@@ -79,5 +79,5 @@ group :test do
   # Record and replay HTTP interactions
   gem "vcr"
   # Pin minitest to a compatible version with Rails 8.1
-  gem "minitest", "~> 5.25"
+  gem "minitest", "~> 6.0"
 end
