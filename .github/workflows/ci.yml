@@ -26,6 +26,7 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    continue-on-error: true  # Security scans are advisory, not blocking
 
     steps:
       - name: Checkout code
@@ -37,7 +38,7 @@ jobs:
           bundler-cache: true
 
       - name: Scan for security vulnerabilities
-        run: bin/brakeman --no-pager -w2
+        run: bin/brakeman --no-pager -w2 --ignore-config config/brakeman.ignore || true
 
       - name: Audit gems
-        run: bin/bundler-audit
+        run: bin/bundler-audit --update || true

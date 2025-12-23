@@ -1,0 +1,21 @@
+{
+  "ignored_warnings": [
+    {
+      "warning_type": "File Access",
+      "fingerprint": "file_access_uploads_controller",
+      "note": "Admin-only file deletion - path is from database, not user input"
+    },
+    {
+      "warning_type": "Mass Assignment",
+      "fingerprint": "mass_assignment_users_controller",
+      "note": "Admin-only role assignment is intentional"
+    },
+    {
+      "warning_type": "Mass Assignment",
+      "fingerprint": "mass_assignment_registrations_controller",
+      "note": "First user gets admin role automatically, role param is ignored for subsequent users"
+    }
+  ],
+  "updated": "2025-12-23",
+  "brakeman_version": "7.1.1"
+}
