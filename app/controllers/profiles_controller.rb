@@ -43,7 +43,65 @@ class ProfilesController < ApplicationController
     end
   end
 
+  # Two-factor authentication setup
+  def two_factor
+    @user = Current.user
+
+    # Generate a new secret if not already set up
+    unless @user.otp_enabled?
+      @user.generate_otp_secret! unless @user.otp_secret.present?
+      @provisioning_uri = @user.otp_provisioning_uri
+      @qr_code = generate_qr_code(@provisioning_uri)
+    end
+  end
+
+  def enable_two_factor
+    @user = Current.user
+
+    unless @user.otp_secret.present?
+      redirect_to two_factor_profile_path, alert: "Please set up 2FA first."
+      return
+    end
+
+    # Verify the code before enabling
+    if @user.verify_otp(params[:otp_code])
+      @user.enable_otp!
+      redirect_to profile_path, notice: "Two-factor authentication enabled successfully."
+    else
+      @provisioning_uri = @user.otp_provisioning_uri
+      @qr_code = generate_qr_code(@provisioning_uri)
+      flash.now[:alert] = "Invalid verification code. Please try again."
+      render :two_factor, status: :unprocessable_entity
+    end
+  end
+
+  def disable_two_factor
+    @user = Current.user
+
+    # Require password confirmation to disable 2FA
+    unless @user.authenticate(params[:password])
+      redirect_to two_factor_profile_path, alert: "Invalid password."
+      return
+    end
+
+    @user.disable_otp!
+    redirect_to profile_path, notice: "Two-factor authentication disabled."
+  end
+
   private
+
+  def generate_qr_code(uri)
+    return nil unless uri
+
+    qrcode = RQRCode::QRCode.new(uri)
+    qrcode.as_svg(
+      offset: 0,
+      color: "000",
+      shape_rendering: "crispEdges",
+      module_size: 4,
+      standalone: true
+    )
+  end
 
   def profile_params
     params.require(:user).permit(:name)

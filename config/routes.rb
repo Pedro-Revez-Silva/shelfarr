@@ -1,6 +1,9 @@
 Rails.application.routes.draw do
   # Authentication
-  resource :session
+  resource :session do
+    get :verify_otp, on: :member
+    post :submit_otp, on: :member
+  end
   get "sign_up", to: "registrations#new", as: :sign_up
   post "sign_up", to: "registrations#create"
 
@@ -18,6 +21,10 @@ Rails.application.routes.draw do
   resource :profile, only: [:show, :edit, :update] do
     get :password, on: :member
     patch :update_password, on: :member
+    # Two-factor authentication
+    get :two_factor, on: :member
+    post :enable_two_factor, on: :member
+    delete :disable_two_factor, on: :member
   end
 
   # Notifications

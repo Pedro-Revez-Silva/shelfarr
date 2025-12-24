@@ -46,6 +46,10 @@ gem "faraday"
 gem "oj"
 # Create zip archives for directory downloads
 gem "rubyzip", require: "zip"
+# TOTP for two-factor authentication
+gem "rotp"
+# QR code generation for 2FA setup
+gem "rqrcode"
 
 group :development, :test do
   # Environment variable management

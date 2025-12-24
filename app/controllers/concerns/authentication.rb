@@ -26,7 +26,20 @@ module Authentication
     end
 
     def find_session_by_cookie
-      Session.find_by(id: cookies.signed[:session_id]) if cookies.signed[:session_id]
+      return nil unless cookies.signed[:session_id]
+
+      session = Session.find_by(id: cookies.signed[:session_id])
+      return nil unless session
+
+      # Check if session has expired (default 30 days)
+      max_age_days = SettingsService.get(:session_max_age_days, default: 30)
+      if session.created_at < max_age_days.days.ago
+        session.destroy
+        cookies.delete(:session_id)
+        return nil
+      end
+
+      session
     end
 
     def request_authentication
@@ -47,7 +60,14 @@ module Authentication
     def start_new_session_for(user)
       user.sessions.create!(user_agent: request.user_agent, ip_address: request.remote_ip).tap do |session|
         Current.session = session
-        cookies.signed.permanent[:session_id] = { value: session.id, httponly: true, same_site: :lax }
+        max_age_days = SettingsService.get(:session_max_age_days, default: 30)
+        cookies.signed[:session_id] = {
+          value: session.id,
+          expires: max_age_days.days.from_now,
+          httponly: true,
+          same_site: :lax,
+          secure: Rails.env.production?
+        }
       end
     end
 

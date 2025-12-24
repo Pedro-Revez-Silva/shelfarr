@@ -40,7 +40,12 @@ class SettingsService
     auto_select_min_seeders: { type: "integer", default: 1, category: "auto_select", description: "Minimum seeders required for auto-selection (torrent only)" },
 
     # Updates
-    github_repo: { type: "string", default: "Pedro-Revez-Silva/shelfarr", category: "updates", description: "GitHub repository for update notifications" }
+    github_repo: { type: "string", default: "Pedro-Revez-Silva/shelfarr", category: "updates", description: "GitHub repository for update notifications" },
+
+    # Security
+    session_max_age_days: { type: "integer", default: 30, category: "security", description: "Maximum session age in days before requiring re-login" },
+    login_lockout_threshold: { type: "integer", default: 5, category: "security", description: "Failed login attempts before temporary lockout" },
+    login_lockout_duration_minutes: { type: "integer", default: 15, category: "security", description: "Duration of login lockout in minutes" }
   }.freeze
 
   CATEGORIES = {
@@ -52,7 +57,8 @@ class SettingsService
     "open_library" => "Open Library",
     "health" => "Health Monitoring",
     "auto_select" => "Auto-Selection",
-    "updates" => "Updates"
+    "updates" => "Updates",
+    "security" => "Security"
   }.freeze
 
   class << self
