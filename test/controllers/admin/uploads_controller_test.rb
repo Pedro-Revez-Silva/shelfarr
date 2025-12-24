@@ -7,7 +7,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
 
   setup do
     @admin = users(:two)
-    post session_url, params: { username: @admin.username, password: "password" }
+    sign_in_as(@admin)
   end
 
   test "index requires admin" do

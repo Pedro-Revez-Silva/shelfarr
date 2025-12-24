@@ -1,13 +1,17 @@
-<% password_digest = BCrypt::Password.create("password") %>
+<% password_digest = BCrypt::Password.create("Password123!") %>
 
 one:
   username: userone
   password_digest: <%= password_digest %>
   name: User One
   role: 0
+  failed_login_count: 0
+  otp_required: false
 
 two:
   username: admin
   password_digest: <%= password_digest %>
   name: Admin User
   role: 1
+  failed_login_count: 0
+  otp_required: false
