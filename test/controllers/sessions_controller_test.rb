@@ -42,7 +42,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     post session_path, params: { username: @user.username, password: "wrong" }
 
     assert_redirected_to new_session_path
-    follow_redirect!
     assert_match(/attempts remaining/, flash[:alert])
   end
 
@@ -52,7 +51,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     post session_path, params: { username: @user.username, password: FIXTURE_PASSWORD }
 
     assert_redirected_to new_session_path
-    follow_redirect!
     assert_match(/Account is locked/, flash[:alert])
     assert_nil cookies[:session_id]
   end
@@ -82,7 +80,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to verify_otp_session_path
     assert_nil cookies[:session_id]
-    assert session[:pending_user_id]
+    # Session should have pending_user_id set for OTP verification
+    assert_equal @user.id, session[:pending_user_id]
   end
 
   test "submit_otp with valid code completes login" do
