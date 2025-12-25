@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2025_12_20_150557) do
+ActiveRecord::Schema[8.1].define(version: 2025_12_24_000001) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -198,7 +198,13 @@ ActiveRecord::Schema[8.1].define(version: 2025_12_20_150557) do
 
   create_table "users", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.integer "failed_login_count", default: 0, null: false
+    t.datetime "last_failed_login_at"
+    t.string "last_failed_login_ip"
+    t.datetime "locked_until"
     t.string "name", default: "", null: false
+    t.boolean "otp_required", default: false, null: false
+    t.string "otp_secret"
     t.string "password_digest", null: false
     t.integer "role", default: 0, null: false
     t.datetime "updated_at", null: false
