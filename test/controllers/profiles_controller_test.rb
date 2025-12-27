@@ -136,14 +136,16 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_select ".bg-green-50"
   end
 
-  test "enable_two_factor with valid code enables 2FA" do
+  test "enable_two_factor with valid code enables 2FA and shows backup codes" do
     @user.generate_otp_secret!
     totp = ROTP::TOTP.new(@user.otp_secret)
 
     post enable_two_factor_profile_path, params: { otp_code: totp.now }
 
-    assert_redirected_to profile_path
+    assert_response :success
+    assert_select "h1", "Save Your Backup Codes"
     assert @user.reload.otp_enabled?
+    assert @user.backup_codes.present?
   end
 
   test "enable_two_factor with invalid code shows error" do
