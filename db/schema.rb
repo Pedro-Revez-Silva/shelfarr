@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2025_12_24_000001) do
+ActiveRecord::Schema[8.1].define(version: 2025_12_27_000001) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -197,6 +197,7 @@ ActiveRecord::Schema[8.1].define(version: 2025_12_24_000001) do
   end
 
   create_table "users", force: :cascade do |t|
+    t.text "backup_codes"
     t.datetime "created_at", null: false
     t.integer "failed_login_count", default: 0, null: false
     t.datetime "last_failed_login_at"

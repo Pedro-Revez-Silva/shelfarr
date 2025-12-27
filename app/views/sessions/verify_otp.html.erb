@@ -15,10 +15,8 @@
         <%= form.text_field :otp_code,
             class: "w-full px-4 py-3 text-center text-2xl tracking-widest border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500",
             placeholder: "000000",
-            maxlength: 6,
+            maxlength: 8,
             autocomplete: "one-time-code",
-            inputmode: "numeric",
-            pattern: "[0-9]*",
             autofocus: true %>
       </div>
 
@@ -28,7 +26,8 @@
       </div>
     <% end %>
 
-    <div class="mt-6 text-center">
+    <div class="mt-6 text-center space-y-2">
+      <p class="text-sm text-gray-500">Lost your authenticator? Use a backup code instead.</p>
       <%= link_to "Cancel and sign in again", new_session_path, class: "text-sm text-gray-600 hover:text-gray-800" %>
     </div>
   </div>

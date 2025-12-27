@@ -25,6 +25,7 @@ Rails.application.routes.draw do
     get :two_factor, on: :member
     post :enable_two_factor, on: :member
     delete :disable_two_factor, on: :member
+    post :regenerate_backup_codes, on: :member
   end
 
   # Notifications

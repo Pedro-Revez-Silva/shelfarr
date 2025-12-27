@@ -44,7 +44,7 @@ class SessionsController < ApplicationController
     end
   end
 
-  # Verify submitted OTP code
+  # Verify submitted OTP code or backup code
   def submit_otp
     user = User.find_by(id: session[:pending_user_id])
 
@@ -53,9 +53,17 @@ class SessionsController < ApplicationController
       return
     end
 
-    if user.verify_otp(params[:otp_code])
+    code = params[:otp_code].to_s.strip
+
+    # Try OTP first, then backup code
+    if user.verify_otp(code)
       session.delete(:pending_user_id)
       complete_login(user)
+    elsif user.verify_backup_code(code)
+      session.delete(:pending_user_id)
+      log_security_event("login.backup_code_used", user)
+      complete_login(user)
+      flash[:warning] = "You used a backup code. You have #{user.backup_codes_remaining} codes remaining."
     else
       log_security_event("login.invalid_otp", user)
       redirect_to verify_otp_session_path, alert: "Invalid verification code. Please try again."

@@ -65,14 +65,33 @@ class ProfilesController < ApplicationController
 
     # Verify the code before enabling
     if @user.verify_otp(params[:otp_code])
-      @user.enable_otp!
-      redirect_to profile_path, notice: "Two-factor authentication enabled successfully."
+      @backup_codes = @user.enable_otp!
+      render :backup_codes
     else
       @provisioning_uri = @user.otp_provisioning_uri
       @qr_code = generate_qr_code(@provisioning_uri)
       flash.now[:alert] = "Invalid verification code. Please try again."
       render :two_factor, status: :unprocessable_entity
     end
+  end
+
+  def regenerate_backup_codes
+    @user = Current.user
+
+    unless @user.otp_enabled?
+      redirect_to two_factor_profile_path, alert: "2FA is not enabled."
+      return
+    end
+
+    # Require password confirmation
+    unless @user.authenticate(params[:password])
+      redirect_to two_factor_profile_path, alert: "Invalid password."
+      return
+    end
+
+    @backup_codes = @user.generate_backup_codes!
+    flash.now[:notice] = "New backup codes generated. Your old codes are now invalid."
+    render :backup_codes
   end
 
   def disable_two_factor

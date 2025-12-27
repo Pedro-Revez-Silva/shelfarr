@@ -5,8 +5,9 @@ class User < ApplicationRecord
   has_many :uploads, dependent: :destroy
   has_many :notifications, dependent: :destroy
 
-  # Encrypt OTP secret at rest
+  # Encrypt OTP secret and backup codes at rest
   encrypts :otp_secret
+  encrypts :backup_codes
 
   enum :role, { user: 0, admin: 1 }, default: :user
 
@@ -93,11 +94,46 @@ class User < ApplicationRecord
   end
 
   def enable_otp!
+    codes = generate_backup_codes!
     update!(otp_required: true)
+    codes
   end
 
   def disable_otp!
-    update!(otp_required: false, otp_secret: nil)
+    update!(otp_required: false, otp_secret: nil, backup_codes: nil)
+  end
+
+  # Backup codes for 2FA recovery
+  BACKUP_CODE_COUNT = 8
+
+  def generate_backup_codes!
+    codes = BACKUP_CODE_COUNT.times.map { SecureRandom.hex(4).upcase }
+    # Store hashed codes
+    hashed_codes = codes.map { |code| Digest::SHA256.hexdigest(code) }
+    update!(backup_codes: hashed_codes.join(","))
+    codes
+  end
+
+  def verify_backup_code(code)
+    return false unless backup_codes.present?
+
+    hashed_input = Digest::SHA256.hexdigest(code.to_s.upcase.gsub(/\s/, ""))
+    remaining_codes = backup_codes.split(",")
+
+    if remaining_codes.include?(hashed_input)
+      # Remove used code (one-time use)
+      remaining_codes.delete(hashed_input)
+      update!(backup_codes: remaining_codes.any? ? remaining_codes.join(",") : nil)
+      Rails.logger.info "[Security] Backup code used for user '#{username}'"
+      true
+    else
+      false
+    end
+  end
+
+  def backup_codes_remaining
+    return 0 unless backup_codes.present?
+    backup_codes.split(",").count
   end
 
   private
