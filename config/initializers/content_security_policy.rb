@@ -21,8 +21,9 @@ Rails.application.configure do
     # Connect sources for Turbo/Stimulus and API calls
     policy.connect_src :self
 
-    # Upgrade insecure requests in production
-    policy.upgrade_insecure_requests true if Rails.env.production?
+    # Note: upgrade_insecure_requests is intentionally NOT enabled
+    # This allows access via HTTP on local networks without SSL
+    # If you're exposing Shelfarr over the internet, use a reverse proxy with SSL instead
   end
 
   # Generate session nonces for permitted importmap and inline scripts.
