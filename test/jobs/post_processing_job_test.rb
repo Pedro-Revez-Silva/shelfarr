@@ -6,8 +6,19 @@ class PostProcessingJobTest < ActiveJob::TestCase
   setup do
     AudiobookshelfClient.reset_connection!
 
-    @request = requests(:pending_request)
-    @book = @request.book
+    # Create an audiobook for testing (not ebook)
+    @book = Book.create!(
+      title: "Test Audiobook",
+      author: "Test Author",
+      book_type: :audiobook
+    )
+
+    # Create a request for the audiobook
+    @request = Request.create!(
+      book: @book,
+      user: users(:one),
+      status: :downloading
+    )
 
     # Create a completed download
     @download = @request.downloads.create!(
@@ -186,6 +197,8 @@ class PostProcessingJobTest < ActiveJob::TestCase
   test "marks for attention when audiobookshelf library fetch fails" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries/lib-123")
+        .to_return(status: 500)
+      stub_request(:post, "http://localhost:13378/api/libraries/lib-123/scan")
         .to_return(status: 500)
 
       PostProcessingJob.perform_now(@download.id)

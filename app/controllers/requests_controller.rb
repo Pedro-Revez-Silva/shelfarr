@@ -192,6 +192,9 @@ class RequestsController < ApplicationController
   def create_zip_file(source_dir, zip_path)
     require "zip"
 
+    # Delete existing zip to avoid "Entry already exists" errors
+    File.delete(zip_path) if File.exist?(zip_path)
+
     source_dir_real = File.realpath(source_dir)
 
     Zip::File.open(zip_path, create: true) do |zipfile|

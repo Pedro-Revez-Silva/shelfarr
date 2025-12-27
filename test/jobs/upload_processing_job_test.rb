@@ -43,75 +43,95 @@ class UploadProcessingJobTest < ActiveJob::TestCase
   end
 
   test "processes upload and creates book" do
-    assert_difference "Book.count", 1 do
-      UploadProcessingJob.perform_now(@upload.id)
-    end
+    VCR.turned_off do
+      stub_open_library_search("Mistborn Brandon Sanderson")
 
-    @upload.reload
-    assert @upload.completed?
-    assert_equal "Mistborn", @upload.parsed_title
-    assert_equal "Brandon Sanderson", @upload.parsed_author
-    assert @upload.audiobook?
-    assert @upload.book.present?
+      assert_difference "Book.count", 1 do
+        UploadProcessingJob.perform_now(@upload.id)
+      end
+
+      @upload.reload
+      assert @upload.completed?
+      assert_equal "Mistborn", @upload.parsed_title
+      assert_equal "Brandon Sanderson", @upload.parsed_author
+      assert @upload.audiobook?
+      assert @upload.book.present?
+    end
   end
 
   test "moves file to correct location" do
-    UploadProcessingJob.perform_now(@upload.id)
+    VCR.turned_off do
+      stub_open_library_search("Mistborn Brandon Sanderson")
 
-    @upload.reload
-    expected_path = File.join(@temp_audiobook_dest, "Brandon Sanderson", "Mistborn")
+      UploadProcessingJob.perform_now(@upload.id)
 
-    assert File.exist?(File.join(expected_path, "Brandon Sanderson - Mistborn.m4b"))
-    assert_equal expected_path, @upload.book.file_path
+      @upload.reload
+      expected_path = File.join(@temp_audiobook_dest, "Brandon Sanderson", "Mistborn")
+
+      assert File.exist?(File.join(expected_path, "Brandon Sanderson - Mistborn.m4b"))
+      assert_equal expected_path, @upload.book.file_path
+    end
   end
 
   test "handles ebook uploads" do
-    ebook_file = File.join(@temp_source, "Frank Herbert - Dune.epub")
-    File.write(ebook_file, "test ebook content")
+    VCR.turned_off do
+      stub_open_library_search("Dune Frank Herbert")
 
-    upload = Upload.create!(
-      user: @user,
-      original_filename: "Frank Herbert - Dune.epub",
-      file_path: ebook_file,
-      file_size: 100,
-      status: :pending
-    )
+      ebook_file = File.join(@temp_source, "Frank Herbert - Dune.epub")
+      File.write(ebook_file, "test ebook content")
 
-    UploadProcessingJob.perform_now(upload.id)
-    upload.reload
+      upload = Upload.create!(
+        user: @user,
+        original_filename: "Frank Herbert - Dune.epub",
+        file_path: ebook_file,
+        file_size: 100,
+        status: :pending
+      )
 
-    assert upload.completed?
-    assert upload.ebook?
-    assert upload.book.ebook?
+      UploadProcessingJob.perform_now(upload.id)
+      upload.reload
 
-    expected_path = File.join(@temp_ebook_dest, "Frank Herbert", "Dune")
-    assert_equal expected_path, upload.book.file_path
+      assert upload.completed?
+      assert upload.ebook?
+      assert upload.book.ebook?
+
+      expected_path = File.join(@temp_ebook_dest, "Frank Herbert", "Dune")
+      assert_equal expected_path, upload.book.file_path
+    end
   end
 
   test "matches existing book instead of creating new" do
-    existing = Book.create!(
-      title: "Mistborn",
-      author: "Brandon Sanderson",
-      book_type: :audiobook
-    )
+    VCR.turned_off do
+      stub_open_library_search("Mistborn Brandon Sanderson")
 
-    assert_no_difference "Book.count" do
-      UploadProcessingJob.perform_now(@upload.id)
+      existing = Book.create!(
+        title: "Mistborn",
+        author: "Brandon Sanderson",
+        book_type: :audiobook
+      )
+
+      assert_no_difference "Book.count" do
+        UploadProcessingJob.perform_now(@upload.id)
+      end
+
+      @upload.reload
+      assert_equal existing, @upload.book
     end
-
-    @upload.reload
-    assert_equal existing, @upload.book
   end
 
   test "handles failed processing due to missing file" do
-    FileUtils.rm(@test_file)
+    VCR.turned_off do
+      stub_open_library_search("Mistborn Brandon Sanderson")
 
-    UploadProcessingJob.perform_now(@upload.id)
+      FileUtils.rm(@test_file)
 
-    @upload.reload
-    assert @upload.failed?
-    assert @upload.error_message.present?
-    assert_includes @upload.error_message, "Source file not found"
+      UploadProcessingJob.perform_now(@upload.id)
+
+      @upload.reload
+      assert @upload.failed?
+      assert @upload.error_message.present?
+      assert_includes @upload.error_message, "Source file not found"
+    end
   end
 
   test "skips non-pending uploads" do
@@ -129,17 +149,38 @@ class UploadProcessingJobTest < ActiveJob::TestCase
   end
 
   test "sets processed_at timestamp on success" do
-    UploadProcessingJob.perform_now(@upload.id)
+    VCR.turned_off do
+      stub_open_library_search("Mistborn Brandon Sanderson")
 
-    @upload.reload
-    assert @upload.processed_at.present?
+      UploadProcessingJob.perform_now(@upload.id)
+
+      @upload.reload
+      assert @upload.processed_at.present?
+    end
   end
 
   test "updates match confidence from parser" do
-    UploadProcessingJob.perform_now(@upload.id)
+    VCR.turned_off do
+      stub_open_library_search("Mistborn Brandon Sanderson")
 
-    @upload.reload
-    assert @upload.match_confidence.present?
-    assert @upload.match_confidence > 0
+      UploadProcessingJob.perform_now(@upload.id)
+
+      @upload.reload
+      assert @upload.match_confidence.present?
+      assert @upload.match_confidence > 0
+    end
+  end
+
+  private
+
+  def stub_open_library_search(query)
+    # Stub Open Library search to return empty results
+    # This allows tests to focus on file operations and book creation
+    stub_request(:get, %r{https://openlibrary\.org/search\.json})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { numFound: 0, docs: [] }.to_json
+      )
   end
 end
