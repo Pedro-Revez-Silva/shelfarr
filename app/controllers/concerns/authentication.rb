@@ -66,7 +66,8 @@ module Authentication
           expires: max_age_days.days.from_now,
           httponly: true,
           same_site: :lax,
-          secure: Rails.env.production?
+          # Only set secure flag if actually using HTTPS (allows HTTP on local networks)
+          secure: request.ssl?
         }
       end
     end
