@@ -10,7 +10,7 @@ Rails.application.configure do
   config.content_security_policy do |policy|
     policy.default_src :self
     policy.font_src    :self, :data
-    policy.img_src     :self, :data, "https://covers.openlibrary.org", "https://*.archive.org"
+    policy.img_src     :self, :data, "https://covers.openlibrary.org", "https://archive.org", "https://*.archive.org"
     policy.object_src  :none
     policy.script_src  :self
     policy.style_src   :self, :unsafe_inline  # Required for Tailwind and inline SVG styles
