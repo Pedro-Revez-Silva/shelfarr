@@ -62,7 +62,7 @@ module Admin
       get admin_issues_path
       assert_response :success
 
-      assert_select ".bg-red-50", text: /Download failed/
+      assert_select ".bg-red-500\\/10", text: /Download failed/
     end
 
     test "index shows retry count for requests with retries" do
