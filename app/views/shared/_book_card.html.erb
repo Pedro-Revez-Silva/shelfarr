@@ -1,0 +1,132 @@
+<%#
+  Shared book card component for poster-style display
+
+  Required locals:
+    - book: Book record OR OpenLibraryResult object
+
+  Optional locals:
+    - link_path: Path to link to (default: library_path if book is persisted)
+    - show_status: Show status badge (default: false)
+    - status: Status to display (if show_status is true)
+    - status_icon: SVG path for status icon
+    - show_actions: Show action buttons on hover (default: false)
+    - actions_partial: Partial to render for actions
+    - size: Card size - :small, :medium (default: :medium)
+    - hover_text: Text to show on hover (default: "View Details")
+%>
+<%
+  # Default values
+  link_path ||= defined?(book.persisted?) && book.persisted? ? library_path(book) : nil
+  show_status ||= false
+  status ||= nil
+  status_icon ||= nil
+  show_actions ||= false
+  actions_partial ||= nil
+  size ||= :medium
+  hover_text ||= "View Details"
+
+  # Extract common book properties
+  title = book.respond_to?(:title) ? book.title : nil
+  author = book.respond_to?(:author) ? book.author : nil
+  cover_url = book.respond_to?(:cover_url) ? book.cover_url : nil
+  year = book.respond_to?(:year) ? book.year : (book.respond_to?(:first_publish_year) ? book.first_publish_year : nil)
+
+  # Book type determination
+  is_audiobook = book.respond_to?(:audiobook?) ? book.audiobook? : false
+  book_type_label = is_audiobook ? 'Audio' : 'Ebook'
+  book_type_color = is_audiobook ? 'bg-purple-500/90' : 'bg-blue-500/90'
+
+  # Size-based classes
+  size_classes = case size
+  when :small
+    { card: "w-36", text: "text-xs", title: "text-xs", padding: "p-2", icon: "w-10 h-10" }
+  else # :medium
+    { card: "", text: "text-sm", title: "text-sm", padding: "p-3", icon: "w-12 h-12" }
+  end
+
+  # Status colors mapping
+  status_colors = {
+    'pending' => 'bg-yellow-500/90',
+    'searching' => 'bg-blue-500/90',
+    'not_found' => 'bg-orange-500/90',
+    'downloading' => 'bg-purple-500/90',
+    'processing' => 'bg-indigo-500/90',
+    'completed' => 'bg-green-500/90',
+    'failed' => 'bg-red-500/90',
+    'acquired' => 'bg-green-500/90',
+    'requested' => 'bg-blue-500/90'
+  }
+%>
+
+<% wrapper = link_path ? "link_to" : "div" %>
+<%= content_tag(:div, class: "group #{size_classes[:card]}") do %>
+  <% card_content = capture do %>
+    <div class="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 hover:scale-[1.02] bg-gray-900">
+      <%# Poster Image %>
+      <div class="aspect-[2/3] relative">
+        <% if cover_url.present? %>
+          <img
+            src="<%= cover_url.respond_to?(:call) ? cover_url.call(size: :m) : cover_url %>"
+            alt="Cover of <%= title %>"
+            class="w-full h-full object-cover"
+            loading="lazy"
+            onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\'w-full h-full bg-gradient-to-br from-gray-700 to-gray-900 flex items-center justify-center\'><svg class=\'<%= size_classes[:icon] %> text-gray-500\' fill=\'none\' stroke=\'currentColor\' viewBox=\'0 0 24 24\'><path stroke-linecap=\'round\' stroke-linejoin=\'round\' stroke-width=\'1.5\' d=\'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253\' /></svg></div>';"
+          >
+        <% else %>
+          <div class="w-full h-full bg-gradient-to-br from-gray-700 to-gray-900 flex items-center justify-center">
+            <svg class="<%= size_classes[:icon] %> text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+          </div>
+        <% end %>
+
+        <%# Status Badge (top right) %>
+        <% if show_status && status.present? %>
+          <span class="absolute top-2 right-2 inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm text-white <%= status_colors[status.to_s] || 'bg-gray-500/90' %>">
+            <% if status_icon.present? %>
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <%= status_icon.html_safe %>
+              </svg>
+            <% end %>
+            <%= status.to_s.titleize %>
+          </span>
+        <% else %>
+          <%# Type Badge when no status %>
+          <span class="absolute top-2 right-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm text-white <%= book_type_color %>">
+            <%= book_type_label %>
+          </span>
+        <% end %>
+
+        <%# Year Badge (top left) %>
+        <% if year.present? %>
+          <span class="absolute top-2 left-2 px-2 py-0.5 rounded text-xs font-medium bg-black/60 text-white backdrop-blur-sm">
+            <%= year %>
+          </span>
+        <% end %>
+
+        <%# Hover Overlay %>
+        <div class="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end <%= size_classes[:padding] %>">
+          <% if show_actions && actions_partial.present? %>
+            <%= render actions_partial, book: book %>
+          <% else %>
+            <span class="text-white <%= size_classes[:text] %> font-medium"><%= hover_text %></span>
+          <% end %>
+        </div>
+      </div>
+
+      <%# Title & Author %>
+      <div class="<%= size_classes[:padding] %> bg-white">
+        <h3 class="font-semibold text-gray-900 <%= size_classes[:title] %> leading-tight line-clamp-2"><%= title %></h3>
+        <% if author.present? %>
+          <p class="text-xs text-gray-500 mt-0.5 truncate"><%= author %></p>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+
+  <% if link_path %>
+    <%= link_to card_content, link_path %>
+  <% else %>
+    <%= card_content %>
+  <% end %>
+<% end %>

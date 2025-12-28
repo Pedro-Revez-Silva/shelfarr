@@ -1,38 +1,259 @@
-<div class="mx-auto max-w-4xl">
-  <h1 class="font-bold text-4xl mb-8">Dashboard</h1>
+<div class="mx-auto max-w-6xl">
+  <%# Quick Search Bar %>
+  <div class="mb-8">
+    <div class="relative">
+      <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+        <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+      </div>
+      <%= link_to search_path, class: "block w-full pl-12 pr-4 py-4 border border-gray-200 rounded-xl shadow-sm text-gray-400 bg-white hover:border-gray-300 hover:shadow-md transition-all" do %>
+        Search for books by title or author...
+      <% end %>
+    </div>
+  </div>
 
-  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-    <div class="bg-white rounded-lg shadow p-6">
-      <div class="text-gray-500 text-sm font-medium">Pending Requests</div>
-      <div class="text-3xl font-bold text-blue-600"><%= @pending_requests %></div>
+  <%# Stats Grid %>
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
+    <%# Pending Requests %>
+    <div class="bg-white rounded-xl shadow-md p-5 hover:shadow-lg transition-shadow">
+      <div class="flex items-center gap-4">
+        <div class="p-3 rounded-lg bg-blue-100">
+          <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-gray-900"><%= @pending_requests %></div>
+          <div class="text-sm text-gray-500">Pending</div>
+        </div>
+      </div>
     </div>
 
-    <div class="bg-white rounded-lg shadow p-6">
-      <div class="text-gray-500 text-sm font-medium">Completed</div>
-      <div class="text-3xl font-bold text-green-600"><%= @completed_requests %></div>
+    <%# Completed %>
+    <div class="bg-white rounded-xl shadow-md p-5 hover:shadow-lg transition-shadow">
+      <div class="flex items-center gap-4">
+        <div class="p-3 rounded-lg bg-green-100">
+          <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-gray-900"><%= @completed_requests %></div>
+          <div class="text-sm text-gray-500">Completed</div>
+        </div>
+      </div>
     </div>
 
-    <div class="bg-white rounded-lg shadow p-6">
-      <div class="text-gray-500 text-sm font-medium">Active Downloads</div>
-      <div class="text-3xl font-bold text-purple-600"><%= @active_downloads %></div>
+    <%# Active Downloads %>
+    <div class="bg-white rounded-xl shadow-md p-5 hover:shadow-lg transition-shadow">
+      <div class="flex items-center gap-4">
+        <div class="p-3 rounded-lg bg-purple-100">
+          <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-gray-900"><%= @active_downloads %></div>
+          <div class="text-sm text-gray-500">Downloads</div>
+        </div>
+      </div>
     </div>
 
-    <div class="bg-white rounded-lg shadow p-6">
-      <div class="text-gray-500 text-sm font-medium">System Status</div>
-      <% unhealthy_count = @system_health.values.count { |h| !h.healthy? } %>
-      <div class="text-3xl font-bold <%= unhealthy_count > 0 ? 'text-red-600' : 'text-green-600' %>">
-        <%= unhealthy_count > 0 ? "#{unhealthy_count} Issues" : "Healthy" %>
+    <%# System Status %>
+    <% unhealthy_count = @system_health.values.count { |h| !h.healthy? } %>
+    <div class="bg-white rounded-xl shadow-md p-5 hover:shadow-lg transition-shadow">
+      <div class="flex items-center gap-4">
+        <div class="p-3 rounded-lg <%= unhealthy_count > 0 ? 'bg-red-100' : 'bg-green-100' %>">
+          <% if unhealthy_count > 0 %>
+            <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          <% else %>
+            <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          <% end %>
+        </div>
+        <div>
+          <div class="text-2xl font-bold <%= unhealthy_count > 0 ? 'text-red-600' : 'text-gray-900' %>">
+            <%= unhealthy_count > 0 ? "#{unhealthy_count} Issue#{unhealthy_count > 1 ? 's' : ''}" : "Healthy" %>
+          </div>
+          <div class="text-sm text-gray-500">System</div>
+        </div>
       </div>
     </div>
   </div>
 
-  <div class="bg-white rounded-lg shadow p-6">
-    <h2 class="font-bold text-xl mb-4">Quick Actions</h2>
-    <div class="flex flex-wrap gap-4">
-      <% if Current.user&.admin? %>
-        <%= link_to "Manage Users", admin_users_path, class: "rounded-md px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700" %>
-        <%= link_to "Settings", admin_settings_path, class: "rounded-md px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700" %>
+  <%# Recently Added to Library %>
+  <% if @recent_books.any? %>
+    <div class="mb-10">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-gray-900">Recently Added</h2>
+        <%= link_to "View All", library_index_path, class: "text-sm text-blue-600 hover:text-blue-500 font-medium" %>
+      </div>
+      <div class="flex gap-4 overflow-x-auto pb-4 -mx-4 px-4 scrollbar-hide">
+        <% @recent_books.each do |book| %>
+          <%= link_to library_path(book), class: "group flex-shrink-0 w-36" do %>
+            <div class="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 hover:scale-[1.03] bg-gray-900">
+              <div class="aspect-[2/3] relative">
+                <% if book.cover_url.present? %>
+                  <img
+                    src="<%= book.cover_url %>"
+                    alt="Cover of <%= book.title %>"
+                    class="w-full h-full object-cover"
+                    loading="lazy"
+                  >
+                <% else %>
+                  <div class="w-full h-full bg-gradient-to-br from-gray-700 to-gray-900 flex items-center justify-center">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                    </svg>
+                  </div>
+                <% end %>
+
+                <%# Type Badge %>
+                <span class="absolute top-2 right-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm <%= book.audiobook? ? 'bg-purple-500/90 text-white' : 'bg-blue-500/90 text-white' %>">
+                  <%= book.audiobook? ? 'Audio' : 'Ebook' %>
+                </span>
+
+                <%# Hover Overlay %>
+                <div class="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-2">
+                  <span class="text-white text-xs font-medium">View Details</span>
+                </div>
+              </div>
+
+              <%# Title & Author %>
+              <div class="p-2 bg-white">
+                <h3 class="font-semibold text-gray-900 text-xs leading-tight line-clamp-2"><%= book.title %></h3>
+                <% if book.author.present? %>
+                  <p class="text-xs text-gray-500 mt-0.5 truncate"><%= book.author %></p>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+
+  <%# Recent Requests %>
+  <% if @recent_requests.any? %>
+    <div class="mb-10">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-gray-900">Recent Requests</h2>
+        <%= link_to "View All", requests_path, class: "text-sm text-blue-600 hover:text-blue-500 font-medium" %>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+        <% @recent_requests.each do |request| %>
+          <% book = request.book %>
+          <%= link_to request_path(request), class: "group" do %>
+            <div class="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 hover:scale-[1.02] bg-gray-900">
+              <div class="aspect-[2/3] relative">
+                <% if book.cover_url.present? %>
+                  <img
+                    src="<%= book.cover_url %>"
+                    alt="Cover of <%= book.title %>"
+                    class="w-full h-full object-cover"
+                    loading="lazy"
+                  >
+                <% else %>
+                  <div class="w-full h-full bg-gradient-to-br from-gray-700 to-gray-900 flex items-center justify-center">
+                    <svg class="w-12 h-12 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                    </svg>
+                  </div>
+                <% end %>
+
+                <%# Status Badge %>
+                <%
+                  status_colors = {
+                    'pending' => 'bg-yellow-500/90',
+                    'searching' => 'bg-blue-500/90',
+                    'not_found' => 'bg-orange-500/90',
+                    'downloading' => 'bg-purple-500/90',
+                    'processing' => 'bg-indigo-500/90',
+                    'completed' => 'bg-green-500/90',
+                    'failed' => 'bg-red-500/90'
+                  }
+                  status_icons = {
+                    'pending' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />',
+                    'searching' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />',
+                    'not_found' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />',
+                    'downloading' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />',
+                    'processing' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />',
+                    'completed' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />',
+                    'failed' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />'
+                  }
+                %>
+                <span class="absolute top-2 right-2 inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm text-white <%= status_colors[request.status] %>">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <%= status_icons[request.status].html_safe %>
+                  </svg>
+                  <%= request.status.titleize %>
+                </span>
+
+                <%# Type Badge %>
+                <span class="absolute top-2 left-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm <%= book.audiobook? ? 'bg-purple-500/90 text-white' : 'bg-blue-500/90 text-white' %>">
+                  <%= book.audiobook? ? 'Audio' : 'Ebook' %>
+                </span>
+
+                <%# Hover Overlay %>
+                <div class="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-3">
+                  <span class="text-white text-sm font-medium">View Request</span>
+                </div>
+              </div>
+
+              <%# Title & Author %>
+              <div class="p-3 bg-white">
+                <h3 class="font-semibold text-gray-900 text-sm leading-tight line-clamp-2"><%= book.title %></h3>
+                <% if book.author.present? %>
+                  <p class="text-xs text-gray-500 mt-1 truncate"><%= book.author %></p>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+
+  <%# Quick Actions (Admin) %>
+  <% if Current.user&.admin? %>
+    <div class="bg-white rounded-xl shadow-md p-6">
+      <h2 class="font-bold text-lg text-gray-900 mb-4">Quick Actions</h2>
+      <div class="flex flex-wrap gap-3">
+        <%= link_to admin_users_path, class: "inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm transition" do %>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+          </svg>
+          Manage Users
+        <% end %>
+        <%= link_to admin_settings_path, class: "inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm transition" do %>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          Settings
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+
+  <%# Empty State for New Users %>
+  <% if @recent_books.empty? && @recent_requests.empty? %>
+    <div class="text-center py-16">
+      <svg class="mx-auto h-20 w-20 text-gray-200 mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+      </svg>
+      <h3 class="text-lg font-medium text-gray-600 mb-2">Welcome to Shelfarr</h3>
+      <p class="text-gray-400 mb-6">Start by searching for your favorite books</p>
+      <%= link_to search_path, class: "inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition shadow-md" do %>
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+        Search Books
       <% end %>
     </div>
-  </div>
+  <% end %>
 </div>

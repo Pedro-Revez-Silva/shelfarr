@@ -3,17 +3,17 @@
     <%= @error %>
   </div>
 <% elsif @results.blank? %>
-  <div class="text-center py-12 text-gray-500">
-    <svg class="mx-auto h-12 w-12 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+  <div class="text-center py-16 text-gray-500">
+    <svg class="mx-auto h-16 w-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>
-    <p>No results found for "<%= @query %>"</p>
-    <p class="text-sm mt-2">Try different keywords or check your spelling</p>
+    <p class="text-lg font-medium text-gray-700">No results found</p>
+    <p class="text-sm mt-1">Try different keywords or check your spelling</p>
   </div>
 <% else %>
-  <div class="space-y-4">
-    <p class="text-sm text-gray-500 mb-4"><%= @results.size %> result<%= @results.size == 1 ? '' : 's' %> found</p>
+  <p class="text-sm text-gray-500 mb-6"><%= @results.size %> result<%= @results.size == 1 ? '' : 's' %> for "<span class="font-medium text-gray-700"><%= @query %></span>"</p>
 
+  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
     <% @results.each do |result| %>
       <%= render "result_card", result: result %>
     <% end %>

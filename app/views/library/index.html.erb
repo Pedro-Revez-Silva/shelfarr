@@ -1,35 +1,41 @@
-<div class="mx-auto max-w-4xl">
-  <div class="flex justify-between items-center mb-8">
-    <h1 class="font-bold text-4xl">Library</h1>
+<div class="mx-auto max-w-6xl">
+  <div class="flex justify-between items-center mb-6">
+    <h1 class="font-bold text-3xl">Library</h1>
+    <span class="text-sm text-gray-500"><%= @books.count %> books</span>
   </div>
 
-  <div class="flex gap-2 mb-6">
+  <div class="flex gap-2 mb-8">
     <%= link_to "All",
         library_index_path,
-        class: "px-4 py-2 rounded-lg font-medium transition #{params[:type].blank? ? 'bg-gray-900 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}" %>
+        class: "px-4 py-2 rounded-full font-medium text-sm transition #{params[:type].blank? ? 'bg-gray-900 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}" %>
     <%= link_to "Audiobooks",
         library_index_path(type: :audiobook),
-        class: "px-4 py-2 rounded-lg font-medium transition #{params[:type] == 'audiobook' ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}" %>
+        class: "px-4 py-2 rounded-full font-medium text-sm transition #{params[:type] == 'audiobook' ? 'bg-purple-600 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}" %>
     <%= link_to "Ebooks",
         library_index_path(type: :ebook),
-        class: "px-4 py-2 rounded-lg font-medium transition #{params[:type] == 'ebook' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}" %>
+        class: "px-4 py-2 rounded-full font-medium text-sm transition #{params[:type] == 'ebook' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}" %>
   </div>
 
   <% if @books.empty? %>
-    <div class="bg-white rounded-lg shadow p-12 text-center">
-      <svg class="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+    <div class="text-center py-20">
+      <svg class="mx-auto h-20 w-20 text-gray-200 mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
       </svg>
-      <h3 class="text-lg font-medium text-gray-900 mb-2">Your library is empty</h3>
-      <p class="text-gray-500 mb-4">Books you request will appear here once downloaded.</p>
-      <%= link_to "Search Books", search_path, class: "inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition" %>
+      <h3 class="text-lg font-medium text-gray-600 mb-2">Your library is empty</h3>
+      <p class="text-gray-400 mb-6">Books you request will appear here once downloaded.</p>
+      <%= link_to search_path, class: "inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition shadow-md" do %>
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+        Search Books
+      <% end %>
     </div>
   <% else %>
-    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-6">
+    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
       <% @books.each do |book| %>
         <%= link_to library_path(book), class: "group" do %>
-          <div class="bg-white rounded-lg shadow hover:shadow-lg transition overflow-hidden">
-            <div class="aspect-[2/3] bg-gray-100 relative">
+          <div class="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 hover:scale-[1.02] bg-gray-900">
+            <div class="aspect-[2/3] relative">
               <% if book.cover_url.present? %>
                 <img
                   src="<%= book.cover_url %>"
@@ -38,20 +44,36 @@
                   loading="lazy"
                 >
               <% else %>
-                <div class="w-full h-full flex items-center justify-center">
-                  <svg class="w-12 h-12 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                <div class="w-full h-full bg-gradient-to-br from-gray-700 to-gray-900 flex items-center justify-center">
+                  <svg class="w-12 h-12 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                   </svg>
                 </div>
               <% end %>
-              <span class="absolute top-2 right-2 inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= book.audiobook? ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800' %>">
+
+              <%# Type Badge %>
+              <span class="absolute top-2 right-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm <%= book.audiobook? ? 'bg-purple-500/90 text-white' : 'bg-blue-500/90 text-white' %>">
                 <%= book.audiobook? ? 'Audio' : 'Ebook' %>
               </span>
+
+              <%# Year Badge %>
+              <% if book.year.present? %>
+                <span class="absolute top-2 left-2 px-2 py-0.5 rounded text-xs font-medium bg-black/60 text-white backdrop-blur-sm">
+                  <%= book.year %>
+                </span>
+              <% end %>
+
+              <%# Hover Overlay %>
+              <div class="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-3">
+                <span class="text-white text-sm font-medium">View Details</span>
+              </div>
             </div>
-            <div class="p-3">
-              <h3 class="font-medium text-gray-900 text-sm truncate group-hover:text-blue-600 transition"><%= book.title %></h3>
+
+            <%# Title & Author %>
+            <div class="p-3 bg-white">
+              <h3 class="font-semibold text-gray-900 text-sm leading-tight line-clamp-2"><%= book.title %></h3>
               <% if book.author.present? %>
-                <p class="text-xs text-gray-500 truncate"><%= book.author %></p>
+                <p class="text-xs text-gray-500 mt-1 truncate"><%= book.author %></p>
               <% end %>
             </div>
           </div>
