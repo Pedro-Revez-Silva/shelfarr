@@ -34,7 +34,7 @@
     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
       <% @books.each do |book| %>
         <%= link_to library_path(book), class: "group" do %>
-          <div class="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 hover:scale-[1.02] bg-gray-900">
+          <div class="relative rounded-xl overflow-hidden shadow-lg hover:shadow-2xl transition-all duration-300 hover:scale-[1.03] bg-gray-900 ring-1 ring-gray-800">
             <div class="aspect-[2/3] relative">
               <% if book.cover_url.present? %>
                 <img
@@ -70,10 +70,10 @@
             </div>
 
             <%# Title & Author %>
-            <div class="p-3 bg-white">
-              <h3 class="font-semibold text-gray-900 text-sm leading-tight line-clamp-2"><%= book.title %></h3>
+            <div class="p-3 bg-gray-900">
+              <h3 class="font-semibold text-white text-sm leading-tight line-clamp-2"><%= book.title %></h3>
               <% if book.author.present? %>
-                <p class="text-xs text-gray-500 mt-1 truncate"><%= book.author %></p>
+                <p class="text-xs text-gray-400 mt-1 truncate"><%= book.author %></p>
               <% end %>
             </div>
           </div>

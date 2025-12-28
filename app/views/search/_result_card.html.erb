@@ -20,7 +20,7 @@
   end
 %>
 
-<div class="group relative rounded-lg overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 hover:scale-[1.02] bg-gray-900">
+<div class="group relative rounded-xl overflow-hidden shadow-lg hover:shadow-2xl transition-all duration-300 hover:scale-[1.03] bg-gray-900 ring-1 ring-gray-800">
   <%# Poster Image %>
   <div class="aspect-[2/3] relative">
     <% if result.cover_url %>
@@ -130,10 +130,10 @@
   </div>
 
   <%# Title & Author (always visible) %>
-  <div class="p-3 bg-white">
-    <h3 class="font-semibold text-gray-900 text-sm leading-tight line-clamp-2"><%= result.title %></h3>
+  <div class="p-3 bg-gray-900">
+    <h3 class="font-semibold text-white text-sm leading-tight line-clamp-2"><%= result.title %></h3>
     <% if result.author.present? %>
-      <p class="text-xs text-gray-500 mt-1 truncate"><%= result.author %></p>
+      <p class="text-xs text-gray-400 mt-1 truncate"><%= result.author %></p>
     <% end %>
   </div>
 </div>
