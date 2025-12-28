@@ -65,9 +65,9 @@ module Authentication
           value: session.id,
           expires: max_age_days.days.from_now,
           httponly: true,
-          same_site: :lax,
-          # Only set secure flag if actually using HTTPS (allows HTTP on local networks)
-          secure: request.ssl?
+          same_site: :lax
+          # Note: secure flag intentionally omitted for self-hosted HTTP access
+          # If using HTTPS via reverse proxy, the proxy handles secure transport
         }
       end
     end

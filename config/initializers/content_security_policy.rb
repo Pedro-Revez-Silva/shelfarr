@@ -1,36 +1,25 @@
 # frozen_string_literal: true
 
-# Be sure to restart your server when you modify this file.
+# Content Security Policy is DISABLED by default for self-hosted setups.
+#
+# Shelfarr is designed to run on home networks like Radarr, Sonarr, and Jellyfin.
+# Strict CSP policies cause issues with:
+# - HTTP access on local networks
+# - External image sources (Open Library covers redirect through multiple domains)
+# - Reverse proxy setups
+#
+# If you're exposing Shelfarr to the internet and want additional security,
+# you can uncomment and customize the policy below. However, the recommended
+# approach is to use a reverse proxy (nginx, Caddy, Traefik) with SSL termination.
 
-# Define an application-wide content security policy.
-# See the Securing Rails Applications Guide for more information:
-# https://guides.rubyonrails.org/security.html#content-security-policy-header
-
-Rails.application.configure do
-  config.content_security_policy do |policy|
-    policy.default_src :self
-    policy.font_src    :self, :data
-    policy.img_src     :self, :data, "https://covers.openlibrary.org", "https://archive.org", "https://*.archive.org"
-    policy.object_src  :none
-    policy.script_src  :self
-    policy.style_src   :self, :unsafe_inline  # Required for Tailwind and inline SVG styles
-    policy.frame_ancestors :none
-    policy.base_uri    :self
-    policy.form_action :self
-
-    # Connect sources for Turbo/Stimulus and API calls
-    policy.connect_src :self
-
-    # Note: upgrade_insecure_requests is intentionally NOT enabled
-    # This allows access via HTTP on local networks without SSL
-    # If you're exposing Shelfarr over the internet, use a reverse proxy with SSL instead
-  end
-
-  # Generate session nonces for permitted importmap and inline scripts.
-  # Note: Nonces provide additional security for inline scripts
-  config.content_security_policy_nonce_generator = ->(request) { SecureRandom.base64(16) }
-  config.content_security_policy_nonce_directives = %w[script-src]
-
-  # Report violations without enforcing the policy in development
-  # config.content_security_policy_report_only = true
-end
+# Rails.application.configure do
+#   config.content_security_policy do |policy|
+#     policy.default_src :self
+#     policy.font_src    :self, :data
+#     policy.img_src     :self, :data, :https
+#     policy.object_src  :none
+#     policy.script_src  :self, :unsafe_inline
+#     policy.style_src   :self, :unsafe_inline
+#     policy.frame_ancestors :none
+#   end
+# end
