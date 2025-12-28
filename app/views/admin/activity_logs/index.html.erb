@@ -1,79 +1,79 @@
 <div class="mx-auto max-w-6xl">
   <div class="flex justify-between items-center mb-8">
-    <h1 class="font-bold text-4xl">Activity Log</h1>
+    <h1 class="font-bold text-4xl text-white">Activity Log</h1>
   </div>
 
-  <div class="bg-white rounded-lg shadow p-4 mb-6">
+  <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
     <%= form_with url: admin_activity_logs_path, method: :get, class: "flex flex-wrap gap-4 items-end" do |f| %>
       <div>
-        <%= f.label :user_id, "User", class: "block text-sm font-medium text-gray-700 mb-1" %>
-        <%= f.select :user_id, options_from_collection_for_select(@users, :id, :name, params[:user_id]), { include_blank: "All Users" }, class: "block w-48 px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" %>
+        <%= f.label :user_id, "User", class: "block text-sm font-medium text-gray-300 mb-1" %>
+        <%= f.select :user_id, options_from_collection_for_select(@users, :id, :name, params[:user_id]), { include_blank: "All Users" }, class: "block w-48 px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-md focus:ring-blue-500 focus:border-blue-500" %>
       </div>
       <div>
-        <%= f.label :action_filter, "Action", class: "block text-sm font-medium text-gray-700 mb-1" %>
-        <%= f.select :action_filter, options_for_select(@actions, params[:action_filter]), { include_blank: "All Actions" }, class: "block w-48 px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" %>
+        <%= f.label :action_filter, "Action", class: "block text-sm font-medium text-gray-300 mb-1" %>
+        <%= f.select :action_filter, options_for_select(@actions, params[:action_filter]), { include_blank: "All Actions" }, class: "block w-48 px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-md focus:ring-blue-500 focus:border-blue-500" %>
       </div>
       <div>
-        <%= f.label :from, "From", class: "block text-sm font-medium text-gray-700 mb-1" %>
-        <%= f.date_field :from, value: params[:from], class: "block px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" %>
+        <%= f.label :from, "From", class: "block text-sm font-medium text-gray-300 mb-1" %>
+        <%= f.date_field :from, value: params[:from], class: "block px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-md focus:ring-blue-500 focus:border-blue-500" %>
       </div>
       <div>
-        <%= f.submit "Filter", class: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition cursor-pointer" %>
+        <%= f.submit "Filter", class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition cursor-pointer" %>
         <% if params[:user_id].present? || params[:action_filter].present? || params[:from].present? %>
-          <%= link_to "Clear", admin_activity_logs_path, class: "ml-2 text-gray-600 hover:text-gray-900" %>
+          <%= link_to "Clear", admin_activity_logs_path, class: "ml-2 text-gray-400 hover:text-gray-300" %>
         <% end %>
       </div>
     <% end %>
   </div>
 
   <% if @logs.empty? %>
-    <div class="bg-white rounded-lg shadow p-12 text-center">
-      <svg class="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
+      <svg class="mx-auto h-12 w-12 text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
       </svg>
-      <h3 class="text-lg font-medium text-gray-900 mb-2">No activity logs</h3>
+      <h3 class="text-lg font-medium text-white mb-2">No activity logs</h3>
       <p class="text-gray-500">Activity will appear here as users interact with the system.</p>
     </div>
   <% else %>
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-      <table class="min-w-full divide-y divide-gray-200">
-        <thead class="bg-gray-50">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-800">
+        <thead class="bg-gray-800/50">
           <tr>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Details</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Time</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">User</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Action</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Details</th>
           </tr>
         </thead>
-        <tbody class="bg-white divide-y divide-gray-200">
+        <tbody class="divide-y divide-gray-800">
           <% @logs.each do |log| %>
-            <tr>
+            <tr class="hover:bg-gray-800/50 transition">
               <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                 <%= log.created_at.strftime("%b %d, %H:%M") %>
               </td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+              <td class="px-6 py-4 whitespace-nowrap text-sm text-white">
                 <%= log.user&.name || "System" %>
               </td>
               <td class="px-6 py-4 whitespace-nowrap">
                 <%
                   action_colors = {
-                    'login' => 'bg-green-100 text-green-800',
-                    'logout' => 'bg-gray-100 text-gray-800',
-                    'created' => 'bg-blue-100 text-blue-800',
-                    'completed' => 'bg-green-100 text-green-800',
-                    'failed' => 'bg-red-100 text-red-800',
-                    'cancelled' => 'bg-yellow-100 text-yellow-800',
-                    'updated' => 'bg-purple-100 text-purple-800',
-                    'deleted' => 'bg-red-100 text-red-800'
+                    'login' => 'bg-green-500/20 text-green-400',
+                    'logout' => 'bg-gray-700 text-gray-300',
+                    'created' => 'bg-blue-500/20 text-blue-400',
+                    'completed' => 'bg-green-500/20 text-green-400',
+                    'failed' => 'bg-red-500/20 text-red-400',
+                    'cancelled' => 'bg-yellow-500/20 text-yellow-400',
+                    'updated' => 'bg-purple-500/20 text-purple-400',
+                    'deleted' => 'bg-red-500/20 text-red-400'
                   }
                   action_part = log.action.split('.').last
-                  color = action_colors[action_part] || 'bg-gray-100 text-gray-800'
+                  color = action_colors[action_part] || 'bg-gray-700 text-gray-300'
                 %>
                 <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= color %>">
                   <%= log.action %>
                 </span>
               </td>
-              <td class="px-6 py-4 text-sm text-gray-500">
+              <td class="px-6 py-4 text-sm text-gray-400">
                 <% if log.trackable.present? %>
                   <% if log.trackable.is_a?(Request) && log.trackable.book.present? %>
                     <%= log.trackable.book.title %>
@@ -84,7 +84,7 @@
                   <% end %>
                 <% end %>
                 <% if log.details.present? && log.details.any? %>
-                  <span class="text-xs text-gray-400 ml-2">
+                  <span class="text-xs text-gray-500 ml-2">
                     <%= log.details.map { |k, v| "#{k}: #{v}" }.join(", ").truncate(50) %>
                   </span>
                 <% end %>

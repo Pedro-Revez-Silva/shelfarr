@@ -1,8 +1,8 @@
 <%= form_with model: [:admin, download_client], class: "contents" do |form| %>
   <% if download_client.errors.any? %>
-    <div class="bg-red-50 text-red-500 px-3 py-2 font-medium rounded-lg mt-3">
+    <div class="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 font-medium rounded-lg mt-3">
       <h2><%= pluralize(download_client.errors.count, "error") %> prohibited this client from being saved:</h2>
-      <ul class="list-disc list-inside">
+      <ul class="list-disc list-inside mt-2">
         <% download_client.errors.each do |error| %>
           <li><%= error.full_message %></li>
         <% end %>
@@ -11,58 +11,58 @@
   <% end %>
 
   <div class="my-5">
-    <%= form.label :name, class: "block text-gray-700 font-medium" %>
-    <%= form.text_field :name, required: true, placeholder: "e.g., Home qBittorrent", class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+    <%= form.label :name, class: "block text-gray-300 font-medium" %>
+    <%= form.text_field :name, required: true, placeholder: "e.g., Home qBittorrent", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
   </div>
 
   <div class="my-5">
-    <%= form.label :client_type, "Type", class: "block text-gray-700 font-medium" %>
-    <%= form.select :client_type, DownloadClient.client_types.keys.map { |t| [t.titleize, t] }, {}, class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full", data: { action: "change->download-client-form#toggleFields" }, id: "client_type_select" %>
+    <%= form.label :client_type, "Type", class: "block text-gray-300 font-medium" %>
+    <%= form.select :client_type, DownloadClient.client_types.keys.map { |t| [t.titleize, t] }, {}, class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full", data: { action: "change->download-client-form#toggleFields" }, id: "client_type_select" %>
   </div>
 
   <div class="my-5">
-    <%= form.label :url, "URL", class: "block text-gray-700 font-medium" %>
-    <%= form.text_field :url, required: true, placeholder: "http://192.168.1.100:8080", class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+    <%= form.label :url, "URL", class: "block text-gray-300 font-medium" %>
+    <%= form.text_field :url, required: true, placeholder: "http://192.168.1.100:8080", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
     <p class="mt-1 text-sm text-gray-500">Include the protocol (http/https) and port</p>
   </div>
 
   <div id="qbittorrent_fields" class="<%= 'hidden' unless download_client.qbittorrent? || download_client.new_record? %>">
     <div class="my-5">
-      <%= form.label :username, class: "block text-gray-700 font-medium" %>
-      <%= form.text_field :username, placeholder: "admin", class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+      <%= form.label :username, class: "block text-gray-300 font-medium" %>
+      <%= form.text_field :username, placeholder: "admin", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
     </div>
 
     <div class="my-5">
-      <%= form.label :password, class: "block text-gray-700 font-medium" %>
-      <%= form.password_field :password, placeholder: download_client.persisted? ? "Leave blank to keep current" : "Enter password", class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+      <%= form.label :password, class: "block text-gray-300 font-medium" %>
+      <%= form.password_field :password, placeholder: download_client.persisted? ? "Leave blank to keep current" : "Enter password", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
     </div>
   </div>
 
   <div id="sabnzbd_fields" class="<%= 'hidden' unless download_client.sabnzbd? %>">
     <div class="my-5">
-      <%= form.label :api_key, "API Key", class: "block text-gray-700 font-medium" %>
-      <%= form.text_field :api_key, placeholder: download_client.persisted? && download_client.api_key.present? ? "Leave blank to keep current" : "Enter API key", class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+      <%= form.label :api_key, "API Key", class: "block text-gray-300 font-medium" %>
+      <%= form.text_field :api_key, placeholder: download_client.persisted? && download_client.api_key.present? ? "Leave blank to keep current" : "Enter API key", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
       <p class="mt-1 text-sm text-gray-500">Found in SABnzbd under Config > General > API Key</p>
     </div>
   </div>
 
   <div class="my-5">
-    <%= form.label :category, class: "block text-gray-700 font-medium" %>
-    <%= form.text_field :category, placeholder: "shelfarr", class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+    <%= form.label :category, class: "block text-gray-300 font-medium" %>
+    <%= form.text_field :category, placeholder: "shelfarr", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
     <p class="mt-1 text-sm text-gray-500">Optional. Downloads will be added to this category.</p>
   </div>
 
   <div class="my-5">
     <%= form.label :enabled, class: "flex items-center gap-2 cursor-pointer" %>
     <div class="flex items-center">
-      <%= form.check_box :enabled, class: "rounded border-gray-300 text-blue-600 shadow-sm focus:ring-blue-500" %>
-      <span class="ml-2 text-gray-700">Enabled</span>
+      <%= form.check_box :enabled, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900" %>
+      <span class="ml-2 text-gray-300">Enabled</span>
     </div>
   </div>
 
   <div class="flex items-center gap-4 mt-8">
     <%= form.submit class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
-    <%= link_to "Cancel", admin_download_clients_path, class: "text-gray-600 hover:text-gray-900" %>
+    <%= link_to "Cancel", admin_download_clients_path, class: "text-gray-400 hover:text-gray-300" %>
   </div>
 <% end %>
 

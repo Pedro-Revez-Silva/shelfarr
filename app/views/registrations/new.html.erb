@@ -1,22 +1,22 @@
 <div class="mx-auto md:w-2/3 w-full">
   <% if alert = flash[:alert] %>
-    <p class="py-2 px-3 bg-red-50 mb-5 text-red-500 font-medium rounded-lg inline-block" id="alert"><%= alert %></p>
+    <p class="py-2 px-3 bg-red-500/10 border border-red-500/20 mb-5 text-red-400 font-medium rounded-lg inline-block" id="alert"><%= alert %></p>
   <% end %>
 
   <% if notice = flash[:notice] %>
-    <p class="py-2 px-3 bg-green-50 mb-5 text-green-500 font-medium rounded-lg inline-block" id="notice"><%= notice %></p>
+    <p class="py-2 px-3 bg-green-500/10 border border-green-500/20 mb-5 text-green-400 font-medium rounded-lg inline-block" id="notice"><%= notice %></p>
   <% end %>
 
-  <h1 class="font-bold text-4xl"><%= User.none? ? "Create your account" : "Create new user" %></h1>
+  <h1 class="font-bold text-4xl text-white"><%= User.none? ? "Create your account" : "Create new user" %></h1>
   <% if User.none? %>
-    <p class="text-gray-600 mt-2">You'll be the first user and will have admin privileges.</p>
+    <p class="text-gray-400 mt-2">You'll be the first user and will have admin privileges.</p>
   <% end %>
 
   <%= form_with model: @user, url: sign_up_path, class: "contents" do |form| %>
     <% if @user.errors.any? %>
-      <div class="bg-red-50 text-red-500 px-3 py-2 font-medium rounded-lg mt-3">
+      <div class="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 font-medium rounded-lg mt-3">
         <h2><%= pluralize(@user.errors.count, "error") %> prohibited this user from being saved:</h2>
-        <ul class="list-disc list-inside">
+        <ul class="list-disc list-inside mt-2">
           <% @user.errors.each do |error| %>
             <li><%= error.full_message %></li>
           <% end %>
@@ -25,42 +25,42 @@
     <% end %>
 
     <div class="my-5">
-      <%= form.label :name, class: "block text-gray-700 font-medium" %>
-      <%= form.text_field :name, required: true, autofocus: true, placeholder: "Your display name", class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+      <%= form.label :name, class: "block text-gray-300 font-medium" %>
+      <%= form.text_field :name, required: true, autofocus: true, placeholder: "Your display name", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
     </div>
 
     <div class="my-5">
-      <%= form.label :username, class: "block text-gray-700 font-medium" %>
-      <%= form.text_field :username, required: true, autocomplete: "username", placeholder: "Choose a username", class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+      <%= form.label :username, class: "block text-gray-300 font-medium" %>
+      <%= form.text_field :username, required: true, autocomplete: "username", placeholder: "Choose a username", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
       <p class="mt-1 text-sm text-gray-500">Lowercase letters, numbers, and underscores only</p>
     </div>
 
     <div class="my-5">
-      <%= form.label :password, class: "block text-gray-700 font-medium" %>
-      <%= form.password_field :password, required: true, minlength: 8, autocomplete: "new-password", placeholder: "Enter password", maxlength: 72, class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+      <%= form.label :password, class: "block text-gray-300 font-medium" %>
+      <%= form.password_field :password, required: true, minlength: 8, autocomplete: "new-password", placeholder: "Enter password", maxlength: 72, class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
       <p class="mt-1 text-sm text-gray-500">Minimum 8 characters</p>
     </div>
 
     <div class="my-5">
-      <%= form.label :password_confirmation, "Confirm password", class: "block text-gray-700 font-medium" %>
-      <%= form.password_field :password_confirmation, required: true, minlength: 8, autocomplete: "new-password", placeholder: "Confirm your password", maxlength: 72, class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+      <%= form.label :password_confirmation, "Confirm password", class: "block text-gray-300 font-medium" %>
+      <%= form.password_field :password_confirmation, required: true, minlength: 8, autocomplete: "new-password", placeholder: "Confirm your password", maxlength: 72, class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
     </div>
 
     <% if Current.user&.admin? %>
       <div class="my-5">
-        <%= form.label :role, class: "block text-gray-700 font-medium" %>
-        <%= form.select :role, User.roles.keys.map { |r| [r.titleize, r] }, {}, class: "block shadow-sm rounded-md border border-gray-400 focus:outline-blue-600 px-3 py-2 mt-2 w-full" %>
+        <%= form.label :role, class: "block text-gray-300 font-medium" %>
+        <%= form.select :role, User.roles.keys.map { |r| [r.titleize, r] }, {}, class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
       </div>
     <% end %>
 
     <div class="col-span-6 sm:flex sm:items-center sm:gap-4">
       <div class="inline">
-        <%= form.submit User.none? ? "Create account" : "Create user", class: "w-full sm:w-auto text-center rounded-md px-3.5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white inline-block font-medium cursor-pointer" %>
+        <%= form.submit User.none? ? "Create account" : "Create user", class: "w-full sm:w-auto text-center rounded-lg px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white inline-block font-medium cursor-pointer transition" %>
       </div>
 
       <% if User.none? %>
         <div class="mt-4 text-sm text-gray-500 sm:mt-0">
-          Already have an account? <%= link_to "Sign in", new_session_path, class: "text-gray-700 underline hover:no-underline" %>
+          Already have an account? <%= link_to "Sign in", new_session_path, class: "text-blue-400 hover:text-blue-300" %>
         </div>
       <% end %>
     </div>

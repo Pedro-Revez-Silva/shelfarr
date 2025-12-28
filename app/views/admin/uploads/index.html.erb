@@ -1,32 +1,32 @@
 <div class="mx-auto max-w-6xl">
   <div class="flex justify-between items-center mb-8">
-    <h1 class="font-bold text-4xl">Uploads</h1>
+    <h1 class="font-bold text-4xl text-white">Uploads</h1>
     <%= link_to "Upload File", new_admin_upload_path,
         class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white" %>
   </div>
 
   <% if @uploads.empty? %>
-    <div class="text-center py-12 text-gray-500">
-      <p class="text-xl">No uploads yet</p>
-      <p class="mt-2">Upload your first book file to get started</p>
+    <div class="text-center py-12">
+      <p class="text-xl text-gray-400">No uploads yet</p>
+      <p class="mt-2 text-gray-500">Upload your first book file to get started</p>
     </div>
   <% else %>
-    <div class="bg-white shadow overflow-hidden rounded-lg">
-      <table class="min-w-full divide-y divide-gray-200">
-        <thead class="bg-gray-50">
+    <div class="bg-gray-900 border border-gray-800 overflow-hidden rounded-lg">
+      <table class="min-w-full divide-y divide-gray-800">
+        <thead class="bg-gray-800/50">
           <tr>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">File</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Parsed Info</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Matched Book</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">File</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Parsed Info</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Matched Book</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Status</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Actions</th>
           </tr>
         </thead>
-        <tbody class="bg-white divide-y divide-gray-200">
+        <tbody class="divide-y divide-gray-800">
           <% @uploads.each do |upload| %>
-            <tr>
+            <tr class="hover:bg-gray-800/50 transition">
               <td class="px-6 py-4">
-                <div class="text-sm font-medium text-gray-900">
+                <div class="text-sm font-medium text-white">
                   <%= truncate(upload.original_filename, length: 40) %>
                 </div>
                 <div class="text-sm text-gray-500">
@@ -38,19 +38,19 @@
               </td>
               <td class="px-6 py-4">
                 <% if upload.parsed_title.present? %>
-                  <div class="text-sm text-gray-900"><%= upload.parsed_title %></div>
+                  <div class="text-sm text-white"><%= upload.parsed_title %></div>
                   <div class="text-sm text-gray-500">by <%= upload.parsed_author || "Unknown" %></div>
-                  <div class="text-xs text-gray-400">Confidence: <%= upload.match_confidence %>%</div>
+                  <div class="text-xs text-gray-500">Confidence: <%= upload.match_confidence %>%</div>
                 <% else %>
-                  <span class="text-gray-400">Not parsed yet</span>
+                  <span class="text-gray-500">Not parsed yet</span>
                 <% end %>
               </td>
               <td class="px-6 py-4">
                 <% if upload.book %>
-                  <%= link_to upload.book.display_name, request_path(upload.book.requests.first), class: "text-blue-600 hover:text-blue-800" if upload.book.requests.any? %>
+                  <%= link_to upload.book.display_name, request_path(upload.book.requests.first), class: "text-blue-400 hover:text-blue-300" if upload.book.requests.any? %>
                   <%= upload.book.display_name if upload.book.requests.empty? %>
                 <% else %>
-                  <span class="text-gray-400">-</span>
+                  <span class="text-gray-500">-</span>
                 <% end %>
               </td>
               <td class="px-6 py-4">
@@ -58,14 +58,14 @@
               </td>
               <td class="px-6 py-4 text-sm">
                 <div class="flex gap-2">
-                  <%= link_to "View", admin_upload_path(upload), class: "text-blue-600 hover:text-blue-800" %>
+                  <%= link_to "View", admin_upload_path(upload), class: "text-blue-400 hover:text-blue-300" %>
                   <% if upload.failed? %>
                     <%= button_to "Retry", retry_admin_upload_path(upload), method: :post,
-                        class: "text-green-600 hover:text-green-800" %>
+                        class: "text-green-400 hover:text-green-300" %>
                   <% end %>
                   <%= button_to "Delete", admin_upload_path(upload), method: :delete,
                       data: { turbo_confirm: "Are you sure?" },
-                      class: "text-red-600 hover:text-red-800" %>
+                      class: "text-red-400 hover:text-red-300" %>
                 </div>
               </td>
             </tr>
