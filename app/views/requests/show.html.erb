@@ -1,9 +1,9 @@
 <div class="mx-auto max-w-2xl">
   <div class="mb-6">
-    <%= link_to "&larr; Back to Requests".html_safe, requests_path, class: "text-blue-400 hover:text-blue-300" %>
+    <%= link_to "&larr; Back to Requests".html_safe, requests_path, class: "text-blue-600 hover:text-blue-800" %>
   </div>
 
-  <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+  <div class="bg-white rounded-lg shadow overflow-hidden">
     <div class="p-6">
       <div class="flex gap-6 mb-6">
         <div class="flex-shrink-0 w-32">
@@ -14,8 +14,8 @@
               class="w-full rounded shadow"
             >
           <% else %>
-            <div class="w-full aspect-[2/3] bg-gray-800 rounded shadow flex items-center justify-center">
-              <svg class="w-10 h-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="w-full aspect-[2/3] bg-gray-200 rounded shadow flex items-center justify-center">
+              <svg class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
             </div>
@@ -23,13 +23,13 @@
         </div>
 
         <div class="flex-grow">
-          <h1 class="font-bold text-2xl text-white mb-1"><%= @request.book.title %></h1>
+          <h1 class="font-bold text-2xl text-gray-900 mb-1"><%= @request.book.title %></h1>
           <% if @request.book.author.present? %>
-            <p class="text-gray-400 mb-2"><%= @request.book.author %></p>
+            <p class="text-gray-600 mb-2"><%= @request.book.author %></p>
           <% end %>
 
           <div class="flex flex-wrap gap-2 mb-4">
-            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= @request.book.audiobook? ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400' %>">
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= @request.book.audiobook? ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800' %>">
               <% if @request.book.audiobook? %>
                 <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
@@ -44,13 +44,13 @@
             </span>
             <%
               status_colors = {
-                'pending' => 'bg-yellow-500/20 text-yellow-400',
-                'searching' => 'bg-blue-500/20 text-blue-400',
-                'not_found' => 'bg-orange-500/20 text-orange-400',
-                'downloading' => 'bg-indigo-500/20 text-indigo-400',
-                'processing' => 'bg-cyan-500/20 text-cyan-400',
-                'completed' => 'bg-green-500/20 text-green-400',
-                'failed' => 'bg-red-500/20 text-red-400'
+                'pending' => 'bg-yellow-100 text-yellow-800',
+                'searching' => 'bg-blue-100 text-blue-800',
+                'not_found' => 'bg-orange-100 text-orange-800',
+                'downloading' => 'bg-indigo-100 text-indigo-800',
+                'processing' => 'bg-cyan-100 text-cyan-800',
+                'completed' => 'bg-green-100 text-green-800',
+                'failed' => 'bg-red-100 text-red-800'
               }
             %>
             <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= status_colors[@request.status] %>">
@@ -65,29 +65,29 @@
       </div>
 
       <% if @request.attention_needed? %>
-        <div class="bg-red-500/10 border border-red-500/20 rounded-lg p-4 mb-6">
+        <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
           <div class="flex">
             <svg class="w-5 h-5 text-red-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
             </svg>
             <div>
-              <h3 class="text-sm font-medium text-red-400">Attention Required</h3>
-              <p class="text-sm text-red-400/80 mt-1"><%= @request.issue_description || "This request needs attention." %></p>
+              <h3 class="text-sm font-medium text-red-800">Attention Required</h3>
+              <p class="text-sm text-red-700 mt-1"><%= @request.issue_description || "This request needs attention." %></p>
             </div>
           </div>
         </div>
       <% end %>
 
       <% if @request.searching? && @request.search_results.any? %>
-        <div class="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
           <div class="flex items-center justify-between">
             <div class="flex items-start">
               <svg class="w-5 h-5 text-blue-400 mr-2 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
               </svg>
               <div>
-                <h3 class="text-sm font-medium text-blue-400">Search Results Available</h3>
-                <p class="text-sm text-blue-400/80 mt-1">
+                <h3 class="text-sm font-medium text-blue-800">Search Results Available</h3>
+                <p class="text-sm text-blue-700 mt-1">
                   <%= @request.search_results.count %> results found.
                   <% if Current.user.admin? %>
                     Select a result to begin download.
@@ -99,20 +99,20 @@
             </div>
             <% if Current.user.admin? %>
               <%= link_to "View Results", admin_request_search_results_path(@request),
-                  class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition text-sm" %>
+                  class: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition text-sm" %>
             <% end %>
           </div>
         </div>
       <% elsif @request.searching? %>
-        <div class="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
           <div class="flex items-center">
             <svg class="animate-spin w-5 h-5 text-blue-400 mr-2" fill="none" viewBox="0 0 24 24">
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
             <div>
-              <h3 class="text-sm font-medium text-blue-400">Searching...</h3>
-              <p class="text-sm text-blue-400/80 mt-1">Searching indexers for this book. This may take a moment.</p>
+              <h3 class="text-sm font-medium text-blue-800">Searching...</h3>
+              <p class="text-sm text-blue-700 mt-1">Searching indexers for this book. This may take a moment.</p>
             </div>
           </div>
         </div>
@@ -122,84 +122,84 @@
         <% if Current.user.admin? %>
           <div>
             <dt class="text-gray-500">Requested by</dt>
-            <dd class="font-medium text-white"><%= @request.user.name %></dd>
+            <dd class="font-medium text-gray-900"><%= @request.user.name %></dd>
           </div>
         <% end %>
         <div>
           <dt class="text-gray-500">Requested</dt>
-          <dd class="font-medium text-white"><%= @request.created_at.strftime("%B %d, %Y at %I:%M %p") %></dd>
+          <dd class="font-medium text-gray-900"><%= @request.created_at.strftime("%B %d, %Y at %I:%M %p") %></dd>
         </div>
         <% if @request.completed_at.present? %>
           <div>
             <dt class="text-gray-500">Completed</dt>
-            <dd class="font-medium text-white"><%= @request.completed_at.strftime("%B %d, %Y at %I:%M %p") %></dd>
+            <dd class="font-medium text-gray-900"><%= @request.completed_at.strftime("%B %d, %Y at %I:%M %p") %></dd>
           </div>
         <% end %>
         <% if @request.retry_count > 0 %>
           <div>
             <dt class="text-gray-500">Retry count</dt>
-            <dd class="font-medium text-white"><%= @request.retry_count %></dd>
+            <dd class="font-medium text-gray-900"><%= @request.retry_count %></dd>
           </div>
         <% end %>
         <% if @request.next_retry_at.present? && @request.next_retry_at > Time.current %>
           <div>
             <dt class="text-gray-500">Next retry</dt>
-            <dd class="font-medium text-white"><%= time_ago_in_words(@request.next_retry_at) %></dd>
+            <dd class="font-medium text-gray-900"><%= time_ago_in_words(@request.next_retry_at) %></dd>
           </div>
         <% end %>
       </dl>
 
       <% if @request.notes.present? %>
-        <div class="mt-6 pt-6 border-t border-gray-800">
+        <div class="mt-6 pt-6 border-t">
           <h3 class="text-sm font-medium text-gray-500 mb-2">Notes</h3>
-          <p class="text-white"><%= @request.notes %></p>
+          <p class="text-gray-900"><%= @request.notes %></p>
         </div>
       <% end %>
 
       <% if @request.book.acquired? %>
-        <div class="mt-6 pt-6 border-t border-gray-800">
+        <div class="mt-6 pt-6 border-t">
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-sm font-medium text-gray-500">File Location</h3>
             <%= link_to download_request_path(@request),
-                class: "inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-500 text-white font-medium rounded-lg transition text-sm" do %>
+                class: "inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition text-sm" do %>
               <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
               </svg>
               Download
             <% end %>
           </div>
-          <code class="text-sm text-gray-300 bg-gray-800 px-2 py-1 rounded block break-all"><%= @request.book.file_path %></code>
+          <code class="text-sm text-gray-900 bg-gray-100 px-2 py-1 rounded block break-all"><%= @request.book.file_path %></code>
         </div>
       <% end %>
 
       <% if @request.downloads.any? %>
-        <div class="mt-6 pt-6 border-t border-gray-800">
+        <div class="mt-6 pt-6 border-t">
           <h3 class="text-sm font-medium text-gray-500 mb-2">Downloads</h3>
           <div class="space-y-2">
             <% @request.downloads.each do |download| %>
-              <div class="flex items-center justify-between p-3 bg-gray-800 rounded-lg">
+              <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                 <div class="truncate mr-4">
-                  <p class="font-medium text-sm text-white truncate"><%= download.name %></p>
+                  <p class="font-medium text-sm text-gray-900 truncate"><%= download.name %></p>
                   <% if download.size_bytes.present? %>
                     <p class="text-xs text-gray-500"><%= number_to_human_size(download.size_bytes) %></p>
                   <% end %>
                 </div>
                 <div class="flex items-center gap-2">
                   <% if download.active? && download.progress.present? %>
-                    <div class="w-24 bg-gray-700 rounded-full h-2">
+                    <div class="w-24 bg-gray-200 rounded-full h-2">
                       <div class="bg-blue-600 h-2 rounded-full" style="width: <%= download.progress %>%"></div>
                     </div>
                     <span class="text-xs text-gray-500"><%= download.progress %>%</span>
                   <% end %>
                   <%
                     download_status_colors = {
-                      'pending' => 'bg-yellow-500/20 text-yellow-400',
-                      'downloading' => 'bg-blue-500/20 text-blue-400',
-                      'completed' => 'bg-green-500/20 text-green-400',
-                      'failed' => 'bg-red-500/20 text-red-400'
+                      'pending' => 'bg-yellow-100 text-yellow-800',
+                      'downloading' => 'bg-blue-100 text-blue-800',
+                      'completed' => 'bg-green-100 text-green-800',
+                      'failed' => 'bg-red-100 text-red-800'
                     }
                   %>
-                  <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= download_status_colors[download.status] || 'bg-gray-700 text-gray-300' %>">
+                  <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= download_status_colors[download.status] || 'bg-gray-100 text-gray-800' %>">
                     <%= download.status.humanize %>
                   </span>
                 </div>
@@ -211,8 +211,8 @@
     </div>
 
     <% if @request.pending? || @request.not_found? || @request.failed? %>
-      <div class="px-6 py-4 bg-gray-800/50 border-t border-gray-800 flex justify-end">
-        <%= button_to "Cancel Request", @request, method: :delete, class: "px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition", data: { confirm: "Are you sure you want to cancel this request?" } %>
+      <div class="px-6 py-4 bg-gray-50 border-t flex justify-end">
+        <%= button_to "Cancel Request", @request, method: :delete, class: "px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition", data: { confirm: "Are you sure you want to cancel this request?" } %>
       </div>
     <% end %>
   </div>

@@ -1,22 +1,22 @@
 <div class="mx-auto max-w-4xl">
   <div class="flex justify-between items-center mb-8">
-    <h1 class="font-bold text-4xl text-white"><%= Current.user.admin? ? "All Requests" : "My Requests" %></h1>
-    <%= link_to "Search Books", search_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
+    <h1 class="font-bold text-4xl"><%= Current.user.admin? ? "All Requests" : "My Requests" %></h1>
+    <%= link_to "Search Books", search_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition" %>
   </div>
 
   <% if @requests.empty? %>
-    <div class="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
-      <svg class="mx-auto h-12 w-12 text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div class="bg-white rounded-lg shadow p-12 text-center">
+      <svg class="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
       </svg>
-      <h3 class="text-lg font-medium text-white mb-2">No requests yet</h3>
+      <h3 class="text-lg font-medium text-gray-900 mb-2">No requests yet</h3>
       <p class="text-gray-500 mb-4">Search for books and request them to add to your library.</p>
-      <%= link_to "Search Books", search_path, class: "inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
+      <%= link_to "Search Books", search_path, class: "inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition" %>
     </div>
   <% else %>
     <div class="space-y-4">
       <% @requests.each do |request| %>
-        <%= link_to request, class: "block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition" do %>
+        <%= link_to request, class: "block bg-white rounded-lg shadow p-4 hover:shadow-md transition" do %>
           <div class="flex gap-4">
             <div class="flex-shrink-0 w-16">
               <% if request.book.cover_url.present? %>
@@ -27,8 +27,8 @@
                   loading="lazy"
                 >
               <% else %>
-                <div class="w-full aspect-[2/3] bg-gray-800 rounded shadow flex items-center justify-center">
-                  <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="w-full aspect-[2/3] bg-gray-200 rounded shadow flex items-center justify-center">
+                  <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                   </svg>
                 </div>
@@ -38,31 +38,31 @@
             <div class="flex-grow min-w-0">
               <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0">
-                  <h3 class="font-semibold text-white truncate"><%= request.book.title %></h3>
+                  <h3 class="font-semibold text-gray-900 truncate"><%= request.book.title %></h3>
                   <% if request.book.author.present? %>
-                    <p class="text-sm text-gray-400 truncate"><%= request.book.author %></p>
+                    <p class="text-sm text-gray-600 truncate"><%= request.book.author %></p>
                   <% end %>
                 </div>
                 <div class="flex-shrink-0 flex items-center gap-2">
-                  <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request.book.audiobook? ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400' %>">
+                  <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request.book.audiobook? ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800' %>">
                     <%= request.book.audiobook? ? 'Audiobook' : 'Ebook' %>
                   </span>
                   <%
                     status_colors = {
-                      'pending' => 'bg-yellow-500/20 text-yellow-400',
-                      'searching' => 'bg-blue-500/20 text-blue-400',
-                      'not_found' => 'bg-orange-500/20 text-orange-400',
-                      'downloading' => 'bg-indigo-500/20 text-indigo-400',
-                      'processing' => 'bg-cyan-500/20 text-cyan-400',
-                      'completed' => 'bg-green-500/20 text-green-400',
-                      'failed' => 'bg-red-500/20 text-red-400'
+                      'pending' => 'bg-yellow-100 text-yellow-800',
+                      'searching' => 'bg-blue-100 text-blue-800',
+                      'not_found' => 'bg-orange-100 text-orange-800',
+                      'downloading' => 'bg-indigo-100 text-indigo-800',
+                      'processing' => 'bg-cyan-100 text-cyan-800',
+                      'completed' => 'bg-green-100 text-green-800',
+                      'failed' => 'bg-red-100 text-red-800'
                     }
                   %>
                   <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= status_colors[request.status] %>">
                     <%= request.status.humanize %>
                   </span>
                   <% if request.attention_needed? %>
-                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-500/20 text-red-400">
+                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-100 text-red-800">
                       <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
                       </svg>
