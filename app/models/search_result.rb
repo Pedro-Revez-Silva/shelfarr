@@ -14,9 +14,6 @@ class SearchResult < ApplicationRecord
 
   scope :selectable, -> { pending }
 
-  # Sort by preferred download type, then by seeders
-  # Usenet results: have download_url, no magnet_url, no seeders (NULL)
-  # Torrent results: have magnet_url or seeders
   scope :preferred_first, -> {
     preferred = SettingsService.get(:preferred_download_type, default: "torrent")
     if preferred == "usenet"
@@ -26,7 +23,21 @@ class SearchResult < ApplicationRecord
     end
   }
 
-  scope :best_first, -> { preferred_first.order(seeders: :desc, size_bytes: :asc) }
+  scope :best_first, -> { preferred_first.order(confidence_score: :desc, seeders: :desc, size_bytes: :asc) }
+
+  scope :high_confidence, ->(threshold = nil) {
+    min_score = threshold || SettingsService.get(:min_match_confidence)
+    where("confidence_score >= ?", min_score)
+  }
+
+  scope :matches_language, ->(lang) {
+    where(detected_language: [ lang, nil ])
+  }
+
+  scope :auto_selectable, ->(threshold = nil) {
+    min_score = threshold || SettingsService.get(:auto_select_confidence_threshold)
+    high_confidence(min_score)
+  }
 
   def downloadable?
     download_url.present? || magnet_url.present?
@@ -52,5 +63,58 @@ class SearchResult < ApplicationRecord
     return nil unless size_bytes
 
     ActiveSupport::NumberHelper.number_to_human_size(size_bytes)
+  end
+
+  def calculate_score!
+    return unless request
+
+    result = ReleaseScorer.score(self, request)
+    update!(
+      detected_language: result.detected_languages.first,
+      confidence_score: result.total,
+      score_breakdown: result.breakdown
+    )
+    result
+  end
+
+  def language_display_name
+    return nil unless detected_language
+
+    info = ReleaseParserService.language_info(detected_language)
+    info ? info[:name] : detected_language
+  end
+
+  def language_flag
+    return nil unless detected_language
+
+    info = ReleaseParserService.language_info(detected_language)
+    info&.dig(:flag)
+  end
+
+  def language_matches_request?
+    return true if detected_language.blank?
+
+    requested = request&.effective_language
+    return true if requested.blank?
+
+    detected_language == requested
+  end
+
+  def high_confidence?
+    return false unless confidence_score
+
+    confidence_score >= SettingsService.get(:auto_select_confidence_threshold)
+  end
+
+  def confidence_level
+    return :unknown unless confidence_score
+
+    if confidence_score >= 90
+      :high
+    elsif confidence_score >= 70
+      :medium
+    else
+      :low
+    end
   end
 end

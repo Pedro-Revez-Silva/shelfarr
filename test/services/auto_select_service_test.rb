@@ -11,7 +11,14 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     @request = Request.create!(
       book: @book,
       user: @user,
-      status: :searching
+      status: :searching,
+      language: "en"
+    )
+
+    Setting.find_or_create_by(key: "auto_select_confidence_threshold").update!(
+      value: "50",
+      value_type: "integer",
+      category: "auto_select"
     )
   end
 
@@ -142,11 +149,14 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
   private
 
   def create_search_result(attrs = {})
-    @request.search_results.create!({
+    result = @request.search_results.create!({
       guid: SecureRandom.uuid,
-      title: "Test Result",
+      title: "Test Result English Audiobook",
       indexer: "TestIndexer",
-      status: :pending
+      status: :pending,
+      confidence_score: 95,
+      detected_language: "en"
     }.merge(attrs))
+    result
   end
 end

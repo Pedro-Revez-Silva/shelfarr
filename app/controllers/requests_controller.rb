@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class RequestsController < ApplicationController
-  before_action :set_request, only: [:show, :destroy, :download]
+  before_action :set_request, only: [ :show, :destroy, :download ]
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
 
   def index
@@ -26,12 +26,15 @@ class RequestsController < ApplicationController
       redirect_to search_path, alert: "Missing book information"
       return
     end
+
+    @default_language = SettingsService.get(:default_language)
+    @enabled_languages = enabled_language_options
   end
 
   def create
     work_id = params[:work_id]
     # Support both single book_type (legacy) and multiple book_types[]
-    book_types = params[:book_types].presence || [params[:book_type]].compact
+    book_types = params[:book_types].presence || [ params[:book_type] ].compact
 
     if work_id.blank? || book_types.empty?
       redirect_to search_path, alert: "Missing required information"
@@ -72,9 +75,9 @@ class RequestsController < ApplicationController
         book.save!
       end
 
-      # Create the request
       request = Current.user.requests.build(book: book, status: :pending)
       request.notes = params[:notes] if params[:notes].present?
+      request.language = params[:language] if params[:language].present?
 
       if request.save
         ActivityTracker.track("request.created", trackable: request)
@@ -241,5 +244,17 @@ class RequestsController < ApplicationController
 
   def record_not_found
     head :not_found
+  end
+
+  def enabled_language_options
+    enabled_codes = SettingsService.get(:enabled_languages) || [ "en" ]
+    enabled_codes = JSON.parse(enabled_codes) if enabled_codes.is_a?(String)
+
+    enabled_codes.filter_map do |code|
+      info = ReleaseParserService.language_info(code)
+      next unless info
+
+      [ info[:name], code ]
+    end.sort_by(&:first)
   end
 end

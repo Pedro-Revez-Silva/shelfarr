@@ -45,7 +45,7 @@ class SearchJob < ApplicationJob
     book = request.book
 
     # Build search query: "title author"
-    query_parts = [book.title]
+    query_parts = [ book.title ]
     query_parts << book.author if book.author.present?
 
     query = query_parts.join(" ")
@@ -56,11 +56,10 @@ class SearchJob < ApplicationJob
   end
 
   def save_results(request, results)
-    # Clear previous results
     request.search_results.destroy_all
 
     results.each do |result|
-      request.search_results.create!(
+      search_result = request.search_results.create!(
         guid: result.guid,
         title: result.title,
         indexer: result.indexer,
@@ -72,6 +71,8 @@ class SearchJob < ApplicationJob
         info_url: result.info_url,
         published_at: result.published_at
       )
+
+      search_result.calculate_score!
     end
   end
 
