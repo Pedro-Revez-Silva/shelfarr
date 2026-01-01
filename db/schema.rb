@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2025_12_27_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_01_01_151531) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -106,6 +106,7 @@ ActiveRecord::Schema[8.1].define(version: 2025_12_27_000001) do
     t.datetime "completed_at"
     t.datetime "created_at", null: false
     t.text "issue_description"
+    t.string "language"
     t.datetime "next_retry_at"
     t.text "notes"
     t.integer "retry_count", default: 0
@@ -121,7 +122,9 @@ ActiveRecord::Schema[8.1].define(version: 2025_12_27_000001) do
   end
 
   create_table "search_results", force: :cascade do |t|
+    t.integer "confidence_score"
     t.datetime "created_at", null: false
+    t.string "detected_language"
     t.string "download_url"
     t.string "guid", null: false
     t.string "indexer"
@@ -130,6 +133,7 @@ ActiveRecord::Schema[8.1].define(version: 2025_12_27_000001) do
     t.string "magnet_url"
     t.datetime "published_at"
     t.integer "request_id", null: false
+    t.json "score_breakdown"
     t.integer "seeders"
     t.bigint "size_bytes"
     t.integer "status", default: 0, null: false

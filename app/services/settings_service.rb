@@ -38,6 +38,12 @@ class SettingsService
     # Auto-Selection
     auto_select_enabled: { type: "boolean", default: false, category: "auto_select", description: "Automatically select the best search result without admin intervention" },
     auto_select_min_seeders: { type: "integer", default: 1, category: "auto_select", description: "Minimum seeders required for auto-selection (torrent only)" },
+    auto_select_confidence_threshold: { type: "integer", default: 90, category: "auto_select", description: "Minimum confidence score (0-100) for auto-selection" },
+
+    # Language Settings
+    default_language: { type: "string", default: "en", category: "language", description: "Default language for new requests" },
+    enabled_languages: { type: "json", default: '["en"]', category: "language", description: "Languages available for selection when creating requests" },
+    min_match_confidence: { type: "integer", default: 50, category: "language", description: "Minimum confidence score (0-100) to display a search result" },
 
     # Updates
     github_repo: { type: "string", default: "Pedro-Revez-Silva/shelfarr", category: "updates", description: "GitHub repository for update notifications" },
@@ -57,6 +63,7 @@ class SettingsService
     "open_library" => "Open Library",
     "health" => "Health Monitoring",
     "auto_select" => "Auto-Selection",
+    "language" => "Language & Matching",
     "updates" => "Updates",
     "security" => "Security"
   }.freeze

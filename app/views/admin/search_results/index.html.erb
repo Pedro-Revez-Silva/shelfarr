@@ -25,7 +25,8 @@
             <% if @request.book.author.present? %>
               by <%= @request.book.author %> &middot;
             <% end %>
-            <%= @search_results.count %> results found
+            <%= @search_results.count %> results found &middot;
+            Looking for: <%= @request.language_display_name %>
           </p>
         </div>
       </div>
@@ -34,11 +35,26 @@
     <% if @search_results.any? %>
       <div class="divide-y">
         <% @search_results.each do |result| %>
-          <div class="p-4 hover:bg-gray-50">
+          <div class="p-4 hover:bg-gray-50 <%= result.language_matches_request? ? '' : 'bg-yellow-50' %>">
             <div class="flex items-start justify-between gap-4">
               <div class="flex-grow min-w-0">
-                <p class="font-medium text-gray-900"><%= result.title %></p>
+                <div class="flex items-center gap-2">
+                  <p class="font-medium text-gray-900"><%= result.title %></p>
+                  <% if result.detected_language.present? %>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= result.language_matches_request? ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800' %>">
+                      <%= result.language_display_name %>
+                    </span>
+                  <% end %>
+                </div>
                 <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mt-1">
+                  <% if result.confidence_score.present? %>
+                    <span class="inline-flex items-center <%= result.high_confidence? ? 'text-green-600' : 'text-gray-500' %>">
+                      <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      Score: <%= result.confidence_score %>%
+                    </span>
+                  <% end %>
                   <% if result.indexer.present? %>
                     <span class="inline-flex items-center">
                       <svg class="w-4 h-4 mr-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">

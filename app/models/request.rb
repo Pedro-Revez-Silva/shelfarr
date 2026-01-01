@@ -14,9 +14,11 @@ class Request < ApplicationRecord
     failed: 6
   }
 
+  before_validation :set_default_language, on: :create
+
   validates :status, presence: true
 
-  scope :active, -> { where(status: [:pending, :searching, :downloading, :processing]) }
+  scope :active, -> { where(status: [ :pending, :searching, :downloading, :processing ]) }
   scope :needs_attention, -> { where(attention_needed: true) }
   scope :retry_due, -> { not_found.where("next_retry_at <= ?", Time.current) }
   scope :for_user, ->(user) { where(user: user) }
@@ -129,7 +131,6 @@ class Request < ApplicationRecord
     end
   end
 
-  # Human-readable next retry time
   def next_retry_in_words
     return nil unless next_retry_at.present? && next_retry_at > Time.current
 
@@ -141,5 +142,20 @@ class Request < ApplicationRecord
     else
       "#{(distance / 1.day).round} days"
     end
+  end
+
+  def effective_language
+    language.presence || SettingsService.get(:default_language)
+  end
+
+  def language_display_name
+    info = ReleaseParserService.language_info(effective_language)
+    info ? info[:name] : effective_language
+  end
+
+  private
+
+  def set_default_language
+    self.language ||= SettingsService.get(:default_language)
   end
 end
