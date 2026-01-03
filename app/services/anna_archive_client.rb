@@ -167,7 +167,7 @@ class AnnaArchiveClient
       text = container.text.to_s
 
       # Try to parse title, author, and metadata from the text
-      title = extract_title(container, text)
+      title = extract_title(container, link)
       author = extract_author(container, text)
       file_type = extract_file_type(container, text)
       file_size = extract_file_size(text)
@@ -205,29 +205,49 @@ class AnnaArchiveClient
       link.parent unless link.parent.is_a?(Nokogiri::HTML4::Document)
     end
 
-    def extract_title(container, text)
+    def extract_title(container, link)
+      # The title is usually in the link element itself if it has certain classes
+      # Look for the main title link with font-semibold text-lg
+      title_link = container.at_css('a[class*="font-semibold"][class*="text-lg"]')
+      return title_link.text.strip if title_link && title_link.text.present?
+
+      # Or check if the link we found is the title link
+      if link["class"]&.include?("font-semibold")
+        return link.text.strip if link.text.present?
+      end
+
       # Try to find a heading or prominent text
       heading = container.at_css("h3, h4, .title, [class*='title']")
-      return heading.text.strip if heading
+      return heading.text.strip if heading && heading.text.present?
 
-      # Fall back to first significant text block
-      # Remove common metadata patterns
-      clean = text.gsub(/\d+(\.\d+)?\s*(MB|KB|GB)/i, "")
-                  .gsub(/epub|pdf|mobi|azw3|djvu/i, "")
-                  .gsub(/\d{4}/, "")
-                  .strip
+      # Look for data-content attribute which holds fallback title
+      fallback = container.at_css('[data-content]')
+      if fallback && fallback["data-content"].present?
+        return fallback["data-content"]
+      end
 
-      # Take first line or first 100 chars
-      lines = clean.split("\n").map(&:strip).reject(&:empty?)
-      lines.first&.truncate(150)
+      nil
     end
 
     def extract_author(container, text)
+      # Look for author link with user-edit icon
+      author_link = container.at_css('a[href^="/search?q="] span[class*="user-edit"]')
+      if author_link
+        parent = author_link.parent
+        return parent.text.strip if parent && parent.text.present?
+      end
+
       # Look for author-specific elements
       author_el = container.at_css(".author, [class*='author']")
-      return author_el.text.strip if author_el
+      return author_el.text.strip if author_el && author_el.text.present?
 
-      # Try common patterns: "by Author Name" or "Author Name -"
+      # Look for data-content with author info
+      author_fallback = container.css('[data-content]')[1]  # Second data-content is usually author
+      if author_fallback && author_fallback["data-content"].present?
+        return author_fallback["data-content"]
+      end
+
+      # Try common patterns: "by Author Name"
       if text =~ /\bby\s+([A-Z][^,\n\d]{3,50})/i
         return $1.strip
       end
