@@ -1,43 +1,43 @@
 <div class="mx-auto max-w-lg">
   <div class="mb-6">
-    <%= link_to "&larr; Back to Profile".html_safe, profile_path, class: "text-blue-600 hover:text-blue-800" %>
+    <%= link_to "&larr; Back to Profile".html_safe, profile_path, class: "text-blue-400 hover:text-blue-300" %>
   </div>
 
-  <div class="bg-white rounded-lg shadow p-6">
-    <h1 class="font-bold text-2xl mb-6">Two-Factor Authentication</h1>
+  <div class="bg-gray-900 rounded-lg shadow p-6 border border-gray-800">
+    <h1 class="font-bold text-2xl mb-6 text-white">Two-Factor Authentication</h1>
 
     <% if flash[:alert] %>
-      <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-        <p class="text-sm text-red-700"><%= flash[:alert] %></p>
+      <div class="bg-red-500/10 border border-red-500/20 rounded-lg p-4 mb-6">
+        <p class="text-sm text-red-400"><%= flash[:alert] %></p>
       </div>
     <% end %>
 
     <% if @user.otp_enabled? %>
       <!-- 2FA is enabled -->
-      <div class="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+      <div class="bg-green-900/30 border border-green-800/50 rounded-lg p-4 mb-6">
         <div class="flex items-center">
-          <svg class="w-5 h-5 text-green-500 mr-2" fill="currentColor" viewBox="0 0 20 20">
+          <svg class="w-5 h-5 text-green-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
           </svg>
-          <span class="font-medium text-green-800">Two-factor authentication is enabled</span>
+          <span class="font-medium text-green-400">Two-factor authentication is enabled</span>
         </div>
       </div>
 
-      <p class="text-gray-600 mb-6">
+      <p class="text-gray-400 mb-6">
         Your account is protected with two-factor authentication. You'll need to enter a code from your authenticator app each time you sign in.
       </p>
 
       <!-- Backup Codes Section -->
-      <div class="border-t pt-6 mb-6">
-        <h3 class="font-medium text-gray-900 mb-4">Backup Codes</h3>
+      <div class="border-t border-gray-700 pt-6 mb-6">
+        <h3 class="font-medium text-white mb-4">Backup Codes</h3>
         <% if @user.backup_codes_remaining > 0 %>
-          <p class="text-sm text-gray-600 mb-4">
-            You have <span class="font-medium text-gray-900"><%= @user.backup_codes_remaining %></span> backup codes remaining.
+          <p class="text-sm text-gray-400 mb-4">
+            You have <span class="font-medium text-white"><%= @user.backup_codes_remaining %></span> backup codes remaining.
             These can be used to access your account if you lose your authenticator device.
           </p>
         <% else %>
-          <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
-            <p class="text-sm text-yellow-800">
+          <div class="bg-yellow-900/30 border border-yellow-800/50 rounded-lg p-4 mb-4">
+            <p class="text-sm text-yellow-400">
               <strong>Warning:</strong> You have no backup codes remaining. Generate new codes to ensure account recovery.
             </p>
           </div>
@@ -45,52 +45,52 @@
 
         <%= form_with url: regenerate_backup_codes_profile_path, method: :post, class: "space-y-4" do |form| %>
           <div>
-            <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password (to regenerate codes)</label>
+            <label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password (to regenerate codes)</label>
             <%= form.password_field :password,
-                class: "w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500",
+                class: "w-full px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500",
                 required: true %>
           </div>
 
           <%= form.submit "Generate New Backup Codes",
-              class: "px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition cursor-pointer",
+              class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition cursor-pointer",
               data: { confirm: "This will invalidate your existing backup codes. Continue?" } %>
         <% end %>
       </div>
 
-      <div class="border-t pt-6">
-        <h3 class="font-medium text-gray-900 mb-4">Disable Two-Factor Authentication</h3>
-        <p class="text-sm text-gray-600 mb-4">
+      <div class="border-t border-gray-700 pt-6">
+        <h3 class="font-medium text-white mb-4">Disable Two-Factor Authentication</h3>
+        <p class="text-sm text-gray-400 mb-4">
           If you disable 2FA, your account will be less secure. You'll need to enter your password to confirm.
         </p>
 
         <%= form_with url: disable_two_factor_profile_path, method: :delete, class: "space-y-4" do |form| %>
           <div>
-            <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+            <label for="password" class="block text-sm font-medium text-gray-300 mb-1">Password</label>
             <%= form.password_field :password,
-                class: "w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500",
+                class: "w-full px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500",
                 required: true %>
           </div>
 
           <%= form.submit "Disable Two-Factor Authentication",
-              class: "px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition cursor-pointer",
+              class: "px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition cursor-pointer",
               data: { confirm: "Are you sure you want to disable two-factor authentication?" } %>
         <% end %>
       </div>
 
     <% else %>
       <!-- 2FA setup -->
-      <p class="text-gray-600 mb-6">
+      <p class="text-gray-400 mb-6">
         Add an extra layer of security to your account by enabling two-factor authentication.
       </p>
 
       <div class="space-y-6">
         <div>
-          <h3 class="font-medium text-gray-900 mb-2">Step 1: Scan QR Code</h3>
-          <p class="text-sm text-gray-600 mb-4">
+          <h3 class="font-medium text-white mb-2">Step 1: Scan QR Code</h3>
+          <p class="text-sm text-gray-400 mb-4">
             Scan this QR code with your authenticator app (Google Authenticator, Authy, 1Password, etc.)
           </p>
 
-          <div class="flex justify-center bg-gray-50 rounded-lg p-6">
+          <div class="flex justify-center bg-gray-800 rounded-lg p-6">
             <% if @qr_code %>
               <div class="bg-white p-4 rounded-lg shadow">
                 <%= @qr_code.html_safe %>
@@ -99,26 +99,26 @@
           </div>
 
           <details class="mt-4">
-            <summary class="text-sm text-blue-600 cursor-pointer hover:text-blue-800">
+            <summary class="text-sm text-blue-400 cursor-pointer hover:text-blue-300">
               Can't scan? Enter code manually
             </summary>
-            <div class="mt-2 p-3 bg-gray-100 rounded font-mono text-sm break-all">
+            <div class="mt-2 p-3 bg-gray-800 rounded font-mono text-sm break-all text-gray-200">
               <%= @user.otp_secret %>
             </div>
           </details>
         </div>
 
-        <div class="border-t pt-6">
-          <h3 class="font-medium text-gray-900 mb-2">Step 2: Verify Setup</h3>
-          <p class="text-sm text-gray-600 mb-4">
+        <div class="border-t border-gray-700 pt-6">
+          <h3 class="font-medium text-white mb-2">Step 2: Verify Setup</h3>
+          <p class="text-sm text-gray-400 mb-4">
             Enter the 6-digit code from your authenticator app to complete setup.
           </p>
 
           <%= form_with url: enable_two_factor_profile_path, method: :post, class: "space-y-4" do |form| %>
             <div>
-              <label for="otp_code" class="block text-sm font-medium text-gray-700 mb-1">Verification Code</label>
+              <label for="otp_code" class="block text-sm font-medium text-gray-300 mb-1">Verification Code</label>
               <%= form.text_field :otp_code,
-                  class: "w-full px-3 py-2 text-center text-xl tracking-widest border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500",
+                  class: "w-full px-3 py-2 text-center text-xl tracking-widest border border-gray-700 bg-gray-800 text-white rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500",
                   placeholder: "000000",
                   maxlength: 6,
                   autocomplete: "one-time-code",
@@ -128,7 +128,7 @@
             </div>
 
             <%= form.submit "Enable Two-Factor Authentication",
-                class: "w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition cursor-pointer" %>
+                class: "w-full py-2 px-4 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition cursor-pointer" %>
           <% end %>
         </div>
       </div>

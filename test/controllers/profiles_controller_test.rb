@@ -29,9 +29,9 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
     get profile_path
     assert_response :success
     # Check that stats are displayed (values depend on fixtures)
-    assert_select ".bg-gray-50 p.text-2xl"
-    assert_select ".bg-green-50 p.text-2xl"
-    assert_select ".bg-yellow-50 p.text-2xl"
+    assert_select ".bg-gray-800 p.text-2xl"
+    assert_select ".bg-green-900\\/30 p.text-2xl"
+    assert_select ".bg-yellow-900\\/30 p.text-2xl"
   end
 
   test "show displays 2FA status" do
@@ -55,7 +55,7 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
   test "update rejects blank name" do
     patch profile_path, params: { user: { name: "" } }
     assert_response :unprocessable_entity
-    assert_select ".bg-red-50"
+    assert_select ".bg-red-500\\/10"
   end
 
   test "password page displays form" do
@@ -133,7 +133,7 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
 
     get two_factor_profile_path
     assert_response :success
-    assert_select ".bg-green-50"
+    assert_select ".bg-green-900\\/30"
   end
 
   test "enable_two_factor with valid code enables 2FA and shows backup codes" do
