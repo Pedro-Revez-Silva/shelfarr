@@ -18,6 +18,31 @@ if [ -z "$RAILS_MASTER_KEY" ] && [ -z "$SECRET_KEY_BASE" ]; then
   fi
 fi
 
+# Auto-generate ActiveRecord encryption keys if not provided
+# These are required for encrypted attributes (e.g., API keys in settings)
+ENCRYPTION_FILE="/rails/storage/.encryption_keys"
+
+if [ -z "$ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY" ]; then
+  if [ -f "$ENCRYPTION_FILE" ]; then
+    # Reuse existing encryption keys
+    source "$ENCRYPTION_FILE"
+    echo "Using existing auto-generated encryption keys"
+  else
+    # Generate new encryption keys and persist them
+    export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$(openssl rand -base64 32)
+    export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$(openssl rand -base64 32)
+    export ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$(openssl rand -base64 32)
+
+    cat > "$ENCRYPTION_FILE" <<EOF
+export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY="$ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"
+export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY="$ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY"
+export ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT="$ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"
+EOF
+    chmod 600 "$ENCRYPTION_FILE"
+    echo "Generated new encryption keys (saved to storage volume)"
+  fi
+fi
+
 # If running the rails server then create or migrate existing database
 if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
   ./bin/rails db:prepare
