@@ -248,7 +248,8 @@ class RequestsController < ApplicationController
 
   def enabled_language_options
     enabled_codes = SettingsService.get(:enabled_languages) || [ "en" ]
-    enabled_codes = JSON.parse(enabled_codes) if enabled_codes.is_a?(String)
+    # Setting model's typed_value getter handles JSON parsing and error recovery
+    enabled_codes = Array(enabled_codes) # Ensure it's an array
 
     enabled_codes.filter_map do |code|
       info = ReleaseParserService.language_info(code)
