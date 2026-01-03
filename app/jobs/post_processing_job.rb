@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
-# Moves completed downloads to Audiobookshelf library folder and triggers library scan
+# Copies completed downloads to library folder and triggers library scan.
+# Files are COPIED (not moved) to preserve seeding on private trackers.
 class PostProcessingJob < ApplicationJob
   queue_as :default
 
@@ -17,8 +18,8 @@ class PostProcessingJob < ApplicationJob
 
     begin
       destination = build_destination_path(book, download)
-      source_path = remap_download_path(download.download_path)
-      move_files(source_path, destination)
+      source_path = remap_download_path(download.download_path, download)
+      copy_files(source_path, destination)
 
       book.update!(file_path: destination)
       request.complete!
@@ -69,35 +70,41 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def move_files(source, destination)
+  def copy_files(source, destination)
     return unless source.present? && File.exist?(source)
 
     FileUtils.mkdir_p(destination)
 
     if File.directory?(source)
-      # Move all files from source directory to destination
+      # Copy all files from source directory to destination
       # Use Dir.entries instead of Dir.glob to avoid pattern matching issues
       # (e.g., [AUDIOBOOK] in path being treated as character class)
+      # Files are COPIED (not moved) to preserve seeding on private trackers
       Dir.entries(source).reject { |f| f.start_with?(".") }.each do |file|
-        FileUtils.mv(File.join(source, file), destination)
+        FileUtils.cp_r(File.join(source, file), destination)
       end
-      # Remove empty source directory
-      FileUtils.rmdir(source) if Dir.empty?(source)
     else
-      # Move single file
-      FileUtils.mv(source, destination)
+      # Copy single file
+      FileUtils.cp(source, destination)
     end
   end
 
   # Remap paths from download client (host) to container paths
   # SABnzbd returns host paths like /mnt/media/Torrents/Completed/...
   # Container has this mounted at /downloads/...
-  def remap_download_path(path)
+  def remap_download_path(path, download)
     return path if path.blank?
 
-    # Get the configured remote path (host path from download client)
+    # Try client-specific download path first
+    if download.download_client&.download_path.present?
+      # Client has a configured path - use it with the filename/dirname from the reported path
+      client_path = download.download_client.download_path
+      basename = File.basename(path)
+      return File.join(client_path, basename)
+    end
+
+    # Fall back to global settings
     remote_path = SettingsService.get(:download_remote_path)
-    # Local path is where it's mounted in the container
     local_path = SettingsService.get(:download_local_path, default: "/downloads")
 
     if remote_path.present? && path.start_with?(remote_path)

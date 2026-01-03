@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_03_154727) do
+ActiveRecord::Schema[8.1].define(version: 2026_01_03_161938) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -54,6 +54,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_03_154727) do
     t.string "category"
     t.string "client_type", null: false
     t.datetime "created_at", null: false
+    t.string "download_path"
     t.boolean "enabled", default: true, null: false
     t.string "name", null: false
     t.string "password"
