@@ -8,6 +8,7 @@ module Admin
       key = params[:id]
       value = params[:setting][:value]
 
+      validate_path_template!(key, value)
       SettingsService.set(key, value)
 
       respond_to do |format|
@@ -19,13 +20,40 @@ module Admin
     end
 
     def bulk_update
+      errors = []
+
       params[:settings]&.each do |key, value|
-        SettingsService.set(key, value)
+        error = validate_path_template(key, value)
+        if error
+          errors << "#{key.to_s.titleize}: #{error}"
+        else
+          SettingsService.set(key, value)
+        end
       end
 
-      redirect_to admin_settings_path, notice: "Settings updated successfully."
+      if errors.any?
+        redirect_to admin_settings_path, alert: errors.join(". ")
+      else
+        redirect_to admin_settings_path, notice: "Settings updated successfully."
+      end
     rescue ArgumentError => e
       redirect_to admin_settings_path, alert: e.message
+    end
+
+    private
+
+    PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze
+
+    def validate_path_template!(key, value)
+      error = validate_path_template(key, value)
+      raise ArgumentError, error if error
+    end
+
+    def validate_path_template(key, value)
+      return nil unless PATH_TEMPLATE_SETTINGS.include?(key.to_s)
+
+      valid, error = PathTemplateService.validate_template(value)
+      valid ? nil : error
     end
   end
 end

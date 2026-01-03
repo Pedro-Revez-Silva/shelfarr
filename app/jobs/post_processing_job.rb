@@ -43,12 +43,7 @@ class PostProcessingJob < ApplicationJob
 
   def build_destination_path(book, download)
     base_path = get_base_path(book)
-
-    # Structure: /base/Author Name/Book Title/
-    author_folder = sanitize_filename(book.author.presence || "Unknown Author")
-    title_folder = sanitize_filename(book.title)
-
-    File.join(base_path, author_folder, title_folder)
+    PathTemplateService.build_destination(book, base_path: base_path)
   end
 
   def get_base_path(book)
