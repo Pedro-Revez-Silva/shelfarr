@@ -230,12 +230,7 @@ class UploadProcessingJob < ApplicationJob
   end
 
   def build_destination_path(book)
-    base_path = get_base_path(book)
-
-    author_folder = sanitize_filename(book.author.presence || "Unknown Author")
-    title_folder = sanitize_filename(book.title)
-
-    File.join(base_path, author_folder, title_folder)
+    PathTemplateService.build_destination(book)
   end
 
   def get_base_path(book)
