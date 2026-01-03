@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_03_161938) do
+ActiveRecord::Schema[8.1].define(version: 2026_01_03_173224) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -137,6 +137,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_03_161938) do
     t.json "score_breakdown"
     t.integer "seeders"
     t.bigint "size_bytes"
+    t.string "source", default: "prowlarr"
     t.integer "status", default: 0, null: false
     t.string "title", null: false
     t.datetime "updated_at", null: false

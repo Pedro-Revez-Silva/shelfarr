@@ -8,6 +8,23 @@ class DownloadClientSelector
     new(search_result).select
   end
 
+  # Select a torrent client directly (for Anna's Archive downloads)
+  def self.for_torrent
+    available_clients = DownloadClient.torrent_clients.enabled.by_priority
+
+    if available_clients.empty?
+      raise NoClientAvailableError, "No torrent download client configured"
+    end
+
+    # Try each client in priority order until one succeeds connection test
+    available_clients.each do |client|
+      return client if client.test_connection
+    end
+
+    # If no client passed connection test, raise error
+    raise NoClientAvailableError, "No torrent client available (all failed connection test)"
+  end
+
   def initialize(search_result)
     @search_result = search_result
   end

@@ -45,14 +45,15 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
-  test "marks for attention when Prowlarr not configured" do
+  test "marks for attention when no search sources configured" do
     SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
 
     SearchJob.perform_now(@request.id)
     @request.reload
 
     assert @request.attention_needed?
-    assert_includes @request.issue_description, "not configured"
+    assert_includes @request.issue_description, "No search sources configured"
   end
 
   test "skips non-pending requests" do

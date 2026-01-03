@@ -9,6 +9,10 @@ class SearchResult < ApplicationRecord
     rejected: 2
   }
 
+  # Source constants
+  SOURCE_PROWLARR = "prowlarr"
+  SOURCE_ANNA_ARCHIVE = "anna_archive"
+
   validates :guid, presence: true, uniqueness: { scope: :request_id }
   validates :title, presence: true
 
@@ -115,6 +119,24 @@ class SearchResult < ApplicationRecord
       :medium
     else
       :low
+    end
+  end
+
+  # Source helpers
+  def from_prowlarr?
+    source == SOURCE_PROWLARR || source.blank?
+  end
+
+  def from_anna_archive?
+    source == SOURCE_ANNA_ARCHIVE
+  end
+
+  def source_display_name
+    case source
+    when SOURCE_ANNA_ARCHIVE
+      "Anna's Archive"
+    else
+      indexer.presence || "Prowlarr"
     end
   end
 end

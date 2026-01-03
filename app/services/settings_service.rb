@@ -54,13 +54,19 @@ class SettingsService
     # Security
     session_max_age_days: { type: "integer", default: 30, category: "security", description: "Maximum session age in days before requiring re-login" },
     login_lockout_threshold: { type: "integer", default: 5, category: "security", description: "Failed login attempts before temporary lockout" },
-    login_lockout_duration_minutes: { type: "integer", default: 15, category: "security", description: "Duration of login lockout in minutes" }
+    login_lockout_duration_minutes: { type: "integer", default: 15, category: "security", description: "Duration of login lockout in minutes" },
+
+    # Anna's Archive
+    anna_archive_enabled: { type: "boolean", default: false, category: "anna_archive", description: "Enable Anna's Archive as an additional search source for ebooks" },
+    anna_archive_url: { type: "string", default: "https://annas-archive.org", category: "anna_archive", description: "Base URL for Anna's Archive (change if domain moves)" },
+    anna_archive_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" }
   }.freeze
 
   CATEGORIES = {
     "prowlarr" => "Prowlarr",
     "download" => "Download Settings",
     "audiobookshelf" => "Audiobookshelf",
+    "anna_archive" => "Anna's Archive",
     "paths" => "Output Paths",
     "queue" => "Queue Settings",
     "open_library" => "Open Library",
@@ -158,6 +164,10 @@ class SettingsService
 
     def audiobookshelf_configured?
       configured?(:audiobookshelf_url) && configured?(:audiobookshelf_api_key)
+    end
+
+    def anna_archive_configured?
+      get(:anna_archive_enabled, default: false) && configured?(:anna_archive_key)
     end
   end
 end
