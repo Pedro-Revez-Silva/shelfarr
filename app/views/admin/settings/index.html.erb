@@ -1,12 +1,4 @@
 <div class="mx-auto max-w-4xl" data-controller="settings-form">
-  <% if notice = flash[:notice] %>
-    <p class="py-2 px-3 bg-green-500/10 border border-green-500/20 mb-5 text-green-400 font-medium rounded-lg inline-block"><%= notice %></p>
-  <% end %>
-
-  <% if alert = flash[:alert] %>
-    <p class="py-2 px-3 bg-red-500/10 border border-red-500/20 mb-5 text-red-400 font-medium rounded-lg inline-block"><%= alert %></p>
-  <% end %>
-
   <%= form_with url: bulk_update_admin_settings_path, method: :patch, data: { settings_form_target: "form" } do |form| %>
     <div class="flex justify-between items-center mb-8">
       <h1 class="font-bold text-4xl text-white">Settings</h1>
