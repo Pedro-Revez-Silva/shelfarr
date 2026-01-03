@@ -6,12 +6,12 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
   setup do
     SettingsService.set(:anna_archive_enabled, true)
     SettingsService.set(:anna_archive_url, "https://annas-archive.org")
-    SettingsService.set(:anna_archive_key, "test-api-key")
+    SettingsService.set(:anna_archive_api_key, "test-api-key")
   end
 
   teardown do
     SettingsService.set(:anna_archive_enabled, false)
-    SettingsService.set(:anna_archive_key, "")
+    SettingsService.set(:anna_archive_api_key, "")
   end
 
   test "configured? returns true when enabled and key is set" do
@@ -24,7 +24,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
   end
 
   test "configured? returns false when key is empty" do
-    SettingsService.set(:anna_archive_key, "")
+    SettingsService.set(:anna_archive_api_key, "")
     assert_not AnnaArchiveClient.configured?
   end
 

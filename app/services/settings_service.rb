@@ -59,7 +59,7 @@ class SettingsService
     # Anna's Archive
     anna_archive_enabled: { type: "boolean", default: false, category: "anna_archive", description: "Enable Anna's Archive as an additional search source for ebooks" },
     anna_archive_url: { type: "string", default: "https://annas-archive.se", category: "anna_archive", description: "Base URL for Anna's Archive (change if domain moves)" },
-    anna_archive_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" }
+    anna_archive_api_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" }
   }.freeze
 
   CATEGORIES = {
@@ -167,7 +167,7 @@ class SettingsService
     end
 
     def anna_archive_configured?
-      get(:anna_archive_enabled, default: false) && configured?(:anna_archive_key)
+      get(:anna_archive_enabled, default: false) && configured?(:anna_archive_api_key)
     end
   end
 end

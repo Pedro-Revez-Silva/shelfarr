@@ -27,7 +27,7 @@ class AnnaArchiveClient
   class << self
     # Check if Anna's Archive is configured (has API key)
     def configured?
-      SettingsService.configured?(:anna_archive_key) &&
+      SettingsService.configured?(:anna_archive_api_key) &&
         SettingsService.get(:anna_archive_enabled, default: false)
     end
 
@@ -115,7 +115,7 @@ class AnnaArchiveClient
     end
 
     def api_key
-      SettingsService.get(:anna_archive_key)
+      SettingsService.get(:anna_archive_api_key)
     end
 
     def build_search_url(query, file_types)

@@ -23,7 +23,9 @@
               <div class="md:w-2/3">
                 <% case data[:definition][:type] %>
                 <% when "boolean" %>
-                  <%= form.select "settings[#{key}]", [["Yes", "true"], ["No", "false"]], { selected: data[:value].to_s }, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                  <label class="inline-flex items-center cursor-pointer">
+                    <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: { action: "change->settings-form#autoSave" } }, "true", "false" %>
+                  </label>
                 <% when "integer" %>
                   <%= form.number_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                 <% when "json" %>
