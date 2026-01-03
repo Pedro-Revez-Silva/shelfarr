@@ -2,6 +2,7 @@ module Admin
   class SettingsController < BaseController
     def index
       @settings_by_category = SettingsService.all_by_category
+      @audiobookshelf_libraries = fetch_audiobookshelf_libraries
     end
 
     def update
@@ -54,6 +55,15 @@ module Admin
 
       valid, error = PathTemplateService.validate_template(value)
       valid ? nil : error
+    end
+
+    def fetch_audiobookshelf_libraries
+      return [] unless AudiobookshelfClient.configured?
+
+      AudiobookshelfClient.libraries
+    rescue AudiobookshelfClient::Error => e
+      Rails.logger.warn "[SettingsController] Failed to fetch Audiobookshelf libraries: #{e.message}"
+      []
     end
   end
 end

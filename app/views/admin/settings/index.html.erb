@@ -30,7 +30,15 @@
                   <%= form.text_field "settings[#{key}]", value: data[:value].is_a?(Array) ? data[:value].join(', ') : data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                   <p class="mt-1 text-xs text-gray-500">For multiple values, use comma-separated format (e.g., en, fr, de)</p>
                 <% else %>
-                  <% if key.to_s.include?("password") || key.to_s.include?("api_key") %>
+                  <% if key.to_s.end_with?("_library_id") && @audiobookshelf_libraries.any? %>
+                    <%# Library picker dropdown when Audiobookshelf is configured %>
+                    <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
+                    <%= form.select "settings[#{key}]", options_for_select([["Select a library...", ""]] + library_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                  <% elsif key.to_s.end_with?("_library_id") %>
+                    <%# Library ID text field when Audiobookshelf is not configured %>
+                    <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure Audiobookshelf URL and API key first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                    <p class="mt-1 text-xs text-yellow-500">Enter Audiobookshelf URL and API key above to select from available libraries</p>
+                  <% elsif key.to_s.include?("password") || key.to_s.include?("api_key") %>
                     <%= form.password_field "settings[#{key}]", value: data[:value], placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                   <% else %>
                     <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
