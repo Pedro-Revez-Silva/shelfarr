@@ -4,11 +4,13 @@
 # Example template: "{author}/{title}" -> "Stephen King/The Shining"
 class PathTemplateService
   VARIABLES = %w[author title year publisher language].freeze
+  DEFAULT_TEMPLATE = "{author}/{title}".freeze
 
   class << self
     # Build a relative path from a template and book metadata
     def build_path(book, template)
-      result = template.dup
+      safe_template = sanitize_template(template)
+      result = safe_template.dup
 
       substitutions = {
         "{author}" => book.author.presence || "Unknown Author",
@@ -22,7 +24,27 @@ class PathTemplateService
         result = result.gsub(variable, sanitize_filename(value))
       end
 
-      result
+      # Final safety check - remove any remaining path traversal
+      sanitize_path(result)
+    end
+
+    # Validate a template string, returns [valid, error_message]
+    def validate_template(template)
+      return [ false, "Template cannot be empty" ] if template.blank?
+      return [ false, "Template must include {title}" ] unless template.include?("{title}")
+
+      # Check for path traversal attempts
+      if template.include?("..") || template.start_with?("/")
+        return [ false, "Template cannot contain '..' or start with '/'" ]
+      end
+
+      # Check for unknown variables
+      unknown = template.scan(/\{(\w+)\}/).flatten - VARIABLES
+      if unknown.any?
+        return [ false, "Unknown variables: #{unknown.map { |v| "{#{v}}" }.join(', ')}" ]
+      end
+
+      [ true, nil ]
     end
 
     # Get the appropriate template for a book type
@@ -61,6 +83,28 @@ class PathTemplateService
         .strip
         .gsub(/\s+/, " ")           # Collapse whitespace
         .truncate(100, omission: "") # Limit length
+    end
+
+    # Sanitize template to prevent path traversal
+    def sanitize_template(template)
+      return DEFAULT_TEMPLATE if template.blank?
+
+      template
+        .gsub("..", "")           # Remove path traversal
+        .gsub(/^\/+/, "")         # Remove leading slashes
+        .gsub(/\/+$/, "")         # Remove trailing slashes
+        .gsub(/\/+/, "/")         # Collapse multiple slashes
+        .presence || DEFAULT_TEMPLATE
+    end
+
+    # Final path sanitization after variable substitution
+    def sanitize_path(path)
+      path
+        .gsub("..", "")           # Remove any path traversal
+        .gsub(/^\/+/, "")         # Remove leading slashes (relative to base)
+        .gsub(/\/+$/, "")         # Remove trailing slashes
+        .gsub(/\/+/, "/")         # Collapse multiple slashes
+        .presence || "Unknown"
     end
   end
 end

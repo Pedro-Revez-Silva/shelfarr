@@ -72,4 +72,62 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     result = PathTemplateService.build_destination(@book, base_path: "/audiobooks")
     assert_equal "/audiobooks/Stephen King/The Shining", result
   end
+
+  # Security / Validation tests
+
+  test "removes path traversal from template" do
+    result = PathTemplateService.build_path(@book, "../../{author}/{title}")
+    assert_equal "Stephen King/The Shining", result
+    assert_not_includes result, ".."
+  end
+
+  test "removes leading slashes from template" do
+    result = PathTemplateService.build_path(@book, "/{author}/{title}")
+    assert_equal "Stephen King/The Shining", result
+  end
+
+  test "handles empty template with default" do
+    result = PathTemplateService.build_path(@book, "")
+    assert_equal "Stephen King/The Shining", result
+  end
+
+  test "handles nil template with default" do
+    result = PathTemplateService.build_path(@book, nil)
+    assert_equal "Stephen King/The Shining", result
+  end
+
+  test "collapses multiple slashes" do
+    result = PathTemplateService.build_path(@book, "{author}//{title}")
+    assert_equal "Stephen King/The Shining", result
+  end
+
+  test "validate_template returns error for empty template" do
+    valid, error = PathTemplateService.validate_template("")
+    assert_not valid
+    assert_equal "Template cannot be empty", error
+  end
+
+  test "validate_template returns error for missing title" do
+    valid, error = PathTemplateService.validate_template("{author}")
+    assert_not valid
+    assert_equal "Template must include {title}", error
+  end
+
+  test "validate_template returns error for path traversal" do
+    valid, error = PathTemplateService.validate_template("../{title}")
+    assert_not valid
+    assert_includes error, ".."
+  end
+
+  test "validate_template returns error for unknown variables" do
+    valid, error = PathTemplateService.validate_template("{author}/{title}/{unknown}")
+    assert_not valid
+    assert_includes error, "{unknown}"
+  end
+
+  test "validate_template accepts valid template" do
+    valid, error = PathTemplateService.validate_template("{year}/{author}/{title}")
+    assert valid
+    assert_nil error
+  end
 end
