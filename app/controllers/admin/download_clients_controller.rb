@@ -72,7 +72,7 @@ module Admin
     end
 
     def download_client_params
-      params.require(:download_client).permit(:name, :client_type, :url, :username, :password, :api_key, :category, :enabled)
+      params.require(:download_client).permit(:name, :client_type, :url, :username, :password, :api_key, :category, :download_path, :enabled)
     end
 
     def next_priority_for(client_type)

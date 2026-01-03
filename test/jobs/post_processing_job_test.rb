@@ -79,7 +79,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
-  test "moves files to destination folder" do
+  test "copies files to destination folder" do
     VCR.turned_off do
       stub_audiobookshelf_library(@temp_dest_base)
       stub_audiobookshelf_scan
@@ -88,6 +88,25 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
       expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
       assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+    end
+  end
+
+  test "preserves original files for seeding" do
+    VCR.turned_off do
+      stub_audiobookshelf_library(@temp_dest_base)
+      stub_audiobookshelf_scan
+
+      original_file = File.join(@temp_source, "audiobook.mp3")
+      assert File.exist?(original_file), "Source file should exist before processing"
+
+      PostProcessingJob.perform_now(@download.id)
+
+      # Original file should still exist (copy, not move)
+      assert File.exist?(original_file), "Source file should still exist after processing (copy, not move)"
+
+      # Destination file should also exist
+      expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+      assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "Destination file should exist"
     end
   end
 
@@ -207,6 +226,38 @@ class PostProcessingJobTest < ActiveJob::TestCase
       assert @request.attention_needed?
       assert_includes @request.issue_description, "Post-processing failed"
     end
+  end
+
+  test "uses per-client download path when configured" do
+    # Create a subdirectory in temp_source to simulate a download folder
+    download_subdir = File.join(@temp_source, "Test Audiobook")
+    FileUtils.mkdir_p(download_subdir)
+    File.write(File.join(download_subdir, "audiobook.mp3"), "test audio content")
+
+    # Create a download client with a specific download path
+    client = DownloadClient.create!(
+      name: "Test Client",
+      client_type: :qbittorrent,
+      url: "http://localhost:8080",
+      download_path: @temp_source  # Client's download path points to our temp source
+    )
+
+    # Associate download with the client
+    # Host path would be something like /mnt/torrents/completed/Test Audiobook
+    # Client's download_path maps this to @temp_source, so we end up with @temp_source/Test Audiobook
+    @download.update!(
+      download_client: client,
+      download_path: "/mnt/torrents/completed/Test Audiobook"  # Host path that would need remapping
+    )
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_output_path, @temp_dest_base)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    # File should be copied to destination
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "File should be copied using client-specific path"
   end
 
   private

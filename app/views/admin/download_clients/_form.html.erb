@@ -53,6 +53,12 @@
   </div>
 
   <div class="my-5">
+    <%= form.label :download_path, "Download Path", class: "block text-gray-300 font-medium" %>
+    <%= form.text_field :download_path, placeholder: "/downloads", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+    <p class="mt-1 text-sm text-gray-500">Container path where completed downloads appear (e.g., /downloads). Leave blank to use global settings.</p>
+  </div>
+
+  <div class="my-5">
     <%= form.label :enabled, class: "flex items-center gap-2 cursor-pointer" %>
     <div class="flex items-center">
       <%= form.check_box :enabled, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900" %>
