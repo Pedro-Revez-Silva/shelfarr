@@ -32,7 +32,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     # Setup Audiobookshelf settings
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
-    SettingsService.set(:audiobookshelf_library_id, "lib-123")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-123")
 
     # Create temp directories for testing file operations
     @temp_source = Dir.mktmpdir("source")

@@ -26,7 +26,7 @@ class PostProcessingJob < ApplicationJob
       # Pre-create zip for directories (audiobooks) so download is instant
       pre_create_download_zip(book, destination) if File.directory?(destination)
 
-      trigger_library_scan if AudiobookshelfClient.configured?
+      trigger_library_scan(book) if AudiobookshelfClient.configured?
 
       NotificationService.request_completed(request)
 
@@ -47,8 +47,9 @@ class PostProcessingJob < ApplicationJob
   end
 
   def get_base_path(book)
-    if AudiobookshelfClient.configured? && library_id.present? && book.audiobook?
-      library = AudiobookshelfClient.library(library_id)
+    lib_id = library_id_for(book)
+    if AudiobookshelfClient.configured? && lib_id.present?
+      library = AudiobookshelfClient.library(lib_id)
       return library.folder_paths.first if library&.folder_paths&.any?
     end
 
@@ -60,8 +61,12 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def library_id
-    SettingsService.get(:audiobookshelf_library_id)
+  def library_id_for(book)
+    if book.audiobook?
+      SettingsService.get(:audiobookshelf_audiobook_library_id)
+    else
+      SettingsService.get(:audiobookshelf_ebook_library_id)
+    end
   end
 
   def move_files(source, destination)
@@ -138,12 +143,12 @@ class PostProcessingJob < ApplicationJob
     # Non-fatal - zip will be created on first download
   end
 
-  def trigger_library_scan
-    lib_id = library_id
+  def trigger_library_scan(book)
+    lib_id = library_id_for(book)
     return unless lib_id.present?
 
     AudiobookshelfClient.scan_library(lib_id)
-    Rails.logger.info "[PostProcessingJob] Triggered Audiobookshelf library scan"
+    Rails.logger.info "[PostProcessingJob] Triggered Audiobookshelf library scan for #{book.book_type}"
   rescue AudiobookshelfClient::Error => e
     Rails.logger.warn "[PostProcessingJob] Failed to trigger scan: #{e.message}"
     # Non-fatal - Audiobookshelf will pick up files on next auto-scan

@@ -69,7 +69,7 @@ class UploadProcessingJob < ApplicationJob
       end
 
       # Step 7: Trigger Audiobookshelf scan if configured (outside transaction)
-      trigger_library_scan(book) if book&.audiobook? && AudiobookshelfClient.configured?
+      trigger_library_scan(book) if book && AudiobookshelfClient.configured?
 
       Rails.logger.info "[UploadProcessingJob] Completed processing upload #{upload.id}"
 
@@ -251,13 +251,16 @@ class UploadProcessingJob < ApplicationJob
   end
 
   def trigger_library_scan(book)
-    return unless book.audiobook?
+    library_id = if book.audiobook?
+      SettingsService.get(:audiobookshelf_audiobook_library_id)
+    else
+      SettingsService.get(:audiobookshelf_ebook_library_id)
+    end
 
-    library_id = SettingsService.get(:audiobookshelf_library_id)
     return unless library_id.present?
 
     AudiobookshelfClient.scan_library(library_id)
-    Rails.logger.info "[UploadProcessingJob] Triggered Audiobookshelf library scan"
+    Rails.logger.info "[UploadProcessingJob] Triggered Audiobookshelf library scan for #{book.book_type}"
   rescue AudiobookshelfClient::Error => e
     Rails.logger.warn "[UploadProcessingJob] Failed to trigger scan: #{e.message}"
   end

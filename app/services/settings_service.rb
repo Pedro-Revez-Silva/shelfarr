@@ -12,7 +12,8 @@ class SettingsService
     # Audiobookshelf Integration
     audiobookshelf_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for Audiobookshelf (e.g., http://localhost:13378)" },
     audiobookshelf_api_key: { type: "string", default: "", category: "audiobookshelf", description: "API token from Audiobookshelf user settings" },
-    audiobookshelf_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Target library ID for imported content" },
+    audiobookshelf_audiobook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for audiobooks" },
+    audiobookshelf_ebook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for ebooks" },
 
     # Output Paths
     audiobook_output_path: { type: "string", default: "/audiobooks", category: "paths", description: "Directory for completed audiobooks" },
