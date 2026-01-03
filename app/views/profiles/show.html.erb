@@ -1,50 +1,50 @@
 <div class="mx-auto max-w-2xl">
-  <h1 class="font-bold text-4xl mb-8">My Profile</h1>
+  <h1 class="font-bold text-4xl mb-8 text-white">My Profile</h1>
 
-  <div class="bg-white rounded-lg shadow overflow-hidden">
+  <div class="bg-gray-900 rounded-lg shadow overflow-hidden border border-gray-800">
     <div class="p-6">
       <div class="flex items-center gap-4 mb-6">
-        <div class="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center">
-          <span class="text-2xl font-bold text-gray-500"><%= @user.name.first.upcase %></span>
+        <div class="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center">
+          <span class="text-2xl font-bold text-gray-300"><%= @user.name.first.upcase %></span>
         </div>
         <div>
-          <h2 class="text-xl font-semibold text-gray-900"><%= @user.name %></h2>
-          <p class="text-gray-500">@<%= @user.username %></p>
+          <h2 class="text-xl font-semibold text-white"><%= @user.name %></h2>
+          <p class="text-gray-400">@<%= @user.username %></p>
           <% if @user.admin? %>
-            <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-800 mt-1">Admin</span>
+            <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-purple-500/20 text-purple-400 mt-1">Admin</span>
           <% end %>
         </div>
       </div>
 
       <div class="grid grid-cols-3 gap-4 mb-6">
-        <div class="bg-gray-50 rounded-lg p-4 text-center">
-          <p class="text-2xl font-bold text-gray-900"><%= @stats[:total_requests] %></p>
-          <p class="text-sm text-gray-500">Total Requests</p>
+        <div class="bg-gray-800 rounded-lg p-4 text-center border border-gray-700">
+          <p class="text-2xl font-bold text-white"><%= @stats[:total_requests] %></p>
+          <p class="text-sm text-gray-400">Total Requests</p>
         </div>
-        <div class="bg-green-50 rounded-lg p-4 text-center">
-          <p class="text-2xl font-bold text-green-600"><%= @stats[:completed_requests] %></p>
-          <p class="text-sm text-gray-500">Completed</p>
+        <div class="bg-green-900/30 rounded-lg p-4 text-center border border-green-800/50">
+          <p class="text-2xl font-bold text-green-400"><%= @stats[:completed_requests] %></p>
+          <p class="text-sm text-gray-400">Completed</p>
         </div>
-        <div class="bg-yellow-50 rounded-lg p-4 text-center">
-          <p class="text-2xl font-bold text-yellow-600"><%= @stats[:pending_requests] %></p>
-          <p class="text-sm text-gray-500">Pending</p>
+        <div class="bg-yellow-900/30 rounded-lg p-4 text-center border border-yellow-800/50">
+          <p class="text-2xl font-bold text-yellow-400"><%= @stats[:pending_requests] %></p>
+          <p class="text-sm text-gray-400">Pending</p>
         </div>
       </div>
 
-      <dl class="grid grid-cols-2 gap-4 text-sm border-t pt-6">
+      <dl class="grid grid-cols-2 gap-4 text-sm border-t border-gray-700 pt-6">
         <div>
           <dt class="text-gray-500">Member since</dt>
-          <dd class="font-medium text-gray-900"><%= @user.created_at.strftime("%B %d, %Y") %></dd>
+          <dd class="font-medium text-gray-200"><%= @user.created_at.strftime("%B %d, %Y") %></dd>
         </div>
         <div>
           <dt class="text-gray-500">Username</dt>
-          <dd class="font-medium text-gray-900">@<%= @user.username %></dd>
+          <dd class="font-medium text-gray-200">@<%= @user.username %></dd>
         </div>
         <div>
           <dt class="text-gray-500">Two-Factor Authentication</dt>
           <dd class="font-medium">
             <% if @user.otp_enabled? %>
-              <span class="inline-flex items-center text-green-600">
+              <span class="inline-flex items-center text-green-400">
                 <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
                   <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                 </svg>
@@ -58,10 +58,10 @@
       </dl>
     </div>
 
-    <div class="px-6 py-4 bg-gray-50 border-t flex flex-wrap gap-4">
-      <%= link_to "Edit Profile", edit_profile_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition" %>
-      <%= link_to "Change Password", password_profile_path, class: "px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition" %>
-      <%= link_to two_factor_profile_path, class: "px-4 py-2 #{@user.otp_enabled? ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'} font-medium rounded-lg transition" do %>
+    <div class="px-6 py-4 bg-gray-800 border-t border-gray-700 flex flex-wrap gap-4">
+      <%= link_to "Edit Profile", edit_profile_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
+      <%= link_to "Change Password", password_profile_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <%= link_to two_factor_profile_path, class: "px-4 py-2 #{@user.otp_enabled? ? 'bg-green-900/50 text-green-400 hover:bg-green-900/70' : 'bg-yellow-900/50 text-yellow-400 hover:bg-yellow-900/70'} font-medium rounded-lg transition" do %>
         <span class="flex items-center">
           <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />

@@ -1,41 +1,41 @@
 <div class="mx-auto max-w-2xl">
   <div class="flex justify-between items-center mb-8">
-    <h1 class="font-bold text-4xl">Notifications</h1>
+    <h1 class="font-bold text-4xl text-white">Notifications</h1>
     <% if @notifications.unread.any? %>
-      <%= button_to "Mark all as read", mark_all_read_notifications_path, method: :post, class: "text-blue-600 hover:text-blue-800 font-medium" %>
+      <%= button_to "Mark all as read", mark_all_read_notifications_path, method: :post, class: "text-blue-400 hover:text-blue-300 font-medium" %>
     <% end %>
   </div>
 
   <% if @notifications.empty? %>
-    <div class="bg-white rounded-lg shadow p-12 text-center">
-      <svg class="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div class="bg-gray-900 rounded-lg shadow p-12 text-center border border-gray-800">
+      <svg class="mx-auto h-12 w-12 text-gray-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
       </svg>
-      <h3 class="text-lg font-medium text-gray-900 mb-2">No notifications</h3>
-      <p class="text-gray-500">You're all caught up!</p>
+      <h3 class="text-lg font-medium text-white mb-2">No notifications</h3>
+      <p class="text-gray-400">You're all caught up!</p>
     </div>
   <% else %>
     <div class="space-y-4">
       <% @notifications.each do |notification| %>
-        <div id="<%= dom_id(notification) %>" class="bg-white rounded-lg shadow p-4 <%= notification.read? ? 'opacity-75' : '' %>">
+        <div id="<%= dom_id(notification) %>" class="bg-gray-900 rounded-lg shadow p-4 border border-gray-800 <%= notification.read? ? 'opacity-75' : '' %>">
           <div class="flex items-start gap-4">
             <div class="flex-shrink-0">
               <% case notification.notification_type %>
               <% when "request_completed" %>
-                <div class="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-                  <svg class="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                <div class="w-10 h-10 bg-green-900/50 rounded-full flex items-center justify-center">
+                  <svg class="w-5 h-5 text-green-400" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
                   </svg>
                 </div>
               <% when "request_failed" %>
-                <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-                  <svg class="w-5 h-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                <div class="w-10 h-10 bg-red-900/50 rounded-full flex items-center justify-center">
+                  <svg class="w-5 h-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
                   </svg>
                 </div>
               <% when "request_attention" %>
-                <div class="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">
-                  <svg class="w-5 h-5 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
+                <div class="w-10 h-10 bg-yellow-900/50 rounded-full flex items-center justify-center">
+                  <svg class="w-5 h-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
                   </svg>
                 </div>
@@ -45,16 +45,16 @@
             <div class="flex-grow min-w-0">
               <div class="flex items-start justify-between">
                 <div>
-                  <h3 class="font-medium text-gray-900"><%= notification.title %></h3>
-                  <p class="text-sm text-gray-600 mt-1"><%= notification.message %></p>
-                  <p class="text-xs text-gray-400 mt-2"><%= time_ago_in_words(notification.created_at) %> ago</p>
+                  <h3 class="font-medium text-white"><%= notification.title %></h3>
+                  <p class="text-sm text-gray-400 mt-1"><%= notification.message %></p>
+                  <p class="text-xs text-gray-500 mt-2"><%= time_ago_in_words(notification.created_at) %> ago</p>
                 </div>
                 <div class="flex items-center gap-2">
                   <% if notification.notifiable.present? && notification.notifiable.is_a?(Request) %>
-                    <%= link_to "View", request_path(notification.notifiable), class: "text-sm text-blue-600 hover:text-blue-800" %>
+                    <%= link_to "View", request_path(notification.notifiable), class: "text-sm text-blue-400 hover:text-blue-300" %>
                   <% end %>
                   <% unless notification.read? %>
-                    <%= button_to mark_read_notification_path(notification), method: :post, class: "text-gray-400 hover:text-gray-600", title: "Mark as read" do %>
+                    <%= button_to mark_read_notification_path(notification), method: :post, class: "text-gray-500 hover:text-gray-300", title: "Mark as read" do %>
                       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                       </svg>

@@ -1,7 +1,7 @@
 <div class="mx-auto max-w-2xl">
-  <h1 class="font-bold text-4xl mb-8">Request Book</h1>
+  <h1 class="font-bold text-4xl mb-8 text-white">Request Book</h1>
 
-  <div class="bg-white rounded-lg shadow p-6">
+  <div class="bg-gray-900 rounded-lg shadow p-6 border border-gray-800">
     <div class="flex gap-6 mb-6">
       <div class="flex-shrink-0 w-32">
         <% if @cover_id.present? %>
@@ -12,8 +12,8 @@
             onerror="this.onerror=null; this.src='/images/no-cover.svg';"
           >
         <% else %>
-          <div class="w-full aspect-[2/3] bg-gray-200 rounded shadow flex items-center justify-center">
-            <svg class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div class="w-full aspect-[2/3] bg-gray-700 rounded shadow flex items-center justify-center">
+            <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
             </svg>
           </div>
@@ -21,9 +21,9 @@
       </div>
 
       <div>
-        <h2 class="font-semibold text-xl text-gray-900"><%= @title %></h2>
+        <h2 class="font-semibold text-xl text-white"><%= @title %></h2>
         <% if @author.present? %>
-          <p class="text-gray-600"><%= @author %></p>
+          <p class="text-gray-400"><%= @author %></p>
         <% end %>
         <% if @first_publish_year.present? %>
           <p class="text-sm text-gray-500">First published <%= @first_publish_year %></p>
@@ -39,14 +39,14 @@
       <%= hidden_field_tag :first_publish_year, @first_publish_year %>
 
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-3">Select format(s):</label>
+        <label class="block text-sm font-medium text-gray-300 mb-3">Select format(s):</label>
         <div class="grid grid-cols-2 gap-4">
           <%
             audiobook_check = DuplicateDetectionService.check(work_id: @work_id, book_type: 'audiobook')
             ebook_check = DuplicateDetectionService.check(work_id: @work_id, book_type: 'ebook')
           %>
 
-          <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= audiobook_check.block? ? 'bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed' : 'bg-white border-gray-300 hover:border-purple-500' %>" data-format="audiobook">
+          <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= audiobook_check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:border-purple-500' %>" data-format="audiobook">
             <input
               type="checkbox"
               name="book_types[]"
@@ -57,27 +57,27 @@
             >
             <span class="flex flex-1">
               <span class="flex flex-col">
-                <span class="flex items-center text-sm font-medium text-gray-900">
-                  <svg class="w-5 h-5 mr-2 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <span class="flex items-center text-sm font-medium text-gray-200">
+                  <svg class="w-5 h-5 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                   </svg>
                   Audiobook
                 </span>
                 <% if audiobook_check.block? %>
-                  <span class="mt-1 text-xs text-red-600"><%= audiobook_check.message %></span>
+                  <span class="mt-1 text-xs text-red-400"><%= audiobook_check.message %></span>
                 <% elsif audiobook_check.warn? %>
-                  <span class="mt-1 text-xs text-yellow-600"><%= audiobook_check.message %></span>
+                  <span class="mt-1 text-xs text-yellow-400"><%= audiobook_check.message %></span>
                 <% else %>
                   <span class="mt-1 text-xs text-gray-500">Audio format for listening</span>
                 <% end %>
               </span>
             </span>
-            <svg class="h-5 w-5 text-purple-600 hidden checkmark" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <svg class="h-5 w-5 text-purple-400 hidden checkmark" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
             </svg>
           </label>
 
-          <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= ebook_check.block? ? 'bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed' : 'bg-white border-gray-300 hover:border-blue-500' %>" data-format="ebook">
+          <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= ebook_check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:border-blue-500' %>" data-format="ebook">
             <input
               type="checkbox"
               name="book_types[]"
@@ -88,22 +88,22 @@
             >
             <span class="flex flex-1">
               <span class="flex flex-col">
-                <span class="flex items-center text-sm font-medium text-gray-900">
-                  <svg class="w-5 h-5 mr-2 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <span class="flex items-center text-sm font-medium text-gray-200">
+                  <svg class="w-5 h-5 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                   </svg>
                   Ebook
                 </span>
                 <% if ebook_check.block? %>
-                  <span class="mt-1 text-xs text-red-600"><%= ebook_check.message %></span>
+                  <span class="mt-1 text-xs text-red-400"><%= ebook_check.message %></span>
                 <% elsif ebook_check.warn? %>
-                  <span class="mt-1 text-xs text-yellow-600"><%= ebook_check.message %></span>
+                  <span class="mt-1 text-xs text-yellow-400"><%= ebook_check.message %></span>
                 <% else %>
                   <span class="mt-1 text-xs text-gray-500">Digital format for reading</span>
                 <% end %>
               </span>
             </span>
-            <svg class="h-5 w-5 text-blue-600 hidden checkmark" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <svg class="h-5 w-5 text-blue-400 hidden checkmark" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
             </svg>
           </label>
@@ -112,11 +112,11 @@
       </div>
 
       <div>
-        <label for="language" class="block text-sm font-medium text-gray-700 mb-1">Language</label>
+        <label for="language" class="block text-sm font-medium text-gray-300 mb-1">Language</label>
         <select
           name="language"
           id="language"
-          class="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          class="w-full px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
         >
           <% @enabled_languages.each do |name, code| %>
             <option value="<%= code %>" <%= 'selected' if code == @default_language %>><%= name %></option>
@@ -126,19 +126,19 @@
       </div>
 
       <div>
-        <label for="notes" class="block text-sm font-medium text-gray-700 mb-1">Notes (optional)</label>
+        <label for="notes" class="block text-sm font-medium text-gray-300 mb-1">Notes (optional)</label>
         <textarea
           name="notes"
           id="notes"
           rows="3"
-          class="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          class="w-full px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-500"
           placeholder="Any specific edition, narrator preference, etc."
         ></textarea>
       </div>
 
       <div class="flex gap-4">
-        <%= form.submit "Create Request", class: "flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed", id: "submit-btn" %>
-        <%= link_to "Cancel", search_path, class: "px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg transition" %>
+        <%= form.submit "Create Request", class: "flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed", id: "submit-btn" %>
+        <%= link_to "Cancel", search_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
       </div>
     <% end %>
   </div>
@@ -162,11 +162,11 @@
 
       if (cb.checked) {
         label.classList.add('border-2', borderColor);
-        label.classList.remove('border-gray-300');
+        label.classList.remove('border-gray-700');
         checkmark?.classList.remove('hidden');
       } else {
         label.classList.remove('border-2', 'border-purple-500', 'border-blue-500');
-        label.classList.add('border-gray-300');
+        label.classList.add('border-gray-700');
         checkmark?.classList.add('hidden');
       }
     });

@@ -60,12 +60,12 @@
 
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div class="bg-gray-800 rounded-lg shadow p-6 border border-gray-700">
-      <h2 class="font-bold text-xl mb-4">System Health</h2>
+      <h2 class="font-bold text-xl mb-4 text-white">System Health</h2>
       <% SystemHealth::SERVICES.each do |service| %>
         <% health = @system_health[service] %>
         <div class="flex items-center justify-between py-3 border-b border-gray-700 last:border-b-0">
           <div>
-            <span class="font-medium"><%= service.titleize %></span>
+            <span class="font-medium text-gray-200"><%= service.titleize %></span>
             <% if health&.last_check_at %>
               <span class="text-xs text-gray-500 block">
                 Checked <%= time_ago_in_words(health.last_check_at) %> ago
@@ -95,7 +95,7 @@
     </div>
 
     <div class="bg-gray-800 rounded-lg shadow p-6 border border-gray-700">
-      <h2 class="font-bold text-xl mb-4">Quick Links</h2>
+      <h2 class="font-bold text-xl mb-4 text-white">Quick Links</h2>
       <div class="space-y-2">
         <%= link_to admin_issues_path, class: "flex items-center justify-between px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-300" do %>
           <span>Issues</span>
