@@ -89,22 +89,23 @@ class PathTemplateService
     def sanitize_template(template)
       return DEFAULT_TEMPLATE if template.blank?
 
-      template
-        .gsub("..", "")           # Remove path traversal
-        .gsub(/^\/+/, "")         # Remove leading slashes
-        .gsub(/\/+$/, "")         # Remove trailing slashes
-        .gsub(/\/+/, "/")         # Collapse multiple slashes
-        .presence || DEFAULT_TEMPLATE
+      sanitize_path_segments(template).presence || DEFAULT_TEMPLATE
     end
 
     # Final path sanitization after variable substitution
     def sanitize_path(path)
+      sanitize_path_segments(path).presence || "Unknown"
+    end
+
+    # Remove path traversal segments (..) while preserving dots in filenames
+    # "../../foo/bar" -> "foo/bar"
+    # "J.R.R. Tolkien/The Hobbit" -> "J.R.R. Tolkien/The Hobbit" (unchanged)
+    def sanitize_path_segments(path)
       path
-        .gsub("..", "")           # Remove any path traversal
-        .gsub(/^\/+/, "")         # Remove leading slashes (relative to base)
-        .gsub(/\/+$/, "")         # Remove trailing slashes
-        .gsub(/\/+/, "/")         # Collapse multiple slashes
-        .presence || "Unknown"
+        .to_s
+        .split("/")
+        .reject { |segment| segment == ".." || segment == "." || segment.empty? }
+        .join("/")
     end
   end
 end

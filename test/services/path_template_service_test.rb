@@ -78,7 +78,18 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
   test "removes path traversal from template" do
     result = PathTemplateService.build_path(@book, "../../{author}/{title}")
     assert_equal "Stephen King/The Shining", result
-    assert_not_includes result, ".."
+  end
+
+  test "preserves dots in author names" do
+    @book.update!(author: "J.R.R. Tolkien", title: "The Hobbit")
+    result = PathTemplateService.build_path(@book, "{author}/{title}")
+    assert_equal "J.R.R. Tolkien/The Hobbit", result
+  end
+
+  test "preserves dots in titles" do
+    @book.update!(title: "What If... Marvel")
+    result = PathTemplateService.build_path(@book, "{author}/{title}")
+    assert_equal "Stephen King/What If... Marvel", result
   end
 
   test "removes leading slashes from template" do
