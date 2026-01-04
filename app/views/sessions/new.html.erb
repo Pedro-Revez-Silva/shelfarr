@@ -1,12 +1,4 @@
 <div class="mx-auto md:w-2/3 w-full">
-  <% if alert = flash[:alert] %>
-    <p class="py-2 px-3 bg-red-500/10 border border-red-500/20 mb-5 text-red-400 font-medium rounded-lg inline-block" id="alert"><%= alert %></p>
-  <% end %>
-
-  <% if notice = flash[:notice] %>
-    <p class="py-2 px-3 bg-green-500/10 border border-green-500/20 mb-5 text-green-400 font-medium rounded-lg inline-block" id="notice"><%= notice %></p>
-  <% end %>
-
   <h1 class="font-bold text-4xl text-white">Sign in</h1>
 
   <%= form_with url: session_url, class: "contents" do |form| %>
