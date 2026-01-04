@@ -210,7 +210,7 @@
       <% end %>
     </div>
 
-    <% if @request.pending? || @request.not_found? || @request.failed? %>
+    <% if @request.can_be_cancelled? %>
       <div class="px-6 py-4 bg-gray-800/50 border-t border-gray-800 flex justify-end">
         <%= button_to "Cancel Request", @request, method: :delete, class: "px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition", data: { confirm: "Are you sure you want to cancel this request?" } %>
       </div>

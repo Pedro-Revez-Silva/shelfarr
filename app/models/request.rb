@@ -104,6 +104,12 @@ class Request < ApplicationRecord
     pending? || not_found? || failed?
   end
 
+  # Check if request can be cancelled/deleted
+  # Allow cancellation for requests not actively downloading or completed
+  def can_be_cancelled?
+    pending? || searching? || not_found? || failed?
+  end
+
   # Check if retry is due
   def retry_due?
     not_found? && next_retry_at.present? && next_retry_at <= Time.current

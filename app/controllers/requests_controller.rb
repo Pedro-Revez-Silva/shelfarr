@@ -106,7 +106,7 @@ class RequestsController < ApplicationController
       return
     end
 
-    unless @request.pending? || @request.not_found? || @request.failed?
+    unless @request.can_be_cancelled?
       redirect_to @request, alert: "Cannot cancel request in #{@request.status} status"
       return
     end

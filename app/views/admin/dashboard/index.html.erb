@@ -79,6 +79,7 @@
                 when 'healthy' then 'bg-green-900/50 text-green-400'
                 when 'degraded' then 'bg-yellow-900/50 text-yellow-400'
                 when 'down' then 'bg-red-900/50 text-red-400'
+                when 'not_configured' then 'bg-gray-700 text-gray-400'
                 end
               %>">
                 <%= health.status.titleize %>
