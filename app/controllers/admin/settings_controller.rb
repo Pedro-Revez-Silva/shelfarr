@@ -1,5 +1,7 @@
 module Admin
   class SettingsController < BaseController
+    before_action :ensure_settings_seeded, only: :index
+
     def index
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
@@ -64,6 +66,10 @@ module Admin
     rescue AudiobookshelfClient::Error => e
       Rails.logger.warn "[SettingsController] Failed to fetch Audiobookshelf libraries: #{e.message}"
       []
+    end
+
+    def ensure_settings_seeded
+      SettingsService.seed_defaults!
     end
   end
 end
