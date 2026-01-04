@@ -210,4 +210,54 @@ class RequestRetryTest < ActiveSupport::TestCase
   test "next_retry_in_words returns nil when retry is past" do
     assert_nil requests(:not_found_retry_due).next_retry_in_words
   end
+
+  # === can_be_cancelled? ===
+
+  test "can_be_cancelled? returns true for pending requests" do
+    assert @pending.can_be_cancelled?
+  end
+
+  test "can_be_cancelled? returns true for searching requests" do
+    searching = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :searching
+    )
+    assert searching.can_be_cancelled?
+  end
+
+  test "can_be_cancelled? returns true for not_found requests" do
+    assert @not_found_waiting.can_be_cancelled?
+  end
+
+  test "can_be_cancelled? returns true for failed requests" do
+    assert requests(:failed_request).can_be_cancelled?
+  end
+
+  test "can_be_cancelled? returns false for downloading requests" do
+    downloading = Request.create!(
+      book: books(:audiobook_acquired),
+      user: users(:one),
+      status: :downloading
+    )
+    assert_not downloading.can_be_cancelled?
+  end
+
+  test "can_be_cancelled? returns false for processing requests" do
+    processing = Request.create!(
+      book: books(:audiobook_acquired),
+      user: users(:one),
+      status: :processing
+    )
+    assert_not processing.can_be_cancelled?
+  end
+
+  test "can_be_cancelled? returns false for completed requests" do
+    completed = Request.create!(
+      book: books(:audiobook_acquired),
+      user: users(:one),
+      status: :completed
+    )
+    assert_not completed.can_be_cancelled?
+  end
 end
