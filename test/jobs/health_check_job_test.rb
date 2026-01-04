@@ -28,13 +28,13 @@ class HealthCheckJobTest < ActiveJob::TestCase
   end
 
   # Prowlarr tests
-  test "marks prowlarr as not_configured when not configured" do
+  test "marks prowlarr as healthy when not configured" do
     Setting.where(key: %w[prowlarr_url prowlarr_api_key]).destroy_all
 
     HealthCheckJob.perform_now
 
     health = SystemHealth.for_service("prowlarr")
-    assert health.not_configured?
+    assert health.healthy?
     assert_includes health.message, "Not configured"
   end
 
@@ -68,13 +68,13 @@ class HealthCheckJobTest < ActiveJob::TestCase
   end
 
   # Download client tests
-  test "marks download_client as not_configured when no clients configured" do
+  test "marks download_client as healthy when no clients configured" do
     DownloadClient.destroy_all
 
     HealthCheckJob.perform_now
 
     health = SystemHealth.for_service("download_client")
-    assert health.not_configured?
+    assert health.healthy?
     assert_includes health.message, "No download clients configured"
   end
 
@@ -185,13 +185,13 @@ class HealthCheckJobTest < ActiveJob::TestCase
   end
 
   # Audiobookshelf tests
-  test "marks audiobookshelf as not_configured when not configured" do
+  test "marks audiobookshelf as healthy when not configured" do
     Setting.where(key: %w[audiobookshelf_url audiobookshelf_api_key]).destroy_all
 
     HealthCheckJob.perform_now
 
     health = SystemHealth.for_service("audiobookshelf")
-    assert health.not_configured?
+    assert health.healthy?
     assert_includes health.message, "Not configured"
   end
 

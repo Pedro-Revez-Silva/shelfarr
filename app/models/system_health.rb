@@ -2,8 +2,7 @@ class SystemHealth < ApplicationRecord
   enum :status, {
     healthy: 0,
     degraded: 1,
-    down: 2,
-    not_configured: 3
+    down: 2
   }
 
   SERVICES = %w[prowlarr download_client output_paths audiobookshelf].freeze
@@ -35,14 +34,6 @@ class SystemHealth < ApplicationRecord
   def check_failed!(message:, degraded: false)
     update!(
       status: degraded ? :degraded : :down,
-      message: message,
-      last_check_at: Time.current
-    )
-  end
-
-  def mark_not_configured!(message: "Not configured")
-    update!(
-      status: :not_configured,
       message: message,
       last_check_at: Time.current
     )

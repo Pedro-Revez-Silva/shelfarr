@@ -18,7 +18,7 @@ class HealthCheckJob < ApplicationJob
     health = SystemHealth.for_service("prowlarr")
 
     unless ProwlarrClient.configured?
-      health.mark_not_configured!
+      health.check_succeeded!(message: "Not configured")
       return
     end
 
@@ -41,7 +41,7 @@ class HealthCheckJob < ApplicationJob
     clients = DownloadClient.enabled.to_a
 
     if clients.empty?
-      health.mark_not_configured!(message: "No download clients configured")
+      health.check_succeeded!(message: "No download clients configured")
       return
     end
 
@@ -103,7 +103,7 @@ class HealthCheckJob < ApplicationJob
     health = SystemHealth.for_service("audiobookshelf")
 
     unless AudiobookshelfClient.configured?
-      health.mark_not_configured!
+      health.check_succeeded!(message: "Not configured")
       return
     end
 

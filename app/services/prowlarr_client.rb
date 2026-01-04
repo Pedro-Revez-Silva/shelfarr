@@ -51,52 +51,11 @@ class ProwlarrClient
       cats = categories || categories_for_type(book_type)
       params[:categories] = Array(cats) if cats.present?
 
-      # Filter by indexer tags if configured
-      indexer_ids = filtered_indexer_ids
-      params[:indexerIds] = indexer_ids if indexer_ids.present?
-
-      response = connection.get("api/v1/search", params)
+      response = connection.get("/api/v1/search", params)
 
       handle_response(response) do |data|
         Array(data).map { |item| parse_result(item) }
       end
-    end
-
-    # Fetch all indexers from Prowlarr
-    def indexers
-      ensure_configured!
-
-      response = connection.get("api/v1/indexer")
-
-      handle_response(response) do |data|
-        Array(data)
-      end
-    end
-
-    # Get indexer IDs filtered by configured tags
-    # Returns nil if no tags configured (use all indexers)
-    def filtered_indexer_ids
-      tags = configured_tags
-      return nil if tags.empty?
-
-      all_indexers = indexers
-      filtered = all_indexers.select do |indexer|
-        indexer_tags = Array(indexer["tags"])
-        (indexer_tags & tags).any?
-      end
-
-      filtered.map { |i| i["id"] }
-    rescue Error => e
-      Rails.logger.warn "[ProwlarrClient] Failed to fetch indexers for tag filtering: #{e.message}"
-      nil
-    end
-
-    # Parse configured tags from settings
-    def configured_tags
-      tags_setting = SettingsService.get(:prowlarr_tags).to_s.strip
-      return [] if tags_setting.blank?
-
-      tags_setting.split(",").map { |t| t.strip.to_i }.reject(&:zero?)
     end
 
     # Get appropriate categories for a book type
@@ -120,7 +79,7 @@ class ProwlarrClient
     def test_connection
       ensure_configured!
 
-      response = connection.get("api/v1/health")
+      response = connection.get("/api/v1/health")
       response.status == 200
     rescue Error
       false
@@ -147,9 +106,7 @@ class ProwlarrClient
     end
 
     def base_url
-      url = SettingsService.get(:prowlarr_url).to_s.strip
-      # Ensure URL ends with trailing slash for proper URI joining
-      url.end_with?("/") ? url : "#{url}/"
+      SettingsService.get(:prowlarr_url)
     end
 
     def api_key
