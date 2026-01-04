@@ -19,7 +19,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     Thread.current[:qbittorrent_sessions] = {}
   end
 
-  test "add_torrent authenticates and adds torrent" do
+  test "add_torrent authenticates and adds torrent with magnet link" do
     VCR.turned_off do
       # Stub authentication
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")
@@ -33,8 +33,36 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
 
-      result = @client.add_torrent("magnet:?xt=urn:btih:testmagnet123")
-      assert result
+      # Use valid hex hash in magnet link
+      result = @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+      assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
+    end
+  end
+
+  test "add_torrent returns hash from API for torrent URLs" do
+    VCR.turned_off do
+      # Stub authentication
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Stub add torrent
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+
+      # Stub torrent info for getting hash after adding
+      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [{ "hash" => "def456abc789" }].to_json
+        )
+
+      result = @client.add_torrent("http://example.com/file.torrent")
+      assert_equal "def456abc789", result
     end
   end
 

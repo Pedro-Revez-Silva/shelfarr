@@ -38,6 +38,7 @@ class DownloadJobTest < ActiveJob::TestCase
 
       assert @download.downloading?
       assert_equal @client.id.to_s, @download.download_client_id
+      assert_equal "abc123def456", @download.external_id
     end
   end
 
@@ -111,5 +112,13 @@ class DownloadJobTest < ActiveJob::TestCase
     # Stub add torrent
     stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
       .to_return(status: 200, body: "Ok.")
+
+    # Stub torrent info query (for getting hash after adding .torrent URL)
+    stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: [{ "hash" => "abc123def456", "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "save_path" => "/downloads" }].to_json
+      )
   end
 end

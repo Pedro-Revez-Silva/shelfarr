@@ -5,8 +5,12 @@ module DownloadClients
   # https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1)
   class Qbittorrent < Base
     # Add a torrent by URL or magnet link
+    # Returns the torrent hash on success, nil on failure
     def add_torrent(url, options = {})
       ensure_authenticated!
+
+      # For magnet links, extract hash upfront (more reliable than querying after)
+      hash_from_magnet = extract_hash_from_magnet(url) if url.start_with?("magnet:")
 
       params = { urls: url }
       params[:category] = config.category if config.category.present?
@@ -18,13 +22,19 @@ module DownloadClients
       case response.status
       when 200
         # qBittorrent returns "Ok." on success or empty body
-        response.body == "Ok." || response.body.blank?
+        return nil unless response.body == "Ok." || response.body.blank?
+
+        # Return hash from magnet if available
+        return hash_from_magnet if hash_from_magnet.present?
+
+        # For .torrent URLs, query qBittorrent to find the newly added torrent
+        find_recently_added_torrent_hash
       when 401, 403
         clear_session!
         raise Base::AuthenticationError, "qBittorrent authentication failed"
       else
         Rails.logger.error "[Qbittorrent] Failed to add torrent: #{response.status} - #{response.body}"
-        false
+        nil
       end
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
@@ -63,6 +73,24 @@ module DownloadClients
     end
 
     private
+
+    def extract_hash_from_magnet(url)
+      match = url.match(/btih:([a-fA-F0-9]+)/i)
+      match[1]&.downcase if match
+    end
+
+    def find_recently_added_torrent_hash
+      # Give qBittorrent a moment to process the torrent
+      sleep 0.5
+
+      response = connection.get("/api/v2/torrents/info", { sort: "added_on", reverse: true, limit: 1 })
+      return nil unless response.status == 200
+
+      data = response.body
+      return nil if data.blank?
+
+      data.first&.dig("hash")
+    end
 
     def ensure_authenticated!
       authenticate! unless session_valid?

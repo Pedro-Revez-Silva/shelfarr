@@ -79,16 +79,17 @@ class DownloadJob < ApplicationJob
 
     Rails.logger.info "[DownloadJob] Using client '#{client_record.name}' for download ##{download.id}"
 
-    result = client.add_torrent(download_url)
+    # add_torrent now returns the hash directly (or nil on failure)
+    torrent_hash = client.add_torrent(download_url)
 
-    if result
+    if torrent_hash
       download.update!(
         status: :downloading,
         download_client: client_record,
-        external_id: extract_external_id_from_url(download_url, result),
+        external_id: torrent_hash,
         download_type: "torrent"
       )
-      Rails.logger.info "[DownloadJob] Successfully added torrent for download ##{download.id}"
+      Rails.logger.info "[DownloadJob] Successfully added torrent for download ##{download.id}, hash: #{torrent_hash}"
     else
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
@@ -107,19 +108,29 @@ class DownloadJob < ApplicationJob
     # Select best available client based on download type and priority
     client_record = DownloadClientSelector.for_download(search_result)
     client = client_record.adapter
+    is_usenet = search_result.usenet?
 
     Rails.logger.info "[DownloadJob] Using client '#{client_record.name}' for download ##{download.id}"
 
-    result = client.add_torrent(search_result.download_link)
+    if is_usenet
+      # SABnzbd returns a hash with nzo_ids
+      result = client.add_torrent(search_result.download_link)
+      external_id = result.is_a?(Hash) ? result["nzo_ids"]&.first : nil
+      success = external_id.present?
+    else
+      # qBittorrent now returns the torrent hash directly
+      external_id = client.add_torrent(search_result.download_link)
+      success = external_id.present?
+    end
 
-    if result
+    if success
       download.update!(
         status: :downloading,
         download_client: client_record,
-        external_id: extract_external_id(search_result, result),
-        download_type: search_result.usenet? ? "usenet" : "torrent"
+        external_id: external_id,
+        download_type: is_usenet ? "usenet" : "torrent"
       )
-      Rails.logger.info "[DownloadJob] Successfully added #{download.download_type} for download ##{download.id}"
+      Rails.logger.info "[DownloadJob] Successfully added #{download.download_type} for download ##{download.id}, external_id: #{external_id}"
     else
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
@@ -127,22 +138,4 @@ class DownloadJob < ApplicationJob
     end
   end
 
-  def extract_external_id(search_result, result)
-    if search_result.download_link&.start_with?("magnet:")
-      # Extract hash from magnet link
-      search_result.download_link.match(/btih:([a-fA-F0-9]+)/i)&.[](1)
-    elsif result.is_a?(Hash) && result["nzo_ids"]
-      # SABnzbd returns nzo_id in response
-      result["nzo_ids"].first
-    end
-  end
-
-  def extract_external_id_from_url(url, result)
-    if url.start_with?("magnet:")
-      # Extract hash from magnet link
-      url.match(/btih:([a-fA-F0-9]+)/i)&.[](1)
-    elsif result.is_a?(Hash) && result["hash"]
-      result["hash"]
-    end
-  end
 end
