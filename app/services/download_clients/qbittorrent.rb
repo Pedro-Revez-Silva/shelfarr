@@ -173,7 +173,7 @@ module DownloadClients
         progress: (data["progress"] * 100).round,
         state: normalize_state(data["state"]),
         size_bytes: data["size"],
-        download_path: data["save_path"]
+        download_path: data["content_path"]
       )
     end
 

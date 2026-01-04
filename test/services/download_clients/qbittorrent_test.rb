@@ -88,7 +88,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
               "progress" => 0.75,
               "state" => "downloading",
               "size" => 1073741824,
-              "save_path" => "/downloads"
+              "content_path" => "/downloads/Test Torrent"
             }
           ].to_json
         )

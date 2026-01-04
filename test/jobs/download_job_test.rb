@@ -118,7 +118,7 @@ class DownloadJobTest < ActiveJob::TestCase
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },
-        body: [{ "hash" => "abc123def456", "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "save_path" => "/downloads" }].to_json
+        body: [{ "hash" => "abc123def456", "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" }].to_json
       )
   end
 end

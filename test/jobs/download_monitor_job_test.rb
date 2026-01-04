@@ -187,7 +187,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
             "progress" => progress / 100.0,
             "state" => state,
             "size" => 1073741824,
-            "save_path" => "/downloads/complete"
+            "content_path" => "/downloads/complete/Test Audiobook"
           }
         ].to_json
       )
