@@ -38,6 +38,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
     @temp_source = Dir.mktmpdir("source")
     @temp_dest_base = Dir.mktmpdir("dest")
 
+    # Set output path to temp destination (Shelfarr always uses its own settings)
+    SettingsService.set(:audiobook_output_path, @temp_dest_base)
+
     # Update download path to temp source
     @download.update!(download_path: @temp_source)
 
@@ -213,7 +216,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
-  test "marks for attention when audiobookshelf library fetch fails" do
+  test "succeeds even when audiobookshelf library fetch fails" do
+    # Shelfarr now uses its own configured paths, not Audiobookshelf's.
+    # Processing should succeed regardless of ABS API issues.
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries/lib-123")
         .to_return(status: 500)
@@ -223,8 +228,10 @@ class PostProcessingJobTest < ActiveJob::TestCase
       PostProcessingJob.perform_now(@download.id)
       @request.reload
 
-      assert @request.attention_needed?
-      assert_includes @request.issue_description, "Post-processing failed"
+      # Request should complete successfully since we use Shelfarr's output path
+      assert @request.completed?
+      expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+      assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
     end
   end
 

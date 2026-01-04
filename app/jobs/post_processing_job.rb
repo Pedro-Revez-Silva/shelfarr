@@ -48,13 +48,9 @@ class PostProcessingJob < ApplicationJob
   end
 
   def get_base_path(book)
-    lib_id = library_id_for(book)
-    if AudiobookshelfClient.configured? && lib_id.present?
-      library = AudiobookshelfClient.library(lib_id)
-      return library.folder_paths.first if library&.folder_paths&.any?
-    end
-
-    # Return path based on book type
+    # Always use Shelfarr's configured output paths.
+    # Audiobookshelf library paths are from ABS's container perspective,
+    # not ours, so we can't use them for file operations.
     if book.ebook?
       SettingsService.get(:ebook_output_path, default: "/ebooks")
     else
