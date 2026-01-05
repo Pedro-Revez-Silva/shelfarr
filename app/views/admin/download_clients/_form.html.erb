@@ -73,10 +73,13 @@
 <% end %>
 
 <script>
-  document.addEventListener('DOMContentLoaded', function() {
+  // Use turbo:load for Turbo navigations and DOMContentLoaded for initial page load
+  function initDownloadClientForm() {
     const clientTypeSelect = document.getElementById('client_type_select');
     const qbittorrentFields = document.getElementById('qbittorrent_fields');
     const sabnzbdFields = document.getElementById('sabnzbd_fields');
+
+    if (!clientTypeSelect || !qbittorrentFields || !sabnzbdFields) return;
 
     function toggleFields() {
       const type = clientTypeSelect.value;
@@ -84,6 +87,14 @@
       sabnzbdFields.classList.toggle('hidden', type !== 'sabnzbd');
     }
 
+    // Run on load to set initial state
+    toggleFields();
+
+    // Listen for changes
     clientTypeSelect.addEventListener('change', toggleFields);
-  });
+  }
+
+  document.addEventListener('DOMContentLoaded', initDownloadClientForm);
+  document.addEventListener('turbo:load', initDownloadClientForm);
+  document.addEventListener('turbo:render', initDownloadClientForm);
 </script>
