@@ -141,20 +141,20 @@ class SearchJob < ApplicationJob
     # Convert file size string to bytes for sorting
     size_bytes = parse_size_to_bytes(result.file_size)
 
-    request.search_results.create!(
-      guid: result.md5,  # Use MD5 as unique identifier
-      title: build_anna_title(result),
-      indexer: "Anna's Archive",
-      size_bytes: size_bytes,
-      seeders: nil,  # N/A for Anna's Archive
-      leechers: nil,
-      download_url: nil,  # Will be fetched via API when downloading
-      magnet_url: nil,
-      info_url: "#{SettingsService.get(:anna_archive_url)}/md5/#{result.md5}",
-      published_at: nil,
-      source: SearchResult::SOURCE_ANNA_ARCHIVE,
-      detected_language: result.language
-    )
+    # Use find_or_create_by to handle duplicate MD5s in Anna's Archive results
+    request.search_results.find_or_create_by!(guid: result.md5) do |sr|
+      sr.title = build_anna_title(result)
+      sr.indexer = "Anna's Archive"
+      sr.size_bytes = size_bytes
+      sr.seeders = nil  # N/A for Anna's Archive
+      sr.leechers = nil
+      sr.download_url = nil  # Will be fetched via API when downloading
+      sr.magnet_url = nil
+      sr.info_url = "#{SettingsService.get(:anna_archive_url)}/md5/#{result.md5}"
+      sr.published_at = nil
+      sr.source = SearchResult::SOURCE_ANNA_ARCHIVE
+      sr.detected_language = result.language
+    end
   end
 
   def build_anna_title(result)
