@@ -211,8 +211,43 @@
     </div>
 
     <% if @request.can_be_cancelled? %>
-      <div class="px-6 py-4 bg-gray-800/50 border-t border-gray-800 flex justify-end">
-        <%= button_to "Cancel Request", @request, method: :delete, class: "px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition", data: { confirm: "Are you sure you want to cancel this request?" } %>
+      <div class="px-6 py-4 bg-gray-800/50 border-t border-gray-800 flex justify-end" data-controller="delete-modal">
+        <button type="button"
+                class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition"
+                data-action="click->delete-modal#open">
+          Cancel Request
+        </button>
+
+        <dialog data-delete-modal-target="modal"
+                class="bg-gray-900 border border-gray-700 rounded-lg p-0 backdrop:bg-black/50 max-w-md w-full"
+                data-action="click->delete-modal#backdropClick">
+          <div class="p-6">
+            <h3 class="text-lg font-semibold text-white mb-2">Cancel Request</h3>
+            <p class="text-gray-400 mb-4">Are you sure you want to cancel this request for "<%= @request.book.title %>"?</p>
+
+            <%= form_with url: request_path(@request), method: :delete, local: true, class: "space-y-4" do |f| %>
+              <% if @request.downloads.any? { |d| d.external_id.present? && d.download_client.present? } %>
+                <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                  <input type="checkbox" name="remove_torrent" value="1"
+                         class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-red-600 focus:ring-red-500">
+                  <span>Also remove torrent from download client</span>
+                </label>
+              <% end %>
+
+              <div class="flex justify-end gap-3 pt-2">
+                <button type="button"
+                        class="px-4 py-2 text-gray-400 hover:text-white transition"
+                        data-action="click->delete-modal#close">
+                  Keep Request
+                </button>
+                <button type="submit"
+                        class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition">
+                  Cancel Request
+                </button>
+              </div>
+            <% end %>
+          </div>
+        </dialog>
       </div>
     <% end %>
   </div>

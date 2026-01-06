@@ -111,6 +111,11 @@ class RequestsController < ApplicationController
       return
     end
 
+    # Optionally remove torrent from download client
+    if params[:remove_torrent] == "1"
+      remove_associated_torrents(@request)
+    end
+
     book = @request.book
     ActivityTracker.track("request.cancelled", trackable: @request)
     @request.destroy!
@@ -257,5 +262,19 @@ class RequestsController < ApplicationController
 
       [ info[:name], code ]
     end.sort_by(&:first)
+  end
+
+  def remove_associated_torrents(request)
+    request.downloads.each do |download|
+      next unless download.external_id.present? && download.download_client.present?
+
+      begin
+        client = download.download_client.adapter
+        client.remove_torrent(download.external_id, delete_files: false)
+        Rails.logger.info "[RequestsController] Removed torrent #{download.external_id} for download ##{download.id}"
+      rescue DownloadClients::Base::Error => e
+        Rails.logger.warn "[RequestsController] Failed to remove torrent: #{e.message}"
+      end
+    end
   end
 end

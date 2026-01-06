@@ -54,6 +54,13 @@ module DownloadClients
       raise NotImplementedError, "Subclass must implement test_connection"
     end
 
+    # Remove a torrent by hash
+    # delete_files: if true, also delete downloaded files
+    # Returns true on success, false otherwise
+    def remove_torrent(hash, delete_files: false)
+      raise NotImplementedError, "Subclass must implement remove_torrent"
+    end
+
     protected
 
     def base_url
