@@ -53,12 +53,12 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
 
-      # Stub torrent info for getting hash after adding
+      # Stub torrent info - first call returns empty (before adding),
+      # subsequent calls return the new torrent (after adding)
       stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
         .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: [{ "hash" => "def456abc789" }].to_json
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [{ "hash" => "def456abc789" }].to_json }
         )
 
       result = @client.add_torrent("http://example.com/file.torrent")

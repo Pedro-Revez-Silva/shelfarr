@@ -14,7 +14,9 @@ module DownloadClients
 
       # For URL-based torrents, capture existing hashes before adding
       # so we can detect the new one by comparing before/after
-      existing_hashes = hash_from_magnet.present? ? nil : fetch_all_torrent_hashes
+      # Filter by category to reduce false positives from other programs
+      category = config.category.presence
+      existing_hashes = hash_from_magnet.present? ? nil : fetch_torrent_hashes(category: category)
 
       params = { urls: url }
       params[:category] = config.category if config.category.present?
@@ -32,7 +34,7 @@ module DownloadClients
         return hash_from_magnet if hash_from_magnet.present?
 
         # For .torrent URLs, detect the newly added torrent by comparing hashes
-        find_newly_added_torrent_hash(existing_hashes)
+        find_newly_added_torrent_hash(existing_hashes, category: category)
       when 401, 403
         clear_session!
         raise Base::AuthenticationError, "qBittorrent authentication failed"
@@ -83,9 +85,10 @@ module DownloadClients
       match[1]&.downcase if match
     end
 
-    # Fetch all current torrent hashes as a Set for efficient comparison
-    def fetch_all_torrent_hashes
-      response = connection.get("/api/v2/torrents/info")
+    # Fetch torrent hashes as a Set, optionally filtered by category
+    def fetch_torrent_hashes(category: nil)
+      params = category.present? ? { category: category } : {}
+      response = connection.get("/api/v2/torrents/info", params)
       return Set.new unless response.status == 200
 
       Set.new(Array(response.body).map { |t| t["hash"] })
@@ -93,13 +96,14 @@ module DownloadClients
 
     # Poll for a newly added torrent by comparing against existing hashes
     # This is more reliable than querying "most recent" which can race with other downloads
-    def find_newly_added_torrent_hash(existing_hashes)
+    # Filters by category to reduce false positives from torrents added by other programs
+    def find_newly_added_torrent_hash(existing_hashes, category: nil)
       max_wait_seconds = 30
 
       max_wait_seconds.times do |attempt|
         sleep 1
 
-        current_hashes = fetch_all_torrent_hashes
+        current_hashes = fetch_torrent_hashes(category: category)
         new_hashes = current_hashes - existing_hashes
 
         if new_hashes.any?

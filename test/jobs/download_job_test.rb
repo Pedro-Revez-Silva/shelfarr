@@ -113,12 +113,12 @@ class DownloadJobTest < ActiveJob::TestCase
     stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
       .to_return(status: 200, body: "Ok.")
 
-    # Stub torrent info query (for getting hash after adding .torrent URL)
+    # Stub torrent info query - first call returns empty (before adding),
+    # subsequent calls return the new torrent (after adding)
     stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
       .to_return(
-        status: 200,
-        headers: { "Content-Type" => "application/json" },
-        body: [{ "hash" => "abc123def456", "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" }].to_json
+        { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
+        { status: 200, headers: { "Content-Type" => "application/json" }, body: [{ "hash" => "abc123def456", "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" }].to_json }
       )
   end
 end
