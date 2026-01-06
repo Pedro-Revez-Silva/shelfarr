@@ -81,6 +81,18 @@ class SearchResultTest < ActiveSupport::TestCase
     assert_not @no_link_result.downloadable?
   end
 
+  test "downloadable? returns true for Anna's Archive results even without links" do
+    anna_result = SearchResult.new(
+      request: requests(:pending_request),
+      guid: "anna-test-md5",
+      title: "Anna's Archive Book",
+      source: SearchResult::SOURCE_ANNA_ARCHIVE,
+      download_url: nil,
+      magnet_url: nil
+    )
+    assert anna_result.downloadable?, "Anna's Archive results should always be downloadable via API"
+  end
+
   test "download_link prefers magnet_url over download_url" do
     result = SearchResult.new(
       magnet_url: "magnet:?xt=test",

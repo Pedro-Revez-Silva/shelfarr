@@ -136,7 +136,7 @@ class RequestRetryTest < ActiveSupport::TestCase
 
   # === retry_now! ===
 
-  test "retry_now! resets request for immediate processing" do
+  test "retry_now! resets request for immediate processing when no selected result" do
     request = @max_retries_exceeded
     assert request.attention_needed?
 
@@ -146,6 +146,70 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_nil request.next_retry_at
     assert_not request.attention_needed?
     assert_nil request.issue_description
+  end
+
+  test "retry_now! retries download when there is a selected result and failed download" do
+    book = Book.create!(title: "Test Book", book_type: :ebook, open_library_work_id: "OL_RETRY_DL")
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :downloading,
+      attention_needed: true,
+      issue_description: "Download failed"
+    )
+
+    # Create a selected search result
+    search_result = request.search_results.create!(
+      guid: "test-guid-retry",
+      title: "Test Result",
+      status: :selected,
+      download_url: "http://example.com/test.nzb"
+    )
+
+    # Create a failed download
+    failed_download = request.downloads.create!(
+      name: "Test Download",
+      status: :failed
+    )
+
+    # Retry should create a new download and queue the job
+    assert_difference -> { request.downloads.count }, 1 do
+      request.retry_now!
+    end
+
+    request.reload
+    assert request.downloading?
+    assert_not request.attention_needed?
+    assert_nil request.issue_description
+
+    # New download should be queued
+    new_download = request.downloads.order(created_at: :desc).first
+    assert new_download.queued?
+    assert_equal search_result.title, new_download.name
+  end
+
+  test "retry_now! restarts search when there is a selected result but no failed download" do
+    book = Book.create!(title: "Test Book 2", book_type: :ebook, open_library_work_id: "OL_RETRY_SEARCH")
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :downloading,
+      attention_needed: true,
+      issue_description: "Something went wrong"
+    )
+
+    # Create a selected search result but no download at all
+    request.search_results.create!(
+      guid: "test-guid-search",
+      title: "Test Result",
+      status: :selected,
+      download_url: "http://example.com/test.nzb"
+    )
+
+    request.retry_now!
+
+    request.reload
+    assert request.pending?, "Should restart search when no failed download exists"
   end
 
   # === cancel! ===

@@ -81,13 +81,39 @@ class Request < ApplicationRecord
   end
 
   # Retry now - reset for immediate processing
+  # If there's a selected result with a failed download, retry the download
+  # Otherwise, restart the search process
   def retry_now!
-    update!(
-      status: :pending,
-      next_retry_at: nil,
-      attention_needed: false,
-      issue_description: nil
-    )
+    selected_result = search_results.selected.first
+    failed_download = downloads.where(status: :failed).order(created_at: :desc).first
+
+    if selected_result && failed_download
+      # Retry the download - create a new download and queue the job
+      ActiveRecord::Base.transaction do
+        download = downloads.create!(
+          name: selected_result.title,
+          size_bytes: selected_result.size_bytes,
+          status: :queued
+        )
+
+        update!(
+          status: :downloading,
+          next_retry_at: nil,
+          attention_needed: false,
+          issue_description: nil
+        )
+
+        DownloadJob.perform_later(download.id)
+      end
+    else
+      # No selected result or failed download - restart search
+      update!(
+        status: :pending,
+        next_retry_at: nil,
+        attention_needed: false,
+        issue_description: nil
+      )
+    end
   end
 
   # Cancel/fail request permanently
