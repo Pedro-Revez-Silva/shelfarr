@@ -44,6 +44,9 @@ class SearchResult < ApplicationRecord
   }
 
   def downloadable?
+    # Anna's Archive results are always downloadable - URL is fetched at download time
+    return true if from_anna_archive?
+
     download_url.present? || magnet_url.present?
   end
 
