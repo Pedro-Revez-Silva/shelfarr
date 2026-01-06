@@ -12,6 +12,10 @@ module DownloadClients
       # For magnet links, extract hash upfront (more reliable than querying after)
       hash_from_magnet = extract_hash_from_magnet(url) if url.start_with?("magnet:")
 
+      # For URL-based torrents, capture existing hashes before adding
+      # so we can detect the new one by comparing before/after
+      existing_hashes = hash_from_magnet.present? ? nil : fetch_all_torrent_hashes
+
       params = { urls: url }
       params[:category] = config.category if config.category.present?
       params[:savepath] = options[:save_path] if options[:save_path].present?
@@ -27,8 +31,8 @@ module DownloadClients
         # Return hash from magnet if available
         return hash_from_magnet if hash_from_magnet.present?
 
-        # For .torrent URLs, query qBittorrent to find the newly added torrent
-        find_recently_added_torrent_hash
+        # For .torrent URLs, detect the newly added torrent by comparing hashes
+        find_newly_added_torrent_hash(existing_hashes)
       when 401, 403
         clear_session!
         raise Base::AuthenticationError, "qBittorrent authentication failed"
@@ -79,17 +83,34 @@ module DownloadClients
       match[1]&.downcase if match
     end
 
-    def find_recently_added_torrent_hash
-      # Give qBittorrent a moment to process the torrent
-      sleep 0.5
+    # Fetch all current torrent hashes as a Set for efficient comparison
+    def fetch_all_torrent_hashes
+      response = connection.get("/api/v2/torrents/info")
+      return Set.new unless response.status == 200
 
-      response = connection.get("/api/v2/torrents/info", { sort: "added_on", reverse: true, limit: 1 })
-      return nil unless response.status == 200
+      Set.new(Array(response.body).map { |t| t["hash"] })
+    end
 
-      data = response.body
-      return nil if data.blank?
+    # Poll for a newly added torrent by comparing against existing hashes
+    # This is more reliable than querying "most recent" which can race with other downloads
+    def find_newly_added_torrent_hash(existing_hashes)
+      max_wait_seconds = 30
 
-      data.first&.dig("hash")
+      max_wait_seconds.times do |attempt|
+        sleep 1
+
+        current_hashes = fetch_all_torrent_hashes
+        new_hashes = current_hashes - existing_hashes
+
+        if new_hashes.any?
+          hash = new_hashes.first
+          Rails.logger.info "[Qbittorrent] Detected new torrent hash after #{attempt + 1}s: #{hash}"
+          return hash
+        end
+      end
+
+      Rails.logger.warn "[Qbittorrent] No new torrent detected after #{max_wait_seconds} seconds"
+      nil
     end
 
     def ensure_authenticated!
