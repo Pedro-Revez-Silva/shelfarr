@@ -47,6 +47,45 @@ module DownloadClients
       false
     end
 
+    # Remove a download by nzo_id
+    # delete_files: if true, also delete downloaded files
+    def remove_torrent(nzo_id, delete_files: false)
+      # Try to delete from queue first
+      response = connection.get("/api", {
+        mode: "queue",
+        name: "delete",
+        value: nzo_id,
+        del_files: delete_files ? 1 : 0,
+        apikey: api_key,
+        output: "json"
+      })
+
+      if response.status == 200 && response.body["status"] == true
+        Rails.logger.info "[Sabnzbd] Removed download #{nzo_id} from queue"
+        return true
+      end
+
+      # If not in queue, try history
+      response = connection.get("/api", {
+        mode: "history",
+        name: "delete",
+        value: nzo_id,
+        del_files: delete_files ? 1 : 0,
+        apikey: api_key,
+        output: "json"
+      })
+
+      if response.status == 200 && response.body["status"] == true
+        Rails.logger.info "[Sabnzbd] Removed download #{nzo_id} from history"
+        true
+      else
+        Rails.logger.error "[Sabnzbd] Failed to remove download #{nzo_id}"
+        false
+      end
+    rescue Faraday::Error => e
+      raise Base::ConnectionError, "Failed to connect to SABnzbd: #{e.message}"
+    end
+
     private
 
     def api_key
