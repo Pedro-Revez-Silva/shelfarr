@@ -49,6 +49,54 @@ class AudiobookshelfClient
       response.status == 200
     end
 
+    # GET /api/libraries/:id/items - Find item by path
+    def find_item_by_path(path)
+      ensure_configured!
+
+      # Normalize path for comparison
+      normalized_path = File.expand_path(path)
+
+      # Search all configured libraries
+      library_ids = [
+        SettingsService.get(:audiobookshelf_audiobook_library_id),
+        SettingsService.get(:audiobookshelf_ebook_library_id)
+      ].compact.uniq
+
+      library_ids.each do |lib_id|
+        next if lib_id.blank?
+
+        response = request { connection.get("/api/libraries/#{lib_id}/items") }
+        next unless response.status == 200
+
+        items = response.body["results"] || []
+        item = items.find do |i|
+          item_path = i["path"] || i.dig("media", "path")
+          next false unless item_path
+          File.expand_path(item_path) == normalized_path
+        end
+
+        return item if item
+      end
+
+      nil
+    end
+
+    # DELETE /api/library-items/:id - Delete a library item
+    def delete_item(item_id)
+      ensure_configured!
+
+      response = request { connection.delete("/api/library-items/#{item_id}") }
+      response.status == 200
+    end
+
+    # Find and delete item by path
+    def delete_item_by_path(path)
+      item = find_item_by_path(path)
+      return false unless item
+
+      delete_item(item["id"])
+    end
+
     def configured?
       SettingsService.audiobookshelf_configured?
     end

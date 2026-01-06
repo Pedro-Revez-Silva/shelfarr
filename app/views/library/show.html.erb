@@ -101,7 +101,7 @@
                     <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
                       <input type="checkbox" name="delete_files" value="1"
                              class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-red-600 focus:ring-red-500">
-                      <span>Delete book files from disk</span>
+                      <span>Delete book files from disk<%= " and Audiobookshelf" if AudiobookshelfClient.configured? %></span>
                     </label>
                   <% end %>
 

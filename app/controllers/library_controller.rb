@@ -27,7 +27,9 @@ class LibraryController < ApplicationController
     end
 
     # Delete book files from disk if requested
+    # Also removes from Audiobookshelf if configured
     if params[:delete_files] == "1" && @book.file_path.present?
+      delete_from_audiobookshelf(@book)
       delete_book_files(@book)
     end
 
@@ -99,5 +101,18 @@ class LibraryController < ApplicationController
       expanded_allowed = File.expand_path(allowed)
       expanded_path.start_with?(expanded_allowed + "/") || expanded_path == expanded_allowed
     end
+  end
+
+  def delete_from_audiobookshelf(book)
+    return unless AudiobookshelfClient.configured?
+    return unless book.file_path.present?
+
+    if AudiobookshelfClient.delete_item_by_path(book.file_path)
+      Rails.logger.info "[LibraryController] Deleted book from Audiobookshelf: #{book.file_path}"
+    else
+      Rails.logger.warn "[LibraryController] Book not found in Audiobookshelf: #{book.file_path}"
+    end
+  rescue AudiobookshelfClient::Error => e
+    Rails.logger.error "[LibraryController] Failed to delete from Audiobookshelf: #{e.message}"
   end
 end
