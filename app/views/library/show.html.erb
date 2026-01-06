@@ -79,6 +79,57 @@
           <h3 class="text-sm font-medium text-gray-500 mb-2">File Location</h3>
           <code class="text-sm text-gray-900 bg-gray-100 px-2 py-1 rounded block break-all"><%= @book.file_path %></code>
         </div>
+
+        <div class="mt-6 pt-6 border-t" data-controller="delete-modal">
+          <h3 class="text-sm font-medium text-gray-500 mb-2">Admin Actions</h3>
+          <button type="button"
+                  class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition text-sm"
+                  data-action="click->delete-modal#open">
+            Delete from Library
+          </button>
+
+          <dialog data-delete-modal-target="modal"
+                  class="bg-gray-900 border border-gray-700 rounded-lg p-0 backdrop:bg-black/50 max-w-md w-full"
+                  data-action="click->delete-modal#backdropClick">
+            <div class="p-6">
+              <h3 class="text-lg font-semibold text-white mb-2">Delete Book</h3>
+              <p class="text-gray-400 mb-4">Are you sure you want to delete "<%= @book.title %>" from the library? This will also remove all associated requests.</p>
+
+              <%= form_with url: library_path(@book), method: :delete, local: true, class: "space-y-4" do |f| %>
+                <div class="space-y-3">
+                  <% if @book.file_path.present? %>
+                    <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                      <input type="checkbox" name="delete_files" value="1"
+                             class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-red-600 focus:ring-red-500">
+                      <span>Delete book files from disk</span>
+                    </label>
+                  <% end %>
+
+                  <% has_torrents = @book.requests.any? { |r| r.downloads.any? { |d| d.external_id.present? && d.download_client.present? } } %>
+                  <% if has_torrents %>
+                    <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                      <input type="checkbox" name="remove_torrent" value="1"
+                             class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-red-600 focus:ring-red-500">
+                      <span>Remove torrent from download client</span>
+                    </label>
+                  <% end %>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-2">
+                  <button type="button"
+                          class="px-4 py-2 text-gray-400 hover:text-white transition"
+                          data-action="click->delete-modal#close">
+                    Cancel
+                  </button>
+                  <button type="submit"
+                          class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition">
+                    Delete Book
+                  </button>
+                </div>
+              <% end %>
+            </div>
+          </dialog>
+        </div>
       <% end %>
     </div>
   </div>

@@ -15,7 +15,7 @@ Rails.application.routes.draw do
   get "search/results", to: "search#results"
 
   # Library
-  resources :library, only: [:index, :show]
+  resources :library, only: [:index, :show, :destroy]
 
   # Profile
   resource :profile, only: [:show, :edit, :update] do

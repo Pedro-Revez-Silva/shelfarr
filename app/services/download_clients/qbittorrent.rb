@@ -78,6 +78,31 @@ module DownloadClients
       false
     end
 
+    # Remove a torrent by hash
+    # delete_files: if true, also delete downloaded files from disk
+    def remove_torrent(hash, delete_files: false)
+      ensure_authenticated!
+
+      response = connection.post("/api/v2/torrents/delete", {
+        hashes: hash,
+        deleteFiles: delete_files.to_s
+      })
+
+      case response.status
+      when 200
+        Rails.logger.info "[Qbittorrent] Removed torrent #{hash} (delete_files: #{delete_files})"
+        true
+      when 401, 403
+        clear_session!
+        raise Base::AuthenticationError, "qBittorrent session expired"
+      else
+        Rails.logger.error "[Qbittorrent] Failed to remove torrent: #{response.status}"
+        false
+      end
+    rescue Faraday::Error => e
+      raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
+    end
+
     private
 
     def extract_hash_from_magnet(url)
