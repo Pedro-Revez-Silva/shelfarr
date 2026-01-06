@@ -152,4 +152,40 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     )
     assert info.failed?
   end
+
+  test "parse_torrent falls back to save_path + name when content_path is missing" do
+    VCR.turned_off do
+      # Stub authentication
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Stub torrent info without content_path (older qBittorrent versions)
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            {
+              "hash" => "abc123def456",
+              "name" => "Test Torrent",
+              "progress" => 1.0,
+              "state" => "uploading",
+              "size" => 1073741824,
+              "save_path" => "/downloads/category"
+            }
+          ].to_json
+        )
+
+      torrents = @client.list_torrents
+
+      assert_equal 1, torrents.size
+      torrent = torrents.first
+      # Should fall back to save_path + name
+      assert_equal "/downloads/category/Test Torrent", torrent.download_path
+    end
+  end
 end

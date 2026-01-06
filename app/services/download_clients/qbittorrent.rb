@@ -167,13 +167,23 @@ module DownloadClients
     end
 
     def parse_torrent(data)
+      # Prefer content_path (specific torrent directory) over save_path (category directory)
+      # Fall back to save_path + name for older qBittorrent versions or when content_path is empty
+      download_path = if data["content_path"].present?
+        data["content_path"]
+      elsif data["save_path"].present? && data["name"].present?
+        File.join(data["save_path"], data["name"])
+      else
+        data["save_path"]
+      end
+
       Base::TorrentInfo.new(
         hash: data["hash"],
         name: data["name"],
         progress: (data["progress"] * 100).round,
         state: normalize_state(data["state"]),
         size_bytes: data["size"],
-        download_path: data["content_path"]
+        download_path: download_path
       )
     end
 

@@ -86,28 +86,31 @@ class PostProcessingJob < ApplicationJob
   end
 
   # Remap paths from download client (host) to container paths
-  # SABnzbd returns host paths like /mnt/media/Torrents/Completed/...
-  # Container has this mounted at /downloads/...
+  # Download clients report paths from their perspective (e.g., /mnt/media/Torrents/Completed/...)
+  # But Shelfarr's container may have those files mounted at a different path (e.g., /downloads/...)
   def remap_download_path(path, download)
     return path if path.blank?
 
-    # Try client-specific download path first
+    # Try global settings first - these do proper prefix replacement
+    # which preserves the full path structure (including category subfolders)
+    remote_path = SettingsService.get(:download_remote_path)
+    local_path = SettingsService.get(:download_local_path, default: "/downloads")
+
+    if remote_path.present? && path.start_with?(remote_path)
+      return path.sub(remote_path, local_path)
+    end
+
+    # Fall back to client-specific download path
+    # This is a simpler mapping that uses the basename (filename or folder name)
+    # Use this when global settings aren't configured or don't match
     if download.download_client&.download_path.present?
-      # Client has a configured path - use it with the filename/dirname from the reported path
       client_path = download.download_client.download_path
       basename = File.basename(path)
       return File.join(client_path, basename)
     end
 
-    # Fall back to global settings
-    remote_path = SettingsService.get(:download_remote_path)
-    local_path = SettingsService.get(:download_local_path, default: "/downloads")
-
-    if remote_path.present? && path.start_with?(remote_path)
-      path.sub(remote_path, local_path)
-    else
-      path
-    end
+    # No remapping configured - use path as-is
+    path
   end
 
   def sanitize_filename(name)
