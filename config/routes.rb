@@ -7,6 +7,10 @@ Rails.application.routes.draw do
   get "sign_up", to: "registrations#new", as: :sign_up
   post "sign_up", to: "registrations#create"
 
+  # OIDC/SSO Authentication (OmniAuth callbacks)
+  get "auth/oidc/callback", to: "auth/omniauth_callbacks#oidc"
+  get "auth/failure", to: "auth/omniauth_callbacks#failure"
+
   # Main application
   root "dashboard#index"
 
@@ -67,6 +71,7 @@ Rails.application.routes.draw do
         patch :bulk_update
         post :test_prowlarr
         post :test_audiobookshelf
+        post :test_oidc
       end
     end
     resources :issues, only: [:index] do

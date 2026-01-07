@@ -21,7 +21,7 @@ class User < ApplicationRecord
       with: /\A(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+\z/,
       message: "must include at least one lowercase letter, one uppercase letter, and one number"
     },
-    if: -> { password.present? }
+    if: -> { password.present? && !oidc_user? }
 
   before_create :set_admin_if_first_user
 
@@ -134,6 +134,67 @@ class User < ApplicationRecord
   def backup_codes_remaining
     return 0 unless backup_codes.present?
     backup_codes.split(",").count
+  end
+
+  # OIDC/SSO methods
+  def oidc_user?
+    oidc_uid.present? && oidc_provider.present?
+  end
+
+  # Find existing user or create new one from OIDC auth data
+  def self.from_oidc(auth_hash)
+    provider = auth_hash["provider"]
+    uid = auth_hash["uid"]
+    info = auth_hash["info"] || {}
+
+    # First try to find by OIDC identity
+    user = find_by(oidc_provider: provider, oidc_uid: uid)
+    return user if user
+
+    # Try to find by email and link the OIDC identity
+    email = info["email"].to_s.strip.downcase
+    if email.present?
+      user = find_by(username: email.split("@").first.gsub(/[^a-z0-9_]/, "_"))
+      if user && !user.oidc_user?
+        user.update!(oidc_provider: provider, oidc_uid: uid)
+        return user
+      end
+    end
+
+    # Auto-create user if enabled
+    return nil unless SettingsService.get(:oidc_auto_create_users, default: false)
+
+    # Generate username from email or name
+    base_username = if email.present?
+      email.split("@").first.gsub(/[^a-z0-9_]/, "_").downcase
+    else
+      (info["name"] || info["preferred_username"] || "user").gsub(/[^a-z0-9_]/i, "_").downcase
+    end
+
+    # Ensure username is unique
+    username = base_username
+    counter = 1
+    while exists?(username: username)
+      username = "#{base_username}#{counter}"
+      counter += 1
+    end
+
+    # Get name from OIDC claims
+    name = info["name"].presence || info["preferred_username"].presence || username
+
+    # Determine role
+    default_role = SettingsService.get(:oidc_default_role, default: "user")
+    role = default_role == "admin" ? :admin : :user
+
+    # Create user with random password (they'll use OIDC to login)
+    create!(
+      username: username,
+      name: name,
+      password: SecureRandom.hex(32),
+      role: role,
+      oidc_provider: provider,
+      oidc_uid: uid
+    )
   end
 
   private

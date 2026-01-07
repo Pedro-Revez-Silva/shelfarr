@@ -225,4 +225,83 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       assert flash[:alert].present?
     end
   end
+
+  # Test connection tests for OIDC
+  test "test_oidc fails when not enabled" do
+    SettingsService.set(:oidc_enabled, false)
+
+    post test_oidc_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not enabled/i, flash[:alert]
+  end
+
+  test "test_oidc fails when issuer not configured" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "")
+
+    post test_oidc_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not configured/i, flash[:alert]
+  end
+
+  test "test_oidc succeeds when discovery document valid" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "test-client")
+    SettingsService.set(:oidc_client_secret, "test-secret")
+
+    VCR.turned_off do
+      stub_request(:get, "https://auth.example.com/.well-known/openid-configuration")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            issuer: "https://auth.example.com",
+            authorization_endpoint: "https://auth.example.com/authorize",
+            token_endpoint: "https://auth.example.com/token"
+          }.to_json
+        )
+
+      post test_oidc_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match /valid/i, flash[:notice]
+    end
+  end
+
+  test "test_oidc fails when discovery document invalid" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "test-client")
+    SettingsService.set(:oidc_client_secret, "test-secret")
+
+    VCR.turned_off do
+      stub_request(:get, "https://auth.example.com/.well-known/openid-configuration")
+        .to_return(status: 404)
+
+      post test_oidc_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
+
+  test "test_oidc handles connection errors" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "test-client")
+    SettingsService.set(:oidc_client_secret, "test-secret")
+
+    VCR.turned_off do
+      stub_request(:get, "https://auth.example.com/.well-known/openid-configuration")
+        .to_timeout
+
+      post test_oidc_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
 end

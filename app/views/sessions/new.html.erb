@@ -1,9 +1,29 @@
 <div class="mx-auto md:w-2/3 w-full">
   <h1 class="font-bold text-4xl text-white">Sign in</h1>
 
+  <% if SettingsService.oidc_configured? %>
+    <div class="my-6">
+      <%= button_to "/auth/oidc", method: :post, class: "w-full flex items-center justify-center gap-3 rounded-lg px-5 py-3 bg-purple-600 hover:bg-purple-500 text-white font-medium cursor-pointer transition", data: { turbo: false } do %>
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+        </svg>
+        Sign in with <%= SettingsService.get(:oidc_provider_name, default: "SSO") %>
+      <% end %>
+    </div>
+
+    <div class="relative my-6">
+      <div class="absolute inset-0 flex items-center">
+        <div class="w-full border-t border-gray-700"></div>
+      </div>
+      <div class="relative flex justify-center text-sm">
+        <span class="px-4 bg-gray-950 text-gray-500">or continue with password</span>
+      </div>
+    </div>
+  <% end %>
+
   <%= form_with url: session_url, class: "contents" do |form| %>
     <div class="my-5">
-      <%= form.text_field :username, required: true, autofocus: true, autocomplete: "username", placeholder: "Enter your username", value: params[:username], class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+      <%= form.text_field :username, required: true, autofocus: !SettingsService.oidc_configured?, autocomplete: "username", placeholder: "Enter your username", value: params[:username], class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
     </div>
 
     <div class="my-5">
