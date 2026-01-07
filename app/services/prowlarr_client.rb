@@ -191,6 +191,7 @@ class ProwlarrClient
       return nil if url.blank?
       return nil if url.start_with?("magnet:")
 
+      Rails.logger.debug "[ProwlarrClient] Received download URL from indexer '#{item['indexer']}' (#{url.length} chars): #{url.truncate(100)}"
       url
     end
 
