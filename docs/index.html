@@ -8,21 +8,21 @@
   <meta property="og:title" content="Shelfarr - Book Request System">
   <meta property="og:description" content="Self-hosted ebook and audiobook request system for the *arr ecosystem.">
   <meta property="og:type" content="website">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
+  <link rel="icon" href="logo.png" type="image/png">
   <style>
     :root {
-      --bg-primary: #030712;
-      --bg-secondary: #111827;
-      --bg-card: #1f2937;
-      --text-primary: #f9fafb;
-      --text-secondary: #9ca3af;
-      --text-muted: #6b7280;
-      --accent: #f59e0b;
-      --accent-hover: #d97706;
-      --accent-glow: rgba(245, 158, 11, 0.15);
-      --border: #374151;
-      --gradient-start: #f59e0b;
-      --gradient-end: #ea580c;
+      --bg-primary: #030712;      /* gray-950 */
+      --bg-secondary: #111827;    /* gray-900 */
+      --bg-card: #1f2937;         /* gray-800 */
+      --text-primary: #f9fafb;    /* gray-50 */
+      --text-secondary: #9ca3af;  /* gray-400 */
+      --text-muted: #6b7280;      /* gray-500 */
+      --accent: #1d4ed8;          /* blue-700 - darker, less bright */
+      --accent-hover: #2563eb;    /* blue-600 */
+      --accent-glow: rgba(29, 78, 216, 0.15);
+      --border: #374151;          /* gray-700 */
+      --gradient-start: #1d4ed8;  /* blue-700 */
+      --gradient-end: #2563eb;    /* blue-600 */
     }
 
     * {
@@ -88,6 +88,12 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+    }
+
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
     }
 
     .nav-links {
@@ -640,7 +646,7 @@
 <body>
   <nav id="navbar">
     <div class="container">
-      <a href="#" class="logo">📚 <span>Shelfarr</span></a>
+      <a href="#" class="logo"><img src="logo.png" alt="Shelfarr" class="logo-icon"> <span>Shelfarr</span></a>
       <div class="nav-links">
         <a href="#features">Features</a>
         <a href="#integrations">Integrations</a>
@@ -736,7 +742,7 @@
         </div>
         <span class="integration-arrow">→</span>
         <div class="integration-item">
-          <div class="integration-icon shelfarr">📚</div>
+          <div class="integration-icon shelfarr"><img src="logo.png" alt="Shelfarr" style="width: 48px; height: 48px; border-radius: 8px;"></div>
           <span class="integration-name">Shelfarr</span>
         </div>
         <span class="integration-arrow">→</span>
@@ -793,7 +799,7 @@
           <p>Automatic library scans after downloads complete. Your books appear instantly.</p>
         </div>
         <div class="feature-card">
-          <div class="feature-card-icon">📚</div>
+          <div class="feature-card-icon">📖</div>
           <h3>Library View</h3>
           <p>Browse your completed books directly in Shelfarr with download options.</p>
         </div>
@@ -863,7 +869,7 @@
   <footer>
     <div class="container">
       <div class="footer-left">
-        <a href="#" class="logo">📚 <span>Shelfarr</span></a>
+        <a href="#" class="logo"><img src="logo.png" alt="Shelfarr" class="logo-icon"> <span>Shelfarr</span></a>
         <span class="footer-badge">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>

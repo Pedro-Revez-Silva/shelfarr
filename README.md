@@ -1,15 +1,44 @@
-# Shelfarr
+<p align="center">
+  <img src="docs/logo.png" alt="Shelfarr" width="128" height="128">
+</p>
 
-A self-hosted ebook and audiobook request and management system for the *arr ecosystem.
+<h1 align="center">Shelfarr</h1>
+
+<p align="center">
+  A self-hosted ebook and audiobook request and management system for the *arr ecosystem.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/Pedro-Revez-Silva/shelfarr" alt="License">
+  </a>
+  <a href="https://github.com/Pedro-Revez-Silva/shelfarr/releases">
+    <img src="https://img.shields.io/github/v/release/Pedro-Revez-Silva/shelfarr" alt="Release">
+  </a>
+  <a href="https://hub.docker.com/r/psilva999/shelfarr">
+    <img src="https://img.shields.io/docker/pulls/psilva999/shelfarr" alt="Docker Pulls">
+  </a>
+</p>
+
+---
 
 **The missing piece**: The video stack has Jellyseerr + Sonarr/Radarr + Jellyfin. For books, only the library exists (Audiobookshelf). Shelfarr fills the gap—think Readarr meets Jellyseerr, but for books that actually works.
 
-## What It Does
+<p align="center">
+  <img src="docs/screenshot-dashboard.png" alt="Shelfarr Dashboard" width="800">
+</p>
 
-- **Request UI** — Users browse and request books via Open Library
-- **Acquisition** — Searches Prowlarr indexers, downloads via qBittorrent/SABnzbd
-- **Processing** — Organizes files and delivers to Audiobookshelf
-- **Multi-user** — Role-based access with admin controls
+## Features
+
+- **Book Discovery** — Search millions of books via Open Library
+- **Smart Acquisition** — Searches Prowlarr indexers, downloads via qBittorrent or SABnzbd
+- **Anna's Archive** — Direct ebook downloads without needing a torrent client
+- **Auto-Processing** — Organizes files by author/title and delivers to Audiobookshelf
+- **Library Sync** — Automatic library scans after downloads complete
+- **Multi-User** — Role-based access with user requests and admin controls
+- **Two-Factor Auth** — TOTP-based 2FA with backup codes
+- **Notifications** — In-app notifications when your books are ready
+- **Multiple Download Clients** — Configure multiple clients with priority ordering
 
 ## Quick Start
 
@@ -43,14 +72,27 @@ After logging in, go to **Admin → Settings**:
 | Prowlarr URL + API Key | For indexer searches |
 | Download Client | qBittorrent or SABnzbd connection |
 | Output Paths | Where to place completed audiobooks/ebooks |
-| Audiobookshelf | URL + API key for library integration |
+| Audiobookshelf | URL + API key for library integration (optional) |
+
+## Integrations
+
+| Service | Purpose |
+|---------|---------|
+| **Open Library** | Book metadata and search |
+| **Anna's Archive** | Direct ebook downloads |
+| **Prowlarr** | Indexer management |
+| **qBittorrent** | Torrent downloads |
+| **SABnzbd** | Usenet downloads |
+| **Audiobookshelf** | Library management |
 
 ## Requirements
 
 - Docker
-- Prowlarr (indexer manager)
-- qBittorrent or SABnzbd (download client)
-- Audiobookshelf (destination library)
+- At least one of:
+  - Prowlarr (for indexer searches)
+  - Anna's Archive (for direct ebook downloads)
+- Download client (qBittorrent or SABnzbd) — optional if using Anna's Archive for ebooks
+- Audiobookshelf (optional, for library integration)
 
 ## Development
 
