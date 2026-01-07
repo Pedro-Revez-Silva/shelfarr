@@ -63,6 +63,21 @@ A secret key is auto-generated on first run and saved to the data volume.
 
 Visit `http://localhost:5056` — the first user to register becomes admin.
 
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HTTP_PORT` | `80` | Internal container port. Change if port 80 is in use (e.g., behind gluetun) |
+| `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set |
+
+Example with custom port:
+```yaml
+environment:
+  - HTTP_PORT=8080
+ports:
+  - "5056:8080"  # Map to the custom port
+```
+
 ### Configuration
 
 After logging in, go to **Admin → Settings**:

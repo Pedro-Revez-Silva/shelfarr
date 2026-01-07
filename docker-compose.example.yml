@@ -13,7 +13,7 @@ services:
     container_name: shelfarr
     restart: unless-stopped
     ports:
-      - "5056:80"
+      - "5056:${HTTP_PORT:-80}"
     volumes:
       # Database and app storage (required - contains auto-generated secret key)
       - ./data:/rails/storage
@@ -25,10 +25,12 @@ services:
       - /path/to/downloads:/downloads
     environment:
       - SOLID_QUEUE_IN_PUMA=1
+      # Optional: Change internal port (default: 80)
+      # - HTTP_PORT=8080
       # Optional: Set your own key instead of auto-generating
       # - RAILS_MASTER_KEY=your-64-char-hex-key
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/up"]
+      test: ["CMD", "curl", "-f", "http://localhost:${HTTP_PORT:-80}/up"]
       interval: 30s
       timeout: 10s
       retries: 3
