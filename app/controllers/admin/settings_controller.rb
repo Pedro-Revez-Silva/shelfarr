@@ -43,6 +43,36 @@ module Admin
       redirect_to admin_settings_path, alert: e.message
     end
 
+    def test_prowlarr
+      unless ProwlarrClient.configured?
+        redirect_to admin_settings_path, alert: "Prowlarr is not configured. Enter URL and API key first."
+        return
+      end
+
+      if ProwlarrClient.test_connection
+        redirect_to admin_settings_path, notice: "Prowlarr connection successful!"
+      else
+        redirect_to admin_settings_path, alert: "Prowlarr connection failed."
+      end
+    rescue ProwlarrClient::Error => e
+      redirect_to admin_settings_path, alert: "Prowlarr error: #{e.message}"
+    end
+
+    def test_audiobookshelf
+      unless AudiobookshelfClient.configured?
+        redirect_to admin_settings_path, alert: "Audiobookshelf is not configured. Enter URL and API key first."
+        return
+      end
+
+      if AudiobookshelfClient.test_connection
+        redirect_to admin_settings_path, notice: "Audiobookshelf connection successful!"
+      else
+        redirect_to admin_settings_path, alert: "Audiobookshelf connection failed."
+      end
+    rescue AudiobookshelfClient::Error => e
+      redirect_to admin_settings_path, alert: "Audiobookshelf error: #{e.message}"
+    end
+
     private
 
     PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze

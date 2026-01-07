@@ -267,6 +267,26 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "File should be copied using client-specific path"
   end
 
+  test "marks request for attention when source path is blank" do
+    @download.update!(download_path: "")
+
+    PostProcessingJob.perform_now(@download.id)
+    @request.reload
+
+    assert @request.attention_needed?
+    assert_match /source path is blank/i, @request.issue_description
+  end
+
+  test "marks request for attention when source path does not exist" do
+    @download.update!(download_path: "/nonexistent/path/that/does/not/exist")
+
+    PostProcessingJob.perform_now(@download.id)
+    @request.reload
+
+    assert @request.attention_needed?
+    assert_match /source path not found/i, @request.issue_description
+  end
+
   private
 
   def stub_audiobookshelf_library(base_path)

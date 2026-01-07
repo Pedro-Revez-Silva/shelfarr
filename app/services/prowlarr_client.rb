@@ -122,7 +122,7 @@ class ProwlarrClient
 
       response = connection.get("api/v1/health")
       response.status == 200
-    rescue Error
+    rescue Error, Faraday::ConnectionFailed, Faraday::TimeoutError
       false
     end
 
