@@ -28,7 +28,10 @@
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16">
           <div class="flex items-center gap-6">
-            <%= link_to "Shelfarr", root_path, class: "text-xl font-bold text-white" %>
+            <%= link_to root_path, class: "flex items-center gap-2 text-xl font-bold text-white" do %>
+              <img src="/icon.png" alt="Shelfarr" class="w-8 h-8 rounded-md">
+              <span>Shelfarr</span>
+            <% end %>
             <% if authenticated? %>
               <%= link_to "Search", search_path, class: "text-gray-400 hover:text-white font-medium transition" %>
               <%= link_to "Requests", requests_path, class: "text-gray-400 hover:text-white font-medium transition" %>
