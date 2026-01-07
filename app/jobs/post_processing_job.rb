@@ -67,8 +67,20 @@ class PostProcessingJob < ApplicationJob
   end
 
   def copy_files(source, destination)
-    return unless source.present? && File.exist?(source)
+    unless source.present?
+      Rails.logger.error "[PostProcessingJob] Source path is blank - download client may not have reported the path"
+      raise "Source path is blank. Check download client configuration and ensure the download completed successfully."
+    end
 
+    unless File.exist?(source)
+      Rails.logger.error "[PostProcessingJob] Source path does not exist: #{source}"
+      Rails.logger.error "[PostProcessingJob] Check path remapping settings:"
+      Rails.logger.error "[PostProcessingJob]   - download_remote_path: #{SettingsService.get(:download_remote_path).inspect}"
+      Rails.logger.error "[PostProcessingJob]   - download_local_path: #{SettingsService.get(:download_local_path).inspect}"
+      raise "Source path not found: #{source}. Verify path remapping settings (download_remote_path/download_local_path) match your container mount points."
+    end
+
+    Rails.logger.info "[PostProcessingJob] Copying from #{source} to #{destination}"
     FileUtils.mkdir_p(destination)
 
     if File.directory?(source)
@@ -76,20 +88,29 @@ class PostProcessingJob < ApplicationJob
       # Use Dir.entries instead of Dir.glob to avoid pattern matching issues
       # (e.g., [AUDIOBOOK] in path being treated as character class)
       # Files are COPIED (not moved) to preserve seeding on private trackers
-      Dir.entries(source).reject { |f| f.start_with?(".") }.each do |file|
+      files = Dir.entries(source).reject { |f| f.start_with?(".") }
+      Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to copy"
+      files.each do |file|
         FileUtils.cp_r(File.join(source, file), destination)
       end
     else
       # Copy single file
       FileUtils.cp(source, destination)
     end
+
+    Rails.logger.info "[PostProcessingJob] Copy completed successfully"
   end
 
   # Remap paths from download client (host) to container paths
   # Download clients report paths from their perspective (e.g., /mnt/media/Torrents/Completed/...)
   # But Shelfarr's container may have those files mounted at a different path (e.g., /downloads/...)
   def remap_download_path(path, download)
-    return path if path.blank?
+    if path.blank?
+      Rails.logger.warn "[PostProcessingJob] Download path is blank - download client didn't report a path"
+      return path
+    end
+
+    Rails.logger.info "[PostProcessingJob] Path remapping - original path from download client: #{path}"
 
     # Try global settings first - these do proper prefix replacement
     # which preserves the full path structure (including category subfolders)
@@ -97,7 +118,11 @@ class PostProcessingJob < ApplicationJob
     local_path = SettingsService.get(:download_local_path, default: "/downloads")
 
     if remote_path.present? && path.start_with?(remote_path)
-      return path.sub(remote_path, local_path)
+      remapped = path.sub(remote_path, local_path)
+      Rails.logger.info "[PostProcessingJob] Path remapped via global settings: #{remapped}"
+      return remapped
+    elsif remote_path.present?
+      Rails.logger.warn "[PostProcessingJob] Global remote_path is set (#{remote_path}) but doesn't match download path (#{path})"
     end
 
     # Fall back to client-specific download path
@@ -106,10 +131,14 @@ class PostProcessingJob < ApplicationJob
     if download.download_client&.download_path.present?
       client_path = download.download_client.download_path
       basename = File.basename(path)
-      return File.join(client_path, basename)
+      remapped = File.join(client_path, basename)
+      Rails.logger.info "[PostProcessingJob] Path remapped via client download_path: #{remapped}"
+      return remapped
     end
 
     # No remapping configured - use path as-is
+    Rails.logger.warn "[PostProcessingJob] No path remapping configured - using original path as-is"
+    Rails.logger.warn "[PostProcessingJob] Consider configuring download_remote_path/download_local_path in Settings if files are not found"
     path
   end
 

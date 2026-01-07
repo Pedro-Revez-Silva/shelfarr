@@ -103,4 +103,124 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to admin_settings_path
     assert flash[:alert].present?
   end
+
+  # Test connection tests for Prowlarr
+  test "test_prowlarr fails when not configured" do
+    SettingsService.set(:prowlarr_url, "")
+    SettingsService.set(:prowlarr_api_key, "")
+
+    post test_prowlarr_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not configured/i, flash[:alert]
+  end
+
+  test "test_prowlarr succeeds when connection works" do
+    SettingsService.set(:prowlarr_url, "http://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/health")
+        .with(headers: { "X-Api-Key" => "test-api-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      post test_prowlarr_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match /successful/i, flash[:notice]
+    end
+  end
+
+  test "test_prowlarr fails when connection fails" do
+    SettingsService.set(:prowlarr_url, "http://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/health")
+        .with(headers: { "X-Api-Key" => "test-api-key" })
+        .to_return(status: 401)
+
+      post test_prowlarr_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
+
+  test "test_prowlarr handles connection errors" do
+    SettingsService.set(:prowlarr_url, "http://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/health")
+        .to_timeout
+
+      post test_prowlarr_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
+
+  # Test connection tests for Audiobookshelf
+  test "test_audiobookshelf fails when not configured" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobookshelf_api_key, "")
+
+    post test_audiobookshelf_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not configured/i, flash[:alert]
+  end
+
+  test "test_audiobookshelf succeeds when connection works" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(
+          status: 200,
+          body: { "libraries" => [{ "id" => "lib1", "name" => "Test" }] }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      post test_audiobookshelf_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match /successful/i, flash[:notice]
+    end
+  end
+
+  test "test_audiobookshelf fails when connection fails" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(status: 401)
+
+      post test_audiobookshelf_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
+
+  test "test_audiobookshelf handles connection errors" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_timeout
+
+      post test_audiobookshelf_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
 end

@@ -65,6 +65,8 @@ Rails.application.routes.draw do
     resources :settings, only: [:index, :update] do
       collection do
         patch :bulk_update
+        post :test_prowlarr
+        post :test_audiobookshelf
       end
     end
     resources :issues, only: [:index] do

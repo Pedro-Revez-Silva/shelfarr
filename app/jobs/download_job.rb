@@ -232,14 +232,18 @@ class DownloadJob < ApplicationJob
 
     Rails.logger.info "[DownloadJob] Using client '#{client_record.name}' for download ##{download.id}"
 
+    download_link = search_result.download_link
+    Rails.logger.info "[DownloadJob] Download link type: #{is_usenet ? 'usenet' : 'torrent'}, length: #{download_link.to_s.length} chars"
+    Rails.logger.debug "[DownloadJob] Full download URL: #{download_link}"
+
     if is_usenet
       # SABnzbd returns a hash with nzo_ids
-      result = client.add_torrent(search_result.download_link)
+      result = client.add_torrent(download_link)
       external_id = result.is_a?(Hash) ? result["nzo_ids"]&.first : nil
       success = external_id.present?
     else
       # qBittorrent now returns the torrent hash directly
-      external_id = client.add_torrent(search_result.download_link)
+      external_id = client.add_torrent(download_link)
       success = external_id.present?
     end
 

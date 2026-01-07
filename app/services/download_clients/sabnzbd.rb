@@ -6,6 +6,9 @@ module DownloadClients
   class Sabnzbd < Base
     # Add an NZB by URL
     def add_torrent(url, options = {})
+      Rails.logger.info "[Sabnzbd] Adding URL to queue (#{url.to_s.length} chars)"
+      Rails.logger.debug "[Sabnzbd] Full URL being sent: #{url}"
+
       params = {
         mode: "addurl",
         name: url,
@@ -16,10 +19,12 @@ module DownloadClients
 
       response = connection.get("/api", params)
       handle_response(response) do |data|
+        Rails.logger.info "[Sabnzbd] API response: status=#{data['status']}, nzo_ids=#{data['nzo_ids']&.inspect}"
         # Return the response data so we can extract nzo_ids
         data["status"] == true ? data : false
       end
     rescue Faraday::Error => e
+      Rails.logger.error "[Sabnzbd] Connection error: #{e.message}"
       raise Base::ConnectionError, "Failed to connect to SABnzbd: #{e.message}"
     end
 
@@ -107,15 +112,19 @@ module DownloadClients
         body = response.body
         # SABnzbd returns error in JSON body sometimes
         if body.is_a?(Hash) && body["error"]
+          Rails.logger.error "[Sabnzbd] API returned error: #{body['error']}"
           raise Base::Error, "SABnzbd error: #{body['error']}"
         end
         yield body
       when 401, 403
+        Rails.logger.error "[Sabnzbd] Authentication failed (status #{response.status})"
         raise Base::AuthenticationError, "SABnzbd authentication failed"
       else
+        Rails.logger.error "[Sabnzbd] API error (status #{response.status}): #{response.body.inspect.truncate(200)}"
         raise Base::Error, "SABnzbd API error: #{response.status}"
       end
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
+      Rails.logger.error "[Sabnzbd] Connection error: #{e.message}"
       raise Base::ConnectionError, "Failed to connect to SABnzbd: #{e.message}"
     end
 
