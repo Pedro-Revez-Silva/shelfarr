@@ -7,10 +7,12 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     @admin = users(:two)
     sign_in_as(@admin)
     AudiobookshelfClient.reset_connection!
+    ProwlarrClient.reset_connection!
   end
 
   teardown do
     AudiobookshelfClient.reset_connection!
+    ProwlarrClient.reset_connection!
   end
 
   test "index requires admin" do

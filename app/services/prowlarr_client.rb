@@ -126,6 +126,11 @@ class ProwlarrClient
       false
     end
 
+    # Reset cached connection (for tests)
+    def reset_connection!
+      @connection = nil
+    end
+
     private
 
     def ensure_configured!
