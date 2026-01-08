@@ -12,11 +12,11 @@
   <a href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/Pedro-Revez-Silva/shelfarr" alt="License">
   </a>
-  <a href="https://github.com/Pedro-Revez-Silva/shelfarr/releases">
-    <img src="https://img.shields.io/github/v/release/Pedro-Revez-Silva/shelfarr" alt="Release">
+  <a href="https://github.com/Pedro-Revez-Silva/shelfarr/actions/workflows/docker.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/Pedro-Revez-Silva/shelfarr/docker.yml?label=build" alt="Build Status">
   </a>
-  <a href="https://hub.docker.com/r/psilva999/shelfarr">
-    <img src="https://img.shields.io/docker/pulls/psilva999/shelfarr" alt="Docker Pulls">
+  <a href="https://github.com/Pedro-Revez-Silva/shelfarr/pkgs/container/shelfarr">
+    <img src="https://img.shields.io/badge/ghcr.io-shelfarr-blue?logo=docker" alt="Docker Image">
   </a>
 </p>
 
