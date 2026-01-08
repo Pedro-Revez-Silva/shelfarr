@@ -60,7 +60,17 @@ class SettingsService
     # Anna's Archive
     anna_archive_enabled: { type: "boolean", default: false, category: "anna_archive", description: "Enable Anna's Archive as an additional search source for ebooks" },
     anna_archive_url: { type: "string", default: "https://annas-archive.se", category: "anna_archive", description: "Base URL for Anna's Archive (change if domain moves)" },
-    anna_archive_api_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" }
+    anna_archive_api_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" },
+
+    # OIDC/SSO Authentication
+    oidc_enabled: { type: "boolean", default: false, category: "oidc", description: "Enable OpenID Connect (OIDC) single sign-on authentication" },
+    oidc_provider_name: { type: "string", default: "SSO", category: "oidc", description: "Display name for the OIDC provider (shown on login button)" },
+    oidc_issuer: { type: "string", default: "", category: "oidc", description: "OIDC issuer URL (e.g., https://auth.example.com/realms/master)" },
+    oidc_client_id: { type: "string", default: "", category: "oidc", description: "OIDC client ID from your identity provider" },
+    oidc_client_secret: { type: "string", default: "", category: "oidc", description: "OIDC client secret from your identity provider" },
+    oidc_scopes: { type: "string", default: "openid profile email", category: "oidc", description: "OIDC scopes to request (space-separated)" },
+    oidc_auto_create_users: { type: "boolean", default: false, category: "oidc", description: "Automatically create new users on first OIDC login" },
+    oidc_default_role: { type: "string", default: "user", category: "oidc", description: "Default role for auto-created OIDC users (user or admin)" }
   }.freeze
 
   CATEGORIES = {
@@ -75,7 +85,8 @@ class SettingsService
     "auto_select" => "Auto-Selection",
     "language" => "Language & Matching",
     "updates" => "Updates",
-    "security" => "Security"
+    "security" => "Security",
+    "oidc" => "OIDC/SSO Authentication"
   }.freeze
 
   class << self
@@ -169,6 +180,13 @@ class SettingsService
 
     def anna_archive_configured?
       get(:anna_archive_enabled, default: false) && configured?(:anna_archive_api_key)
+    end
+
+    def oidc_configured?
+      get(:oidc_enabled, default: false) &&
+        configured?(:oidc_issuer) &&
+        configured?(:oidc_client_id) &&
+        configured?(:oidc_client_secret)
     end
   end
 end

@@ -73,6 +73,40 @@ module Admin
       redirect_to admin_settings_path, alert: "Audiobookshelf error: #{e.message}"
     end
 
+    def test_oidc
+      unless SettingsService.get(:oidc_enabled, default: false)
+        redirect_to admin_settings_path, alert: "OIDC is not enabled. Enable it first."
+        return
+      end
+
+      issuer = SettingsService.get(:oidc_issuer).to_s.strip
+      if issuer.blank?
+        redirect_to admin_settings_path, alert: "OIDC issuer URL is not configured."
+        return
+      end
+
+      # Try to fetch the OIDC discovery document
+      discovery_url = "#{issuer.chomp('/')}/.well-known/openid-configuration"
+      response = Faraday.get(discovery_url)
+
+      if response.status == 200
+        config = JSON.parse(response.body)
+        if config["issuer"].present? && config["authorization_endpoint"].present?
+          redirect_to admin_settings_path, notice: "OIDC configuration valid! Provider: #{config['issuer']}"
+        else
+          redirect_to admin_settings_path, alert: "OIDC discovery document is incomplete."
+        end
+      else
+        redirect_to admin_settings_path, alert: "Failed to fetch OIDC discovery document (HTTP #{response.status})."
+      end
+    rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
+      redirect_to admin_settings_path, alert: "Could not connect to OIDC provider: #{e.message}"
+    rescue JSON::ParserError
+      redirect_to admin_settings_path, alert: "Invalid OIDC discovery document (not valid JSON)."
+    rescue StandardError => e
+      redirect_to admin_settings_path, alert: "OIDC test error: #{e.message}"
+    end
+
     private
 
     PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze
