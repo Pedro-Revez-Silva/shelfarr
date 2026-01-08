@@ -12,11 +12,11 @@
   <a href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/Pedro-Revez-Silva/shelfarr" alt="License">
   </a>
-  <a href="https://github.com/Pedro-Revez-Silva/shelfarr/releases">
-    <img src="https://img.shields.io/github/v/release/Pedro-Revez-Silva/shelfarr" alt="Release">
+  <a href="https://github.com/Pedro-Revez-Silva/shelfarr/actions/workflows/docker.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/Pedro-Revez-Silva/shelfarr/docker.yml?label=build" alt="Build Status">
   </a>
-  <a href="https://hub.docker.com/r/psilva999/shelfarr">
-    <img src="https://img.shields.io/docker/pulls/psilva999/shelfarr" alt="Docker Pulls">
+  <a href="https://github.com/Pedro-Revez-Silva/shelfarr/pkgs/container/shelfarr">
+    <img src="https://img.shields.io/badge/ghcr.io-shelfarr-blue?logo=docker" alt="Docker Image">
   </a>
 </p>
 
@@ -37,6 +37,7 @@
 - **Library Sync** — Automatic library scans after downloads complete
 - **Multi-User** — Role-based access with user requests and admin controls
 - **Two-Factor Auth** — TOTP-based 2FA with backup codes
+- **OIDC/SSO** — Single sign-on via OpenID Connect (Authentik, Authelia, Keycloak, etc.)
 - **Notifications** — In-app notifications when your books are ready
 - **Multiple Download Clients** — Configure multiple clients with priority ordering
 
@@ -88,6 +89,30 @@ After logging in, go to **Admin → Settings**:
 | Download Client | qBittorrent or SABnzbd connection |
 | Output Paths | Where to place completed audiobooks/ebooks |
 | Audiobookshelf | URL + API key for library integration (optional) |
+
+### OIDC/SSO Setup
+
+Shelfarr supports OpenID Connect for single sign-on with identity providers like Authentik, Authelia, Keycloak, and others.
+
+1. Create an OIDC client in your identity provider:
+   - **Redirect URI**: `http://your-shelfarr-url/auth/oidc/callback`
+   - **Scopes**: `openid profile email`
+
+2. In **Admin → Settings → OIDC/SSO Authentication**:
+   - Enable OIDC
+   - Enter your provider's issuer URL (e.g., `https://auth.example.com`)
+   - Enter the client ID and secret from step 1
+   - Optionally enable auto-creation of new users
+
+| Setting | Description |
+|---------|-------------|
+| Oidc Enabled | Enable/disable SSO login |
+| Oidc Provider Name | Label shown on login button (e.g., "Authentik") |
+| Oidc Issuer | Your identity provider's issuer URL |
+| Oidc Client Id | Client ID from your provider |
+| Oidc Client Secret | Client secret from your provider |
+| Oidc Auto Create Users | Auto-create accounts on first login |
+| Oidc Default Role | Role for auto-created users (user/admin) |
 
 ## Integrations
 

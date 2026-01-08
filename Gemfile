@@ -50,6 +50,10 @@ gem "rubyzip", require: "zip"
 gem "rotp"
 # QR code generation for 2FA setup
 gem "rqrcode"
+# OpenID Connect authentication (OIDC/SSO)
+gem "omniauth"
+gem "omniauth-rails_csrf_protection"
+gem "omniauth_openid_connect"
 
 group :development, :test do
   # Environment variable management
