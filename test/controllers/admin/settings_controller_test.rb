@@ -304,4 +304,152 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       assert flash[:alert].present?
     end
   end
+
+  # Turbo Stream response tests
+  test "bulk_update returns turbo stream when requested" do
+    patch bulk_update_admin_settings_url,
+      params: { settings: { max_retries: "25" } },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_match "turbo-stream", response.body
+    assert_match "settings-form", response.body
+    assert_equal 25, SettingsService.get(:max_retries)
+  end
+
+  test "bulk_update turbo stream shows error on validation failure" do
+    patch bulk_update_admin_settings_url,
+      params: { settings: { audiobook_path_template: "{invalid_var}" } },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_match "turbo-stream", response.body
+    assert_match "flash", response.body
+  end
+
+  test "test_prowlarr returns turbo stream when requested" do
+    SettingsService.set(:prowlarr_url, "http://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/health")
+        .with(headers: { "X-Api-Key" => "test-api-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      post test_prowlarr_admin_settings_url,
+        headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+      assert_response :success
+      assert_match "turbo-stream", response.body
+    end
+  end
+
+  test "test_audiobookshelf returns turbo stream when requested" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(
+          status: 200,
+          body: { "libraries" => [{ "id" => "lib1", "name" => "Test" }] }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      post test_audiobookshelf_admin_settings_url,
+        headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+      assert_response :success
+      assert_match "turbo-stream", response.body
+    end
+  end
+
+  # SSL error handling tests
+  test "test_prowlarr handles SSL errors" do
+    SettingsService.set(:prowlarr_url, "https://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://localhost:9696/api/v1/health")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      post test_prowlarr_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
+
+  test "test_audiobookshelf handles SSL errors" do
+    SettingsService.set(:audiobookshelf_url, "https://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://localhost:13378/api/libraries")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      post test_audiobookshelf_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
+
+  test "test_oidc handles SSL errors" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "test-client")
+    SettingsService.set(:oidc_client_secret, "test-secret")
+
+    VCR.turned_off do
+      stub_request(:get, "https://auth.example.com/.well-known/openid-configuration")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      post test_oidc_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert flash[:alert].present?
+    end
+  end
+
+  # Connection cache reset tests
+  test "bulk_update uses new audiobookshelf url after settings change" do
+    SettingsService.set(:audiobookshelf_url, "http://old.example.com")
+    SettingsService.set(:audiobookshelf_api_key, "test-key")
+
+    VCR.turned_off do
+      # The controller should use the NEW url after updating settings
+      # This verifies the connection was reset and recreated with new credentials
+      stub_request(:get, "http://new.example.com/api/libraries")
+        .to_return(status: 200, body: { "libraries" => [] }.to_json, headers: { "Content-Type" => "application/json" })
+
+      patch bulk_update_admin_settings_url, params: {
+        settings: { audiobookshelf_url: "http://new.example.com" }
+      }
+
+      assert_response :redirect
+      assert_equal "http://new.example.com", SettingsService.get(:audiobookshelf_url)
+      # If reset didn't work, it would have tried old.example.com and failed
+      assert_requested(:get, "http://new.example.com/api/libraries")
+    end
+  end
+
+  test "bulk_update resets prowlarr connection when api key changes" do
+    SettingsService.set(:prowlarr_url, "http://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "old-key")
+
+    # Prime the connection with old credentials
+    ProwlarrClient.send(:connection)
+    old_connection = ProwlarrClient.instance_variable_get(:@connection)
+    assert_not_nil old_connection
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { prowlarr_api_key: "new-key" }
+    }
+
+    # Connection should be reset - either nil or a different object
+    new_connection = ProwlarrClient.instance_variable_get(:@connection)
+    assert_nil new_connection, "Connection should be reset after prowlarr settings change"
+  end
 end

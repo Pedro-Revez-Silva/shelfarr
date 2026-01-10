@@ -55,7 +55,7 @@ class ProwlarrClient
       indexer_ids = filtered_indexer_ids
       params[:indexerIds] = indexer_ids if indexer_ids.present?
 
-      response = connection.get("api/v1/search", params)
+      response = request { connection.get("api/v1/search", params) }
 
       handle_response(response) do |data|
         Array(data).map { |item| parse_result(item) }
@@ -66,7 +66,7 @@ class ProwlarrClient
     def indexers
       ensure_configured!
 
-      response = connection.get("api/v1/indexer")
+      response = request { connection.get("api/v1/indexer") }
 
       handle_response(response) do |data|
         Array(data)
@@ -122,7 +122,7 @@ class ProwlarrClient
 
       response = connection.get("api/v1/health")
       response.status == 200
-    rescue Error, Faraday::ConnectionFailed, Faraday::TimeoutError
+    rescue Error, Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError
       false
     end
 
@@ -135,6 +135,12 @@ class ProwlarrClient
 
     def ensure_configured!
       raise NotConfiguredError, "Prowlarr is not configured" unless configured?
+    end
+
+    def request
+      yield
+    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+      raise ConnectionError, "Failed to connect to Prowlarr: #{e.message}"
     end
 
     def connection

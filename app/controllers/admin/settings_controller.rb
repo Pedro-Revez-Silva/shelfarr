@@ -134,7 +134,7 @@ module Admin
       else
         respond_with_flash(alert: "Failed to fetch OIDC discovery document (HTTP #{response.status}).")
       end
-    rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
+    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
       respond_with_flash(alert: "Could not connect to OIDC provider: #{e.message}")
     rescue JSON::ParserError
       respond_with_flash(alert: "Invalid OIDC discovery document (not valid JSON).")

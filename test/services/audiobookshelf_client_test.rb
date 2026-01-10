@@ -176,4 +176,25 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
       end
     end
   end
+
+  # SSL error handling tests
+  test "test_connection returns false on SSL error" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      assert_not AudiobookshelfClient.test_connection
+    end
+  end
+
+  test "raises ConnectionError on SSL error" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      assert_raises AudiobookshelfClient::ConnectionError do
+        AudiobookshelfClient.libraries
+      end
+    end
+  end
 end

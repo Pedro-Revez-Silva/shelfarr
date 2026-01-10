@@ -227,4 +227,25 @@ class ProwlarrClientTest < ActiveSupport::TestCase
       assert_requested search_stub
     end
   end
+
+  # SSL error handling tests
+  test "test_connection returns false on SSL error" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/health")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      assert_not ProwlarrClient.test_connection
+    end
+  end
+
+  test "search raises ConnectionError on SSL error" do
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      assert_raises ProwlarrClient::ConnectionError do
+        ProwlarrClient.search("test query")
+      end
+    end
+  end
 end
