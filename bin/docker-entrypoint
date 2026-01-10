@@ -1,7 +1,40 @@
 #!/bin/bash -e
 
+# =============================================================================
+# PUID/PGID Support
+# =============================================================================
+# Allows users to specify the UID/GID the container should run as.
+# This resolves permission issues when mounting host volumes.
+# Defaults to 1000:1000 for backward compatibility.
+
+PUID=${PUID:-1000}
+PGID=${PGID:-1000}
+
+# Only modify user/group if running as root
+if [ "$(id -u)" = "0" ]; then
+  # Modify rails group GID if different from default
+  if [ "$(id -g rails)" != "$PGID" ]; then
+    groupmod -o -g "$PGID" rails
+    echo "Set rails group GID to $PGID"
+  fi
+
+  # Modify rails user UID if different from default
+  if [ "$(id -u rails)" != "$PUID" ]; then
+    usermod -o -u "$PUID" rails
+    echo "Set rails user UID to $PUID"
+  fi
+
+  # Ensure storage directory exists and has correct ownership
+  mkdir -p /rails/storage
+  chown -R rails:rails /rails/storage
+fi
+
+# =============================================================================
+# Secret Key Generation
+# =============================================================================
 # Auto-generate SECRET_KEY_BASE if not provided
 # This allows "just run docker-compose up" without manual key generation
+
 if [ -z "$RAILS_MASTER_KEY" ] && [ -z "$SECRET_KEY_BASE" ]; then
   SECRET_FILE="/rails/storage/.secret_key_base"
 
@@ -18,8 +51,12 @@ if [ -z "$RAILS_MASTER_KEY" ] && [ -z "$SECRET_KEY_BASE" ]; then
   fi
 fi
 
+# =============================================================================
+# Encryption Keys Generation
+# =============================================================================
 # Auto-generate ActiveRecord encryption keys if not provided
 # These are required for encrypted attributes (e.g., API keys in settings)
+
 ENCRYPTION_FILE="/rails/storage/.encryption_keys"
 
 if [ -z "$ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY" ]; then
@@ -43,12 +80,29 @@ EOF
   fi
 fi
 
+# =============================================================================
+# Database Setup
+# =============================================================================
 # If running the rails server then create or migrate existing database
-if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
-  ./bin/rails db:prepare
 
-  # Seed default settings if needed
-  ./bin/rails runner 'SettingsService.seed_defaults!'
+if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
+  # Run database setup as rails user if we're root
+  if [ "$(id -u)" = "0" ]; then
+    gosu rails ./bin/rails db:prepare
+    gosu rails ./bin/rails runner 'SettingsService.seed_defaults!'
+  else
+    ./bin/rails db:prepare
+    ./bin/rails runner 'SettingsService.seed_defaults!'
+  fi
 fi
 
-exec "${@}"
+# =============================================================================
+# Start Application
+# =============================================================================
+# Drop privileges if running as root, then execute the command
+
+if [ "$(id -u)" = "0" ]; then
+  exec gosu rails "$@"
+else
+  exec "$@"
+fi
