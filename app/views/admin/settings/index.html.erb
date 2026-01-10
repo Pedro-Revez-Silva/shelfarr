@@ -60,7 +60,7 @@
                 <p class="text-sm text-gray-500">Verify Prowlarr is reachable</p>
               </div>
               <div class="md:w-2/3">
-                <%= link_to "Test Prowlarr Connection", test_prowlarr_admin_settings_path, data: { turbo_method: :post }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                <%= link_to "Test Prowlarr Connection", test_prowlarr_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
               </div>
             </div>
           <% elsif category == "audiobookshelf" %>
@@ -70,7 +70,7 @@
                 <p class="text-sm text-gray-500">Verify Audiobookshelf is reachable</p>
               </div>
               <div class="md:w-2/3">
-                <%= link_to "Test Audiobookshelf Connection", test_audiobookshelf_admin_settings_path, data: { turbo_method: :post }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                <%= link_to "Test Audiobookshelf Connection", test_audiobookshelf_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
               </div>
             </div>
           <% elsif category == "oidc" %>
@@ -80,7 +80,7 @@
                 <p class="text-sm text-gray-500">Verify OIDC provider discovery works</p>
               </div>
               <div class="md:w-2/3">
-                <%= link_to "Test OIDC Configuration", test_oidc_admin_settings_path, data: { turbo_method: :post }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                <%= link_to "Test OIDC Configuration", test_oidc_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
               </div>
             </div>
           <% end %>
