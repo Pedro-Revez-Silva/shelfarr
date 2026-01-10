@@ -25,6 +25,10 @@ services:
       - /path/to/downloads:/downloads
     environment:
       - SOLID_QUEUE_IN_PUMA=1
+      # Optional: Set user/group ID to match the owner of your mounted volumes
+      # Run: ls -n /path/to/your/data to find the UID/GID
+      # - PUID=1000
+      # - PGID=1000
       # Optional: Change internal port (default: 80)
       # - HTTP_PORT=8080
       # Optional: Set your own key instead of auto-generating
