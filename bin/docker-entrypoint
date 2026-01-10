@@ -97,6 +97,15 @@ if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
 fi
 
 # =============================================================================
+# Fix Permissions
+# =============================================================================
+# Ensure all files created above (as root) have correct ownership before dropping privileges
+
+if [ "$(id -u)" = "0" ]; then
+  chown -R rails:rails /rails/storage /rails/tmp 2>/dev/null || true
+fi
+
+# =============================================================================
 # Start Application
 # =============================================================================
 # Drop privileges if running as root, then execute the command
