@@ -68,6 +68,8 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PUID` | `1000` | User ID for file permissions. Run `id -u` to find yours |
+| `PGID` | `1000` | Group ID for file permissions. Run `id -g` to find yours |
 | `HTTP_PORT` | `80` | Internal container port. Change if port 80 is in use (e.g., behind gluetun) |
 | `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set |
 
