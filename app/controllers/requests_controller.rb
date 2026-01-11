@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 class RequestsController < ApplicationController
-  before_action :set_request, only: [ :show, :destroy, :download ]
+  before_action :set_request, only: [ :show, :destroy ]
+  before_action :set_request_for_download, only: [ :download ]
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
 
   def index
@@ -244,6 +245,15 @@ class RequestsController < ApplicationController
       Request.find(params[:id])
     else
       Request.for_user(Current.user).find(params[:id])
+    end
+  end
+
+  # Allow any user to download from any request if the book is acquired
+  # This enables shared library access where users can download books added by others
+  def set_request_for_download
+    @request = Request.find(params[:id])
+    unless @request.book.acquired?
+      redirect_to library_index_path, alert: "This book is not available for download"
     end
   end
 
