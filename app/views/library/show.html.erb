@@ -69,8 +69,7 @@
         </div>
       <% else %>
         <div class="mt-6 pt-6 border-t">
-          <p class="text-sm text-gray-500">This book was added by another user. You can request your own copy.</p>
-          <%= link_to "Search for this book", search_path(q: @book.title), class: "text-blue-600 hover:text-blue-800 text-sm" %>
+          <p class="text-sm text-gray-500">This book is in your library but has no associated download request.</p>
         </div>
       <% end %>
 
