@@ -205,7 +205,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_not request.book.acquired?
 
     get download_request_path(request)
-    assert_redirected_to request_path(request)
+    assert_redirected_to library_index_path
     assert_equal "This book is not available for download", flash[:alert]
   end
 
@@ -270,7 +270,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(temp_dir)
   end
 
-  test "user cannot download another user's request" do
+  test "user can download another user's request when book is acquired" do
     temp_dir = Dir.mktmpdir
     temp_file = File.join(temp_dir, "test.m4b")
     File.write(temp_file, "content")
@@ -286,8 +286,9 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     )
     other_request = Request.create!(book: book, user: @admin, status: :completed)
 
+    # Users can download any acquired book, regardless of who requested it
     get download_request_path(other_request)
-    assert_response :not_found
+    assert_response :success
   ensure
     FileUtils.rm_rf(temp_dir)
   end

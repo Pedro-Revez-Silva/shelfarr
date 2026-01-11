@@ -10,7 +10,7 @@ class LibraryController < ApplicationController
 
   def show
     @book = Book.acquired.find(params[:id])
-    @user_request = @book.requests.find_by(user: Current.user)
+    @user_request = @book.requests.completed.first
   end
 
   def destroy
