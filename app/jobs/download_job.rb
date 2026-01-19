@@ -121,6 +121,9 @@ class DownloadJob < ApplicationJob
     uri = URI.parse(url)
     filename_from_url = File.basename(uri.path)
 
+    # URL-decode the filename (converts %20 to space, %3A to colon, etc.)
+    filename_from_url = URI.decode_www_form_component(filename_from_url) if filename_from_url.present?
+
     # If URL has a valid filename with extension, use it
     if filename_from_url.present? && filename_from_url.include?(".")
       return sanitize_filename(filename_from_url)
@@ -154,12 +157,22 @@ class DownloadJob < ApplicationJob
   end
 
   def sanitize_filename(name)
-    name
+    result = name
       .gsub(/[<>:"\/\\|?*]/, "_")
       .gsub(/[\x00-\x1f]/, "")
       .strip
       .gsub(/\s+/, " ")
-      .truncate(200, omission: "")
+
+    # Truncate while preserving file extension
+    max_length = 200
+    if result.length > max_length
+      ext = File.extname(result)
+      base = File.basename(result, ext)
+      base = base.truncate(max_length - ext.length, omission: "")
+      result = "#{base}#{ext}"
+    end
+
+    result
   end
 
   def download_file_via_http(url, destination)
@@ -203,6 +216,9 @@ class DownloadJob < ApplicationJob
     torrent_hash = client.add_torrent(download_url)
 
     if torrent_hash
+      # Defensive check: warn if another download already has this external_id
+      check_for_duplicate_external_id(torrent_hash, download.id)
+
       download.update!(
         status: :downloading,
         download_client: client_record,
@@ -248,6 +264,10 @@ class DownloadJob < ApplicationJob
     end
 
     if success
+      # Defensive check: warn if another download already has this external_id
+      # This should not happen with the race condition fix, but log it if it does
+      check_for_duplicate_external_id(external_id, download.id)
+
       download.update!(
         status: :downloading,
         download_client: client_record,
@@ -259,6 +279,22 @@ class DownloadJob < ApplicationJob
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
+    end
+  end
+
+  def check_for_duplicate_external_id(external_id, current_download_id)
+    return if external_id.blank?
+
+    existing = Download.where(external_id: external_id)
+                       .where.not(id: current_download_id)
+                       .where.not(status: :failed)
+                       .first
+
+    if existing
+      Rails.logger.error "[DownloadJob] DUPLICATE EXTERNAL_ID DETECTED! " \
+                         "Download ##{current_download_id} is being assigned external_id #{external_id}, " \
+                         "but Download ##{existing.id} (request ##{existing.request_id}) already has this ID. " \
+                         "This indicates a potential race condition that should be investigated."
     end
   end
 

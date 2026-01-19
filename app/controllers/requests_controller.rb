@@ -83,6 +83,11 @@ class RequestsController < ApplicationController
       if request.save
         ActivityTracker.track("request.created", trackable: request)
         created_requests << request
+
+        # Trigger immediate search if enabled
+        if SettingsService.get(:immediate_search_enabled, default: false)
+          SearchJob.perform_later(request.id)
+        end
       else
         errors << "#{book_type.titleize}: #{request.errors.full_messages.join(', ')}"
       end
