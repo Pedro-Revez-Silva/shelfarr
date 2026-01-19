@@ -98,6 +98,67 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  # Tests for filename handling (URL decoding and sanitization)
+
+  test "sanitize_filename decodes URL-encoded characters" do
+    job = DownloadJob.new
+    url = "https://example.com/download/Moonshot%20%3A%20inside%20Pfizer%27s%20book.epub"
+
+    filename = job.send(:infer_filename_from_url, url, @selected_result)
+
+    # Should decode %20 to space, %3A to colon, %27 to apostrophe
+    assert_includes filename, "Moonshot"
+    assert_not_includes filename, "%20"
+    assert_not_includes filename, "%3A"
+    assert_not_includes filename, "%27"
+    assert filename.end_with?(".epub")
+  end
+
+  test "sanitize_filename preserves extension when truncating long filenames" do
+    job = DownloadJob.new
+
+    # Create a filename that's over 200 characters
+    long_name = "A" * 250 + ".epub"
+    result = job.send(:sanitize_filename, long_name)
+
+    assert result.length <= 200
+    assert result.end_with?(".epub"), "Extension should be preserved after truncation"
+  end
+
+  test "sanitize_filename handles filenames under max length" do
+    job = DownloadJob.new
+
+    short_name = "Short Book Title.epub"
+    result = job.send(:sanitize_filename, short_name)
+
+    assert_equal "Short Book Title.epub", result
+  end
+
+  test "sanitize_filename removes invalid characters" do
+    job = DownloadJob.new
+
+    name_with_invalid = "Book: A \"Test\" Title?.epub"
+    result = job.send(:sanitize_filename, name_with_invalid)
+
+    assert_not_includes result, ":"
+    assert_not_includes result, "\""
+    assert_not_includes result, "?"
+    assert result.end_with?(".epub")
+  end
+
+  test "infer_filename_from_url falls back to book metadata when URL has no extension" do
+    job = DownloadJob.new
+    url = "https://example.com/download/some-file-without-extension"
+
+    filename = job.send(:infer_filename_from_url, url, @selected_result)
+
+    # Should fall back to author - title format
+    book = @selected_result.request.book
+    assert_includes filename, book.author
+    assert_includes filename, book.title
+    assert filename.end_with?(".epub") || filename.end_with?(".pdf") || filename.end_with?(".mobi")
+  end
+
   private
 
   def stub_qbittorrent_success

@@ -121,6 +121,9 @@ class DownloadJob < ApplicationJob
     uri = URI.parse(url)
     filename_from_url = File.basename(uri.path)
 
+    # URL-decode the filename (converts %20 to space, %3A to colon, etc.)
+    filename_from_url = URI.decode_www_form_component(filename_from_url) if filename_from_url.present?
+
     # If URL has a valid filename with extension, use it
     if filename_from_url.present? && filename_from_url.include?(".")
       return sanitize_filename(filename_from_url)
@@ -154,12 +157,22 @@ class DownloadJob < ApplicationJob
   end
 
   def sanitize_filename(name)
-    name
+    result = name
       .gsub(/[<>:"\/\\|?*]/, "_")
       .gsub(/[\x00-\x1f]/, "")
       .strip
       .gsub(/\s+/, " ")
-      .truncate(200, omission: "")
+
+    # Truncate while preserving file extension
+    max_length = 200
+    if result.length > max_length
+      ext = File.extname(result)
+      base = File.basename(result, ext)
+      base = base.truncate(max_length - ext.length, omission: "")
+      result = "#{base}#{ext}"
+    end
+
+    result
   end
 
   def download_file_via_http(url, destination)
