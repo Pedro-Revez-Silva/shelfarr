@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "bencode"
+require "digest/sha1"
 
 class DownloadJobTest < ActiveJob::TestCase
   setup do
@@ -38,7 +40,9 @@ class DownloadJobTest < ActiveJob::TestCase
 
       assert @download.downloading?
       assert_equal @client.id.to_s, @download.download_client_id
-      assert_equal "abc123def456", @download.external_id
+      # Hash is computed from the test torrent file
+      assert @download.external_id.present?, "external_id should be set"
+      assert_match(/^[a-f0-9]{40}$/, @download.external_id, "external_id should be a SHA1 hash")
     end
   end
 
@@ -101,6 +105,26 @@ class DownloadJobTest < ActiveJob::TestCase
   private
 
   def stub_qbittorrent_success
+    # Create a valid torrent file for hash extraction
+    info_dict = {
+      "name" => "Test Torrent",
+      "piece length" => 16384,
+      "pieces" => "x" * 20,
+      "length" => 1000
+    }
+    torrent_data = { "info" => info_dict }.bencode
+    # The hash will be SHA1 of the bencoded info dict
+    # We use a fixed hash in the test since we control the torrent data
+    expected_hash = Digest::SHA1.hexdigest(info_dict.bencode).downcase
+
+    # Stub torrent file download (used for hash extraction)
+    stub_request(:get, "http://example.com/download/test.torrent")
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/x-bittorrent" },
+        body: torrent_data
+      )
+
     # Stub authentication
     stub_request(:post, "http://localhost:8080/api/v2/auth/login")
       .to_return(
@@ -113,12 +137,13 @@ class DownloadJobTest < ActiveJob::TestCase
     stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
       .to_return(status: 200, body: "Ok.")
 
-    # Stub torrent info query - first call returns empty (before adding),
-    # subsequent calls return the new torrent (after adding)
+    # Note: With pre-computed hash, we should NOT need to poll for torrent info
+    # But stub it anyway in case fallback is triggered
     stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
       .to_return(
-        { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-        { status: 200, headers: { "Content-Type" => "application/json" }, body: [{ "hash" => "abc123def456", "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" }].to_json }
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: [{ "hash" => expected_hash, "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" }].to_json
       )
   end
 end

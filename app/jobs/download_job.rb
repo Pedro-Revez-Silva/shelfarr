@@ -203,6 +203,9 @@ class DownloadJob < ApplicationJob
     torrent_hash = client.add_torrent(download_url)
 
     if torrent_hash
+      # Defensive check: warn if another download already has this external_id
+      check_for_duplicate_external_id(torrent_hash, download.id)
+
       download.update!(
         status: :downloading,
         download_client: client_record,
@@ -248,6 +251,10 @@ class DownloadJob < ApplicationJob
     end
 
     if success
+      # Defensive check: warn if another download already has this external_id
+      # This should not happen with the race condition fix, but log it if it does
+      check_for_duplicate_external_id(external_id, download.id)
+
       download.update!(
         status: :downloading,
         download_client: client_record,
@@ -259,6 +266,22 @@ class DownloadJob < ApplicationJob
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
+    end
+  end
+
+  def check_for_duplicate_external_id(external_id, current_download_id)
+    return if external_id.blank?
+
+    existing = Download.where(external_id: external_id)
+                       .where.not(id: current_download_id)
+                       .where.not(status: :failed)
+                       .first
+
+    if existing
+      Rails.logger.error "[DownloadJob] DUPLICATE EXTERNAL_ID DETECTED! " \
+                         "Download ##{current_download_id} is being assigned external_id #{external_id}, " \
+                         "but Download ##{existing.id} (request ##{existing.request_id}) already has this ID. " \
+                         "This indicates a potential race condition that should be investigated."
     end
   end
 

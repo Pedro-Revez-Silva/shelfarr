@@ -85,6 +85,7 @@ GEM
     bcrypt_pbkdf (1.1.2)
     bcrypt_pbkdf (1.1.2-arm64-darwin)
     bcrypt_pbkdf (1.1.2-x86_64-darwin)
+    bencode (1.0.0)
     bigdecimal (4.0.1)
     bindata (2.5.1)
     bindex (0.8.1)
@@ -499,6 +500,7 @@ PLATFORMS
 
 DEPENDENCIES
   bcrypt (~> 3.1.7)
+  bencode
   bootsnap
   brakeman
   bundler-audit

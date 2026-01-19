@@ -46,6 +46,8 @@ gem "faraday"
 gem "oj"
 # Create zip archives for directory downloads
 gem "rubyzip", require: "zip"
+# Parse .torrent files to extract info hash
+gem "bencode"
 # TOTP for two-factor authentication
 gem "rotp"
 # QR code generation for 2FA setup

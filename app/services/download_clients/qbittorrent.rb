@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "bencode"
+require "digest/sha1"
+
 module DownloadClients
   # qBittorrent WebUI API client
   # https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1)
@@ -9,14 +12,14 @@ module DownloadClients
     def add_torrent(url, options = {})
       ensure_authenticated!
 
-      # For magnet links, extract hash upfront (more reliable than querying after)
-      hash_from_magnet = extract_hash_from_magnet(url) if url.start_with?("magnet:")
+      # Pre-compute hash before adding to avoid race conditions with concurrent downloads
+      # Priority: magnet hash > torrent file hash > polling fallback
+      precomputed_hash = precompute_torrent_hash(url)
 
-      # For URL-based torrents, capture existing hashes before adding
-      # so we can detect the new one by comparing before/after
-      # Filter by category to reduce false positives from other programs
+      # Only capture existing hashes if we couldn't pre-compute the hash
+      # This is the fallback for edge cases where hash extraction fails
       category = config.category.presence
-      existing_hashes = hash_from_magnet.present? ? nil : fetch_torrent_hashes(category: category)
+      existing_hashes = precomputed_hash.present? ? nil : fetch_torrent_hashes(category: category)
 
       params = { urls: url }
       params[:category] = config.category if config.category.present?
@@ -30,10 +33,15 @@ module DownloadClients
         # qBittorrent returns "Ok." on success or empty body
         return nil unless response.body == "Ok." || response.body.blank?
 
-        # Return hash from magnet if available
-        return hash_from_magnet if hash_from_magnet.present?
+        # Return pre-computed hash if available (eliminates race condition)
+        if precomputed_hash.present?
+          Rails.logger.info "[Qbittorrent] Using pre-computed hash: #{precomputed_hash}"
+          return precomputed_hash
+        end
 
-        # For .torrent URLs, detect the newly added torrent by comparing hashes
+        # Fallback: detect the newly added torrent by comparing hashes
+        # This path is only taken if hash extraction failed
+        Rails.logger.warn "[Qbittorrent] Falling back to polling for hash detection (race condition possible)"
         find_newly_added_torrent_hash(existing_hashes, category: category)
       when 401, 403
         clear_session!
@@ -105,9 +113,82 @@ module DownloadClients
 
     private
 
+    # Pre-compute torrent hash from URL to avoid race conditions
+    # Returns the hash if extraction succeeds, nil otherwise
+    def precompute_torrent_hash(url)
+      if url.start_with?("magnet:")
+        extract_hash_from_magnet(url)
+      elsif torrent_file_url?(url)
+        download_and_extract_hash(url)
+      end
+    end
+
     def extract_hash_from_magnet(url)
       match = url.match(/btih:([a-fA-F0-9]+)/i)
       match[1]&.downcase if match
+    end
+
+    # Check if URL points to a .torrent file
+    def torrent_file_url?(url)
+      return false if url.blank?
+
+      # Check file extension
+      return true if url.match?(/\.torrent(\?|$)/i)
+
+      # Many private trackers use URLs like /download.php?id=123 that return torrent files
+      # We'll attempt to download and parse - if it fails, we fall back to polling
+      true
+    end
+
+    # Download .torrent file and extract the info hash
+    # The info hash is the SHA1 of the bencoded "info" dictionary
+    def download_and_extract_hash(url)
+      Rails.logger.info "[Qbittorrent] Downloading torrent file to extract hash: #{url.truncate(100)}"
+
+      response = torrent_download_connection.get(url)
+
+      unless response.success?
+        Rails.logger.warn "[Qbittorrent] Failed to download torrent file: HTTP #{response.status}"
+        return nil
+      end
+
+      torrent_data = response.body
+      return nil if torrent_data.blank?
+
+      # Parse the torrent file (bencoded format)
+      parsed = BEncode.load(torrent_data)
+      return nil unless parsed.is_a?(Hash) && parsed["info"].is_a?(Hash)
+
+      # The info hash is the SHA1 of the bencoded "info" dictionary
+      info_bencoded = parsed["info"].bencode
+      hash = Digest::SHA1.hexdigest(info_bencoded).downcase
+
+      Rails.logger.info "[Qbittorrent] Extracted hash from torrent file: #{hash}"
+      hash
+    rescue BEncode::DecodeError => e
+      Rails.logger.warn "[Qbittorrent] Failed to parse torrent file (not valid bencode): #{e.message}"
+      nil
+    rescue Faraday::Error => e
+      Rails.logger.warn "[Qbittorrent] Failed to download torrent file: #{e.message}"
+      nil
+    rescue => e
+      Rails.logger.warn "[Qbittorrent] Unexpected error extracting hash: #{e.class} - #{e.message}"
+      nil
+    end
+
+    # Separate connection for downloading torrent files (different from qBittorrent API)
+    def torrent_download_connection
+      Faraday.new do |f|
+        f.adapter Faraday.default_adapter
+        f.options.timeout = 30
+        f.options.open_timeout = 10
+        # Follow redirects (common for torrent download URLs)
+        f.response :follow_redirects, limit: 5
+        # Accept any content type (torrent files have various content types)
+        f.headers["Accept"] = "*/*"
+        # Some trackers require a user agent
+        f.headers["User-Agent"] = "Shelfarr/1.0"
+      end
     end
 
     # Fetch torrent hashes as a Set, optionally filtered by category
