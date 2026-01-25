@@ -64,10 +64,11 @@ class DownloadMonitorJob < ApplicationJob
   end
 
   def handle_missing(download)
-    Rails.logger.error "[DownloadMonitorJob] Download #{download.id} not found in client"
+    client_name = download.download_client&.name || "unknown"
+    Rails.logger.error "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}'"
 
     download.update!(status: :failed)
-    download.request.mark_for_attention!("Download not found in client (may have been removed)")
+    download.request.mark_for_attention!("Download not found in client '#{client_name}' (hash: #{download.external_id})")
   end
 
   def schedule_next_run
