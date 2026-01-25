@@ -111,7 +111,80 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search raises BotProtectionError on 403 response" do
+    VCR.turned_off do
+      stub_request(:get, /annas-archive\.org\/search/)
+        .to_return(status: 403, body: "Forbidden")
+
+      error = assert_raises AnnaArchiveClient::BotProtectionError do
+        AnnaArchiveClient.search("test query")
+      end
+
+      assert_includes error.message, "FlareSolverr"
+    end
+  end
+
+  test "search raises BotProtectionError when DDoS-Guard detected" do
+    VCR.turned_off do
+      stub_request(:get, /annas-archive\.org\/search/)
+        .to_return(status: 200, body: "<html>DDoS-Guard protection</html>")
+
+      error = assert_raises AnnaArchiveClient::BotProtectionError do
+        AnnaArchiveClient.search("test query")
+      end
+
+      assert_includes error.message, "FlareSolverr"
+    end
+  end
+
+  test "search uses FlareSolverr when configured" do
+    VCR.turned_off do
+      SettingsService.set(:flaresolverr_url, "http://localhost:8191")
+
+      stub_flaresolverr_with_search_results
+      results = AnnaArchiveClient.search("test book")
+
+      assert results.is_a?(Array)
+      assert results.any?
+      assert_equal "abc123def456", results.first.md5
+
+      SettingsService.set(:flaresolverr_url, "")
+    end
+  end
+
   private
+
+  def stub_flaresolverr_with_search_results
+    html = <<~HTML
+      <html>
+        <body>
+          <a href="/md5/abc123def456">
+            <div>
+              <h3>Test Book Title</h3>
+              <span class="author">by Test Author</span>
+              <span class="badge">epub</span>
+              <span>15.2 MB</span>
+              <span>English</span>
+              <span>2023</span>
+            </div>
+          </a>
+        </body>
+      </html>
+    HTML
+
+    stub_request(:post, "http://localhost:8191/v1")
+      .to_return(
+        status: 200,
+        body: {
+          status: "ok",
+          message: "",
+          solution: {
+            status: 200,
+            response: html
+          }
+        }.to_json
+      )
+  end
 
   def stub_anna_search_with_results
     html = <<~HTML

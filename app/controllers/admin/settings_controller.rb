@@ -37,6 +37,7 @@ module Admin
       # Reset cached connections when relevant settings change
       AudiobookshelfClient.reset_connection! if params[:settings]&.keys&.any? { |k| k.to_s.start_with?("audiobookshelf") }
       ProwlarrClient.reset_connection! if params[:settings]&.keys&.any? { |k| k.to_s.start_with?("prowlarr") }
+      FlaresolverrClient.reset_connection! if params[:settings]&.keys&.any? { |k| k.to_s == "flaresolverr_url" }
 
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
@@ -106,6 +107,21 @@ module Admin
       end
     rescue AudiobookshelfClient::Error => e
       respond_with_flash(alert: "Audiobookshelf error: #{e.message}")
+    end
+
+    def test_flaresolverr
+      unless FlaresolverrClient.configured?
+        respond_with_flash(alert: "FlareSolverr URL is not configured.")
+        return
+      end
+
+      if FlaresolverrClient.test_connection
+        respond_with_flash(notice: "FlareSolverr connection successful!")
+      else
+        respond_with_flash(alert: "FlareSolverr connection failed.")
+      end
+    rescue FlaresolverrClient::Error => e
+      respond_with_flash(alert: "FlareSolverr error: #{e.message}")
     end
 
     def test_oidc

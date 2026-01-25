@@ -46,7 +46,12 @@ class SearchJob < ApplicationJob
         attempt_auto_select(request)
       else
         Rails.logger.info "[SearchJob] No results found for request ##{request.id}"
-        request.schedule_retry!
+        # If bot protection was detected and no results from other sources, mark for attention
+        if @anna_archive_bot_protection_error
+          request.mark_for_attention!(@anna_archive_bot_protection_error)
+        else
+          request.schedule_retry!
+        end
       end
     rescue ProwlarrClient::AuthenticationError => e
       Rails.logger.error "[SearchJob] Prowlarr authentication failed: #{e.message}"
@@ -99,6 +104,11 @@ class SearchJob < ApplicationJob
     results.map do |r|
       { result: r, source: SearchResult::SOURCE_ANNA_ARCHIVE }
     end
+  rescue AnnaArchiveClient::BotProtectionError => e
+    Rails.logger.warn "[SearchJob] Anna's Archive bot protection: #{e.message}"
+    # Store the error message to show user if no other results
+    @anna_archive_bot_protection_error = e.message
+    []
   rescue AnnaArchiveClient::Error => e
     Rails.logger.warn "[SearchJob] Anna's Archive search failed: #{e.message}"
     []
