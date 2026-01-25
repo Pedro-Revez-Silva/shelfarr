@@ -36,7 +36,15 @@ module DownloadClients
         # Return pre-computed hash if available (eliminates race condition)
         if precomputed_hash.present?
           Rails.logger.info "[Qbittorrent] Using pre-computed hash: #{precomputed_hash}"
-          return precomputed_hash
+
+          # Verify torrent was actually added (qBittorrent returns "Ok." even when it fails silently)
+          if verify_torrent_added(precomputed_hash)
+            return precomputed_hash
+          else
+            Rails.logger.error "[Qbittorrent] Torrent #{precomputed_hash} not found after adding to #{config.name} - " \
+                               "qBittorrent may have rejected it (check disk permissions, save path, or duplicate torrent)"
+            return nil
+          end
         end
 
         # Fallback: detect the newly added torrent by comparing hashes
@@ -112,6 +120,27 @@ module DownloadClients
     end
 
     private
+
+    # Verify that a torrent was actually added to qBittorrent
+    # qBittorrent may return "Ok." but fail to add the torrent due to:
+    # - Disk permissions issues
+    # - Invalid save path
+    # - Duplicate torrent (if configured to reject)
+    # - Torrent file rejection
+    def verify_torrent_added(hash, max_attempts: 3, wait_time: 1)
+      max_attempts.times do |attempt|
+        # Only sleep on retry attempts to avoid unnecessary delay if torrent is immediately available
+        sleep wait_time if attempt > 0
+
+        info = torrent_info(hash)
+        if info.present?
+          Rails.logger.info "[Qbittorrent] Verified torrent #{hash} exists in client (attempt #{attempt + 1})"
+          return true
+        end
+        Rails.logger.debug "[Qbittorrent] Torrent #{hash} not found yet (attempt #{attempt + 1}/#{max_attempts})"
+      end
+      false
+    end
 
     # Pre-compute torrent hash from URL to avoid race conditions
     # Returns the hash if extraction succeeds, nil otherwise

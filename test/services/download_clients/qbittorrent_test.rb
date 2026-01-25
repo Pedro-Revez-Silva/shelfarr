@@ -33,6 +33,14 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
 
+      # Stub verification - torrent info returns the added torrent
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "name" => "Test", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+        )
+
       # Use valid hex hash in magnet link
       result = @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
       assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
@@ -62,7 +70,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
         .to_return(
           { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [{ "hash" => "def456abc789" }].to_json }
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "def456abc789" } ].to_json }
         )
 
       result = @client.add_torrent("http://example.com/file.torrent")
@@ -229,8 +237,14 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
 
-      # Note: We should NOT need to stub /api/v2/torrents/info because
-      # the hash should be pre-computed from the torrent file
+      # Stub verification - torrent info returns the added torrent
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash, "name" => "Test Book.epub", "progress" => 0, "state" => "downloading", "size" => 1024, "content_path" => "/downloads" } ].to_json
+        )
+
       result = @client.add_torrent("http://tracker.example.com/download/123.torrent")
 
       assert_equal expected_hash, result
@@ -271,6 +285,14 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
 
+      # Stub verification - torrent info returns the added torrent
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash, "name" => "Another Book.epub", "progress" => 0, "state" => "downloading", "size" => 2048, "content_path" => "/downloads" } ].to_json
+        )
+
       result = @client.add_torrent("http://tracker.example.com/download.php?id=456&passkey=abc123")
 
       assert_equal expected_hash, result
@@ -297,7 +319,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
         .to_return(
           { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [{ "hash" => "fallback123" }].to_json }
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "fallback123" } ].to_json }
         )
 
       # Stub add torrent
@@ -333,7 +355,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
         .to_return(
           { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [{ "hash" => "polled456" }].to_json }
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "polled456" } ].to_json }
         )
 
       # Stub add torrent
@@ -371,7 +393,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
         .to_return(
           { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [{ "hash" => "noinfo789" }].to_json }
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "noinfo789" } ].to_json }
         )
 
       # Stub add torrent
@@ -384,7 +406,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent skips polling when hash is pre-computed from torrent file" do
+  test "add_torrent verifies torrent exists after adding with pre-computed hash" do
     VCR.turned_off do
       # Create a valid torrent file
       info_dict = { "name" => "Book.epub", "piece length" => 16384, "pieces" => "x" * 20, "length" => 100 }
@@ -407,15 +429,19 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
 
-      # Stub torrent info - but this should NOT be called since we pre-compute the hash
-      info_stub = stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
-        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+      # Stub verification - torrent info is called to verify the torrent exists
+      info_stub = stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash, "name" => "Book.epub", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+        )
 
       result = @client.add_torrent("http://tracker.example.com/file.torrent")
 
       assert_equal expected_hash, result
-      # Verify that polling was NOT used (torrent info endpoint not called)
-      assert_not_requested(info_stub)
+      # Verify that torrent info was called to verify the torrent exists
+      assert_requested(info_stub, times: 1)
     end
   end
 
@@ -449,6 +475,20 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       # Stub add torrent
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
+
+      # Stub verification for both torrents
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash_a}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash_a, "name" => "Book A.epub", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+        )
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash_b}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash_b, "name" => "Book B.epub", "progress" => 0, "state" => "downloading", "size" => 200, "content_path" => "/downloads" } ].to_json
+        )
 
       # Simulate concurrent calls - each should get its own correct hash
       result_a = @client.add_torrent("http://tracker.example.com/book_a.torrent")
@@ -484,9 +524,76 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
 
+      # Stub verification
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash, "name" => "Redirect Book.epub", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+        )
+
       result = @client.add_torrent("http://tracker.example.com/download/redirect.torrent")
 
       assert_equal expected_hash, result
+    end
+  end
+
+  # === Verification Tests (Issue #114 Fix) ===
+
+  test "add_torrent returns nil when verification fails (torrent rejected by qBittorrent)" do
+    VCR.turned_off do
+      # Stub authentication
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Stub add torrent - qBittorrent returns "Ok." even when it fails silently
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+
+      # Stub verification - torrent not found (qBittorrent rejected it)
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+
+      # Should return nil because verification failed
+      assert_nil result
+    end
+  end
+
+  test "add_torrent retries verification when torrent takes time to appear" do
+    VCR.turned_off do
+      # Stub authentication
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Stub add torrent
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+
+      # Stub verification - first call returns empty, second call returns the torrent
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        .to_return(
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "name" => "Test", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json }
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+
+      # Should succeed on second verification attempt
+      assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
     end
   end
 end
