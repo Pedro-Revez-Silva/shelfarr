@@ -224,6 +224,53 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_nil request.issue_description
   end
 
+  # === complete! ===
+
+  test "complete! clears attention_needed and issue_description" do
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :processing,
+      attention_needed: true,
+      issue_description: "Some issue that was resolved"
+    )
+
+    request.complete!
+
+    assert request.completed?
+    assert_not request.attention_needed?
+    assert_nil request.issue_description
+    assert request.completed_at.present?
+  end
+
+  # === select_result! ===
+
+  test "select_result! clears attention_needed and issue_description" do
+    book = Book.create!(title: "Select Test Book", book_type: :ebook, open_library_work_id: "OL_SELECT_TEST")
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :searching,
+      attention_needed: true,
+      issue_description: "Manual selection required"
+    )
+
+    search_result = request.search_results.create!(
+      guid: "select-test-guid",
+      title: "Test Result",
+      status: :pending,
+      download_url: "http://example.com/test.torrent"
+    )
+
+    request.select_result!(search_result)
+
+    request.reload
+    assert request.downloading?
+    assert_not request.attention_needed?
+    assert_nil request.issue_description
+    assert search_result.reload.selected?
+  end
+
   # === can_retry? ===
 
   test "can_retry? returns true for pending, not_found, and failed" do
@@ -238,6 +285,91 @@ class RequestRetryTest < ActiveSupport::TestCase
       status: :downloading
     )
     assert_not downloading.can_retry?
+  end
+
+  test "can_retry? returns true when attention_needed is true" do
+    # A downloading request normally cannot be retried
+    downloading = Request.create!(
+      book: books(:audiobook_acquired),
+      user: users(:one),
+      status: :downloading,
+      attention_needed: false
+    )
+    assert_not downloading.can_retry?
+
+    # But with attention_needed it can be retried
+    downloading.update!(attention_needed: true)
+    assert downloading.can_retry?
+  end
+
+  test "can_retry? returns false for completed requests even with attention_needed" do
+    completed = Request.create!(
+      book: books(:audiobook_acquired),
+      user: users(:one),
+      status: :completed,
+      attention_needed: true
+    )
+    assert_not completed.can_retry?
+  end
+
+  # === needs_manual_selection? ===
+
+  test "needs_manual_selection? returns true when searching with pending results" do
+    book = Book.create!(title: "Manual Select Book", book_type: :ebook, open_library_work_id: "OL_MANUAL_SEL")
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :searching
+    )
+
+    # No results yet
+    assert_not request.needs_manual_selection?
+
+    # Add a pending search result
+    request.search_results.create!(
+      guid: "manual-sel-guid",
+      title: "Test Result",
+      status: :pending,
+      download_url: "http://example.com/test.torrent"
+    )
+
+    assert request.needs_manual_selection?
+  end
+
+  test "needs_manual_selection? returns false for non-searching status" do
+    book = Book.create!(title: "Non-Search Book", book_type: :ebook, open_library_work_id: "OL_NON_SEARCH")
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :pending
+    )
+
+    request.search_results.create!(
+      guid: "non-search-guid",
+      title: "Test Result",
+      status: :pending,
+      download_url: "http://example.com/test.torrent"
+    )
+
+    assert_not request.needs_manual_selection?
+  end
+
+  test "needs_manual_selection? returns false when only selected results exist" do
+    book = Book.create!(title: "Selected Book", book_type: :ebook, open_library_work_id: "OL_SELECTED")
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :searching
+    )
+
+    request.search_results.create!(
+      guid: "selected-guid",
+      title: "Test Result",
+      status: :selected,
+      download_url: "http://example.com/test.torrent"
+    )
+
+    assert_not request.needs_manual_selection?
   end
 
   # === retry_due? ===
