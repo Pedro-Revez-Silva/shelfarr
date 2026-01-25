@@ -80,7 +80,8 @@ module Admin
 
       assert @pending_result.selected?
       assert @request_record.downloading?
-      assert_redirected_to admin_request_search_results_path(@request_record)
+      # Uses redirect_back with fallback to requests_path
+      assert_redirected_to requests_path
     end
 
     test "select marks other results as rejected" do

@@ -53,9 +53,21 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_out
     sign_in_as(@admin)
 
+    # Create unique books for this test
+    active_book = Book.create!(
+      title: "Active Test Book Unique",
+      book_type: :ebook,
+      open_library_work_id: "OL_ACTIVE_FILTER_TEST"
+    )
+    attention_book = Book.create!(
+      title: "Attention Test Book Unique",
+      book_type: :ebook,
+      open_library_work_id: "OL_ATTENTION_FILTER_TEST"
+    )
+
     # Create an active request without attention needed
     active_request = Request.create!(
-      book: books(:audiobook_acquired),
+      book: active_book,
       user: @user,
       status: :pending,
       attention_needed: false
@@ -63,7 +75,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     # Create an active request with attention needed
     attention_request = Request.create!(
-      book: books(:ebook_pending),
+      book: attention_book,
       user: @user,
       status: :searching,
       attention_needed: true
@@ -73,8 +85,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     # Active filter should exclude requests needing attention
-    assert_select "h3", active_request.book.title
-    assert_select "h3", text: attention_request.book.title, count: 0
+    assert_select "h3", text: "Active Test Book Unique"
+    assert_select "h3", text: "Attention Test Book Unique", count: 0
   end
 
   test "index filters by attention needed" do
