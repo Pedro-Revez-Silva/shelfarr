@@ -9,6 +9,7 @@ class AnnaArchiveClient
   class AuthenticationError < Error; end
   class NotConfiguredError < Error; end
   class ScrapingError < Error; end
+  class BotProtectionError < Error; end
 
   # Data structure for search results
   Result = Data.define(
@@ -42,15 +43,11 @@ class AnnaArchiveClient
       ensure_configured!
 
       url = build_search_url(query, file_types)
+      full_url = "#{base_url}#{url}"
       Rails.logger.info "[AnnaArchiveClient] Searching: #{url}"
 
-      response = connection.get(url)
-
-      unless response.status == 200
-        raise Error, "Anna's Archive search failed with status #{response.status}"
-      end
-
-      parse_search_results(response.body, limit)
+      html = fetch_with_protection_bypass(full_url)
+      parse_search_results(html, limit)
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
       raise ConnectionError, "Failed to connect to Anna's Archive: #{e.message}"
     end
@@ -93,6 +90,36 @@ class AnnaArchiveClient
     end
 
     private
+
+    def fetch_with_protection_bypass(url)
+      if FlaresolverrClient.configured?
+        Rails.logger.info "[AnnaArchiveClient] Using FlareSolverr for request"
+        FlaresolverrClient.get(url)
+      else
+        response = connection.get(url)
+
+        # Detect bot protection
+        if response.status == 403 || bot_protection_detected?(response.body)
+          raise BotProtectionError, "Anna's Archive requires FlareSolverr to bypass DDoS protection. " \
+                                    "Please configure FlareSolverr URL in settings."
+        end
+
+        raise Error, "Search failed with status #{response.status}" unless response.status == 200
+        response.body
+      end
+    rescue FlaresolverrClient::Error => e
+      raise ConnectionError, "FlareSolverr error: #{e.message}"
+    end
+
+    def bot_protection_detected?(html)
+      return false if html.blank?
+
+      html.include?("DDoS-Guard") ||
+        html.include?("ddos-guard") ||
+        html.include?("Checking your browser") ||
+        html.include?("Just a moment") ||
+        html.include?("Enable JavaScript and cookies")
+    end
 
     def ensure_configured!
       unless configured?
