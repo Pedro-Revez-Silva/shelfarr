@@ -19,9 +19,9 @@ http_interactions:
       message: OK
     headers:
       Server:
-      - nginx/1.28.0
+      - nginx/1.28.1
       Date:
-      - Fri, 19 Dec 2025 00:23:52 GMT
+      - Mon, 19 Jan 2026 19:20:17 GMT
       Content-Type:
       - application/json
       Transfer-Encoding:
@@ -35,5 +35,5 @@ http_interactions:
     body:
       encoding: ASCII-8BIT
       string: '{"numFound":0,"start":0,"numFoundExact":true,"num_found":0,"documentation_url":"https://openlibrary.org/dev/docs/api/search","q":"asdfghjklqwertyuiop123456789","offset":null,"docs":[]}'
-  recorded_at: Fri, 19 Dec 2025 00:23:52 GMT
+  recorded_at: Mon, 19 Jan 2026 19:20:17 GMT
 recorded_with: VCR 6.3.1

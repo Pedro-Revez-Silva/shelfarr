@@ -258,7 +258,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "destroy rejects non-cancellable status" do
-    @pending_request.update!(status: :downloading)
+    # Only completed requests cannot be cancelled
+    @pending_request.update!(status: :completed)
 
     assert_no_difference "Request.count" do
       delete request_path(@pending_request)
