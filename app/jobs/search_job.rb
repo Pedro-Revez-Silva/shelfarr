@@ -73,9 +73,11 @@ class SearchJob < ApplicationJob
   def search_prowlarr(request)
     book = request.book
 
-    # Build search query: "title author"
+    # Build search query: "title author [language]"
     query_parts = [ book.title ]
     query_parts << book.author if book.author.present?
+    # Add language to query for non-English requests to help find localized releases
+    query_parts << language_search_term(request) if should_add_language_to_search?(request)
 
     query = query_parts.join(" ")
     Rails.logger.debug "[SearchJob] Searching Prowlarr for: #{query} (type: #{book.book_type})"
@@ -96,9 +98,11 @@ class SearchJob < ApplicationJob
     query_parts << book.author if book.author.present?
     query = query_parts.join(" ")
 
-    Rails.logger.debug "[SearchJob] Searching Anna's Archive for: #{query}"
+    # Pass language to Anna's Archive for better filtering
+    language = request.effective_language
+    Rails.logger.debug "[SearchJob] Searching Anna's Archive for: #{query} (language: #{language})"
 
-    results = AnnaArchiveClient.search(query)
+    results = AnnaArchiveClient.search(query, language: language)
 
     # Tag results with source
     results.map do |r|
@@ -210,5 +214,19 @@ class SearchJob < ApplicationJob
       request.mark_for_attention!("Search results found but none matched auto-select criteria. Please review and select a result manually.")
       Rails.logger.info "[SearchJob] Auto-select failed, flagged for manual selection for request ##{request.id}"
     end
+  end
+
+  # Check if we should add language to the search query
+  # Only add for non-English languages as English is typically the default
+  def should_add_language_to_search?(request)
+    language = request.effective_language
+    language.present? && language != "en"
+  end
+
+  # Get the language name for search query
+  def language_search_term(request)
+    language = request.effective_language
+    info = ReleaseParserService.language_info(language)
+    info ? info[:name] : nil
   end
 end
