@@ -92,6 +92,56 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "marks for attention when auto-select is disabled and results found" do
+    SettingsService.set(:auto_select_enabled, false)
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert @request.searching?
+      assert @request.attention_needed?
+      assert_includes @request.issue_description, "Please review and select a result"
+    end
+  end
+
+  test "marks for attention when auto-select fails to find suitable result" do
+    SettingsService.set(:auto_select_enabled, true)
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      # Mock AutoSelectService to return failure
+      AutoSelectService.stub :call, OpenStruct.new(success?: false) do
+        SearchJob.perform_now(@request.id)
+      end
+      @request.reload
+
+      assert @request.searching?
+      assert @request.attention_needed?
+      assert_includes @request.issue_description, "none matched auto-select criteria"
+    end
+  end
+
+  test "does not mark for attention when auto-select succeeds" do
+    SettingsService.set(:auto_select_enabled, true)
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      # Mock AutoSelectService to return success
+      AutoSelectService.stub :call, OpenStruct.new(success?: true) do
+        SearchJob.perform_now(@request.id)
+      end
+      @request.reload
+
+      assert @request.searching?
+      assert_not @request.attention_needed?
+    end
+  end
+
   private
 
   def stub_prowlarr_search_with_results

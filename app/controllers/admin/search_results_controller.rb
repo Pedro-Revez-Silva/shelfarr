@@ -11,17 +11,17 @@ module Admin
 
     def select
       unless @search_result.downloadable?
-        redirect_to admin_request_search_results_path(@request),
-                    alert: "This result cannot be downloaded (no download link available)"
+        redirect_back fallback_location: admin_request_search_results_path(@request),
+                      alert: "This result cannot be downloaded (no download link available)"
         return
       end
 
       begin
         @request.select_result!(@search_result)
-        redirect_to admin_request_search_results_path(@request),
-                    notice: "Download initiated for: #{@search_result.title}"
+        redirect_back fallback_location: requests_path,
+                      notice: "Download initiated for: #{@search_result.title}"
       rescue ArgumentError => e
-        redirect_to admin_request_search_results_path(@request), alert: e.message
+        redirect_back fallback_location: admin_request_search_results_path(@request), alert: e.message
       end
     end
 

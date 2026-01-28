@@ -14,7 +14,7 @@ module Admin
         end
       end
 
-      redirect_to admin_issues_path, notice: "#{count} #{'request'.pluralize(count)} queued for retry."
+      redirect_to requests_path(attention: "true"), notice: "#{count} #{'request'.pluralize(count)} queued for retry."
     end
 
     def cancel_selected
@@ -27,7 +27,7 @@ module Admin
         count += 1
       end
 
-      redirect_to admin_issues_path, notice: "#{count} #{'request'.pluralize(count)} cancelled."
+      redirect_to requests_path(attention: "true"), notice: "#{count} #{'request'.pluralize(count)} cancelled."
     end
 
     def retry_all
@@ -39,7 +39,7 @@ module Admin
         end
       end
 
-      redirect_to admin_issues_path, notice: "#{count} #{'request'.pluralize(count)} queued for retry."
+      redirect_to requests_path(attention: "true"), notice: "#{count} #{'request'.pluralize(count)} queued for retry."
     end
   end
 end

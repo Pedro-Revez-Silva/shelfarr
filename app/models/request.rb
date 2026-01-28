@@ -34,7 +34,12 @@ class Request < ApplicationRecord
   end
 
   def complete!
-    update!(status: :completed, completed_at: Time.current)
+    update!(
+      status: :completed,
+      completed_at: Time.current,
+      attention_needed: false,
+      issue_description: nil
+    )
     ActivityTracker.track("request.completed", trackable: self, user: user)
   end
 
@@ -126,8 +131,15 @@ class Request < ApplicationRecord
   end
 
   # Check if request can be retried
+  # Allow retry if already in retryable state OR if attention is needed
   def can_retry?
-    pending? || not_found? || failed?
+    return false if completed?
+    pending? || not_found? || failed? || attention_needed?
+  end
+
+  # Check if request needs manual selection of search results
+  def needs_manual_selection?
+    searching? && search_results.pending.any?
   end
 
   # Check if request can be cancelled/deleted
@@ -157,7 +169,11 @@ class Request < ApplicationRecord
         status: :queued
       )
 
-      update!(status: :downloading)
+      update!(
+        status: :downloading,
+        attention_needed: false,
+        issue_description: nil
+      )
       DownloadJob.perform_later(download.id)
       download
     end

@@ -14,9 +14,9 @@
   </div>
 
   <%# Stats Grid %>
-  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
+  <div class="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-10">
     <%# Pending Requests %>
-    <div class="bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition">
+    <%= link_to requests_path(status: "active"), class: "bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition" do %>
       <div class="flex items-center gap-4">
         <div class="p-3 rounded-lg bg-blue-500/20">
           <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -25,13 +25,13 @@
         </div>
         <div>
           <div class="text-2xl font-bold text-white"><%= @pending_requests %></div>
-          <div class="text-sm text-gray-500">Pending</div>
+          <div class="text-sm text-gray-500">Active</div>
         </div>
       </div>
-    </div>
+    <% end %>
 
     <%# Completed %>
-    <div class="bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition">
+    <%= link_to requests_path(status: "completed"), class: "bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition" do %>
       <div class="flex items-center gap-4">
         <div class="p-3 rounded-lg bg-green-500/20">
           <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -43,10 +43,10 @@
           <div class="text-sm text-gray-500">Completed</div>
         </div>
       </div>
-    </div>
+    <% end %>
 
     <%# Active Downloads %>
-    <div class="bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition">
+    <%= link_to requests_path(status: "downloading"), class: "bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition" do %>
       <div class="flex items-center gap-4">
         <div class="p-3 rounded-lg bg-purple-500/20">
           <svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -58,7 +58,22 @@
           <div class="text-sm text-gray-500">Downloads</div>
         </div>
       </div>
-    </div>
+    <% end %>
+
+    <%# Attention Needed %>
+    <%= link_to requests_path(attention: "true"), class: "bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition" do %>
+      <div class="flex items-center gap-4">
+        <div class="p-3 rounded-lg <%= @attention_needed > 0 ? 'bg-red-500/20' : 'bg-gray-700' %>">
+          <svg class="w-6 h-6 <%= @attention_needed > 0 ? 'text-red-400' : 'text-gray-500' %>" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+          </svg>
+        </div>
+        <div>
+          <div class="text-2xl font-bold <%= @attention_needed > 0 ? 'text-red-400' : 'text-white' %>"><%= @attention_needed %></div>
+          <div class="text-sm text-gray-500">Attention</div>
+        </div>
+      </div>
+    <% end %>
 
     <%# System Status %>
     <% unhealthy_count = @system_health.values.count { |h| !h.healthy? } %>

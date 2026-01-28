@@ -53,7 +53,7 @@
     </div>
 
     <div class="bg-gray-800 rounded-lg shadow p-6 border border-gray-700">
-      <div class="text-gray-400 text-sm font-medium">Needs Attention</div>
+      <div class="text-gray-400 text-sm font-medium">Need Attention</div>
       <div class="text-3xl font-bold <%= @attention_needed > 0 ? 'text-red-400' : 'text-gray-500' %>"><%= @attention_needed %></div>
     </div>
   </div>
@@ -98,10 +98,10 @@
     <div class="bg-gray-800 rounded-lg shadow p-6 border border-gray-700">
       <h2 class="font-bold text-xl mb-4 text-white">Quick Links</h2>
       <div class="space-y-2">
-        <%= link_to admin_issues_path, class: "flex items-center justify-between px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-300" do %>
-          <span>Issues</span>
-          <% if @issues_count > 0 %>
-            <span class="px-2 py-0.5 text-xs font-medium rounded-full bg-red-500 text-white"><%= @issues_count %></span>
+        <%= link_to requests_path(attention: "true"), class: "flex items-center justify-between px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-300" do %>
+          <span>Need Attention</span>
+          <% if @attention_needed > 0 %>
+            <span class="px-2 py-0.5 text-xs font-medium rounded-full bg-red-500 text-white"><%= @attention_needed %></span>
           <% end %>
         <% end %>
         <%= link_to "Manage Users", admin_users_path, class: "block px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-300" %>

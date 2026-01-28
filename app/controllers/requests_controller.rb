@@ -1,16 +1,37 @@
 # frozen_string_literal: true
 
 class RequestsController < ApplicationController
-  before_action :set_request, only: [ :show, :destroy ]
+  before_action :set_request, only: [ :show, :destroy, :retry ]
   before_action :set_request_for_download, only: [ :download ]
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
 
   def index
     @requests = if Current.user.admin?
-      Request.includes(:book, :user).order(created_at: :desc)
+      Request.includes(:book, :user, :search_results)
     else
-      Request.for_user(Current.user).includes(:book).order(created_at: :desc)
+      Request.for_user(Current.user).includes(:book, :search_results)
     end
+
+    # Apply status filter
+    if params[:status].present?
+      case params[:status]
+      when "active"
+        # Active tab shows active requests that DON'T need attention
+        @requests = @requests.active.where(attention_needed: false)
+      else
+        @requests = @requests.where(status: params[:status])
+      end
+    end
+
+    # Apply attention filter
+    @requests = @requests.needs_attention if params[:attention] == "true"
+
+    @requests = @requests.order(created_at: :desc)
+
+    # Counts for filter tabs
+    base_requests = Current.user.admin? ? Request : Request.for_user(Current.user)
+    @attention_count = base_requests.needs_attention.count
+    @active_count = base_requests.active.where(attention_needed: false).count
   end
 
   def show
@@ -131,7 +152,17 @@ class RequestsController < ApplicationController
       book.destroy
     end
 
-    redirect_to requests_path, notice: "Request cancelled"
+    redirect_back fallback_location: requests_path, notice: "Request cancelled"
+  end
+
+  def retry
+    unless Current.user.admin?
+      redirect_back fallback_location: @request, alert: "You don't have permission to retry requests"
+      return
+    end
+
+    @request.retry_now!
+    redirect_back fallback_location: @request, notice: "Request has been queued for retry."
   end
 
   def download

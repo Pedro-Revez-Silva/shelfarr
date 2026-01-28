@@ -31,6 +31,96 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "All Requests"
   end
 
+  test "index filters by status" do
+    sign_out
+    sign_in_as(@admin)
+
+    # Create requests with different statuses
+    completed_request = Request.create!(
+      book: books(:audiobook_acquired),
+      user: @user,
+      status: :completed
+    )
+
+    get requests_path(status: "completed")
+    assert_response :success
+
+    # Should only show completed requests
+    assert_select "h3", completed_request.book.title
+  end
+
+  test "index filters by active status excluding attention needed" do
+    sign_out
+    sign_in_as(@admin)
+
+    # Create unique books for this test
+    active_book = Book.create!(
+      title: "Active Test Book Unique",
+      book_type: :ebook,
+      open_library_work_id: "OL_ACTIVE_FILTER_TEST"
+    )
+    attention_book = Book.create!(
+      title: "Attention Test Book Unique",
+      book_type: :ebook,
+      open_library_work_id: "OL_ATTENTION_FILTER_TEST"
+    )
+
+    # Create an active request without attention needed
+    active_request = Request.create!(
+      book: active_book,
+      user: @user,
+      status: :pending,
+      attention_needed: false
+    )
+
+    # Create an active request with attention needed
+    attention_request = Request.create!(
+      book: attention_book,
+      user: @user,
+      status: :searching,
+      attention_needed: true
+    )
+
+    get requests_path(status: "active")
+    assert_response :success
+
+    # Active filter should exclude requests needing attention
+    assert_select "h3", text: "Active Test Book Unique"
+    assert_select "h3", text: "Attention Test Book Unique", count: 0
+  end
+
+  test "index filters by attention needed" do
+    sign_out
+    sign_in_as(@admin)
+
+    # Create a request needing attention
+    attention_request = Request.create!(
+      book: books(:audiobook_acquired),
+      user: @user,
+      status: :downloading,
+      attention_needed: true,
+      issue_description: "Download failed"
+    )
+
+    get requests_path(attention: "true")
+    assert_response :success
+
+    # Should show requests needing attention
+    assert_select "h3", attention_request.book.title
+  end
+
+  test "index shows attention count and active count" do
+    sign_out
+    sign_in_as(@admin)
+
+    get requests_path
+    assert_response :success
+
+    # Should have filter tabs rendered
+    assert_select "a", text: /Need Attention/
+    assert_select "a", text: /Active/
+  end
+
   test "show displays request details" do
     get request_path(@pending_request)
     assert_response :success
@@ -188,6 +278,40 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     delete request_path(other_request)
     assert_response :not_found
+  end
+
+  # Retry tests
+  test "retry requires admin" do
+    # Regular user should be rejected
+    post retry_request_path(@failed_request)
+
+    assert_response :redirect
+    assert_equal "You don't have permission to retry requests", flash[:alert]
+  end
+
+  test "admin can retry a request" do
+    sign_out
+    sign_in_as(@admin)
+
+    @failed_request.update!(attention_needed: true, issue_description: "Test issue")
+
+    post retry_request_path(@failed_request)
+
+    @failed_request.reload
+    assert @failed_request.pending?
+    assert_not @failed_request.attention_needed?
+    assert_nil @failed_request.issue_description
+    assert_equal "Request has been queued for retry.", flash[:notice]
+  end
+
+  test "retry redirects back to referring page" do
+    sign_out
+    sign_in_as(@admin)
+
+    # Set referer header to simulate coming from requests index
+    post retry_request_path(@failed_request), headers: { "HTTP_REFERER" => requests_path }
+
+    assert_redirected_to requests_path
   end
 
   # Download tests

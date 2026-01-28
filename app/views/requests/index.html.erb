@@ -1,33 +1,91 @@
 <div class="mx-auto max-w-4xl">
-  <div class="flex justify-between items-center mb-8">
+  <div class="flex justify-between items-center mb-6">
     <h1 class="font-bold text-4xl text-white"><%= Current.user.admin? ? "All Requests" : "My Requests" %></h1>
     <%= link_to "Search Books", search_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
   </div>
 
+  <%# Filter Tabs %>
+  <div class="mb-6">
+    <div class="flex flex-wrap gap-2">
+      <%
+        current_filter = params[:attention] == "true" ? "attention" : (params[:status].presence || "all")
+        filters = [
+          { key: "all", label: "All", path: requests_path },
+          { key: "attention", label: "Need Attention", path: requests_path(attention: "true"), count: @attention_count, alert: true },
+          { key: "active", label: "Active", path: requests_path(status: "active"), count: @active_count },
+          { key: "completed", label: "Completed", path: requests_path(status: "completed") },
+          { key: "not_found", label: "Not Found", path: requests_path(status: "not_found") },
+          { key: "failed", label: "Cancelled", path: requests_path(status: "failed") }
+        ]
+      %>
+      <% filters.each do |filter| %>
+        <%
+          is_active = current_filter == filter[:key]
+          base_classes = "inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium transition"
+          active_classes = filter[:alert] && filter[:count].to_i > 0 ? "bg-red-600 text-white" : "bg-blue-600 text-white"
+          inactive_classes = filter[:alert] && filter[:count].to_i > 0 ? "bg-red-500/20 text-red-400 hover:bg-red-500/30" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+        %>
+        <%= link_to filter[:path], class: "#{base_classes} #{is_active ? active_classes : inactive_classes}" do %>
+          <%= filter[:label] %>
+          <% if filter[:count].to_i > 0 %>
+            <span class="ml-2 px-2 py-0.5 text-xs rounded-full <%= is_active ? 'bg-white/20' : (filter[:alert] ? 'bg-red-500 text-white' : 'bg-gray-700') %>">
+              <%= filter[:count] %>
+            </span>
+          <% end %>
+        <% end %>
+      <% end %>
+    </div>
+  </div>
+
+  <%
+    has_filters = params[:status].present? || params[:attention].present?
+  %>
   <% if @requests.empty? %>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
-      <svg class="mx-auto h-12 w-12 text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-      </svg>
-      <h3 class="text-lg font-medium text-white mb-2">No requests yet</h3>
-      <p class="text-gray-500 mb-4">Search for books and request them to add to your library.</p>
-      <%= link_to "Search Books", search_path, class: "inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
+      <% if has_filters %>
+        <svg class="mx-auto h-12 w-12 text-green-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <h3 class="text-lg font-medium text-white mb-2">
+          <% if params[:attention] == "true" %>
+            No requests need attention
+          <% else %>
+            No matching requests
+          <% end %>
+        </h3>
+        <p class="text-gray-500 mb-4">
+          <% if params[:attention] == "true" %>
+            All requests are processing normally.
+          <% else %>
+            No requests match your current filter.
+          <% end %>
+        </p>
+        <%= link_to "View All Requests", requests_path, class: "inline-flex items-center px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition" %>
+      <% else %>
+        <svg class="mx-auto h-12 w-12 text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+        </svg>
+        <h3 class="text-lg font-medium text-white mb-2">No requests yet</h3>
+        <p class="text-gray-500 mb-4">Search for books and request them to add to your library.</p>
+        <%= link_to "Search Books", search_path, class: "inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
+      <% end %>
     </div>
   <% else %>
     <div class="space-y-4">
       <% @requests.each do |request| %>
-        <%= link_to request, class: "block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition" do %>
+        <% has_view_results = Current.user.admin? && request.searching? && request.search_results.any? %>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition" <%= "data-controller=search-results" if has_view_results %>>
           <div class="flex gap-4">
-            <div class="flex-shrink-0 w-16">
+            <div class="flex-shrink-0 w-16 aspect-[2/3] bg-gray-800 rounded shadow overflow-hidden">
               <% if request.book.cover_url.present? %>
                 <img
                   src="<%= request.book.cover_url %>"
                   alt="Cover"
-                  class="w-full rounded shadow"
+                  class="w-full h-full object-cover"
                   loading="lazy"
                 >
               <% else %>
-                <div class="w-full aspect-[2/3] bg-gray-800 rounded shadow flex items-center justify-center">
+                <div class="w-full h-full flex items-center justify-center">
                   <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                   </svg>
@@ -36,41 +94,34 @@
             </div>
 
             <div class="flex-grow min-w-0">
-              <div class="flex items-start justify-between gap-2">
-                <div class="min-w-0">
-                  <h3 class="font-semibold text-white truncate"><%= request.book.title %></h3>
-                  <% if request.book.author.present? %>
-                    <p class="text-sm text-gray-400 truncate"><%= request.book.author %></p>
-                  <% end %>
-                </div>
-                <div class="flex-shrink-0 flex items-center gap-2">
-                  <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request.book.audiobook? ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400' %>">
-                    <%= request.book.audiobook? ? 'Audiobook' : 'Ebook' %>
-                  </span>
-                  <%
-                    status_colors = {
-                      'pending' => 'bg-yellow-500/20 text-yellow-400',
-                      'searching' => 'bg-blue-500/20 text-blue-400',
-                      'not_found' => 'bg-orange-500/20 text-orange-400',
-                      'downloading' => 'bg-indigo-500/20 text-indigo-400',
-                      'processing' => 'bg-cyan-500/20 text-cyan-400',
-                      'completed' => 'bg-green-500/20 text-green-400',
-                      'failed' => 'bg-red-500/20 text-red-400'
-                    }
-                  %>
-                  <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= status_colors[request.status] %>">
-                    <%= request.status.humanize %>
-                  </span>
-                  <% if request.attention_needed? %>
-                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-500/20 text-red-400">
-                      <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
-                      </svg>
-                      Attention
+              <%= link_to request, class: "block" do %>
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <h3 class="font-semibold text-white truncate"><%= request.book.title %></h3>
+                    <% if request.book.author.present? %>
+                      <p class="text-sm text-gray-400 truncate"><%= request.book.author %></p>
+                    <% end %>
+                  </div>
+                  <div class="flex-shrink-0 flex items-center gap-2">
+                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request.book.audiobook? ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400' %>">
+                      <%= request.book.audiobook? ? 'Audiobook' : 'Ebook' %>
                     </span>
-                  <% end %>
+                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request_status_color(request.status) %>">
+                      <%= request.status.humanize %>
+                    </span>
+                    <% if request.attention_needed? %>
+                      <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-500/20 text-red-400">
+                        <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                          <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                        </svg>
+                        Attention
+                      </span>
+                    <% end %>
+                  </div>
                 </div>
-              </div>
+              <% end %>
+
+              <%# Metadata row %>
               <div class="mt-2 flex items-center gap-4 text-xs text-gray-500">
                 <% if Current.user.admin? && request.user != Current.user %>
                   <span>Requested by <%= request.user.name %></span>
@@ -80,9 +131,77 @@
                   <span>Completed <%= time_ago_in_words(request.completed_at) %> ago</span>
                 <% end %>
               </div>
+
+              <%# Error description and action buttons row %>
+              <% if Current.user.admin? %>
+                <% has_retry = request.can_retry? && !has_view_results %>
+                <% has_cancel = request.can_be_cancelled? %>
+                <% has_issue = request.issue_description.present? %>
+                <% if has_view_results || has_retry || has_cancel || has_issue %>
+                  <div class="mt-2 flex items-center justify-between gap-4">
+                    <% if has_issue %>
+                      <span class="text-xs text-red-400 truncate min-w-0" title="<%= request.issue_description %>">
+                        <%= request.issue_description.truncate(60) %>
+                      </span>
+                    <% else %>
+                      <span></span>
+                    <% end %>
+                    <% if has_view_results || has_retry || has_cancel %>
+                      <div class="flex-shrink-0 flex items-center gap-2">
+                        <% if has_view_results %>
+                          <button type="button"
+                              data-action="click->search-results#toggle"
+                              data-search-results-target="toggleBtn"
+                              class="inline-flex items-center px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition whitespace-nowrap">
+                            View Results (<%= request.search_results.count %>)
+                          </button>
+                        <% elsif has_retry %>
+                          <%= button_to retry_request_path(request), method: :post,
+                              class: "inline-flex items-center px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition whitespace-nowrap" do %>
+                            Retry
+                          <% end %>
+                        <% end %>
+                        <% if has_cancel %>
+                          <%= button_to request_path(request), method: :delete,
+                              class: "inline-flex items-center px-2 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded font-medium transition whitespace-nowrap",
+                              data: { turbo_confirm: "Cancel request for \"#{request.book.title}\"?" } do %>
+                            Cancel
+                          <% end %>
+                        <% end %>
+                      </div>
+                    <% end %>
+                  </div>
+                <% end %>
+              <% end %>
             </div>
           </div>
-        <% end %>
+
+          <%# Expandable search results section - full width %>
+          <% if has_view_results %>
+            <div data-search-results-target="content" class="hidden mt-3 pt-3 border-t border-gray-800 space-y-2">
+              <% request.search_results.best_first.each do |result| %>
+                <%= render "requests/search_result_row", result: result, request: request %>
+              <% end %>
+
+              <%# Pagination controls %>
+              <div data-search-results-target="pagination" class="flex items-center justify-center gap-4 pt-2 text-xs">
+                <button type="button"
+                    data-action="click->search-results#prevPage"
+                    data-search-results-target="prevBtn"
+                    class="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition">
+                  Prev
+                </button>
+                <span data-search-results-target="pageInfo" class="text-gray-400">Page 1 of 1</span>
+                <button type="button"
+                    data-action="click->search-results#nextPage"
+                    data-search-results-target="nextBtn"
+                    class="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition">
+                  Next
+                </button>
+              </div>
+            </div>
+          <% end %>
+        </div>
       <% end %>
     </div>
   <% end %>

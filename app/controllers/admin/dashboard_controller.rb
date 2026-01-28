@@ -5,7 +5,6 @@ module Admin
       @total_books = Book.count
       @pending_requests = Request.active.count
       @attention_needed = Request.needs_attention.count
-      @issues_count = Request.with_issues.count
       @system_health = SystemHealth.all.index_by(&:service)
       @update_check = UpdateCheckerService.cached_result
     end
