@@ -19,7 +19,7 @@ class PostProcessingJob < ApplicationJob
     begin
       destination = build_destination_path(book, download)
       source_path = remap_download_path(download.download_path, download)
-      copy_files(source_path, destination)
+      copy_files(source_path, destination, book: book)
 
       book.update!(file_path: destination)
       request.complete!
@@ -66,7 +66,7 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def copy_files(source, destination)
+  def copy_files(source, destination, book: nil)
     unless source.present?
       Rails.logger.error "[PostProcessingJob] Source path is blank - download client may not have reported the path"
       raise "Source path is blank. Check download client configuration and ensure the download completed successfully."
@@ -94,11 +94,33 @@ class PostProcessingJob < ApplicationJob
         FileUtils.cp_r(File.join(source, file), destination)
       end
     else
-      # Copy single file
-      FileUtils.cp(source, destination)
+      # Copy single file with renamed filename based on template
+      extension = File.extname(source)
+      new_filename = book ? PathTemplateService.build_filename(book, extension) : File.basename(source)
+      destination_file = File.join(destination, new_filename)
+
+      # Handle duplicate filenames
+      destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
+
+      Rails.logger.info "[PostProcessingJob] Renaming file to: #{new_filename}"
+      FileUtils.cp(source, destination_file)
     end
 
     Rails.logger.info "[PostProcessingJob] Copy completed successfully"
+  end
+
+  def handle_duplicate_filename(path)
+    dir = File.dirname(path)
+    ext = File.extname(path)
+    base = File.basename(path, ext)
+
+    counter = 1
+    new_path = path
+    while File.exist?(new_path)
+      counter += 1
+      new_path = File.join(dir, "#{base} (#{counter})#{ext}")
+    end
+    new_path
   end
 
   # Remap paths from download client (host) to container paths
