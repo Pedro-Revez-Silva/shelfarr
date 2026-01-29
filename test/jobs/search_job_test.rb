@@ -142,6 +142,66 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "includes language in search query for non-English requests" do
+    # Set request language to French
+    @request.update!(language: "fr")
+
+    VCR.turned_off do
+      # Stub that verifies "French" is in the query
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["query"].include?("French") }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      assert_nothing_raised do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+  end
+
+  test "does not add language to search query for English requests" do
+    # Set request language to English
+    @request.update!(language: "en")
+
+    VCR.turned_off do
+      # Stub that verifies "English" is NOT in the query (just title and author)
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| !req.uri.query_values["query"].include?("English") }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      assert_nothing_raised do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+  end
+
+  test "handles unknown language code gracefully" do
+    # Set request language to unknown code
+    @request.update!(language: "xyz")
+
+    VCR.turned_off do
+      # Stub search - unknown language should not be added to query
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| !req.uri.query_values["query"].include?("xyz") }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      assert_nothing_raised do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+  end
+
   private
 
   def stub_prowlarr_search_with_results

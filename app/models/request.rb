@@ -122,12 +122,38 @@ class Request < ApplicationRecord
   end
 
   # Cancel/fail request permanently
+  # Also cancels any active downloads and removes them from download clients
   def cancel!
-    update!(
-      status: :failed,
-      attention_needed: false,
-      issue_description: nil
-    )
+    ActiveRecord::Base.transaction do
+      # Cancel active and paused downloads and remove from download clients
+      downloads.where(status: [ :queued, :downloading, :paused ]).each do |download|
+        cancel_download(download)
+      end
+
+      update!(
+        status: :failed,
+        attention_needed: false,
+        issue_description: nil
+      )
+    end
+  end
+
+  # Cancel a specific download and remove from download client
+  def cancel_download(download)
+    return unless download.queued? || download.downloading? || download.paused?
+
+    # Try to remove from download client if we have an external_id
+    if download.external_id.present? && download.download_client.present?
+      begin
+        client = download.download_client.client_instance
+        client.remove_torrent(download.external_id, delete_files: true)
+        Rails.logger.info "[Request] Removed download #{download.id} from #{download.download_client.name}"
+      rescue => e
+        Rails.logger.warn "[Request] Failed to remove download from client: #{e.message}"
+      end
+    end
+
+    download.update!(status: :failed)
   end
 
   # Check if request can be retried
@@ -143,9 +169,9 @@ class Request < ApplicationRecord
   end
 
   # Check if request can be cancelled/deleted
-  # Allow cancellation for requests not actively downloading or completed
+  # Allow cancellation for any request that isn't already completed
   def can_be_cancelled?
-    pending? || searching? || not_found? || failed?
+    !completed?
   end
 
   # Check if retry is due
