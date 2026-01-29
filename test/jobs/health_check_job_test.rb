@@ -113,8 +113,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
 
     VCR.turned_off do
       # First client succeeds
-      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
-        .to_return(status: 200, headers: { "Set-Cookie" => "SID=test; path=/" }, body: "Ok.")
+      stub_qbittorrent_connection("http://localhost:8080", session_id: "test")
       # Second client fails
       stub_request(:post, "http://localhost:9090/api/v2/auth/login")
         .to_return(status: 401, body: "Fails.")
@@ -282,11 +281,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
   end
 
   def stub_qbittorrent_auth_success
-    stub_request(:post, "http://localhost:8080/api/v2/auth/login")
-      .to_return(
-        status: 200,
-        headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
-        body: "Ok."
-      )
+    stub_qbittorrent_connection("http://localhost:8080")
   end
 end

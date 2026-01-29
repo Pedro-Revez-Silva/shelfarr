@@ -128,6 +128,9 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
           body: "Ok."
         )
 
+      stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .to_return(status: 200, body: "v4.6.0")
+
       assert @client.test_connection
     end
   end
@@ -136,6 +139,23 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     VCR.turned_off do
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")
         .to_return(status: 401, body: "Fails.")
+
+      assert_not @client.test_connection
+    end
+  end
+
+  test "test_connection returns false when API endpoint returns 404" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Simulates seedbox subpath issue where auth works but API returns 404
+      stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .to_return(status: 404, body: "<html><head><title>404 Not Found</title></head></html>")
 
       assert_not @client.test_connection
     end

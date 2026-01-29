@@ -86,10 +86,22 @@ module DownloadClients
       end
     end
 
-    # Test connection
+    # Test connection - verifies both authentication AND API accessibility
+    # This catches seedbox subpath issues where auth works but API endpoints return 404
     def test_connection
       ensure_authenticated!
-      true
+
+      # Actually call an API endpoint to verify the full path works
+      # (not just authentication which uses a different code path)
+      response = connection.get("/api/v2/app/version")
+
+      if response.status == 200
+        Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
+        true
+      else
+        Rails.logger.error "[Qbittorrent] API endpoint returned #{response.status} - check URL path configuration"
+        false
+      end
     rescue Error
       false
     end

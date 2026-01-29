@@ -16,6 +16,19 @@ module ActiveSupport
     # Include VCR helper for all tests
     include VCRHelper
 
+    # Helper to stub qBittorrent connection (auth + version endpoint)
+    def stub_qbittorrent_connection(url, session_id: "test_session_id")
+      stub_request(:post, "#{url}/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=#{session_id}; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, "#{url}/api/v2/app/version")
+        .to_return(status: 200, body: "v4.6.0")
+    end
+
     # Add more helper methods to be used by all tests here...
   end
 end

@@ -18,7 +18,7 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
     )
 
     VCR.turned_off do
-      stub_qbittorrent_auth
+      stub_qbittorrent_connection("http://localhost:8080")
 
       search_result = Minitest::Mock.new
       search_result.expect :usenet?, false
@@ -68,10 +68,8 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
 
     VCR.turned_off do
       # Both succeed connection test
-      stub_request(:post, "http://localhost:9090/api/v2/auth/login")
-        .to_return(status: 200, headers: { "Set-Cookie" => "SID=test; path=/" }, body: "Ok.")
-      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
-        .to_return(status: 200, headers: { "Set-Cookie" => "SID=test; path=/" }, body: "Ok.")
+      stub_qbittorrent_connection("http://localhost:9090", session_id: "test")
+      stub_qbittorrent_connection("http://localhost:8080", session_id: "test")
 
       search_result = Minitest::Mock.new
       search_result.expect :usenet?, false
@@ -104,8 +102,7 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")
         .to_return(status: 401, body: "Fails.")
       # Second client succeeds
-      stub_request(:post, "http://localhost:9090/api/v2/auth/login")
-        .to_return(status: 200, headers: { "Set-Cookie" => "SID=test; path=/" }, body: "Ok.")
+      stub_qbittorrent_connection("http://localhost:9090", session_id: "test")
 
       search_result = Minitest::Mock.new
       search_result.expect :usenet?, false
@@ -180,15 +177,6 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
   end
 
   private
-
-  def stub_qbittorrent_auth
-    stub_request(:post, "http://localhost:8080/api/v2/auth/login")
-      .to_return(
-        status: 200,
-        headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
-        body: "Ok."
-      )
-  end
 
   def stub_sabnzbd_version
     stub_request(:get, %r{localhost:8080/api.*mode=version})

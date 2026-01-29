@@ -186,13 +186,8 @@ class DownloadJobTest < ActiveJob::TestCase
         body: torrent_data
       )
 
-    # Stub authentication
-    stub_request(:post, "http://localhost:8080/api/v2/auth/login")
-      .to_return(
-        status: 200,
-        headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
-        body: "Ok."
-      )
+    # Stub authentication and version endpoint
+    stub_qbittorrent_connection("http://localhost:8080")
 
     # Stub add torrent
     stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
