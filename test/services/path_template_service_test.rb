@@ -141,4 +141,65 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert valid
     assert_nil error
   end
+
+  # Filename template tests
+
+  test "build_filename with default template" do
+    result = PathTemplateService.build_filename(@book, ".epub")
+    assert_equal "Stephen King - The Shining.epub", result
+  end
+
+  test "build_filename with custom template" do
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{title} by {author}")
+    assert_equal "The Shining by Stephen King.m4b", result
+  end
+
+  test "build_filename includes year when in template" do
+    result = PathTemplateService.build_filename(@book, ".epub", template: "{author} - {title} ({year})")
+    assert_equal "Stephen King - The Shining (1977).epub", result
+  end
+
+  test "build_filename handles missing year gracefully" do
+    @book.update!(year: nil)
+    result = PathTemplateService.build_filename(@book, ".epub", template: "{author} - {title} - {year}")
+    # Empty year should be cleaned up, not leave trailing separator
+    assert_equal "Stephen King - The Shining.epub", result
+  end
+
+  test "build_filename handles missing author" do
+    @book.update!(author: nil)
+    result = PathTemplateService.build_filename(@book, ".epub")
+    assert_equal "Unknown Author - The Shining.epub", result
+  end
+
+  test "build_filename sanitizes invalid characters" do
+    @book.update!(title: "Book: A Story?")
+    result = PathTemplateService.build_filename(@book, ".epub")
+    assert_equal "Stephen King - Book A Story.epub", result
+  end
+
+  test "build_filename strips path separators from template" do
+    result = PathTemplateService.build_filename(@book, ".epub", template: "{author}/{title}")
+    assert_equal "Stephen KingThe Shining.epub", result
+  end
+
+  test "build_filename adds dot to extension if missing" do
+    result = PathTemplateService.build_filename(@book, "epub")
+    assert_equal "Stephen King - The Shining.epub", result
+  end
+
+  test "filename_template_for returns audiobook template for audiobooks" do
+    Setting.create!(key: "audiobook_filename_template", value: "{title}", value_type: "string", category: "paths")
+
+    template = PathTemplateService.filename_template_for(@book)
+    assert_equal "{title}", template
+  end
+
+  test "filename_template_for returns ebook template for ebooks" do
+    ebook = books(:ebook_pending)
+    Setting.create!(key: "ebook_filename_template", value: "{title} - {author}", value_type: "string", category: "paths")
+
+    template = PathTemplateService.filename_template_for(ebook)
+    assert_equal "{title} - {author}", template
+  end
 end

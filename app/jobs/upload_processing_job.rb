@@ -210,9 +210,7 @@ class UploadProcessingJob < ApplicationJob
   end
 
   def build_filename(book, extension)
-    author = sanitize_filename(book.author.presence || "Unknown Author")
-    title = sanitize_filename(book.title)
-    "#{author} - #{title}#{extension}"
+    PathTemplateService.build_filename(book, extension)
   end
 
   def handle_duplicate_filename(path)
