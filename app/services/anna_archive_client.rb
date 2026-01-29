@@ -39,10 +39,11 @@ class AnnaArchiveClient
 
     # Search for books via HTML scraping
     # Returns array of Result
-    def search(query, file_types: %w[epub pdf], limit: 50)
+    # @param language [String] ISO 639-1 language code (e.g., "en", "fr", "de")
+    def search(query, file_types: %w[epub pdf], limit: 50, language: nil)
       ensure_configured!
 
-      url = build_search_url(query, file_types)
+      url = build_search_url(query, file_types, language: language)
       full_url = "#{base_url}#{url}"
       Rails.logger.info "[AnnaArchiveClient] Searching: #{url}"
 
@@ -145,13 +146,19 @@ class AnnaArchiveClient
       SettingsService.get(:anna_archive_api_key)
     end
 
-    def build_search_url(query, file_types)
+    def build_search_url(query, file_types, language: nil)
       encoded_query = URI.encode_www_form_component(query)
       ext_param = Array(file_types).join(",")
 
       # Anna's Archive search URL pattern
       # Sort by "most_relevant" for best matches
-      "/search?q=#{encoded_query}&ext=#{ext_param}&sort=&content=book_nonfiction,book_fiction,book_unknown"
+      url = "/search?q=#{encoded_query}&ext=#{ext_param}&sort=&content=book_nonfiction,book_fiction,book_unknown"
+
+      # Add language filter if specified
+      # Anna's Archive uses ISO 639-1 codes (e.g., en, fr, de)
+      url += "&lang=#{language}" if language.present?
+
+      url
     end
 
     def parse_search_results(html, limit)
