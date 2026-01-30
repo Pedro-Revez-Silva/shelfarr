@@ -58,4 +58,51 @@ http_interactions:
         Potter"},{"author_name":["Rick DeMonico"],"cover_i":6984750,"edition_count":3,"first_publish_year":2001,"key":"/works/OL16058211W","title":"Harry
         Potter Poster Book"}]}'
   recorded_at: Mon, 19 Jan 2026 19:20:17 GMT
+- request:
+    method: get
+    uri: https://openlibrary.org/search.json?fields=key,title,author_name,first_publish_year,cover_i,edition_count&limit=10&q=harry%20potter
+    body:
+      encoding: US-ASCII
+      string: ''
+    headers:
+      User-Agent:
+      - Faraday v2.14.0
+      Accept-Encoding:
+      - gzip;q=1.0,deflate;q=0.6,identity;q=0.3
+      Accept:
+      - "*/*"
+  response:
+    status:
+      code: 200
+      message: OK
+    headers:
+      Server:
+      - nginx/1.28.1
+      Date:
+      - Fri, 30 Jan 2026 12:11:04 GMT
+      Content-Type:
+      - application/json
+      Transfer-Encoding:
+      - chunked
+      Connection:
+      - keep-alive
+      X-Served-By:
+      - FastAPI
+      Referrer-Policy:
+      - no-referrer-when-downgrade
+    body:
+      encoding: ASCII-8BIT
+      string: '{"numFound":3752,"start":0,"numFoundExact":true,"num_found":3752,"documentation_url":"https://openlibrary.org/dev/docs/api/search","q":"harry
+        potter","offset":null,"docs":[{"author_name":["J. K. Rowling"],"cover_i":15155833,"edition_count":393,"first_publish_year":1997,"key":"/works/OL82563W","title":"Harry
+        Potter and the Philosopher''s Stone"},{"author_name":["J. K. Rowling"],"cover_i":15158660,"edition_count":144,"first_publish_year":2007,"key":"/works/OL82586W","title":"Harry
+        Potter and the Deathly Hallows"},{"author_name":["J. K. Rowling"],"cover_i":10580435,"edition_count":277,"first_publish_year":1999,"key":"/works/OL82536W","title":"Harry
+        Potter and the Prisoner of Azkaban"},{"author_name":["J. K. Rowling"],"cover_i":12059372,"edition_count":241,"first_publish_year":2000,"key":"/works/OL82560W","title":"Harry
+        Potter and the Goblet of Fire"},{"author_name":["J. K. Rowling"],"cover_i":15158666,"edition_count":246,"first_publish_year":2003,"key":"/works/OL82548W","title":"Harry
+        Potter and the Order of the Phoenix"},{"author_name":["J. K. Rowling"],"cover_i":10716273,"edition_count":176,"first_publish_year":2005,"key":"/works/OL82565W","title":"Harry
+        Potter and the Half-Blood Prince"},{"author_name":["J. K. Rowling"],"cover_i":15158664,"edition_count":303,"first_publish_year":1998,"key":"/works/OL82537W","title":"Harry
+        Potter and the Chamber of Secrets"},{"author_name":["J.K. Rowling"],"cover_i":8457523,"edition_count":16,"first_publish_year":1999,"key":"/works/OL14981609W","title":"Harry
+        Potter (series) 1-7"},{"author_name":["J. K. Rowling"],"edition_count":2,"first_publish_year":2001,"key":"/works/OL21385222W","title":"Harry
+        Potter"},{"author_name":["Warner Bros. Entertainment Inc"],"cover_i":10195373,"edition_count":1,"first_publish_year":2007,"key":"/works/OL20874116W","title":"Harry
+        Potter poster annual 2008"}]}'
+  recorded_at: Fri, 30 Jan 2026 12:11:04 GMT
 recorded_with: VCR 6.3.1

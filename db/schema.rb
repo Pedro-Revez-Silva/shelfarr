@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_07_234613) do
+ActiveRecord::Schema[8.1].define(version: 2026_01_30_120752) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -35,8 +35,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_07_234613) do
     t.datetime "created_at", null: false
     t.text "description"
     t.string "file_path"
+    t.string "hardcover_id"
     t.string "isbn"
     t.string "language", default: "en"
+    t.string "metadata_source", default: "openlibrary"
     t.string "open_library_edition_id"
     t.string "open_library_work_id"
     t.string "publisher"
@@ -44,6 +46,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_07_234613) do
     t.datetime "updated_at", null: false
     t.integer "year"
     t.index ["book_type"], name: "index_books_on_book_type"
+    t.index ["hardcover_id"], name: "index_books_on_hardcover_id"
     t.index ["isbn"], name: "index_books_on_isbn"
     t.index ["open_library_edition_id"], name: "index_books_on_open_library_edition_id"
     t.index ["open_library_work_id"], name: "index_books_on_open_library_work_id"

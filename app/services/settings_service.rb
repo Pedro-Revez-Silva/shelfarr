@@ -66,6 +66,11 @@ class SettingsService
     anna_archive_api_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" },
     flaresolverr_url: { type: "string", default: "", category: "anna_archive", description: "FlareSolverr URL for bypassing DDoS protection (e.g., http://flaresolverr:8191)" },
 
+    # Hardcover Integration
+    hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
+    metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover first, OpenLibrary fallback), hardcover, or openlibrary" },
+    hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
+
     # OIDC/SSO Authentication
     oidc_enabled: { type: "boolean", default: false, category: "oidc", description: "Enable OpenID Connect (OIDC) single sign-on authentication" },
     oidc_provider_name: { type: "string", default: "SSO", category: "oidc", description: "Display name for the OIDC provider (shown on login button)" },
@@ -82,6 +87,7 @@ class SettingsService
     "download" => "Download Settings",
     "audiobookshelf" => "Audiobookshelf",
     "anna_archive" => "Anna's Archive",
+    "hardcover" => "Hardcover",
     "paths" => "Output Paths",
     "queue" => "Queue Settings",
     "open_library" => "Open Library",
@@ -195,6 +201,10 @@ class SettingsService
         configured?(:oidc_issuer) &&
         configured?(:oidc_client_id) &&
         configured?(:oidc_client_secret)
+    end
+
+    def hardcover_configured?
+      configured?(:hardcover_api_token)
     end
   end
 end
