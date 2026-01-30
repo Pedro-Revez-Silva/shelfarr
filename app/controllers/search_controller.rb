@@ -13,16 +13,16 @@ class SearchController < ApplicationController
       @error = nil
     else
       begin
-        @results = OpenLibraryClient.search(@query)
+        @results = MetadataService.search(@query)
         @error = nil
-      rescue OpenLibraryClient::ConnectionError => e
+      rescue HardcoverClient::ConnectionError, OpenLibraryClient::ConnectionError => e
         @results = []
-        @error = "Unable to connect to Open Library. Please try again later."
-        Rails.logger.error("Open Library connection error: #{e.message}")
-      rescue OpenLibraryClient::Error => e
+        @error = "Unable to connect to metadata service. Please try again later."
+        Rails.logger.error("Metadata service connection error: #{e.message}")
+      rescue HardcoverClient::Error, OpenLibraryClient::Error, MetadataService::Error => e
         @results = []
         @error = "Search failed. Please try again."
-        Rails.logger.error("Open Library error: #{e.message}")
+        Rails.logger.error("Metadata service error: #{e.message}")
       end
     end
 

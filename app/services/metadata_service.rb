@@ -194,13 +194,7 @@ class MetadataService
     end
 
     def parse_work_id(work_id)
-      parts = work_id.to_s.split(":", 2)
-      if parts.length == 2
-        parts
-      else
-        # Legacy OpenLibrary IDs without prefix
-        [ "openlibrary", work_id ]
-      end
+      Book.parse_work_id(work_id)
     end
 
     def parse_year(date_string)

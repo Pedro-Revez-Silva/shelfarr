@@ -41,7 +41,7 @@ class RequestsController < ApplicationController
     @work_id = params[:work_id]
     @title = params[:title]
     @author = params[:author]
-    @cover_id = params[:cover_id]
+    @cover_url = params[:cover_url]
     @first_publish_year = params[:first_publish_year]
 
     if @work_id.blank? || @title.blank?
@@ -81,21 +81,8 @@ class RequestsController < ApplicationController
 
       warnings << duplicate_check.message if duplicate_check.warn?
 
-      # Find or create the book
-      book = Book.find_or_initialize_by(
-        open_library_work_id: work_id,
-        book_type: book_type
-      )
-
-      if book.new_record?
-        book.assign_attributes(
-          title: params[:title],
-          author: params[:author],
-          cover_url: params[:cover_id].present? ? OpenLibraryClient.cover_url(params[:cover_id], size: :l) : nil,
-          year: params[:first_publish_year]
-        )
-        book.save!
-      end
+      # Find or create the book based on metadata source
+      book = find_or_create_book_for_source(work_id, book_type)
 
       request = Current.user.requests.build(book: book, status: :pending)
       request.notes = params[:notes] if params[:notes].present?
@@ -322,5 +309,23 @@ class RequestsController < ApplicationController
         Rails.logger.warn "[RequestsController] Failed to remove torrent: #{e.message}"
       end
     end
+  end
+
+  def find_or_create_book_for_source(work_id, book_type)
+    source, _source_id = Book.parse_work_id(work_id)
+    book = Book.find_or_initialize_by_work_id(work_id, book_type: book_type)
+
+    if book.new_record?
+      book.assign_attributes(
+        title: params[:title],
+        author: params[:author],
+        cover_url: params[:cover_url],
+        year: params[:first_publish_year],
+        metadata_source: source
+      )
+      book.save!
+    end
+
+    book
   end
 end

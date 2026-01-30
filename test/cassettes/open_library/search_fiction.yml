@@ -37,4 +37,50 @@ http_interactions:
       string: !binary |-
         eyJudW1Gb3VuZCI6MTcxMDI0Niwic3RhcnQiOjAsIm51bUZvdW5kRXhhY3QiOnRydWUsIm51bV9mb3VuZCI6MTcxMDI0NiwiZG9jdW1lbnRhdGlvbl91cmwiOiJodHRwczovL29wZW5saWJyYXJ5Lm9yZy9kZXYvZG9jcy9hcGkvc2VhcmNoIiwicSI6ImZpY3Rpb24iLCJvZmZzZXQiOm51bGwsImRvY3MiOlt7ImF1dGhvcl9uYW1lIjpbIklzYWFjIEFzaW1vdiJdLCJjb3Zlcl9pIjoxNDYxMjYxMCwiZWRpdGlvbl9jb3VudCI6OTcsImZpcnN0X3B1Ymxpc2hfeWVhciI6MTk1MSwia2V5IjoiL3dvcmtzL09MNDYxMjVXIiwidGl0bGUiOiJGb3VuZGF0aW9uIn0seyJhdXRob3JfbmFtZSI6WyJKb3JnZSBMdWlzIEJvcmdlcyJdLCJjb3Zlcl9pIjoxMDgzMjI5MCwiZWRpdGlvbl9jb3VudCI6NzgsImZpcnN0X3B1Ymxpc2hfeWVhciI6MTk0NSwia2V5IjoiL3dvcmtzL09MMTEwOTcxVyIsInRpdGxlIjoiRmljY2lvbmVzIn0seyJhdXRob3JfbmFtZSI6WyJBZ2F0aGEgQ2hyaXN0aWUiXSwiY292ZXJfaSI6MTM2OTk2NjcsImVkaXRpb25fY291bnQiOjEwOTEsImZpcnN0X3B1Ymxpc2hfeWVhciI6MTkyMCwia2V5IjoiL3dvcmtzL09MNDcyNzE1VyIsInRpdGxlIjoiVGhlIE15c3RlcmlvdXMgQWZmYWlyIGF0IFN0eWxlcyJ9LHsiYXV0aG9yX25hbWUiOlsiQnJhbSBTdG9rZXIiXSwiY292ZXJfaSI6MTIyMTY1MDMsImVkaXRpb25fY291bnQiOjczNiwiZmlyc3RfcHVibGlzaF95ZWFyIjoxODk3LCJrZXkiOiIvd29ya3MvT0w4NTg5MlciLCJ0aXRsZSI6IkRyYWN1bGEifSx7ImF1dGhvcl9uYW1lIjpbIlRvbmkgTW9ycmlzb24iXSwiY292ZXJfaSI6ODI2MTM2NywiZWRpdGlvbl9jb3VudCI6MTA0LCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5ODcsImtleSI6Ii93b3Jrcy9PTDUwNTQ4VyIsInRpdGxlIjoiQmVsb3ZlZCJ9LHsiYXV0aG9yX25hbWUiOlsiTWFyeSBTaGVsbGV5Il0sImNvdmVyX2kiOjg4MjY2MiwiZWRpdGlvbl9jb3VudCI6NDMwLCJmaXJzdF9wdWJsaXNoX3llYXIiOjE4MjYsImtleSI6Ii93b3Jrcy9PTDQ1MDEyNFciLCJ0aXRsZSI6IlRoZSBMYXN0IE1hbiJ9LHsiYXV0aG9yX25hbWUiOlsiSC4gRy4gV2VsbHMiXSwiY292ZXJfaSI6OTAwOTMxNiwiZWRpdGlvbl9jb3VudCI6MTE1NCwiZmlyc3RfcHVibGlzaF95ZWFyIjoxODk1LCJrZXkiOiIvd29ya3MvT0w1MjI2N1ciLCJ0aXRsZSI6IlRoZSBUaW1lIE1hY2hpbmUifSx7ImF1dGhvcl9uYW1lIjpbIkguIEcuIFdlbGxzIl0sImNvdmVyX2kiOjY0MTkxOTksImVkaXRpb25fY291bnQiOjU2MywiZmlyc3RfcHVibGlzaF95ZWFyIjowLCJrZXkiOiIvd29ya3MvT0w1MjI2NlciLCJ0aXRsZSI6IlRoZSBJbnZpc2libGUgTWFuIn0seyJhdXRob3JfbmFtZSI6WyJFZGl0aCBXaGFydG9uIl0sImNvdmVyX2kiOjgzMDM0ODAsImVkaXRpb25fY291bnQiOjEwMDAsImZpcnN0X3B1Ymxpc2hfeWVhciI6MTkxMCwia2V5IjoiL3dvcmtzL09MOTg1MDFXIiwidGl0bGUiOiJFdGhhbiBGcm9tZSJ9LHsiYXV0aG9yX25hbWUiOlsiRnJhbmsgSGVyYmVydCJdLCJjb3Zlcl9pIjoxMTQ4MTM1NCwiZWRpdGlvbl9jb3VudCI6MTIxLCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5NjUsImtleSI6Ii93b3Jrcy9PTDg5MzQxNVciLCJ0aXRsZSI6IkR1bmUifSx7ImF1dGhvcl9uYW1lIjpbItCV0LLQs9C10L3QuNC5INCY0LLQsNC90L7QstC40Ycg0JfQsNC80Y/RgtC40L0iXSwiY292ZXJfaSI6NTQ4NDE4OSwiZWRpdGlvbl9jb3VudCI6MjEwLCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5MjQsImtleSI6Ii93b3Jrcy9PTDEwMjE1VyIsInRpdGxlIjoi0JzRiyJ9LHsiYXV0aG9yX25hbWUiOlsiVmlyZ2luaWEgV29vbGYiXSwiY292ZXJfaSI6NjU1OTA1NywiZWRpdGlvbl9jb3VudCI6MzAzLCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5MjksImtleSI6Ii93b3Jrcy9PTDM5Mzc5VyIsInRpdGxlIjoiQSBSb29tIG9mIE9uZSdzIE93biJ9LHsiYXV0aG9yX25hbWUiOlsiSmFtZXMgSm95Y2UiXSwiY292ZXJfaSI6ODIxNjQxMiwiZWRpdGlvbl9jb3VudCI6OTk2LCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5MTQsImtleSI6Ii93b3Jrcy9PTDg2MzIwVyIsInRpdGxlIjoiRHVibGluZXJzIn0seyJhdXRob3JfbmFtZSI6WyJILiBHLiBXZWxscyJdLCJjb3Zlcl9pIjozNjMxNCwiZWRpdGlvbl9jb3VudCI6NDYxLCJmaXJzdF9wdWJsaXNoX3llYXIiOjAsImtleSI6Ii93b3Jrcy9PTDUyMTE0VyIsInRpdGxlIjoiVGhlIFdhciBvZiB0aGUgV29ybGRzIn0seyJhdXRob3JfbmFtZSI6WyJSdWR5YXJkIEtpcGxpbmciXSwiY292ZXJfaSI6MTA1MzAxMSwiZWRpdGlvbl9jb3VudCI6OTM0LCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5MDEsImtleSI6Ii93b3Jrcy9PTDE5OTA4VyIsInRpdGxlIjoiS2ltIn0seyJhdXRob3JfbmFtZSI6WyJFcnNraW5lIENoaWxkZXJzIl0sImNvdmVyX2kiOjIyOTM5NzQsImVkaXRpb25fY291bnQiOjUzMSwiZmlyc3RfcHVibGlzaF95ZWFyIjoxOTAzLCJrZXkiOiIvd29ya3MvT0wyMzc5N1ciLCJ0aXRsZSI6IlRoZSBSaWRkbGUgb2YgdGhlIFNhbmRzIn0seyJhdXRob3JfbmFtZSI6WyJMdWN5IE1hdWQgTW9udGdvbWVyeSJdLCJjb3Zlcl9pIjoxNDY0MDA2NywiZWRpdGlvbl9jb3VudCI6Mjk0LCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5MjYsImtleSI6Ii93b3Jrcy9PTDc3Nzc1VyIsInRpdGxlIjoiVGhlIGJsdWUgY2FzdGxlIn0seyJhdXRob3JfbmFtZSI6WyJFbW1hIE9yY3p5Il0sImNvdmVyX2kiOjQ3OTEwMiwiZWRpdGlvbl9jb3VudCI6NTkxLCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5MDAsImtleSI6Ii93b3Jrcy9PTDEyNTMyODVXIiwidGl0bGUiOiJUaGUgU2NhcmxldCBQaW1wZXJuZWwifSx7ImF1dGhvcl9uYW1lIjpbIkthdGUgQ2hvcGluIl0sImNvdmVyX2kiOjg3NTAyNDEsImVkaXRpb25fY291bnQiOjM0NiwiZmlyc3RfcHVibGlzaF95ZWFyIjoxODk5LCJrZXkiOiIvd29ya3MvT0w2NTQzMFciLCJ0aXRsZSI6IlRoZSBBd2FrZW5pbmcifSx7ImF1dGhvcl9uYW1lIjpbIkpvc2VwaCBDb25yYWQiXSwiY292ZXJfaSI6ODIzNjI5NSwiZWRpdGlvbl9jb3VudCI6MzQ0LCJmaXJzdF9wdWJsaXNoX3llYXIiOjE5MDAsImtleSI6Ii93b3Jrcy9PTDM4Njg0VyIsInRpdGxlIjoiTG9yZCBKaW0ifV19
   recorded_at: Mon, 19 Jan 2026 19:20:19 GMT
+- request:
+    method: get
+    uri: https://openlibrary.org/search.json?fields=key,title,author_name,first_publish_year,cover_i,edition_count&limit=10&q=fiction
+    body:
+      encoding: US-ASCII
+      string: ''
+    headers:
+      User-Agent:
+      - Faraday v2.14.0
+      Accept-Encoding:
+      - gzip;q=1.0,deflate;q=0.6,identity;q=0.3
+      Accept:
+      - "*/*"
+  response:
+    status:
+      code: 200
+      message: OK
+    headers:
+      Server:
+      - nginx/1.28.1
+      Date:
+      - Fri, 30 Jan 2026 12:17:12 GMT
+      Content-Type:
+      - application/json
+      Transfer-Encoding:
+      - chunked
+      Connection:
+      - keep-alive
+      X-Served-By:
+      - FastAPI
+      Referrer-Policy:
+      - no-referrer-when-downgrade
+    body:
+      encoding: ASCII-8BIT
+      string: '{"numFound":1711121,"start":0,"numFoundExact":true,"num_found":1711121,"documentation_url":"https://openlibrary.org/dev/docs/api/search","q":"fiction","offset":null,"docs":[{"author_name":["Isaac
+        Asimov"],"cover_i":14612610,"edition_count":97,"first_publish_year":1951,"key":"/works/OL46125W","title":"Foundation"},{"author_name":["Jorge
+        Luis Borges"],"cover_i":10832290,"edition_count":78,"first_publish_year":1945,"key":"/works/OL110971W","title":"Ficciones"},{"author_name":["Agatha
+        Christie"],"cover_i":13699667,"edition_count":1091,"first_publish_year":1920,"key":"/works/OL472715W","title":"The
+        Mysterious Affair at Styles"},{"author_name":["Bram Stoker"],"cover_i":12216503,"edition_count":736,"first_publish_year":1897,"key":"/works/OL85892W","title":"Dracula"},{"author_name":["Toni
+        Morrison"],"cover_i":8261367,"edition_count":104,"first_publish_year":1987,"key":"/works/OL50548W","title":"Beloved"},{"author_name":["Mary
+        Shelley"],"cover_i":882662,"edition_count":430,"first_publish_year":1826,"key":"/works/OL450124W","title":"The
+        Last Man"},{"author_name":["Charlotte Perkins Gilman"],"cover_i":448130,"edition_count":541,"first_publish_year":1915,"key":"/works/OL2771987W","title":"Herland"},{"author_name":["H.
+        G. Wells"],"cover_i":9009316,"edition_count":1154,"first_publish_year":1895,"key":"/works/OL52267W","title":"The
+        Time Machine"},{"author_name":["H. G. Wells"],"cover_i":6419199,"edition_count":563,"first_publish_year":0,"key":"/works/OL52266W","title":"The
+        Invisible Man"},{"author_name":["Frank Herbert"],"cover_i":11481354,"edition_count":121,"first_publish_year":1965,"key":"/works/OL893415W","title":"Dune"}]}'
+  recorded_at: Fri, 30 Jan 2026 12:17:12 GMT
 recorded_with: VCR 6.3.1

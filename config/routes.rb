@@ -73,6 +73,7 @@ Rails.application.routes.draw do
         post :test_prowlarr
         post :test_audiobookshelf
         post :test_flaresolverr
+        post :test_hardcover
         post :test_oidc
       end
     end

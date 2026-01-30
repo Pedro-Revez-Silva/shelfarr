@@ -6,7 +6,7 @@ class SystemHealth < ApplicationRecord
     not_configured: 3
   }
 
-  SERVICES = %w[prowlarr download_client output_paths audiobookshelf].freeze
+  SERVICES = %w[prowlarr download_client output_paths audiobookshelf hardcover].freeze
 
   validates :service, presence: true, uniqueness: true
   validates :status, presence: true

@@ -42,7 +42,7 @@ class DuplicateDetectionService
       end
 
       # Check 2: Same work + type already acquired
-      existing_book = Book.find_by(open_library_work_id: work_id, book_type: book_type)
+      existing_book = Book.find_by_work_id(work_id, book_type: book_type)
       if existing_book&.acquired?
         return Result.new(
           status: BLOCK,
@@ -67,7 +67,7 @@ class DuplicateDetectionService
 
       # Check 4: Same work exists as different type (warn only)
       other_type = book_type == "audiobook" ? "ebook" : "audiobook"
-      other_book = Book.find_by(open_library_work_id: work_id, book_type: other_type)
+      other_book = Book.find_by_work_id(work_id, book_type: other_type)
       if other_book
         return Result.new(
           status: WARN,
@@ -79,7 +79,7 @@ class DuplicateDetectionService
 
       # Check 5: Same work has a failed/not_found request (warn, allow retry)
       if existing_book
-        failed_request = existing_book.requests.where(status: [:failed, :not_found]).first
+        failed_request = existing_book.requests.where(status: [ :failed, :not_found ]).first
         if failed_request
           return Result.new(
             status: WARN,
@@ -104,5 +104,6 @@ class DuplicateDetectionService
       result = check(work_id: work_id, edition_id: edition_id, book_type: book_type)
       !result.block?
     end
+
   end
 end

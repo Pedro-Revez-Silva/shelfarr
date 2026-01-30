@@ -4,9 +4,9 @@
   <div class="bg-gray-900 rounded-lg shadow p-6 border border-gray-800">
     <div class="flex gap-6 mb-6">
       <div class="flex-shrink-0 w-32">
-        <% if @cover_id.present? %>
+        <% if @cover_url.present? %>
           <img
-            src="<%= OpenLibraryClient.cover_url(@cover_id, size: :m) %>"
+            src="<%= @cover_url %>"
             alt="Cover of <%= @title %>"
             class="w-full rounded shadow"
             onerror="this.onerror=null; this.src='/images/no-cover.svg';"
@@ -35,7 +35,7 @@
       <%= hidden_field_tag :work_id, @work_id %>
       <%= hidden_field_tag :title, @title %>
       <%= hidden_field_tag :author, @author %>
-      <%= hidden_field_tag :cover_id, @cover_id %>
+      <%= hidden_field_tag :cover_url, @cover_url %>
       <%= hidden_field_tag :first_publish_year, @first_publish_year %>
 
       <div>

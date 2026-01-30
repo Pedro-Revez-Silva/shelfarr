@@ -9,6 +9,7 @@ class HealthCheckJob < ApplicationJob
     check_download_clients
     check_output_paths
     check_audiobookshelf
+    check_hardcover
     schedule_next_run
   end
 
@@ -119,6 +120,28 @@ class HealthCheckJob < ApplicationJob
   rescue => e
     health.check_failed!(message: "Error: #{e.message}")
     Rails.logger.error "[HealthCheckJob] Audiobookshelf check failed: #{e.message}"
+  end
+
+  def check_hardcover
+    health = SystemHealth.for_service("hardcover")
+
+    unless HardcoverClient.configured?
+      health.mark_not_configured!
+      return
+    end
+
+    if HardcoverClient.test_connection
+      health.check_succeeded!(message: "Connection successful")
+    else
+      health.check_failed!(message: "Failed to connect to Hardcover")
+    end
+  rescue HardcoverClient::AuthenticationError => e
+    health.check_failed!(message: "Authentication failed: #{e.message}")
+  rescue HardcoverClient::ConnectionError => e
+    health.check_failed!(message: "Connection error: #{e.message}")
+  rescue => e
+    health.check_failed!(message: "Error: #{e.message}")
+    Rails.logger.error "[HealthCheckJob] Hardcover check failed: #{e.message}"
   end
 
   def schedule_next_run

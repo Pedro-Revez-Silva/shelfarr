@@ -1,7 +1,7 @@
 <%
   # Check if this book already exists in our system
-  existing_audiobook = Book.find_by(open_library_work_id: result.work_id, book_type: :audiobook)
-  existing_ebook = Book.find_by(open_library_work_id: result.work_id, book_type: :ebook)
+  existing_audiobook = Book.find_by_work_id(result.work_id, book_type: :audiobook)
+  existing_ebook = Book.find_by_work_id(result.work_id, book_type: :ebook)
 
   audiobook_status = if existing_audiobook&.acquired?
     :acquired
@@ -23,9 +23,9 @@
 <div class="group relative rounded-xl overflow-hidden shadow-lg hover:shadow-2xl transition-all duration-300 hover:scale-[1.03] bg-gray-900 ring-1 ring-gray-800">
   <%# Poster Image %>
   <div class="aspect-[2/3] relative">
-    <% if result.cover_url %>
+    <% if result.cover_url.present? %>
       <img
-        src="<%= result.cover_url(size: :m) %>"
+        src="<%= result.cover_url %>"
         alt="Cover of <%= result.title %>"
         class="w-full h-full object-cover"
         loading="lazy"
@@ -89,7 +89,7 @@
             work_id: result.work_id,
             title: result.title,
             author: result.author,
-            cover_id: result.cover_id,
+            cover_url: result.cover_url,
             first_publish_year: result.first_publish_year,
             book_type: 'audiobook'
           ), class: "flex items-center justify-center gap-2 w-full px-3 py-2 rounded-md text-sm font-medium bg-purple-600 hover:bg-purple-500 text-white transition-colors" do %>
@@ -105,7 +105,7 @@
             work_id: result.work_id,
             title: result.title,
             author: result.author,
-            cover_id: result.cover_id,
+            cover_url: result.cover_url,
             first_publish_year: result.first_publish_year,
             book_type: 'ebook'
           ), class: "flex items-center justify-center gap-2 w-full px-3 py-2 rounded-md text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors" do %>
