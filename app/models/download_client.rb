@@ -3,7 +3,7 @@
 class DownloadClient < ApplicationRecord
   encrypts :password, :api_key
 
-  enum :client_type, { qbittorrent: "qbittorrent", sabnzbd: "sabnzbd" }
+  enum :client_type, { qbittorrent: "qbittorrent", sabnzbd: "sabnzbd", nzbget: "nzbget" }
 
   has_many :downloads, dependent: :nullify
 
@@ -15,7 +15,7 @@ class DownloadClient < ApplicationRecord
   scope :enabled, -> { where(enabled: true) }
   scope :by_priority, -> { order(priority: :asc) }
   scope :torrent_clients, -> { where(client_type: :qbittorrent) }
-  scope :usenet_clients, -> { where(client_type: :sabnzbd) }
+  scope :usenet_clients, -> { where(client_type: [ :sabnzbd, :nzbget ]) }
 
   def adapter
     case client_type
@@ -23,8 +23,11 @@ class DownloadClient < ApplicationRecord
       DownloadClients::Qbittorrent.new(self)
     when "sabnzbd"
       DownloadClients::Sabnzbd.new(self)
+    when "nzbget"
+      DownloadClients::Nzbget.new(self)
     end
   end
+  alias_method :client_instance, :adapter
 
   def test_connection
     adapter.test_connection
@@ -37,6 +40,6 @@ class DownloadClient < ApplicationRecord
   end
 
   def usenet_client?
-    sabnzbd?
+    sabnzbd? || nzbget?
   end
 end
