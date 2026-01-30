@@ -2,7 +2,7 @@
 
 # Processes uploaded files:
 # 1. Parses filename to extract title/author
-# 2. Searches Open Library for metadata
+# 2. Searches metadata sources (Hardcover/OpenLibrary) for metadata
 # 3. Creates book with proper metadata
 # 4. Renames file and moves to library location
 class UploadProcessingJob < ApplicationJob
@@ -32,13 +32,13 @@ class UploadProcessingJob < ApplicationJob
       book_type = upload.infer_book_type
       upload.update!(book_type: book_type)
 
-      # Step 3: Search Open Library for proper metadata
+      # Step 3: Search metadata sources for proper metadata
       metadata = fetch_metadata(parsed.title, parsed.author)
 
       if metadata
-        Rails.logger.info "[UploadProcessingJob] Found metadata: '#{metadata.title}' by #{metadata.author}"
+        Rails.logger.info "[UploadProcessingJob] Found metadata from #{metadata.source}: '#{metadata.title}' by #{metadata.author}"
       else
-        Rails.logger.info "[UploadProcessingJob] No Open Library match, using parsed filename"
+        Rails.logger.info "[UploadProcessingJob] No metadata match, using parsed filename"
       end
 
       # Wrap critical operations in transaction for atomicity
@@ -86,14 +86,14 @@ class UploadProcessingJob < ApplicationJob
 
   private
 
-  # Search Open Library and return the best matching result
+  # Search metadata sources and return the best matching result
   def fetch_metadata(title, author)
     return nil if title.blank?
 
     # Build search query - include author if available for better results
     query = author.present? ? "#{title} #{author}" : title
 
-    results = OpenLibraryClient.search(query, limit: 5)
+    results = MetadataService.search(query, limit: 5)
     return nil if results.empty?
 
     # Score results and pick the best match
@@ -102,8 +102,8 @@ class UploadProcessingJob < ApplicationJob
     # Only return if score is reasonable
     score = score_result(best_match, title, author)
     score >= 30 ? best_match : nil
-  rescue OpenLibraryClient::Error => e
-    Rails.logger.warn "[UploadProcessingJob] Open Library search failed: #{e.message}"
+  rescue HardcoverClient::Error, OpenLibraryClient::Error, MetadataService::Error => e
+    Rails.logger.warn "[UploadProcessingJob] Metadata search failed: #{e.message}"
     nil
   end
 
@@ -153,12 +153,12 @@ class UploadProcessingJob < ApplicationJob
     title = metadata&.title || parsed.title
     author = metadata&.author || parsed.author
     work_id = metadata&.work_id
-    cover_url = metadata&.cover_url(size: :l)
-    year = metadata&.first_publish_year
+    cover_url = metadata&.cover_url
+    year = metadata&.year
 
     # Check for existing book with same work_id and type
     if work_id.present?
-      existing = Book.find_by(open_library_work_id: work_id, book_type: book_type)
+      existing = Book.find_by_work_id(work_id, book_type: book_type)
       return existing if existing
     end
 
@@ -167,14 +167,27 @@ class UploadProcessingJob < ApplicationJob
     return result.book if result.exact? || result.fuzzy?
 
     # Create new book with metadata
-    Book.create!(
-      title: title,
-      author: author,
-      book_type: book_type,
-      open_library_work_id: work_id,
-      cover_url: cover_url,
-      year: year
-    )
+    if work_id.present?
+      source, _source_id = Book.parse_work_id(work_id)
+      book = Book.find_or_initialize_by_work_id(work_id, book_type: book_type)
+      book.assign_attributes(
+        title: title,
+        author: author,
+        cover_url: cover_url,
+        year: year,
+        metadata_source: source
+      )
+      book.save!
+      book
+    else
+      Book.create!(
+        title: title,
+        author: author,
+        book_type: book_type,
+        cover_url: cover_url,
+        year: year
+      )
+    end
   end
 
   def move_to_library(upload, book)
