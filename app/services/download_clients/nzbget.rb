@@ -10,15 +10,17 @@ module DownloadClients
 
       # appendurl params: URL, NZBFilename, Category, Priority, AddToTop, AddPaused, DupeKey, DupeScore, DupeMode
       result = rpc_call("appendurl", [
+        "",                               # Filename
         url,                              # URL
-        "",                               # NZBFilename
         config.category.presence || "",   # Category
         0,                                # Priority
         false,                            # AddToTop
         false,                            # AddPaused
         "",                               # DupeKey
         0,                                # DupeScore
-        "SCORE"                           # DupeMode
+        "SCORE",                          # DupeMode
+        false,                            # AutoCategory
+        [],                               # PPParameters
       ])
 
       if result && result > 0
