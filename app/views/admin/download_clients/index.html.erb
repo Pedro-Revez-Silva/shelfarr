@@ -11,7 +11,7 @@
     </div>
   <% else %>
     <% %w[torrent usenet].each do |type| %>
-      <% clients = @download_clients.select { |c| type == 'torrent' ? c.qbittorrent? : c.sabnzbd? } %>
+      <% clients = @download_clients.select { |c| type == 'torrent' ? c.usenet_client? : c.torrent_client? } %>
       <% next if clients.empty? %>
 
       <div class="mb-8">
