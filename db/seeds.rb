@@ -9,14 +9,14 @@ puts "Created #{Setting.count} settings"
 if Rails.env.development?
   puts "Creating development admin user..."
 
-  unless User.exists?(email_address: "admin@shelfarr.local")
+  unless User.exists?(username: "admin")
     User.create!(
       name: "Admin",
-      email_address: "admin@shelfarr.local",
-      password: "password123",
-      password_confirmation: "password123"
+      username: "admin",
+      password: "Password1234",
+      password_confirmation: "Password1234"
     )
-    puts "Created admin user: admin@shelfarr.local / password123"
+    puts "Created admin user: admin / Password1234"
   end
 end
 
