@@ -161,7 +161,10 @@ module DownloadClients
       result = rpc_call("history", [ false ])
       return [] unless result.is_a?(Array)
 
-      result.take(limit).map { |item| parse_history_item(item) }
+      result
+        .sort_by { it["HistoryTime"] }
+        .take(limit)
+        .map { |item| parse_history_item(item) }
     end
 
     def find_in_queue(nzbget_id)
@@ -172,7 +175,7 @@ module DownloadClients
     end
 
     def find_in_history(nzbget_id)
-      list_history.find { |item| item.hash == nzbget_id.to_s }
+      list_history.first { |item| item.hash == nzbget_id.to_s }
     rescue Base::Error
       nil
     end
@@ -189,13 +192,16 @@ module DownloadClients
     end
 
     def parse_history_item(data)
+      # Rails.logger.error "#{data.inspect}"
+      # Rails.logger.error "@" * 80
+
       Base::TorrentInfo.new(
         hash: data["NZBID"].to_s,
         name: data["Name"],
         progress: 100,
         state: normalize_history_state(data["Status"]),
         size_bytes: data["FileSizeMB"].to_f * 1024 * 1024,
-        download_path: data["DestDir"].presence || ""
+        download_path: data["DestDir"].presence || "",
       )
     end
 
@@ -224,13 +230,13 @@ module DownloadClients
     end
 
     def normalize_history_state(status)
-      case status&.upcase
-      when "SUCCESS"
+      case status.to_s.strip.upcase
+      when "SUCCESS/UNPACK"
         :completed
       when "FAILURE", "DELETED"
         :failed
       else
-        :completed
+        :queued
       end
     end
   end
