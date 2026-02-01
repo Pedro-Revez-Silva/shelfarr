@@ -48,6 +48,9 @@ gem "oj"
 gem "rubyzip", require: "zip"
 # Parse .torrent files to extract info hash
 gem "bencode"
+# Extract metadata from media files
+gem "id3tag"      # MP3 ID3 tags
+gem "pdf-reader"  # PDF metadata
 # TOTP for two-factor authentication
 gem "rotp"
 # QR code generation for 2FA setup
