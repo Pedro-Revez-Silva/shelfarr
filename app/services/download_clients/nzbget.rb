@@ -192,9 +192,6 @@ module DownloadClients
     end
 
     def parse_history_item(data)
-      # Rails.logger.error "#{data.inspect}"
-      # Rails.logger.error "@" * 80
-
       Base::TorrentInfo.new(
         hash: data["NZBID"].to_s,
         name: data["Name"],
