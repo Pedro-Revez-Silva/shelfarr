@@ -175,7 +175,7 @@ module DownloadClients
     end
 
     def find_in_history(nzbget_id)
-      list_history.first { |item| item.hash == nzbget_id.to_s }
+      list_history.find { |item| item.hash == nzbget_id.to_s }
     rescue Base::Error
       nil
     end
