@@ -26,7 +26,7 @@ module DownloadClients
       params[:savepath] = options[:save_path] if options[:save_path].present?
       params[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
 
-      response = connection.post("/api/v2/torrents/add", params)
+      response = connection.post("api/v2/torrents/add", params)
 
       case response.status
       when 200
@@ -66,7 +66,7 @@ module DownloadClients
     def torrent_info(hash)
       ensure_authenticated!
 
-      response = connection.get("/api/v2/torrents/info", { hashes: hash })
+      response = connection.get("api/v2/torrents/info", { hashes: hash })
 
       handle_response(response) do |data|
         return nil if data.blank?
@@ -79,7 +79,7 @@ module DownloadClients
     def list_torrents(filter = {})
       ensure_authenticated!
 
-      response = connection.get("/api/v2/torrents/info", filter)
+      response = connection.get("api/v2/torrents/info", filter)
 
       handle_response(response) do |data|
         Array(data).map { |t| parse_torrent(t) }
@@ -93,7 +93,7 @@ module DownloadClients
 
       # Actually call an API endpoint to verify the full path works
       # (not just authentication which uses a different code path)
-      response = connection.get("/api/v2/app/version")
+      response = connection.get("api/v2/app/version")
 
       if response.status == 200
         Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
@@ -111,7 +111,7 @@ module DownloadClients
     def remove_torrent(hash, delete_files: false)
       ensure_authenticated!
 
-      response = connection.post("/api/v2/torrents/delete", {
+      response = connection.post("api/v2/torrents/delete", {
         hashes: hash,
         deleteFiles: delete_files.to_s
       })
@@ -235,7 +235,7 @@ module DownloadClients
     # Fetch torrent hashes as a Set, optionally filtered by category
     def fetch_torrent_hashes(category: nil)
       params = category.present? ? { category: category } : {}
-      response = connection.get("/api/v2/torrents/info", params)
+      response = connection.get("api/v2/torrents/info", params)
       return Set.new unless response.status == 200
 
       Set.new(Array(response.body).map { |t| t["hash"] })
