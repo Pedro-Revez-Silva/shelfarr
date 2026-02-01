@@ -162,7 +162,7 @@ module DownloadClients
       return [] unless result.is_a?(Array)
 
       result
-        .sort_by { it["HistoryTime"] }
+        .sort_by { |item| item["HistoryTime"] }
         .take(limit)
         .map { |item| parse_history_item(item) }
     end
