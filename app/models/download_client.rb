@@ -42,4 +42,8 @@ class DownloadClient < ApplicationRecord
   def usenet_client?
     sabnzbd? || nzbget?
   end
+
+  def requires_authentication?
+    qbittorrent? || nzbget?
+  end
 end

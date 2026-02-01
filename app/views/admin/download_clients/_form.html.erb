@@ -26,7 +26,7 @@
     <p class="mt-1 text-sm text-gray-500">Include the protocol (http/https) and port</p>
   </div>
 
-  <div id="qbittorrent_fields" class="<%= 'hidden' unless download_client.qbittorrent? || download_client.new_record? %>">
+  <div id="authentication_fields" class="<%= 'hidden' unless download_client.requires_authentication? || download_client.new_record? %>">
     <div class="my-5">
       <%= form.label :username, class: "block text-gray-300 font-medium" %>
       <%= form.text_field :username, placeholder: "admin", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
@@ -96,14 +96,17 @@
   // Use turbo:load for Turbo navigations and DOMContentLoaded for initial page load
   function initDownloadClientForm() {
     const clientTypeSelect = document.getElementById('client_type_select');
-    const qbittorrentFields = document.getElementById('qbittorrent_fields');
+    const authenticationFields = document.getElementById('authentication_fields');
     const sabnzbdFields = document.getElementById('sabnzbd_fields');
 
-    if (!clientTypeSelect || !qbittorrentFields || !sabnzbdFields) return;
+    if (!clientTypeSelect || !authenticationFields || !sabnzbdFields) return;
 
     function toggleFields() {
       const type = clientTypeSelect.value;
-      qbittorrentFields.classList.toggle('hidden', type !== 'qbittorrent');
+      authenticationFields.classList.toggle(
+        'hidden',
+        !['qbittorrent', 'nzbget'].includes(type)
+      );
       sabnzbdFields.classList.toggle('hidden', type !== 'sabnzbd');
     }
 
