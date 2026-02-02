@@ -161,10 +161,7 @@ module DownloadClients
       result = rpc_call("history", [ false ])
       return [] unless result.is_a?(Array)
 
-      result
-        .sort_by { |item| item["HistoryTime"] }
-        .take(limit)
-        .map { |item| parse_history_item(item) }
+      result.take(limit).map { |item| parse_history_item(item) }
     end
 
     def find_in_queue(nzbget_id)
@@ -187,7 +184,7 @@ module DownloadClients
         progress: calculate_progress(data),
         state: normalize_queue_state(data["Status"]),
         size_bytes: data["FileSizeMB"].to_f * 1024 * 1024,
-        download_path: data["DestDir"].presence || ""
+        download_path: normalize_download_path(data["DestDir"]),
       )
     end
 
@@ -198,7 +195,7 @@ module DownloadClients
         progress: 100,
         state: normalize_history_state(data["Status"]),
         size_bytes: data["FileSizeMB"].to_f * 1024 * 1024,
-        download_path: data["DestDir"].presence || "",
+        download_path: normalize_download_path(data["DestDir"]),
       )
     end
 
@@ -219,7 +216,7 @@ module DownloadClients
         :paused
       when "QUEUED", "FETCHING", "LOADING_PARS", "VERIFYING_SOURCES",
            "REPAIRING", "VERIFYING_REPAIRED", "RENAMING", "UNPACKING",
-           "MOVING", "EXECUTING_SCRIPT", "PP_QUEUED", "POST-PROCESSING"
+           "MOVING", "EXECUTING_SCRIPT", "PP_QUEUED", "POST-PROCESSING", "PP_FINISHED"
         :queued
       else
         :queued
@@ -227,14 +224,21 @@ module DownloadClients
     end
 
     def normalize_history_state(status)
-      case status.to_s.strip.upcase
-      when "SUCCESS/UNPACK"
+      status = status.to_s.upcase
+
+      case
+      when status.start_with?("SUCCESS"), status == "DELETED/COPY"
         :completed
-      when "FAILURE", "DELETED"
+      when status.start_with?("FAILURE"), status.start_with?("DELETED")
         :failed
       else
         :queued
       end
+    end
+
+    def normalize_download_path(url)
+      url = url.presence || ""
+      url.to_s.sub(/\.\#[^\/]+$/, "")
     end
   end
 end
