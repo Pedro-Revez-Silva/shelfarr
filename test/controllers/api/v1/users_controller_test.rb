@@ -1,13 +1,21 @@
 require "test_helper"
 
 class API::V1::UsersControllerTest < ActionDispatch::IntegrationTest
+  setup do
+    SettingsService.set(:api_token, "apitoken")
+  end
+
   test "create user" do
     assert_difference("User.count", 1) do
-      post api_v1_users_path, params: {
-        name: "John Doe",
-        username: "johndoe",
-        password: "Password1234"
-      }
+      post api_v1_users_path,
+        headers: {
+          "Authorization" => "Bearer apitoken"
+        },
+        params: {
+          name: "John Doe",
+          username: "johndoe",
+          password: "Password1234"
+        }
     end
 
     assert_response :created
@@ -19,10 +27,14 @@ class API::V1::UsersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "returns error with missing field" do
-    post api_v1_users_path, params: {
-      name: "John Doe",
-      username: "johndoe"
-    }
+    post api_v1_users_path,
+      headers: {
+        "Authorization" => "Bearer apitoken"
+      },
+      params: {
+        name: "John Doe",
+        username: "johndoe"
+      }
 
     assert_response :unprocessable_entity
 
@@ -31,13 +43,12 @@ class API::V1::UsersControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "returns error when invalid JSON payload" do
-    headers = {
-      "Content-Type" => "application/json",
-      "Accept" => "application/json"
-    }
-
     post api_v1_users_path,
-      headers: headers,
+      headers: {
+        "Content-Type" => "application/json",
+        "Accept" => "application/json",
+        "Authorization" => "apitoken"
+      },
       params: '{"name": "John",}'
 
     assert_response :bad_request
