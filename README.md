@@ -72,6 +72,7 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `PGID` | `1000` | Group ID for file permissions. Should match the group of your mounted volumes |
 | `HTTP_PORT` | `80` | Internal container port. Change if port 80 is in use (e.g., behind gluetun) |
 | `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set |
+| `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
 
 Example with custom port:
 ```yaml
@@ -79,6 +80,12 @@ environment:
   - HTTP_PORT=8080
 ports:
   - "5056:8080"  # Map to the custom port
+```
+
+Example running at a sub-path (e.g., behind a reverse proxy at `/shelfarr`):
+```yaml
+environment:
+  - RAILS_RELATIVE_URL_ROOT=/shelfarr
 ```
 
 ### Configuration

@@ -23,6 +23,10 @@ module Shelfarr
     # Initialize configuration defaults for originally generated Rails version.
     config.load_defaults 8.1
 
+    # Support running the app at a sub-path (e.g., /shelfarr)
+    # Set RAILS_RELATIVE_URL_ROOT environment variable to configure
+    config.relative_url_root = ENV.fetch("RAILS_RELATIVE_URL_ROOT", "/")
+
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.
     # Common ones are `templates`, `generators`, or `middleware`, for example.
