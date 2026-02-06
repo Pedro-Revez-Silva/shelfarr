@@ -9,7 +9,7 @@
             src="<%= @cover_url %>"
             alt="Cover of <%= @title %>"
             class="w-full rounded shadow"
-            onerror="this.onerror=null; this.src='/images/no-cover.svg';"
+            onerror="this.onerror=null; this.src='<%= public_asset_path('images/no-cover.svg') %>';"
           >
         <% else %>
           <div class="w-full aspect-[2/3] bg-gray-700 rounded shadow flex items-center justify-center">

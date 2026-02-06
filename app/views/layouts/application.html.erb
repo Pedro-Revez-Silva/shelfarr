@@ -14,8 +14,8 @@
     <%# Enable PWA manifest for installable apps (make sure to enable in config/routes.rb too!) %>
     <%#= tag.link rel: "manifest", href: pwa_manifest_path(format: :json) %>
 
-    <link rel="icon" href="/icon.png" type="image/png">
-    <link rel="apple-touch-icon" href="/icon.png">
+    <link rel="icon" href="<%= public_asset_path('icon.png') %>" type="image/png">
+    <link rel="apple-touch-icon" href="<%= public_asset_path('icon.png') %>">
 
     <%# Includes all stylesheet files in app/assets/stylesheets %>
     <%= stylesheet_link_tag :app, "data-turbo-track": "reload" %>
@@ -28,7 +28,7 @@
         <div class="flex justify-between h-16">
           <div class="flex items-center gap-6">
             <%= link_to root_path, class: "flex items-center gap-2 text-xl font-bold text-white" do %>
-              <img src="/icon.png" alt="Shelfarr" class="w-8 h-8 rounded-md">
+              <img src="<%= public_asset_path('icon.png') %>" alt="Shelfarr" class="w-8 h-8 rounded-md">
               <span>Shelfarr</span>
             <% end %>
             <% if authenticated? %>
