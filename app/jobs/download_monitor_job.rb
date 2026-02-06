@@ -2,6 +2,8 @@
 
 # Recurring job that monitors active downloads and triggers post-processing on completion
 class DownloadMonitorJob < ApplicationJob
+  NOT_FOUND_THRESHOLD = 3
+
   queue_as :default
 
   def perform
@@ -30,6 +32,7 @@ class DownloadMonitorJob < ApplicationJob
 
     return handle_missing(download) unless info
 
+    download.update!(not_found_count: 0) if download.not_found_count > 0
     update_progress(download, info)
 
     if info.completed?
@@ -65,10 +68,18 @@ class DownloadMonitorJob < ApplicationJob
 
   def handle_missing(download)
     client_name = download.download_client&.name || "unknown"
-    Rails.logger.error "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}'"
+    new_count = download.not_found_count + 1
 
-    download.update!(status: :failed)
-    download.request.mark_for_attention!("Download not found in client '#{client_name}' (hash: #{download.external_id})")
+    if new_count >= NOT_FOUND_THRESHOLD
+      Rails.logger.error "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}' after #{new_count} consecutive checks"
+
+      download.update!(status: :failed, not_found_count: new_count)
+      download.request.mark_for_attention!("Download not found in client '#{client_name}' (hash: #{download.external_id})")
+    else
+      Rails.logger.warn "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}' (attempt #{new_count}/#{NOT_FOUND_THRESHOLD})"
+
+      download.update!(not_found_count: new_count)
+    end
   end
 
   def schedule_next_run

@@ -78,7 +78,22 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
-  test "marks download as failed when removed from client" do
+  test "does not immediately fail download on first not-found" do
+    VCR.turned_off do
+      stub_qbittorrent_auth
+      stub_qbittorrent_torrent_not_found
+
+      DownloadMonitorJob.perform_now
+      @download.reload
+
+      assert @download.downloading?
+      assert_equal 1, @download.not_found_count
+    end
+  end
+
+  test "marks download as failed after not-found threshold exceeded" do
+    @download.update!(not_found_count: DownloadMonitorJob::NOT_FOUND_THRESHOLD - 1)
+
     VCR.turned_off do
       stub_qbittorrent_auth
       stub_qbittorrent_torrent_not_found
@@ -90,6 +105,21 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       assert @download.failed?
       assert @request.attention_needed?
       assert_includes @request.issue_description, "not found in client"
+    end
+  end
+
+  test "resets not_found_count when download is found again" do
+    @download.update!(not_found_count: 2)
+
+    VCR.turned_off do
+      stub_qbittorrent_auth
+      stub_qbittorrent_torrent_info(progress: 75, state: "downloading")
+
+      DownloadMonitorJob.perform_now
+      @download.reload
+
+      assert_equal 0, @download.not_found_count
+      assert @download.downloading?
     end
   end
 
