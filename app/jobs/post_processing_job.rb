@@ -91,7 +91,7 @@ class PostProcessingJob < ApplicationJob
       files = Dir.entries(source).reject { |f| f.start_with?(".") }
       Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to copy"
       files.each do |file|
-        FileUtils.cp_r(File.join(source, file), destination)
+        FileCopyService.cp_r(File.join(source, file), destination)
       end
     else
       # Copy single file with renamed filename based on template
@@ -103,7 +103,7 @@ class PostProcessingJob < ApplicationJob
       destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
 
       Rails.logger.info "[PostProcessingJob] Renaming file to: #{new_filename}"
-      FileUtils.cp(source, destination_file)
+      FileCopyService.cp(source, destination_file)
     end
 
     Rails.logger.info "[PostProcessingJob] Copy completed successfully"

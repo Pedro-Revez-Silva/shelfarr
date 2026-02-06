@@ -230,7 +230,7 @@ class UploadProcessingJob < ApplicationJob
       FileUtils.mv(source_path, destination_file)
     rescue Errno::EXDEV
       # Cross-device move, use copy then delete
-      FileUtils.cp(source_path, destination_file)
+      FileCopyService.cp(source_path, destination_file)
       FileUtils.rm(source_path)
     end
 
