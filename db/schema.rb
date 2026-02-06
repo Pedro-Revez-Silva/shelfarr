@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_30_120752) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_06_111153) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -77,6 +77,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_30_120752) do
     t.string "download_type"
     t.string "external_id"
     t.string "name"
+    t.integer "not_found_count", default: 0, null: false
     t.integer "progress", default: 0
     t.integer "request_id", null: false
     t.bigint "size_bytes"
