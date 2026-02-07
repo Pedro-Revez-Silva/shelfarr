@@ -4,16 +4,32 @@
 class HealthCheckJob < ApplicationJob
   queue_as :default
 
-  def perform
-    check_prowlarr
-    check_download_clients
-    check_output_paths
-    check_audiobookshelf
-    check_hardcover
-    schedule_next_run
+  def perform(service: nil)
+    if service.present?
+      run_check_for(service)
+    else
+      check_prowlarr
+      check_download_clients
+      check_output_paths
+      check_audiobookshelf
+      check_hardcover
+      schedule_next_run
+    end
   end
 
   private
+
+  def run_check_for(service)
+    case service.to_s
+    when "prowlarr" then check_prowlarr
+    when "download_client" then check_download_clients
+    when "output_paths" then check_output_paths
+    when "audiobookshelf" then check_audiobookshelf
+    when "hardcover" then check_hardcover
+    else
+      Rails.logger.warn "[HealthCheckJob] Unknown service: #{service}"
+    end
+  end
 
   def check_prowlarr
     health = SystemHealth.for_service("prowlarr")

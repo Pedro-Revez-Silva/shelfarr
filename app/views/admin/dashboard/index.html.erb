@@ -60,7 +60,10 @@
 
   <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
     <div class="bg-gray-800 rounded-lg shadow p-6 border border-gray-700">
-      <h2 class="font-bold text-xl mb-4 text-white">System Health</h2>
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-bold text-xl text-white">System Health</h2>
+        <%= button_to "Run Check", admin_run_health_check_path, method: :post, class: "px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded" %>
+      </div>
       <% SystemHealth::SERVICES.each do |service| %>
         <% health = @system_health[service] %>
         <div class="flex items-center justify-between py-3 border-b border-gray-700 last:border-b-0">
@@ -89,6 +92,7 @@
               <% end %>
             <% else %>
               <span class="px-2 py-1 rounded text-sm bg-gray-700 text-gray-400">Not checked</span>
+              <span class="text-xs text-gray-500 block mt-1">Click "Run Check" to verify</span>
             <% end %>
           </div>
         </div>

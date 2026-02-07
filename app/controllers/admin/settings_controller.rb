@@ -34,11 +34,27 @@ module Admin
         end
       end
 
-      # Reset cached connections when relevant settings change
-      AudiobookshelfClient.reset_connection! if params[:settings]&.keys&.any? { |k| k.to_s.start_with?("audiobookshelf") }
-      ProwlarrClient.reset_connection! if params[:settings]&.keys&.any? { |k| k.to_s.start_with?("prowlarr") }
-      FlaresolverrClient.reset_connection! if params[:settings]&.keys&.any? { |k| k.to_s == "flaresolverr_url" }
-      HardcoverClient.reset_connection! if params[:settings]&.keys&.any? { |k| k.to_s.start_with?("hardcover") }
+      # Reset cached connections and trigger health checks when relevant settings change
+      changed_keys = params[:settings]&.keys&.map(&:to_s) || []
+
+      if changed_keys.any? { |k| k.start_with?("audiobookshelf") }
+        AudiobookshelfClient.reset_connection!
+        run_service_health_check("audiobookshelf")
+      end
+      if changed_keys.any? { |k| k.start_with?("prowlarr") }
+        ProwlarrClient.reset_connection!
+        run_service_health_check("prowlarr")
+      end
+      if changed_keys.any? { |k| k == "flaresolverr_url" }
+        FlaresolverrClient.reset_connection!
+      end
+      if changed_keys.any? { |k| k.start_with?("hardcover") }
+        HardcoverClient.reset_connection!
+        run_service_health_check("hardcover")
+      end
+      if changed_keys.any? { |k| k.start_with?("audiobook_output_path") || k.start_with?("ebook_output_path") }
+        run_service_health_check("output_paths")
+      end
 
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
@@ -81,32 +97,44 @@ module Admin
     end
 
     def test_prowlarr
+      health = SystemHealth.for_service("prowlarr")
+
       unless ProwlarrClient.configured?
+        health.mark_not_configured!
         respond_with_flash(alert: "Prowlarr is not configured. Enter URL and API key first.")
         return
       end
 
       if ProwlarrClient.test_connection
+        health.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "Prowlarr connection successful!")
       else
+        health.check_failed!(message: "Failed to connect to Prowlarr")
         respond_with_flash(alert: "Prowlarr connection failed.")
       end
     rescue ProwlarrClient::Error => e
+      health&.check_failed!(message: e.message)
       respond_with_flash(alert: "Prowlarr error: #{e.message}")
     end
 
     def test_audiobookshelf
+      health = SystemHealth.for_service("audiobookshelf")
+
       unless AudiobookshelfClient.configured?
+        health.mark_not_configured!
         respond_with_flash(alert: "Audiobookshelf is not configured. Enter URL and API key first.")
         return
       end
 
       if AudiobookshelfClient.test_connection
+        health.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "Audiobookshelf connection successful!")
       else
+        health.check_failed!(message: "Failed to connect to Audiobookshelf")
         respond_with_flash(alert: "Audiobookshelf connection failed.")
       end
     rescue AudiobookshelfClient::Error => e
+      health&.check_failed!(message: e.message)
       respond_with_flash(alert: "Audiobookshelf error: #{e.message}")
     end
 
@@ -126,17 +154,23 @@ module Admin
     end
 
     def test_hardcover
+      health = SystemHealth.for_service("hardcover")
+
       unless HardcoverClient.configured?
+        health.mark_not_configured!
         respond_with_flash(alert: "Hardcover is not configured. Enter API token first.")
         return
       end
 
       if HardcoverClient.test_connection
+        health.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "Hardcover connection successful!")
       else
+        health.check_failed!(message: "Failed to connect to Hardcover")
         respond_with_flash(alert: "Hardcover connection failed.")
       end
     rescue HardcoverClient::Error => e
+      health&.check_failed!(message: e.message)
       respond_with_flash(alert: "Hardcover error: #{e.message}")
     end
 
@@ -185,6 +219,12 @@ module Admin
           render turbo_stream: turbo_stream.update("flash", partial: "shared/flash")
         end
       end
+    end
+
+    def run_service_health_check(service_name)
+      HealthCheckJob.perform_later(service: service_name)
+    rescue => e
+      Rails.logger.warn "[SettingsController] Failed to enqueue health check for #{service_name}: #{e.message}"
     end
 
     PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze

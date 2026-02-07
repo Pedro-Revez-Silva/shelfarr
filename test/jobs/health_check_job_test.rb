@@ -27,6 +27,19 @@ class HealthCheckJobTest < ActiveJob::TestCase
     assert enqueued
   end
 
+  # Single service check
+  test "checks only the specified service when service param is given" do
+    Setting.where(key: %w[prowlarr_url prowlarr_api_key]).destroy_all
+
+    # Should only check prowlarr and NOT schedule next run
+    assert_no_enqueued_jobs(only: HealthCheckJob) do
+      HealthCheckJob.perform_now(service: "prowlarr")
+    end
+
+    health = SystemHealth.for_service("prowlarr")
+    assert health.not_configured?
+  end
+
   # Prowlarr tests
   test "marks prowlarr as not_configured when not configured" do
     Setting.where(key: %w[prowlarr_url prowlarr_api_key]).destroy_all

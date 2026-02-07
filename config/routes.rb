@@ -54,6 +54,7 @@ Rails.application.routes.draw do
   namespace :admin do
     root "dashboard#index"
     post "check_updates", to: "dashboard#check_updates"
+    post "run_health_check", to: "dashboard#run_health_check"
     resources :users
     resources :uploads, only: [:index, :new, :create, :show, :destroy] do
       member do
