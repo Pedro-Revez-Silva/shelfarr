@@ -4,7 +4,7 @@
 # Example path template: "{author}/{title}" -> "Stephen King/The Shining"
 # Example filename template: "{author} - {title}" -> "Stephen King - The Shining"
 class PathTemplateService
-  VARIABLES = %w[author title year publisher language].freeze
+  VARIABLES = %w[author title year publisher language series narrator].freeze
   DEFAULT_TEMPLATE = "{author}/{title}".freeze
   DEFAULT_FILENAME_TEMPLATE = "{author} - {title}".freeze
 
@@ -19,7 +19,9 @@ class PathTemplateService
         "{title}" => book.title,
         "{year}" => book.year&.to_s.presence || "Unknown Year",
         "{publisher}" => book.publisher.presence || "Unknown Publisher",
-        "{language}" => book.language || "en"
+        "{language}" => book.language || "en",
+        "{series}" => book.series.presence || "Unknown Series",
+        "{narrator}" => book.narrator.presence || "Unknown Narrator"
       }
 
       substitutions.each do |variable, value|
@@ -80,7 +82,9 @@ class PathTemplateService
       substitutions = {
         "{author}" => book.author.presence || "Unknown Author",
         "{title}" => book.title,
-        "{year}" => book.year&.to_s.presence || ""
+        "{year}" => book.year&.to_s.presence || "",
+        "{series}" => book.series.presence || "",
+        "{narrator}" => book.narrator.presence || ""
       }
 
       substitutions.each do |variable, value|

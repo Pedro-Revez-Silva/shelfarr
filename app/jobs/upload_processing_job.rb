@@ -168,6 +168,8 @@ class UploadProcessingJob < ApplicationJob
     cover_url = metadata&.cover_url
     year = metadata&.year || extracted&.year
     description = metadata&.description || extracted&.description
+    series = metadata&.series_name if metadata.respond_to?(:series_name)
+    narrator = extracted&.narrator if extracted.respond_to?(:narrator)
 
     # Check for existing book with same work_id and type
     if work_id.present?
@@ -189,6 +191,8 @@ class UploadProcessingJob < ApplicationJob
         cover_url: cover_url,
         year: year,
         description: description,
+        series: series,
+        narrator: narrator,
         metadata_source: source
       )
       book.save!
@@ -200,7 +204,9 @@ class UploadProcessingJob < ApplicationJob
         book_type: book_type,
         cover_url: cover_url,
         year: year,
-        description: description
+        description: description,
+        series: series,
+        narrator: narrator
       )
     end
   end
