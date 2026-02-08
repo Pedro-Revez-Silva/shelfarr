@@ -121,7 +121,8 @@ class MetadataServiceTest < ActiveSupport::TestCase
       year: 2020,
       cover_url: "https://example.com/cover.jpg",
       has_audiobook: true,
-      has_ebook: true
+      has_ebook: true,
+      series_name: "Test Series"
     )
 
     assert_equal "hardcover:123", result.work_id

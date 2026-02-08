@@ -19,10 +19,10 @@ class SettingsService
     # Output Paths
     audiobook_output_path: { type: "string", default: "/audiobooks", category: "paths", description: "Directory for completed audiobooks" },
     ebook_output_path: { type: "string", default: "/ebooks", category: "paths", description: "Directory for completed ebooks" },
-    audiobook_path_template: { type: "string", default: "{author}/{title}", category: "paths", description: "Folder structure for audiobooks. Variables: {author}, {title}, {year}, {publisher}, {language}" },
-    ebook_path_template: { type: "string", default: "{author}/{title}", category: "paths", description: "Folder structure for ebooks. Variables: {author}, {title}, {year}, {publisher}, {language}" },
-    audiobook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for audiobooks (extension added automatically). Variables: {author}, {title}, {year}" },
-    ebook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for ebooks (extension added automatically). Variables: {author}, {title}, {year}" },
+    audiobook_path_template: { type: "string", default: "{author}/{title}", category: "paths", description: "Folder structure for audiobooks. Variables: {author}, {title}, {year}, {publisher}, {language}, {series}, {narrator}" },
+    ebook_path_template: { type: "string", default: "{author}/{title}", category: "paths", description: "Folder structure for ebooks. Variables: {author}, {title}, {year}, {publisher}, {language}, {series}, {narrator}" },
+    audiobook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for audiobooks (extension added automatically). Variables: {author}, {title}, {year}, {series}, {narrator}" },
+    ebook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for ebooks (extension added automatically). Variables: {author}, {title}, {year}, {series}, {narrator}" },
     download_remote_path: { type: "string", default: "", category: "paths", description: "Download client path (host path, e.g., /mnt/media/Torrents/Completed)" },
     download_local_path: { type: "string", default: "/downloads", category: "paths", description: "Container path for downloads (e.g., /downloads)" },
 

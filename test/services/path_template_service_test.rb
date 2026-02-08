@@ -47,6 +47,30 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "Unknown Publisher/The Shining", result
   end
 
+  test "builds path with series variable" do
+    @book.update!(series: "The Dark Tower")
+    result = PathTemplateService.build_path(@book, "{author}/{series}/{title}")
+    assert_equal "Stephen King/The Dark Tower/The Shining", result
+  end
+
+  test "handles missing series" do
+    @book.update!(series: nil)
+    result = PathTemplateService.build_path(@book, "{author}/{series}/{title}")
+    assert_equal "Stephen King/Unknown Series/The Shining", result
+  end
+
+  test "builds path with narrator variable" do
+    @book.update!(narrator: "Frank Muller")
+    result = PathTemplateService.build_path(@book, "{author}/{narrator}/{title}")
+    assert_equal "Stephen King/Frank Muller/The Shining", result
+  end
+
+  test "handles missing narrator" do
+    @book.update!(narrator: nil)
+    result = PathTemplateService.build_path(@book, "{narrator}/{title}")
+    assert_equal "Unknown Narrator/The Shining", result
+  end
+
   test "sanitizes invalid filename characters" do
     @book.update!(author: "Author: With/Bad\\Chars?")
     result = PathTemplateService.build_path(@book, "{author}/{title}")
@@ -142,6 +166,18 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_nil error
   end
 
+  test "validate_template accepts series variable" do
+    valid, error = PathTemplateService.validate_template("{author}/{series}/{title}")
+    assert valid
+    assert_nil error
+  end
+
+  test "validate_template accepts narrator variable" do
+    valid, error = PathTemplateService.validate_template("{narrator}/{title}")
+    assert valid
+    assert_nil error
+  end
+
   # Filename template tests
 
   test "build_filename with default template" do
@@ -200,6 +236,30 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
   test "build_filename adds dot to extension if missing" do
     result = PathTemplateService.build_filename(@book, "epub")
     assert_equal "Stephen King - The Shining.epub", result
+  end
+
+  test "build_filename includes series when in template" do
+    @book.update!(series: "The Dark Tower")
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{series} - {title}")
+    assert_equal "The Dark Tower - The Shining.m4b", result
+  end
+
+  test "build_filename includes narrator when in template" do
+    @book.update!(narrator: "Frank Muller")
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{title} ({narrator})")
+    assert_equal "The Shining (Frank Muller).m4b", result
+  end
+
+  test "build_filename handles missing series gracefully" do
+    @book.update!(series: nil)
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{author} - {title} - {series}")
+    assert_equal "Stephen King - The Shining.m4b", result
+  end
+
+  test "build_filename handles missing narrator gracefully" do
+    @book.update!(narrator: nil)
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{author} - {title} ({narrator})")
+    assert_equal "Stephen King - The Shining.m4b", result
   end
 
   test "filename_template_for returns audiobook template for audiobooks" do
