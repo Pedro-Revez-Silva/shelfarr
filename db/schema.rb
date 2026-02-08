@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_06_111153) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_08_005649) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -39,9 +39,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_06_111153) do
     t.string "isbn"
     t.string "language", default: "en"
     t.string "metadata_source", default: "openlibrary"
+    t.string "narrator"
     t.string "open_library_edition_id"
     t.string "open_library_work_id"
     t.string "publisher"
+    t.string "series"
     t.string "title", null: false
     t.datetime "updated_at", null: false
     t.integer "year"
