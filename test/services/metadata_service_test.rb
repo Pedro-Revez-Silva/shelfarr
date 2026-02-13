@@ -166,11 +166,20 @@ class MetadataServiceTest < ActiveSupport::TestCase
   private
 
   def stub_hardcover_search(results)
+    typesense_response = {
+      "facet_counts" => [],
+      "found" => results.size,
+      "hits" => results.map { |r| { "document" => r } },
+      "request_params" => {},
+      "search_cutoff" => false,
+      "search_time_ms" => 5
+    }
+
     stub_request(:post, HardcoverClient::BASE_URL)
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },
-        body: { "data" => { "search" => { "results" => results } } }.to_json
+        body: { "data" => { "search" => { "results" => typesense_response } } }.to_json
       )
   end
 
