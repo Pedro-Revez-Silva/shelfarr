@@ -9,6 +9,7 @@ class SettingsService
     # Download Settings (clients are now managed separately via Admin > Download Clients)
     preferred_download_type: { type: "string", default: "torrent", category: "download", description: "Preferred download type when both available (torrent or usenet)" },
     download_check_interval: { type: "integer", default: 60, category: "download", description: "Seconds between download status checks" },
+    remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 
     # Audiobookshelf Integration
     audiobookshelf_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for Audiobookshelf (e.g., http://localhost:13378)" },

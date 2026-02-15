@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # Copies completed downloads to library folder and triggers library scan.
-# Files are COPIED (not moved) to preserve seeding on private trackers.
+# Files are COPIED (not moved) to preserve seeding for torrent downloads.
+# Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
   queue_as :default
 
@@ -20,6 +21,7 @@ class PostProcessingJob < ApplicationJob
       destination = build_destination_path(book, download)
       source_path = remap_download_path(download.download_path, download)
       copy_files(source_path, destination, book: book)
+      cleanup_usenet_download(download)
 
       book.update!(file_path: destination)
       request.complete!
@@ -41,6 +43,18 @@ class PostProcessingJob < ApplicationJob
   end
 
   private
+
+  def cleanup_usenet_download(download)
+    return unless SettingsService.get(:remove_completed_usenet_downloads, default: true)
+    return unless download.download_client&.usenet_client?
+    return unless download.external_id.present?
+
+    Rails.logger.info "[PostProcessingJob] Removing usenet download #{download.external_id} from #{download.download_client.name}"
+    download.download_client.adapter.remove_torrent(download.external_id, delete_files: true)
+    Rails.logger.info "[PostProcessingJob] Usenet download removed successfully"
+  rescue => e
+    Rails.logger.warn "[PostProcessingJob] Failed to remove usenet download (non-fatal): #{e.message}"
+  end
 
   def build_destination_path(book, download)
     base_path = get_base_path(book)

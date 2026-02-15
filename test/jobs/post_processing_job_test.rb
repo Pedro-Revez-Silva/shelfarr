@@ -267,6 +267,93 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "File should be copied using client-specific path"
   end
 
+  test "removes usenet download from client after successful import" do
+    client = DownloadClient.create!(
+      name: "SABnzbd Test",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_abc123")
+
+    SettingsService.set(:audiobookshelf_url, "")
+
+    VCR.turned_off do
+      # Stub the SABnzbd queue delete API call
+      remove_stub = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete", "value" => "SABnzbd_nzo_abc123", "del_files" => "1"))
+        .to_return(status: 200, body: { "status" => true }.to_json, headers: { "Content-Type" => "application/json" })
+
+      PostProcessingJob.perform_now(@download.id)
+
+      assert_requested remove_stub
+      assert @request.reload.completed?
+    end
+  end
+
+  test "does not remove torrent download after import" do
+    client = DownloadClient.create!(
+      name: "qBittorrent Test",
+      client_type: :qbittorrent,
+      url: "http://localhost:8080"
+    )
+    @download.update!(download_client: client, external_id: "abc123hash")
+
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?
+    # Source files should still exist (copied, not removed)
+    assert File.exist?(File.join(@temp_source, "audiobook.mp3"))
+  end
+
+  test "does not remove usenet download when setting is disabled" do
+    SettingsService.set(:remove_completed_usenet_downloads, false)
+
+    client = DownloadClient.create!(
+      name: "SABnzbd Disabled",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_abc123")
+
+    SettingsService.set(:audiobookshelf_url, "")
+
+    # No HTTP stubs for SABnzbd - if cleanup ran, it would hit VCR and fail
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?
+  end
+
+  test "import succeeds even when usenet cleanup fails" do
+    client = DownloadClient.create!(
+      name: "SABnzbd Failing",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_abc123")
+
+    SettingsService.set(:audiobookshelf_url, "")
+
+    VCR.turned_off do
+      # Stub SABnzbd to return an error
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete"))
+        .to_return(status: 500)
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "history", "name" => "delete"))
+        .to_return(status: 500)
+
+      PostProcessingJob.perform_now(@download.id)
+
+      # Import should still complete despite cleanup failure
+      assert @request.reload.completed?
+    end
+  end
+
   test "marks request for attention when source path is blank" do
     @download.update!(download_path: "")
 
