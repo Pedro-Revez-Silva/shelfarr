@@ -2,8 +2,6 @@ services:
   shelfarr:
     build:
       context: .
-      args:
-        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: shelfarr
     restart: unless-stopped
     ports:

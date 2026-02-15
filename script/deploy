@@ -4,13 +4,9 @@
 
 set -e
 
-# Get current git commit
-GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+VERSION=$(cat VERSION 2>/dev/null || echo "unknown")
 
-echo "Deploying Shelfarr (commit: ${GIT_COMMIT:0:7})"
-
-# Export for docker-compose
-export GIT_COMMIT
+echo "Deploying Shelfarr (v${VERSION})"
 
 # Build and restart
 docker-compose up -d --build
