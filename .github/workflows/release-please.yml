@@ -25,16 +25,6 @@ jobs:
           default_bump: patch
           release_branches: main
 
-      - name: Update VERSION file
-        if: steps.tag.outputs.new_tag
-        run: |
-          echo "${{ steps.tag.outputs.new_version }}" > VERSION
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add VERSION
-          git commit -m "chore: bump version to ${{ steps.tag.outputs.new_version }}"
-          git push
-
       - name: Create GitHub Release
         if: steps.tag.outputs.new_tag
         uses: softprops/action-gh-release@v2

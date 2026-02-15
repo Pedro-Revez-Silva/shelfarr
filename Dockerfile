@@ -46,6 +46,10 @@ RUN bundle install && \
 # Copy application code
 COPY . .
 
+# Inject version from build arg (set by CI when building from a tag)
+ARG APP_VERSION=""
+RUN if [ -n "$APP_VERSION" ]; then echo "$APP_VERSION" > VERSION; fi
+
 # Precompile bootsnap code for faster boot times.
 # -j 1 disable parallel compilation to avoid a QEMU bug: https://github.com/rails/bootsnap/issues/495
 RUN bundle exec bootsnap precompile -j 1 app/ lib/
