@@ -2,15 +2,45 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main, master, dev]
-    tags: ['v*']
+    branches: [main, dev]
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.tag.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version and push tag
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          release_branches: main
+
+      - name: Create GitHub Release
+        if: steps.tag.outputs.new_tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.new_tag }}
+          name: Release ${{ steps.tag.outputs.new_version }}
+          body: ${{ steps.tag.outputs.changelog }}
+
+  docker:
+    needs: [release]
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,14 +72,8 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ needs.release.outputs.version }},enable=${{ needs.release.outputs.version != '' }}
             type=sha,prefix=
-
-      - name: Extract version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -60,6 +84,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            APP_VERSION=${{ steps.version.outputs.version || '' }}
+            APP_VERSION=${{ needs.release.outputs.version || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
