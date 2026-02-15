@@ -117,10 +117,12 @@ class ProwlarrClient
     end
 
     # Test connection to Prowlarr
+    # Uses /api/v1/indexer instead of /api/v1/health because the health
+    # endpoint may not require authentication, masking invalid API keys.
     def test_connection
       ensure_configured!
 
-      response = connection.get("api/v1/health")
+      response = connection.get("api/v1/indexer")
       response.status == 200
     rescue Error, Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError
       false

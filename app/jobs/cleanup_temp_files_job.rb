@@ -23,7 +23,12 @@ class CleanupTempFilesJob < ApplicationJob
 
     Dir.glob(downloads_dir.join("*")).each do |file|
       next if File.directory?(file)
-      next if File.mtime(file) > max_age
+      # Handle race condition where file is deleted between glob and mtime check
+      begin
+        next if File.mtime(file) > max_age
+      rescue Errno::ENOENT
+        next
+      end
 
       FileUtils.rm_f(file)
       deleted_count += 1
