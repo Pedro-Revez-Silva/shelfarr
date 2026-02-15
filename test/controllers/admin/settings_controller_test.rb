@@ -124,7 +124,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:prowlarr_api_key, "test-api-key")
 
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/health")
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .with(headers: { "X-Api-Key" => "test-api-key" })
         .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
 
@@ -140,7 +140,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:prowlarr_api_key, "test-api-key")
 
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/health")
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .with(headers: { "X-Api-Key" => "test-api-key" })
         .to_return(status: 401)
 
@@ -156,7 +156,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:prowlarr_api_key, "test-api-key")
 
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/health")
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .to_timeout
 
       post test_prowlarr_admin_settings_url
@@ -334,7 +334,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:prowlarr_api_key, "test-api-key")
 
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/health")
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .with(headers: { "X-Api-Key" => "test-api-key" })
         .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
 
@@ -373,7 +373,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:prowlarr_api_key, "test-api-key")
 
     VCR.turned_off do
-      stub_request(:get, "https://localhost:9696/api/v1/health")
+      stub_request(:get, "https://localhost:9696/api/v1/indexer")
         .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
 
       post test_prowlarr_admin_settings_url

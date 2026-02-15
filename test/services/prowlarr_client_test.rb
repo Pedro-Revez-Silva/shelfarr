@@ -137,8 +137,8 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     ProwlarrClient.instance_variable_set(:@connection, nil)
 
     VCR.turned_off do
-      # Should request /prowlarr/api/v1/health, not /api/v1/health
-      stub_request(:get, "http://localhost:9696/prowlarr/api/v1/health")
+      # Should request /prowlarr/api/v1/indexer, not /api/v1/indexer
+      stub_request(:get, "http://localhost:9696/prowlarr/api/v1/indexer")
         .to_return(status: 200, body: "[]")
 
       assert ProwlarrClient.test_connection
@@ -150,7 +150,7 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     ProwlarrClient.instance_variable_set(:@connection, nil)
 
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/prowlarr/api/v1/health")
+      stub_request(:get, "http://localhost:9696/prowlarr/api/v1/indexer")
         .to_return(status: 200, body: "[]")
 
       assert ProwlarrClient.test_connection
@@ -231,7 +231,7 @@ class ProwlarrClientTest < ActiveSupport::TestCase
   # SSL error handling tests
   test "test_connection returns false on SSL error" do
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/health")
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
 
       assert_not ProwlarrClient.test_connection

@@ -55,7 +55,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
     setup_prowlarr_settings
 
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/health")
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .to_return(status: 200, body: "[]")
 
       HealthCheckJob.perform_now
@@ -70,7 +70,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
     setup_prowlarr_settings
 
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/health")
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .to_return(status: 500)
 
       HealthCheckJob.perform_now
