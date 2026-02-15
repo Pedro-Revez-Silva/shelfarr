@@ -66,7 +66,8 @@ class HardcoverClient
       Rails.logger.info "[HardcoverClient] Response keys: #{response.keys rescue 'not a hash'}"
       Rails.logger.info "[HardcoverClient] Search data: #{response.dig('data', 'search')&.keys rescue 'not accessible'}"
 
-      results = response.dig("data", "search", "results") || []
+      raw_results = response.dig("data", "search", "results")
+      results = extract_hits(raw_results)
 
       Rails.logger.info "[HardcoverClient] Search '#{query}' returned #{results.size} results"
       if results.any?
@@ -205,34 +206,23 @@ class HardcoverClient
     end
 
     def parse_search_result(result)
-      # Handle different result formats from Hardcover API
-      # The search results may come as a hash with a "document" key or directly
-      unless result.is_a?(Hash)
-        Rails.logger.warn "[HardcoverClient] Unexpected result format: #{result.class} - #{result.inspect[0..200]}"
-        return nil
-      end
-
-      # Extract the actual document data
-      doc = result["document"] || result
+      doc = result["document"]
+      return nil unless doc.is_a?(Hash)
 
       SearchResult.new(
         id: doc["id"]&.to_s,
         title: doc["title"],
-        author: extract_author_from_result(result),
+        author: extract_author(doc),
         description: doc["description"],
         release_year: doc["release_year"],
-        cover_url: doc["cached_image"] || doc["image"],
+        cover_url: extract_cover_url(doc),
         has_audiobook: doc["has_audiobook"] || false,
         has_ebook: doc["has_ebook"] || false
       )
     end
 
-    def extract_author_from_result(result)
-      # Try different possible author field locations
-      result["author_names"]&.first ||
-        result["document"]&.dig("author_names")&.first ||
-        result["author"] ||
-        result["document"]&.dig("author")
+    def extract_author(doc)
+      doc["author_names"]&.first || doc["author"]
     end
 
     def parse_book_details(book)
@@ -251,13 +241,30 @@ class HardcoverClient
         author: author,
         description: book["description"],
         release_year: book["release_year"],
-        cover_url: book["cached_image"],
+        cover_url: extract_cover_url(book),
         has_audiobook: false, # Not available in this query
         has_ebook: false,     # Not available in this query
         pages: pages,
         genres: [],           # Would need separate query
         series_name: series_name
       )
+    end
+
+    def extract_cover_url(doc)
+      cached = doc["cached_image"]
+      image = doc["image"]
+      
+      cached_url = cached.is_a?(Hash) ? cached["url"] : cached
+      image_url = image.is_a?(Hash) ? image["url"] : image
+      
+      cached_url || image_url
+    end
+
+    def extract_hits(raw_results)
+      return [] unless raw_results.is_a?(Hash)
+      
+      hits = raw_results["hits"]
+      hits.is_a?(Array) ? hits : []
     end
   end
 end

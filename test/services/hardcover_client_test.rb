@@ -67,6 +67,47 @@ class HardcoverClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search returns empty array when results shape is invalid" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_request(:post, HardcoverClient::BASE_URL)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "data" => { "search" => { "results" => [] } } }.to_json
+        )
+
+      results = HardcoverClient.search("lord of the rings")
+
+      assert_equal [], results
+    end
+  end
+
+  test "search extracts cover_url from image hash" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_hardcover_search("dune", [
+        {
+          "id" => 123,
+          "title" => "Dune",
+          "author_names" => [ "Frank Herbert" ],
+          "release_year" => 1965,
+          "cached_image" => nil,
+          "image" => { "url" => "https://example.com/image-cover.jpg" },
+          "has_audiobook" => true,
+          "has_ebook" => true
+        }
+      ])
+
+      results = HardcoverClient.search("dune")
+
+      assert_equal 1, results.size
+      assert_equal "https://example.com/image-cover.jpg", results.first.cover_url
+    end
+  end
+
   test "book returns BookDetails" do
     SettingsService.set(:hardcover_api_token, "test_token")
 
@@ -90,6 +131,27 @@ class HardcoverClientTest < ActiveSupport::TestCase
       assert_equal 2020, book.release_year
       assert_equal 300, book.pages
       assert_equal "Test Series", book.series_name
+    end
+  end
+
+  test "book extracts cover_url from cached_image hash" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_hardcover_book(12346, {
+        "id" => 12346,
+        "title" => "Hash Cover Book",
+        "description" => "A test description",
+        "release_year" => 2021,
+        "cached_image" => { "url" => "https://example.com/hash-cover.jpg" },
+        "contributions" => [ { "author" => { "name" => "Test Author" } } ],
+        "default_physical_edition" => { "pages" => 320 },
+        "book_series" => []
+      })
+
+      book = HardcoverClient.book(12346)
+
+      assert_equal "https://example.com/hash-cover.jpg", book.cover_url
     end
   end
 
@@ -175,11 +237,20 @@ class HardcoverClientTest < ActiveSupport::TestCase
   private
 
   def stub_hardcover_search(query, results)
+    typesense_response = {
+      "facet_counts" => [],
+      "found" => results.size,
+      "hits" => results.map { |r| { "document" => r } },
+      "request_params" => {},
+      "search_cutoff" => false,
+      "search_time_ms" => 5
+    }
+
     stub_request(:post, HardcoverClient::BASE_URL)
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },
-        body: { "data" => { "search" => { "results" => results } } }.to_json
+        body: { "data" => { "search" => { "results" => typesense_response } } }.to_json
       )
   end
 
