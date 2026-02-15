@@ -57,6 +57,7 @@ class SettingsService
     github_repo: { type: "string", default: "Pedro-Revez-Silva/shelfarr", category: "updates", description: "GitHub repository for update notifications" },
 
     # Security
+    auth_disabled: { type: "boolean", default: false, category: "security", description: "Disable password authentication (username-only login for trusted networks). Can also be set via DISABLE_AUTH env var." },
     session_max_age_days: { type: "integer", default: 30, category: "security", description: "Maximum session age in days before requiring re-login" },
     login_lockout_threshold: { type: "integer", default: 5, category: "security", description: "Failed login attempts before temporary lockout" },
     login_lockout_duration_minutes: { type: "integer", default: 15, category: "security", description: "Duration of login lockout in minutes" },
@@ -206,6 +207,10 @@ class SettingsService
 
     def hardcover_configured?
       configured?(:hardcover_api_token)
+    end
+
+    def auth_disabled?
+      ENV["DISABLE_AUTH"]&.downcase == "true" || get(:auth_disabled, default: false)
     end
   end
 end
