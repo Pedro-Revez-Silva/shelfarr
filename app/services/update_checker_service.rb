@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-# Checks GitHub repository for available updates
+# Checks GitHub releases for available updates
 class UpdateCheckerService
   class Error < StandardError; end
 
-  Result = Data.define(:update_available, :current_version, :latest_version, :latest_message, :latest_date, :compare_url) do
+  Result = Data.define(:update_available, :current_version, :latest_version, :latest_message, :latest_date, :release_url) do
     def update_available?
       update_available
     end
@@ -37,21 +37,23 @@ class UpdateCheckerService
 
     def perform_check
       current = current_version
-      return no_update_result(current, "Not a git repository") unless current
+      return no_update_result(current, "Version not available") if current.blank?
 
       repo = github_repo
-      return no_update_result(current, "GitHub repo not configured") unless repo
+      return no_update_result(current, "GitHub repo not configured") if repo.blank?
 
-      latest = fetch_latest_commit(repo)
-      return no_update_result(current, "Could not fetch latest version") unless latest
+      latest = fetch_latest_release(repo)
+      return no_update_result(current, "No releases found") unless latest
+
+      update = newer_version?(current, latest[:version])
 
       Result.new(
-        update_available: current != latest[:sha],
-        current_version: current[0..6],
-        latest_version: latest[:sha][0..6],
+        update_available: update,
+        current_version: current,
+        latest_version: latest[:version],
         latest_message: latest[:message],
         latest_date: latest[:date],
-        compare_url: "https://github.com/#{repo}/compare/#{current[0..6]}...#{latest[:sha][0..6]}"
+        release_url: latest[:url]
       )
     rescue => e
       Rails.logger.error "[UpdateChecker] Error checking for updates: #{e.message}"
@@ -61,56 +63,55 @@ class UpdateCheckerService
     def no_update_result(current, message = nil)
       Result.new(
         update_available: false,
-        current_version: current&.slice(0, 7) || "unknown",
+        current_version: current || "unknown",
         latest_version: nil,
         latest_message: message,
         latest_date: nil,
-        compare_url: nil
+        release_url: nil
       )
     end
 
     def current_version
-      # Try reading from GIT_COMMIT env var (set during docker build)
-      return ENV["GIT_COMMIT"] if ENV["GIT_COMMIT"].present?
-
-      # Try reading from VERSION file
       version_file = Rails.root.join("VERSION")
       return File.read(version_file).strip if File.exist?(version_file)
 
-      # Try getting from git directly
-      result = `git rev-parse HEAD 2>/dev/null`.strip
-      result.present? ? result : nil
+      nil
     end
 
     def github_repo
       SettingsService.get(:github_repo)
     end
 
-    def fetch_latest_commit(repo)
-      response = connection.get("/repos/#{repo}/commits/main")
+    def fetch_latest_release(repo)
+      response = connection.get("/repos/#{repo}/releases/latest")
 
-      case response.status
-      when 200
-        data = response.body
-        {
-          sha: data["sha"],
-          message: data.dig("commit", "message")&.lines&.first&.strip,
-          date: data.dig("commit", "committer", "date")
-        }
-      when 404
-        # Try master branch
-        response = connection.get("/repos/#{repo}/commits/master")
-        return nil unless response.status == 200
+      return nil unless response.status == 200
 
-        data = response.body
-        {
-          sha: data["sha"],
-          message: data.dig("commit", "message")&.lines&.first&.strip,
-          date: data.dig("commit", "committer", "date")
-        }
-      else
-        nil
-      end
+      data = response.body
+      tag = data["tag_name"]
+      version = tag&.delete_prefix("v")
+
+      {
+        version: version,
+        message: data["name"] || tag,
+        date: parse_date(data["published_at"]),
+        url: data["html_url"]
+      }
+    end
+
+    def parse_date(date_string)
+      Time.parse(date_string)
+    rescue ArgumentError, TypeError
+      nil
+    end
+
+    def newer_version?(current, latest)
+      return false if current.blank? || latest.blank?
+
+      Gem::Version.new(latest) > Gem::Version.new(current)
+    rescue ArgumentError
+      # Fall back to string comparison if versions aren't valid semver
+      current != latest
     end
 
     def connection
