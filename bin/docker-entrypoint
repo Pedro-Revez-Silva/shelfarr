@@ -1,5 +1,67 @@
 #!/bin/bash -e
 
+# Control whether to attempt ownership changes on startup.
+CHOWN_ON_START="${CHOWN_ON_START:-auto}"
+
+if [ -n "${SKIP_CHOWN:-}" ]; then
+  CHOWN_ON_START="never"
+fi
+
+case "$CHOWN_ON_START" in
+  auto|always|never) ;;
+  *) 
+    echo "Unknown CHOWN_ON_START value '${CHOWN_ON_START}', defaulting to 'auto'."
+    CHOWN_ON_START="auto"
+    ;;
+esac
+
+run_as_rails() {
+  if [ "$(id -u)" = "0" ]; then
+    gosu rails "$@"
+  else
+    "$@"
+  fi
+}
+
+verify_path_writable() {
+  local path="$1"
+  local marker="${path%/}/.shelfarr-startup-check.$$"
+
+  if run_as_rails sh -c "touch \"${marker}\" && rm -f \"${marker}\""; then
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_storage_path_permissions() {
+  local path="$1"
+  local action="$2"
+  local policy="${action:-$CHOWN_ON_START}"
+
+  mkdir -p "$path"
+
+  if [ "$(id -u)" = "0" ] && [ "$policy" != "never" ]; then
+    if ! chown -R rails:rails "$path" 2>/tmp/shelfarr-chown-error.$$; then
+      if [ "$policy" = "always" ]; then
+        echo "Failed to chown $path and CHOWN_ON_START=always is set."
+        cat /tmp/shelfarr-chown-error.$$
+        rm -f /tmp/shelfarr-chown-error.$$
+        exit 1
+      fi
+
+      echo "Warning: unable to chown ${path}; continuing for read/write-capable filesystems."
+      echo "If filesystem permissions are not writable by UID ${PUID}/${PGID}, set CHOWN_ON_START=always or CHOWN_ON_START=never accordingly."
+      rm -f /tmp/shelfarr-chown-error.$$
+    fi
+  fi
+
+  if ! verify_path_writable "$path"; then
+    echo "Storage path ${path} is not writable by the rails user. Check permissions for UID ${PUID} and GID ${PGID}."
+    exit 1
+  fi
+}
+
 # =============================================================================
 # PUID/PGID Support
 # =============================================================================
@@ -23,11 +85,10 @@ if [ "$(id -u)" = "0" ]; then
     usermod -o -u "$PUID" rails
     echo "Set rails user UID to $PUID"
   fi
-
-  # Ensure storage directory exists and has correct ownership
-  mkdir -p /rails/storage
-  chown -R rails:rails /rails/storage
 fi
+
+# Ensure storage directory is usable by the rails user
+ensure_storage_path_permissions "/rails/storage"
 
 # =============================================================================
 # Secret Key Generation
@@ -96,14 +157,9 @@ if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
   fi
 fi
 
-# =============================================================================
-# Fix Permissions
-# =============================================================================
-# Ensure all files created above (as root) have correct ownership before dropping privileges
-
-if [ "$(id -u)" = "0" ]; then
-  chown -R rails:rails /rails/storage /rails/tmp 2>/dev/null || true
-fi
+# Re-check permissions after files are created during startup.
+ensure_storage_path_permissions "/rails/storage"
+ensure_storage_path_permissions "/rails/tmp"
 
 # =============================================================================
 # Start Application
