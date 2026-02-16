@@ -42,6 +42,10 @@ ensure_storage_path_permissions() {
   mkdir -p "$path"
 
   if [ "$(id -u)" = "0" ] && [ "$policy" != "never" ]; then
+    if verify_path_writable "$path"; then
+      return 0
+    fi
+
     if ! chown -R rails:rails "$path" 2>/tmp/shelfarr-chown-error.$$; then
       if [ "$policy" = "always" ]; then
         echo "Failed to chown $path and CHOWN_ON_START=always is set."
@@ -51,7 +55,8 @@ ensure_storage_path_permissions() {
       fi
 
       echo "Warning: unable to chown ${path}; continuing for read/write-capable filesystems."
-      echo "If filesystem permissions are not writable by UID ${PUID}/${PGID}, set CHOWN_ON_START=always or CHOWN_ON_START=never accordingly."
+      echo "If filesystem permissions are not writable by UID ${PUID}/${PGID}, set CHOWN_ON_START=never."
+      echo "Set CHOWN_ON_START=always to fail fast if permission adjustment is required."
       rm -f /tmp/shelfarr-chown-error.$$
     fi
   fi
