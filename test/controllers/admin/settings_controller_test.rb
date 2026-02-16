@@ -29,6 +29,14 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Settings"
   end
 
+  test "index warns when disabling authentication is enabled" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "input[name='settings[auth_disabled]'][data-action='change->settings-form#handleAuthDisabledToggle']"
+    assert_select "p", text: /Warning: This removes password and 2FA authentication/
+  end
+
   test "index shows library picker dropdown when audiobookshelf configured" do
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
