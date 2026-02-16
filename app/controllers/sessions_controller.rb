@@ -9,6 +9,22 @@ class SessionsController < ApplicationController
   def create
     user = User.find_by(username: params[:username]&.strip&.downcase)
 
+    if SettingsService.auth_disabled?
+      if user
+        if user.locked?
+          log_security_event("login.blocked_locked", user, params[:username])
+          redirect_to new_session_path, alert: "Account is locked. Try again in #{user.unlock_in_words}."
+        else
+          log_security_event("login.auth_disabled", user)
+          complete_login(user)
+        end
+      else
+        log_security_event("login.unknown_user", nil, params[:username])
+        redirect_to new_session_path, alert: "Invalid username."
+      end
+      return
+    end
+
     # Check if account is locked
     if user&.locked?
       log_security_event("login.blocked_locked", user, params[:username])
