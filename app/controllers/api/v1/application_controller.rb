@@ -1,3 +1,5 @@
+require "digest"
+
 class API::V1::ApplicationController < ActionController::API
   before_action :authenticate!
 
@@ -6,15 +8,26 @@ class API::V1::ApplicationController < ActionController::API
   private
 
   def authenticate!
-    token = request.headers["Authorization"]&.remove("Bearer ")
+    scheme, token = request.authorization.to_s.split(" ", 2)
+    return unauthorized! unless scheme&.casecmp("Bearer")&.zero?
+    return unauthorized! if token.blank?
 
-    return head :unauthorized if token.blank?
-    return head :unauthorized unless SettingsService.api_token_configured?
+    expected_token = SettingsService.api_token
+    return unauthorized! if expected_token.blank?
 
-    head :unauthorized unless SettingsService.get(:api_token) == token
+    token_digest = Digest::SHA256.hexdigest(token)
+    expected_digest = Digest::SHA256.hexdigest(expected_token)
+
+    return if ActiveSupport::SecurityUtils.secure_compare(token_digest, expected_digest)
+
+    unauthorized!
   end
 
   def handle_parse_error
     render json: { errors: [ "JSON invalid" ] }, status: :bad_request
+  end
+
+  def unauthorized!
+    head :unauthorized
   end
 end

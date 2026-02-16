@@ -208,8 +208,15 @@ class SettingsService
       configured?(:hardcover_api_token)
     end
 
+    def api_token
+      setting = Setting.find_by(key: "api_token")
+      return nil unless setting
+
+      setting.typed_value.presence
+    end
+
     def api_token_configured?
-      configured?(:api_token)
+      api_token.present?
     end
   end
 end

@@ -42,12 +42,30 @@ class API::V1::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ "Password can't be blank" ], body["errors"]
   end
 
+  test "ignores role parameter and creates regular user" do
+    post api_v1_users_path,
+      headers: {
+        "Authorization" => "Bearer apitoken"
+      },
+      params: {
+        name: "John Doe",
+        username: "johndoe_user_role",
+        password: "Password1234",
+        role: "admin"
+      }
+
+    assert_response :created
+
+    body = JSON.parse(response.body)
+    assert_equal "user", body["role"]
+  end
+
   test "returns error when invalid JSON payload" do
     post api_v1_users_path,
       headers: {
         "Content-Type" => "application/json",
         "Accept" => "application/json",
-        "Authorization" => "apitoken"
+        "Authorization" => "Bearer apitoken"
       },
       params: '{"name": "John",}'
 
