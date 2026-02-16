@@ -60,6 +60,7 @@ class SettingsService
     session_max_age_days: { type: "integer", default: 30, category: "security", description: "Maximum session age in days before requiring re-login" },
     login_lockout_threshold: { type: "integer", default: 5, category: "security", description: "Failed login attempts before temporary lockout" },
     login_lockout_duration_minutes: { type: "integer", default: 15, category: "security", description: "Duration of login lockout in minutes" },
+    api_token: { type: "string", category: "security", default: SecureRandom.base58(32), description: "Authentication token for the API" },
 
     # Anna's Archive
     anna_archive_enabled: { type: "boolean", default: false, category: "anna_archive", description: "Enable Anna's Archive as an additional search source for ebooks" },
@@ -206,6 +207,17 @@ class SettingsService
 
     def hardcover_configured?
       configured?(:hardcover_api_token)
+    end
+
+    def api_token
+      setting = Setting.find_by(key: "api_token")
+      return nil unless setting
+
+      setting.typed_value.presence
+    end
+
+    def api_token_configured?
+      api_token.present?
     end
   end
 end
