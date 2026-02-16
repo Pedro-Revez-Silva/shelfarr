@@ -30,6 +30,25 @@ export default class extends Controller {
     }, 800);
   }
 
+  handleAuthDisabledToggle(event) {
+    if (!event?.target?.checked) {
+      this.autoSave(event);
+      return;
+    }
+
+    const shouldDisableAuth = window.confirm(
+      "You are enabling username-only authentication. This disables password and 2FA logins and may be insecure outside trusted networks. Continue?"
+    );
+
+    if (!shouldDisableAuth) {
+      event.preventDefault();
+      event.target.checked = false;
+      return;
+    }
+
+    this.autoSave(event);
+  }
+
   submitForm() {
     if (this.hasFormTarget) {
       this.formTarget.requestSubmit();
