@@ -184,9 +184,11 @@ module DownloadClients
     # Download .torrent file and extract the info hash
     # The info hash is the SHA1 of the bencoded "info" dictionary
     def download_and_extract_hash(url)
-      Rails.logger.info "[Qbittorrent] Downloading torrent file to extract hash: #{url.truncate(100)}"
+      normalized_url = normalized_torrent_url(url)
+      return nil unless normalized_url
 
-      response = torrent_download_connection.get(url)
+      Rails.logger.info "[Qbittorrent] Downloading torrent file to extract hash: #{normalized_url.truncate(100)}"
+      response = torrent_download_connection.get(normalized_url)
 
       unless response.success?
         Rails.logger.warn "[Qbittorrent] Failed to download torrent file: HTTP #{response.status}"
@@ -209,11 +211,26 @@ module DownloadClients
     rescue BEncode::DecodeError => e
       Rails.logger.warn "[Qbittorrent] Failed to parse torrent file (not valid bencode): #{e.message}"
       nil
+    rescue URI::InvalidURIError => e
+      Rails.logger.warn "[Qbittorrent] Invalid torrent URL for hash extraction: #{e.message}"
+      nil
     rescue Faraday::Error => e
       Rails.logger.warn "[Qbittorrent] Failed to download torrent file: #{e.message}"
       nil
     rescue => e
       Rails.logger.warn "[Qbittorrent] Unexpected error extracting hash: #{e.class} - #{e.message}"
+      nil
+    end
+
+    def normalized_torrent_url(raw_url)
+      return nil if raw_url.blank?
+
+      uri = URI.parse(raw_url.to_s.strip)
+      return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+      uri.to_s
+    rescue URI::InvalidURIError => e
+      Rails.logger.warn "[Qbittorrent] Invalid torrent URL for hash extraction: #{e.message}"
       nil
     end
 

@@ -172,6 +172,11 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     assert_equal [ 1, 5 ], ProwlarrClient.configured_tags
   end
 
+  test "configured_tag_names parses non-numeric tag values" do
+    SettingsService.set(:prowlarr_tags, "1, books, 5,  bookshelf ")
+    assert_equal [ "books", "bookshelf" ], ProwlarrClient.send(:configured_tag_names)
+  end
+
   test "filtered_indexer_ids returns nil when no tags configured" do
     SettingsService.set(:prowlarr_tags, "")
     assert_nil ProwlarrClient.filtered_indexer_ids
@@ -198,6 +203,37 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "filtered_indexer_ids resolves tag names to IDs" do
+    SettingsService.set(:prowlarr_tags, "books")
+    ProwlarrClient.instance_variable_set(:@connection, nil)
+
+    VCR.turned_off do
+      # Stub tags endpoint to map tag name to ID
+      stub_request(:get, %r{localhost:9696/api/v1/tag})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            { "id" => 7, "label" => "other" },
+            { "id" => 42, "label" => "books" }
+          ].to_json
+        )
+
+      # Stub indexers endpoint
+      stub_request(:get, %r{localhost:9696/api/v1/indexer})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            { "id" => 1, "name" => "Indexer1", "tags" => [ 7 ] },
+            { "id" => 2, "name" => "Indexer2", "tags" => [ 42 ] }
+          ].to_json
+        )
+
+      assert_equal [ 2 ], ProwlarrClient.filtered_indexer_ids
+    end
+  end
+
   test "search passes indexerIds when tags configured" do
     SettingsService.set(:prowlarr_tags, "3")
     ProwlarrClient.instance_variable_set(:@connection, nil)
@@ -211,6 +247,47 @@ class ProwlarrClientTest < ActiveSupport::TestCase
           body: [
             { "id" => 1, "name" => "Indexer1", "tags" => [ 1 ] },
             { "id" => 2, "name" => "Indexer2", "tags" => [ 3 ] }
+          ].to_json
+        )
+
+      # Stub search endpoint - verify it includes indexerIds
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with(query: hash_including("indexerIds" => "2"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      ProwlarrClient.search("test query")
+      assert_requested search_stub
+    end
+  end
+
+  test "search passes indexerIds when tags configured by name" do
+    SettingsService.set(:prowlarr_tags, "books")
+    ProwlarrClient.instance_variable_set(:@connection, nil)
+
+    VCR.turned_off do
+      # Stub tags endpoint to map tag name to ID
+      stub_request(:get, %r{localhost:9696/api/v1/tag})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            { "id" => 7, "label" => "other" },
+            { "id" => 42, "label" => "books" }
+          ].to_json
+        )
+
+      # Stub indexers endpoint
+      stub_request(:get, %r{localhost:9696/api/v1/indexer})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            { "id" => 1, "name" => "Indexer1", "tags" => [ 7 ] },
+            { "id" => 2, "name" => "Indexer2", "tags" => [ 42 ] }
           ].to_json
         )
 

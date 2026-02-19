@@ -76,12 +76,12 @@ class ProwlarrClient
     # Get indexer IDs filtered by configured tags
     # Returns nil if no tags configured (use all indexers)
     def filtered_indexer_ids
-      tags = configured_tags
+      tags = indexer_filter_tags.map(&:to_s).map(&:downcase)
       return nil if tags.empty?
 
       all_indexers = indexers
       filtered = all_indexers.select do |indexer|
-        indexer_tags = Array(indexer["tags"])
+        indexer_tags = normalized_indexer_tags(indexer["tags"])
         (indexer_tags & tags).any?
       end
 
@@ -97,6 +97,59 @@ class ProwlarrClient
       return [] if tags_setting.blank?
 
       tags_setting.split(",").map { |t| t.strip.to_i }.reject(&:zero?)
+    end
+
+    def configured_tag_names
+      tags_setting = SettingsService.get(:prowlarr_tags).to_s.strip
+      return [] if tags_setting.blank?
+
+      tags_setting.split(",").map { |t| t.strip }.reject do |tag|
+        tag.blank? || tag.match?(/\A\d+\z/)
+      end
+    end
+
+    def indexer_filter_tags
+      configured_tags.concat(configured_tag_ids_for_names(configured_tag_names)).uniq
+    end
+
+    def configured_tag_ids_for_names(tag_names)
+      return [] if tag_names.empty?
+
+      response = request { connection.get("api/v1/tag") }
+      handle_response(response) do |tags|
+        tag_lookup = {}
+        Array(tags).each do |tag|
+          next unless tag.is_a?(Hash)
+
+          label = tag["label"] || tag["name"] || tag["tag"]
+          next if label.blank?
+
+          tag_id = tag["id"] || tag["tagId"]
+          next if tag_id.blank?
+
+          tag_lookup[label.to_s.strip.downcase] = tag_id.to_i
+        end
+
+        tag_names.filter_map do |name|
+          tag_lookup[name.to_s.downcase]
+        end
+      end
+    rescue Error => e
+      Rails.logger.warn "[ProwlarrClient] Failed to resolve tag names for filtering: #{e.message}"
+      []
+    end
+
+    def normalized_indexer_tags(tags)
+      values = tags.to_a.flat_map do |tag|
+        case tag
+        when Hash
+          [tag["id"], tag["label"], tag["name"]]
+        else
+          tag
+        end
+      end
+
+      values.compact.map(&:to_s).map(&:downcase)
     end
 
     # Get appropriate categories for a book type

@@ -4,7 +4,7 @@ class SettingsService
     # Prowlarr Integration
     prowlarr_url: { type: "string", default: "", category: "prowlarr", description: "Base URL for Prowlarr instance (e.g., http://localhost:9696)" },
     prowlarr_api_key: { type: "string", default: "", category: "prowlarr", description: "API key from Prowlarr Settings > General" },
-    prowlarr_tags: { type: "string", default: "", category: "prowlarr", description: "Comma-separated tag IDs to filter indexers (leave empty for all indexers)" },
+    prowlarr_tags: { type: "string", default: "", category: "prowlarr", description: "Comma-separated tag IDs or names to filter indexers (leave empty for all indexers)" },
 
     # Download Settings (clients are now managed separately via Admin > Download Clients)
     preferred_download_type: { type: "string", default: "torrent", category: "download", description: "Preferred download type when both available (torrent or usenet)" },

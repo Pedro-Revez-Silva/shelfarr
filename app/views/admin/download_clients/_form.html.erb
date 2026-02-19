@@ -105,7 +105,7 @@
       const type = clientTypeSelect.value;
       authenticationFields.classList.toggle(
         'hidden',
-        !['qbittorrent', 'nzbget'].includes(type)
+        !['qbittorrent', 'nzbget', 'deluge', 'transmission'].includes(type)
       );
       sabnzbdFields.classList.toggle('hidden', type !== 'sabnzbd');
     }
