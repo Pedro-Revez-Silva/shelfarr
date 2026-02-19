@@ -47,6 +47,32 @@ class DownloadClientTest < ActiveSupport::TestCase
     assert_equal client, adapter.config
   end
 
+  test "creates deluge adapter" do
+    client = DownloadClient.create!(
+      name: "Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      username: "admin",
+      password: "password"
+    )
+    adapter = client.adapter
+    assert_kind_of DownloadClients::Deluge, adapter
+    assert_equal client, adapter.config
+  end
+
+  test "creates transmission adapter" do
+    client = DownloadClient.create!(
+      name: "Transmission",
+      client_type: "transmission",
+      url: "http://localhost:9091/transmission/rpc",
+      username: "admin",
+      password: "password"
+    )
+    adapter = client.adapter
+    assert_kind_of DownloadClients::Transmission, adapter
+    assert_equal client, adapter.config
+  end
+
   test "creates sabnzbd adapter" do
     client = DownloadClient.create!(
       name: "SABnzbd",
@@ -76,11 +102,15 @@ class DownloadClientTest < ActiveSupport::TestCase
     assert_equal [high, mid, low], clients
   end
 
-  test "torrent_clients scope returns only qbittorrent" do
+  test "torrent_clients scope returns torrent clients" do
     qb = DownloadClient.create!(name: "qBit", client_type: "qbittorrent", url: "http://localhost:8080")
+    deluge = DownloadClient.create!(name: "Deluge", client_type: "deluge", url: "http://localhost:8112")
+    transmission = DownloadClient.create!(name: "Transmission", client_type: "transmission", url: "http://localhost:9091/transmission/rpc")
     sab = DownloadClient.create!(name: "SAB", client_type: "sabnzbd", url: "http://localhost:9090", api_key: "key")
 
     assert_includes DownloadClient.torrent_clients, qb
+    assert_includes DownloadClient.torrent_clients, deluge
+    assert_includes DownloadClient.torrent_clients, transmission
     assert_not_includes DownloadClient.torrent_clients, sab
   end
 

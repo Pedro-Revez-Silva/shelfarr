@@ -5,6 +5,8 @@ require "test_helper"
 class DownloadClientSelectorTest < ActiveSupport::TestCase
   setup do
     Thread.current[:qbittorrent_sessions] = {}
+    Thread.current[:deluge_sessions] = {}
+    Thread.current[:transmission_sessions] = {}
   end
 
   test "selects torrent client for torrent download" do
@@ -109,6 +111,103 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
 
       selected = DownloadClientSelector.for_download(search_result)
       assert_equal working, selected
+    end
+  end
+
+  test "selects highest-priority torrent client across all torrent types" do
+    DownloadClient.create!(
+      name: "QB",
+      client_type: "qbittorrent",
+      url: "http://localhost:8080",
+      username: "admin",
+      password: "password",
+      priority: 10
+    )
+    deluge = DownloadClient.create!(
+      name: "Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "password",
+      priority: 0
+    )
+    DownloadClient.create!(
+      name: "Transmission",
+      client_type: "transmission",
+      url: "http://localhost:9091/transmission/rpc",
+      password: "password",
+      priority: 1
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"method"\s*:\s*"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=deluge; path=/" },
+          body: { "result" => true, "error" => nil, "id" => 1 }.to_json
+        )
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"method"\s*:\s*"core.get_session_state"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => ["new-id"], "error" => nil, "id" => 1 }.to_json
+        )
+
+      search_result = Minitest::Mock.new
+      search_result.expect :usenet?, false
+
+      selected = DownloadClientSelector.for_download(search_result)
+      assert_equal deluge, selected
+    end
+  end
+
+  test "falls back to transmission when deluge is not usable" do
+    deluge = DownloadClient.create!(
+      name: "Down Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "password",
+      priority: 0
+    )
+    transmission = DownloadClient.create!(
+      name: "Transmission",
+      client_type: "transmission",
+      url: "http://localhost:9091/transmission/rpc",
+      username: "admin",
+      password: "password",
+      priority: 1
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"method"\s*:\s*"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=deluge; path=/" },
+          body: { "result" => false, "error" => { "message" => "Not logged in" }, "id" => 1 }.to_json
+        )
+
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with(body: /"method"\s*:\s*"session-get"/)
+        .to_return(
+          status: 409,
+          headers: { "x-transmission-session-id" => "transmission-session-id" },
+          body: { "result" => "session", "arguments" => {} }.to_json
+        )
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with(body: /"method"\s*:\s*"session-get"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "success", "arguments" => {} }.to_json
+        )
+
+      search_result = Minitest::Mock.new
+      search_result.expect :usenet?, false
+
+      selected = DownloadClientSelector.for_download(search_result)
+      assert_equal transmission, selected
     end
   end
 
