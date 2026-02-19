@@ -78,6 +78,34 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent skips hash pre-computation for relative torrent URLs and falls back to polling" do
+    VCR.turned_off do
+      # Stub authentication
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Since relative URL cannot be used for hash pre-computation, it should fall back to polling
+      # First call: get existing hashes (empty)
+      # Second call: after adding, find new hash
+      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+        .to_return(
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "relative123" } ].to_json }
+        )
+
+      # Stub add torrent
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+
+      result = @client.add_torrent("/download/123.torrent")
+      assert_equal "relative123", result
+    end
+  end
+
   test "list_torrents returns array of TorrentInfo" do
     VCR.turned_off do
       # Stub authentication
