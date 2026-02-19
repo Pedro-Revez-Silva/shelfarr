@@ -56,9 +56,9 @@ http_interactions:
       message: OK
     headers:
       Server:
-      - nginx/1.28.1
+      - nginx/1.28.2
       Date:
-      - Fri, 30 Jan 2026 12:17:12 GMT
+      - Thu, 19 Feb 2026 12:53:30 GMT
       Content-Type:
       - application/json
       Transfer-Encoding:
@@ -71,16 +71,16 @@ http_interactions:
       - no-referrer-when-downgrade
     body:
       encoding: ASCII-8BIT
-      string: '{"numFound":1711121,"start":0,"numFoundExact":true,"num_found":1711121,"documentation_url":"https://openlibrary.org/dev/docs/api/search","q":"fiction","offset":null,"docs":[{"author_name":["Isaac
+      string: '{"numFound":1713160,"start":0,"numFoundExact":true,"num_found":1713160,"documentation_url":"https://openlibrary.org/dev/docs/api/search","q":"fiction","offset":null,"docs":[{"author_name":["Isaac
         Asimov"],"cover_i":14612610,"edition_count":97,"first_publish_year":1951,"key":"/works/OL46125W","title":"Foundation"},{"author_name":["Jorge
         Luis Borges"],"cover_i":10832290,"edition_count":78,"first_publish_year":1945,"key":"/works/OL110971W","title":"Ficciones"},{"author_name":["Agatha
         Christie"],"cover_i":13699667,"edition_count":1091,"first_publish_year":1920,"key":"/works/OL472715W","title":"The
         Mysterious Affair at Styles"},{"author_name":["Bram Stoker"],"cover_i":12216503,"edition_count":736,"first_publish_year":1897,"key":"/works/OL85892W","title":"Dracula"},{"author_name":["Toni
-        Morrison"],"cover_i":8261367,"edition_count":104,"first_publish_year":1987,"key":"/works/OL50548W","title":"Beloved"},{"author_name":["Mary
+        Morrison","MorrisonToni","Toni Morrison"],"cover_i":8261367,"edition_count":107,"first_publish_year":1987,"key":"/works/OL50548W","title":"Beloved"},{"author_name":["Mary
         Shelley"],"cover_i":882662,"edition_count":430,"first_publish_year":1826,"key":"/works/OL450124W","title":"The
-        Last Man"},{"author_name":["Charlotte Perkins Gilman"],"cover_i":448130,"edition_count":541,"first_publish_year":1915,"key":"/works/OL2771987W","title":"Herland"},{"author_name":["H.
-        G. Wells"],"cover_i":9009316,"edition_count":1154,"first_publish_year":1895,"key":"/works/OL52267W","title":"The
-        Time Machine"},{"author_name":["H. G. Wells"],"cover_i":6419199,"edition_count":563,"first_publish_year":0,"key":"/works/OL52266W","title":"The
+        Last Man"},{"author_name":["H. G. Wells"],"cover_i":9009316,"edition_count":1146,"first_publish_year":1895,"key":"/works/OL52267W","title":"The
+        Time Machine"},{"author_name":["Charlotte Perkins Gilman"],"cover_i":448130,"edition_count":541,"first_publish_year":1915,"key":"/works/OL2771987W","title":"Herland"},{"author_name":["H.
+        G. Wells"],"cover_i":6419199,"edition_count":563,"first_publish_year":0,"key":"/works/OL52266W","title":"The
         Invisible Man"},{"author_name":["Frank Herbert"],"cover_i":11481354,"edition_count":121,"first_publish_year":1965,"key":"/works/OL893415W","title":"Dune"}]}'
-  recorded_at: Fri, 30 Jan 2026 12:17:12 GMT
+  recorded_at: Thu, 19 Feb 2026 12:53:30 GMT
 recorded_with: VCR 6.3.1

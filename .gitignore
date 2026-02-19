@@ -36,3 +36,6 @@
 
 /app/assets/builds/*
 !/app/assets/builds/.keep
+
+# Agent instructions (local development reference only)
+/AGENTS.md

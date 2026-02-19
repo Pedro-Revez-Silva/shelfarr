@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_08_005649) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_19_000001) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -105,6 +105,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_08_005649) do
     t.index ["user_id", "created_at"], name: "index_notifications_on_user_id_and_created_at"
     t.index ["user_id", "read_at"], name: "index_notifications_on_user_id_and_read_at"
     t.index ["user_id"], name: "index_notifications_on_user_id"
+  end
+
+  create_table "library_items", force: :cascade do |t|
+    t.string "library_id", null: false
+    t.string "audiobookshelf_id", null: false
+    t.string "title"
+    t.string "author"
+    t.datetime "synced_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["library_id", "audiobookshelf_id"], name: "index_library_items_on_library_id_and_audiobookshelf_id", unique: true
+    t.index ["library_id"], name: "index_library_items_on_library_id"
+    t.index ["synced_at"], name: "index_library_items_on_synced_at"
   end
 
   create_table "requests", force: :cascade do |t|

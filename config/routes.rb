@@ -79,6 +79,7 @@ Rails.application.routes.draw do
       collection do
         patch :bulk_update
         post :test_prowlarr
+        post :sync_audiobookshelf_library
         post :test_audiobookshelf
         post :test_flaresolverr
         post :test_hardcover

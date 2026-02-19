@@ -19,9 +19,9 @@ http_interactions:
       message: OK
     headers:
       Server:
-      - nginx/1.28.1
+      - nginx/1.28.2
       Date:
-      - Mon, 19 Jan 2026 19:20:17 GMT
+      - Thu, 19 Feb 2026 12:23:36 GMT
       Content-Type:
       - application/json
       Transfer-Encoding:
@@ -35,7 +35,7 @@ http_interactions:
       Access-Control-Max-Age:
       - '86400'
       X-Ol-Stats:
-      - '"MC 2 0.002 TT 0 0.028"'
+      - '"MC 2 0.001 TT 0 0.008"'
       Referrer-Policy:
       - no-referrer-when-downgrade
     body:
@@ -63,5 +63,5 @@ http_interactions:
         [{"key": "/works/OL82563W"}], "latest_revision": 29, "revision": 29, "created":
         {"type": "/type/datetime", "value": "2009-01-07T23:46:06.178276"}, "last_modified":
         {"type": "/type/datetime", "value": "2025-04-16T10:17:08.981375"}}'
-  recorded_at: Mon, 19 Jan 2026 19:20:17 GMT
+  recorded_at: Thu, 19 Feb 2026 12:23:36 GMT
 recorded_with: VCR 6.3.1

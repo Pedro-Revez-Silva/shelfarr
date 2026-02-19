@@ -39,4 +39,56 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       assert_match "turbo-stream", response.body
     end
   end
+
+  test "results shows warning when matching audiobookshelf item exists" do
+    LibraryItem.destroy_all
+    LibraryItem.create!(
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-1",
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      synced_at: Time.current
+    )
+
+    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
+    metadata_result = result.new(
+      work_id: "work-hobbit",
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      first_publish_year: 1937
+    )
+
+    MetadataService.stub(:search, [metadata_result]) do
+      get search_results_path, params: { q: "hobbit" }
+    end
+
+    assert_response :success
+    assert_match "Similar book may already exist", response.body
+  end
+
+  test "results does not show warning when no similar audiobookshelf item exists" do
+    LibraryItem.destroy_all
+    LibraryItem.create!(
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-1",
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      synced_at: Time.current
+    )
+
+    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
+    metadata_result = result.new(
+      work_id: "work-1984",
+      title: "1984",
+      author: "George Orwell",
+      first_publish_year: 1949
+    )
+
+    MetadataService.stub(:search, [metadata_result]) do
+      get search_results_path, params: { q: "1984" }
+    end
+
+    assert_response :success
+    assert_no_match "Similar book may already exist", response.body
+  end
 end
