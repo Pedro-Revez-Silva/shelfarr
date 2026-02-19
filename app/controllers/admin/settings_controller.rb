@@ -5,6 +5,7 @@ module Admin
     def index
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
+      load_audiobookshelf_cache_summary
     end
 
     def update
@@ -39,6 +40,7 @@ module Admin
 
       if changed_keys.any? { |k| k.start_with?("audiobookshelf") }
         AudiobookshelfClient.reset_connection!
+        AudiobookshelfLibrarySyncJob.perform_later if AudiobookshelfClient.configured?
         run_service_health_check("audiobookshelf")
       end
       if changed_keys.any? { |k| k.start_with?("prowlarr") }
@@ -58,6 +60,7 @@ module Admin
 
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
+      load_audiobookshelf_cache_summary
 
       respond_to do |format|
         if errors.any?
@@ -83,6 +86,7 @@ module Admin
     rescue ArgumentError => e
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
+      load_audiobookshelf_cache_summary
 
       respond_to do |format|
         format.html { redirect_to admin_settings_path, alert: e.message }
@@ -136,6 +140,16 @@ module Admin
     rescue AudiobookshelfClient::Error => e
       health&.check_failed!(message: e.message)
       respond_with_flash(alert: "Audiobookshelf error: #{e.message}")
+    end
+
+    def sync_audiobookshelf_library
+      unless AudiobookshelfClient.configured?
+        redirect_to admin_settings_path, alert: "Audiobookshelf is not configured. Enter URL and API key first."
+        return
+      end
+
+      AudiobookshelfLibrarySyncJob.perform_later
+      redirect_to admin_settings_path, notice: "Audiobookshelf library sync started."
     end
 
     # FlareSolverr is not tracked in SystemHealth::SERVICES, so no SystemHealth sync here
@@ -249,6 +263,12 @@ module Admin
     rescue AudiobookshelfClient::Error => e
       Rails.logger.warn "[SettingsController] Failed to fetch Audiobookshelf libraries: #{e.message}"
       []
+    end
+
+    def load_audiobookshelf_cache_summary
+      @audiobookshelf_library_items = LibraryItem.by_synced_at_desc.limit(50)
+      @audiobookshelf_library_items_count = LibraryItem.count
+      @audiobookshelf_library_items_last_synced_at = @audiobookshelf_library_items.maximum(:synced_at)
     end
 
     def ensure_settings_seeded

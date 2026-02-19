@@ -236,6 +236,28 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "sync_audiobookshelf_library fails when not configured" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobookshelf_api_key, "")
+
+    post sync_audiobookshelf_library_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not configured/i, flash[:alert]
+  end
+
+  test "sync_audiobookshelf_library enqueues a sync job" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    assert_enqueued_with(job: AudiobookshelfLibrarySyncJob) do
+      post sync_audiobookshelf_library_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /sync started/i, flash[:notice]
+  end
+
   # Test connection tests for OIDC
   test "test_oidc fails when not enabled" do
     SettingsService.set(:oidc_enabled, false)

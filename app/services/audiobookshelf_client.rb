@@ -49,6 +49,26 @@ class AudiobookshelfClient
       response.status == 200
     end
 
+    # GET /api/libraries/:id/items - List all items in a library
+    def library_items(id, page_size: 500)
+      ensure_configured!
+
+      items = []
+      page = 1
+
+      loop do
+        response = request { connection.get("/api/libraries/#{id}/items", { limit: page_size, page: page }) }
+        break unless response.status == 200
+
+        page_items = extract_library_items(response.body)
+        items.concat(page_items)
+        break if end_of_items?(page_items, response.body, page_size, page)
+        page += 1
+      end
+
+      items
+    end
+
     # GET /api/libraries/:id/items - Find item by path
     def find_item_by_path(path)
       ensure_configured!
@@ -163,6 +183,61 @@ class AudiobookshelfClient
         folders: data["folders"] || [],
         media_type: data["mediaType"]
       )
+    end
+
+    def extract_library_items(data)
+      raw_items = data["results"] || data["items"] || data["libraryItems"] || []
+      return [] unless raw_items.is_a?(Array)
+
+      raw_items.filter_map do |raw_item|
+        next unless raw_item.is_a?(Hash)
+
+        {
+          "audiobookshelf_id" => raw_item["id"] || raw_item.dig("media", "id") || raw_item.dig("item", "id"),
+          "title" => raw_item["title"] || raw_item.dig("media", "title") || raw_item.dig("book", "title"),
+          "author" => extract_author(raw_item)
+        }
+      end
+    end
+
+    def extract_author(raw_item)
+      return raw_item["author"] if raw_item["author"].present?
+      return raw_item.dig("media", "author") if raw_item.dig("media", "author").present?
+      return raw_item.dig("book", "author") if raw_item.dig("book", "author").present?
+
+      raw_authors = raw_item.dig("media", "authors") ||
+        raw_item.dig("media", "metadata", "authors") ||
+        raw_item.dig("metadata", "authors") ||
+        raw_item.dig("book", "metadata", "authors")
+      return nil if raw_authors.blank?
+
+      if raw_authors.is_a?(Array)
+        return raw_authors.join(", ") if raw_authors.all?(String)
+
+        names = raw_authors.map do |author|
+          next unless author.is_a?(Hash)
+
+          author["name"] || author["fullName"] || author["author"]
+        end.compact
+
+        names.join(", ")
+      else
+        raw_authors.to_s
+      end
+    end
+
+    def end_of_items?(page_items, data, page_size, page)
+      return true if page_items.empty?
+      return true if page_items.length < page_size
+
+      total = data["total"] || data["totalItems"] || data["total_items"] || data["total_results"]
+      return true if total.present? && total <= (page * page_size)
+
+      total_pages = data["totalPages"] || data["pages"] || data["total_pages"]
+      current_page = data["page"] || page
+      return true if total_pages.present? && current_page >= total_pages
+
+      false
     end
   end
 end

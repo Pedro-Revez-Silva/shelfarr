@@ -1,4 +1,6 @@
 <%
+  audiobookshelf_matches ||= []
+
   # Check if this book already exists in our system
   existing_audiobook = Book.find_by_work_id(result.work_id, book_type: :audiobook)
   existing_ebook = Book.find_by_work_id(result.work_id, book_type: :ebook)
@@ -41,6 +43,14 @@
 
     <%# Status Badges (top right) %>
     <div class="absolute top-2 right-2 flex flex-col gap-1">
+      <% if audiobookshelf_matches.any? %>
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-500/90 text-white backdrop-blur-sm">
+          <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M10 18a1 1 0 100-2H2a1 1 0 100-2h8V8a1 1 0 102 0v6h8a1 1 0 100 2h-8v2h8a1 1 0 100 2H10z"></path>
+          </svg>
+          Similar book may already exist
+        </span>
+      <% end %>
       <% if audiobook_status == :acquired %>
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/90 text-white backdrop-blur-sm">
           <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
@@ -134,6 +144,24 @@
     <h3 class="font-semibold text-white text-sm leading-tight line-clamp-2"><%= result.title %></h3>
     <% if result.author.present? %>
       <p class="text-xs text-gray-400 mt-1 truncate"><%= result.author %></p>
+    <% end %>
+    <% if audiobookshelf_matches.any? %>
+      <div class="mt-2 pt-2 border-t border-gray-700">
+        <p class="text-[11px] text-amber-300">A similar book may already exist in your library:</p>
+        <ul class="text-[11px] text-amber-200 space-y-1 mt-1">
+          <% audiobookshelf_matches.each do |match| %>
+            <li class="truncate">
+              <% label = [match.item.title, match.item.author].compact.join(" · ").truncate(70) %>
+              <% if match.item.audiobookshelf_url.present? %>
+                <%= link_to label, match.item.audiobookshelf_url, target: "_blank", rel: "noopener", class: "hover:text-amber-100 underline" %>
+              <% else %>
+                <%= label %>
+              <% end %>
+              <span class="text-amber-400">(<%= match.match_type.to_s.titleize %>)</span>
+            </li>
+          <% end %>
+        </ul>
+      </div>
     <% end %>
   </div>
 </div>
