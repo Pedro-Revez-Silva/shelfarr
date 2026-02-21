@@ -4,6 +4,7 @@ class User < ApplicationRecord
   has_many :requests, dependent: :destroy
   has_many :uploads, dependent: :destroy
   has_many :notifications, dependent: :destroy
+  has_many :activity_logs, dependent: :destroy
 
   # Encrypt OTP secret and backup codes at rest
   encrypts :otp_secret
