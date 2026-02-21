@@ -39,12 +39,19 @@ module Authentication
         return nil
       end
 
+      # Block soft-deleted users
+      if session.user&.deleted?
+        session.destroy
+        cookies.delete(:session_id)
+        return nil
+      end
+
       session
     end
 
     def request_authentication
       # Redirect to setup if no users exist
-      if User.none?
+      if User.active.none?
         redirect_to sign_up_path
         return
       end

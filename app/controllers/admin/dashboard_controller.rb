@@ -1,7 +1,7 @@
 module Admin
   class DashboardController < BaseController
     def index
-      @total_users = User.count
+      @total_users = User.active.count
       @total_books = Book.count
       @pending_requests = Request.active.count
       @attention_needed = Request.needs_attention.count

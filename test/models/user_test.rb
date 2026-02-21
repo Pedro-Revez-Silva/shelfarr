@@ -78,4 +78,29 @@ class UserTest < ActiveSupport::TestCase
     assert_nil user.locked_until
     assert_nil user.last_failed_login_ip
   end
+
+  test "soft_delete! marks user as deleted and clears sessions" do
+    user = users(:one)
+    user.sessions.create!(user_agent: "test", ip_address: "127.0.0.1")
+
+    assert_difference("user.sessions.count", -1) do
+      user.soft_delete!
+    end
+
+    assert user.reload.deleted?
+  end
+
+  test "allows reusing username from a soft-deleted user" do
+    user = users(:one)
+    username = user.username
+    user.soft_delete!
+
+    replacement = User.new(
+      name: "Replacement User",
+      username: username,
+      password: VALID_PASSWORD
+    )
+
+    assert replacement.save
+  end
 end

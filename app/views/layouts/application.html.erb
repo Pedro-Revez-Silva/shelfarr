@@ -73,7 +73,7 @@
               <%= button_to "Sign out", session_path, method: :delete, class: "text-gray-400 hover:text-white transition" %>
             <% else %>
               <%= link_to "Sign in", new_session_path, class: "text-gray-400 hover:text-white transition" %>
-              <% if User.none? %>
+              <% if User.active.none? %>
                 <%= link_to "Sign up", sign_up_path, class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white" %>
               <% end %>
             <% end %>
