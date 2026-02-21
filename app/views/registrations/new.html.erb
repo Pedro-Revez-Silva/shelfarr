@@ -1,6 +1,6 @@
 <div class="mx-auto md:w-2/3 w-full">
-  <h1 class="font-bold text-4xl text-white"><%= User.none? ? "Create your account" : "Create new user" %></h1>
-  <% if User.none? %>
+  <h1 class="font-bold text-4xl text-white"><%= User.active.none? ? "Create your account" : "Create new user" %></h1>
+  <% if User.active.none? %>
     <p class="text-gray-400 mt-2">You'll be the first user and will have admin privileges.</p>
   <% end %>
 
@@ -47,10 +47,10 @@
 
     <div class="col-span-6 sm:flex sm:items-center sm:gap-4">
       <div class="inline">
-        <%= form.submit User.none? ? "Create account" : "Create user", class: "w-full sm:w-auto text-center rounded-lg px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white inline-block font-medium cursor-pointer transition" %>
+        <%= form.submit User.active.none? ? "Create account" : "Create user", class: "w-full sm:w-auto text-center rounded-lg px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white inline-block font-medium cursor-pointer transition" %>
       </div>
 
-      <% if User.none? %>
+      <% if User.active.none? %>
         <div class="mt-4 text-sm text-gray-500 sm:mt-0">
           Already have an account? <%= link_to "Sign in", new_session_path, class: "text-blue-400 hover:text-blue-300" %>
         </div>

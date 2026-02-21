@@ -16,7 +16,7 @@ class User < ApplicationRecord
 
   normalizes :username, with: ->(u) { u.strip.downcase }
 
-  validates :username, presence: true, uniqueness: true,
+  validates :username, presence: true, uniqueness: { conditions: -> { where(deleted_at: nil) } },
     format: { with: /\A[a-z0-9_]+\z/, message: "only allows lowercase letters, numbers, and underscores" }
   validates :name, presence: true
   validates :password, length: { minimum: 12 },
@@ -189,7 +189,7 @@ class User < ApplicationRecord
     # Ensure username is unique
     username = base_username
     counter = 1
-    while exists?(username: username)
+    while active.exists?(username: username)
       username = "#{base_username}#{counter}"
       counter += 1
     end

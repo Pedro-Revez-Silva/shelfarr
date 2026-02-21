@@ -216,4 +216,14 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to new_session_path
     assert_nil cookies[:session_id]
   end
+
+  test "create rejects soft-deleted users" do
+    @user.update!(deleted_at: Time.current)
+
+    post session_path, params: { username: @user.username, password: FIXTURE_PASSWORD }
+
+    assert_redirected_to new_session_path
+    assert_match(/Invalid username or password/, flash[:alert])
+    assert_nil cookies[:session_id]
+  end
 end
