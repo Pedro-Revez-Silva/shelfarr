@@ -6,6 +6,8 @@ class User < ApplicationRecord
   has_many :notifications, dependent: :destroy
   has_many :activity_logs, dependent: :destroy
 
+  scope :active, -> { where(deleted_at: nil) }
+
   # Encrypt OTP secret and backup codes at rest
   encrypts :otp_secret
   encrypts :backup_codes
@@ -137,6 +139,18 @@ class User < ApplicationRecord
     backup_codes.split(",").count
   end
 
+  # Soft delete
+  def soft_delete!
+    transaction do
+      sessions.destroy_all
+      update!(deleted_at: Time.current)
+    end
+  end
+
+  def deleted?
+    deleted_at.present?
+  end
+
   # OIDC/SSO methods
   def oidc_user?
     oidc_uid.present? && oidc_provider.present?
@@ -149,13 +163,13 @@ class User < ApplicationRecord
     info = auth_hash["info"] || {}
 
     # First try to find by OIDC identity
-    user = find_by(oidc_provider: provider, oidc_uid: uid)
+    user = active.find_by(oidc_provider: provider, oidc_uid: uid)
     return user if user
 
     # Try to find by email and link the OIDC identity
     email = info["email"].to_s.strip.downcase
     if email.present?
-      user = find_by(username: email.split("@").first.gsub(/[^a-z0-9_]/, "_"))
+      user = active.find_by(username: email.split("@").first.gsub(/[^a-z0-9_]/, "_"))
       if user && !user.oidc_user?
         user.update!(oidc_provider: provider, oidc_uid: uid)
         return user
@@ -201,6 +215,6 @@ class User < ApplicationRecord
   private
 
   def set_admin_if_first_user
-    self.role = :admin if User.count.zero?
+    self.role = :admin if User.active.count.zero?
   end
 end

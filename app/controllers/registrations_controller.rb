@@ -33,11 +33,11 @@ class RegistrationsController < ApplicationController
   end
 
   def first_user?
-    User.count == 1 && @user == User.first
+    User.active.count == 1 && @user == User.active.first
   end
 
   def require_admin_for_new_users
-    return if User.none?
+    return if User.active.none?
     return if authenticated? && Current.user&.admin?
 
     redirect_to root_path, alert: "Only admins can create new users."

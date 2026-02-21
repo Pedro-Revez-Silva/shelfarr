@@ -3,7 +3,7 @@ module Admin
     before_action :set_user, only: [:show, :edit, :update, :destroy]
 
     def index
-      @users = User.order(created_at: :desc)
+      @users = User.active.order(created_at: :desc)
     end
 
     def show
@@ -41,7 +41,7 @@ module Admin
       if @user == Current.user
         redirect_to admin_users_path, alert: "You cannot delete yourself."
       else
-        @user.destroy
+        @user.soft_delete!
         redirect_to admin_users_path, notice: "User was successfully deleted."
       end
     end

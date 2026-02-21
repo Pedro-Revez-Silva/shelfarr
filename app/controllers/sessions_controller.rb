@@ -3,11 +3,11 @@ class SessionsController < ApplicationController
   rate_limit to: 10, within: 3.minutes, only: :create, with: -> { redirect_to new_session_path, alert: "Try again later." }
 
   def new
-    redirect_to sign_up_path if User.none?
+    redirect_to sign_up_path if User.active.none?
   end
 
   def create
-    user = User.find_by(username: params[:username]&.strip&.downcase)
+    user = User.active.find_by(username: params[:username]&.strip&.downcase)
 
     if SettingsService.auth_disabled?
       if user
@@ -53,7 +53,7 @@ class SessionsController < ApplicationController
       return
     end
 
-    @user = User.find_by(id: session[:pending_user_id])
+    @user = User.active.find_by(id: session[:pending_user_id])
     unless @user
       session.delete(:pending_user_id)
       redirect_to new_session_path
@@ -62,7 +62,7 @@ class SessionsController < ApplicationController
 
   # Verify submitted OTP code or backup code
   def submit_otp
-    user = User.find_by(id: session[:pending_user_id])
+    user = User.active.find_by(id: session[:pending_user_id])
 
     unless user
       redirect_to new_session_path, alert: "Session expired. Please log in again."
