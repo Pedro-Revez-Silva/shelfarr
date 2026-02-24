@@ -116,6 +116,42 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert flash[:alert].present?
   end
 
+  test "bulk_update immediately updates output_paths health when paths are valid" do
+    Dir.mktmpdir do |audiobook_dir|
+      Dir.mktmpdir do |ebook_dir|
+        patch bulk_update_admin_settings_url, params: {
+          settings: {
+            audiobook_output_path: audiobook_dir,
+            ebook_output_path: ebook_dir
+          }
+        }
+
+        assert_redirected_to admin_settings_path
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.healthy?
+        assert_includes health.message, "accessible"
+      end
+    end
+  end
+
+  test "bulk_update immediately updates output_paths health with failure reason" do
+    Dir.mktmpdir do |audiobook_dir|
+      patch bulk_update_admin_settings_url, params: {
+        settings: {
+          audiobook_output_path: audiobook_dir,
+          ebook_output_path: "/definitely/missing/path"
+        }
+      }
+
+      assert_redirected_to admin_settings_path
+
+      health = SystemHealth.for_service("output_paths")
+      assert health.degraded?
+      assert_includes health.message, "Ebook path does not exist"
+    end
+  end
+
   # Test connection tests for Prowlarr
   test "test_prowlarr fails when not configured" do
     SettingsService.set(:prowlarr_url, "")

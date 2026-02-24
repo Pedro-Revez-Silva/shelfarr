@@ -20,6 +20,7 @@ module Admin
       @download_client.priority = next_priority_for(@download_client.client_type)
 
       if @download_client.save
+        run_download_client_health_check
         redirect_to admin_download_clients_path, notice: "Download client was successfully created."
       else
         render :new, status: :unprocessable_entity
@@ -36,6 +37,7 @@ module Admin
       update_params = update_params.except(:api_key) if update_params[:api_key].blank?
 
       if @download_client.update(update_params)
+        run_download_client_health_check
         redirect_to admin_download_clients_path, notice: "Download client was successfully updated."
       else
         render :edit, status: :unprocessable_entity
@@ -44,11 +46,15 @@ module Admin
 
     def destroy
       @download_client.destroy
+      run_download_client_health_check
       redirect_to admin_download_clients_path, notice: "Download client was successfully deleted."
     end
 
     def test
-      if @download_client.test_connection
+      success = @download_client.test_connection
+      run_download_client_health_check
+
+      if success
         redirect_to admin_download_clients_path, notice: "Connection to '#{@download_client.name}' successful!"
       else
         redirect_to admin_download_clients_path, alert: "Connection to '#{@download_client.name}' failed."
@@ -92,6 +98,12 @@ module Admin
       @download_client.priority, other.priority = other.priority, @download_client.priority
       @download_client.save!
       other.save!
+    end
+
+    def run_download_client_health_check
+      HealthCheckJob.perform_now(service: "download_client")
+    rescue => e
+      Rails.logger.warn "[DownloadClientsController] Failed to run download client health check: #{e.message}"
     end
   end
 end

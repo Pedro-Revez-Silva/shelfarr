@@ -55,7 +55,7 @@ module Admin
         run_service_health_check("hardcover")
       end
       if changed_keys.any? { |k| k.start_with?("audiobook_output_path") || k.start_with?("ebook_output_path") }
-        run_service_health_check("output_paths")
+        run_service_health_check_now("output_paths")
       end
 
       @settings_by_category = SettingsService.all_by_category
@@ -240,6 +240,12 @@ module Admin
       HealthCheckJob.perform_later(service: service_name)
     rescue => e
       Rails.logger.warn "[SettingsController] Failed to enqueue health check for #{service_name}: #{e.message}"
+    end
+
+    def run_service_health_check_now(service_name)
+      HealthCheckJob.perform_now(service: service_name)
+    rescue => e
+      Rails.logger.warn "[SettingsController] Failed to run health check for #{service_name}: #{e.message}"
     end
 
     PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze
