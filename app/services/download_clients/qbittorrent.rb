@@ -289,7 +289,10 @@ module DownloadClients
       auth_response = Faraday.post(
         "#{base_url}/api/v2/auth/login",
         { username: username, password: password }
-      )
+      ) do |req|
+        req.headers["Referer"] = base_url
+        req.headers["Origin"] = base_url
+      end
 
       if auth_response.status == 200 && auth_response.body == "Ok."
         # Extract SID cookie from response
@@ -336,6 +339,8 @@ module DownloadClients
         f.response :json, parser_options: { symbolize_names: false }
         f.adapter Faraday.default_adapter
         f.headers["Cookie"] = "SID=#{session_key[:sid]}" if session_valid?
+        f.headers["Referer"] = base_url
+        f.headers["Origin"] = base_url
         f.options.timeout = 15
         f.options.open_timeout = 5
       end
