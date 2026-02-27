@@ -108,20 +108,21 @@ class HealthCheckJob < ApplicationJob
     end
 
     clients.each do |client|
-      category = client.category
-
-      # Check category subfolder if category is configured
-      if category.present? && Dir.exist?(local_path)
-        category_path = File.join(local_path, category)
-        unless Dir.exist?(category_path)
-          issues << "#{client.name}: category folder '#{category_path}' not found — " \
-                    "ensure your Docker mount includes the '#{category}' subfolder"
-        end
-      end
-
       # Check client-specific download_path if set
       if client.download_path.present? && !Dir.exist?(client.download_path)
         issues << "#{client.name}: configured download path '#{client.download_path}' does not exist"
+      end
+
+      # Check category subfolder only for qBittorrent (uses category-based save paths)
+      if client.qbittorrent? && client.category.present?
+        base = client.download_path.presence || local_path
+        if Dir.exist?(base)
+          category_path = File.join(base, client.category)
+          unless Dir.exist?(category_path)
+            issues << "#{client.name}: category folder '#{category_path}' not found — " \
+                      "ensure your Docker mount includes the '#{client.category}' subfolder"
+          end
+        end
       end
 
       # Query qBit for save path info (diagnostics only)
