@@ -1,9 +1,9 @@
 <div class="mx-auto max-w-2xl">
   <div class="mb-6">
-    <%= link_to "&larr; Back to Library".html_safe, library_index_path, class: "text-blue-600 hover:text-blue-800" %>
+    <%= link_to "&larr; Back to Library".html_safe, library_index_path, class: "text-blue-400 hover:text-blue-300" %>
   </div>
 
-  <div class="bg-white rounded-lg shadow overflow-hidden">
+  <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
     <div class="p-6">
       <div class="flex gap-6 mb-6">
         <div class="flex-shrink-0 w-32">
@@ -14,8 +14,8 @@
               class="w-full rounded shadow"
             >
           <% else %>
-            <div class="w-full aspect-[2/3] bg-gray-200 rounded shadow flex items-center justify-center">
-              <svg class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="w-full aspect-[2/3] bg-gray-800 rounded shadow flex items-center justify-center">
+              <svg class="w-10 h-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
             </div>
@@ -23,13 +23,13 @@
         </div>
 
         <div class="flex-grow">
-          <h1 class="font-bold text-2xl text-gray-900 mb-1"><%= @book.title %></h1>
+          <h1 class="font-bold text-2xl text-white mb-1"><%= @book.title %></h1>
           <% if @book.author.present? %>
-            <p class="text-gray-600 mb-2"><%= @book.author %></p>
+            <p class="text-gray-400 mb-2"><%= @book.author %></p>
           <% end %>
 
           <div class="flex flex-wrap gap-2 mb-4">
-            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= @book.audiobook? ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800' %>">
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= @book.audiobook? ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400' %>">
               <% if @book.audiobook? %>
                 <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
@@ -42,7 +42,7 @@
                 Ebook
               <% end %>
             </span>
-            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-500/20 text-green-400">
               In Library
             </span>
           </div>
@@ -54,7 +54,7 @@
       </div>
 
       <% if @user_request %>
-        <div class="mt-6 pt-6 border-t">
+        <div class="mt-6 pt-6 border-t border-gray-800">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-medium text-gray-500">Download</h3>
             <%= link_to download_request_path(@user_request),
@@ -65,21 +65,31 @@
               Download
             <% end %>
           </div>
-          <%= link_to "View Request Details", request_path(@user_request), class: "text-blue-600 hover:text-blue-800 text-sm" %>
+          <%= link_to "View Request Details", request_path(@user_request), class: "text-blue-400 hover:text-blue-300 text-sm" %>
         </div>
       <% else %>
-        <div class="mt-6 pt-6 border-t">
+        <div class="mt-6 pt-6 border-t border-gray-800">
           <p class="text-sm text-gray-500">This book is in your library but has no associated download request.</p>
         </div>
       <% end %>
 
       <% if Current.user&.admin? %>
-        <div class="mt-6 pt-6 border-t">
+        <% if @attention_request %>
+          <div class="mt-6 pt-6 border-t border-gray-800">
+            <h3 class="text-sm font-medium text-gray-500 mb-2">Attention Required</h3>
+            <p class="text-sm text-yellow-400 mb-3"><%= @attention_request.issue_description %></p>
+            <%= button_to "Retry Post-Processing", retry_post_processing_library_path(@book),
+                method: :post,
+                class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition text-sm" %>
+          </div>
+        <% end %>
+
+        <div class="mt-6 pt-6 border-t border-gray-800">
           <h3 class="text-sm font-medium text-gray-500 mb-2">File Location</h3>
-          <code class="text-sm text-gray-900 bg-gray-100 px-2 py-1 rounded block break-all"><%= @book.file_path %></code>
+          <code class="text-sm text-gray-300 bg-gray-800 px-2 py-1 rounded block break-all"><%= @book.file_path %></code>
         </div>
 
-        <div class="mt-6 pt-6 border-t" data-controller="delete-modal">
+        <div class="mt-6 pt-6 border-t border-gray-800" data-controller="delete-modal">
           <h3 class="text-sm font-medium text-gray-500 mb-2">Admin Actions</h3>
           <button type="button"
                   class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition text-sm"

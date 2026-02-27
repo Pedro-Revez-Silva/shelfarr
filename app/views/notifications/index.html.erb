@@ -1,9 +1,14 @@
 <div class="mx-auto max-w-2xl">
   <div class="flex justify-between items-center mb-8">
     <h1 class="font-bold text-4xl text-white">Notifications</h1>
-    <% if @notifications.unread.any? %>
-      <%= button_to "Mark all as read", mark_all_read_notifications_path, method: :post, class: "text-blue-400 hover:text-blue-300 font-medium" %>
-    <% end %>
+    <div class="flex items-center gap-4">
+      <% if @notifications.unread.any? %>
+        <%= button_to "Mark all as read", mark_all_read_notifications_path, method: :post, class: "text-blue-400 hover:text-blue-300 font-medium" %>
+      <% end %>
+      <% if @notifications.any? %>
+        <%= button_to "Clear all", clear_all_notifications_path, method: :delete, class: "text-gray-400 hover:text-gray-300 font-medium" %>
+      <% end %>
+    </div>
   </div>
 
   <% if @notifications.empty? %>

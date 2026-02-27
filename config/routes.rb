@@ -19,7 +19,11 @@ Rails.application.routes.draw do
   get "search/results", to: "search#results"
 
   # Library
-  resources :library, only: [ :index, :show, :destroy ]
+  resources :library, only: [ :index, :show, :destroy ] do
+    member do
+      post :retry_post_processing
+    end
+  end
 
   # Profile
   resource :profile, only: [ :show, :edit, :update ] do
@@ -39,6 +43,7 @@ Rails.application.routes.draw do
     end
     collection do
       post :mark_all_read
+      delete :clear_all
     end
   end
 

@@ -11,6 +11,28 @@ class LibraryController < ApplicationController
   def show
     @book = Book.acquired.find(params[:id])
     @user_request = @book.requests.completed.first
+    @attention_request = @book.requests.where(attention_needed: true).first
+  end
+
+  def retry_post_processing
+    unless Current.user&.admin?
+      redirect_to library_index_path, alert: "Only admins can retry post-processing"
+      return
+    end
+
+    @book = Book.find(params[:id])
+    request = @book.requests.where(attention_needed: true).first
+    download = request&.downloads&.where(status: :completed)&.order(created_at: :desc)&.first
+
+    unless request && download
+      redirect_to library_path(@book), alert: "No retryable post-processing found for this book"
+      return
+    end
+
+    request.update!(attention_needed: false, issue_description: nil)
+    PostProcessingJob.perform_later(download.id)
+
+    redirect_to library_path(@book), notice: "Post-processing has been queued for retry."
   end
 
   def destroy

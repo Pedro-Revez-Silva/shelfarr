@@ -22,6 +22,11 @@ class NotificationsController < ApplicationController
     redirect_to notifications_path, notice: "All notifications marked as read."
   end
 
+  def clear_all
+    Current.user.notifications.destroy_all
+    redirect_to notifications_path, notice: "All notifications cleared."
+  end
+
   private
 
   def record_not_found
