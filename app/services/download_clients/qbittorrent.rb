@@ -93,16 +93,24 @@ module DownloadClients
 
       # Actually call an API endpoint to verify the full path works
       # (not just authentication which uses a different code path)
+      url = "#{base_url}/api/v2/app/version"
       response = connection.get("api/v2/app/version")
 
       if response.status == 200
         Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
         true
       else
-        Rails.logger.error "[Qbittorrent] API endpoint returned #{response.status} - check URL path configuration"
+        Rails.logger.error "[Qbittorrent] Connection test failed: GET #{url} returned #{response.status} (#{response.body.to_s.truncate(200)})"
         false
       end
-    rescue Error
+    rescue AuthenticationError => e
+      Rails.logger.error "[Qbittorrent] Authentication failed for #{config.name} at #{base_url}: #{e.message}"
+      false
+    rescue ConnectionError => e
+      Rails.logger.error "[Qbittorrent] Connection failed for #{config.name} at #{base_url}: #{e.message}"
+      false
+    rescue Error => e
+      Rails.logger.error "[Qbittorrent] Unexpected error for #{config.name} at #{base_url}: #{e.message}"
       false
     end
 
@@ -286,8 +294,11 @@ module DownloadClients
     end
 
     def authenticate!
+      login_url = "#{base_url}/api/v2/auth/login"
+      Rails.logger.info "[Qbittorrent] Authenticating to #{config.name} at #{login_url} (username: #{username})"
+
       auth_response = Faraday.post(
-        "#{base_url}/api/v2/auth/login",
+        login_url,
         { username: username, password: password }
       ) do |req|
         req.headers["Referer"] = base_url
@@ -300,15 +311,20 @@ module DownloadClients
         match = cookie&.match(/SID=([^;]+)/)
         if match
           session_key[:sid] = match[1]
-          Rails.logger.debug "[Qbittorrent] Authenticated successfully to #{config.name}"
+          Rails.logger.info "[Qbittorrent] Authenticated successfully to #{config.name}"
         else
-          raise Base::AuthenticationError, "No session cookie received from qBittorrent"
+          raise Base::AuthenticationError, "No session cookie received from qBittorrent at #{login_url}"
         end
+      elsif auth_response.status == 403
+        raise Base::AuthenticationError,
+          "qBittorrent rejected login at #{login_url} with 403 Forbidden — " \
+          "ensure the URL is reachable and CSRF protection allows this host"
       else
-        raise Base::AuthenticationError, "qBittorrent login failed: #{auth_response.body}"
+        raise Base::AuthenticationError,
+          "qBittorrent login failed at #{login_url}: HTTP #{auth_response.status} — #{auth_response.body}"
       end
     rescue Faraday::Error => e
-      raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
+      raise Base::ConnectionError, "Failed to connect to qBittorrent at #{login_url}: #{e.message}"
     end
 
     def session_key
@@ -352,12 +368,14 @@ module DownloadClients
         yield response.body
       when 401, 403
         clear_session!
-        raise Base::AuthenticationError, "qBittorrent session expired"
+        Rails.logger.error "[Qbittorrent] Session expired or rejected (HTTP #{response.status}) for #{config.name} at #{base_url}"
+        raise Base::AuthenticationError, "qBittorrent session expired (HTTP #{response.status}) at #{base_url}"
       else
+        Rails.logger.error "[Qbittorrent] API error: HTTP #{response.status} from #{base_url} — #{response.body.to_s.truncate(200)}"
         raise Base::Error, "qBittorrent API error: #{response.status}"
       end
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-      raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
+      raise Base::ConnectionError, "Failed to connect to qBittorrent at #{base_url}: #{e.message}"
     end
 
     def parse_torrent(data)
