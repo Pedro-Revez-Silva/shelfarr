@@ -10,6 +10,7 @@ class HealthCheckJob < ApplicationJob
     else
       check_prowlarr
       check_download_clients
+      check_download_paths
       check_output_paths
       check_audiobookshelf
       check_hardcover
@@ -23,6 +24,7 @@ class HealthCheckJob < ApplicationJob
     case service.to_s
     when "prowlarr" then check_prowlarr
     when "download_client" then check_download_clients
+    when "download_paths" then check_download_paths
     when "output_paths" then check_output_paths
     when "audiobookshelf" then check_audiobookshelf
     when "hardcover" then check_hardcover
@@ -85,6 +87,65 @@ class HealthCheckJob < ApplicationJob
       health.check_failed!(
         message: "#{successful}/#{clients.size} working. Failed: #{names}",
         degraded: true
+      )
+    end
+  end
+
+  def check_download_paths
+    health = SystemHealth.for_service("download_paths")
+    clients = DownloadClient.enabled.torrent_clients.to_a
+
+    if clients.empty?
+      health.mark_not_configured!(message: "No torrent clients configured")
+      return
+    end
+
+    issues = []
+    local_path = SettingsService.get(:download_local_path, default: "/downloads")
+
+    unless Dir.exist?(local_path)
+      issues << "Base download path '#{local_path}' does not exist in container"
+    end
+
+    clients.each do |client|
+      category = client.category
+
+      # Check category subfolder if category is configured
+      if category.present? && Dir.exist?(local_path)
+        category_path = File.join(local_path, category)
+        unless Dir.exist?(category_path)
+          issues << "#{client.name}: category folder '#{category_path}' not found — " \
+                    "ensure your Docker mount includes the '#{category}' subfolder"
+        end
+      end
+
+      # Check client-specific download_path if set
+      if client.download_path.present? && !Dir.exist?(client.download_path)
+        issues << "#{client.name}: configured download path '#{client.download_path}' does not exist"
+      end
+
+      # Query qBit for save path info (diagnostics only)
+      if client.qbittorrent?
+        begin
+          diagnostics = client.adapter.connection_diagnostics
+          if diagnostics
+            save_path = diagnostics[:save_path]
+            cat_path = diagnostics[:category_save_path]
+            Rails.logger.info "[HealthCheckJob] #{client.name}: qBit save_path=#{save_path}, " \
+                              "category_save_path=#{cat_path.presence || '(default)'}"
+          end
+        rescue => e
+          Rails.logger.warn "[HealthCheckJob] Path diagnostics for #{client.name} failed: #{e.message}"
+        end
+      end
+    end
+
+    if issues.empty?
+      health.check_succeeded!(message: "Download paths accessible")
+    else
+      health.check_failed!(
+        message: issues.join("; ").truncate(500),
+        degraded: issues.none? { |i| i.include?("does not exist in container") }
       )
     end
   end

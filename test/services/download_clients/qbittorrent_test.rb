@@ -617,6 +617,136 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  # === Category Auto-Creation Tests ===
+
+  test "test_connection creates category after successful connection" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .to_return(status: 200, body: "v4.6.0")
+
+      category_stub = stub_request(:post, "http://localhost:8080/api/v2/torrents/createCategory")
+        .with(body: { "category" => "shelfarr" })
+        .to_return(status: 200)
+
+      assert @client.test_connection
+      assert_requested(category_stub)
+    end
+  end
+
+  test "test_connection handles existing category gracefully" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .to_return(status: 200, body: "v4.6.0")
+
+      # 409 = category already exists
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/createCategory")
+        .to_return(status: 409)
+
+      assert @client.test_connection
+    end
+  end
+
+  test "test_connection skips category creation when no category configured" do
+    VCR.turned_off do
+      @client_record.update!(category: nil)
+
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .to_return(status: 200, body: "v4.6.0")
+
+      assert @client.test_connection
+      assert_not_requested(:post, "http://localhost:8080/api/v2/torrents/createCategory")
+    end
+  end
+
+  test "test_connection clears session on 403 response" do
+    VCR.turned_off do
+      # First: authenticate successfully
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Then: version endpoint returns 403 (expired session)
+      stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .to_return(status: 403, body: "Forbidden")
+
+      assert_not @client.test_connection
+    end
+  end
+
+  # === Connection Diagnostics Tests ===
+
+  test "connection_diagnostics returns save path and category info" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "save_path" => "/mnt/media/Torrents/Completed" }.to_json
+        )
+
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "shelfarr" => { "name" => "shelfarr", "savePath" => "" } }.to_json
+        )
+
+      result = @client.connection_diagnostics
+
+      assert_equal "/mnt/media/Torrents/Completed", result[:save_path]
+      assert_equal({ "shelfarr" => { "name" => "shelfarr", "savePath" => "" } }, result[:categories])
+      assert_equal "", result[:category_save_path]
+    end
+  end
+
+  test "connection_diagnostics returns nil on failure" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(status: 401, body: "Fails.")
+
+      result = @client.connection_diagnostics
+
+      assert_nil result
+    end
+  end
+
   test "add_torrent retries verification when torrent takes time to appear" do
     VCR.turned_off do
       # Stub authentication

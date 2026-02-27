@@ -140,6 +140,112 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  # Download paths tests
+  test "marks download_paths as not_configured when no torrent clients exist" do
+    DownloadClient.destroy_all
+
+    HealthCheckJob.perform_now(service: "download_paths")
+
+    health = SystemHealth.for_service("download_paths")
+    assert health.not_configured?
+    assert_includes health.message, "No torrent clients"
+  end
+
+  test "marks download_paths as healthy when local path and category folder exist" do
+    Dir.mktmpdir do |download_dir|
+      category_dir = File.join(download_dir, "shelfarr")
+      FileUtils.mkdir_p(category_dir)
+
+      setup_download_paths(download_dir)
+      client = create_download_client(name: "Path Test Client")
+      client.update!(category: "shelfarr")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+
+        # Stub diagnostics endpoints
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/media/Torrents" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "shelfarr" => { "name" => "shelfarr", "savePath" => "" } }.to_json
+          )
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.healthy?
+        assert_includes health.message, "accessible"
+      end
+    end
+  end
+
+  test "marks download_paths as failed when base local path does not exist" do
+    setup_download_paths("/nonexistent/downloads")
+    client = create_download_client(name: "Path Fail Client")
+
+    VCR.turned_off do
+      stub_qbittorrent_auth_success
+
+      stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "save_path" => "/mnt/media/Torrents" }.to_json
+        )
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {}.to_json
+        )
+
+      HealthCheckJob.perform_now(service: "download_paths")
+
+      health = SystemHealth.for_service("download_paths")
+      assert health.down?
+      assert_includes health.message, "does not exist"
+    end
+  end
+
+  test "marks download_paths as degraded when category folder is missing" do
+    Dir.mktmpdir do |download_dir|
+      # Don't create the category subfolder
+      setup_download_paths(download_dir)
+      client = create_download_client(name: "Cat Missing Client")
+      client.update!(category: "shelfarr")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => download_dir }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "shelfarr" => { "name" => "shelfarr", "savePath" => "" } }.to_json
+          )
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.degraded?
+        assert_includes health.message, "category folder"
+      end
+    end
+  end
+
   # Output paths tests
   test "marks output_paths as healthy when paths exist and are writable" do
     Dir.mktmpdir do |audiobook_dir|
@@ -288,6 +394,14 @@ class HealthCheckJobTest < ActiveJob::TestCase
     )
     Setting.find_or_create_by(key: "ebook_output_path").update!(
       value: ebook_path,
+      value_type: "string",
+      category: "paths"
+    )
+  end
+
+  def setup_download_paths(local_path)
+    Setting.find_or_create_by(key: "download_local_path").update!(
+      value: local_path,
       value_type: "string",
       category: "paths"
     )
