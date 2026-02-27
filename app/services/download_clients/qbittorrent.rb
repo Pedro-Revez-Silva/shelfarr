@@ -100,6 +100,8 @@ module DownloadClients
         Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
         true
       else
+        # Clear stale session so next attempt re-authenticates
+        clear_session! if response.status == 401 || response.status == 403
         Rails.logger.error "[Qbittorrent] Connection test failed: GET #{url} returned #{response.status} (#{response.body.to_s.truncate(200)})"
         false
       end
