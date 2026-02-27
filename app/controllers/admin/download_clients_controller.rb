@@ -12,7 +12,7 @@ module Admin
     end
 
     def new
-      @download_client = DownloadClient.new
+      @download_client = DownloadClient.new(category: "shelfarr")
     end
 
     def create

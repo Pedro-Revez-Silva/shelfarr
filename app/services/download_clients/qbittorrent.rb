@@ -98,6 +98,7 @@ module DownloadClients
 
       if response.status == 200
         Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
+        ensure_category_exists!
         true
       else
         # Clear stale session so next attempt re-authenticates
@@ -139,6 +140,46 @@ module DownloadClients
       end
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
+    end
+
+    # Auto-create the configured category in qBittorrent (idempotent)
+    def ensure_category_exists!
+      return unless config.category.present?
+
+      response = connection.post("api/v2/torrents/createCategory", { category: config.category })
+      case response.status
+      when 200
+        Rails.logger.info "[Qbittorrent] Category '#{config.category}' created in #{config.name}"
+      when 409
+        # Already exists — expected
+      else
+        Rails.logger.warn "[Qbittorrent] Failed to create category '#{config.category}': HTTP #{response.status}"
+      end
+    rescue => e
+      Rails.logger.warn "[Qbittorrent] Failed to ensure category (non-fatal): #{e.message}"
+    end
+
+    # Fetch qBittorrent's save path and category info for diagnostics
+    def connection_diagnostics
+      ensure_authenticated!
+
+      prefs = {}
+      cats = {}
+
+      prefs_response = connection.get("api/v2/app/preferences")
+      prefs = prefs_response.body if prefs_response.status == 200
+
+      cats_response = connection.get("api/v2/torrents/categories")
+      cats = cats_response.body if cats_response.status == 200
+
+      {
+        save_path: prefs["save_path"],
+        categories: cats,
+        category_save_path: config.category.present? ? cats.dig(config.category, "savePath") : nil
+      }
+    rescue => e
+      Rails.logger.warn "[Qbittorrent] Failed to fetch diagnostics: #{e.message}"
+      nil
     end
 
     private

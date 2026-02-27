@@ -354,6 +354,73 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "remaps path using category when global remote_path is a sibling folder" do
+    # Scenario: qBittorrent saves to /mnt/media/Torrents/shelfarr/TorrentName
+    # but download_remote_path is /mnt/media/Torrents/Completed (SABnzbd path)
+    # The category-aware remapping should detect the shared parent and remap correctly
+
+    # Create a subdirectory simulating the category-based download path
+    category_dir = File.join(@temp_source, "shelfarr")
+    download_dir = File.join(category_dir, "Test Audiobook")
+    FileUtils.mkdir_p(download_dir)
+    File.write(File.join(download_dir, "audiobook.mp3"), "test audio content")
+
+    client = DownloadClient.create!(
+      name: "qBit Category Test",
+      client_type: :qbittorrent,
+      url: "http://localhost:8080",
+      category: "shelfarr"
+    )
+
+    # Host path: /mnt/media/Torrents/shelfarr/Test Audiobook
+    @download.update!(
+      download_client: client,
+      download_path: "/mnt/media/Torrents/shelfarr/Test Audiobook"
+    )
+
+    # Global settings point to a sibling folder (SABnzbd's Completed folder)
+    SettingsService.set(:download_remote_path, "/mnt/media/Torrents/Completed")
+    SettingsService.set(:download_local_path, @temp_source + "/Completed")
+    SettingsService.set(:audiobookshelf_url, "")
+
+    # The parent of remote_path (/mnt/media/Torrents) matches the parent of category path
+    # So /mnt/media/Torrents/shelfarr/Test Audiobook → @temp_source/shelfarr/Test Audiobook
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3")),
+      "File should be copied using category-aware sibling remapping"
+  end
+
+  test "remaps path using client download_path with category" do
+    # Scenario: client has a download_path and category, global remote doesn't match
+    category_dir = File.join(@temp_source, "Test Audiobook")
+    FileUtils.mkdir_p(category_dir)
+    File.write(File.join(category_dir, "audiobook.mp3"), "test audio content")
+
+    client = DownloadClient.create!(
+      name: "qBit DlPath Test",
+      client_type: :qbittorrent,
+      url: "http://localhost:8080",
+      category: "shelfarr",
+      download_path: @temp_source  # Local path for this client's files
+    )
+
+    @download.update!(
+      download_client: client,
+      download_path: "/mnt/torrents/shelfarr/Test Audiobook"
+    )
+
+    SettingsService.set(:download_remote_path, "")
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3")),
+      "File should be copied using client download_path + category extraction"
+  end
+
   test "marks request for attention when source path is blank" do
     @download.update!(download_path: "")
 

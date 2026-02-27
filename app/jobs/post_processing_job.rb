@@ -137,45 +137,81 @@ class PostProcessingJob < ApplicationJob
     new_path
   end
 
-  # Remap paths from download client (host) to container paths
-  # Download clients report paths from their perspective (e.g., /mnt/media/Torrents/Completed/...)
-  # But Shelfarr's container may have those files mounted at a different path (e.g., /downloads/...)
+  # Remap paths from download client (host) to container paths.
+  # Builds a list of candidate paths and returns the first one that exists on disk.
+  # This handles different client configurations (with/without category, with/without
+  # per-client download_path) without requiring a single "correct" configuration.
   def remap_download_path(path, download)
     if path.blank?
       Rails.logger.warn "[PostProcessingJob] Download path is blank - download client didn't report a path"
       return path
     end
 
-    Rails.logger.info "[PostProcessingJob] Path remapping - original path from download client: #{path}"
+    Rails.logger.info "[PostProcessingJob] Path remapping - original path from client: #{path}"
 
-    # Try global settings first - these do proper prefix replacement
-    # which preserves the full path structure (including category subfolders)
+    candidates = build_path_candidates(path, download)
+
+    # Return the first candidate that actually exists on disk
+    candidates.each do |candidate|
+      next if candidate[:path].blank?
+
+      if File.exist?(candidate[:path])
+        Rails.logger.info "[PostProcessingJob] Path resolved via #{candidate[:strategy]}: #{candidate[:path]}"
+        return candidate[:path]
+      end
+    end
+
+    # None found — log all candidates for debugging
+    Rails.logger.warn "[PostProcessingJob] No remapped path exists on disk. Candidates tried:"
+    candidates.each { |c| Rails.logger.warn "[PostProcessingJob]   #{c[:strategy]}: #{c[:path]}" }
+
+    # Return the first non-nil candidate so copy_files produces a clear "not found" error
+    best_guess = candidates.find { |c| c[:path].present? }
+    best_guess ? best_guess[:path] : path
+  end
+
+  def build_path_candidates(path, download)
+    candidates = []
     remote_path = SettingsService.get(:download_remote_path)
     local_path = SettingsService.get(:download_local_path, default: "/downloads")
+    category = download.download_client&.category
+    client_download_path = download.download_client&.download_path
+    basename = File.basename(path)
 
+    # 1. Global remote_path → local_path prefix replacement
     if remote_path.present? && path.start_with?(remote_path)
-      remapped = path.sub(remote_path, local_path)
-      Rails.logger.info "[PostProcessingJob] Path remapped via global settings: #{remapped}"
-      return remapped
-    elsif remote_path.present?
-      Rails.logger.warn "[PostProcessingJob] Global remote_path is set (#{remote_path}) but doesn't match download path (#{path})"
+      candidates << { strategy: "global_prefix_remap", path: path.sub(remote_path, local_path) }
     end
 
-    # Fall back to client-specific download path
-    # This is a simpler mapping that uses the basename (filename or folder name)
-    # Use this when global settings aren't configured or don't match
-    if download.download_client&.download_path.present?
-      client_path = download.download_client.download_path
-      basename = File.basename(path)
-      remapped = File.join(client_path, basename)
-      Rails.logger.info "[PostProcessingJob] Path remapped via client download_path: #{remapped}"
-      return remapped
+    # 2. local_path/category/basename — most common torrent client layout
+    if category.present?
+      candidates << { strategy: "local_path_with_category", path: File.join(local_path, category, basename) }
     end
 
-    # No remapping configured - use path as-is
-    Rails.logger.warn "[PostProcessingJob] No path remapping configured - using original path as-is"
-    Rails.logger.warn "[PostProcessingJob] Consider configuring download_remote_path/download_local_path in Settings if files are not found"
-    path
+    # 3. Category-aware sibling remap — when remote_path points to a sibling folder
+    #    e.g., remote=/mnt/Torrents/Completed, path=/mnt/Torrents/shelfarr/File
+    if category.present? && remote_path.present? && path.include?("/#{category}/")
+      category_idx = path.index("/#{category}/")
+      remote_base = path[0...category_idx]
+      relative_after_base = path[(category_idx)..]
+
+      if remote_base == File.dirname(remote_path)
+        candidates << { strategy: "category_sibling_remap", path: File.join(File.dirname(local_path), relative_after_base) }
+      end
+    end
+
+    # 4. Client download_path + basename
+    if client_download_path.present?
+      candidates << { strategy: "client_download_path", path: File.join(client_download_path, basename) }
+    end
+
+    # 5. local_path/basename (no category)
+    candidates << { strategy: "local_path_basename", path: File.join(local_path, basename) }
+
+    # 6. Original path as-is (works when download client runs in the same filesystem)
+    candidates << { strategy: "original_path", path: path }
+
+    candidates
   end
 
   def sanitize_filename(name)
