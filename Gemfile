@@ -42,6 +42,8 @@ gem "image_processing", "~> 1.2"
 
 # HTTP client for external API integrations (Prowlarr, Open Library, etc.)
 gem "faraday"
+# Multipart file upload support for Faraday (used to upload .torrent files to qBittorrent)
+gem "faraday-multipart"
 # Fast JSON parser
 gem "oj"
 # Create zip archives for directory downloads
