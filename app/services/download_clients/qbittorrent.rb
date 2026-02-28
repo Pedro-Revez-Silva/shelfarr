@@ -12,10 +12,11 @@ module DownloadClients
     # Returns the torrent hash on success, nil on failure
     def add_torrent(url, options = {})
       ensure_authenticated!
-
+      Rails.logger.info "[Qbittorrent] Add Torrent started"
+      resolved_url = resolve_final_url(url)
       # Pre-compute hash before adding to avoid race conditions with concurrent downloads
       # Priority: magnet hash > torrent file hash > polling fallback
-      precomputed = precompute_torrent_hash(url)
+      precomputed = precompute_torrent_hash(resolved_url)
       precomputed_hash = precomputed&.dig(:hash)
       torrent_data = precomputed&.dig(:torrent_data)
 
@@ -31,7 +32,7 @@ module DownloadClients
         response = upload_torrent_file(torrent_data, options)
       else
         # Magnet links or failed torrent downloads: pass URL to qBittorrent
-        params = { urls: url }
+        params = { urls: resolved_url }
         params[:category] = config.category if config.category.present?
         params[:savepath] = options[:save_path] if options[:save_path].present?
         params[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
@@ -215,6 +216,81 @@ module DownloadClients
       false
     end
 
+    # Resolve the final torrent or magnet URL, following multiple redirects if necessary
+    # Returns a String containing the resolved URL on success, or nil on failure
+    # - For direct torrent URLs, follows HTTP(S) redirects via HEAD
+    # - For magnet links, returns the original URL immediately
+    # - Handles indexer/proxy URLs that redirect to a magnet
+    # - Fallback: fetches body only if redirect headers fail to yield a final URL
+    def resolve_final_url(url)
+      return url if url&.start_with?("magnet:")
+
+      Rails.logger.info "[Qbittorrent] resolve_final_url() called"
+      Rails.logger.info "[Qbittorrent] Initial URL: #{url}"
+
+      conn = Faraday.new do |f|
+        f.adapter Faraday.default_adapter
+        f.headers['User-Agent'] = 'Shelfarr/1.0'
+      end
+
+      max_redirects = 10
+      current_url = url
+
+      max_redirects.times do |i|
+        Rails.logger.info "[Qbittorrent] ---- Redirect step #{i + 1} ----"
+        Rails.logger.info "[Qbittorrent] Requesting: #{current_url}"
+
+        response = conn.get(current_url)
+
+        Rails.logger.info "[Qbittorrent] Status: #{response.status}"
+        Rails.logger.debug "[Qbittorrent] Headers: #{response.headers.inspect}"
+
+        location = response.headers['location']
+        Rails.logger.info "[Qbittorrent] Location header: #{location.inspect}"
+
+        # 1️⃣ Magnet redirect via header
+        if location&.start_with?("magnet:")
+          Rails.logger.info "[Qbittorrent] Magnet found in Location header"
+          Rails.logger.info "[Qbittorrent] Final URL: #{location}"
+          return location
+        end
+
+        # 2️⃣ HTTP redirect
+        if location.present?
+          Rails.logger.info "[Qbittorrent] HTTP redirect to: #{location}"
+          current_url = location
+          next
+        end
+
+        # 3️⃣ Magnet inside body (Prowlarr / HTML fallback)
+        body = response.body.to_s
+        magnet = body.match(/magnet:\?xt=urn:btih:[a-zA-Z0-9]+/)&.to_s
+
+        if magnet
+          Rails.logger.info "[Qbittorrent] Magnet found in response body"
+          Rails.logger.info "[Qbittorrent] Final URL: #{magnet}"
+          return magnet
+        end
+
+        # 4️⃣ No redirect, no magnet — final URL
+        Rails.logger.info "[Qbittorrent] No redirect detected"
+        Rails.logger.info "[Qbittorrent] Final URL: #{current_url}"
+        return current_url
+      end
+
+      Rails.logger.warn "[Qbittorrent] Too many redirects while resolving: #{url}"
+      nil
+    rescue Faraday::Error => e
+      Rails.logger.warn "[Qbittorrent] Faraday error resolving URL: #{e.class} - #{e.message}"
+      nil
+    rescue URI::InvalidURIError => e
+      Rails.logger.warn "[Qbittorrent] Invalid URI: #{e.message}"
+      nil
+    rescue => e
+      Rails.logger.warn "[Qbittorrent] Unexpected error resolving URL: #{e.class} - #{e.message}"
+      nil2
+    end
+
     # Pre-compute torrent hash from URL to avoid race conditions
     # Returns { hash: String, torrent_data: String? } on success, nil otherwise
     # torrent_data is only present for torrent file URLs (not magnets)
@@ -253,8 +329,11 @@ module DownloadClients
       normalized_url = normalized_torrent_url(url)
       return nil unless normalized_url
 
-      Rails.logger.info "[Qbittorrent] Downloading torrent file to extract hash: #{normalized_url.truncate(100)}"
-      response = torrent_download_connection.get(normalized_url)
+      Rails.logger.info "[Qbittorrent] Downloading torrent file to extract hash: #{normalized_url}"
+      Rails.logger.info "[Qbittorrent] Downloading torrent filewith new "
+      response = torrent_download_connection.get do |req|
+        req.url normalized_url.to_s
+      end
 
       unless response.success?
         Rails.logger.warn "[Qbittorrent] Failed to download torrent file: HTTP #{response.status}"
