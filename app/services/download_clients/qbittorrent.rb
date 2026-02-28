@@ -2,6 +2,7 @@
 
 require "bencode"
 require "digest/sha1"
+require "faraday/multipart"
 
 module DownloadClients
   # qBittorrent WebUI API client
@@ -14,19 +15,28 @@ module DownloadClients
 
       # Pre-compute hash before adding to avoid race conditions with concurrent downloads
       # Priority: magnet hash > torrent file hash > polling fallback
-      precomputed_hash = precompute_torrent_hash(url)
+      precomputed = precompute_torrent_hash(url)
+      precomputed_hash = precomputed&.dig(:hash)
+      torrent_data = precomputed&.dig(:torrent_data)
 
       # Only capture existing hashes if we couldn't pre-compute the hash
       # This is the fallback for edge cases where hash extraction fails
       category = config.category.presence
       existing_hashes = precomputed_hash.present? ? nil : fetch_torrent_hashes(category: category)
 
-      params = { urls: url }
-      params[:category] = config.category if config.category.present?
-      params[:savepath] = options[:save_path] if options[:save_path].present?
-      params[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
-
-      response = connection.post("api/v2/torrents/add", params)
+      if torrent_data
+        # Upload torrent file directly — essential for seedbox setups where
+        # qBittorrent can't reach the indexer URL (e.g., local Prowlarr)
+        Rails.logger.info "[Qbittorrent] Uploading torrent file directly to #{config.name}"
+        response = upload_torrent_file(torrent_data, options)
+      else
+        # Magnet links or failed torrent downloads: pass URL to qBittorrent
+        params = { urls: url }
+        params[:category] = config.category if config.category.present?
+        params[:savepath] = options[:save_path] if options[:save_path].present?
+        params[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
+        response = connection.post("api/v2/torrents/add", params)
+      end
 
       case response.status
       when 200
@@ -206,10 +216,12 @@ module DownloadClients
     end
 
     # Pre-compute torrent hash from URL to avoid race conditions
-    # Returns the hash if extraction succeeds, nil otherwise
+    # Returns { hash: String, torrent_data: String? } on success, nil otherwise
+    # torrent_data is only present for torrent file URLs (not magnets)
     def precompute_torrent_hash(url)
       if url.start_with?("magnet:")
-        extract_hash_from_magnet(url)
+        hash = extract_hash_from_magnet(url)
+        hash ? { hash: hash } : nil
       elsif torrent_file_url?(url)
         download_and_extract_hash(url)
       end
@@ -234,6 +246,9 @@ module DownloadClients
 
     # Download .torrent file and extract the info hash
     # The info hash is the SHA1 of the bencoded "info" dictionary
+    # Returns { hash: String, torrent_data: String } on success, nil on failure
+    # torrent_data is preserved so it can be uploaded directly to qBittorrent
+    # (essential for seedbox setups where qBittorrent can't reach the indexer URL)
     def download_and_extract_hash(url)
       normalized_url = normalized_torrent_url(url)
       return nil unless normalized_url
@@ -258,7 +273,7 @@ module DownloadClients
       hash = Digest::SHA1.hexdigest(info_bencoded).downcase
 
       Rails.logger.info "[Qbittorrent] Extracted hash from torrent file: #{hash}"
-      hash
+      { hash: hash, torrent_data: torrent_data }
     rescue BEncode::DecodeError => e
       Rails.logger.warn "[Qbittorrent] Failed to parse torrent file (not valid bencode): #{e.message}"
       nil
@@ -298,6 +313,35 @@ module DownloadClients
         # Some trackers require a user agent
         f.headers["User-Agent"] = "Shelfarr/1.0"
       end
+    end
+
+    # Upload a .torrent file directly to qBittorrent via multipart form upload
+    # This is used instead of passing URLs so qBittorrent doesn't need to reach the indexer
+    # (critical for seedbox setups where qBittorrent is on a different network)
+    def upload_torrent_file(torrent_data, options = {})
+      upload_conn = Faraday.new(url: base_url) do |f|
+        f.request :multipart
+        f.request :url_encoded
+        f.adapter Faraday.default_adapter
+        f.headers["Cookie"] = "SID=#{session_key[:sid]}" if session_valid?
+        f.headers["Referer"] = base_url
+        f.headers["Origin"] = base_url
+        f.options.timeout = 30
+        f.options.open_timeout = 10
+      end
+
+      payload = {
+        torrents: Faraday::Multipart::FilePart.new(
+          StringIO.new(torrent_data),
+          "application/x-bittorrent",
+          "torrent.torrent"
+        )
+      }
+      payload[:category] = config.category if config.category.present?
+      payload[:savepath] = options[:save_path] if options[:save_path].present?
+      payload[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
+
+      upload_conn.post("api/v2/torrents/add", payload)
     end
 
     # Fetch torrent hashes as a Set, optionally filtered by category

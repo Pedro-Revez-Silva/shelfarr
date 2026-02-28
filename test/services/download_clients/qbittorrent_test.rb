@@ -747,6 +747,90 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  # === Seedbox / Multipart Upload Tests ===
+
+  test "add_torrent uploads torrent file data via multipart instead of passing URL" do
+    VCR.turned_off do
+      # Create a valid bencoded torrent file
+      info_dict = {
+        "name" => "Seedbox Book.epub",
+        "piece length" => 16384,
+        "pieces" => "s" * 20,
+        "length" => 512
+      }
+      torrent_data = { "info" => info_dict }.bencode
+      expected_hash = Digest::SHA1.hexdigest(info_dict.bencode).downcase
+
+      # Stub authentication
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Stub torrent file download (Shelfarr downloads from indexer)
+      stub_request(:get, "http://prowlarr:9696/api/v1/indexer/download/123")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/x-bittorrent" },
+          body: torrent_data
+        )
+
+      # Stub add torrent — should receive multipart upload with torrent file data,
+      # NOT a URL parameter (which the seedbox qBittorrent couldn't reach)
+      add_stub = stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+
+      # Stub verification
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash, "name" => "Seedbox Book.epub", "progress" => 0, "state" => "downloading", "size" => 512, "content_path" => "/downloads" } ].to_json
+        )
+
+      result = @client.add_torrent("http://prowlarr:9696/api/v1/indexer/download/123")
+
+      assert_equal expected_hash, result
+      # Verify the add request was made (with multipart torrent data, not URL)
+      assert_requested(add_stub)
+      # Verify the torrent file was downloaded by Shelfarr (not left for qBittorrent)
+      assert_requested(:get, "http://prowlarr:9696/api/v1/indexer/download/123")
+    end
+  end
+
+  test "add_torrent uses urls parameter for magnet links (no multipart needed)" do
+    VCR.turned_off do
+      # Stub authentication
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      # Stub add torrent — should receive the magnet URL as a parameter
+      add_stub = stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .with(body: hash_including("urls" => "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"))
+        .to_return(status: 200, body: "Ok.")
+
+      # Stub verification
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "name" => "Test", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+
+      assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
+      # Verify the URL-based add was used (not multipart)
+      assert_requested(add_stub)
+    end
+  end
+
   test "add_torrent retries verification when torrent takes time to appear" do
     VCR.turned_off do
       # Stub authentication
