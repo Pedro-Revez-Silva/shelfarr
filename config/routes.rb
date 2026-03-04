@@ -65,7 +65,6 @@ Rails.application.routes.draw do
   # Admin namespace
   namespace :admin do
     root "dashboard#index"
-    get "documentation", to: "documentation#index"
     post "check_updates", to: "dashboard#check_updates"
     post "run_health_check", to: "dashboard#run_health_check"
     resources :users
