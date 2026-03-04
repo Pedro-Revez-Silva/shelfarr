@@ -8,6 +8,19 @@ class Admin::DashboardControllerTest < ActionDispatch::IntegrationTest
     sign_in_as(@admin)
   end
 
+  test "index requires admin" do
+    sign_out
+    get admin_root_url
+    assert_response :redirect
+  end
+
+  test "index shows documentation link in quick links" do
+    get admin_root_url
+
+    assert_response :success
+    assert_select "a", "Documentation"
+  end
+
   test "run_health_check requires admin" do
     sign_out
     post admin_run_health_check_url
