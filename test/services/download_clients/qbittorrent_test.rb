@@ -623,7 +623,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent uploads torrent file data via multipart instead of passing URL" do
+  test "add_torrent uploads torrent file data as multipart payload without urls parameter" do
     VCR.turned_off do
       info_dict = {
         "name" => "Seedbox Book.epub",
