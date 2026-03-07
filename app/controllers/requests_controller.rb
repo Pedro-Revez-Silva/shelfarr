@@ -139,7 +139,7 @@ class RequestsController < ApplicationController
       book.destroy
     end
 
-    redirect_back fallback_location: requests_path, notice: "Request cancelled"
+    redirect_to destroy_redirect_location, notice: "Request cancelled", status: :see_other
   end
 
   def retry
@@ -282,6 +282,17 @@ class RequestsController < ApplicationController
 
   def record_not_found
     head :not_found
+  end
+
+  def destroy_redirect_location
+    return requests_path if request.referer.blank?
+
+    referer_path = URI.parse(request.referer).path
+    return requests_path if referer_path == request_path(@request)
+
+    request.referer
+  rescue URI::InvalidURIError
+    requests_path
   end
 
   def enabled_language_options

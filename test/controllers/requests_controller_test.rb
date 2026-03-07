@@ -233,6 +233,26 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to requests_path
   end
 
+  test "destroy from show page redirects to requests index" do
+    assert_difference "Request.count", -1 do
+      delete request_path(@pending_request), headers: { "HTTP_REFERER" => request_path(@pending_request) }
+    end
+
+    assert_redirected_to requests_path
+    assert_equal 303, response.status
+  end
+
+  test "destroy from filtered list redirects back to referrer" do
+    filtered_requests_path = requests_path(status: "active")
+
+    assert_difference "Request.count", -1 do
+      delete request_path(@pending_request), headers: { "HTTP_REFERER" => filtered_requests_path }
+    end
+
+    assert_redirected_to filtered_requests_path
+    assert_equal 303, response.status
+  end
+
   test "destroy cleans up orphaned book without requests" do
     book = Book.create!(
       title: "Orphan Book",
