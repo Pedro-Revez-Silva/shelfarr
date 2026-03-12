@@ -140,7 +140,7 @@ class AudiobookshelfClient
 
     def request
       yield
-    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError, URI::Error => e
       raise ConnectionError, "Failed to connect to Audiobookshelf: #{e.message}"
     end
 
@@ -156,7 +156,14 @@ class AudiobookshelfClient
     end
 
     def base_url
-      SettingsService.get(:audiobookshelf_url)
+      url = SettingsService.get(:audiobookshelf_url).to_s.strip
+      parsed_url = URI.parse(url)
+
+      unless parsed_url.is_a?(URI::HTTP) && parsed_url.host.present?
+        raise URI::InvalidURIError, "Audiobookshelf URL must include http:// or https://"
+      end
+
+      url
     end
 
     def api_key

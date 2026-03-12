@@ -92,6 +92,16 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "index handles malformed audiobookshelf url gracefully" do
+    SettingsService.set(:audiobookshelf_url, "audiobookshelf:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "input[name='settings[audiobookshelf_audiobook_library_id]']"
+  end
+
   test "bulk_update updates multiple settings" do
     patch bulk_update_admin_settings_url, params: {
       settings: {
@@ -270,6 +280,16 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       assert_redirected_to admin_settings_path
       assert flash[:alert].present?
     end
+  end
+
+  test "test_audiobookshelf handles malformed urls" do
+    SettingsService.set(:audiobookshelf_url, "audiobookshelf:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    post test_audiobookshelf_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match(/failed/i, flash[:alert])
   end
 
   test "sync_audiobookshelf_library fails when not configured" do
