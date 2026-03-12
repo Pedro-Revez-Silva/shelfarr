@@ -218,6 +218,14 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "raises ConnectionError on malformed url" do
+    SettingsService.set(:audiobookshelf_url, "audiobookshelf:13378")
+
+    assert_raises AudiobookshelfClient::ConnectionError do
+      AudiobookshelfClient.libraries
+    end
+  end
+
   # SSL error handling tests
   test "test_connection returns false on SSL error" do
     VCR.turned_off do
@@ -237,5 +245,11 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
         AudiobookshelfClient.libraries
       end
     end
+  end
+
+  test "test_connection returns false on malformed url" do
+    SettingsService.set(:audiobookshelf_url, "audiobookshelf:13378")
+
+    assert_not AudiobookshelfClient.test_connection
   end
 end
