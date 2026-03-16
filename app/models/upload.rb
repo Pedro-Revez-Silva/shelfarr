@@ -23,6 +23,7 @@ class Upload < ApplicationRecord
 
   scope :recent, -> { order(created_at: :desc) }
   scope :pending_or_processing, -> { where(status: [:pending, :processing]) }
+  scope :for_user, ->(user) { where(user: user) }
 
   def file_extension
     File.extname(original_filename).delete(".").downcase

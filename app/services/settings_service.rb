@@ -63,6 +63,7 @@ class SettingsService
     login_lockout_threshold: { type: "integer", default: 5, category: "security", description: "Failed login attempts before temporary lockout" },
     login_lockout_duration_minutes: { type: "integer", default: 15, category: "security", description: "Duration of login lockout in minutes" },
     api_token: { type: "string", category: "security", default: SecureRandom.base58(32), description: "Authentication token for the API" },
+    allow_user_uploads: { type: "boolean", default: false, category: "security", description: "Allow non-admin users to upload book files directly" },
 
     # Anna's Archive
     anna_archive_enabled: { type: "boolean", default: false, category: "anna_archive", description: "Enable Anna's Archive as an additional search source for ebooks" },
@@ -224,6 +225,10 @@ class SettingsService
 
     def auth_disabled?
       ENV["DISABLE_AUTH"]&.downcase == "true" || get(:auth_disabled, default: false)
+    end
+
+    def user_uploads_allowed?
+      get(:allow_user_uploads, default: false)
     end
   end
 end
