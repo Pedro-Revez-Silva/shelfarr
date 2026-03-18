@@ -46,6 +46,9 @@
                 <% end %>
               </div>
               <%= link_to "Library", library_index_path, class: "text-gray-400 hover:text-white font-medium transition" %>
+              <% if allowed_to?(:index?, Upload) %>
+                <%= link_to "Uploads", uploads_path, class: "text-gray-400 hover:text-white font-medium transition" %>
+              <% end %>
             <% end %>
           </div>
           <div class="flex items-center gap-4">

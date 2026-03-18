@@ -37,6 +37,15 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /Warning: This removes password and 2FA authentication/
   end
 
+  test "index shows allow user uploads setting" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Allow User Uploads"
+    assert_select "input[name='settings[allow_user_uploads]']"
+    assert_select "p", text: /Allow non-admin users to upload book files directly/
+  end
+
   test "index shows library picker dropdown when audiobookshelf configured" do
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
@@ -113,6 +122,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to admin_settings_path
     assert_equal 20, SettingsService.get(:max_retries)
     assert_equal 5, SettingsService.get(:rate_limit_delay)
+  end
+
+  test "bulk_update updates allow user uploads setting" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        allow_user_uploads: "true"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal true, SettingsService.user_uploads_allowed?
   end
 
   test "bulk_update validates path templates" do

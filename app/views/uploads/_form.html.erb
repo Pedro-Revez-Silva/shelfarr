@@ -1,0 +1,57 @@
+<%= form_with url: submit_path, method: :post,
+    multipart: true,
+    class: "space-y-6",
+    data: { controller: "upload-form" } do |f| %>
+
+  <div class="border-2 border-dashed border-gray-700 rounded-lg p-8 text-center bg-gray-900"
+       data-upload-form-target="dropzone"
+       data-action="drop->upload-form#drop dragover->upload-form#dragover dragleave->upload-form#dragleave">
+
+    <div class="space-y-4">
+      <div class="text-gray-500">
+        <svg class="mx-auto h-12 w-12" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+          <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </div>
+
+      <div>
+        <label class="cursor-pointer">
+          <span class="text-blue-400 hover:text-blue-300 font-medium">Choose a file</span>
+          <input type="file"
+                 name="file"
+                 class="hidden"
+                 data-upload-form-target="input"
+                 data-action="change->upload-form#fileSelected"
+                 accept=".m4b,.mp3,.zip,.rar,.epub,.pdf,.mobi,.azw3">
+        </label>
+        <span class="text-gray-500"> or drag and drop</span>
+      </div>
+
+      <p class="text-sm text-gray-500">
+        Audiobooks: m4b, mp3, zip, rar | Ebooks: epub, pdf, mobi, azw3
+      </p>
+
+      <div data-upload-form-target="filename" class="hidden text-sm font-medium text-gray-300 mt-4">
+        Selected: <span class="text-blue-400"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="flex items-center gap-4">
+    <%= f.submit "Upload",
+        class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer disabled:opacity-50",
+        data: { upload_form_target: "submit" } %>
+    <%= link_to "Cancel", cancel_path, class: "text-gray-400 hover:text-gray-300" %>
+  </div>
+<% end %>
+
+<div class="mt-8 p-4 bg-gray-900 border border-gray-800 rounded-lg">
+  <h3 class="font-medium text-gray-300 mb-2">Filename Tips</h3>
+  <p class="text-sm text-gray-400 mb-2">For best results, name your files using one of these patterns:</p>
+  <ul class="text-sm text-gray-500 list-disc list-inside space-y-1">
+    <li>Author Name - Book Title.m4b</li>
+    <li>Book Title (Author Name).epub</li>
+    <li>Book Title [Author Name].pdf</li>
+  </ul>
+</div>

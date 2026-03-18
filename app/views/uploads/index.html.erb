@@ -1,8 +1,10 @@
 <div class="mx-auto max-w-6xl">
   <div class="flex justify-between items-center mb-8">
     <h1 class="font-bold text-4xl text-white">Uploads</h1>
-    <%= link_to "Upload File", new_admin_upload_path,
-        class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white" %>
+    <% if allowed_to?(:new?, Upload) %>
+      <%= link_to "Upload File", new_upload_path,
+          class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white" %>
+    <% end %>
   </div>
 
   <% if @uploads.empty? %>
@@ -52,8 +54,7 @@
               </td>
               <td class="px-6 py-4">
                 <% if upload.book %>
-                  <%= link_to upload.book.display_name, request_path(upload.book.requests.first), class: "text-blue-400 hover:text-blue-300" if upload.book.requests.any? %>
-                  <%= upload.book.display_name if upload.book.requests.empty? %>
+                  <span class="text-gray-200"><%= upload.book.display_name %></span>
                 <% else %>
                   <span class="text-gray-500">-</span>
                 <% end %>
@@ -62,16 +63,7 @@
                 <%= render_upload_status(upload) %>
               </td>
               <td class="px-6 py-4 text-sm">
-                <div class="flex gap-2">
-                  <%= link_to "View", admin_upload_path(upload), class: "text-blue-400 hover:text-blue-300" %>
-                  <% if upload.failed? %>
-                    <%= button_to "Retry", retry_admin_upload_path(upload), method: :post,
-                        class: "text-green-400 hover:text-green-300" %>
-                  <% end %>
-                  <%= button_to "Delete", admin_upload_path(upload), method: :delete,
-                      data: { turbo_confirm: "Are you sure?" },
-                      class: "text-red-400 hover:text-red-300" %>
-                </div>
+                <%= link_to "View", upload_path(upload), class: "text-blue-400 hover:text-blue-300" %>
               </td>
             </tr>
           <% end %>

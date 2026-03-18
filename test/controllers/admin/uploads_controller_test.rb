@@ -17,8 +17,18 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index shows uploads" do
+    upload = Upload.create!(
+      user: users(:one),
+      original_filename: "shared-book.epub",
+      file_path: "/tmp/shared-book.epub",
+      status: :pending
+    )
+
     get admin_uploads_url
+
     assert_response :success
+    assert_select "th", "Uploaded By"
+    assert_select "div", text: upload.user.name
   end
 
   test "new shows upload form" do
