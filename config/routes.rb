@@ -55,6 +55,9 @@ Rails.application.routes.draw do
     end
   end
 
+  # User Uploads
+  resources :uploads, only: [ :index, :new, :create, :show ]
+
   # API
   namespace :api, defaults: { format: :json } do
     namespace :v1 do
