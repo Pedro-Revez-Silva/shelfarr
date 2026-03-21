@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_21_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_03_21_224500) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -118,6 +118,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_21_000002) do
     t.index ["user_id", "created_at"], name: "index_notifications_on_user_id_and_created_at"
     t.index ["user_id", "read_at"], name: "index_notifications_on_user_id_and_read_at"
     t.index ["user_id"], name: "index_notifications_on_user_id"
+  end
+
+  create_table "request_events", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.json "details", default: {}
+    t.integer "download_id"
+    t.string "event_type", null: false
+    t.integer "level", default: 0, null: false
+    t.text "message"
+    t.integer "request_id", null: false
+    t.string "source", null: false
+    t.datetime "updated_at", null: false
+    t.boolean "user_visible", default: false, null: false
+    t.index ["created_at"], name: "index_request_events_on_created_at"
+    t.index ["download_id"], name: "index_request_events_on_download_id"
+    t.index ["event_type"], name: "index_request_events_on_event_type"
+    t.index ["request_id"], name: "index_request_events_on_request_id"
   end
 
   create_table "requests", force: :cascade do |t|
@@ -247,6 +264,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_21_000002) do
   add_foreign_key "activity_logs", "users"
   add_foreign_key "downloads", "requests"
   add_foreign_key "notifications", "users"
+  add_foreign_key "request_events", "downloads"
+  add_foreign_key "request_events", "requests"
   add_foreign_key "requests", "books"
   add_foreign_key "requests", "users"
   add_foreign_key "search_results", "requests"

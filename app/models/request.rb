@@ -1,6 +1,7 @@
 class Request < ApplicationRecord
   belongs_to :book
   belongs_to :user
+  has_many :request_events, dependent: :destroy
   has_many :downloads, dependent: :destroy
   has_many :search_results, dependent: :destroy
 
@@ -27,6 +28,7 @@ class Request < ApplicationRecord
 
   def mark_for_attention!(description)
     update!(attention_needed: true, issue_description: description)
+    track_diagnostic("attention_flagged", message: description, level: :warn)
   end
 
   def clear_attention!
@@ -94,6 +96,7 @@ class Request < ApplicationRecord
 
     if selected_result && failed_download
       # Retry the download - create a new download and queue the job
+      download = nil
       ActiveRecord::Base.transaction do
         download = downloads.create!(
           name: selected_result.title,
@@ -107,9 +110,19 @@ class Request < ApplicationRecord
           attention_needed: false,
           issue_description: nil
         )
-
-        DownloadJob.perform_later(download.id)
       end
+
+      track_diagnostic(
+        "download_queued",
+        download: download,
+        message: "Download queued for retry from selected result",
+        details: {
+          search_result_id: selected_result.id,
+          title: selected_result.title,
+          trigger: "retry"
+        }
+      )
+      DownloadJob.perform_later(download.id)
     else
       # No selected result or failed download - restart search
       update!(
@@ -185,6 +198,7 @@ class Request < ApplicationRecord
     raise ArgumentError, "Result not downloadable" unless search_result.downloadable?
     raise ArgumentError, "Result does not belong to this request" unless search_result.request_id == id
 
+    download = nil
     ActiveRecord::Base.transaction do
       search_results.where.not(id: search_result.id).update_all(status: :rejected)
       search_result.update!(status: :selected)
@@ -200,9 +214,20 @@ class Request < ApplicationRecord
         attention_needed: false,
         issue_description: nil
       )
-      DownloadJob.perform_later(download.id)
-      download
     end
+
+    track_diagnostic(
+      "download_queued",
+      download: download,
+      message: "Download queued from manual result selection",
+      details: {
+        search_result_id: search_result.id,
+        title: search_result.title,
+        trigger: "manual_select"
+      }
+    )
+    DownloadJob.perform_later(download.id)
+    download
   end
 
   def next_retry_in_words
@@ -228,6 +253,18 @@ class Request < ApplicationRecord
   end
 
   private
+
+  def track_diagnostic(event_type, message: nil, level: :info, download: nil, details: {})
+    RequestEvent.record!(
+      request: self,
+      download: download,
+      event_type: event_type,
+      source: "request",
+      message: message,
+      level: level,
+      details: details
+    )
+  end
 
   def set_default_language
     self.language ||= SettingsService.get(:default_language)
