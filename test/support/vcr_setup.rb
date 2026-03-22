@@ -25,6 +25,9 @@ end
 # Helper module for using VCR in tests
 module VCRHelper
   def with_cassette(name, options = {}, &block)
-    VCR.use_cassette(name, options, &block)
+    # Tests should be deterministic by default. Opt in to re-recording
+    # explicitly via options or VCR_RECORD=true when refreshing cassettes.
+    default_options = ENV["VCR_RECORD"] == "true" ? {} : { record: :none }
+    VCR.use_cassette(name, default_options.merge(options), &block)
   end
 end
