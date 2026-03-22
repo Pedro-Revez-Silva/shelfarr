@@ -33,33 +33,6 @@ class CleanupTempFilesJobTest < ActiveJob::TestCase
     assert_not ActivityLog.exists?(old_log.id), "Old log should be deleted"
     assert ActivityLog.exists?(recent_log.id), "Recent log should be kept"
   end
-
-  test "cleanup_old_request_events deletes old events" do
-    request = requests(:pending_request)
-
-    old_event = RequestEvent.create!(
-      request: request,
-      event_type: "dispatch_failed",
-      source: "DownloadJob",
-      level: :error,
-      message: "Old event",
-      created_at: 100.days.ago
-    )
-
-    recent_event = RequestEvent.create!(
-      request: request,
-      event_type: "dispatch_failed",
-      source: "DownloadJob",
-      level: :error,
-      message: "Recent event",
-      created_at: 1.day.ago
-    )
-
-    CleanupTempFilesJob.perform_now
-
-    assert_not RequestEvent.exists?(old_event.id), "Old request event should be deleted"
-    assert RequestEvent.exists?(recent_event.id), "Recent request event should be kept"
-  end
 end
 
 class CleanupTempFilesJobIsolatedTest < ActiveJob::TestCase

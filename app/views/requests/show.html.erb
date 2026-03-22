@@ -67,33 +67,6 @@
         </div>
       <% end %>
 
-      <% if Current.user.admin? && @request_events.any? %>
-        <div class="bg-gray-800/60 border border-gray-700 rounded-lg p-4 mb-6">
-          <div class="flex items-center justify-between mb-3">
-            <div>
-              <h3 class="text-sm font-medium text-white">Diagnostics</h3>
-              <p class="text-sm text-gray-400 mt-1">Admin-only request events for troubleshooting dispatch and client failures.</p>
-            </div>
-          </div>
-          <div class="space-y-3">
-            <% @request_events.each do |event| %>
-              <div class="rounded-lg border border-gray-700 bg-gray-900/70 p-3">
-                <div class="flex items-center justify-between gap-3">
-                  <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= diagnostic_event_color(event) %>">
-                    <%= diagnostic_event_title(event) %>
-                  </span>
-                  <span class="text-xs text-gray-500"><%= event.created_at.strftime("%B %d, %Y at %I:%M %p") %></span>
-                </div>
-                <% message = diagnostic_event_message(event) %>
-                <% if message.present? %>
-                  <p class="mt-2 text-sm text-gray-300 break-all"><%= message %></p>
-                <% end %>
-              </div>
-            <% end %>
-          </div>
-        </div>
-      <% end %>
-
       <% if @request.searching? && @request.search_results.any? %>
         <div class="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
           <div class="flex items-center justify-between">

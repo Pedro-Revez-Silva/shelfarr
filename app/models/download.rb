@@ -1,7 +1,6 @@
 class Download < ApplicationRecord
   belongs_to :request
   belongs_to :download_client, optional: true
-  has_many :request_events, dependent: :nullify
 
   enum :status, {
     queued: 0,

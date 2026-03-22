@@ -35,7 +35,6 @@ class RequestsController < ApplicationController
   end
 
   def show
-    @request_events = Current.user.admin? ? @request.request_events.recent.limit(10) : RequestEvent.none
   end
 
   def new

@@ -9,7 +9,6 @@ class SettingsService
     # Download Settings (clients are now managed separately via Admin > Download Clients)
     preferred_download_type: { type: "string", default: "torrent", category: "download", description: "Preferred download type when both available (torrent or usenet)" },
     download_check_interval: { type: "integer", default: 60, category: "download", description: "Seconds between download status checks" },
-    download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 
     # Audiobookshelf Integration

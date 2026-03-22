@@ -3,8 +3,6 @@
 require "test_helper"
 
 class RequestRetryTest < ActiveSupport::TestCase
-  include ActiveJob::TestHelper
-
   setup do
     @pending = requests(:pending_request)
     @not_found_waiting = requests(:not_found_waiting)
@@ -150,19 +148,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_nil request.issue_description
   end
 
-  test "mark_for_attention! creates a request event" do
-    request = @pending
-
-    assert_difference -> { request.request_events.count }, 1 do
-      request.mark_for_attention!("Something broke")
-    end
-
-    event = request.request_events.recent.first
-    assert_equal "attention_flagged", event.event_type
-    assert_equal "Something broke", event.message
-    assert_equal "request", event.source
-  end
-
   test "retry_now! retries download when there is a selected result and failed download" do
     book = Book.create!(title: "Test Book", book_type: :ebook, open_library_work_id: "OL_RETRY_DL")
     request = Request.create!(
@@ -189,9 +174,7 @@ class RequestRetryTest < ActiveSupport::TestCase
 
     # Retry should create a new download and queue the job
     assert_difference -> { request.downloads.count }, 1 do
-      assert_enqueued_with(job: DownloadJob) do
-        request.retry_now!
-      end
+      request.retry_now!
     end
 
     request.reload
@@ -279,17 +262,13 @@ class RequestRetryTest < ActiveSupport::TestCase
       download_url: "http://example.com/test.torrent"
     )
 
-    download = nil
-    assert_enqueued_with(job: DownloadJob) do
-      download = request.select_result!(search_result)
-    end
+    request.select_result!(search_result)
 
     request.reload
     assert request.downloading?
     assert_not request.attention_needed?
     assert_nil request.issue_description
     assert search_result.reload.selected?
-    assert download.queued?
   end
 
   # === can_retry? ===

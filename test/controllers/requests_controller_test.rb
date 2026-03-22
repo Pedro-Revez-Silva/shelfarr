@@ -127,42 +127,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", @pending_request.book.title
   end
 
-  test "show displays diagnostics timeline for request activity" do
-    sign_out
-    sign_in_as(@admin)
-
-    RequestEvent.create!(
-      request: @pending_request,
-      event_type: "dispatch_failed",
-      source: "DownloadJob",
-      level: :error,
-      message: "Failed to connect to download client",
-      details: {
-        client_name: "SABnzbd"
-      }
-    )
-
-    get request_path(@pending_request)
-    assert_response :success
-    assert_select "h3", "Diagnostics"
-    assert_select "p", text: /Failed to connect to download client/
-    assert_select "p", text: /SABnzbd/
-  end
-
-  test "show hides diagnostics timeline from regular users" do
-    RequestEvent.create!(
-      request: @pending_request,
-      event_type: "dispatch_failed",
-      source: "DownloadJob",
-      level: :error,
-      message: "Failed to connect to download client"
-    )
-
-    get request_path(@pending_request)
-    assert_response :success
-    assert_select "h3", text: "Diagnostics", count: 0
-  end
-
   test "user cannot view another user's request" do
     other_user = users(:two)
     other_request = Request.create!(
@@ -280,27 +244,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_difference [ "Request.count", "Book.count" ], -1 do
       delete request_path(request)
     end
-  end
-
-  test "destroy succeeds when request has download-linked diagnostics" do
-    download = @pending_request.downloads.create!(
-      name: "Pending Download",
-      status: :queued
-    )
-    RequestEvent.create!(
-      request: @pending_request,
-      download: download,
-      event_type: "dispatch_started",
-      source: "DownloadJob",
-      level: :info,
-      message: "Dispatch started"
-    )
-
-    assert_difference "Request.count", -1 do
-      delete request_path(@pending_request)
-    end
-
-    assert_redirected_to requests_path
   end
 
   test "destroy does not clean up book with file" do
