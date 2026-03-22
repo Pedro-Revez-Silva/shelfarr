@@ -533,9 +533,9 @@ module DownloadClients
       case state
       when "downloading", "forcedDL", "metaDL", "queuedDL", "allocating", "checkingDL"
         :downloading
-      when "stalledDL", "pausedDL"
+      when "stalledDL", "pausedDL", "stoppedDL"
         :paused
-      when "uploading", "forcedUP", "stalledUP", "queuedUP", "pausedUP", "checkingUP"
+      when "uploading", "forcedUP", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "checkingUP"
         :completed
       when "error", "missingFiles"
         :failed
