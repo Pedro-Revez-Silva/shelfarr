@@ -5,15 +5,27 @@ class DownloadJob < ApplicationJob
 
   def perform(download_id)
     download = Download.find_by(id: download_id)
-    return unless download
+    unless download
+      Rails.logger.warn "[DownloadJob] Download ##{download_id} not found when job started"
+      return
+    end
+
     return unless download.queued?
 
     Rails.logger.info "[DownloadJob] Starting download ##{download.id} for request ##{download.request.id}"
+    track_request_event(
+      download.request,
+      "dispatch_started",
+      download: download,
+      message: "Started dispatching download to a client",
+      details: { request_status: download.request.status }
+    )
 
     search_result = download.request.search_results.selected.first
 
     unless search_result
       Rails.logger.error "[DownloadJob] No selected search result for download ##{download.id}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: "No search result selected for download", level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("No search result selected for download")
       return
@@ -28,22 +40,27 @@ class DownloadJob < ApplicationJob
       end
     rescue DownloadClientSelector::NoClientAvailableError => e
       Rails.logger.error "[DownloadJob] No download client available: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!(e.message)
     rescue DownloadClients::Base::AuthenticationError => e
       Rails.logger.error "[DownloadJob] Download client authentication failed: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Download client authentication failed. Please check credentials.")
     rescue DownloadClients::Base::ConnectionError => e
       Rails.logger.error "[DownloadJob] Download client connection error: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to connect to download client: #{e.message}")
     rescue DownloadClients::Base::Error => e
       Rails.logger.error "[DownloadJob] Download client error for download ##{download.id}: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Download client error: #{e.message}")
     rescue AnnaArchiveClient::Error => e
       Rails.logger.error "[DownloadJob] Anna's Archive error for download ##{download.id}: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Anna's Archive error: #{e.message}")
     end
@@ -107,11 +124,13 @@ class DownloadJob < ApplicationJob
 
     # Send notification
     NotificationService.request_completed(download.request)
+    track_request_event(download.request, "completed", download: download, message: "Direct download completed")
 
     Rails.logger.info "[DownloadJob] Direct download completed: #{destination_path}"
   rescue => e
     Rails.logger.error "[DownloadJob] Direct download failed: #{e.message}"
     Rails.logger.error e.backtrace.first(5).join("\n")
+    track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
     download.update!(status: :failed)
     download.request.mark_for_attention!("Direct download failed: #{e.message}")
   end
@@ -225,8 +244,27 @@ class DownloadJob < ApplicationJob
         external_id: torrent_hash,
         download_type: "torrent"
       )
+      track_request_event(
+        download.request,
+        "dispatched",
+        download: download,
+        message: "Sent torrent download to #{client_record.name}",
+        details: {
+          client_name: client_record.name,
+          download_type: "torrent",
+          external_id: torrent_hash
+        }
+      )
       Rails.logger.info "[DownloadJob] Successfully added torrent for download ##{download.id}, hash: #{torrent_hash}"
     else
+      track_request_event(
+        download.request,
+        "dispatch_failed",
+        download: download,
+        message: "Client did not return a torrent hash",
+        level: :error,
+        details: { client_name: client_record.name }
+      )
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
@@ -236,6 +274,7 @@ class DownloadJob < ApplicationJob
   def handle_standard_download(download, search_result)
     unless search_result.downloadable?
       Rails.logger.error "[DownloadJob] Search result has no download link for download ##{download.id}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: "Selected result has no download link", level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Selected result has no download link")
       return
@@ -274,8 +313,30 @@ class DownloadJob < ApplicationJob
         external_id: external_id,
         download_type: is_usenet ? "usenet" : "torrent"
       )
+      track_request_event(
+        download.request,
+        "dispatched",
+        download: download,
+        message: "Sent #{download.download_type} download to #{client_record.name}",
+        details: {
+          client_name: client_record.name,
+          download_type: download.download_type,
+          external_id: external_id
+        }
+      )
       Rails.logger.info "[DownloadJob] Successfully added #{download.download_type} for download ##{download.id}, external_id: #{external_id}"
     else
+      track_request_event(
+        download.request,
+        "dispatch_failed",
+        download: download,
+        message: "Client did not return an external ID",
+        level: :error,
+        details: {
+          client_name: client_record.name,
+          download_type: is_usenet ? "usenet" : "torrent"
+        }
+      )
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
@@ -296,6 +357,18 @@ class DownloadJob < ApplicationJob
                          "but Download ##{existing.id} (request ##{existing.request_id}) already has this ID. " \
                          "This indicates a potential race condition that should be investigated."
     end
+  end
+
+  def track_request_event(request, event_type, download: nil, message: nil, level: :info, details: {})
+    RequestEvent.record!(
+      request: request,
+      download: download,
+      event_type: event_type,
+      source: self.class.name,
+      message: message,
+      level: level,
+      details: details
+    )
   end
 
 end

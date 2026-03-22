@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_19_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_03_21_224500) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -91,6 +91,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_19_000001) do
     t.index ["status"], name: "index_downloads_on_status"
   end
 
+  create_table "library_items", force: :cascade do |t|
+    t.string "audiobookshelf_id", null: false
+    t.string "author"
+    t.datetime "created_at", null: false
+    t.string "library_id", null: false
+    t.datetime "synced_at"
+    t.string "title"
+    t.datetime "updated_at", null: false
+    t.index ["library_id", "audiobookshelf_id"], name: "index_library_items_on_library_id_and_audiobookshelf_id", unique: true
+    t.index ["library_id"], name: "index_library_items_on_library_id"
+    t.index ["synced_at"], name: "index_library_items_on_synced_at"
+  end
+
   create_table "notifications", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "message"
@@ -107,17 +120,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_19_000001) do
     t.index ["user_id"], name: "index_notifications_on_user_id"
   end
 
-  create_table "library_items", force: :cascade do |t|
-    t.string "library_id", null: false
-    t.string "audiobookshelf_id", null: false
-    t.string "title"
-    t.string "author"
-    t.datetime "synced_at"
+  create_table "request_events", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.json "details", default: {}
+    t.integer "download_id"
+    t.string "event_type", null: false
+    t.integer "level", default: 0, null: false
+    t.text "message"
+    t.integer "request_id", null: false
+    t.string "source", null: false
     t.datetime "updated_at", null: false
-    t.index ["library_id", "audiobookshelf_id"], name: "index_library_items_on_library_id_and_audiobookshelf_id", unique: true
-    t.index ["library_id"], name: "index_library_items_on_library_id"
-    t.index ["synced_at"], name: "index_library_items_on_synced_at"
+    t.boolean "user_visible", default: false, null: false
+    t.index ["created_at"], name: "index_request_events_on_created_at"
+    t.index ["download_id"], name: "index_request_events_on_download_id"
+    t.index ["event_type"], name: "index_request_events_on_event_type"
+    t.index ["request_id"], name: "index_request_events_on_request_id"
   end
 
   create_table "requests", force: :cascade do |t|
@@ -245,6 +262,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_19_000001) do
   add_foreign_key "activity_logs", "users"
   add_foreign_key "downloads", "requests"
   add_foreign_key "notifications", "users"
+  add_foreign_key "request_events", "downloads"
+  add_foreign_key "request_events", "requests"
   add_foreign_key "requests", "books"
   add_foreign_key "requests", "users"
   add_foreign_key "search_results", "requests"

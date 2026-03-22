@@ -10,6 +10,7 @@ class CleanupTempFilesJob < ApplicationJob
     cleanup_download_temps
     cleanup_upload_temps
     cleanup_old_activity_logs
+    cleanup_old_request_events
   end
 
   private
@@ -66,5 +67,11 @@ class CleanupTempFilesJob < ApplicationJob
     # Keep 90 days of logs
     deleted_count = ActivityLog.where("created_at < ?", 90.days.ago).delete_all
     Rails.logger.info "[CleanupTempFilesJob] Deleted #{deleted_count} old activity logs" if deleted_count > 0
+  end
+
+  def cleanup_old_request_events
+    # Keep 90 days of request diagnostics
+    deleted_count = RequestEvent.where("created_at < ?", 90.days.ago).delete_all
+    Rails.logger.info "[CleanupTempFilesJob] Deleted #{deleted_count} old request events" if deleted_count > 0
   end
 end

@@ -181,6 +181,29 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "flags queued downloads that never reached a client" do
+    @download.update_columns(
+      status: Download.statuses[:queued],
+      external_id: nil,
+      download_client_id: nil,
+      created_at: 10.minutes.ago,
+      updated_at: 10.minutes.ago
+    )
+
+    SettingsService.set(:download_enqueue_timeout_minutes, 5)
+
+    assert_enqueued_with(job: DownloadMonitorJob) do
+      DownloadMonitorJob.perform_now
+    end
+
+    @download.reload
+    @request.reload
+
+    assert @download.failed?
+    assert @request.attention_needed?
+    assert_includes @request.issue_description, "never sent to the download client"
+  end
+
   test "skips downloads with disabled client" do
     @qbittorrent.update!(enabled: false)
 
