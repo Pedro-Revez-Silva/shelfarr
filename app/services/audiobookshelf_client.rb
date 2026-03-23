@@ -54,7 +54,7 @@ class AudiobookshelfClient
       ensure_configured!
 
       items = []
-      page = 1
+      page = 0
 
       loop do
         response = request { connection.get("/api/libraries/#{id}/items", { limit: page_size, page: page }) }
@@ -246,11 +246,11 @@ class AudiobookshelfClient
       return true if page_items.length < page_size
 
       total = data["total"] || data["totalItems"] || data["total_items"] || data["total_results"]
-      return true if total.present? && total <= (page * page_size)
+      return true if total.present? && total <= ((page + 1) * page_size)
 
       total_pages = data["totalPages"] || data["pages"] || data["total_pages"]
       current_page = data["page"] || page
-      return true if total_pages.present? && current_page >= total_pages
+      return true if total_pages.present? && (current_page + 1) >= total_pages
 
       false
     end
