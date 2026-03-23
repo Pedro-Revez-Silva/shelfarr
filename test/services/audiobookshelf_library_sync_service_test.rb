@@ -16,7 +16,7 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
 
     VCR.turned_off do
       stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
-        .with(query: hash_including("limit" => "500", "page" => "1"))
+        .with(query: hash_including("limit" => "500", "page" => "0"))
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
@@ -33,7 +33,7 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
         )
 
       stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
-        .with(query: hash_including("limit" => "500", "page" => "1"))
+        .with(query: hash_including("limit" => "500", "page" => "0"))
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
@@ -86,7 +86,7 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
 
     VCR.turned_off do
       stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
-        .with(query: hash_including("limit" => "500", "page" => "1"))
+        .with(query: hash_including("limit" => "500", "page" => "0"))
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },

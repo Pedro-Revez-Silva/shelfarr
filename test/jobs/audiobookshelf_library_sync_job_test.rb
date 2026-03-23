@@ -18,7 +18,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
       stub_request(:get, "http://localhost:13378/api/libraries/lib-audio/items")
         .with(
           headers: { "Authorization" => "Bearer test-api-key" },
-          query: hash_including("limit" => "500", "page" => "1")
+          query: hash_including("limit" => "500", "page" => "0")
         )
         .to_return(
           status: 200,
