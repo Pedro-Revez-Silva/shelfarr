@@ -80,4 +80,42 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       assert_equal "No Audiobookshelf library IDs configured or available.", result.errors.first
     end
   end
+
+  test "syncs ebook library items when title and author only exist in media metadata" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "1"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [
+              {
+                "id" => "ebook-1",
+                "media" => {
+                  "metadata" => {
+                    "title" => "Project Hail Mary",
+                    "authorName" => "Andy Weir"
+                  }
+                }
+              }
+            ],
+            "total" => 1
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 1, result.items_synced
+      assert_equal 1, result.libraries_synced
+      assert_empty result.errors
+
+      item = LibraryItem.find_by!(library_id: "lib-ebook", audiobookshelf_id: "ebook-1")
+      assert_equal "Project Hail Mary", item.title
+      assert_equal "Andy Weir", item.author
+    end
+  end
 end

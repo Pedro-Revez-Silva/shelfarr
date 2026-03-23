@@ -146,6 +146,51 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "library_items extracts title and author from media metadata" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries/lib-123/items?limit=500&page=1")
+        .with(headers: { "Authorization" => "Bearer test-api-key-12345" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [
+              {
+                "id" => "ab-item-1",
+                "media" => {
+                  "metadata" => {
+                    "title" => "Project Hail Mary",
+                    "authorName" => "Andy Weir"
+                  }
+                }
+              },
+              {
+                "id" => "ab-item-2",
+                "media" => {
+                  "metadata" => {
+                    "title" => "Good Omens",
+                    "authors" => [
+                      { "name" => "Neil Gaiman" },
+                      { "name" => "Terry Pratchett" }
+                    ]
+                  }
+                }
+              }
+            ],
+            "total" => 2
+          }.to_json
+        )
+
+      items = AudiobookshelfClient.library_items("lib-123", page_size: 500)
+
+      assert_equal 2, items.size
+      assert_equal "Project Hail Mary", items.first["title"]
+      assert_equal "Andy Weir", items.first["author"]
+      assert_equal "Good Omens", items.last["title"]
+      assert_equal "Neil Gaiman, Terry Pratchett", items.last["author"]
+    end
+  end
+
   test "test_connection returns true when libraries exist" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries")

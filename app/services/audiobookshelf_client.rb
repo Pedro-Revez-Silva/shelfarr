@@ -201,7 +201,12 @@ class AudiobookshelfClient
 
         {
           "audiobookshelf_id" => raw_item["id"] || raw_item.dig("media", "id") || raw_item.dig("item", "id"),
-          "title" => raw_item["title"] || raw_item.dig("media", "title") || raw_item.dig("book", "title"),
+          "title" => raw_item["title"] ||
+            raw_item.dig("media", "metadata", "title") ||
+            raw_item.dig("media", "title") ||
+            raw_item.dig("metadata", "title") ||
+            raw_item.dig("book", "metadata", "title") ||
+            raw_item.dig("book", "title"),
           "author" => extract_author(raw_item)
         }
       end
@@ -209,8 +214,11 @@ class AudiobookshelfClient
 
     def extract_author(raw_item)
       return raw_item["author"] if raw_item["author"].present?
+      return raw_item.dig("media", "metadata", "authorName") if raw_item.dig("media", "metadata", "authorName").present?
       return raw_item.dig("media", "author") if raw_item.dig("media", "author").present?
+      return raw_item.dig("metadata", "authorName") if raw_item.dig("metadata", "authorName").present?
       return raw_item.dig("book", "author") if raw_item.dig("book", "author").present?
+      return raw_item.dig("book", "metadata", "authorName") if raw_item.dig("book", "metadata", "authorName").present?
 
       raw_authors = raw_item.dig("media", "authors") ||
         raw_item.dig("media", "metadata", "authors") ||
