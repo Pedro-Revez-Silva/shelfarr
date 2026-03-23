@@ -90,6 +90,7 @@ class RequestsController < ApplicationController
 
       if request.save
         ActivityTracker.track("request.created", trackable: request)
+        NotificationService.request_created(request)
         created_requests << request
 
         # Trigger immediate search if enabled

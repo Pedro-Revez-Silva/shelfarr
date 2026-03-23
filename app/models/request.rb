@@ -27,6 +27,7 @@ class Request < ApplicationRecord
 
   def mark_for_attention!(description)
     update!(attention_needed: true, issue_description: description)
+    NotificationService.request_attention(self)
   end
 
   def clear_attention!

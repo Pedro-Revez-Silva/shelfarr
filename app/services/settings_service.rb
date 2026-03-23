@@ -76,6 +76,12 @@ class SettingsService
     metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover first, OpenLibrary fallback), hardcover, or openlibrary" },
     hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
 
+    # Webhook Notifications
+    webhook_enabled: { type: "boolean", default: false, category: "webhook", description: "Enable webhook notifications for request events (new, completed, failed, attention needed)" },
+    webhook_url: { type: "string", default: "", category: "webhook", description: "Webhook URL (ntfy, Discord, Slack, or any HTTP endpoint). For ntfy: https://ntfy.example.com/topic" },
+    webhook_token: { type: "string", default: "", category: "webhook", description: "Authorization token (optional). For ntfy Bearer token, Discord/Slack leave empty" },
+    webhook_events: { type: "string", default: "request_completed,request_failed,request_attention,request_created", category: "webhook", description: "Comma-separated events to notify on: request_created, request_completed, request_failed, request_attention" },
+
     # OIDC/SSO Authentication
     oidc_enabled: { type: "boolean", default: false, category: "oidc", description: "Enable OpenID Connect (OIDC) single sign-on authentication" },
     oidc_provider_name: { type: "string", default: "SSO", category: "oidc", description: "Display name for the OIDC provider (shown on login button)" },
@@ -101,6 +107,7 @@ class SettingsService
     "language" => "Language & Matching",
     "updates" => "Updates",
     "security" => "Security",
+    "webhook" => "Webhook Notifications",
     "oidc" => "OIDC/SSO Authentication"
   }.freeze
 

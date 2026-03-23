@@ -4,7 +4,7 @@ class Notification < ApplicationRecord
   belongs_to :user
   belongs_to :notifiable, polymorphic: true, optional: true
 
-  TYPES = %w[request_completed request_failed request_attention].freeze
+  TYPES = %w[request_completed request_failed request_attention request_created].freeze
 
   validates :notification_type, presence: true, inclusion: { in: TYPES }
   validates :title, presence: true
