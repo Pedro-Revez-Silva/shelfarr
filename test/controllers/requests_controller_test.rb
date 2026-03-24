@@ -216,6 +216,52 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to request_path(Request.last)
   end
 
+  test "create auto-approves non-admin requests when setting is enabled" do
+    SettingsService.set(:auto_approve_requests, true)
+
+    assert_enqueued_with(job: SearchJob) do
+      post requests_path, params: {
+        work_id: "OL_AUTO_APPROVE_123W",
+        title: "Auto Approve Book",
+        author: "Trusted User",
+        book_type: "ebook"
+      }
+    end
+
+    assert_redirected_to request_path(Request.last)
+  end
+
+  test "create does not auto-approve admin requests when only auto approve requests is enabled" do
+    SettingsService.set(:auto_approve_requests, true)
+    sign_out
+    sign_in_as(@admin)
+
+    assert_no_enqueued_jobs only: SearchJob do
+      post requests_path, params: {
+        work_id: "OL_ADMIN_CREATE_123W",
+        title: "Admin Queue Book",
+        author: "Admin",
+        book_type: "ebook"
+      }
+    end
+
+    assert_redirected_to request_path(Request.last)
+  end
+
+  test "create enqueues search only once when immediate search and auto approve are both enabled" do
+    SettingsService.set(:immediate_search_enabled, true)
+    SettingsService.set(:auto_approve_requests, true)
+
+    assert_enqueued_jobs 1, only: SearchJob do
+      post requests_path, params: {
+        work_id: "OL_BOTH_FLAGS_123W",
+        title: "Dual Trigger Book",
+        author: "Trusted User",
+        book_type: "ebook"
+      }
+    end
+  end
+
   test "create reuses existing book" do
     existing_book = Book.create!(
       title: "Existing",

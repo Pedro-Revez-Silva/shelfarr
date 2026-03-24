@@ -46,6 +46,15 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /Allow non-admin users to upload book files directly/
   end
 
+  test "index shows auto approve requests setting" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Auto Approve Requests"
+    assert_select "input[name='settings[auto_approve_requests]']"
+    assert_select "p", text: /Automatically enqueue search immediately for requests created by non-admin users/
+  end
+
   test "index shows library picker dropdown when audiobookshelf configured" do
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
@@ -133,6 +142,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal true, SettingsService.user_uploads_allowed?
+  end
+
+  test "bulk_update updates auto approve requests setting" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        auto_approve_requests: "true"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal true, SettingsService.auto_approve_requests?
   end
 
   test "bulk_update validates path templates" do

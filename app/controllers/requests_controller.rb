@@ -93,8 +93,7 @@ class RequestsController < ApplicationController
         ActivityTracker.track("request.created", trackable: request)
         created_requests << request
 
-        # Trigger immediate search if enabled
-        if SettingsService.get(:immediate_search_enabled, default: false)
+        if enqueue_search_immediately_for?(request)
           SearchJob.perform_later(request.id)
         end
       else
@@ -183,6 +182,11 @@ class RequestsController < ApplicationController
   end
 
   private
+
+  def enqueue_search_immediately_for?(request)
+    SettingsService.get(:immediate_search_enabled, default: false) ||
+      (!request.user.admin? && SettingsService.auto_approve_requests?)
+  end
 
   def send_single_file(path, book)
     filename = File.basename(path)
