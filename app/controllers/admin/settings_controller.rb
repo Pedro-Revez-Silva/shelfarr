@@ -227,6 +227,21 @@ module Admin
       respond_with_flash(alert: "OIDC test error: #{e.message}")
     end
 
+    def test_webhook
+      payload = OutboundNotifications::WebhookDelivery.test_payload
+      OutboundNotifications::WebhookDelivery.deliver!(
+        event: payload[:event],
+        title: payload[:title],
+        message: payload[:message]
+      )
+
+      respond_with_flash(notice: "Webhook test sent successfully!")
+    rescue OutboundNotifications::WebhookDelivery::ConfigurationError => e
+      respond_with_flash(alert: e.message)
+    rescue OutboundNotifications::WebhookDelivery::DeliveryError => e
+      respond_with_flash(alert: e.message)
+    end
+
     private
 
     def respond_with_flash(notice: nil, alert: nil)

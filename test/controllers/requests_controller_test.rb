@@ -301,6 +301,25 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_nil book.series
   end
 
+  test "create enqueues request_created webhook event" do
+    SettingsService.set(:webhook_enabled, true)
+    SettingsService.set(:webhook_url, "http://localhost:4567/webhook")
+    SettingsService.set(:webhook_events, "request_created")
+
+    assert_enqueued_with(job: OutboundWebhookDeliveryJob) do
+      post requests_path, params: {
+        work_id: "OL_WEBHOOK_123W",
+        title: "Webhook Book",
+        author: "Webhook Author",
+        book_type: "audiobook"
+      }
+    end
+
+    enqueued = enqueued_jobs.find { |job| job[:job] == OutboundWebhookDeliveryJob }
+    args = enqueued[:args].first.with_indifferent_access
+    assert_equal "request_created", args[:event]
+  end
+
   test "create auto-approves non-admin requests when setting is enabled" do
     SettingsService.set(:auto_approve_requests, true)
 

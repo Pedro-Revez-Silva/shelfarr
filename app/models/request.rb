@@ -149,6 +149,8 @@ class Request < ApplicationRecord
         issue_description: nil
       )
     end
+
+    NotificationService.request_failed(self)
   end
 
   # Cancel a specific download and remove from download client

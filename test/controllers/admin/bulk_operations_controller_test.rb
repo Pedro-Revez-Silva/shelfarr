@@ -37,12 +37,23 @@ class Admin::BulkOperationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "cancel_selected cancels selected requests" do
-    post cancel_selected_admin_bulk_operations_path, params: { request_ids: [@failed_request.id] }
+    SettingsService.set(:webhook_enabled, true)
+    SettingsService.set(:webhook_url, "http://localhost:4567/webhook")
+    SettingsService.set(:webhook_events, "request_failed")
+
+    assert_enqueued_with(job: OutboundWebhookDeliveryJob) do
+      post cancel_selected_admin_bulk_operations_path, params: { request_ids: [@failed_request.id] }
+    end
 
     assert_redirected_to requests_path(attention: "true")
     assert_includes flash[:notice], "1 request cancelled"
 
     assert_equal "failed", @failed_request.reload.status
+
+    enqueued = enqueued_jobs.find { |job| job[:job] == OutboundWebhookDeliveryJob }
+    args = enqueued[:args].first.with_indifferent_access
+    assert_equal "request_failed", args[:event]
+    assert_equal @failed_request.id, args[:request_id]
   end
 
   test "retry_all retries all issues" do

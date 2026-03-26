@@ -164,6 +164,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal true, SettingsService.auto_approve_requests?
   end
 
+  test "index shows webhook settings" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Webhook Enabled"
+    assert_select "input[name='settings[webhook_enabled]']"
+    assert_select "input[name='settings[webhook_url]']"
+    assert_select "input[name='settings[webhook_events]']"
+    assert_select "a", text: "Send Test Webhook"
+  end
+
   test "bulk_update validates path templates" do
     patch bulk_update_admin_settings_url, params: {
       settings: {
@@ -284,6 +295,49 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       assert_redirected_to admin_settings_path
       assert_match /successful/i, flash[:notice]
     end
+  end
+
+  test "test_webhook fails when disabled" do
+    SettingsService.set(:webhook_enabled, false)
+    SettingsService.set(:webhook_url, "http://localhost:4567/webhook")
+
+    post test_webhook_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not enabled/i, flash[:alert]
+  end
+
+  test "test_webhook succeeds when webhook accepts payload" do
+    SettingsService.set(:webhook_enabled, true)
+    SettingsService.set(:webhook_url, "http://localhost:4567/webhook")
+    SettingsService.set(:webhook_token, "secret-token")
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:4567/webhook")
+        .with(
+          headers: {
+            "Authorization" => "Bearer secret-token",
+            "Content-Type" => "application/json",
+            "X-Shelfarr-Event" => "test"
+          }
+        )
+        .to_return(status: 200, body: "{\"ok\":true}", headers: { "Content-Type" => "application/json" })
+
+      post test_webhook_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match /successfully/i, flash[:notice]
+    end
+  end
+
+  test "test_webhook handles invalid webhook URL" do
+    SettingsService.set(:webhook_enabled, true)
+    SettingsService.set(:webhook_url, "ht!tp://bad")
+
+    post test_webhook_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /invalid/i, flash[:alert]
   end
 
   # Test connection tests for Audiobookshelf
