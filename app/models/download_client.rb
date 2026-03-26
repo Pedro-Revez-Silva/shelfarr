@@ -11,6 +11,10 @@ class DownloadClient < ApplicationRecord
   validates :client_type, presence: true
   validates :url, presence: true
   validates :priority, presence: true, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
+  validates :torrent_verification_max_attempts,
+    numericality: { only_integer: true, greater_than: 0 }
+  validates :torrent_verification_wait_time,
+    numericality: { only_integer: true, greater_than_or_equal_to: 0 }
 
   scope :enabled, -> { where(enabled: true) }
   scope :by_priority, -> { order(priority: :asc) }

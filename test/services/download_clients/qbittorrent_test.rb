@@ -47,6 +47,41 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent waits for delayed torrent registration using configured verification settings" do
+    @client_record.update!(
+      torrent_verification_max_attempts: 5,
+      torrent_verification_wait_time: 0
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        .to_return(
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [ { "hash" => "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "name" => "Delayed Test", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+          }
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+
+      assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
+    end
+  end
+
   test "add_torrent falls back to polling when torrent file cannot be downloaded" do
     VCR.turned_off do
       # Stub authentication

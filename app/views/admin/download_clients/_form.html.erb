@@ -78,6 +78,22 @@
     <p class="mt-1 text-sm text-gray-500">Container path where completed downloads appear (e.g., /downloads). Leave blank to use global settings.</p>
   </div>
 
+  <div id="qbittorrent_fields" class="<%= 'hidden' unless download_client.qbittorrent? || download_client.new_record? %>">
+    <div class="grid gap-5 md:grid-cols-2">
+      <div>
+        <%= form.label :torrent_verification_max_attempts, "Torrent Verification Attempts", class: "block text-gray-300 font-medium" %>
+        <%= form.number_field :torrent_verification_max_attempts, min: 1, class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+        <p class="mt-1 text-sm text-gray-500">How many times Shelfarr should poll qBittorrent to confirm a newly added torrent exists.</p>
+      </div>
+
+      <div>
+        <%= form.label :torrent_verification_wait_time, "Verification Wait Time (Seconds)", class: "block text-gray-300 font-medium" %>
+        <%= form.number_field :torrent_verification_wait_time, min: 0, class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+        <p class="mt-1 text-sm text-gray-500">Delay between verification attempts. Increase this if qBittorrent runs behind a VPN or slow network path.</p>
+      </div>
+    </div>
+  </div>
+
   <div class="my-5">
     <%= form.label :enabled, class: "flex items-center gap-2 cursor-pointer" %>
     <div class="flex items-center">
@@ -98,8 +114,9 @@
     const clientTypeSelect = document.getElementById('client_type_select');
     const authenticationFields = document.getElementById('authentication_fields');
     const sabnzbdFields = document.getElementById('sabnzbd_fields');
+    const qbittorrentFields = document.getElementById('qbittorrent_fields');
 
-    if (!clientTypeSelect || !authenticationFields || !sabnzbdFields) return;
+    if (!clientTypeSelect || !authenticationFields || !sabnzbdFields || !qbittorrentFields) return;
 
     function toggleFields() {
       const type = clientTypeSelect.value;
@@ -108,6 +125,7 @@
         !['qbittorrent', 'nzbget', 'deluge', 'transmission'].includes(type)
       );
       sabnzbdFields.classList.toggle('hidden', type !== 'sabnzbd');
+      qbittorrentFields.classList.toggle('hidden', type !== 'qbittorrent');
     }
 
     // Run on load to set initial state

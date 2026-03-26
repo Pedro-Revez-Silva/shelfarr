@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_21_224500) do
+ActiveRecord::Schema[8.1].define(version: 2026_03_26_211000) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -64,6 +64,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_21_224500) do
     t.string "name", null: false
     t.string "password"
     t.integer "priority", default: 0, null: false
+    t.integer "torrent_verification_max_attempts", default: 10, null: false
+    t.integer "torrent_verification_wait_time", default: 2, null: false
     t.datetime "updated_at", null: false
     t.string "url", null: false
     t.string "username"

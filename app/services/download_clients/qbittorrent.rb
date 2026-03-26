@@ -9,6 +9,9 @@ module DownloadClients
   # qBittorrent WebUI API client
   # https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1)
   class Qbittorrent < Base
+    DEFAULT_TORRENT_VERIFICATION_MAX_ATTEMPTS = 10
+    DEFAULT_TORRENT_VERIFICATION_WAIT_TIME = 2
+
     # Add a torrent by URL or magnet link
     # Returns the torrent hash on success, nil on failure
     def add_torrent(url, options = {})
@@ -196,7 +199,10 @@ module DownloadClients
     # - Invalid save path
     # - Duplicate torrent (if configured to reject)
     # - Torrent file rejection
-    def verify_torrent_added(hash, max_attempts: 3, wait_time: 1)
+    def verify_torrent_added(hash)
+      max_attempts = config.torrent_verification_max_attempts || DEFAULT_TORRENT_VERIFICATION_MAX_ATTEMPTS
+      wait_time = config.torrent_verification_wait_time.nil? ? DEFAULT_TORRENT_VERIFICATION_WAIT_TIME : config.torrent_verification_wait_time
+
       max_attempts.times do |attempt|
         # Only sleep on retry attempts to avoid unnecessary delay if torrent is immediately available
         sleep wait_time if attempt > 0

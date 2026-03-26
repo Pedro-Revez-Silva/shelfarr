@@ -21,6 +21,7 @@ module Admin
 
       if @download_client.save
         run_download_client_health_check
+        sync_download_monitor
         redirect_to admin_download_clients_path, notice: "Download client was successfully created."
       else
         render :new, status: :unprocessable_entity
@@ -38,6 +39,7 @@ module Admin
 
       if @download_client.update(update_params)
         run_download_client_health_check
+        sync_download_monitor
         redirect_to admin_download_clients_path, notice: "Download client was successfully updated."
       else
         render :edit, status: :unprocessable_entity
@@ -47,6 +49,7 @@ module Admin
     def destroy
       @download_client.destroy
       run_download_client_health_check
+      sync_download_monitor
       redirect_to admin_download_clients_path, notice: "Download client was successfully deleted."
     end
 
@@ -78,7 +81,10 @@ module Admin
     end
 
     def download_client_params
-      params.require(:download_client).permit(:name, :client_type, :url, :username, :password, :api_key, :category, :download_path, :enabled)
+      params.require(:download_client).permit(
+        :name, :client_type, :url, :username, :password, :api_key, :category, :download_path, :enabled,
+        :torrent_verification_max_attempts, :torrent_verification_wait_time
+      )
     end
 
     def next_priority_for(client_type)
@@ -104,6 +110,16 @@ module Admin
       HealthCheckJob.perform_now(service: "download_client")
     rescue => e
       Rails.logger.warn "[DownloadClientsController] Failed to run download client health check: #{e.message}"
+    end
+
+    def sync_download_monitor
+      if DownloadClient.enabled.exists?
+        DownloadMonitorJob.ensure_running!
+      else
+        DownloadMonitorJob.clear_schedule!
+      end
+    rescue => e
+      Rails.logger.warn "[DownloadClientsController] Failed to sync download monitor: #{e.message}"
     end
   end
 end
