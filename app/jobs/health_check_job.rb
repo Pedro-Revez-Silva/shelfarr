@@ -113,8 +113,8 @@ class HealthCheckJob < ApplicationJob
         issues << "#{client.name}: configured download path '#{client.download_path}' does not exist"
       end
 
-      # Check category subfolder only for qBittorrent (uses category-based save paths)
-      if client.qbittorrent? && client.category.present?
+      # Check category subfolder only for qBittorrent-compatible clients
+      if client.qbittorrent_compatible? && client.category.present?
         base = client.download_path.presence || local_path
         if Dir.exist?(base)
           category_path = File.join(base, client.category)
@@ -125,8 +125,8 @@ class HealthCheckJob < ApplicationJob
         end
       end
 
-      # Query qBit for save path info (diagnostics only)
-      if client.qbittorrent?
+      # Query qBittorrent-compatible clients for save path info (diagnostics only)
+      if client.qbittorrent_compatible?
         begin
           diagnostics = client.adapter.connection_diagnostics
           if diagnostics

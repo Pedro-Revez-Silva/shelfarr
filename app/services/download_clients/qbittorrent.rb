@@ -30,10 +30,7 @@ module DownloadClients
       response = if torrent_data.present?
         upload_torrent_file(torrent_data, options)
       else
-        params = { urls: submit_url }
-        params[:category] = config.category if config.category.present?
-        params[:savepath] = options[:save_path] if options[:save_path].present?
-        params[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
+        params = build_add_torrent_params(urls: submit_url, options: options)
         connection.post("api/v2/torrents/add", params)
       end
 
@@ -372,7 +369,7 @@ module DownloadClients
         f.request :multipart
         f.request :url_encoded
         f.adapter Faraday.default_adapter
-        f.headers["Cookie"] = "SID=#{session_key[:sid]}" if session_valid?
+        f.headers["Cookie"] = session_cookie_header if session_valid?
         f.headers["Referer"] = base_url
         f.headers["Origin"] = base_url
         f.options.timeout = 30
@@ -386,9 +383,7 @@ module DownloadClients
           "torrent.torrent"
         )
       }
-      payload[:category] = config.category if config.category.present?
-      payload[:savepath] = options[:save_path] if options[:save_path].present?
-      payload[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
+      payload.merge!(build_add_torrent_params(options: options))
 
       upload_conn.post("api/v2/torrents/add", payload)
     end
@@ -442,11 +437,10 @@ module DownloadClients
       end
 
       if auth_response.status == 200 && auth_response.body == "Ok."
-        # Extract SID cookie from response
-        cookie = auth_response.headers["set-cookie"]
-        match = cookie&.match(/SID=([^;]+)/)
-        if match
-          session_key[:sid] = match[1]
+        session = extract_session_cookie(auth_response.headers["set-cookie"])
+        if session
+          session_key[:cookie_name] = session[:name]
+          session_key[:cookie_value] = session[:value]
           Rails.logger.info "[Qbittorrent] Authenticated successfully to #{config.name}"
         else
           raise Base::AuthenticationError, "No session cookie received from qBittorrent at #{login_url}"
@@ -470,11 +464,12 @@ module DownloadClients
     end
 
     def session_valid?
-      session_key[:sid].present?
+      session_key[:cookie_value].present?
     end
 
     def clear_session!
-      session_key[:sid] = nil
+      session_key[:cookie_name] = nil
+      session_key[:cookie_value] = nil
     end
 
     def username
@@ -490,7 +485,7 @@ module DownloadClients
         f.request :url_encoded
         f.response :json, parser_options: { symbolize_names: false }
         f.adapter Faraday.default_adapter
-        f.headers["Cookie"] = "SID=#{session_key[:sid]}" if session_valid?
+        f.headers["Cookie"] = session_cookie_header if session_valid?
         f.headers["Referer"] = base_url
         f.headers["Origin"] = base_url
         f.options.timeout = 15
@@ -548,6 +543,46 @@ module DownloadClients
       else
         :queued
       end
+    end
+
+    def build_add_torrent_params(urls: nil, options: {})
+      params = {}
+      params[:urls] = urls if urls.present?
+      params[:category] = config.category if config.category.present?
+      params[:savepath] = options[:save_path] if options[:save_path].present?
+      params[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
+      params.merge!(adapter_specific_add_torrent_params)
+      params
+    end
+
+    def adapter_specific_add_torrent_params
+      {}
+    end
+
+    def extract_session_cookie(cookie)
+      match = cookie.to_s.match(session_cookie_pattern)
+      return nil unless match
+
+      {
+        name: match[:name] || default_session_cookie_name,
+        value: match[:value]
+      }
+    end
+
+    def session_cookie_pattern
+      /\b(?<name>#{Regexp.escape(default_session_cookie_name)})=(?<value>[^;]+)/
+    end
+
+    def default_session_cookie_name
+      "SID"
+    end
+
+    def session_cookie_name
+      session_key[:cookie_name].presence || default_session_cookie_name
+    end
+
+    def session_cookie_header
+      "#{session_cookie_name}=#{session_key[:cookie_value]}"
     end
   end
 end

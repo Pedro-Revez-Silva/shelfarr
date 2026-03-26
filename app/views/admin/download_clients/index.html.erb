@@ -52,7 +52,7 @@
                     <div class="font-medium text-white"><%= client.name %></div>
                   </td>
                   <td class="px-6 py-4 whitespace-nowrap">
-                    <span class="px-2 py-1 text-xs rounded <%= client.qbittorrent? ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400' %>">
+                    <span class="px-2 py-1 text-xs rounded <%= client.qbittorrent_compatible? ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400' %>">
                       <%= client.client_type.titleize %>
                     </span>
                   </td>

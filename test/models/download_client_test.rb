@@ -51,6 +51,19 @@ class DownloadClientTest < ActiveSupport::TestCase
     assert_equal client, adapter.config
   end
 
+  test "creates decypharr adapter" do
+    client = DownloadClient.create!(
+      name: "Decypharr",
+      client_type: "decypharr",
+      url: "http://localhost:8282",
+      username: "admin",
+      password: "password"
+    )
+    adapter = client.adapter
+    assert_kind_of DownloadClients::Decypharr, adapter
+    assert_equal client, adapter.config
+  end
+
   test "creates deluge adapter" do
     client = DownloadClient.create!(
       name: "Deluge",
@@ -108,11 +121,13 @@ class DownloadClientTest < ActiveSupport::TestCase
 
   test "torrent_clients scope returns torrent clients" do
     qb = DownloadClient.create!(name: "qBit", client_type: "qbittorrent", url: "http://localhost:8080")
+    decypharr = DownloadClient.create!(name: "Decypharr", client_type: "decypharr", url: "http://localhost:8282")
     deluge = DownloadClient.create!(name: "Deluge", client_type: "deluge", url: "http://localhost:8112")
     transmission = DownloadClient.create!(name: "Transmission", client_type: "transmission", url: "http://localhost:9091/transmission/rpc")
     sab = DownloadClient.create!(name: "SAB", client_type: "sabnzbd", url: "http://localhost:9090", api_key: "key")
 
     assert_includes DownloadClient.torrent_clients, qb
+    assert_includes DownloadClient.torrent_clients, decypharr
     assert_includes DownloadClient.torrent_clients, deluge
     assert_includes DownloadClient.torrent_clients, transmission
     assert_not_includes DownloadClient.torrent_clients, sab

@@ -3,7 +3,14 @@
 class DownloadClient < ApplicationRecord
   encrypts :password, :api_key
 
-  enum :client_type, { qbittorrent: "qbittorrent", sabnzbd: "sabnzbd", nzbget: "nzbget", deluge: "deluge", transmission: "transmission" }
+  enum :client_type, {
+    qbittorrent: "qbittorrent",
+    decypharr: "decypharr",
+    sabnzbd: "sabnzbd",
+    nzbget: "nzbget",
+    deluge: "deluge",
+    transmission: "transmission"
+  }
 
   has_many :downloads, dependent: :nullify
 
@@ -18,13 +25,15 @@ class DownloadClient < ApplicationRecord
 
   scope :enabled, -> { where(enabled: true) }
   scope :by_priority, -> { order(priority: :asc) }
-  scope :torrent_clients, -> { where(client_type: [ :qbittorrent, :deluge, :transmission ]) }
+  scope :torrent_clients, -> { where(client_type: [ :qbittorrent, :decypharr, :deluge, :transmission ]) }
   scope :usenet_clients, -> { where(client_type: [ :sabnzbd, :nzbget ]) }
 
   def adapter
     case client_type
     when "qbittorrent"
       DownloadClients::Qbittorrent.new(self)
+    when "decypharr"
+      DownloadClients::Decypharr.new(self)
     when "sabnzbd"
       DownloadClients::Sabnzbd.new(self)
     when "nzbget"
@@ -44,7 +53,7 @@ class DownloadClient < ApplicationRecord
   end
 
   def torrent_client?
-    qbittorrent? || deluge? || transmission?
+    qbittorrent? || decypharr? || deluge? || transmission?
   end
 
   def usenet_client?
@@ -52,6 +61,10 @@ class DownloadClient < ApplicationRecord
   end
 
   def requires_authentication?
-    qbittorrent? || nzbget? || deluge? || transmission?
+    qbittorrent? || decypharr? || nzbget? || deluge? || transmission?
+  end
+
+  def qbittorrent_compatible?
+    qbittorrent? || decypharr?
   end
 end
