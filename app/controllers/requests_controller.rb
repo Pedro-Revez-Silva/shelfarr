@@ -328,19 +328,17 @@ class RequestsController < ApplicationController
   end
 
   def find_or_create_book_for_source(work_id, book_type)
-    source, _source_id = Book.parse_work_id(work_id)
     book = Book.find_or_initialize_by_work_id(work_id, book_type: book_type)
-
-    if book.new_record?
-      book.assign_attributes(
+    BookMetadataBackfillService.apply!(
+      book,
+      work_id: work_id,
+      fallback_attrs: {
         title: params[:title],
         author: params[:author],
         cover_url: params[:cover_url],
-        year: params[:first_publish_year],
-        metadata_source: source
-      )
-      book.save!
-    end
+        year: params[:first_publish_year]
+      }
+    )
 
     book
   end

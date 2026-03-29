@@ -216,6 +216,91 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to request_path(Request.last)
   end
 
+  test "create stores series from metadata details" do
+    details = MetadataService::SearchResult.new(
+      source: "hardcover",
+      source_id: "123",
+      title: "Leviathan Wakes",
+      author: "James S. A. Corey",
+      description: "Book one of The Expanse",
+      year: 2011,
+      cover_url: "https://example.com/cover.jpg",
+      has_audiobook: true,
+      has_ebook: true,
+      series_name: "The Expanse"
+    )
+
+    MetadataService.stub(:book_details, details) do
+      assert_difference [ "Book.count", "Request.count" ], 1 do
+        post requests_path, params: {
+          work_id: "hardcover:123",
+          title: "Leviathan Wakes",
+          author: "James S. A. Corey",
+          book_type: "ebook"
+        }
+      end
+    end
+
+    book = Book.last
+    assert_equal "The Expanse", book.series
+    assert_equal "Book one of The Expanse", book.description
+    assert_equal 2011, book.year
+  end
+
+  test "create backfills missing series on an existing book" do
+    existing_book = Book.create!(
+      title: "Leviathan Wakes",
+      author: "James S. A. Corey",
+      book_type: :ebook,
+      hardcover_id: "456",
+      series: nil
+    )
+
+    details = MetadataService::SearchResult.new(
+      source: "hardcover",
+      source_id: "456",
+      title: "Leviathan Wakes",
+      author: "James S. A. Corey",
+      description: "Book one of The Expanse",
+      year: 2011,
+      cover_url: nil,
+      has_audiobook: true,
+      has_ebook: true,
+      series_name: "The Expanse"
+    )
+
+    MetadataService.stub(:book_details, details) do
+      assert_no_difference "Book.count" do
+        post requests_path, params: {
+          work_id: "hardcover:456",
+          title: "Leviathan Wakes",
+          author: "James S. A. Corey",
+          book_type: "ebook"
+        }
+      end
+    end
+
+    assert_equal "The Expanse", existing_book.reload.series
+  end
+
+  test "create falls back to request params when metadata details lookup fails" do
+    MetadataService.stub(:book_details, ->(*) { raise OpenLibraryClient::ConnectionError, "timeout" }) do
+      assert_difference [ "Book.count", "Request.count" ], 1 do
+        post requests_path, params: {
+          work_id: "OL_FALLBACK_123W",
+          title: "Fallback Book",
+          author: "Fallback Author",
+          book_type: "ebook"
+        }
+      end
+    end
+
+    book = Book.last
+    assert_equal "Fallback Book", book.title
+    assert_equal "Fallback Author", book.author
+    assert_nil book.series
+  end
+
   test "create auto-approves non-admin requests when setting is enabled" do
     SettingsService.set(:auto_approve_requests, true)
 

@@ -18,6 +18,10 @@ default: &default
     class: CleanupTempFilesJob
     queue: default
     schedule: every hour
+  book_metadata_backfill:
+    class: BookMetadataBackfillJob
+    queue: default
+    schedule: at 3am every day
   update_check:
     class: UpdateCheckJob
     queue: default
