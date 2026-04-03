@@ -94,7 +94,9 @@ module IndexerClients
       end
 
       def parse_item(item)
-        enclosure_url = item.at_xpath("enclosure")&.[]("url").to_s.strip.presence
+        enclosure = item.at_xpath("enclosure")
+        enclosure_url = enclosure&.[]("url").to_s.strip.presence
+        enclosure_length = enclosure&.[]("length")
         link = item.at_xpath("link")&.text.to_s.strip.presence
         attrs = item.xpath("attr").each_with_object({}) do |attr, lookup|
           lookup[attr["name"].to_s] = attr["value"]
@@ -104,11 +106,11 @@ module IndexerClients
           guid: item.at_xpath("guid")&.text.to_s.strip.presence || enclosure_url || link || SecureRandom.uuid,
           title: item.at_xpath("title")&.text.to_s.strip,
           indexer: item.at_xpath("jackettindexer")&.text.to_s.strip.presence || item.at_xpath("comments")&.text.to_s.strip.presence || "Jackett",
-          size_bytes: integer_attr(item.at_xpath("size")&.text) || integer_attr(attrs["size"]),
+          size_bytes: integer_attr(enclosure_length) || integer_attr(item.at_xpath("size")&.text) || integer_attr(attrs["size"]),
           seeders: integer_attr(attrs["seeders"]),
           leechers: integer_attr(attrs["peers"]) || integer_attr(attrs["leechers"]),
-          download_url: extract_download_url(enclosure_url, link),
-          magnet_url: extract_magnet_url(enclosure_url, link),
+          download_url: extract_download_url(enclosure_url),
+          magnet_url: extract_magnet_url(enclosure_url),
           info_url: link,
           published_at: parse_date(item.at_xpath("pubDate")&.text)
         )
@@ -122,12 +124,16 @@ module IndexerClients
         nil
       end
 
-      def extract_download_url(enclosure_url, link)
-        [enclosure_url, link].find { |candidate| candidate.present? && !candidate.start_with?("magnet:") }
+      def extract_download_url(enclosure_url)
+        return nil if enclosure_url.blank? || enclosure_url.start_with?("magnet:")
+
+        enclosure_url
       end
 
-      def extract_magnet_url(enclosure_url, link)
-        [enclosure_url, link].find { |candidate| candidate.present? && candidate.start_with?("magnet:") }
+      def extract_magnet_url(enclosure_url)
+        return nil unless enclosure_url.present? && enclosure_url.start_with?("magnet:")
+
+        enclosure_url
       end
 
       def parse_date(date_string)

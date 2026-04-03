@@ -51,8 +51,38 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
       assert_equal "Books", result.indexer
       assert_equal 42, result.seeders
       assert_equal 7, result.leechers
+      assert_equal 1_048_576, result.size_bytes
       assert_equal "magnet:?xt=urn:btih:123", result.magnet_url
       assert_equal "magnet:?xt=urn:btih:123", result.download_link
+    end
+  end
+
+  test "search does not treat info link as a download url when enclosure is missing" do
+    body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+        <channel>
+          <item>
+            <title>Info Only Result</title>
+            <guid>jackett-guid-info-only</guid>
+            <link>https://example.com/details/info-only</link>
+            <jackettindexer>Books</jackettindexer>
+          </item>
+        </channel>
+      </rss>
+    XML
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "jackett-api-key", "t" => "search"))
+        .to_return(status: 200, body: body, headers: { "Content-Type" => "application/xml" })
+
+      result = IndexerClients::Jackett.search("test query", book_type: :ebook).first
+
+      assert_nil result.download_url
+      assert_nil result.magnet_url
+      assert_equal "https://example.com/details/info-only", result.info_url
+      assert_not result.downloadable?
     end
   end
 
