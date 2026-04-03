@@ -202,6 +202,41 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "uses jackett when explicitly selected as the indexer provider" do
+    SettingsService.set(:indexer_provider, "jackett")
+    SettingsService.set(:jackett_url, "http://localhost:9117")
+    SettingsService.set(:jackett_api_key, "jackett-key")
+
+    body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+        <channel>
+          <item>
+            <title>Jackett Search Result</title>
+            <guid>jackett-guid-1</guid>
+            <link>https://example.com/details/1</link>
+            <jackettindexer>JackettBooks</jackettindexer>
+            <enclosure url="magnet:?xt=urn:btih:jackett1" length="12345" type="application/x-bittorrent" />
+            <torznab:attr name="seeders" value="12" />
+          </item>
+        </channel>
+      </rss>
+    XML
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "jackett-key", "t" => "search"))
+        .to_return(status: 200, body: body, headers: { "Content-Type" => "application/xml" })
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert @request.search_results.any?
+      assert_equal SearchResult::SOURCE_JACKETT, @request.search_results.first.source
+      assert_equal "JackettBooks", @request.search_results.first.indexer
+    end
+  end
+
   private
 
   def stub_prowlarr_search_with_results

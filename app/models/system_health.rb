@@ -1,4 +1,8 @@
 class SystemHealth < ApplicationRecord
+  SERVICE_ALIASES = {
+    "prowlarr" => "indexer"
+  }.freeze
+
   enum :status, {
     healthy: 0,
     degraded: 1,
@@ -6,7 +10,7 @@ class SystemHealth < ApplicationRecord
     not_configured: 3
   }
 
-  SERVICES = %w[prowlarr download_client download_paths output_paths audiobookshelf hardcover].freeze
+  SERVICES = %w[indexer download_client download_paths output_paths audiobookshelf hardcover].freeze
 
   validates :service, presence: true, uniqueness: true
   validates :status, presence: true
@@ -14,7 +18,9 @@ class SystemHealth < ApplicationRecord
   scope :unhealthy, -> { where(status: [:degraded, :down]) }
 
   def self.for_service(service_name)
-    find_or_create_by(service: service_name) do |health|
+    canonical_name = SERVICE_ALIASES.fetch(service_name.to_s, service_name.to_s)
+
+    find_or_create_by(service: canonical_name) do |health|
       health.status = :not_configured
     end
   end

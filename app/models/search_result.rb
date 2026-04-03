@@ -11,6 +11,7 @@ class SearchResult < ApplicationRecord
 
   # Source constants
   SOURCE_PROWLARR = "prowlarr"
+  SOURCE_JACKETT = "jackett"
   SOURCE_ANNA_ARCHIVE = "anna_archive"
 
   validates :guid, presence: true, uniqueness: { scope: :request_id }
@@ -130,12 +131,22 @@ class SearchResult < ApplicationRecord
     source == SOURCE_PROWLARR || source.blank?
   end
 
+  def from_jackett?
+    source == SOURCE_JACKETT
+  end
+
+  def from_indexer?
+    from_prowlarr? || from_jackett?
+  end
+
   def from_anna_archive?
     source == SOURCE_ANNA_ARCHIVE
   end
 
   def source_display_name
     case source
+    when SOURCE_JACKETT
+      indexer.presence || "Jackett"
     when SOURCE_ANNA_ARCHIVE
       "Anna's Archive"
     else

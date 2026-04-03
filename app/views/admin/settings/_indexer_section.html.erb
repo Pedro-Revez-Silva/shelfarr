@@ -1,0 +1,99 @@
+<% selected_provider = SettingsService.active_indexer_provider %>
+<% indexer_provider_value = settings.dig(:indexer_provider, :value).presence || selected_provider %>
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 mb-6">
+  <div class="px-6 py-4 border-b border-gray-800">
+    <h2 class="font-bold text-xl text-white">Indexer</h2>
+  </div>
+  <div class="p-6 space-y-6">
+    <div class="flex flex-col md:flex-row md:items-start gap-4">
+      <div class="md:w-1/3">
+        <label for="settings_indexer_provider" class="font-medium text-gray-300">Provider</label>
+        <p class="text-sm text-gray-500">Choose the single indexer provider Shelfarr should use for searches.</p>
+      </div>
+      <div class="md:w-2/3">
+        <%= form.select "settings[indexer_provider]",
+          options_for_select([["None", "none"], ["Prowlarr", "prowlarr"], ["Jackett", "jackett"]], indexer_provider_value),
+          {},
+          id: "settings_indexer_provider",
+          class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2",
+          data: { settings_form_target: "indexerProvider", action: "change->settings-form#handleIndexerProviderChange" } %>
+        <p class="mt-1 text-xs text-gray-500">Existing installs fall back to Prowlarr automatically until this is explicitly changed.</p>
+      </div>
+    </div>
+
+    <div data-settings-form-target="prowlarrFields" class="<%= 'hidden' unless selected_provider == 'prowlarr' %> space-y-6">
+      <div class="flex flex-col md:flex-row md:items-start gap-4">
+        <div class="md:w-1/3">
+          <label for="settings_prowlarr_url" class="font-medium text-gray-300">Prowlarr Url</label>
+          <p class="text-sm text-gray-500"><%= settings.dig(:prowlarr_url, :definition, :description) %></p>
+        </div>
+        <div class="md:w-2/3">
+          <%= form.text_field "settings[prowlarr_url]", value: settings.dig(:prowlarr_url, :value), id: "settings_prowlarr_url", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+        </div>
+      </div>
+
+      <div class="flex flex-col md:flex-row md:items-start gap-4">
+        <div class="md:w-1/3">
+          <label for="settings_prowlarr_api_key" class="font-medium text-gray-300">Prowlarr Api Key</label>
+          <p class="text-sm text-gray-500"><%= settings.dig(:prowlarr_api_key, :definition, :description) %></p>
+        </div>
+        <div class="md:w-2/3">
+          <%= form.password_field "settings[prowlarr_api_key]", value: settings.dig(:prowlarr_api_key, :value), placeholder: settings.dig(:prowlarr_api_key, :value).present? ? "********" : "", id: "settings_prowlarr_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+        </div>
+      </div>
+
+      <div class="flex flex-col md:flex-row md:items-start gap-4">
+        <div class="md:w-1/3">
+          <label for="settings_prowlarr_tags" class="font-medium text-gray-300">Prowlarr Tags</label>
+          <p class="text-sm text-gray-500"><%= settings.dig(:prowlarr_tags, :definition, :description) %></p>
+        </div>
+        <div class="md:w-2/3">
+          <%= form.text_field "settings[prowlarr_tags]", value: settings.dig(:prowlarr_tags, :value), id: "settings_prowlarr_tags", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+        </div>
+      </div>
+    </div>
+
+    <div data-settings-form-target="jackettFields" class="<%= 'hidden' unless selected_provider == 'jackett' %> space-y-6">
+      <div class="flex flex-col md:flex-row md:items-start gap-4">
+        <div class="md:w-1/3">
+          <label for="settings_jackett_url" class="font-medium text-gray-300">Jackett Url</label>
+          <p class="text-sm text-gray-500"><%= settings.dig(:jackett_url, :definition, :description) %></p>
+        </div>
+        <div class="md:w-2/3">
+          <%= form.text_field "settings[jackett_url]", value: settings.dig(:jackett_url, :value), id: "settings_jackett_url", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+        </div>
+      </div>
+
+      <div class="flex flex-col md:flex-row md:items-start gap-4">
+        <div class="md:w-1/3">
+          <label for="settings_jackett_api_key" class="font-medium text-gray-300">Jackett Api Key</label>
+          <p class="text-sm text-gray-500"><%= settings.dig(:jackett_api_key, :definition, :description) %></p>
+        </div>
+        <div class="md:w-2/3">
+          <%= form.password_field "settings[jackett_api_key]", value: settings.dig(:jackett_api_key, :value), placeholder: settings.dig(:jackett_api_key, :value).present? ? "********" : "", id: "settings_jackett_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+        </div>
+      </div>
+
+      <div class="flex flex-col md:flex-row md:items-start gap-4">
+        <div class="md:w-1/3">
+          <label for="settings_jackett_indexer_filter" class="font-medium text-gray-300">Jackett Indexer Filter</label>
+          <p class="text-sm text-gray-500"><%= settings.dig(:jackett_indexer_filter, :definition, :description) %></p>
+        </div>
+        <div class="md:w-2/3">
+          <%= form.text_field "settings[jackett_indexer_filter]", value: settings.dig(:jackett_indexer_filter, :value), id: "settings_jackett_indexer_filter", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
+      <div class="md:w-1/3">
+        <span class="font-medium text-gray-300">Test Connection</span>
+        <p class="text-sm text-gray-500">Verify the selected indexer provider is reachable.</p>
+      </div>
+      <div class="md:w-2/3">
+        <%= link_to "Test Indexer Connection", test_indexer_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+      </div>
+    </div>
+  </div>
+</div>

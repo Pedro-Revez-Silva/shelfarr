@@ -8,7 +8,7 @@ class HealthCheckJob < ApplicationJob
     if service.present?
       run_check_for(service)
     else
-      check_prowlarr
+      check_indexer
       check_download_clients
       check_download_paths
       check_output_paths
@@ -22,7 +22,7 @@ class HealthCheckJob < ApplicationJob
 
   def run_check_for(service)
     case service.to_s
-    when "prowlarr" then check_prowlarr
+    when "indexer", "prowlarr" then check_indexer
     when "download_client" then check_download_clients
     when "download_paths" then check_download_paths
     when "output_paths" then check_output_paths
@@ -33,26 +33,26 @@ class HealthCheckJob < ApplicationJob
     end
   end
 
-  def check_prowlarr
-    health = SystemHealth.for_service("prowlarr")
+  def check_indexer
+    health = SystemHealth.for_service("indexer")
 
-    unless ProwlarrClient.configured?
+    unless IndexerClient.configured?
       health.mark_not_configured!
       return
     end
 
-    if ProwlarrClient.test_connection
+    if IndexerClient.test_connection
       health.check_succeeded!(message: "Connection successful")
     else
-      health.check_failed!(message: "Failed to connect to Prowlarr")
+      health.check_failed!(message: "Failed to connect to #{IndexerClient.display_name}")
     end
-  rescue ProwlarrClient::AuthenticationError => e
+  rescue IndexerClients::Base::AuthenticationError => e
     health.check_failed!(message: "Authentication failed: #{e.message}")
-  rescue ProwlarrClient::ConnectionError => e
+  rescue IndexerClients::Base::ConnectionError => e
     health.check_failed!(message: "Connection error: #{e.message}")
   rescue => e
     health.check_failed!(message: "Error: #{e.message}")
-    Rails.logger.error "[HealthCheckJob] Prowlarr check failed: #{e.message}"
+    Rails.logger.error "[HealthCheckJob] Indexer check failed: #{e.message}"
   end
 
   def check_download_clients

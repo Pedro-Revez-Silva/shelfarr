@@ -1,10 +1,14 @@
 class SettingsService
   # Define all expected settings with their defaults and types
   DEFINITIONS = {
-    # Prowlarr Integration
-    prowlarr_url: { type: "string", default: "", category: "prowlarr", description: "Base URL for Prowlarr instance (e.g., http://localhost:9696)" },
-    prowlarr_api_key: { type: "string", default: "", category: "prowlarr", description: "API key from Prowlarr Settings > General" },
-    prowlarr_tags: { type: "string", default: "", category: "prowlarr", description: "Comma-separated tag IDs or names to filter indexers (leave empty for all indexers)" },
+    # Indexer Integration
+    indexer_provider: { type: "string", default: "", category: "indexer", description: "Active indexer provider. Leave unset on upgrades to keep legacy Prowlarr configuration." },
+    prowlarr_url: { type: "string", default: "", category: "indexer", description: "Base URL for Prowlarr instance (e.g., http://localhost:9696)" },
+    prowlarr_api_key: { type: "string", default: "", category: "indexer", description: "API key from Prowlarr Settings > General" },
+    prowlarr_tags: { type: "string", default: "", category: "indexer", description: "Comma-separated tag IDs or names to filter Prowlarr indexers (leave empty for all indexers)" },
+    jackett_url: { type: "string", default: "", category: "indexer", description: "Base URL for Jackett instance (e.g., http://localhost:9117)" },
+    jackett_api_key: { type: "string", default: "", category: "indexer", description: "API key from Jackett dashboard" },
+    jackett_indexer_filter: { type: "string", default: "all", category: "indexer", description: "Jackett indexer filter for Torznab queries. Use 'all' for every indexer, or a specific Jackett filter such as 'tag:books'." },
 
     # Download Settings (clients are now managed separately via Admin > Download Clients)
     preferred_download_type: { type: "string", default: "torrent", category: "download", description: "Preferred download type when both available (torrent or usenet)" },
@@ -90,7 +94,7 @@ class SettingsService
   }.freeze
 
   CATEGORIES = {
-    "prowlarr" => "Prowlarr",
+    "indexer" => "Indexer",
     "download" => "Download Settings",
     "audiobookshelf" => "Audiobookshelf",
     "anna_archive" => "Anna's Archive",
@@ -185,6 +189,30 @@ class SettingsService
     # Check if integrations are configured
     def prowlarr_configured?
       configured?(:prowlarr_url) && configured?(:prowlarr_api_key)
+    end
+
+    def jackett_configured?
+      configured?(:jackett_url) && configured?(:jackett_api_key)
+    end
+
+    def active_indexer_provider
+      provider = get(:indexer_provider).to_s.strip
+      return provider if %w[none prowlarr jackett].include?(provider)
+
+      return "prowlarr" if prowlarr_configured?
+
+      "none"
+    end
+
+    def active_indexer_configured?
+      case active_indexer_provider
+      when "prowlarr"
+        prowlarr_configured?
+      when "jackett"
+        jackett_configured?
+      else
+        false
+      end
     end
 
     def download_client_configured?

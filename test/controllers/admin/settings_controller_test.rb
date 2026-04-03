@@ -29,6 +29,15 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Settings"
   end
 
+  test "index shows indexer provider dropdown" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "select[name='settings[indexer_provider]']"
+    assert_select "option[value='prowlarr']", text: "Prowlarr"
+    assert_select "option[value='jackett']", text: "Jackett"
+  end
+
   test "index warns when disabling authentication is enabled" do
     get admin_settings_url
 
@@ -257,6 +266,23 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
       assert_redirected_to admin_settings_path
       assert flash[:alert].present?
+    end
+  end
+
+  test "test_indexer succeeds for jackett when selected" do
+    SettingsService.set(:indexer_provider, "jackett")
+    SettingsService.set(:jackett_url, "http://localhost:9117")
+    SettingsService.set(:jackett_api_key, "jackett-key")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "jackett-key", "t" => "caps"))
+        .to_return(status: 200, body: "<caps />", headers: { "Content-Type" => "application/xml" })
+
+      post test_indexer_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match /successful/i, flash[:notice]
     end
   end
 

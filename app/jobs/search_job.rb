@@ -14,23 +14,22 @@ class SearchJob < ApplicationJob
     request.update!(status: :searching)
 
     # Check if any search sources are configured
-    prowlarr_available = ProwlarrClient.configured?
+    indexer_available = IndexerClient.configured?
     anna_available = AnnaArchiveClient.configured? && request.book.ebook?
 
-    unless prowlarr_available || anna_available
+    unless indexer_available || anna_available
       Rails.logger.error "[SearchJob] No search sources configured"
-      request.mark_for_attention!("No search sources configured. Please configure Prowlarr or Anna's Archive in Admin Settings.")
+      request.mark_for_attention!("No search sources configured. Please configure an indexer or Anna's Archive in Admin Settings.")
       return
     end
 
     begin
       all_results = []
 
-      # Search Prowlarr if configured
-      if prowlarr_available
-        prowlarr_results = search_prowlarr(request)
-        all_results.concat(prowlarr_results)
-        Rails.logger.info "[SearchJob] Found #{prowlarr_results.count} Prowlarr results"
+      if indexer_available
+        indexer_results = search_indexer(request)
+        all_results.concat(indexer_results)
+        Rails.logger.info "[SearchJob] Found #{indexer_results.count} #{IndexerClient.display_name} results"
       end
 
       # Search Anna's Archive for ebooks if configured
@@ -53,14 +52,14 @@ class SearchJob < ApplicationJob
           request.schedule_retry!
         end
       end
-    rescue ProwlarrClient::AuthenticationError => e
-      Rails.logger.error "[SearchJob] Prowlarr authentication failed: #{e.message}"
-      request.mark_for_attention!("Prowlarr authentication failed. Please check your API key.")
-    rescue ProwlarrClient::ConnectionError => e
-      Rails.logger.error "[SearchJob] Prowlarr connection error for request ##{request.id}: #{e.message}"
+    rescue IndexerClients::Base::AuthenticationError => e
+      Rails.logger.error "[SearchJob] #{IndexerClient.display_name} authentication failed: #{e.message}"
+      request.mark_for_attention!("#{IndexerClient.display_name} authentication failed. Please check your API key.")
+    rescue IndexerClients::Base::ConnectionError => e
+      Rails.logger.error "[SearchJob] #{IndexerClient.display_name} connection error for request ##{request.id}: #{e.message}"
       request.schedule_retry!
-    rescue ProwlarrClient::Error => e
-      Rails.logger.error "[SearchJob] Prowlarr error for request ##{request.id}: #{e.message}"
+    rescue IndexerClients::Base::Error => e
+      Rails.logger.error "[SearchJob] #{IndexerClient.display_name} error for request ##{request.id}: #{e.message}"
       request.schedule_retry!
     rescue AnnaArchiveClient::Error => e
       Rails.logger.error "[SearchJob] Anna's Archive error for request ##{request.id}: #{e.message}"
@@ -70,7 +69,7 @@ class SearchJob < ApplicationJob
 
   private
 
-  def search_prowlarr(request)
+  def search_indexer(request)
     book = request.book
 
     # Build search query: "title author [language]"
@@ -80,14 +79,12 @@ class SearchJob < ApplicationJob
     query_parts << language_search_term(request) if should_add_language_to_search?(request)
 
     query = query_parts.join(" ")
-    Rails.logger.debug "[SearchJob] Searching Prowlarr for: #{query} (type: #{book.book_type})"
+    Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for: #{query} (type: #{book.book_type})"
 
-    # Search with appropriate category filter for book type
-    results = ProwlarrClient.search(query, book_type: book.book_type)
+    results = IndexerClient.search(query, book_type: book.book_type)
 
-    # Tag results with source
     results.map do |r|
-      { result: r, source: SearchResult::SOURCE_PROWLARR }
+      { result: r, source: IndexerClient.provider }
     end
   end
 
@@ -128,14 +125,14 @@ class SearchJob < ApplicationJob
       search_result = if source == SearchResult::SOURCE_ANNA_ARCHIVE
         save_anna_archive_result(request, result)
       else
-        save_prowlarr_result(request, result)
+        save_indexer_result(request, result, source)
       end
 
       search_result.calculate_score! if search_result
     end
   end
 
-  def save_prowlarr_result(request, result)
+  def save_indexer_result(request, result, source)
     request.search_results.create!(
       guid: result.guid,
       title: result.title,
@@ -147,7 +144,7 @@ class SearchJob < ApplicationJob
       magnet_url: result.magnet_url,
       info_url: result.info_url,
       published_at: result.published_at,
-      source: SearchResult::SOURCE_PROWLARR
+      source: source
     )
   end
 

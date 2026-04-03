@@ -1,7 +1,7 @@
 import { Controller } from "@hotwired/stimulus";
 
 export default class extends Controller {
-  static targets = ["form", "status"];
+  static targets = ["form", "status", "indexerProvider", "prowlarrFields", "jackettFields"];
 
   connect() {
     this.saveTimeout = null;
@@ -9,6 +9,8 @@ export default class extends Controller {
     // Listen for Turbo events to manage status
     this.boundHandleSubmitEnd = this.handleSubmitEnd.bind(this);
     document.addEventListener("turbo:submit-end", this.boundHandleSubmitEnd);
+
+    this.toggleIndexerProvider();
   }
 
   disconnect() {
@@ -49,6 +51,11 @@ export default class extends Controller {
     this.autoSave(event);
   }
 
+  handleIndexerProviderChange(event) {
+    this.toggleIndexerProvider();
+    this.autoSave(event);
+  }
+
   submitForm() {
     if (this.hasFormTarget) {
       this.formTarget.requestSubmit();
@@ -70,6 +77,20 @@ export default class extends Controller {
   hideStatus() {
     if (this.hasStatusTarget) {
       this.statusTarget.classList.add("hidden");
+    }
+  }
+
+  toggleIndexerProvider() {
+    if (!this.hasIndexerProviderTarget) return;
+
+    const provider = this.indexerProviderTarget.value;
+
+    if (this.hasProwlarrFieldsTarget) {
+      this.prowlarrFieldsTarget.classList.toggle("hidden", provider !== "prowlarr");
+    }
+
+    if (this.hasJackettFieldsTarget) {
+      this.jackettFieldsTarget.classList.toggle("hidden", provider !== "jackett");
     }
   }
 }

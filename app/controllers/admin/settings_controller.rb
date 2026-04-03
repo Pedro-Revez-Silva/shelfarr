@@ -43,9 +43,9 @@ module Admin
         AudiobookshelfLibrarySyncJob.perform_later if AudiobookshelfClient.configured?
         run_service_health_check("audiobookshelf")
       end
-      if changed_keys.any? { |k| k.start_with?("prowlarr") }
-        ProwlarrClient.reset_connection!
-        run_service_health_check("prowlarr")
+      if changed_keys.any? { |k| indexer_setting_key?(k) }
+        IndexerClient.reset_all_connections!
+        run_service_health_check("indexer")
       end
       if changed_keys.any? { |k| k == "flaresolverr_url" }
         FlaresolverrClient.reset_connection!
@@ -100,25 +100,29 @@ module Admin
       end
     end
 
-    def test_prowlarr
-      health = SystemHealth.for_service("prowlarr")
+    def test_indexer
+      health = SystemHealth.for_service("indexer")
 
-      unless ProwlarrClient.configured?
+      unless IndexerClient.configured?
         health.mark_not_configured!
-        respond_with_flash(alert: "Prowlarr is not configured. Enter URL and API key first.")
+        respond_with_flash(alert: "#{IndexerClient.display_name} is not configured. Select a provider and enter connection details first.")
         return
       end
 
-      if ProwlarrClient.test_connection
+      if IndexerClient.test_connection
         health.check_succeeded!(message: "Connection successful")
-        respond_with_flash(notice: "Prowlarr connection successful!")
+        respond_with_flash(notice: "#{IndexerClient.display_name} connection successful!")
       else
-        health.check_failed!(message: "Failed to connect to Prowlarr")
-        respond_with_flash(alert: "Prowlarr connection failed.")
+        health.check_failed!(message: "Failed to connect to #{IndexerClient.display_name}")
+        respond_with_flash(alert: "#{IndexerClient.display_name} connection failed.")
       end
-    rescue ProwlarrClient::Error => e
+    rescue IndexerClients::Base::Error => e
       health&.check_failed!(message: e.message)
-      respond_with_flash(alert: "Prowlarr error: #{e.message}")
+      respond_with_flash(alert: "#{IndexerClient.display_name} error: #{e.message}")
+    end
+
+    def test_prowlarr
+      test_indexer
     end
 
     def test_audiobookshelf
@@ -279,6 +283,10 @@ module Admin
 
     def ensure_settings_seeded
       SettingsService.seed_defaults!
+    end
+
+    def indexer_setting_key?(key)
+      key.start_with?("indexer_") || key.start_with?("prowlarr") || key.start_with?("jackett")
     end
   end
 end

@@ -81,6 +81,24 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "marks indexer as healthy when jackett is selected and connected" do
+    SettingsService.set(:indexer_provider, "jackett")
+    SettingsService.set(:jackett_url, "http://localhost:9117")
+    SettingsService.set(:jackett_api_key, "jackett-key")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "jackett-key", "t" => "caps"))
+        .to_return(status: 200, body: "<caps />", headers: { "Content-Type" => "application/xml" })
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health = SystemHealth.for_service("indexer")
+      assert health.healthy?
+      assert_includes health.message, "successful"
+    end
+  end
+
   # Download client tests
   test "marks download_client as not_configured when no clients configured" do
     DownloadClient.destroy_all
