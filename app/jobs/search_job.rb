@@ -70,22 +70,54 @@ class SearchJob < ApplicationJob
   private
 
   def search_indexer(request)
-    book = request.book
-
-    # Build search query: "title author [language]"
-    query_parts = [ book.title ]
-    query_parts << book.author if book.author.present?
-    # Add language to query for non-English requests to help find localized releases
-    query_parts << language_search_term(request) if should_add_language_to_search?(request)
-
-    query = query_parts.join(" ")
-    Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for: #{query} (type: #{book.book_type})"
-
-    results = IndexerClient.search(query, book_type: book.book_type)
+    if IndexerClient.provider == SearchResult::SOURCE_PROWLARR
+      results = search_prowlarr(request)
+    else
+      results = search_generic_indexer(request)
+    end
 
     results.map do |r|
       { result: r, source: IndexerClient.provider }
     end
+  end
+
+  def search_prowlarr(request)
+    book = request.book
+    query = indexer_language_hint(request)
+
+    Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} book query for title='#{book.title}' author='#{book.author}' extra='#{query}' (type: #{book.book_type})"
+
+    results = IndexerClient.search(
+      query,
+      book_type: book.book_type,
+      title: book.title,
+      author: book.author
+    )
+
+    return results if results.any?
+
+    fallback_query = generic_indexer_query(request)
+    Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with generic query '#{fallback_query}'"
+
+    IndexerClient.search(fallback_query, book_type: book.book_type)
+  end
+
+  def search_generic_indexer(request)
+    book = request.book
+    query = generic_indexer_query(request)
+    Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for: #{query} (type: #{book.book_type})"
+
+    IndexerClient.search(query, book_type: book.book_type)
+  end
+
+  def generic_indexer_query(request)
+    [ request.book.title, indexer_language_hint(request) ].reject(&:blank?).join(" ")
+  end
+
+  def indexer_language_hint(request)
+    return nil unless should_add_language_to_search?(request)
+
+    language_search_term(request)
   end
 
   def search_anna_archive(request)

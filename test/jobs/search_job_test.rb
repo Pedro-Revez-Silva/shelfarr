@@ -147,13 +147,19 @@ class SearchJobTest < ActiveJob::TestCase
     @request.update!(language: "fr")
 
     VCR.turned_off do
-      # Stub that verifies "French" is in the query
+      # Prowlarr book search should keep language as free text while title/author are structured
       stub_request(:get, %r{localhost:9696/api/v1/search})
-        .with { |req| req.uri.query_values["query"].include?("French") }
+        .with do |req|
+          query = req.uri.query_values["query"]
+          req.uri.query_values["type"] == "book" &&
+            query.include?("French") &&
+            query.include?("{title:#{@request.book.title}}") &&
+            query.include?("{author:#{@request.book.author}}")
+        end
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: [].to_json
+          body: [ prowlarr_result_payload ].to_json
         )
 
       assert_nothing_raised do
@@ -167,17 +173,164 @@ class SearchJobTest < ActiveJob::TestCase
     @request.update!(language: "en")
 
     VCR.turned_off do
-      # Stub that verifies "English" is NOT in the query (just title and author)
+      # Prowlarr book search should omit the English language hint
       stub_request(:get, %r{localhost:9696/api/v1/search})
-        .with { |req| !req.uri.query_values["query"].include?("English") }
+        .with do |req|
+          query = req.uri.query_values["query"]
+          req.uri.query_values["type"] == "book" &&
+            !query.include?("English") &&
+            query.include?("{title:#{@request.book.title}}") &&
+            query.include?("{author:#{@request.book.author}}")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ prowlarr_result_payload ].to_json
+        )
+
+      assert_nothing_raised do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+  end
+
+  test "uses structured Prowlarr book search with title and author" do
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values["query"]
+          req.uri.query_values["type"] == "book" &&
+            query.include?("{title:#{@request.book.title}}") &&
+            query.include?("{author:#{@request.book.author}}")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ prowlarr_result_payload ].to_json
+        )
+
+      assert_nothing_raised do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+  end
+
+  test "falls back to generic Prowlarr search when book search returns no results" do
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values["query"]
+          req.uri.query_values["type"] == "book" &&
+            query.include?("{title:#{@request.book.title}}") &&
+            query.include?("{author:#{@request.book.author}}")
+        end
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
           body: [].to_json
         )
 
+      fallback_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == @request.book.title
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ prowlarr_result_payload ].to_json
+        )
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert_requested structured_stub
+      assert_requested fallback_stub
+      assert_equal "Test Result Book", @request.search_results.first.title
+    end
+  end
+
+  test "sanitizes braces in structured Prowlarr query values" do
+    book = Book.create!(
+      title: "The {Brace} Book",
+      author: "Author {Name}",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values["query"]
+          req.uri.query_values["type"] == "book" &&
+            query.include?("{title:The Brace Book}") &&
+            query.include?("{author:Author Name}") &&
+            !query.include?("{Brace}") &&
+            !query.include?("{Name}")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ prowlarr_result_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert request.search_results.any?
+    end
+  end
+
+  test "keeps Jackett on title-only generic search" do
+    SettingsService.set(:indexer_provider, "jackett")
+    SettingsService.set(:jackett_url, "http://localhost:9117")
+    SettingsService.set(:jackett_api_key, "jackett-key")
+
+    body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+        <channel></channel>
+      </rss>
+    XML
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with do |req|
+          query = req.uri.query_values["q"]
+          req.uri.query_values["t"] == "search" &&
+            query.include?(@request.book.title) &&
+            !query.include?(@request.book.author)
+        end
+        .to_return(status: 200, body: body, headers: { "Content-Type" => "application/xml" })
+
       assert_nothing_raised do
         SearchJob.perform_now(@request.id)
+      end
+    end
+  end
+
+  test "still appends author to Anna's Archive search query" do
+    SettingsService.set(:prowlarr_api_key, "")
+    result = AnnaArchiveClient::Result.new(
+      md5: "abc123def456",
+      title: @request.book.title,
+      author: @request.book.author,
+      year: 2019,
+      file_type: "epub",
+      file_size: "5 MB",
+      language: "en"
+    )
+
+    AnnaArchiveClient.stub :configured?, true do
+      AnnaArchiveClient.stub :search, ->(query, **_) {
+        assert_includes query, @request.book.title
+        assert_includes query, @request.book.author
+        [ result ]
+      } do
+        SearchJob.perform_now(@request.id)
+        @request.reload
+
+        assert_equal SearchResult::SOURCE_ANNA_ARCHIVE, @request.search_results.first.source
       end
     end
   end
@@ -244,20 +397,7 @@ class SearchJobTest < ActiveJob::TestCase
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },
-        body: [
-          {
-            "guid" => "test-guid-123",
-            "title" => "Test Result Book",
-            "indexer" => "TestIndexer",
-            "size" => 52428800,
-            "seeders" => 25,
-            "leechers" => 5,
-            "downloadUrl" => "http://example.com/download",
-            "magnetUrl" => "magnet:?xt=urn:btih:test123",
-            "infoUrl" => "http://example.com/info",
-            "publishDate" => "2024-01-15T10:00:00Z"
-          }
-        ].to_json
+        body: [ prowlarr_result_payload ].to_json
       )
   end
 
@@ -268,5 +408,20 @@ class SearchJobTest < ActiveJob::TestCase
         headers: { "Content-Type" => "application/json" },
         body: [].to_json
       )
+  end
+
+  def prowlarr_result_payload
+    {
+      "guid" => "test-guid-123",
+      "title" => "Test Result Book",
+      "indexer" => "TestIndexer",
+      "size" => 52_428_800,
+      "seeders" => 25,
+      "leechers" => 5,
+      "downloadUrl" => "http://example.com/download",
+      "magnetUrl" => "magnet:?xt=urn:btih:test123",
+      "infoUrl" => "http://example.com/info",
+      "publishDate" => "2024-01-15T10:00:00Z"
+    }
   end
 end

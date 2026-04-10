@@ -5,7 +5,7 @@ module IndexerClients
     DEFAULT_INDEXER_FILTER = "all"
 
     class << self
-      def search(query, categories: nil, book_type: nil, limit: 100)
+      def search(query, categories: nil, book_type: nil, limit: 100, **)
         ensure_configured!
 
         params = {
