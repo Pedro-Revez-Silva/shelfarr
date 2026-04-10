@@ -73,6 +73,63 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search uses Prowlarr book search when title or author are provided" do
+    VCR.turned_off do
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values
+          query["type"] == "book" &&
+            query["query"].include?("{title:Harry Potter and the Goblet of Fire}") &&
+            query["query"].include?("{author:J.K. Rowling}") &&
+            query["query"].include?("French")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      results = ProwlarrClient.search(
+        "French",
+        book_type: :ebook,
+        title: "Harry Potter and the Goblet of Fire",
+        author: "J.K. Rowling"
+      )
+
+      assert_equal [], results
+      assert_requested search_stub
+    end
+  end
+
+  test "search sanitizes braces in structured book query values" do
+    VCR.turned_off do
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values
+          query["type"] == "book" &&
+            query["query"].include?("{title:The Example Title}") &&
+            query["query"].include?("{author:Ada Lovelace}") &&
+            !query["query"].include?("{Title}") &&
+            !query["query"].include?("{Ada}")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      results = ProwlarrClient.search(
+        "",
+        book_type: :ebook,
+        title: "The {Example} Title",
+        author: "{Ada} Lovelace"
+      )
+
+      assert_equal [], results
+      assert_requested search_stub
+    end
+  end
+
   test "search handles empty results" do
     VCR.turned_off do
       stub_request(:get, %r{localhost:9696/api/v1/search})

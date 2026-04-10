@@ -5,10 +5,14 @@ module IndexerClients
     Result = IndexerClients::Result
 
     class << self
-      def search(query, categories: nil, book_type: nil, limit: 100)
+      def search(query, categories: nil, book_type: nil, limit: 100, title: nil, author: nil)
         ensure_configured!
 
-        params = { query: query, type: "search", limit: limit }
+        params = {
+          query: build_query(query, title: title, author: author),
+          type: search_type_for(title: title, author: author),
+          limit: limit
+        }
 
         cats = categories || categories_for_type(book_type)
         params[:categories] = Array(cats) if cats.present?
@@ -188,6 +192,27 @@ module IndexerClients
         Time.parse(date_string)
       rescue ArgumentError
         nil
+      end
+
+      def search_type_for(title:, author:)
+        sanitized_book_value(title).present? || sanitized_book_value(author).present? ? "book" : "search"
+      end
+
+      def build_query(query, title:, author:)
+        return query if search_type_for(title: title, author: author) == "search"
+
+        parts = []
+        sanitized_title = sanitized_book_value(title)
+        sanitized_author = sanitized_book_value(author)
+
+        parts << "{title:#{sanitized_title}}" if sanitized_title.present?
+        parts << "{author:#{sanitized_author}}" if sanitized_author.present?
+        parts << query if query.present?
+        parts.join(" ")
+      end
+
+      def sanitized_book_value(value)
+        value.to_s.tr("{}", "  ").squish.presence
       end
     end
   end
