@@ -10,6 +10,10 @@ export default class extends Controller {
   }
 
   connect() {
+    // Respect initial expanded state (e.g. show page starts expanded)
+    if (this.hasContentTarget) {
+      this.contentTarget.classList.toggle("hidden", !this.expandedValue)
+    }
     this.updateVisibility()
   }
 

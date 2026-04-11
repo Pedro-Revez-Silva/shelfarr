@@ -65,7 +65,7 @@ module Admin
       assert_response :success
 
       assert_match @pending_result.indexer, response.body
-      assert_match(/seeders/, response.body)
+      assert_match(/seeds/, response.body)
     end
 
     # === Select ===

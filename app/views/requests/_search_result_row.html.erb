@@ -21,8 +21,25 @@
           Score: <%= result.confidence_score %>%
         </span>
       <% end %>
+      <% if result.primary_extension.present? %>
+        <span class="text-gray-300"><%= result.primary_extension.upcase %></span>
+      <% end %>
+      <% if result.audiobook_structure.present? %>
+        <span class="text-gray-300"><%= result.audiobook_structure == :single_file ? "Single file" : "Multi-file" %></span>
+      <% end %>
+      <% if result.audio_bitrate_kbps.present? %>
+        <span class="text-gray-300"><%= result.audio_bitrate_kbps %> kbps</span>
+      <% end %>
       <% if result.indexer.present? %>
         <span class="text-gray-500"><%= result.indexer %></span>
+      <% end %>
+      <% if result.preference_adjustment != 0 %>
+        <span class="<%= result.preference_adjustment.positive? ? 'text-blue-400' : 'text-red-400' %>">
+          Pref <%= result.preference_adjustment.positive? ? '+' : '' %><%= result.preference_adjustment %>
+        </span>
+      <% end %>
+      <% unless result.auto_select_allowed_by_preferences? %>
+        <span class="text-red-400 font-medium">Manual review</span>
       <% end %>
     </div>
   </div>
@@ -39,6 +56,8 @@
       <span class="px-2 py-1 text-xs bg-gray-700 text-gray-500 rounded">No link</span>
     <% elsif result.selected? %>
       <span class="px-2 py-1 text-xs bg-green-600/20 text-green-400 rounded font-medium">Selected</span>
+    <% elsif result.rejected? %>
+      <span class="px-2 py-1 text-xs bg-gray-700 text-gray-400 rounded">Skipped</span>
     <% end %>
   </div>
 </div>

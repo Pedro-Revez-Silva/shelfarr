@@ -271,9 +271,9 @@ class RequestsController < ApplicationController
 
   def set_request
     @request = if Current.user.admin?
-      Request.find(params[:id])
+      Request.includes(:search_results).find(params[:id])
     else
-      Request.for_user(Current.user).find(params[:id])
+      Request.for_user(Current.user).includes(:search_results).find(params[:id])
     end
   end
 
