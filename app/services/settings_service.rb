@@ -55,6 +55,16 @@ class SettingsService
     auto_select_min_seeders: { type: "integer", default: 1, category: "auto_select", description: "Minimum seeders required for auto-selection (torrent only)" },
     auto_select_confidence_threshold: { type: "integer", default: 90, category: "auto_select", description: "Minimum confidence score (0-100) for auto-selection" },
 
+    # Format Preferences
+    ebook_approved_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated ebook formats that may be auto-selected (leave blank to allow any detected format)" },
+    ebook_rejected_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated ebook formats that should never be auto-selected" },
+    ebook_preferred_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated ebook formats in preference order, from best to worst" },
+    audiobook_approved_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated audiobook formats that may be auto-selected (leave blank to allow any detected format)" },
+    audiobook_rejected_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated audiobook formats that should never be auto-selected" },
+    audiobook_preferred_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated audiobook formats in preference order, from best to worst" },
+    audiobook_prefer_single_file: { type: "boolean", default: false, category: "format_preferences", description: "Prefer single-file audiobook releases (for example .m4b) over chapter-split releases when detected" },
+    audiobook_prefer_higher_bitrate: { type: "boolean", default: false, category: "format_preferences", description: "Prefer higher bitrate audiobook releases when the bitrate can be inferred from the title" },
+
     # Language Settings
     default_language: { type: "string", default: "en", category: "language", description: "Default language for new requests" },
     enabled_languages: { type: "json", default: '["en"]', category: "language", description: "Languages available for selection when creating requests" },
@@ -110,6 +120,7 @@ class SettingsService
     "open_library" => "Open Library",
     "health" => "Health Monitoring",
     "auto_select" => "Auto-Selection",
+    "format_preferences" => "Format Preferences",
     "language" => "Language & Matching",
     "updates" => "Updates",
     "security" => "Security",
@@ -270,6 +281,38 @@ class SettingsService
 
     def auto_approve_requests?
       get(:auto_approve_requests, default: false)
+    end
+
+    def format_preferences_for(book_type)
+      type = book_type.to_s
+      return default_format_preferences unless %w[audiobook ebook].include?(type)
+
+      {
+        approved_formats: normalized_list_setting("#{type}_approved_formats"),
+        rejected_formats: normalized_list_setting("#{type}_rejected_formats"),
+        preferred_formats: normalized_list_setting("#{type}_preferred_formats"),
+        prefer_single_file: type == "audiobook" && get(:audiobook_prefer_single_file, default: false),
+        prefer_higher_bitrate: type == "audiobook" && get(:audiobook_prefer_higher_bitrate, default: false)
+      }
+    end
+
+    private
+
+    def normalized_list_setting(key)
+      Array(get(key)).filter_map do |value|
+        normalized = value.to_s.strip.downcase
+        normalized.presence
+      end.uniq
+    end
+
+    def default_format_preferences
+      {
+        approved_formats: [],
+        rejected_formats: [],
+        preferred_formats: [],
+        prefer_single_file: false,
+        prefer_higher_bitrate: false
+      }
     end
   end
 end

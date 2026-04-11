@@ -225,6 +225,39 @@ class ReleaseParserService
     /\bcbz\b/i
   ].freeze
 
+  EXTENSION_PATTERNS = {
+    "m4b" => /\bm4b\b/i,
+    "m4a" => /\bm4a\b/i,
+    "mp3" => /\bmp3\b/i,
+    "epub" => /\bepub\b/i,
+    "pdf" => /\bpdf\b/i,
+    "mobi" => /\bmobi\b/i,
+    "azw3" => /\bazw3\b/i,
+    "azw" => /\bazw\b/i,
+    "cbz" => /\bcbz\b/i,
+    "cbr" => /\bcbr\b/i
+  }.freeze
+
+  AUDIOBOOK_SINGLE_FILE_PATTERNS = [
+    /\bsingle[\s\-_]?file\b/i,
+    /\bone[\s\-_]?file\b/i,
+    /\b1[\s\-_]?file\b/i,
+    /\bm4b\b/i,
+    /\bm4a\b/i
+  ].freeze
+
+  AUDIOBOOK_MULTI_FILE_PATTERNS = [
+    /\bmulti[\s\-_]?file\b/i,
+    /\bchapters?\b/i,
+    /\bchaptered\b/i,
+    /\bcd\s?\d+\b/i,
+    /\bdisc\s?\d+\b/i,
+    /\bpart\s?\d+\b/i,
+    /\bmp3\b/i
+  ].freeze
+
+  BITRATE_PATTERN = /(?<!\d)(\d{2,3})\s?kbps\b/i
+
   class << self
     # Parse a release title and extract metadata
     # @param title [String] The release title to parse
@@ -236,6 +269,10 @@ class ReleaseParserService
         languages: detect_languages(title),
         is_multi_language: multi_language?(title),
         format: detect_format(title),
+        extensions: detect_extensions(title),
+        primary_extension: detect_primary_extension(title),
+        audio_bitrate_kbps: detect_audio_bitrate(title),
+        audiobook_structure: detect_audiobook_structure(title),
         raw_title: title
       }
     end
@@ -279,6 +316,45 @@ class ReleaseParserService
       nil
     end
 
+    def detect_extensions(title)
+      return [] if title.blank?
+
+      EXTENSION_PATTERNS.each_with_object([]) do |(extension, pattern), detected|
+        detected << extension if title.match?(pattern)
+      end
+    end
+
+    def detect_primary_extension(title)
+      return nil if title.blank?
+
+      EXTENSION_PATTERNS
+        .filter_map do |extension, pattern|
+          match = title.match(pattern)
+          next unless match
+
+          [ extension, match.begin(0) ]
+        end
+        .min_by(&:last)
+        &.first
+    end
+
+    def detect_audio_bitrate(title)
+      return nil if title.blank?
+
+      match = title.match(BITRATE_PATTERN)
+      match && match[1].to_i
+    end
+
+    def detect_audiobook_structure(title)
+      return nil if title.blank?
+      return nil unless detect_format(title) == :audiobook
+
+      return :multi_file if AUDIOBOOK_MULTI_FILE_PATTERNS.any? { |pattern| title.match?(pattern) }
+      return :single_file if AUDIOBOOK_SINGLE_FILE_PATTERNS.any? { |pattern| title.match?(pattern) }
+
+      nil
+    end
+
     # Get display info for a language code
     # @param code [String] ISO 639-1 language code
     # @return [Hash, nil] Hash with :name and :flag, or nil if unknown
@@ -305,6 +381,10 @@ class ReleaseParserService
         languages: [],
         is_multi_language: false,
         format: nil,
+        extensions: [],
+        primary_extension: nil,
+        audio_bitrate_kbps: nil,
+        audiobook_structure: nil,
         raw_title: nil
       }
     end

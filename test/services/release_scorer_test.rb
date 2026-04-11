@@ -18,6 +18,12 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       status: :pending,
       language: "en"
     )
+
+    SettingsService.set(:audiobook_approved_formats, [])
+    SettingsService.set(:audiobook_rejected_formats, [])
+    SettingsService.set(:audiobook_preferred_formats, [])
+    SettingsService.set(:audiobook_prefer_single_file, false)
+    SettingsService.set(:audiobook_prefer_higher_bitrate, false)
   end
 
   test "scores high for exact title match with correct language" do
@@ -96,6 +102,43 @@ class ReleaseScorerTest < ActiveSupport::TestCase
 
     assert_equal :ebook, result.detected_format
     assert result.breakdown[:format] == 0
+  end
+
+  test "preferred audiobook format increases score" do
+    SettingsService.set(:audiobook_preferred_formats, [ "m4b", "mp3" ])
+
+    m4b_result = @request.search_results.create!(
+      guid: "test-pref-m4b",
+      title: "The Name of the Wind English Audiobook M4B",
+      seeders: 25
+    )
+    mp3_result = @request.search_results.create!(
+      guid: "test-pref-mp3",
+      title: "The Name of the Wind English Audiobook MP3",
+      seeders: 25
+    )
+
+    m4b_score = ReleaseScorer.score(m4b_result, @request)
+    mp3_score = ReleaseScorer.score(mp3_result, @request)
+
+    assert_operator m4b_score.total, :>, mp3_score.total
+    assert_equal "m4b", m4b_score.breakdown[:extension]
+    assert_equal "mp3", mp3_score.breakdown[:extension]
+  end
+
+  test "rejected audiobook format blocks auto selection" do
+    SettingsService.set(:audiobook_rejected_formats, [ "mp3" ])
+
+    search_result = @request.search_results.create!(
+      guid: "test-rejected-format",
+      title: "The Name of the Wind English Audiobook MP3",
+      seeders: 50
+    )
+
+    result = ReleaseScorer.score(search_result, @request)
+
+    refute result.breakdown[:auto_select_allowed]
+    assert_operator result.breakdown[:preference_adjustment], :<=, -35
   end
 
   test "scores author presence correctly" do

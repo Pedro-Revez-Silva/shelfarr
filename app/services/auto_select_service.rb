@@ -68,6 +68,7 @@ class AutoSelectService
       .auto_selectable(@confidence_threshold)
       .matches_language(@requested_language)
       .best_first
+      .select(&:auto_select_allowed_by_preferences?)
   end
 
   def meets_confidence_threshold?(result)

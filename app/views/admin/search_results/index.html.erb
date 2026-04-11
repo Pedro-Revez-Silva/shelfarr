@@ -1,19 +1,19 @@
 <div class="mx-auto max-w-4xl">
   <div class="mb-6 flex items-center justify-between">
-    <%= link_to "&larr; Back to Request".html_safe, request_path(@request), class: "text-blue-600 hover:text-blue-800" %>
+    <%= link_to "&larr; Back to Request".html_safe, request_path(@request), class: "text-blue-400 hover:text-blue-300" %>
     <%= button_to "Refresh Search", refresh_admin_request_search_results_path(@request),
-        method: :post, class: "px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-lg transition" %>
+        method: :post, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition" %>
   </div>
 
-  <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
-    <div class="p-4 border-b bg-gray-50">
+  <div class="bg-gray-900 rounded-lg border border-gray-800 shadow overflow-hidden mb-6">
+    <div class="p-4 border-b border-gray-800 bg-gray-900">
       <div class="flex items-center gap-4">
         <% if @request.book.cover_url.present? %>
           <img src="<%= @request.book.cover_url %>" alt="Cover" class="w-12 h-auto rounded shadow">
         <% end %>
         <div>
-          <h2 class="font-bold text-lg">Search Results for "<%= @request.book.title %>"</h2>
-          <p class="text-sm text-gray-600">
+          <h2 class="font-bold text-lg text-white">Search Results for "<%= @request.book.title %>"</h2>
+          <p class="text-sm text-gray-400">
             <% if @request.book.author.present? %>
               by <%= @request.book.author %> &middot;
             <% end %>
@@ -25,84 +25,85 @@
     </div>
 
     <% if @search_results.any? %>
-      <div class="divide-y">
+      <div class="space-y-2 p-3">
         <% @search_results.each do |result| %>
-          <div class="p-4 hover:bg-gray-50 <%= result.language_matches_request? ? '' : 'bg-yellow-50' %>">
-            <div class="flex items-start justify-between gap-4">
-              <div class="flex-grow min-w-0">
-                <div class="flex items-center gap-2">
-                  <p class="font-medium text-gray-900"><%= result.title %></p>
-                  <% if result.detected_language.present? %>
-                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= result.language_matches_request? ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800' %>">
-                      <%= result.language_display_name %>
-                    </span>
+          <% row_classes = ["rounded-lg border px-3 py-3 transition"] %>
+          <% row_classes << if result.language_matches_request?
+            "border-gray-800 bg-gray-800/70 hover:bg-gray-800"
+          else
+            "border-yellow-600/30 bg-yellow-950/10 hover:bg-yellow-950/20"
+          end %>
+
+          <div class="<%= row_classes.join(' ') %>">
+            <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+              <div class="min-w-0 flex-grow">
+                <p class="text-sm font-medium leading-6 text-white break-words" title="<%= result.title %>"><%= result.title %></p>
+
+                <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+                  <% if result.size_bytes.present? %>
+                    <span><%= result.size_human %></span>
                   <% end %>
-                </div>
-                <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mt-1">
+                  <% if result.seeders.present? %>
+                    <span class="text-green-400"><%= result.seeders %> seeds</span>
+                  <% end %>
+                  <% if result.leechers.present? %>
+                    <span class="text-orange-400"><%= result.leechers %> leeches</span>
+                  <% end %>
                   <% if result.confidence_score.present? %>
-                    <span class="inline-flex items-center <%= result.high_confidence? ? 'text-green-600' : 'text-gray-500' %>">
-                      <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
+                    <span class="<%= result.high_confidence? ? 'text-green-400' : 'text-gray-400' %>">
                       Score: <%= result.confidence_score %>%
                     </span>
                   <% end %>
                   <% if result.indexer.present? %>
-                    <span class="inline-flex items-center">
-                      <svg class="w-4 h-4 mr-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-                      </svg>
-                      <%= result.indexer %>
+                    <span class="text-gray-500"><%= result.indexer %></span>
+                  <% end %>
+                </div>
+
+                <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+                  <% if result.detected_language.present? %>
+                    <span class="<%= result.language_matches_request? ? 'text-green-400' : 'text-yellow-400' %>">
+                      <%= result.language_display_name %>
                     </span>
                   <% end %>
-                  <% if result.size_bytes.present? %>
-                    <span class="inline-flex items-center">
-                      <svg class="w-4 h-4 mr-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
-                      </svg>
-                      <%= result.size_human %>
+                  <% if result.primary_extension.present? %>
+                    <span class="text-gray-300"><%= result.primary_extension.upcase %></span>
+                  <% end %>
+                  <% if result.audiobook_structure.present? %>
+                    <span class="text-gray-300"><%= result.audiobook_structure == :single_file ? "Single file" : "Multi-file" %></span>
+                  <% end %>
+                  <% if result.audio_bitrate_kbps.present? %>
+                    <span class="text-gray-300"><%= result.audio_bitrate_kbps %> kbps</span>
+                  <% end %>
+                  <% if result.preference_adjustment != 0 %>
+                    <span class="<%= result.preference_adjustment.positive? ? 'text-blue-400' : 'text-red-400' %>">
+                      Preference <%= result.preference_adjustment.positive? ? '+' : '' %><%= result.preference_adjustment %>
                     </span>
                   <% end %>
-                  <% if result.seeders.present? %>
-                    <span class="inline-flex items-center text-green-600">
-                      <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" />
-                      </svg>
-                      <%= result.seeders %> seeders
-                    </span>
-                  <% end %>
-                  <% if result.leechers.present? %>
-                    <span class="inline-flex items-center text-orange-600">
-                      <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                      </svg>
-                      <%= result.leechers %> leechers
+                  <% unless result.auto_select_allowed_by_preferences? %>
+                    <span class="inline-flex items-center rounded-full bg-red-500/10 px-2 py-0.5 font-medium text-red-400 ring-1 ring-inset ring-red-500/20">
+                      Manual review
                     </span>
                   <% end %>
                 </div>
               </div>
-              <div class="flex items-center gap-2 flex-shrink-0">
+
+              <div class="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto sm:flex-nowrap">
                 <% if result.info_url.present? %>
                   <%= link_to "Info", result.info_url, target: "_blank", rel: "noopener",
-                      class: "px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition" %>
+                      class: "px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition" %>
                 <% end %>
                 <% if result.pending? %>
                   <% if result.downloadable? %>
                     <%= button_to "Select", select_admin_request_search_result_path(@request, result),
                         method: :post,
-                        class: "px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition" %>
+                        class: "px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition" %>
                   <% else %>
-                    <span class="px-3 py-1.5 text-sm bg-gray-100 text-gray-500 rounded-lg">No link</span>
+                    <span class="px-2 py-1 text-xs bg-gray-700 text-gray-500 rounded">No link</span>
                   <% end %>
                 <% elsif result.selected? %>
-                  <span class="inline-flex items-center px-3 py-1.5 bg-green-100 text-green-800 rounded-lg text-sm font-medium">
-                    <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                    </svg>
-                    Selected
-                  </span>
+                  <span class="px-2 py-1 text-xs bg-green-600/20 text-green-400 rounded font-medium">Selected</span>
                 <% elsif result.rejected? %>
-                  <span class="px-3 py-1.5 bg-gray-100 text-gray-500 rounded-lg text-sm">Skipped</span>
+                  <span class="px-2 py-1 text-xs bg-gray-700 text-gray-400 rounded">Skipped</span>
                 <% end %>
               </div>
             </div>
@@ -110,12 +111,12 @@
         <% end %>
       </div>
     <% else %>
-      <div class="p-8 text-center text-gray-500">
-        <svg class="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <div class="p-8 text-center text-gray-400">
+        <svg class="mx-auto h-12 w-12 text-gray-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
         </svg>
-        <h3 class="text-lg font-medium text-gray-900 mb-2">No search results</h3>
-        <p class="mb-4">No results have been found yet. The search may still be in progress.</p>
+        <h3 class="text-lg font-medium text-white mb-2">No search results</h3>
+        <p class="mb-4 text-gray-500">No results have been found yet. The search may still be in progress.</p>
         <%= button_to "Run Search", refresh_admin_request_search_results_path(@request),
             method: :post,
             class: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition" %>

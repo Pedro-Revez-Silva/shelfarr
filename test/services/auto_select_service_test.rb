@@ -20,6 +20,10 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
       value_type: "integer",
       category: "auto_select"
     )
+
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
   end
 
   test "selects best downloadable result meeting seeder threshold" do
@@ -135,6 +139,29 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert selected.reload.selected?
     assert other1.reload.rejected?
     assert other2.reload.rejected?
+  end
+
+  test "skips blocked formats and selects next allowed result" do
+    SettingsService.set(:ebook_rejected_formats, [ "mobi" ])
+
+    blocked = create_search_result(
+      title: "Test Result English EPUB MOBI",
+      seeders: 100,
+      magnet_url: "magnet:?blocked",
+      confidence_score: 99
+    )
+    allowed = create_search_result(
+      title: "Test Result English EPUB",
+      seeders: 10,
+      magnet_url: "magnet:?allowed",
+      confidence_score: 95
+    )
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal allowed, selection.search_result
+    assert blocked.reload.rejected?
   end
 
   test "selection result error reason works" do

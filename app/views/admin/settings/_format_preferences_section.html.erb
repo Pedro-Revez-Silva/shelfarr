@@ -1,0 +1,49 @@
+<% audiobook_settings = settings.select { |key, _| key.to_s.start_with?("audiobook_") } %>
+<% ebook_settings = settings.select { |key, _| key.to_s.start_with?("ebook_") } %>
+
+<div class="bg-gray-900 rounded-lg border border-gray-800 mb-6">
+  <div class="px-6 py-4 border-b border-gray-800">
+    <h2 class="font-bold text-xl text-white"><%= SettingsService::CATEGORIES["format_preferences"] %></h2>
+    <p class="mt-1 text-sm text-gray-500">Control which formats can be auto-selected and how matching releases should be ranked.</p>
+  </div>
+
+  <div class="p-6 space-y-6">
+    <div class="grid gap-6 lg:grid-cols-2">
+      <% [["Audiobooks", audiobook_settings], ["Ebooks", ebook_settings]].each do |label, group| %>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/70 p-5 space-y-5">
+          <div>
+            <h3 class="text-lg font-semibold text-white"><%= label %></h3>
+            <p class="mt-1 text-sm text-gray-500">
+              <% if label == "Audiobooks" %>
+                Use file extensions plus optional structure and bitrate hints from the release title.
+              <% else %>
+                Use file extensions detected in the release title.
+              <% end %>
+            </p>
+          </div>
+
+          <% group.each do |key, data| %>
+            <div class="space-y-2">
+              <label for="settings_<%= key %>" class="font-medium text-gray-300"><%= key.to_s.humanize %></label>
+              <p class="text-sm text-gray-500"><%= data[:definition][:description] %></p>
+
+              <% if data[:definition][:type] == "boolean" %>
+                <label class="inline-flex items-center cursor-pointer">
+                  <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: { action: "change->settings-form#autoSave" } }, "true", "false" %>
+                </label>
+              <% else %>
+                <% field_value = data[:value].is_a?(Array) ? data[:value].join(", ") : data[:value] %>
+                <%= form.text_field "settings[#{key}]", value: field_value, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                <p class="text-xs text-gray-500">Use comma-separated extensions such as <%= label == "Audiobooks" ? "m4b, mp3" : "epub, pdf" %>.</p>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+
+    <div class="rounded-xl border border-gray-800 bg-gray-950/70 px-4 py-3 text-sm text-gray-400">
+      Auto-selection treats rejected formats as manual-review-only. Preferred formats still remain manually selectable even when they rank lower.
+    </div>
+  </div>
+</div>

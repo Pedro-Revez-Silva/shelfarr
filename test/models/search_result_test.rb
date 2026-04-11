@@ -114,4 +114,24 @@ class SearchResultTest < ActiveSupport::TestCase
     result = SearchResult.new
     assert_nil result.size_human
   end
+
+  test "format helper methods read score breakdown metadata" do
+    result = SearchResult.new(
+      score_breakdown: {
+        extension: "m4b",
+        extensions: [ "m4b" ],
+        audiobook_structure: "single_file",
+        audio_bitrate_kbps: 192,
+        auto_select_allowed: false,
+        preference_adjustment: 12
+      }
+    )
+
+    assert_equal "m4b", result.primary_extension
+    assert_equal [ "m4b" ], result.detected_extensions
+    assert_equal :single_file, result.audiobook_structure
+    assert_equal 192, result.audio_bitrate_kbps
+    refute result.auto_select_allowed_by_preferences?
+    assert_equal 12, result.preference_adjustment
+  end
 end

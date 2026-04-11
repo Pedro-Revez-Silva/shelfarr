@@ -103,6 +103,9 @@ class ReleaseParserServiceTest < ActiveSupport::TestCase
 
     assert_includes result[:languages], "nl"
     assert_equal :audiobook, result[:format]
+    assert_equal [ "m4b" ], result[:extensions]
+    assert_equal "m4b", result[:primary_extension]
+    assert_equal :single_file, result[:audiobook_structure]
     refute result[:is_multi_language]
     assert_equal "Book.Title.Dutch.Audiobook.M4B", result[:raw_title]
   end
@@ -112,8 +115,28 @@ class ReleaseParserServiceTest < ActiveSupport::TestCase
 
     assert_empty result[:languages]
     assert_nil result[:format]
+    assert_empty result[:extensions]
+    assert_nil result[:primary_extension]
+    assert_nil result[:audio_bitrate_kbps]
+    assert_nil result[:audiobook_structure]
     refute result[:is_multi_language]
     assert_nil result[:raw_title]
+  end
+
+  test "detect_extensions returns all supported extensions found" do
+    assert_equal [ "epub", "pdf" ], ReleaseParserService.detect_extensions("Book Title EPUB PDF")
+  end
+
+  test "detect_primary_extension returns first extension in title order" do
+    assert_equal "pdf", ReleaseParserService.detect_primary_extension("Book Title PDF EPUB")
+  end
+
+  test "detect_audio_bitrate extracts kbps values" do
+    assert_equal 192, ReleaseParserService.detect_audio_bitrate("Book Title Audiobook 192kbps M4B")
+  end
+
+  test "detect_audiobook_structure identifies multi file releases" do
+    assert_equal :multi_file, ReleaseParserService.detect_audiobook_structure("Book Title Audiobook MP3 Chapters")
   end
 
   test "language_info returns correct data for known language" do

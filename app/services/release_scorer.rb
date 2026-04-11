@@ -31,6 +31,7 @@ class ReleaseScorer
     @request = request
     @book = request.book
     @parsed = ReleaseParserService.parse(search_result.title)
+    @format_preferences = FormatPreferenceService.evaluate(title: search_result.title, book_type: @book.book_type)
   end
 
   # Calculate the confidence score
@@ -41,13 +42,21 @@ class ReleaseScorer
       author: calculate_author_score,
       language: calculate_language_score,
       format: calculate_format_score,
-      health: calculate_health_score
+      health: calculate_health_score,
+      preference_adjustment: @format_preferences.score_adjustment,
+      auto_select_allowed: @format_preferences.auto_select_allowed,
+      extension: @format_preferences.matched_extension,
+      extensions: @format_preferences.detected_extensions,
+      audiobook_structure: @format_preferences.audiobook_structure,
+      audio_bitrate_kbps: @format_preferences.audio_bitrate_kbps
     }
 
     # Calculate weighted total
-    total = WEIGHTS.sum do |key, weight|
+    base_total = WEIGHTS.sum do |key, weight|
       (breakdown[key] * weight) / 100.0
     end.round
+
+    total = (base_total + @format_preferences.score_adjustment).clamp(0, 100)
 
     Result.new(
       total: total,

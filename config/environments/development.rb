@@ -78,6 +78,7 @@ Rails.application.configure do
 
   # Use Solid Queue for background jobs in development too
   config.active_job.queue_adapter = :solid_queue
+  config.solid_queue.connects_to = { database: { writing: :queue } }
 
   # Active Record Encryption - use fixed keys in development for convenience
   config.active_record.encryption.primary_key = ENV.fetch("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY", "dev_primary_key_12345678901234567890123456")

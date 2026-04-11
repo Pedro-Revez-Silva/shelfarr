@@ -126,6 +126,35 @@ class SearchResult < ApplicationRecord
     end
   end
 
+  def primary_extension
+    score_detail(:extension).presence
+  end
+
+  def detected_extensions
+    Array(score_detail(:extensions)).map(&:to_s)
+  end
+
+  def audiobook_structure
+    structure = score_detail(:audiobook_structure)
+    structure&.to_sym
+  end
+
+  def audio_bitrate_kbps
+    bitrate = score_detail(:audio_bitrate_kbps)
+    bitrate.present? ? bitrate.to_i : nil
+  end
+
+  def auto_select_allowed_by_preferences?
+    auto_select_allowed = score_detail(:auto_select_allowed)
+    return auto_select_allowed unless auto_select_allowed.nil?
+
+    FormatPreferenceService.evaluate(title: title, book_type: request&.book&.book_type).auto_select_allowed
+  end
+
+  def preference_adjustment
+    score_detail(:preference_adjustment).to_i
+  end
+
   # Source helpers
   def from_prowlarr?
     source == SOURCE_PROWLARR || source.blank?
@@ -152,5 +181,16 @@ class SearchResult < ApplicationRecord
     else
       indexer.presence || "Prowlarr"
     end
+  end
+
+  private
+
+  def score_detail(key)
+    return nil unless score_breakdown.is_a?(Hash)
+
+    return score_breakdown[key.to_s] if score_breakdown.key?(key.to_s)
+    return score_breakdown[key.to_sym] if score_breakdown.key?(key.to_sym)
+
+    nil
   end
 end

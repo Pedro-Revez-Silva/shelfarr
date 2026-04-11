@@ -11,6 +11,10 @@
 
   <% @settings_by_category.each do |category, settings| %>
     <% next if category == "indexer" %>
+    <% if category == "format_preferences" %>
+      <%= render "admin/settings/format_preferences_section", form: form, settings: settings %>
+      <% next %>
+    <% end %>
     <div class="bg-gray-900 rounded-lg border border-gray-800 mb-6">
       <div class="px-6 py-4 border-b border-gray-800">
         <h2 class="font-bold text-xl text-white"><%= SettingsService::CATEGORIES[category] || category.titleize %></h2>
