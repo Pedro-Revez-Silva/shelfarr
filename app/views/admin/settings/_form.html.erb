@@ -1,5 +1,31 @@
+<%
+  # Define which categories belong to each tab
+  tab_groups = {
+    "search" => {
+      label: "Search",
+      categories: %w[indexer anna_archive language auto_select]
+    },
+    "downloads" => {
+      label: "Downloads",
+      categories: %w[download paths format_preferences]
+    },
+    "integrations" => {
+      label: "Integrations",
+      categories: %w[audiobookshelf hardcover open_library]
+    },
+    "system" => {
+      label: "Queue & System",
+      categories: %w[queue health updates]
+    },
+    "security" => {
+      label: "Security",
+      categories: %w[security oidc webhook]
+    }
+  }
+%>
+
 <%= form_with url: bulk_update_admin_settings_path, method: :patch, data: { settings_form_target: "form" } do |form| %>
-  <div class="flex justify-between items-center mb-8">
+  <div class="flex justify-between items-center mb-6">
     <h1 class="font-bold text-4xl text-white">Settings</h1>
     <div class="flex items-center gap-4">
       <span data-settings-form-target="status" class="text-sm text-gray-500 hidden">Saving...</span>
@@ -7,150 +33,178 @@
     </div>
   </div>
 
-  <%= render "admin/settings/indexer_section", form: form, settings: @settings_by_category["indexer"] || {} %>
-
-  <% @settings_by_category.each do |category, settings| %>
-    <% next if category == "indexer" %>
-    <% if category == "format_preferences" %>
-      <%= render "admin/settings/format_preferences_section", form: form, settings: settings %>
-      <% next %>
-    <% end %>
-    <div class="bg-gray-900 rounded-lg border border-gray-800 mb-6">
-      <div class="px-6 py-4 border-b border-gray-800">
-        <h2 class="font-bold text-xl text-white"><%= SettingsService::CATEGORIES[category] || category.titleize %></h2>
-      </div>
-      <div class="p-6 space-y-6">
-        <% settings.each do |key, data| %>
-          <div class="flex flex-col md:flex-row md:items-start gap-4">
-            <div class="md:w-1/3">
-              <label for="settings_<%= key %>" class="font-medium text-gray-300"><%= key.to_s.titleize %></label>
-              <p class="text-sm text-gray-500"><%= data[:definition][:description] %></p>
-            </div>
-            <div class="md:w-2/3">
-              <% case data[:definition][:type] %>
-              <% when "boolean" %>
-                <% if key.to_s == "auth_disabled" %>
-                  <label class="inline-flex items-center gap-2 cursor-pointer">
-                    <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: { action: "change->settings-form#handleAuthDisabledToggle" } }, "true", "false" %>
-                  </label>
-                  <p class="mt-2 text-sm text-yellow-500">Warning: This removes password and 2FA authentication. Confirm carefully.</p>
-                <% else %>
-                <label class="inline-flex items-center cursor-pointer">
-                  <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: { action: "change->settings-form#autoSave" } }, "true", "false" %>
-                </label>
-                <% end %>
-              <% when "integer" %>
-                <%= form.number_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
-              <% when "json" %>
-                <%= form.text_field "settings[#{key}]", value: data[:value].is_a?(Array) ? data[:value].join(', ') : data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
-                <p class="mt-1 text-xs text-gray-500">For multiple values, use comma-separated format (e.g., en, fr, de)</p>
-              <% else %>
-                <% if key.to_s.end_with?("_library_id") && @audiobookshelf_libraries.any? %>
-                  <%# Library picker dropdown when Audiobookshelf is configured %>
-                  <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
-                  <%= form.select "settings[#{key}]", options_for_select([["Select a library...", ""]] + library_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
-                <% elsif key.to_s.end_with?("_library_id") %>
-                  <%# Library ID text field when Audiobookshelf is not configured %>
-                  <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure Audiobookshelf URL and API key first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
-                  <p class="mt-1 text-xs text-yellow-500">Enter Audiobookshelf URL and API key above to select from available libraries</p>
-                <% elsif key.to_s == "oidc_default_role" %>
-                  <%= form.select "settings[#{key}]", options_for_select([["User", "user"], ["Admin", "admin"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
-                <% elsif key.to_s.include?("password") || key.to_s.include?("api_key") || key.to_s.include?("token") || key.to_s.include?("secret") %>
-                  <%= form.password_field "settings[#{key}]", value: data[:value], placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
-                <% else %>
-                  <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
-                <% end %>
-              <% end %>
-            </div>
-          </div>
+  <%# Tab navigation %>
+  <div data-controller="settings-tabs" data-settings-tabs-active-value="search">
+    <div class="border-b border-gray-800 mb-6">
+      <nav class="flex gap-1 -mb-px overflow-x-auto" role="tablist">
+        <% tab_groups.each do |tab_key, tab_config| %>
+          <button type="button"
+              data-settings-tabs-target="tab"
+              data-tab="<%= tab_key %>"
+              data-action="click->settings-tabs#switch"
+              role="tab"
+              class="px-4 py-3 text-sm font-medium border-b-2 transition whitespace-nowrap
+                     <%= tab_key == 'search' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-600' %>">
+            <%= tab_config[:label] %>
+          </button>
         <% end %>
-
-        <%# Test connection buttons for services - using link_to with turbo-method to avoid nested forms %>
-        <% if category == "anna_archive" %>
-          <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
-            <div class="md:w-1/3">
-              <span class="font-medium text-gray-300">Test FlareSolverr</span>
-              <p class="text-sm text-gray-500">Verify FlareSolverr is reachable (required to bypass DDoS protection)</p>
-            </div>
-            <div class="md:w-2/3">
-              <%= link_to "Test FlareSolverr Connection", test_flaresolverr_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
-            </div>
-          </div>
-        <% elsif category == "audiobookshelf" %>
-          <div class="grid grid-cols-1 gap-2 border-t border-gray-800 pt-4">
-            <div class="space-y-2">
-              <p class="text-sm text-gray-300 font-medium">Library Sync</p>
-              <% if @audiobookshelf_library_items_count.to_i > 0 %>
-                <p class="text-xs text-gray-500">
-                  Cached items: <%= @audiobookshelf_library_items_count %> ·
-                  Last synced: <%= @audiobookshelf_library_items_last_synced_at ? time_ago_in_words(@audiobookshelf_library_items_last_synced_at) + " ago" : "never" %>
-                </p>
-              <% else %>
-                <p class="text-xs text-gray-500">
-                  No cached items yet. Run a sync to populate.
-                </p>
-              <% end %>
-              <%= link_to "Sync Audiobookshelf Library", sync_audiobookshelf_library_admin_settings_path, data: { turbo_method: :post }, class: "inline-block rounded-md px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white text-sm cursor-pointer" %>
-            </div>
-            <div>
-              <% if @audiobookshelf_library_items.any? %>
-                <p class="text-xs text-gray-400 mb-2">Recent cached items:</p>
-                <ul class="space-y-1 max-h-32 overflow-y-auto">
-                  <% @audiobookshelf_library_items.each do |item| %>
-                    <li class="text-xs text-gray-300 truncate">
-                      <% item_label = [item.title, item.author].compact.join(" · ").truncate(90) %>
-                      <% if item.audiobookshelf_url.present? %>
-                        <%= link_to item_label, item.audiobookshelf_url, target: "_blank", rel: "noopener", class: "text-blue-400 hover:text-blue-300 underline" %>
-                      <% else %>
-                        <%= item_label %>
-                      <% end %>
-                    </li>
-                  <% end %>
-                </ul>
-              <% end %>
-            </div>
-          </div>
-          <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
-            <div class="md:w-1/3">
-              <span class="font-medium text-gray-300">Test Connection</span>
-              <p class="text-sm text-gray-500">Verify Audiobookshelf is reachable</p>
-            </div>
-            <div class="md:w-2/3">
-              <%= link_to "Test Audiobookshelf Connection", test_audiobookshelf_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
-            </div>
-          </div>
-        <% elsif category == "hardcover" %>
-          <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
-            <div class="md:w-1/3">
-              <span class="font-medium text-gray-300">Test Connection</span>
-              <p class="text-sm text-gray-500">Verify Hardcover API token is valid</p>
-            </div>
-            <div class="md:w-2/3">
-              <%= link_to "Test Hardcover Connection", test_hardcover_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
-            </div>
-          </div>
-        <% elsif category == "webhook" %>
-          <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
-            <div class="md:w-1/3">
-              <span class="font-medium text-gray-300">Test Webhook</span>
-              <p class="text-sm text-gray-500">Send a sample JSON webhook payload using the current settings</p>
-            </div>
-            <div class="md:w-2/3">
-              <%= link_to "Send Test Webhook", test_webhook_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
-            </div>
-          </div>
-        <% elsif category == "oidc" %>
-          <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
-            <div class="md:w-1/3">
-              <span class="font-medium text-gray-300">Test Configuration</span>
-              <p class="text-sm text-gray-500">Verify OIDC provider discovery works</p>
-            </div>
-            <div class="md:w-2/3">
-              <%= link_to "Test OIDC Configuration", test_oidc_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
-            </div>
-          </div>
-        <% end %>
-      </div>
+      </nav>
     </div>
-  <% end %>
+
+    <%# Tab panels — all rendered in DOM so form fields are always submitted %>
+    <% tab_groups.each do |tab_key, tab_config| %>
+      <div data-settings-tabs-target="panel"
+           data-tab="<%= tab_key %>"
+           role="tabpanel"
+           class="space-y-6">
+
+        <% tab_config[:categories].each do |category| %>
+          <% settings = @settings_by_category[category] || {} %>
+          <% next if settings.empty? && category != "indexer" %>
+
+          <% if category == "indexer" %>
+            <%= render "admin/settings/indexer_section", form: form, settings: @settings_by_category["indexer"] || {} %>
+          <% elsif category == "format_preferences" %>
+            <%= render "admin/settings/format_preferences_section", form: form, settings: settings %>
+          <% else %>
+            <div class="bg-gray-900 rounded-lg border border-gray-800">
+              <div class="px-6 py-4 border-b border-gray-800">
+                <h2 class="font-bold text-xl text-white"><%= SettingsService::CATEGORIES[category] || category.titleize %></h2>
+              </div>
+              <div class="p-6 space-y-6">
+                <% settings.each do |key, data| %>
+                  <div class="flex flex-col md:flex-row md:items-start gap-4">
+                    <div class="md:w-1/3">
+                      <label for="settings_<%= key %>" class="font-medium text-gray-300"><%= key.to_s.titleize %></label>
+                      <p class="text-sm text-gray-500"><%= data[:definition][:description] %></p>
+                    </div>
+                    <div class="md:w-2/3">
+                      <% case data[:definition][:type] %>
+                      <% when "boolean" %>
+                        <% if key.to_s == "auth_disabled" %>
+                          <label class="inline-flex items-center gap-2 cursor-pointer">
+                            <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: { action: "change->settings-form#handleAuthDisabledToggle" } }, "true", "false" %>
+                          </label>
+                          <p class="mt-2 text-sm text-yellow-500">Warning: This removes password and 2FA authentication. Confirm carefully.</p>
+                        <% else %>
+                        <label class="inline-flex items-center cursor-pointer">
+                          <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: { action: "change->settings-form#autoSave" } }, "true", "false" %>
+                        </label>
+                        <% end %>
+                      <% when "integer" %>
+                        <%= form.number_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                      <% when "json" %>
+                        <%= form.text_field "settings[#{key}]", value: data[:value].is_a?(Array) ? data[:value].join(', ') : data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                        <p class="mt-1 text-xs text-gray-500">For multiple values, use comma-separated format (e.g., en, fr, de)</p>
+                      <% else %>
+                        <% if key.to_s.end_with?("_library_id") && @audiobookshelf_libraries.any? %>
+                          <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
+                          <%= form.select "settings[#{key}]", options_for_select([["Select a library...", ""]] + library_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                        <% elsif key.to_s.end_with?("_library_id") %>
+                          <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure Audiobookshelf URL and API key first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <p class="mt-1 text-xs text-yellow-500">Enter Audiobookshelf URL and API key above to select from available libraries</p>
+                        <% elsif key.to_s == "oidc_default_role" %>
+                          <%= form.select "settings[#{key}]", options_for_select([["User", "user"], ["Admin", "admin"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                        <% elsif key.to_s.include?("password") || key.to_s.include?("api_key") || key.to_s.include?("token") || key.to_s.include?("secret") %>
+                          <%= form.password_field "settings[#{key}]", value: data[:value], placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                        <% else %>
+                          <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                        <% end %>
+                      <% end %>
+                    </div>
+                  </div>
+                <% end %>
+
+                <%# Test connection buttons for services %>
+                <% if category == "anna_archive" %>
+                  <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
+                    <div class="md:w-1/3">
+                      <span class="font-medium text-gray-300">Test FlareSolverr</span>
+                      <p class="text-sm text-gray-500">Verify FlareSolverr is reachable (required to bypass DDoS protection)</p>
+                    </div>
+                    <div class="md:w-2/3">
+                      <%= link_to "Test FlareSolverr Connection", test_flaresolverr_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                    </div>
+                  </div>
+                <% elsif category == "audiobookshelf" %>
+                  <div class="grid grid-cols-1 gap-2 border-t border-gray-800 pt-4">
+                    <div class="space-y-2">
+                      <p class="text-sm text-gray-300 font-medium">Library Sync</p>
+                      <% if @audiobookshelf_library_items_count.to_i > 0 %>
+                        <p class="text-xs text-gray-500">
+                          Cached items: <%= @audiobookshelf_library_items_count %> ·
+                          Last synced: <%= @audiobookshelf_library_items_last_synced_at ? time_ago_in_words(@audiobookshelf_library_items_last_synced_at) + " ago" : "never" %>
+                        </p>
+                      <% else %>
+                        <p class="text-xs text-gray-500">
+                          No cached items yet. Run a sync to populate.
+                        </p>
+                      <% end %>
+                      <%= link_to "Sync Audiobookshelf Library", sync_audiobookshelf_library_admin_settings_path, data: { turbo_method: :post }, class: "inline-block rounded-md px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white text-sm cursor-pointer" %>
+                    </div>
+                    <div>
+                      <% if @audiobookshelf_library_items.any? %>
+                        <p class="text-xs text-gray-400 mb-2">Recent cached items:</p>
+                        <ul class="space-y-1 max-h-32 overflow-y-auto">
+                          <% @audiobookshelf_library_items.each do |item| %>
+                            <li class="text-xs text-gray-300 truncate">
+                              <% item_label = [item.title, item.author].compact.join(" · ").truncate(90) %>
+                              <% if item.audiobookshelf_url.present? %>
+                                <%= link_to item_label, item.audiobookshelf_url, target: "_blank", rel: "noopener", class: "text-blue-400 hover:text-blue-300 underline" %>
+                              <% else %>
+                                <%= item_label %>
+                              <% end %>
+                            </li>
+                          <% end %>
+                        </ul>
+                      <% end %>
+                    </div>
+                  </div>
+                  <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
+                    <div class="md:w-1/3">
+                      <span class="font-medium text-gray-300">Test Connection</span>
+                      <p class="text-sm text-gray-500">Verify Audiobookshelf is reachable</p>
+                    </div>
+                    <div class="md:w-2/3">
+                      <%= link_to "Test Audiobookshelf Connection", test_audiobookshelf_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                    </div>
+                  </div>
+                <% elsif category == "hardcover" %>
+                  <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
+                    <div class="md:w-1/3">
+                      <span class="font-medium text-gray-300">Test Connection</span>
+                      <p class="text-sm text-gray-500">Verify Hardcover API token is valid</p>
+                    </div>
+                    <div class="md:w-2/3">
+                      <%= link_to "Test Hardcover Connection", test_hardcover_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                    </div>
+                  </div>
+                <% elsif category == "webhook" %>
+                  <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
+                    <div class="md:w-1/3">
+                      <span class="font-medium text-gray-300">Test Webhook</span>
+                      <p class="text-sm text-gray-500">Send a sample JSON webhook payload using the current settings</p>
+                    </div>
+                    <div class="md:w-2/3">
+                      <%= link_to "Send Test Webhook", test_webhook_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                    </div>
+                  </div>
+                <% elsif category == "oidc" %>
+                  <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
+                    <div class="md:w-1/3">
+                      <span class="font-medium text-gray-300">Test Configuration</span>
+                      <p class="text-sm text-gray-500">Verify OIDC provider discovery works</p>
+                    </div>
+                    <div class="md:w-2/3">
+                      <%= link_to "Test OIDC Configuration", test_oidc_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                    </div>
+                  </div>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
 <% end %>

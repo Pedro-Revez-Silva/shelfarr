@@ -1,7 +1,7 @@
 <% audiobook_settings = settings.select { |key, _| key.to_s.start_with?("audiobook_") } %>
 <% ebook_settings = settings.select { |key, _| key.to_s.start_with?("ebook_") } %>
 
-<div class="bg-gray-900 rounded-lg border border-gray-800 mb-6">
+<div class="bg-gray-900 rounded-lg border border-gray-800">
   <div class="px-6 py-4 border-b border-gray-800">
     <h2 class="font-bold text-xl text-white"><%= SettingsService::CATEGORIES["format_preferences"] %></h2>
     <p class="mt-1 text-sm text-gray-500">Control which formats can be auto-selected and how matching releases should be ranked.</p>
