@@ -127,6 +127,31 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", @pending_request.book.title
   end
 
+  test "show keeps search results hidden from regular users" do
+    @pending_request.update!(status: :searching)
+
+    get request_path(@pending_request)
+    assert_response :success
+
+    assert_select "h3", text: "Search Results Available"
+    assert_select "p", text: "Waiting for admin approval."
+    assert_select "p", text: /The Pending Ebook - Complete Audiobook/, count: 0
+    assert_select "form[action='#{select_admin_request_search_result_path(@pending_request, search_results(:pending_result))}']", count: 0
+  end
+
+  test "show displays inline search results for admins" do
+    @pending_request.update!(status: :searching)
+    sign_out
+    sign_in_as(@admin)
+
+    get request_path(@pending_request)
+    assert_response :success
+
+    assert_select "h3", text: /Search Results/
+    assert_select "p", text: /The Pending Ebook - Complete Audiobook/
+    assert_select "form[action='#{select_admin_request_search_result_path(@pending_request, search_results(:pending_result))}']"
+  end
+
   test "show displays diagnostics timeline for request activity" do
     sign_out
     sign_in_as(@admin)

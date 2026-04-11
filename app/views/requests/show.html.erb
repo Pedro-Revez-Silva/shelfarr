@@ -95,52 +95,61 @@
       <% end %>
 
       <% if @request.searching? && @request.search_results.any? %>
-        <div class="mb-6" data-controller="search-results" data-search-results-expanded-value="true">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-medium text-gray-400">
-              Search Results
-              <span class="text-gray-500">(<%= @request.search_results.count %>)</span>
-            </h3>
-            <div class="flex items-center gap-2">
-              <% if Current.user.admin? %>
+        <% if Current.user.admin? %>
+          <div class="mb-6" data-controller="search-results" data-search-results-expanded-value="true">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-medium text-gray-400">
+                Search Results
+                <span class="text-gray-500">(<%= @request.search_results.count %>)</span>
+              </h3>
+              <div class="flex items-center gap-2">
                 <%= button_to "Refresh Search", refresh_admin_request_search_results_path(@request),
                     method: :post, class: "px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition" %>
+                <button type="button"
+                    data-action="click->search-results#toggle"
+                    data-search-results-target="toggleBtn"
+                    class="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition">
+                  Hide Results (<%= @request.search_results.count %>)
+                </button>
+              </div>
+            </div>
+
+            <div data-search-results-target="content" class="space-y-2">
+              <% @request.search_results.best_first.each do |result| %>
+                <%= render "requests/search_result_row", result: result, request: @request %>
               <% end %>
-              <button type="button"
-                  data-action="click->search-results#toggle"
-                  data-search-results-target="toggleBtn"
-                  class="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition">
-                Hide Results (<%= @request.search_results.count %>)
-              </button>
+
+              <%# Pagination controls %>
+              <div data-search-results-target="pagination" class="flex items-center justify-center gap-4 pt-2 text-xs">
+                <button type="button"
+                    data-action="click->search-results#prevPage"
+                    data-search-results-target="prevBtn"
+                    class="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition">
+                  Prev
+                </button>
+                <span data-search-results-target="pageInfo" class="text-gray-400">Page 1 of 1</span>
+                <button type="button"
+                    data-action="click->search-results#nextPage"
+                    data-search-results-target="nextBtn"
+                    class="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition">
+                  Next
+                </button>
+              </div>
             </div>
           </div>
-
-          <div data-search-results-target="content" class="space-y-2">
-            <% if !Current.user.admin? %>
-              <p class="text-sm text-gray-500 mb-2">Waiting for admin approval.</p>
-            <% end %>
-            <% @request.search_results.best_first.each do |result| %>
-              <%= render "requests/search_result_row", result: result, request: @request %>
-            <% end %>
-
-            <%# Pagination controls %>
-            <div data-search-results-target="pagination" class="flex items-center justify-center gap-4 pt-2 text-xs">
-              <button type="button"
-                  data-action="click->search-results#prevPage"
-                  data-search-results-target="prevBtn"
-                  class="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition">
-                Prev
-              </button>
-              <span data-search-results-target="pageInfo" class="text-gray-400">Page 1 of 1</span>
-              <button type="button"
-                  data-action="click->search-results#nextPage"
-                  data-search-results-target="nextBtn"
-                  class="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition">
-                Next
-              </button>
+        <% else %>
+          <div class="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
+            <div class="flex items-center">
+              <svg class="w-5 h-5 text-blue-400 mr-2 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd" />
+              </svg>
+              <div>
+                <h3 class="text-sm font-medium text-blue-400">Search Results Available</h3>
+                <p class="text-sm text-blue-400/80 mt-1">Waiting for admin approval.</p>
+              </div>
             </div>
           </div>
-        </div>
+        <% end %>
       <% elsif @request.searching? %>
         <div class="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
           <div class="flex items-center">
