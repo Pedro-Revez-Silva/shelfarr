@@ -13,6 +13,7 @@ class SearchResult < ApplicationRecord
   SOURCE_PROWLARR = "prowlarr"
   SOURCE_JACKETT = "jackett"
   SOURCE_ANNA_ARCHIVE = "anna_archive"
+  SOURCE_ZLIBRARY = "zlibrary"
 
   validates :guid, presence: true, uniqueness: { scope: :request_id }
   validates :title, presence: true
@@ -47,6 +48,7 @@ class SearchResult < ApplicationRecord
   def downloadable?
     # Anna's Archive results are always downloadable - URL is fetched at download time
     return true if from_anna_archive?
+    return true if from_zlibrary?
 
     download_url.present? || magnet_url.present?
   end
@@ -143,12 +145,18 @@ class SearchResult < ApplicationRecord
     source == SOURCE_ANNA_ARCHIVE
   end
 
+  def from_zlibrary?
+    source == SOURCE_ZLIBRARY
+  end
+
   def source_display_name
     case source
     when SOURCE_JACKETT
       indexer.presence || "Jackett"
     when SOURCE_ANNA_ARCHIVE
       "Anna's Archive"
+    when SOURCE_ZLIBRARY
+      "Z-Library"
     else
       indexer.presence || "Prowlarr"
     end

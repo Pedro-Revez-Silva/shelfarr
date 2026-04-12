@@ -77,6 +77,10 @@ class SettingsService
     anna_archive_api_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" },
     flaresolverr_url: { type: "string", default: "", category: "anna_archive", description: "FlareSolverr URL for bypassing DDoS protection (e.g., http://flaresolverr:8191)" },
 
+    # Z-Library
+    zlibrary_email: { type: "string", default: "", category: "zlibrary", description: "Z-Library account email for ebook search and download" },
+    zlibrary_password: { type: "string", default: "", category: "zlibrary", description: "Z-Library account password" },
+
     # Hardcover Integration
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
     metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover first, OpenLibrary fallback), hardcover, or openlibrary" },
@@ -104,6 +108,7 @@ class SettingsService
     "download" => "Download Settings",
     "audiobookshelf" => "Audiobookshelf",
     "anna_archive" => "Anna's Archive",
+    "zlibrary" => "Z-Library",
     "hardcover" => "Hardcover",
     "paths" => "Output Paths",
     "queue" => "Queue Settings",

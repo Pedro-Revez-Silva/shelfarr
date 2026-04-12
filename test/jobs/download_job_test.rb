@@ -25,6 +25,7 @@ class DownloadJobTest < ActiveJob::TestCase
     # Clear qBittorrent sessions
     Thread.current[:qbittorrent_sessions] = {}
     Thread.current[:transmission_protocols] = {}
+    ZLibraryClient.reset_auth_cache! if defined?(ZLibraryClient)
 
     # Create a queued download
     @download = @request.downloads.create!(
@@ -254,6 +255,54 @@ class DownloadJobTest < ActiveJob::TestCase
     assert filename.end_with?(".epub") || filename.end_with?(".pdf") || filename.end_with?(".mobi")
   end
 
+  test "zlibrary download completes via eAPI" do
+    VCR.turned_off do
+      setup_zlibrary_download
+
+      stub_zlibrary_login
+      stub_zlibrary_download_api
+      stub_request(:get, "https://download.z-library.bz/dl/book999/file.epub")
+        .to_return(status: 200, body: "PK\x03\x04" + "x" * 2000, headers: { "Content-Type" => "application/epub+zip" })
+
+      DownloadJob.perform_now(@zlib_download.id)
+      @zlib_download.reload
+
+      assert @zlib_download.completed?
+    end
+  end
+
+  test "zlibrary download fails on auth error" do
+    VCR.turned_off do
+      setup_zlibrary_download
+
+      %w[z-library.bz 1lib.sk z-lib.fm z-lib.sk].each do |domain|
+        stub_request(:post, "https://#{domain}/eapi/user/login")
+          .to_return(status: 500, body: "Server Error")
+      end
+
+      DownloadJob.perform_now(@zlib_download.id)
+      @zlib_download.reload
+
+      assert @zlib_download.failed?
+    end
+  end
+
+  test "zlibrary download rejects HTML error page" do
+    VCR.turned_off do
+      setup_zlibrary_download
+
+      stub_zlibrary_login
+      stub_zlibrary_download_api
+      stub_request(:get, "https://download.z-library.bz/dl/book999/file.epub")
+        .to_return(status: 200, body: "<html><body>Error</body></html>", headers: { "Content-Type" => "text/html" })
+
+      DownloadJob.perform_now(@zlib_download.id)
+      @zlib_download.reload
+
+      assert @zlib_download.failed?
+    end
+  end
+
   private
 
   def stub_qbittorrent_success
@@ -291,6 +340,49 @@ class DownloadJobTest < ActiveJob::TestCase
         status: 200,
         headers: { "Content-Type" => "application/json" },
         body: [{ "hash" => expected_hash, "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" }].to_json
+      )
+  end
+
+  def setup_zlibrary_download
+    SettingsService.set(:zlibrary_email, "test@example.com")
+    SettingsService.set(:zlibrary_password, "testpass")
+    SettingsService.set(:ebook_output_path, Dir.tmpdir)
+
+    zlib_result = @request.search_results.create!(
+      guid: "999:deadbeef",
+      title: "Z-Library Book [EPUB]",
+      indexer: "Z-Library",
+      source: SearchResult::SOURCE_ZLIBRARY,
+      status: :selected
+    )
+    @request.search_results.where.not(id: zlib_result.id).update_all(status: :pending)
+
+    @zlib_download = @request.downloads.create!(
+      name: zlib_result.title,
+      size_bytes: 1_000_000,
+      status: :queued
+    )
+    @download.update!(status: :completed)
+  end
+
+  def stub_zlibrary_login
+    stub_request(:post, "https://z-library.bz/eapi/user/login")
+      .to_return(
+        status: 200,
+        body: { success: 1, user: { id: "12345", remix_userkey: "abcdef123456" } }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+  end
+
+  def stub_zlibrary_download_api
+    stub_request(:get, "https://z-library.bz/eapi/book/999/deadbeef/file")
+      .to_return(
+        status: 200,
+        body: {
+          success: 1,
+          file: { downloadLink: "https://download.z-library.bz/dl/book999/file.epub" }
+        }.to_json,
+        headers: { "Content-Type" => "application/json" }
       )
   end
 end

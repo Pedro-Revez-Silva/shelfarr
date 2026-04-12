@@ -35,6 +35,8 @@ class DownloadJob < ApplicationJob
       # Handle Anna's Archive downloads differently
       if search_result.from_anna_archive?
         handle_anna_archive_download(download, search_result)
+      elsif search_result.from_zlibrary?
+        handle_zlibrary_download(download, search_result)
       else
         handle_standard_download(download, search_result)
       end
@@ -63,6 +65,11 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Anna's Archive error: #{e.message}")
+    rescue ZLibraryClient::Error => e
+      Rails.logger.error "[DownloadJob] Z-Library error for download ##{download.id}: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+      download.update!(status: :failed)
+      download.request.mark_for_attention!("Z-Library error: #{e.message}")
     end
   end
 
@@ -87,6 +94,17 @@ class DownloadJob < ApplicationJob
     end
   end
 
+  def handle_zlibrary_download(download, search_result)
+    # guid format is "id:hash"
+    id, hash = search_result.guid.split(":", 2)
+    Rails.logger.info "[DownloadJob] Fetching download URL from Z-Library for book #{id}"
+
+    download_url = ZLibraryClient.get_download_url(id: id, hash: hash)
+    Rails.logger.info "[DownloadJob] Got Z-Library download URL: #{download_url.truncate(100)}"
+
+    handle_direct_http_download(download, search_result, download_url)
+  end
+
   def handle_direct_http_download(download, search_result, download_url)
     book = download.request.book
 
@@ -105,6 +123,9 @@ class DownloadJob < ApplicationJob
 
     # Download the file
     download_file_via_http(download_url, destination_path)
+
+    # Verify the downloaded file is actually an ebook
+    verify_ebook_file(destination_path)
 
     # Update download record as completed
     download.update!(
@@ -207,6 +228,37 @@ class DownloadJob < ApplicationJob
 
     file_size = File.size(destination)
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
+  end
+
+  # Verify downloaded file is actually an ebook, not an error page
+  def verify_ebook_file(path)
+    unless File.exist?(path)
+      raise "Downloaded file does not exist: #{path}"
+    end
+
+    file_size = File.size(path)
+
+    raw_head = File.binread(path, 200)
+    head = raw_head.downcase
+
+    # Reject HTML error pages regardless of size
+    if head.include?("<html") || head.include?("<!doctype")
+      FileUtils.rm_f(path)
+      raise "Downloaded file is an HTML error page, not an ebook"
+    end
+
+    if file_size < 1_000
+      FileUtils.rm_f(path)
+      raise "Downloaded file too small (#{file_size} bytes) - likely corrupt"
+    end
+
+    # Check magic bytes for known formats
+    magic = raw_head[0, 4]
+    valid_magic = ["PK\x03\x04", "%PDF"]
+
+    unless valid_magic.any? { |m| magic&.start_with?(m) }
+      Rails.logger.warn "[DownloadJob] Unknown file format (magic: #{magic&.bytes&.map { |b| '%02x' % b }&.join(' ')}), allowing"
+    end
   end
 
   def trigger_library_scan(book)

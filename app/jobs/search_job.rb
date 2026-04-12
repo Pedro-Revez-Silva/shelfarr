@@ -16,8 +16,9 @@ class SearchJob < ApplicationJob
     # Check if any search sources are configured
     indexer_available = IndexerClient.configured?
     anna_available = AnnaArchiveClient.configured? && request.book.ebook?
+    zlib_available = !anna_available && ZLibraryClient.configured? && request.book.ebook?
 
-    unless indexer_available || anna_available
+    unless indexer_available || anna_available || zlib_available
       Rails.logger.error "[SearchJob] No search sources configured"
       request.mark_for_attention!("No search sources configured. Please configure an indexer or Anna's Archive in Admin Settings.")
       return
@@ -37,6 +38,13 @@ class SearchJob < ApplicationJob
         anna_results = search_anna_archive(request)
         all_results.concat(anna_results)
         Rails.logger.info "[SearchJob] Found #{anna_results.count} Anna's Archive results"
+      end
+
+      # Search Z-Library for ebooks if configured
+      if zlib_available
+        zlib_results = search_zlibrary(request)
+        all_results.concat(zlib_results)
+        Rails.logger.info "[SearchJob] Found #{zlib_results.count} Z-Library results"
       end
 
       if all_results.any?
@@ -64,6 +72,8 @@ class SearchJob < ApplicationJob
     rescue AnnaArchiveClient::Error => e
       Rails.logger.error "[SearchJob] Anna's Archive error for request ##{request.id}: #{e.message}"
       # Non-fatal - continue if Prowlarr had results
+    rescue ZLibraryClient::Error => e
+      Rails.logger.error "[SearchJob] Z-Library error for request ##{request.id}: #{e.message}"
     end
   end
 
@@ -120,6 +130,26 @@ class SearchJob < ApplicationJob
     language_search_term(request)
   end
 
+  def search_zlibrary(request)
+    book = request.book
+
+    query_parts = [book.title]
+    query_parts << book.author if book.author.present?
+    query = query_parts.join(" ")
+
+    language = request.effective_language
+    Rails.logger.debug "[SearchJob] Searching Z-Library for: #{query} (language: #{language})"
+
+    results = ZLibraryClient.search(query, language: language)
+
+    results.map do |r|
+      { result: r, source: SearchResult::SOURCE_ZLIBRARY }
+    end
+  rescue ZLibraryClient::Error => e
+    Rails.logger.warn "[SearchJob] Z-Library search failed: #{e.message}"
+    []
+  end
+
   def search_anna_archive(request)
     book = request.book
 
@@ -154,8 +184,11 @@ class SearchJob < ApplicationJob
       result = tagged[:result]
       source = tagged[:source]
 
-      search_result = if source == SearchResult::SOURCE_ANNA_ARCHIVE
+      search_result = case source
+      when SearchResult::SOURCE_ANNA_ARCHIVE
         save_anna_archive_result(request, result)
+      when SearchResult::SOURCE_ZLIBRARY
+        save_zlibrary_result(request, result)
       else
         save_indexer_result(request, result, source)
       end
@@ -186,7 +219,7 @@ class SearchJob < ApplicationJob
 
     # Use find_or_create_by to handle duplicate MD5s in Anna's Archive results
     request.search_results.find_or_create_by!(guid: result.md5) do |sr|
-      sr.title = build_anna_title(result)
+      sr.title = build_ebook_source_title(result)
       sr.indexer = "Anna's Archive"
       sr.size_bytes = size_bytes
       sr.seeders = nil  # N/A for Anna's Archive
@@ -200,7 +233,24 @@ class SearchJob < ApplicationJob
     end
   end
 
-  def build_anna_title(result)
+  def save_zlibrary_result(request, result)
+    guid = "#{result.id}:#{result.hash}"
+    request.search_results.find_or_create_by!(guid: guid) do |sr|
+      sr.title = build_ebook_source_title(result)
+      sr.indexer = "Z-Library"
+      sr.size_bytes = result.file_size
+      sr.seeders = nil
+      sr.leechers = nil
+      sr.download_url = nil
+      sr.magnet_url = nil
+      sr.info_url = nil
+      sr.published_at = nil
+      sr.source = SearchResult::SOURCE_ZLIBRARY
+      sr.detected_language = result.language
+    end
+  end
+
+  def build_ebook_source_title(result)
     parts = []
     parts << result.title if result.title.present?
     parts << "- #{result.author}" if result.author.present?

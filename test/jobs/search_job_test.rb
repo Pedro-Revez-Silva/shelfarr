@@ -7,6 +7,7 @@ class SearchJobTest < ActiveJob::TestCase
     @request = requests(:pending_request)
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "test-key")
+    ZLibraryClient.reset_auth_cache! if defined?(ZLibraryClient)
   end
 
   test "updates request status to searching" do
@@ -388,6 +389,101 @@ class SearchJobTest < ActiveJob::TestCase
       assert_equal SearchResult::SOURCE_JACKETT, @request.search_results.first.source
       assert_equal "JackettBooks", @request.search_results.first.indexer
     end
+  end
+
+  test "includes Z-Library results when configured" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:zlibrary_email, "test@example.com")
+    SettingsService.set(:zlibrary_password, "testpass")
+
+    result = ZLibraryClient::Result.new(
+      id: "999",
+      hash: "deadbeef",
+      title: "Z-Library Book",
+      author: "Test Author",
+      year: 2023,
+      file_type: "epub",
+      file_size: 5452595,
+      language: "english"
+    )
+
+    ZLibraryClient.stub :configured?, true do
+      ZLibraryClient.stub :search, ->(query, **_) {
+        assert_includes query, @request.book.title
+        [result]
+      } do
+        SearchJob.perform_now(@request.id)
+        @request.reload
+
+        assert @request.search_results.any?
+        assert_equal SearchResult::SOURCE_ZLIBRARY, @request.search_results.first.source
+        assert_equal "Z-Library", @request.search_results.first.indexer
+        assert_equal "999:deadbeef", @request.search_results.first.guid
+      end
+    end
+
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+  end
+
+  test "does not search Z-Library when not configured" do
+    SettingsService.set(:zlibrary_email, "")
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert @request.search_results.any?
+      assert @request.search_results.none? { |r| r.source == SearchResult::SOURCE_ZLIBRARY }
+    end
+  end
+
+  test "does not search Z-Library for audiobook requests" do
+    SettingsService.set(:zlibrary_email, "test@example.com")
+    SettingsService.set(:zlibrary_password, "testpass")
+
+    audiobook_book = books(:audiobook_acquired)
+    request = Request.create!(book: audiobook_book, user: users(:one), status: :pending)
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      ZLibraryClient.stub :configured?, true do
+        ZLibraryClient.stub :search, ->(*) { raise "Should not be called" } do
+          assert_nothing_raised do
+            SearchJob.perform_now(request.id)
+          end
+        end
+      end
+    end
+
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+  end
+
+  test "Z-Library errors do not block other search sources" do
+    SettingsService.set(:zlibrary_email, "test@example.com")
+    SettingsService.set(:zlibrary_password, "testpass")
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      ZLibraryClient.stub :configured?, true do
+        ZLibraryClient.stub :search, ->(*) { raise ZLibraryClient::ConnectionError, "Z-Library down" } do
+          SearchJob.perform_now(@request.id)
+          @request.reload
+
+          # Prowlarr results should still be saved despite Z-Library failure
+          assert @request.search_results.any?
+          assert @request.search_results.none? { |r| r.source == SearchResult::SOURCE_ZLIBRARY }
+        end
+      end
+    end
+
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
   end
 
   private

@@ -146,6 +146,32 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_nil result.search_result
   end
 
+  test "zlibrary results bypass seeder check" do
+    Setting.find_or_create_by(key: "auto_select_min_seeders").update!(
+      value: "100",
+      value_type: "integer",
+      category: "auto_select"
+    )
+
+    # Z-Library results have nil seeders since they're direct downloads
+    result = create_search_result(
+      seeders: nil,
+      source: SearchResult::SOURCE_ZLIBRARY,
+      indexer: "Z-Library",
+      download_url: nil,
+      magnet_url: nil
+    )
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?
+      assert_equal :auto_selected, selection.reason
+    end
+
+    assert result.reload.selected?
+  end
+
   private
 
   def create_search_result(attrs = {})
