@@ -357,6 +357,53 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "sends attention notification when no search result selected" do
+    @request.search_results.update_all(status: :pending)
+
+    attention_requests = []
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal 1, attention_requests.size
+    assert_equal @request, attention_requests.first
+  end
+
+  test "sends attention notification when download client unavailable" do
+    DownloadClient.destroy_all
+
+    attention_requests = []
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal 1, attention_requests.size
+  end
+
+  test "sends attention notification when selected result has no download link" do
+    @selected_result.update!(download_url: nil, magnet_url: nil, source: "prowlarr")
+
+    attention_requests = []
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal 1, attention_requests.size
+  end
+
+  test "download still fails gracefully when outbound dispatch fails" do
+    @request.search_results.update_all(status: :pending)
+
+    OutboundNotifications::Dispatcher.stub :notify, ->(**) { raise "Webhook delivery failed" } do
+      DownloadJob.perform_now(@download.id)
+    end
+
+    @download.reload
+    assert @download.failed?
+    @request.reload
+    assert @request.attention_needed?
+  end
+
   private
 
   def setup_zlibrary_download

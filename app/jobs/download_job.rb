@@ -33,6 +33,7 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: "No search result selected for download", level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("No search result selected for download")
+      NotificationService.request_attention(download.request)
       return
     end
 
@@ -50,31 +51,37 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!(e.message)
+      NotificationService.request_attention(download.request)
     rescue DownloadClients::Base::AuthenticationError => e
       Rails.logger.error "[DownloadJob] Download client authentication failed: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Download client authentication failed. Please check credentials.")
+      NotificationService.request_attention(download.request)
     rescue DownloadClients::Base::ConnectionError => e
       Rails.logger.error "[DownloadJob] Download client connection error: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to connect to download client: #{e.message}")
+      NotificationService.request_attention(download.request)
     rescue DownloadClients::Base::Error => e
       Rails.logger.error "[DownloadJob] Download client error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Download client error: #{e.message}")
+      NotificationService.request_attention(download.request)
     rescue AnnaArchiveClient::Error => e
       Rails.logger.error "[DownloadJob] Anna's Archive error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Anna's Archive error: #{e.message}")
+      NotificationService.request_attention(download.request)
     rescue ZLibraryClient::Error => e
       Rails.logger.error "[DownloadJob] Z-Library error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Z-Library error: #{e.message}")
+      NotificationService.request_attention(download.request)
     end
   end
 
@@ -157,6 +164,7 @@ class DownloadJob < ApplicationJob
     track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
     download.update!(status: :failed)
     download.request.mark_for_attention!("Direct download failed: #{e.message}")
+    NotificationService.request_attention(download.request)
   end
 
   def infer_filename_from_url(url, search_result)
@@ -377,6 +385,7 @@ class DownloadJob < ApplicationJob
       )
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
+      NotificationService.request_attention(download.request)
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
     end
   end
@@ -387,6 +396,7 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: "Selected result has no download link", level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Selected result has no download link")
+      NotificationService.request_attention(download.request)
       return
     end
 
@@ -449,6 +459,7 @@ class DownloadJob < ApplicationJob
       )
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
+      NotificationService.request_attention(download.request)
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
     end
   end

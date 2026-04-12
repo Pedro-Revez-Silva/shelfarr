@@ -21,6 +21,7 @@ class SearchJob < ApplicationJob
     unless indexer_available || anna_available || zlibrary_available
       Rails.logger.error "[SearchJob] No search sources configured"
       request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, or Z-Library in Admin Settings.")
+      NotificationService.request_attention(request)
       return
     end
 
@@ -75,8 +76,10 @@ class SearchJob < ApplicationJob
   def handle_no_results(request, indexer_error)
     if @anna_archive_bot_protection_error
       request.mark_for_attention!(@anna_archive_bot_protection_error)
+      NotificationService.request_attention(request)
     elsif indexer_error.is_a?(IndexerClients::Base::AuthenticationError)
       request.mark_for_attention!("#{IndexerClient.display_name} authentication failed. Please check your API key.")
+      NotificationService.request_attention(request)
     else
       request.schedule_retry!
     end
@@ -281,6 +284,7 @@ class SearchJob < ApplicationJob
     unless SettingsService.get(:auto_select_enabled, default: false)
       # Auto-select disabled, flag for manual selection
       request.mark_for_attention!("Search results found. Please review and select a result to download.")
+      NotificationService.request_attention(request)
       Rails.logger.info "[SearchJob] Auto-select disabled, flagged for manual selection for request ##{request.id}"
       return
     end
@@ -292,6 +296,7 @@ class SearchJob < ApplicationJob
     else
       # Auto-select failed to find a suitable result, flag for manual selection
       request.mark_for_attention!("Search results found but none matched auto-select criteria. Please review and select a result manually.")
+      NotificationService.request_attention(request)
       Rails.logger.info "[SearchJob] Auto-select failed, flagged for manual selection for request ##{request.id}"
     end
   end

@@ -110,6 +110,7 @@ class DownloadMonitorJob < ApplicationJob
     track_request_event(download.request, "failed", download: download, message: "Download failed in client", level: :error)
     download.update!(status: :failed)
     download.request.mark_for_attention!("Download failed in client")
+    NotificationService.request_attention(download.request)
   end
 
   def handle_missing(download)
@@ -129,6 +130,7 @@ class DownloadMonitorJob < ApplicationJob
       )
       download.update!(status: :failed, not_found_count: new_count)
       download.request.mark_for_attention!("Download not found in client '#{client_name}' (hash: #{download.external_id})")
+      NotificationService.request_attention(download.request)
     else
       Rails.logger.warn "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}' (attempt #{new_count}/#{NOT_FOUND_THRESHOLD})"
 
@@ -156,6 +158,7 @@ class DownloadMonitorJob < ApplicationJob
     download.request.mark_for_attention!(
       "Download stayed queued in Shelfarr for more than #{timeout_minutes} minutes and was never sent to the download client. Retry the request and check the job queue/logs."
     )
+    NotificationService.request_attention(download.request)
   end
 
   def schedule_next_run

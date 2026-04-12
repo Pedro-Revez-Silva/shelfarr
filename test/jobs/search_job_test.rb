@@ -69,6 +69,85 @@ class SearchJobTest < ActiveJob::TestCase
     assert_includes @request.issue_description, "No search sources configured"
   end
 
+  test "sends attention notification when no search sources configured" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+
+    attention_requests = []
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    assert @request.attention_needed?
+    assert_equal 1, attention_requests.size
+    assert_equal @request, attention_requests.first
+  end
+
+  test "sends attention notification when auto-select disabled" do
+    SettingsService.set(:auto_select_enabled, false)
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      attention_requests = []
+      NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+        SearchJob.perform_now(@request.id)
+      end
+
+      @request.reload
+      assert @request.attention_needed?
+      assert_equal 1, attention_requests.size
+    end
+  end
+
+  test "sends attention notification when auto-select fails" do
+    SettingsService.set(:auto_select_enabled, true)
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      attention_requests = []
+      NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+        AutoSelectService.stub :call, OpenStruct.new(success?: false) do
+          SearchJob.perform_now(@request.id)
+        end
+      end
+
+      @request.reload
+      assert @request.attention_needed?
+      assert_equal 1, attention_requests.size
+    end
+  end
+
+  test "sends attention notification on indexer authentication failure" do
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696}).to_raise(IndexerClients::Base::AuthenticationError.new("Invalid API key"))
+
+      attention_requests = []
+      NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+        SearchJob.perform_now(@request.id)
+      end
+
+      @request.reload
+      assert @request.attention_needed?
+      assert_equal 1, attention_requests.size
+    end
+  end
+
+  test "attention notification still works when outbound dispatch fails" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+
+    OutboundNotifications::Dispatcher.stub :notify, ->(**) { raise "Webhook delivery failed" } do
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    assert @request.attention_needed?
+    assert_includes @request.issue_description, "No search sources configured"
+  end
+
   test "skips non-pending requests" do
     @request.update!(status: :searching)
 
