@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "uri"
 
 # Client for interacting with Z-Library's internal eAPI.
 # This integration is unofficial and may break if the service changes.
@@ -148,6 +149,10 @@ class ZLibraryClient
     end
 
     def configured_domain
+      configured_uri.host
+    end
+
+    def configured_uri
       raw_url = SettingsService.get(:zlibrary_url).to_s.strip
       raise ConfigurationError, "Z-Library URL is not configured" if raw_url.blank?
 
@@ -156,7 +161,15 @@ class ZLibraryClient
         raise ConfigurationError, "Z-Library URL must be a valid http or https URL"
       end
 
-      uri.host
+      if uri.path.present? && uri.path != "/"
+        raise ConfigurationError, "Z-Library URL must not include a path"
+      end
+
+      if uri.query.present? || uri.fragment.present? || uri.userinfo.present?
+        raise ConfigurationError, "Z-Library URL must only include the site origin"
+      end
+
+      uri
     rescue URI::InvalidURIError => e
       raise ConfigurationError, "Z-Library URL is invalid: #{e.message}"
     end
@@ -203,11 +216,20 @@ class ZLibraryClient
 
     def validate_download_url!(url)
       uri = URI.parse(url)
-      return if ALLOWED_DOWNLOAD_SCHEMES.include?(uri.scheme) && uri.host.present?
+      unless ALLOWED_DOWNLOAD_SCHEMES.include?(uri.scheme) && uri.host.present?
+        raise Error, "Z-Library returned an invalid download URL"
+      end
 
-      raise Error, "Z-Library returned an invalid download URL"
+      return if download_host_allowed?(uri.host)
+
+      raise Error, "Z-Library returned a download URL outside the configured host family"
     rescue URI::InvalidURIError => e
       raise Error, "Z-Library returned an invalid download URL: #{e.message}"
+    end
+
+    def download_host_allowed?(host)
+      configured_host = configured_domain
+      host == configured_host || host.end_with?(".#{configured_host}")
     end
 
     def parse_search_results(books, limit)

@@ -1,7 +1,12 @@
 # frozen_string_literal: true
 
+require "net/http"
+require "uri"
+
 class DownloadJob < ApplicationJob
   queue_as :default
+
+  MAX_DIRECT_DOWNLOAD_BYTES = 512.megabytes
 
   def perform(download_id)
     download = Download.find_by(id: download_id)
@@ -121,8 +126,9 @@ class DownloadJob < ApplicationJob
     FileUtils.mkdir_p(destination_dir)
 
     # Download the file
+    expected_extension = infer_extension(download_url, search_result)
     download_file_via_http(search_result, download_url, destination_path)
-    verify_downloaded_ebook!(destination_path)
+    verify_downloaded_ebook!(destination_path, expected_extension: expected_extension)
 
     # Update download record as completed
     download.update!(
@@ -217,16 +223,34 @@ class DownloadJob < ApplicationJob
 
     Rails.logger.info "[DownloadJob] Starting HTTP download..."
 
-    response = direct_download_connection(uri).get(uri.request_uri)
-    raise "Direct download failed with status #{response.status}" unless response.success?
+    bytes_written = 0
 
-    File.open(destination, "wb") do |dest|
-      dest.write(response.body)
+    Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https", open_timeout: 30, read_timeout: 300) do |http|
+      request = Net::HTTP::Get.new(uri)
+      request["User-Agent"] = "Shelfarr/1.0"
+
+      http.request(request) do |response|
+        raise "Direct download failed with status #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+        validate_direct_download_response_headers!(
+          content_type: response["Content-Type"],
+          content_length: response["Content-Length"]
+        )
+
+        File.open(destination, "wb") do |dest|
+          response.read_body do |chunk|
+            bytes_written += chunk.bytesize
+            raise "Direct download exceeds size limit of #{MAX_DIRECT_DOWNLOAD_BYTES / 1.megabyte} MB" if bytes_written > MAX_DIRECT_DOWNLOAD_BYTES
+
+            dest.write(chunk)
+          end
+        end
+      end
     end
 
     file_size = File.size(destination)
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
-  rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+  rescue SocketError, IOError, EOFError, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError => e
     raise "Direct download request failed: #{e.message}"
   end
 
@@ -243,21 +267,6 @@ class DownloadJob < ApplicationJob
     raise "Invalid direct download URL: #{e.message}"
   end
 
-  def direct_download_connection(uri)
-    Faraday.new(url: direct_download_base_url(uri)) do |f|
-      f.adapter Faraday.default_adapter
-      f.headers["User-Agent"] = "Shelfarr/1.0"
-      f.options.timeout = 300
-      f.options.open_timeout = 30
-    end
-  end
-
-  def direct_download_base_url(uri)
-    default_port = (uri.scheme == "https" ? 443 : 80)
-    port_suffix = uri.port == default_port ? "" : ":#{uri.port}"
-    "#{uri.scheme}://#{uri.host}#{port_suffix}"
-  end
-
   def zlibrary_download_host_allowed?(host)
     configured_host = URI.parse(SettingsService.get(:zlibrary_url).to_s).host
     return false if configured_host.blank?
@@ -267,17 +276,44 @@ class DownloadJob < ApplicationJob
     false
   end
 
-  def verify_downloaded_ebook!(path)
+  def validate_direct_download_response_headers!(content_type:, content_length:)
+    normalized_content_type = content_type.to_s.split(";").first.to_s.downcase
+
+    if normalized_content_type.present? &&
+        (normalized_content_type.start_with?("text/") ||
+         normalized_content_type.include?("html") ||
+         normalized_content_type.include?("json") ||
+         normalized_content_type.include?("xml"))
+      raise "Direct download returned unexpected content type: #{normalized_content_type}"
+    end
+
+    length = content_length.to_i if content_length.present?
+    if length.present? && length > MAX_DIRECT_DOWNLOAD_BYTES
+      raise "Direct download exceeds size limit of #{MAX_DIRECT_DOWNLOAD_BYTES / 1.megabyte} MB"
+    end
+  end
+
+  def verify_downloaded_ebook!(path, expected_extension: nil)
     raise "Downloaded file does not exist" unless File.exist?(path)
 
     file_size = File.size(path)
     raise "Downloaded file is empty" if file_size.zero?
 
-    head = File.binread(path, 256)
+    head = File.binread(path, [512, file_size].min)
     lowered = head.downcase
     if lowered.include?("<html") || lowered.include?("<!doctype")
       FileUtils.rm_f(path)
       raise "Downloaded file is an HTML page, not an ebook"
+    end
+
+    case expected_extension.to_s.downcase
+    when "epub"
+      raise "Downloaded file is not a valid EPUB" unless head.start_with?("PK\x03\x04")
+    when "pdf"
+      raise "Downloaded file is not a valid PDF" unless head.start_with?("%PDF")
+    when "mobi"
+      mobi_signature = File.binread(path, [68, file_size].min).byteslice(60, 8)
+      raise "Downloaded file is not a valid MOBI" unless mobi_signature == "BOOKMOBI"
     end
   rescue Errno::ENOENT => e
     raise "Downloaded file is missing: #{e.message}"

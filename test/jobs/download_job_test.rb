@@ -320,6 +320,43 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_match /Invalid direct download URL host/, error.message
   end
 
+  test "validate_direct_download_response_headers rejects html content types" do
+    error = assert_raises RuntimeError do
+      DownloadJob.new.send(
+        :validate_direct_download_response_headers!,
+        content_type: "text/html; charset=utf-8",
+        content_length: "1024"
+      )
+    end
+
+    assert_match /unexpected content type/i, error.message
+  end
+
+  test "validate_direct_download_response_headers rejects oversized downloads" do
+    error = assert_raises RuntimeError do
+      DownloadJob.new.send(
+        :validate_direct_download_response_headers!,
+        content_type: "application/epub+zip",
+        content_length: (DownloadJob::MAX_DIRECT_DOWNLOAD_BYTES + 1).to_s
+      )
+    end
+
+    assert_match /size limit/i, error.message
+  end
+
+  test "verify_downloaded_ebook rejects invalid pdf signature" do
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "broken.pdf")
+      File.binwrite(path, "not a pdf")
+
+      error = assert_raises RuntimeError do
+        DownloadJob.new.send(:verify_downloaded_ebook!, path, expected_extension: "pdf")
+      end
+
+      assert_match /not a valid PDF/, error.message
+    end
+  end
+
   private
 
   def setup_zlibrary_download

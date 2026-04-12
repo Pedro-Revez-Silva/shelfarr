@@ -111,6 +111,25 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "get_download_url rejects hosts outside configured family" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:get, "https://z-library.sk/eapi/book/999/deadbeef/file")
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            file: { downloadLink: "https://evil.example/book.epub" }
+          }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      assert_raises ZLibraryClient::Error do
+        ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
+      end
+    end
+  end
+
   test "login cache is invalidated when credentials change" do
     VCR.turned_off do
       stub_zlibrary_login_success
@@ -139,6 +158,11 @@ class ZLibraryClientTest < ActiveSupport::TestCase
 
   test "test_connection returns false for invalid url" do
     SettingsService.set(:zlibrary_url, "not-a-url")
+    assert_not ZLibraryClient.test_connection
+  end
+
+  test "test_connection returns false when url includes a path" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk/login")
     assert_not ZLibraryClient.test_connection
   end
 
