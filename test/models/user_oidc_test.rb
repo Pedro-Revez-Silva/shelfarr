@@ -36,8 +36,7 @@ class UserOidcTest < ActiveSupport::TestCase
     assert_equal user, result
   end
 
-  test "from_oidc links existing user by username derived from email" do
-    # Create user with username matching email prefix
+  test "from_oidc does not implicitly link existing user by email prefix" do
     user = User.create!(
       username: "johndoe",
       name: "John Doe",
@@ -52,9 +51,8 @@ class UserOidcTest < ActiveSupport::TestCase
 
     result = User.from_oidc(auth_hash)
 
-    assert_equal user, result
-    assert_equal "oidc", result.oidc_provider
-    assert_equal "new-uid", result.oidc_uid
+    assert_nil result
+    assert_not user.reload.oidc_user?
   end
 
   test "from_oidc returns nil when user not found and auto-create disabled" do
@@ -171,5 +169,36 @@ class UserOidcTest < ActiveSupport::TestCase
     result = User.from_oidc(auth_hash)
 
     assert_equal "preferred_user", result.username
+  end
+
+  test "link_oidc_identity! links an unlinked user" do
+    user = users(:one)
+
+    user.link_oidc_identity!(provider: "oidc", uid: "linked-uid")
+
+    assert_equal "oidc", user.reload.oidc_provider
+    assert_equal "linked-uid", user.oidc_uid
+  end
+
+  test "link_oidc_identity! rejects identities already linked to another user" do
+    existing = users(:two)
+    existing.update!(oidc_provider: "oidc", oidc_uid: "shared-uid")
+
+    error = assert_raises(User::OidcIdentityAlreadyLinkedError) do
+      users(:one).link_oidc_identity!(provider: "oidc", uid: "shared-uid")
+    end
+
+    assert_match(/already linked/i, error.message)
+  end
+
+  test "link_oidc_identity! rejects replacing a different existing identity" do
+    user = users(:one)
+    user.update!(oidc_provider: "oidc", oidc_uid: "old-uid")
+
+    error = assert_raises(User::OidcIdentityConflictError) do
+      user.link_oidc_identity!(provider: "oidc", uid: "new-uid")
+    end
+
+    assert_match(/different OIDC identity/i, error.message)
   end
 end

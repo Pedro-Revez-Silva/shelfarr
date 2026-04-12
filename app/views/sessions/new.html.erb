@@ -1,6 +1,12 @@
 <div class="mx-auto md:w-2/3 w-full">
   <h1 class="font-bold text-4xl text-white">Sign in</h1>
 
+  <% if params[:local].present? && SettingsService.oidc_auto_redirect? %>
+    <div class="my-4 rounded-lg border border-blue-800 bg-blue-950/40 p-3 text-sm text-blue-200">
+      SSO auto-redirect is enabled. This page is the local login fallback.
+    </div>
+  <% end %>
+
   <% if SettingsService.auth_disabled? %>
     <div class="my-4 p-3 rounded-lg bg-yellow-900/30 border border-yellow-700 text-yellow-400 text-sm">
       Authentication is disabled. Enter your username to continue.
@@ -38,7 +44,7 @@
 
     <%= form_with url: session_url, class: "contents" do |form| %>
       <div class="my-5">
-        <%= form.text_field :username, required: true, autofocus: !SettingsService.oidc_configured?, autocomplete: "username", placeholder: "Enter your username", value: params[:username], class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+        <%= form.text_field :username, required: true, autofocus: params[:local].present? || !SettingsService.oidc_configured?, autocomplete: "username", placeholder: "Enter your username", value: params[:username], class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
       </div>
 
       <div class="my-5">

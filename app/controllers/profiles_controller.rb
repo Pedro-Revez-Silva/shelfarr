@@ -43,6 +43,43 @@ class ProfilesController < ApplicationController
     end
   end
 
+  def link_oidc
+    @user = Current.user
+
+    unless SettingsService.oidc_configured?
+      redirect_to profile_path, alert: "OIDC must be fully configured before you can link an account."
+      return
+    end
+
+    if @user.oidc_user?
+      redirect_to profile_path, notice: "Your account is already linked to OIDC."
+      return
+    end
+
+    session[:pending_oidc_link_user_id] = @user.id
+    render :link_oidc_redirect
+  end
+
+  def unlink_oidc
+    @user = Current.user
+
+    unless @user.oidc_user?
+      redirect_to profile_path, notice: "Your account is not linked to OIDC."
+      return
+    end
+
+    unless SettingsService.auth_disabled? || @user.authenticate(params[:current_password])
+      redirect_to profile_path, alert: "Current password is incorrect."
+      return
+    end
+
+    @user.unlink_oidc_identity!
+    session.delete(:pending_oidc_link_user_id)
+
+    ActivityTracker.track("user.oidc_unlinked", user: @user)
+    redirect_to profile_path, notice: "OIDC sign-in has been removed from your account."
+  end
+
   # Two-factor authentication setup
   def two_factor
     @user = Current.user

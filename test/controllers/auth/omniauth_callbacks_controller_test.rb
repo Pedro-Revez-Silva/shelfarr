@@ -125,11 +125,80 @@ class Auth::OmniauthCallbacksControllerTest < ActionDispatch::IntegrationTest
     assert_match(/locked/i, flash[:alert])
   end
 
+  test "OIDC callback links current signed-in user when link flow is pending" do
+    user = users(:one)
+    sign_in_as(user)
+    post link_oidc_profile_path
+    assert_equal user.id, session[:pending_oidc_link_user_id]
+
+    OmniAuth.config.mock_auth[:oidc] = OmniAuth::AuthHash.new({
+      provider: "oidc",
+      uid: "linked-user-uid",
+      info: {
+        email: "test@example.com",
+        name: "Linked User"
+      }
+    })
+
+    get "/auth/oidc/callback"
+
+    assert_redirected_to profile_path
+    assert_match(/now linked/i, flash[:notice])
+    assert_equal "oidc", user.reload.oidc_provider
+    assert_equal "linked-user-uid", user.oidc_uid
+    assert_nil session[:pending_oidc_link_user_id]
+  end
+
+  test "OIDC callback refuses to link identity that belongs to another user" do
+    user = users(:one)
+    other_user = users(:two)
+    other_user.update!(oidc_provider: "oidc", oidc_uid: "shared-uid")
+
+    sign_in_as(user)
+    post link_oidc_profile_path
+
+    OmniAuth.config.mock_auth[:oidc] = OmniAuth::AuthHash.new({
+      provider: "oidc",
+      uid: "shared-uid",
+      info: {
+        email: "admin@example.com",
+        name: "Existing OIDC User"
+      }
+    })
+
+    get "/auth/oidc/callback"
+
+    assert_redirected_to profile_path
+    assert_match(/already linked to another/i, flash[:alert])
+    assert_nil user.reload.oidc_uid
+  end
+
   test "failure endpoint handles OIDC errors" do
     get "/auth/failure", params: { message: "invalid_credentials" }
 
     assert_redirected_to new_session_path
     assert_match(/invalid_credentials/i, flash[:alert])
+  end
+
+  test "failure endpoint redirects to local bypass when OIDC auto redirect is enabled" do
+    SettingsService.set(:oidc_auto_redirect, true)
+
+    get "/auth/failure", params: { message: "invalid_credentials" }
+
+    assert_redirected_to new_session_path(local: 1)
+    assert_match(/invalid_credentials/i, flash[:alert])
+  end
+
+  test "failure endpoint returns to profile when OIDC link flow is pending" do
+    user = users(:one)
+    sign_in_as(user)
+    post link_oidc_profile_path
+
+    get "/auth/failure", params: { message: "invalid_credentials" }
+
+    assert_redirected_to profile_path
+    assert_match(/invalid_credentials/i, flash[:alert])
+    assert_nil session[:pending_oidc_link_user_id]
   end
 
   test "OIDC callback without auth hash redirects with error" do
@@ -144,5 +213,24 @@ class Auth::OmniauthCallbacksControllerTest < ActionDispatch::IntegrationTest
 
     # Then our failure handler redirects to login
     assert_redirected_to new_session_path
+  end
+
+  test "OIDC callback user-not-found failure redirects to local bypass when auto redirect is enabled" do
+    SettingsService.set(:oidc_auto_redirect, true)
+    SettingsService.set(:oidc_auto_create_users, false)
+
+    OmniAuth.config.mock_auth[:oidc] = OmniAuth::AuthHash.new({
+      provider: "oidc",
+      uid: "unknown-uid",
+      info: {
+        email: "newuser@example.com",
+        name: "New User"
+      }
+    })
+
+    get "/auth/oidc/callback"
+
+    assert_redirected_to new_session_path(local: 1)
+    assert_match(/not found/i, flash[:alert])
   end
 end

@@ -8,11 +8,64 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     @user = users(:one)
     # Ensure user is not locked
     @user.update!(failed_login_count: 0, locked_until: nil)
+    SettingsService.set(:auth_disabled, false)
+    SettingsService.set(:oidc_enabled, false)
+    SettingsService.set(:oidc_auto_redirect, false)
+    SettingsService.set(:oidc_issuer, "")
+    SettingsService.set(:oidc_client_id, "")
+    SettingsService.set(:oidc_client_secret, "")
   end
 
   test "new" do
     get new_session_path
     assert_response :success
+  end
+
+  test "new renders OIDC auto handoff when auto redirect is enabled" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_auto_redirect, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+
+    get new_session_path
+
+    assert_response :success
+    assert_select "h1", /Redirecting to/
+    assert_select "form[action='/auth/oidc']"
+    assert_select "a[href='#{new_session_path(local: 1)}']", text: /Use local sign-in instead/
+    assert_select "input[name='username']", count: 0
+  end
+
+  test "new shows local login form when local bypass is requested" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_auto_redirect, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+
+    get new_session_path, params: { local: 1 }
+
+    assert_response :success
+    assert_select "h1", "Sign in"
+    assert_select "div", text: /local login fallback/
+    assert_select "input[name='username']"
+    assert_select "input[name='password']"
+  end
+
+  test "new does not auto redirect when auth is disabled" do
+    SettingsService.set(:auth_disabled, true)
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_auto_redirect, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+
+    get new_session_path
+
+    assert_response :success
+    assert_select "div", text: /Authentication is disabled/
+    assert_select "form[action='/auth/oidc']", count: 0
   end
 
   test "create with valid credentials" do
@@ -70,6 +123,20 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     delete session_path
 
     assert_redirected_to new_session_path
+    assert_empty cookies[:session_id]
+  end
+
+  test "destroy redirects to local bypass when OIDC auto redirect is enabled" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_auto_redirect, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+    sign_in_as(@user)
+
+    delete session_path
+
+    assert_redirected_to new_session_path(local: 1)
     assert_empty cookies[:session_id]
   end
 

@@ -116,6 +116,7 @@ class SettingsService
 
     # OIDC/SSO Authentication
     oidc_enabled: { type: "boolean", default: false, category: "oidc", description: "Enable OpenID Connect (OIDC) single sign-on authentication" },
+    oidc_auto_redirect: { type: "boolean", default: false, category: "oidc", description: "Automatically start OIDC sign-in for unauthenticated users. Use /session/new?local=1 to access the local login form." },
     oidc_provider_name: { type: "string", default: "SSO", category: "oidc", description: "Display name for the OIDC provider (shown on login button)" },
     oidc_issuer: { type: "string", default: "", category: "oidc", description: "OIDC issuer URL (e.g., https://auth.example.com/realms/master)" },
     oidc_client_id: { type: "string", default: "", category: "oidc", description: "OIDC client ID from your identity provider" },
@@ -266,6 +267,12 @@ class SettingsService
         configured?(:oidc_issuer) &&
         configured?(:oidc_client_id) &&
         configured?(:oidc_client_secret)
+    end
+
+    def oidc_auto_redirect?
+      oidc_configured? &&
+        !auth_disabled? &&
+        get(:oidc_auto_redirect, default: false)
     end
 
     def hardcover_configured?

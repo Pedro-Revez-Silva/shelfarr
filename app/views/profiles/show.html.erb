@@ -55,12 +55,32 @@
             <% end %>
           </dd>
         </div>
+        <% if SettingsService.oidc_configured? %>
+          <div>
+            <dt class="text-gray-500">OIDC Sign-In</dt>
+            <dd class="font-medium">
+              <% if @user.oidc_user? %>
+                <span class="inline-flex items-center text-green-400">
+                  <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                  </svg>
+                  Linked to <%= SettingsService.get(:oidc_provider_name, default: "SSO") %>
+                </span>
+              <% else %>
+                <span class="text-gray-500">Not linked</span>
+              <% end %>
+            </dd>
+          </div>
+        <% end %>
       </dl>
     </div>
 
     <div class="px-6 py-4 bg-gray-800 border-t border-gray-700 flex flex-wrap gap-4">
       <%= link_to "Edit Profile", edit_profile_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
       <%= link_to "Change Password", password_profile_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <% if SettingsService.oidc_configured? && !@user.oidc_user? %>
+        <%= button_to "Link OIDC Login", link_oidc_profile_path, method: :post, form: { data: { turbo: false } }, class: "px-4 py-2 bg-indigo-700 hover:bg-indigo-600 text-white font-medium rounded-lg transition cursor-pointer" %>
+      <% end %>
       <%= link_to two_factor_profile_path, class: "px-4 py-2 #{@user.otp_enabled? ? 'bg-green-900/50 text-green-400 hover:bg-green-900/70' : 'bg-yellow-900/50 text-yellow-400 hover:bg-yellow-900/70'} font-medium rounded-lg transition" do %>
         <span class="flex items-center">
           <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -70,5 +90,24 @@
         </span>
       <% end %>
     </div>
+
+    <% if SettingsService.oidc_configured? && @user.oidc_user? %>
+      <div class="border-t border-gray-700 bg-gray-900/40 px-6 py-5">
+        <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div class="max-w-xl">
+            <p class="text-sm font-medium text-gray-200">Linked OIDC account</p>
+            <p class="mt-1 text-sm text-gray-400">
+              This account is linked to <%= SettingsService.get(:oidc_provider_name, default: "SSO") %>.
+              Enter your current local password to remove the link and return to password-only sign-in for this account.
+            </p>
+          </div>
+
+          <%= form_with url: unlink_oidc_profile_path, method: :delete, class: "flex w-full flex-col gap-3 md:w-auto md:min-w-[24rem] md:flex-row" do |form| %>
+            <%= form.password_field :current_password, required: !SettingsService.auth_disabled?, autocomplete: "current-password", placeholder: "Current password", class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            <%= form.submit "Unlink OIDC Login", class: "rounded-lg bg-red-700 px-4 py-2 font-medium text-white transition hover:bg-red-600 cursor-pointer whitespace-nowrap" %>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
   </div>
 </div>

@@ -10,6 +10,10 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
   setup do
     @user = users(:one)
     sign_in_as(@user)
+    SettingsService.set(:oidc_enabled, false)
+    SettingsService.set(:oidc_issuer, "")
+    SettingsService.set(:oidc_client_id, "")
+    SettingsService.set(:oidc_client_secret, "")
   end
 
   test "show requires authentication" do
@@ -38,6 +42,35 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
     get profile_path
     assert_response :success
     assert_select "dt", "Two-Factor Authentication"
+  end
+
+  test "show displays OIDC link button when OIDC is configured and user is not linked" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+
+    get profile_path
+
+    assert_response :success
+    assert_select "dt", "OIDC Sign-In"
+    assert_select "form[action='#{link_oidc_profile_path}']"
+    assert_select "button", "Link OIDC Login"
+  end
+
+  test "show displays linked OIDC status when account is already linked" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+    @user.update!(oidc_provider: "oidc", oidc_uid: "linked-uid")
+
+    get profile_path
+
+    assert_response :success
+    assert_select "dd", /Linked to/
+    assert_select "form[action='#{link_oidc_profile_path}']", count: 0
+    assert_select "form[action='#{unlink_oidc_profile_path}']"
   end
 
   test "edit displays form" do
@@ -119,6 +152,73 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
       user: { password: "alllowercase123", password_confirmation: "alllowercase123" }
     }
     assert_response :unprocessable_entity
+  end
+
+  test "link_oidc requires configured OIDC" do
+    post link_oidc_profile_path
+
+    assert_redirected_to profile_path
+    assert_match(/must be fully configured/i, flash[:alert])
+  end
+
+  test "link_oidc starts OIDC linking flow for current user" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+
+    post link_oidc_profile_path
+
+    assert_response :success
+    assert_equal @user.id, session[:pending_oidc_link_user_id]
+    assert_select "h1", /Link/
+    assert_select "form[action='/auth/oidc']"
+    assert_select "a[href='#{profile_path}']", text: "Cancel"
+  end
+
+  test "link_oidc returns to profile when account is already linked" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+    @user.update!(oidc_provider: "oidc", oidc_uid: "linked-uid")
+
+    post link_oidc_profile_path
+
+    assert_redirected_to profile_path
+    assert_match(/already linked/i, flash[:notice])
+  end
+
+  test "unlink_oidc requires current password when auth is enabled" do
+    @user.update!(oidc_provider: "oidc", oidc_uid: "linked-uid")
+
+    delete unlink_oidc_profile_path, params: { current_password: "WrongPassword123!" }
+
+    assert_redirected_to profile_path
+    assert_match(/incorrect/i, flash[:alert])
+    assert @user.reload.oidc_user?
+  end
+
+  test "unlink_oidc removes OIDC link with correct current password" do
+    @user.update!(oidc_provider: "oidc", oidc_uid: "linked-uid")
+
+    delete unlink_oidc_profile_path, params: { current_password: FIXTURE_PASSWORD }
+
+    assert_redirected_to profile_path
+    assert_match(/removed from your account/i, flash[:notice])
+    assert_not @user.reload.oidc_user?
+  end
+
+  test "unlink_oidc allows unlinking without password when auth is disabled" do
+    SettingsService.set(:auth_disabled, true)
+    @user.update!(oidc_provider: "oidc", oidc_uid: "linked-uid")
+
+    delete unlink_oidc_profile_path
+
+    assert_redirected_to profile_path
+    assert_not @user.reload.oidc_user?
+  ensure
+    SettingsService.set(:auth_disabled, false)
   end
 
   # Two-factor authentication tests

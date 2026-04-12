@@ -1,4 +1,7 @@
 class User < ApplicationRecord
+  class OidcIdentityAlreadyLinkedError < StandardError; end
+  class OidcIdentityConflictError < StandardError; end
+
   has_secure_password
   has_many :sessions, dependent: :destroy
   has_many :requests, dependent: :destroy
@@ -19,6 +22,12 @@ class User < ApplicationRecord
   validates :username, presence: true, uniqueness: { conditions: -> { where(deleted_at: nil) } },
     format: { with: /\A[a-z0-9_]+\z/, message: "only allows lowercase letters, numbers, and underscores" }
   validates :name, presence: true
+  validates :oidc_provider, presence: true, if: -> { oidc_uid.present? }
+  validates :oidc_uid, presence: true, if: -> { oidc_provider.present? }
+  validates :oidc_uid, uniqueness: {
+    scope: :oidc_provider,
+    conditions: -> { where(deleted_at: nil) }
+  }, allow_nil: true
   validates :password, length: { minimum: 12 },
     format: {
       with: /\A(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+\z/,
@@ -156,6 +165,21 @@ class User < ApplicationRecord
     oidc_uid.present? && oidc_provider.present?
   end
 
+  def link_oidc_identity!(provider:, uid:)
+    existing_user = self.class.active.find_by(oidc_provider: provider, oidc_uid: uid)
+    raise OidcIdentityAlreadyLinkedError, "OIDC identity is already linked to another user" if existing_user && existing_user != self
+
+    if oidc_user? && (oidc_provider != provider || oidc_uid != uid)
+      raise OidcIdentityConflictError, "User is already linked to a different OIDC identity"
+    end
+
+    update!(oidc_provider: provider, oidc_uid: uid)
+  end
+
+  def unlink_oidc_identity!
+    update!(oidc_provider: nil, oidc_uid: nil)
+  end
+
   # Find existing user or create new one from OIDC auth data
   def self.from_oidc(auth_hash)
     provider = auth_hash["provider"]
@@ -166,20 +190,11 @@ class User < ApplicationRecord
     user = active.find_by(oidc_provider: provider, oidc_uid: uid)
     return user if user
 
-    # Try to find by email and link the OIDC identity
-    email = info["email"].to_s.strip.downcase
-    if email.present?
-      user = active.find_by(username: email.split("@").first.gsub(/[^a-z0-9_]/, "_"))
-      if user && !user.oidc_user?
-        user.update!(oidc_provider: provider, oidc_uid: uid)
-        return user
-      end
-    end
-
     # Auto-create user if enabled
     return nil unless SettingsService.get(:oidc_auto_create_users, default: false)
 
     # Generate username from email or name
+    email = info["email"].to_s.strip.downcase
     base_username = if email.present?
       email.split("@").first.gsub(/[^a-z0-9_]/, "_").downcase
     else

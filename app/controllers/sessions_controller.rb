@@ -3,7 +3,14 @@ class SessionsController < ApplicationController
   rate_limit to: 10, within: 3.minutes, only: :create, with: -> { redirect_to new_session_path, alert: "Try again later." }
 
   def new
-    redirect_to sign_up_path if User.active.none?
+    if User.active.none?
+      redirect_to sign_up_path
+      return
+    end
+
+    return unless auto_redirect_to_oidc?
+
+    render :oidc_redirect
   end
 
   def create
@@ -89,10 +96,14 @@ class SessionsController < ApplicationController
   def destroy
     ActivityTracker.track("user.logout")
     terminate_session
-    redirect_to new_session_path, status: :see_other
+    redirect_to post_logout_redirect_path, status: :see_other
   end
 
   private
+
+  def auto_redirect_to_oidc?
+    SettingsService.oidc_auto_redirect? && params[:local].blank?
+  end
 
   def complete_login(user)
     user.reset_failed_logins!
@@ -130,5 +141,9 @@ class SessionsController < ApplicationController
     details[:username] = user&.username || attempted_username
 
     Rails.logger.info "[Security] #{event_type}: #{details.to_json}"
+  end
+
+  def post_logout_redirect_path
+    SettingsService.oidc_auto_redirect? ? new_session_path(local: 1) : new_session_path
   end
 end

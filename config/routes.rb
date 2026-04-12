@@ -29,6 +29,8 @@ Rails.application.routes.draw do
   resource :profile, only: [ :show, :edit, :update ] do
     get :password, on: :member
     patch :update_password, on: :member
+    post :link_oidc, on: :member
+    delete :unlink_oidc, on: :member
     # Two-factor authentication
     get :two_factor, on: :member
     post :enable_two_factor, on: :member

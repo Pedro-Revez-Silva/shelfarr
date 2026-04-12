@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_31_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_12_113500) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -258,7 +258,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_31_120000) do
     t.datetime "updated_at", null: false
     t.string "username", null: false
     t.index ["deleted_at"], name: "index_users_on_deleted_at"
-    t.index ["oidc_uid"], name: "index_users_on_oidc_uid"
+    t.index ["oidc_provider", "oidc_uid"], name: "index_users_on_oidc_provider_and_uid_unique", unique: true, where: "deleted_at IS NULL AND oidc_provider IS NOT NULL AND oidc_uid IS NOT NULL"
     t.index ["role"], name: "index_users_on_role"
     t.index ["username"], name: "index_users_on_username", unique: true, where: "deleted_at IS NULL"
   end
