@@ -121,7 +121,7 @@ class DownloadJob < ApplicationJob
     FileUtils.mkdir_p(destination_dir)
 
     # Download the file
-    download_file_via_http(download_url, destination_path)
+    download_file_via_http(search_result, download_url, destination_path)
     verify_downloaded_ebook!(destination_path)
 
     # Update download record as completed
@@ -212,29 +212,59 @@ class DownloadJob < ApplicationJob
     result
   end
 
-  def download_file_via_http(url, destination)
-    require "open-uri"
-    validate_direct_download_url!(url)
+  def download_file_via_http(search_result, url, destination)
+    uri = validate_direct_download_url!(url, search_result)
 
     Rails.logger.info "[DownloadJob] Starting HTTP download..."
 
-    URI.open(url, "rb", read_timeout: 300, open_timeout: 30) do |source|
-      File.open(destination, "wb") do |dest|
-        IO.copy_stream(source, dest)
-      end
+    response = direct_download_connection(uri).get(uri.request_uri)
+    raise "Direct download failed with status #{response.status}" unless response.success?
+
+    File.open(destination, "wb") do |dest|
+      dest.write(response.body)
     end
 
     file_size = File.size(destination)
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
+  rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+    raise "Direct download request failed: #{e.message}"
   end
 
-  def validate_direct_download_url!(url)
+  def validate_direct_download_url!(url, search_result = nil)
     uri = URI.parse(url)
-    return if %w[http https].include?(uri.scheme) && uri.host.present?
+    raise "Invalid direct download URL" unless %w[http https].include?(uri.scheme) && uri.host.present?
 
-    raise "Invalid direct download URL"
+    if search_result&.from_zlibrary? && !zlibrary_download_host_allowed?(uri.host)
+      raise "Invalid direct download URL host"
+    end
+
+    uri
   rescue URI::InvalidURIError => e
     raise "Invalid direct download URL: #{e.message}"
+  end
+
+  def direct_download_connection(uri)
+    Faraday.new(url: direct_download_base_url(uri)) do |f|
+      f.adapter Faraday.default_adapter
+      f.headers["User-Agent"] = "Shelfarr/1.0"
+      f.options.timeout = 300
+      f.options.open_timeout = 30
+    end
+  end
+
+  def direct_download_base_url(uri)
+    default_port = (uri.scheme == "https" ? 443 : 80)
+    port_suffix = uri.port == default_port ? "" : ":#{uri.port}"
+    "#{uri.scheme}://#{uri.host}#{port_suffix}"
+  end
+
+  def zlibrary_download_host_allowed?(host)
+    configured_host = URI.parse(SettingsService.get(:zlibrary_url).to_s).host
+    return false if configured_host.blank?
+
+    host == configured_host || host.end_with?(".#{configured_host}")
+  rescue URI::InvalidURIError
+    false
   end
 
   def verify_downloaded_ebook!(path)
