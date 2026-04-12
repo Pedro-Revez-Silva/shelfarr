@@ -93,6 +93,7 @@ Rails.application.routes.draw do
         post :sync_audiobookshelf_library
         post :test_audiobookshelf
         post :test_flaresolverr
+        post :test_zlibrary
         post :test_hardcover
         post :test_oidc
         post :test_webhook

@@ -14,6 +14,7 @@ module Admin
 
       validate_path_template!(key, value)
       SettingsService.set(key, value)
+      handle_settings_side_effects([key.to_s])
 
       respond_to do |format|
         format.html { redirect_to admin_settings_path, notice: "Setting updated." }
@@ -35,28 +36,8 @@ module Admin
         end
       end
 
-      # Reset cached connections and trigger health checks when relevant settings change
       changed_keys = params[:settings]&.keys&.map(&:to_s) || []
-
-      if changed_keys.any? { |k| k.start_with?("audiobookshelf") }
-        AudiobookshelfClient.reset_connection!
-        AudiobookshelfLibrarySyncJob.perform_later if AudiobookshelfClient.configured?
-        run_service_health_check("audiobookshelf")
-      end
-      if changed_keys.any? { |k| indexer_setting_key?(k) }
-        IndexerClient.reset_all_connections!
-        run_service_health_check("indexer")
-      end
-      if changed_keys.any? { |k| k == "flaresolverr_url" }
-        FlaresolverrClient.reset_connection!
-      end
-      if changed_keys.any? { |k| k.start_with?("hardcover") }
-        HardcoverClient.reset_connection!
-        run_service_health_check("hardcover")
-      end
-      if changed_keys.any? { |k| k.start_with?("audiobook_output_path") || k.start_with?("ebook_output_path") }
-        run_service_health_check_now("output_paths")
-      end
+      handle_settings_side_effects(changed_keys)
 
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
@@ -193,6 +174,19 @@ module Admin
       respond_with_flash(alert: "Hardcover error: #{e.message}")
     end
 
+    def test_zlibrary
+      unless ZLibraryClient.configured?
+        respond_with_flash(alert: "Z-Library is not configured. Enable it and enter your account credentials first.")
+        return
+      end
+
+      if ZLibraryClient.test_connection
+        respond_with_flash(notice: "Z-Library connection successful!")
+      else
+        respond_with_flash(alert: "Z-Library connection failed.")
+      end
+    end
+
     def test_oidc
       unless SettingsService.get(:oidc_enabled, default: false)
         respond_with_flash(alert: "OIDC is not enabled. Enable it first.")
@@ -265,6 +259,33 @@ module Admin
       HealthCheckJob.perform_now(service: service_name)
     rescue => e
       Rails.logger.warn "[SettingsController] Failed to run health check for #{service_name}: #{e.message}"
+    end
+
+    def handle_settings_side_effects(changed_keys)
+      return if changed_keys.blank?
+
+      if changed_keys.any? { |k| k.start_with?("audiobookshelf") }
+        AudiobookshelfClient.reset_connection!
+        AudiobookshelfLibrarySyncJob.perform_later if AudiobookshelfClient.configured?
+        run_service_health_check("audiobookshelf")
+      end
+      if changed_keys.any? { |k| indexer_setting_key?(k) }
+        IndexerClient.reset_all_connections!
+        run_service_health_check("indexer")
+      end
+      if changed_keys.any? { |k| k == "flaresolverr_url" }
+        FlaresolverrClient.reset_connection!
+      end
+      if changed_keys.any? { |k| k.start_with?("zlibrary") }
+        ZLibraryClient.reset_connection!
+      end
+      if changed_keys.any? { |k| k.start_with?("hardcover") }
+        HardcoverClient.reset_connection!
+        run_service_health_check("hardcover")
+      end
+      if changed_keys.any? { |k| k.start_with?("audiobook_output_path") || k.start_with?("ebook_output_path") }
+        run_service_health_check_now("output_paths")
+      end
     end
 
     PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze

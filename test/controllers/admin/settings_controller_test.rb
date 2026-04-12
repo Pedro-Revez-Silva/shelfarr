@@ -9,12 +9,14 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     AudiobookshelfClient.reset_connection!
     ProwlarrClient.reset_connection!
     FlaresolverrClient.reset_connection!
+    ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
   end
 
   teardown do
     AudiobookshelfClient.reset_connection!
     ProwlarrClient.reset_connection!
     FlaresolverrClient.reset_connection!
+    ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
   end
 
   test "index requires admin" do
@@ -237,6 +239,18 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a", text: "Send Test Webhook"
   end
 
+  test "index shows z-library settings and test button" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Zlibrary Enabled"
+    assert_select "input[name='settings[zlibrary_enabled]']"
+    assert_select "input[name='settings[zlibrary_url]']"
+    assert_select "input[name='settings[zlibrary_email]']"
+    assert_select "input[name='settings[zlibrary_password]']"
+    assert_select "a", text: "Test Z-Library Connection"
+  end
+
   test "bulk_update validates path templates" do
     patch bulk_update_admin_settings_url, params: {
       settings: {
@@ -400,6 +414,32 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_match /invalid/i, flash[:alert]
+  end
+
+  test "test_zlibrary fails when not configured" do
+    SettingsService.set(:zlibrary_enabled, false)
+    SettingsService.set(:zlibrary_url, "")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+
+    post test_zlibrary_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not configured/i, flash[:alert]
+  end
+
+  test "test_zlibrary succeeds when connection works" do
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    ZLibraryClient.stub :test_connection, true do
+      post test_zlibrary_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
   end
 
   # Test connection tests for Audiobookshelf

@@ -35,6 +35,8 @@ class DownloadJob < ApplicationJob
       # Handle Anna's Archive downloads differently
       if search_result.from_anna_archive?
         handle_anna_archive_download(download, search_result)
+      elsif search_result.from_zlibrary?
+        handle_zlibrary_download(download, search_result)
       else
         handle_standard_download(download, search_result)
       end
@@ -63,6 +65,11 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Anna's Archive error: #{e.message}")
+    rescue ZLibraryClient::Error => e
+      Rails.logger.error "[DownloadJob] Z-Library error for download ##{download.id}: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+      download.update!(status: :failed)
+      download.request.mark_for_attention!("Z-Library error: #{e.message}")
     end
   end
 
@@ -87,6 +94,16 @@ class DownloadJob < ApplicationJob
     end
   end
 
+  def handle_zlibrary_download(download, search_result)
+    book_id, file_hash = search_result.guid.to_s.split(":", 2)
+    raise ZLibraryClient::Error, "Selected Z-Library result is missing download metadata" if book_id.blank? || file_hash.blank?
+
+    Rails.logger.info "[DownloadJob] Fetching Z-Library download URL for book #{book_id}"
+    download_url = ZLibraryClient.get_download_url(id: book_id, hash: file_hash)
+
+    handle_direct_http_download(download, search_result, download_url)
+  end
+
   def handle_direct_http_download(download, search_result, download_url)
     book = download.request.book
 
@@ -105,6 +122,7 @@ class DownloadJob < ApplicationJob
 
     # Download the file
     download_file_via_http(download_url, destination_path)
+    verify_downloaded_ebook!(destination_path)
 
     # Update download record as completed
     download.update!(
@@ -196,6 +214,7 @@ class DownloadJob < ApplicationJob
 
   def download_file_via_http(url, destination)
     require "open-uri"
+    validate_direct_download_url!(url)
 
     Rails.logger.info "[DownloadJob] Starting HTTP download..."
 
@@ -207,6 +226,31 @@ class DownloadJob < ApplicationJob
 
     file_size = File.size(destination)
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
+  end
+
+  def validate_direct_download_url!(url)
+    uri = URI.parse(url)
+    return if %w[http https].include?(uri.scheme) && uri.host.present?
+
+    raise "Invalid direct download URL"
+  rescue URI::InvalidURIError => e
+    raise "Invalid direct download URL: #{e.message}"
+  end
+
+  def verify_downloaded_ebook!(path)
+    raise "Downloaded file does not exist" unless File.exist?(path)
+
+    file_size = File.size(path)
+    raise "Downloaded file is empty" if file_size.zero?
+
+    head = File.binread(path, 256)
+    lowered = head.downcase
+    if lowered.include?("<html") || lowered.include?("<!doctype")
+      FileUtils.rm_f(path)
+      raise "Downloaded file is an HTML page, not an ebook"
+    end
+  rescue Errno::ENOENT => e
+    raise "Downloaded file is missing: #{e.message}"
   end
 
   def trigger_library_scan(book)

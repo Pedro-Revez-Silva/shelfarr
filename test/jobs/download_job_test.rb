@@ -10,6 +10,10 @@ class DownloadJobTest < ActiveJob::TestCase
     DownloadClient.destroy_all
     @request = requests(:pending_request)
     @selected_result = search_results(:selected_result)
+    SettingsService.set(:zlibrary_enabled, false)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
 
     # Create a qBittorrent client
     @client = DownloadClient.create!(
@@ -25,6 +29,7 @@ class DownloadJobTest < ActiveJob::TestCase
     # Clear qBittorrent sessions
     Thread.current[:qbittorrent_sessions] = {}
     Thread.current[:transmission_protocols] = {}
+    ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
 
     # Create a queued download
     @download = @request.downloads.create!(
@@ -32,6 +37,14 @@ class DownloadJobTest < ActiveJob::TestCase
       size_bytes: @selected_result.size_bytes,
       status: :queued
     )
+  end
+
+  teardown do
+    SettingsService.set(:zlibrary_enabled, false)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
   end
 
   test "updates download status to downloading on success" do
@@ -254,7 +267,73 @@ class DownloadJobTest < ActiveJob::TestCase
     assert filename.end_with?(".epub") || filename.end_with?(".pdf") || filename.end_with?(".mobi")
   end
 
+  test "z-library download completes via direct http download" do
+    setup_zlibrary_download
+
+    VCR.turned_off do
+      ZLibraryClient.stub :get_download_url, "https://download.z-library.sk/books/test-book.epub" do
+        stub_request(:get, "https://download.z-library.sk/books/test-book.epub")
+          .to_return(status: 200, body: "PK\x03\x04" + ("x" * 1024), headers: { "Content-Type" => "application/epub+zip" })
+
+        DownloadJob.perform_now(@zlibrary_download.id)
+      end
+    end
+
+    @zlibrary_download.reload
+    assert @zlibrary_download.completed?
+    assert_equal "direct", @zlibrary_download.download_type
+  end
+
+  test "z-library download rejects html error pages" do
+    setup_zlibrary_download
+
+    VCR.turned_off do
+      ZLibraryClient.stub :get_download_url, "https://download.z-library.sk/books/test-book.epub" do
+        stub_request(:get, "https://download.z-library.sk/books/test-book.epub")
+          .to_return(status: 200, body: "<html><body>error</body></html>", headers: { "Content-Type" => "text/html" })
+
+        DownloadJob.perform_now(@zlibrary_download.id)
+      end
+    end
+
+    @zlibrary_download.reload
+    @request.reload
+    assert @zlibrary_download.failed?
+    assert @request.attention_needed?
+  end
+
+  test "validate_direct_download_url rejects non-http schemes" do
+    error = assert_raises RuntimeError do
+      DownloadJob.new.send(:validate_direct_download_url!, "file:///tmp/book.epub")
+    end
+
+    assert_match /Invalid direct download URL/, error.message
+  end
+
   private
+
+  def setup_zlibrary_download
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+    SettingsService.set(:ebook_output_path, Dir.tmpdir)
+
+    zlibrary_result = @request.search_results.create!(
+      guid: "999:deadbeef",
+      title: "Z-Library Result [EPUB]",
+      indexer: "Z-Library",
+      source: SearchResult::SOURCE_ZLIBRARY,
+      status: :selected
+    )
+    @request.search_results.where.not(id: zlibrary_result.id).update_all(status: :rejected)
+
+    @zlibrary_download = @request.downloads.create!(
+      name: zlibrary_result.title,
+      size_bytes: 1_000_000,
+      status: :queued
+    )
+  end
 
   def stub_qbittorrent_success
     # Create a valid torrent file for hash extraction

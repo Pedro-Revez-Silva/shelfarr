@@ -11,7 +11,7 @@ class SettingsService
     },
     "direct" => {
       label: "Direct",
-      description: "Integration downloads such as Anna's Archive"
+      description: "Integration downloads such as Anna's Archive and Z-Library"
     }
   }.freeze
 
@@ -103,6 +103,12 @@ class SettingsService
     anna_archive_api_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" },
     flaresolverr_url: { type: "string", default: "", category: "anna_archive", description: "FlareSolverr URL for bypassing DDoS protection (e.g., http://flaresolverr:8191)" },
 
+    # Z-Library
+    zlibrary_enabled: { type: "boolean", default: false, category: "zlibrary", description: "Enable the unofficial Z-Library fallback for ebook search and direct download. This integration may break if the service changes." },
+    zlibrary_url: { type: "string", default: "https://z-library.sk", category: "zlibrary", description: "Base URL for the Z-Library site you can access (for example https://z-library.sk)" },
+    zlibrary_email: { type: "string", default: "", category: "zlibrary", description: "Z-Library account email used for login" },
+    zlibrary_password: { type: "string", default: "", category: "zlibrary", description: "Z-Library account password used for login" },
+
     # Hardcover Integration
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
     metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover first, OpenLibrary fallback), hardcover, or openlibrary" },
@@ -133,6 +139,7 @@ class SettingsService
     "download" => "Download Settings",
     "audiobookshelf" => "Audiobookshelf",
     "anna_archive" => "Anna's Archive",
+    "zlibrary" => "Z-Library",
     "hardcover" => "Hardcover",
     "paths" => "Output Paths",
     "queue" => "Queue Settings",
@@ -258,6 +265,13 @@ class SettingsService
 
     def anna_archive_configured?
       get(:anna_archive_enabled, default: false) && configured?(:anna_archive_api_key)
+    end
+
+    def zlibrary_configured?
+      get(:zlibrary_enabled, default: false) &&
+        configured?(:zlibrary_url) &&
+        configured?(:zlibrary_email) &&
+        configured?(:zlibrary_password)
     end
 
     def flaresolverr_configured?

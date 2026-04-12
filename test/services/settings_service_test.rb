@@ -4,7 +4,7 @@ require "test_helper"
 
 class SettingsServiceTest < ActiveSupport::TestCase
   setup do
-    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types]).delete_all
+    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -53,5 +53,17 @@ class SettingsServiceTest < ActiveSupport::TestCase
     SettingsService.set(:preferred_download_types, %w[direct torrent])
 
     assert_equal %w[direct torrent usenet], SettingsService.preferred_download_types
+  end
+
+  test "zlibrary_configured? requires enabled flag and credentials" do
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    assert SettingsService.zlibrary_configured?
+
+    SettingsService.set(:zlibrary_enabled, false)
+    assert_not SettingsService.zlibrary_configured?
   end
 end

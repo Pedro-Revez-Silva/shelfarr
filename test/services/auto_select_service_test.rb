@@ -95,6 +95,30 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert result.reload.selected?
   end
 
+  test "direct download results bypass seeder check" do
+    Setting.find_or_create_by(key: "auto_select_min_seeders").update!(
+      value: "100",
+      value_type: "integer",
+      category: "auto_select"
+    )
+
+    result = create_search_result(
+      seeders: nil,
+      source: SearchResult::SOURCE_ZLIBRARY,
+      download_url: nil,
+      magnet_url: nil
+    )
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?
+      assert_equal :auto_selected, selection.reason
+    end
+
+    assert result.reload.selected?
+  end
+
   test "creates download record and enqueues job on success" do
     result = create_search_result(
       title: "Test Book - Audiobook",

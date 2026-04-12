@@ -7,6 +7,19 @@ class SearchJobTest < ActiveJob::TestCase
     @request = requests(:pending_request)
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "test-key")
+    SettingsService.set(:zlibrary_enabled, false)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
+  end
+
+  teardown do
+    SettingsService.set(:zlibrary_enabled, false)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
   end
 
   test "updates request status to searching" do
@@ -353,6 +366,106 @@ class SearchJobTest < ActiveJob::TestCase
         SearchJob.perform_now(@request.id)
       end
     end
+  end
+
+  test "includes z-library results when enabled and anna is unavailable" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    result = ZLibraryClient::Result.new(
+      id: "999",
+      hash: "deadbeef",
+      title: "Z-Library Result",
+      author: @request.book.author,
+      year: 2024,
+      file_type: "epub",
+      file_size: 5_452_595,
+      language: "en"
+    )
+
+    ZLibraryClient.stub :search, ->(query, language: nil, **) {
+      assert_includes query, @request.book.title
+      assert_equal "english", language
+      [result]
+    } do
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    saved_result = @request.search_results.first
+    assert_equal SearchResult::SOURCE_ZLIBRARY, saved_result.source
+    assert_equal "999:deadbeef", saved_result.guid
+    assert_equal "Z-Library", saved_result.indexer
+  end
+
+  test "continues to z-library when indexer URL is invalid" do
+    SettingsService.set(:prowlarr_url, "localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-key")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    result = ZLibraryClient::Result.new(
+      id: "999",
+      hash: "deadbeef",
+      title: "Z-Library Result",
+      author: @request.book.author,
+      year: 2024,
+      file_type: "epub",
+      file_size: 5_452_595,
+      language: "en"
+    )
+
+    ZLibraryClient.stub :search, [result] do
+      assert_nothing_raised do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    @request.reload
+    assert_equal SearchResult::SOURCE_ZLIBRARY, @request.search_results.first.source
+    assert @request.attention_needed?
+  end
+
+  test "skips z-library when anna archive is configured" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, true)
+    SettingsService.set(:anna_archive_api_key, "aa-key")
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    AnnaArchiveClient.stub :search, [] do
+      ZLibraryClient.stub :search, ->(*) { flunk "Z-Library should not be searched when Anna's Archive is available" } do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    @request.reload
+    assert @request.not_found?
+    assert @request.search_results.none? { |result| result.source == SearchResult::SOURCE_ZLIBRARY }
+  end
+
+  test "marks z-library as a valid configured source" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    ZLibraryClient.stub :search, [] do
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    assert @request.not_found?
+    assert_not @request.attention_needed?
   end
 
   test "uses jackett when explicitly selected as the indexer provider" do

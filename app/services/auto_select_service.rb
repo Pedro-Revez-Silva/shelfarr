@@ -76,7 +76,7 @@ class AutoSelectService
   end
 
   def meets_seeder_threshold?(result)
-    return true if result.usenet?
+    return true if result.usenet? || result.direct_download?
     (result.seeders || 0) >= @min_seeders
   end
 
