@@ -20,12 +20,17 @@ class SearchResult < ApplicationRecord
   scope :selectable, -> { pending }
 
   scope :preferred_first, -> {
-    preferred = SettingsService.get(:preferred_download_type, default: "torrent")
-    if preferred == "usenet"
-      order(Arel.sql("CASE WHEN download_url IS NOT NULL AND magnet_url IS NULL AND seeders IS NULL THEN 0 ELSE 1 END"))
-    else
-      order(Arel.sql("CASE WHEN magnet_url IS NOT NULL THEN 0 ELSE 1 END"))
-    end
+    ordered_types = SettingsService.preferred_download_types
+    type_order_sql = ordered_types.each_with_index.map { |type, index| "WHEN '#{type}' THEN #{index}" }.join(" ")
+    download_type_sql = <<~SQL.squish
+      CASE
+        WHEN source = '#{SOURCE_ANNA_ARCHIVE}' THEN 'direct'
+        WHEN download_url IS NOT NULL AND magnet_url IS NULL AND seeders IS NULL THEN 'usenet'
+        ELSE 'torrent'
+      END
+    SQL
+
+    order(Arel.sql("CASE #{download_type_sql} #{type_order_sql} ELSE #{ordered_types.length} END"))
   }
 
   scope :best_first, -> { preferred_first.order(confidence_score: :desc, seeders: :desc, size_bytes: :asc) }
@@ -65,6 +70,18 @@ class SearchResult < ApplicationRecord
   # Check if this is a torrent result
   def torrent?
     magnet_url.present? || (download_url.present? && !usenet?)
+  end
+
+  def direct_download?
+    from_anna_archive?
+  end
+
+  def download_type
+    return "direct" if direct_download?
+    return "usenet" if usenet?
+    return "torrent" if torrent?
+
+    nil
   end
 
   def size_human

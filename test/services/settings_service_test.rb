@@ -4,7 +4,7 @@ require "test_helper"
 
 class SettingsServiceTest < ActiveSupport::TestCase
   setup do
-    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key]).delete_all
+    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -31,5 +31,27 @@ class SettingsServiceTest < ActiveSupport::TestCase
   test "active_indexer_provider returns none when nothing is configured" do
     assert_equal "none", SettingsService.active_indexer_provider
     assert_not SettingsService.active_indexer_configured?
+  end
+
+  test "preferred_download_types defaults to torrent usenet then direct" do
+    assert_equal %w[torrent usenet direct], SettingsService.preferred_download_types
+  end
+
+  test "preferred_download_types falls back to legacy preferred_download_type" do
+    Setting.create!(
+      key: "preferred_download_type",
+      value: "usenet",
+      value_type: "string",
+      category: "download",
+      description: "Legacy preferred download type"
+    )
+
+    assert_equal %w[usenet torrent direct], SettingsService.preferred_download_types
+  end
+
+  test "preferred_download_types preserves stored order and appends missing types" do
+    SettingsService.set(:preferred_download_types, %w[direct torrent])
+
+    assert_equal %w[direct torrent usenet], SettingsService.preferred_download_types
   end
 end

@@ -64,6 +64,28 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /Automatically enqueue search immediately for requests created by non-admin users/
   end
 
+  test "index shows ordered download type preferences" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "input[name='settings[preferred_download_types]'][type='hidden']"
+    assert_select "p", text: /Most preferred first/
+    assert_select "p", text: "Torrent"
+    assert_select "p", text: "Usenet"
+    assert_select "p", text: "Direct"
+  end
+
+  test "bulk_update stores ordered download type preferences" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        preferred_download_types: %w[direct usenet torrent]
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal %w[direct usenet torrent], SettingsService.preferred_download_types
+  end
+
   test "index shows library picker dropdown when audiobookshelf configured" do
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")

@@ -79,6 +79,9 @@
                       <p class="text-sm text-gray-500"><%= data[:definition][:description] %></p>
                     </div>
                     <div class="md:w-2/3">
+                      <% if key.to_s == "preferred_download_types" %>
+                        <%= render "admin/settings/download_type_preferences_field", form: form, key: key, ordered_types: SettingsService.preferred_download_types %>
+                      <% else %>
                       <% case data[:definition][:type] %>
                       <% when "boolean" %>
                         <% if key.to_s == "auth_disabled" %>
@@ -110,6 +113,7 @@
                         <% else %>
                           <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% end %>
+                      <% end %>
                       <% end %>
                     </div>
                   </div>

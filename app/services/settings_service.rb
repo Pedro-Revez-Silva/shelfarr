@@ -1,4 +1,20 @@
 class SettingsService
+  DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
+  DOWNLOAD_TYPE_OPTIONS = {
+    "torrent" => {
+      label: "Torrent",
+      description: "Tracker and magnet-link releases"
+    },
+    "usenet" => {
+      label: "Usenet",
+      description: "NZB releases sent to a usenet client"
+    },
+    "direct" => {
+      label: "Direct",
+      description: "Integration downloads such as Anna's Archive"
+    }
+  }.freeze
+
   # Define all expected settings with their defaults and types
   DEFINITIONS = {
     # Indexer Integration
@@ -11,7 +27,7 @@ class SettingsService
     jackett_indexer_filter: { type: "string", default: "all", category: "indexer", description: "Jackett indexer filter for Torznab queries. Use 'all' for every indexer, or a specific Jackett filter such as 'tag:books'." },
 
     # Download Settings (clients are now managed separately via Admin > Download Clients)
-    preferred_download_type: { type: "string", default: "torrent", category: "download", description: "Preferred download type when both available (torrent or usenet)" },
+    preferred_download_types: { type: "json", default: '["torrent","usenet","direct"]', category: "download", description: "Download types in preference order. Higher-ranked types are preferred when multiple result types are available." },
     download_check_interval: { type: "integer", default: 60, category: "download", description: "Seconds between download status checks" },
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
@@ -132,17 +148,13 @@ class SettingsService
     # Primary getter with default fallback
     def get(key, default: nil)
       key = key.to_sym
+      return preferred_download_types if key == :preferred_download_types
+
+      value = raw_setting_value(key)
+      return value unless value.nil?
+
       definition = DEFINITIONS[key]
-
-      setting = Setting.find_by(key: key.to_s)
-
-      if setting
-        setting.typed_value
-      elsif definition
-        definition[:default]
-      else
-        default
-      end
+      definition ? definition[:default] : default
     end
 
     # Primary setter
@@ -283,6 +295,25 @@ class SettingsService
       get(:auto_approve_requests, default: false)
     end
 
+    def preferred_download_types
+      stored_preferred_types = Setting.find_by(key: "preferred_download_types")&.typed_value
+      ordered_types = normalize_download_types(stored_preferred_types)
+
+      if ordered_types.empty?
+        legacy_type = normalize_download_types(Setting.find_by(key: "preferred_download_type")&.typed_value).first
+        ordered_types = legacy_type ? [ legacy_type ] : []
+      end
+
+      ordered_types + (DOWNLOAD_TYPES - ordered_types)
+    end
+
+    def download_type_options
+      preferred_download_types.map do |type|
+        DOWNLOAD_TYPE_OPTIONS.fetch(type)
+          .merge(value: type)
+      end
+    end
+
     def format_preferences_for(book_type)
       type = book_type.to_s
       return default_format_preferences unless %w[audiobook ebook].include?(type)
@@ -297,6 +328,20 @@ class SettingsService
     end
 
     private
+
+    def raw_setting_value(key)
+      setting = Setting.find_by(key: key.to_s)
+      return setting.typed_value if setting
+
+      DEFINITIONS[key.to_sym]&.dig(:default)
+    end
+
+    def normalize_download_types(values)
+      Array(values).filter_map do |value|
+        normalized = value.to_s.strip.downcase
+        normalized if DOWNLOAD_TYPES.include?(normalized)
+      end.uniq
+    end
 
     def normalized_list_setting(key)
       Array(get(key)).filter_map do |value|

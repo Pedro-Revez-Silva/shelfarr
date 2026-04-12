@@ -1,0 +1,57 @@
+<div class="space-y-3"
+     data-controller="download-type-preferences">
+  <%= form.hidden_field "settings[#{key}]",
+      value: ordered_types.to_json,
+      id: "settings_#{key}",
+      data: {
+        download_type_preferences_target: "input",
+        action: "change->settings-form#autoSave"
+      } %>
+
+  <p class="text-sm text-gray-400">Most preferred first. Drag rows into place or use the arrow buttons.</p>
+
+  <div class="space-y-2" data-download-type-preferences-target="list">
+    <% ordered_types.each do |type| %>
+      <% option = SettingsService::DOWNLOAD_TYPE_OPTIONS.fetch(type) %>
+      <div class="flex items-center gap-3 rounded-lg border border-gray-700 bg-gray-800/80 px-3 py-3"
+           draggable="true"
+           data-download-type-preferences-target="item"
+           data-type="<%= type %>"
+           data-action="dragstart->download-type-preferences#dragStart dragover->download-type-preferences#dragOver drop->download-type-preferences#drop dragend->download-type-preferences#dragEnd">
+        <button type="button"
+                class="cursor-grab text-gray-500 hover:text-gray-300"
+                aria-label="Drag <%= option[:label] %>">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 6h.01M8 12h.01M8 18h.01M16 6h.01M16 12h.01M16 18h.01" />
+          </svg>
+        </button>
+
+        <div class="min-w-0 flex-grow">
+          <p class="text-sm font-medium text-white"><%= option[:label] %></p>
+          <p class="text-xs text-gray-400"><%= option[:description] %></p>
+        </div>
+
+        <div class="flex items-center gap-1">
+          <button type="button"
+                  class="rounded-md p-2 text-gray-400 transition hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  data-action="click->download-type-preferences#moveUp"
+                  data-download-type-preferences-target="moveUpButton"
+                  aria-label="Move <%= option[:label] %> up">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+          <button type="button"
+                  class="rounded-md p-2 text-gray-400 transition hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  data-action="click->download-type-preferences#moveDown"
+                  data-download-type-preferences-target="moveDownButton"
+                  aria-label="Move <%= option[:label] %> down">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    <% end %>
+  </div>
+</div>
