@@ -57,6 +57,32 @@ class Auth::OmniauthCallbacksControllerTest < ActionDispatch::IntegrationTest
     assert_match(/not found/i, flash[:alert])
   end
 
+  test "OIDC login links existing local user when linking is enabled" do
+    SettingsService.set(:oidc_link_existing_users, true)
+
+    user = User.create!(
+      username: "existing_user",
+      name: "Existing User",
+      password: "ValidPassword123!"
+    )
+
+    OmniAuth.config.mock_auth[:oidc] = OmniAuth::AuthHash.new({
+      provider: "oidc",
+      uid: "existing-user-uid",
+      info: {
+        preferred_username: "existing_user",
+        email: "existing_user@example.com",
+        name: "Existing User"
+      }
+    })
+
+    get "/auth/oidc/callback"
+
+    assert_redirected_to root_path
+    assert_equal "oidc", user.reload.oidc_provider
+    assert_equal "existing-user-uid", user.oidc_uid
+  end
+
   test "OIDC login creates user when auto-create enabled" do
     SettingsService.set(:oidc_auto_create_users, true)
     SettingsService.set(:oidc_default_role, "user")

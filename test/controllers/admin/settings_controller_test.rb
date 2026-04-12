@@ -84,6 +84,15 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /Use \/session\/new\?local=1/
   end
 
+  test "index shows OIDC link existing users setting" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Oidc Link Existing Users"
+    assert_select "input[name='settings[oidc_link_existing_users]']"
+    assert_select "p", text: /link an unlinked local user/
+  end
+
   test "bulk_update stores ordered download type preferences" do
     patch bulk_update_admin_settings_url, params: {
       settings: {
@@ -104,6 +113,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal true, SettingsService.get(:oidc_auto_redirect)
+  end
+
+  test "bulk_update stores OIDC link existing users setting" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        oidc_link_existing_users: "true"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal true, SettingsService.get(:oidc_link_existing_users)
   end
 
   test "index shows library picker dropdown when audiobookshelf configured" do

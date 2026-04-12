@@ -190,6 +190,12 @@ class User < ApplicationRecord
     user = active.find_by(oidc_provider: provider, oidc_uid: uid)
     return user if user
 
+    # Optionally link an existing unlinked local account by username
+    if SettingsService.get(:oidc_link_existing_users, default: false)
+      user = find_linkable_user_for_oidc(info, provider:, uid:)
+      return user if user
+    end
+
     # Auto-create user if enabled
     return nil unless SettingsService.get(:oidc_auto_create_users, default: false)
 
@@ -228,6 +234,31 @@ class User < ApplicationRecord
   end
 
   private
+
+  def self.find_linkable_user_for_oidc(info, provider:, uid:)
+    candidate_usernames_from_oidc(info).each do |candidate|
+      user = active.find_by(username: candidate)
+      next unless user
+      next if user.oidc_user?
+
+      user.link_oidc_identity!(provider: provider, uid: uid)
+      return user
+    rescue OidcIdentityAlreadyLinkedError, OidcIdentityConflictError
+      next
+    end
+
+    nil
+  end
+
+  def self.candidate_usernames_from_oidc(info)
+    email_prefix = info["email"].to_s.strip.downcase.split("@").first
+    preferred_username = info["preferred_username"].to_s.strip.downcase
+
+    [ preferred_username, email_prefix ]
+      .map { |value| value.to_s.gsub(/[^a-z0-9_]/, "_") }
+      .reject(&:blank?)
+      .uniq
+  end
 
   def set_admin_if_first_user
     self.role = :admin if User.active.count.zero?

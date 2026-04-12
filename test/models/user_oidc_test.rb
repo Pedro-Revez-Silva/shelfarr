@@ -5,6 +5,7 @@ require "test_helper"
 class UserOidcTest < ActiveSupport::TestCase
   setup do
     SettingsService.set(:oidc_auto_create_users, false)
+    SettingsService.set(:oidc_link_existing_users, false)
     SettingsService.set(:oidc_default_role, "user")
   end
 
@@ -53,6 +54,50 @@ class UserOidcTest < ActiveSupport::TestCase
 
     assert_nil result
     assert_not user.reload.oidc_user?
+  end
+
+  test "from_oidc links existing user by preferred_username when linking is enabled" do
+    SettingsService.set(:oidc_link_existing_users, true)
+
+    user = User.create!(
+      username: "johndoe",
+      name: "John Doe",
+      password: "ValidPassword123!"
+    )
+
+    auth_hash = {
+      "provider" => "oidc",
+      "uid" => "new-uid",
+      "info" => { "preferred_username" => "johndoe" }
+    }
+
+    result = User.from_oidc(auth_hash)
+
+    assert_equal user, result
+    assert_equal "oidc", user.reload.oidc_provider
+    assert_equal "new-uid", user.oidc_uid
+  end
+
+  test "from_oidc links existing user by email prefix when linking is enabled" do
+    SettingsService.set(:oidc_link_existing_users, true)
+
+    user = User.create!(
+      username: "johndoe",
+      name: "John Doe",
+      password: "ValidPassword123!"
+    )
+
+    auth_hash = {
+      "provider" => "oidc",
+      "uid" => "new-uid",
+      "info" => { "email" => "johndoe@example.com" }
+    }
+
+    result = User.from_oidc(auth_hash)
+
+    assert_equal user, result
+    assert_equal "oidc", user.reload.oidc_provider
+    assert_equal "new-uid", user.oidc_uid
   end
 
   test "from_oidc returns nil when user not found and auto-create disabled" do
