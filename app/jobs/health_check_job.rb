@@ -109,18 +109,21 @@ class HealthCheckJob < ApplicationJob
 
     clients.each do |client|
       # Check client-specific download_path if set
-      if client.download_path.present? && !Dir.exist?(client.download_path)
-        issues << "#{client.name}: configured download path '#{client.download_path}' does not exist"
-      end
-
-      # Check category subfolder only for qBittorrent-compatible clients
-      if client.qbittorrent_compatible? && client.category.present?
-        base = client.download_path.presence || local_path
-        if Dir.exist?(base)
-          category_path = File.join(base, client.category)
-          unless Dir.exist?(category_path)
-            issues << "#{client.name}: category folder '#{category_path}' not found — " \
-                      "ensure your Docker mount includes the '#{client.category}' subfolder"
+      if client.download_path.present? 
+        if !Dir.exist?(client.download_path)
+          issues << "#{client.name}: configured download path '#{client.download_path}' does not exist"
+        end
+      else 
+        # No client-specific download_path set, try the default pattern that qbittorrent will set
+        # Check category subfolder only for qBittorrent-compatible clients
+        if client.qbittorrent_compatible? && client.category.present?
+          base = client.download_path.presence || local_path
+          if Dir.exist?(base)
+            category_path = File.join(base, client.category)
+            unless Dir.exist?(category_path)
+              issues << "#{client.name}: category folder '#{category_path}' not found — " \
+                        "ensure your Docker mount includes the '#{client.category}' subfolder"
+            end
           end
         end
       end
