@@ -14,7 +14,7 @@ module Admin
 
       validate_path_template!(key, value)
       SettingsService.set(key, value)
-      handle_settings_side_effects([key.to_s])
+      handle_settings_side_effects([ key.to_s ])
 
       respond_to do |format|
         format.html { redirect_to admin_settings_path, notice: "Setting updated." }

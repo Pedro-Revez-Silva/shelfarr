@@ -304,23 +304,6 @@ class UploadProcessingJob < ApplicationJob
     PathTemplateService.build_destination(book)
   end
 
-  def get_base_path(book)
-    if book.audiobook?
-      SettingsService.get(:audiobook_output_path, default: "/audiobooks")
-    else
-      SettingsService.get(:ebook_output_path, default: "/ebooks")
-    end
-  end
-
-  def sanitize_filename(name)
-    name
-      .gsub(/[<>:"\/\\|?*]/, "")
-      .gsub(/[\x00-\x1f]/, "")
-      .strip
-      .gsub(/\s+/, " ")
-      .truncate(100, omission: "")
-  end
-
   def trigger_library_scan(book)
     library_id = if book.audiobook?
       SettingsService.get(:audiobookshelf_audiobook_library_id)

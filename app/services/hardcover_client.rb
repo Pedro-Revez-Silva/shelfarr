@@ -262,16 +262,16 @@ class HardcoverClient
     def extract_cover_url(doc)
       cached = doc["cached_image"]
       image = doc["image"]
-      
+
       cached_url = cached.is_a?(Hash) ? cached["url"] : cached
       image_url = image.is_a?(Hash) ? image["url"] : image
-      
+
       cached_url || image_url
     end
 
     def extract_hits(raw_results)
       return [] unless raw_results.is_a?(Hash)
-      
+
       hits = raw_results["hits"]
       hits.is_a?(Array) ? hits : []
     end
