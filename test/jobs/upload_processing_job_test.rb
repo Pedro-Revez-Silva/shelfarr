@@ -119,6 +119,41 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "backfills existing matched book with metadata when needed" do
+    original_source = SettingsService.get(:metadata_source)
+    original_token = SettingsService.get(:hardcover_api_token)
+
+    SettingsService.set(:metadata_source, "hardcover")
+    SettingsService.set(:hardcover_api_token, "test_token")
+    HardcoverClient.reset_connection!
+
+    existing = Book.create!(
+      title: "Mistborn",
+      author: "Brandon Sanderson",
+      book_type: :audiobook
+    )
+
+    VCR.turned_off do
+      stub_hardcover_upload_metadata_search(
+        query: "Mistborn Brandon Sanderson",
+        id: 12345,
+        series_position: "3"
+      )
+
+      UploadProcessingJob.perform_now(@upload.id)
+    end
+
+    @upload.reload
+    existing.reload
+
+    assert_equal existing, @upload.book
+    assert_equal "3", existing.series_position
+  ensure
+    SettingsService.set(:metadata_source, original_source)
+    SettingsService.set(:hardcover_api_token, original_token || "")
+    HardcoverClient.reset_connection!
+  end
+
   test "handles failed processing due to missing file" do
     VCR.turned_off do
       stub_open_library_search("Mistborn Brandon Sanderson")
@@ -182,5 +217,61 @@ class UploadProcessingJobTest < ActiveJob::TestCase
         headers: { "Content-Type" => "application/json" },
         body: { numFound: 0, docs: [] }.to_json
       )
+  end
+
+  def stub_hardcover_upload_metadata_search(query:, id:, series_position:)
+    search_body = {
+      data: {
+        search: {
+          results: {
+            hits: [
+              {
+                document: {
+                  id: id,
+                  title: "Mistborn",
+                  author_names: [ "Brandon Sanderson" ],
+                  release_year: 2006,
+                  cached_image: "https://example.com/cover.jpg",
+                  has_audiobook: true,
+                  has_ebook: true
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+
+    book_body = {
+      data: {
+        books: [
+          {
+            id: id,
+            title: "Mistborn",
+            description: "Epic fantasy series.",
+            release_year: 2006,
+            cached_image: "https://example.com/cover.jpg",
+            contributions: [ { author: { name: "Brandon Sanderson" } } ],
+            default_physical_edition: nil,
+            book_series: [],
+            featured_book_series: [
+              {
+                position: series_position,
+                series: { name: "Mistborn" }
+              }
+            ]
+          }
+        ]
+      }
+    }
+
+    headers = { "Content-Type" => "application/json" }
+
+    stub_request(:post, HardcoverClient::BASE_URL)
+      .with { |req| req.body.include?(query) && req.body.include?("query SearchBooks") }
+      .to_return(status: 200, headers: headers, body: search_body.to_json)
+    stub_request(:post, HardcoverClient::BASE_URL)
+      .with { |req| req.body.include?("query GetBook") }
+      .to_return(status: 200, headers: headers, body: book_body.to_json)
   end
 end

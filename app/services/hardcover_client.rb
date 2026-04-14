@@ -16,7 +16,7 @@ class HardcoverClient
   # Data structures for API responses
   SearchResult = Data.define(
     :id, :title, :author, :description, :release_year,
-    :cover_url, :has_audiobook, :has_ebook
+    :cover_url, :has_audiobook, :has_ebook, :series_name, :series_position
   ) do
     def work_id
       "hardcover:#{id}"
@@ -34,7 +34,7 @@ class HardcoverClient
 
   BookDetails = Data.define(
     :id, :title, :author, :description, :release_year,
-    :cover_url, :has_audiobook, :has_ebook, :pages, :genres, :series_name
+    :cover_url, :has_audiobook, :has_ebook, :pages, :genres, :series_name, :series_position
   ) do
     def work_id
       "hardcover:#{id}"
@@ -100,6 +100,13 @@ class HardcoverClient
               pages
             }
             book_series {
+              position
+              series {
+                name
+              }
+            }
+            featured_book_series {
+              position
               series {
                 name
               }
@@ -217,7 +224,9 @@ class HardcoverClient
         release_year: doc["release_year"],
         cover_url: extract_cover_url(doc),
         has_audiobook: doc["has_audiobook"] || false,
-        has_ebook: doc["has_ebook"] || false
+        has_ebook: doc["has_ebook"] || false,
+        series_name: nil,
+        series_position: nil
       )
     end
 
@@ -229,8 +238,7 @@ class HardcoverClient
       # Extract author from contributions
       author = book.dig("contributions", 0, "author", "name")
 
-      # Extract series name
-      series_name = book.dig("book_series", 0, "series", "name")
+      series = featured_or_first_series(book)
 
       # Extract pages from default edition
       pages = book.dig("default_physical_edition", "pages")
@@ -246,7 +254,8 @@ class HardcoverClient
         has_ebook: false,     # Not available in this query
         pages: pages,
         genres: [],           # Would need separate query
-        series_name: series_name
+        series_name: series&.dig("series", "name"),
+        series_position: normalize_series_position(series&.[]("position"))
       )
     end
 
@@ -265,6 +274,22 @@ class HardcoverClient
       
       hits = raw_results["hits"]
       hits.is_a?(Array) ? hits : []
+    end
+
+    def featured_or_first_series(book)
+      featured = book["featured_book_series"]
+      return featured if featured.is_a?(Hash)
+      return featured.first if featured.is_a?(Array) && featured.any?
+
+      series = book["book_series"]
+      series.is_a?(Array) ? series.first : nil
+    end
+
+    def normalize_series_position(value)
+      return nil if value.blank?
+      return value.to_i.to_s if value.is_a?(Numeric) && value.to_i == value
+
+      value.to_s
     end
   end
 end

@@ -3,7 +3,7 @@
 require "test_helper"
 
 class BookMetadataBackfillJobTest < ActiveJob::TestCase
-  test "processes only books with blank series by default" do
+  test "processes books with blank series or series position by default" do
     blank_series = Book.create!(
       title: "Blank Series",
       author: "Author One",
@@ -11,12 +11,21 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
       hardcover_id: "100",
       series: nil
     )
+    blank_series_position = Book.create!(
+      title: "Blank Series Position",
+      author: "Author One",
+      book_type: :ebook,
+      hardcover_id: "102",
+      series: "Known Series",
+      series_position: nil
+    )
     filled_series = Book.create!(
       title: "Filled Series",
       author: "Author Two",
       book_type: :ebook,
       hardcover_id: "101",
-      series: "Known Series"
+      series: "Known Series",
+      series_position: "3"
     )
 
     processed = []
@@ -31,6 +40,7 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
     processed_ids = processed.map(&:first)
 
     assert_includes processed_ids, blank_series.id
+    assert_includes processed_ids, blank_series_position.id
     assert_not_includes processed_ids, filled_series.id
     assert_equal "Known Series", filled_series.reload.series
   end
@@ -55,7 +65,8 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
       cover_url: "https://example.com/cover.jpg",
       has_audiobook: true,
       has_ebook: true,
-      series_name: "The Expanse"
+      series_name: "The Expanse",
+      series_position: "1"
     )
 
     MetadataService.stub(:book_details, details) do
@@ -64,6 +75,7 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
 
     book.reload
     assert_equal "The Expanse", book.series
+    assert_equal "1", book.series_position
     assert_equal "Existing description", book.description
     assert_equal 2011, book.year
     assert_equal "https://example.com/cover.jpg", book.cover_url
@@ -74,7 +86,8 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
       title: "Standalone Book",
       author: "No Source",
       book_type: :ebook,
-      series: nil
+      series: nil,
+      series_position: nil
     )
 
     MetadataService.stub(:book_details, ->(*) { flunk "book_details should not be called without a work_id" }) do
@@ -92,14 +105,16 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
       author: "Author One",
       book_type: :ebook,
       hardcover_id: "201",
-      series: nil
+      series: nil,
+      series_position: nil
     )
     second_book = Book.create!(
       title: "Second Book",
       author: "Author Two",
       book_type: :ebook,
       hardcover_id: "202",
-      series: nil
+      series: nil,
+      series_position: nil
     )
 
     processed = []
@@ -108,7 +123,7 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
       processed << work_id
       raise "boom" if book.id == first_book.id
 
-      book.update!(series: "Recovered Series")
+      book.update!(series: "Recovered Series", series_position: "4")
     }) do
       assert_nothing_raised do
         BookMetadataBackfillJob.perform_now(book_ids: [ first_book.id, second_book.id ])
@@ -118,5 +133,6 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
     assert_equal %w[hardcover:201 hardcover:202], processed.sort
     assert_nil first_book.reload.series
     assert_equal "Recovered Series", second_book.reload.series
+    assert_equal "4", second_book.reload.series_position
   end
 end

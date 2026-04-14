@@ -262,6 +262,39 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert flash[:alert].present?
   end
 
+  test "bulk_update validates filename templates" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        audiobook_filename_template: "{invalid_var}"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert flash[:alert].present?
+  end
+
+  test "bulk_update accepts backward-compatible filename template without title" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        audiobook_filename_template: "{author}"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "{author}", SettingsService.get(:audiobook_filename_template)
+  end
+
+  test "bulk_update rejects invalid series number formatting in filename template" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        audiobook_filename_template: "{seriesNum:abc} - {title}"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert flash[:alert].present?
+  end
+
   test "bulk_update immediately updates output_paths health when paths are valid" do
     Dir.mktmpdir do |audiobook_dir|
       Dir.mktmpdir do |ebook_dir|
@@ -635,6 +668,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_match "turbo-stream", response.body
     assert_match "flash", response.body
+  end
+
+  test "bulk_update accepts optional template syntax for filename templates" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        audiobook_filename_template: "{author} - {series - }{title}"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "{author} - {series - }{title}", SettingsService.get(:audiobook_filename_template)
   end
 
   test "test_prowlarr returns turbo stream when requested" do

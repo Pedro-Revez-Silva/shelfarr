@@ -25,7 +25,8 @@ class BookMetadataBackfillService
         cover_url: value_for(book.cover_url, details&.cover_url, fallback_attrs[:cover_url]),
         year: numeric_value_for(book.year, details&.year, fallback_attrs[:year]),
         description: value_for(book.description, details&.description, fallback_attrs[:description]),
-        series: value_for(book.series, details&.series_name, fallback_attrs[:series])
+        series: value_for(book.series, details&.series_name, fallback_attrs[:series]),
+        series_position: value_for(book.series_position, details&.series_position, fallback_attrs[:series_position])
       }.compact
 
       attrs[:metadata_source] = source if book.metadata_source.blank? || book.new_record?

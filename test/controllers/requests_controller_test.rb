@@ -252,7 +252,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       cover_url: "https://example.com/cover.jpg",
       has_audiobook: true,
       has_ebook: true,
-      series_name: "The Expanse"
+      series_name: "The Expanse",
+      series_position: "1"
     )
 
     MetadataService.stub(:book_details, details) do
@@ -268,6 +269,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     book = Book.last
     assert_equal "The Expanse", book.series
+    assert_equal "1", book.series_position
     assert_equal "Book one of The Expanse", book.description
     assert_equal 2011, book.year
   end
@@ -291,7 +293,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       cover_url: nil,
       has_audiobook: true,
       has_ebook: true,
-      series_name: "The Expanse"
+      series_name: "The Expanse",
+      series_position: "2"
     )
 
     MetadataService.stub(:book_details, details) do
@@ -305,7 +308,9 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       end
     end
 
-    assert_equal "The Expanse", existing_book.reload.series
+    existing_book.reload
+    assert_equal "The Expanse", existing_book.series
+    assert_equal "2", existing_book.series_position
   end
 
   test "create falls back to request params when metadata details lookup fails" do

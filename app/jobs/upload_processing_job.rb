@@ -169,17 +169,34 @@ class UploadProcessingJob < ApplicationJob
     year = metadata&.year || extracted&.year
     description = metadata&.description || extracted&.description
     series = metadata&.series_name if metadata.respond_to?(:series_name)
+    series_position = metadata&.series_position if metadata.respond_to?(:series_position)
     narrator = extracted&.narrator if extracted.respond_to?(:narrator)
+
+    fallback_attrs = {
+      title: title,
+      author: author,
+      cover_url: cover_url,
+      year: year,
+      description: description,
+      series: series,
+      series_position: series_position
+    }
 
     # Check for existing book with same work_id and type
     if work_id.present?
       existing = Book.find_by_work_id(work_id, book_type: book_type)
-      return existing if existing
+      if existing
+        apply_metadata_backfill_if_needed(existing, work_id: work_id, fallback_attrs: fallback_attrs)
+        return existing
+      end
     end
 
     # Try to match against existing books
     result = BookMatcherService.match(title: title, author: author, book_type: book_type)
-    return result.book if result.exact? || result.fuzzy?
+    if result.exact? || result.fuzzy?
+      apply_metadata_backfill_if_needed(result.book, work_id: work_id, fallback_attrs: fallback_attrs)
+      return result.book
+    end
 
     # Create new book with metadata
     if work_id.present?
@@ -192,10 +209,12 @@ class UploadProcessingJob < ApplicationJob
         year: year,
         description: description,
         series: series,
+        series_position: series_position,
         narrator: narrator,
         metadata_source: source
       )
       book.save!
+      BookMetadataBackfillService.apply!(book, work_id: work_id, fallback_attrs: fallback_attrs)
       book
     else
       Book.create!(
@@ -206,9 +225,29 @@ class UploadProcessingJob < ApplicationJob
         year: year,
         description: description,
         series: series,
+        series_position: series_position,
         narrator: narrator
       )
     end
+  end
+
+  def apply_metadata_backfill_if_needed(book, work_id:, fallback_attrs:)
+    return if work_id.blank?
+    return unless needs_metadata_backfill?(book)
+
+    BookMetadataBackfillService.apply!(
+      book,
+      work_id: work_id,
+      fallback_attrs: fallback_attrs
+    )
+  end
+
+  def needs_metadata_backfill?(book)
+    book.series.blank? ||
+      book.series_position.blank? ||
+      book.cover_url.blank? ||
+      book.year.blank? ||
+      book.description.blank?
   end
 
   def move_to_library(upload, book)

@@ -15,7 +15,8 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
       cover_url: "https://example.com/cover.jpg",
       has_audiobook: true,
       has_ebook: true,
-      series_name: "The Expanse"
+      series_name: "The Expanse",
+      series_position: "1"
     )
 
     result = MetadataService.stub(:book_details, details) do
@@ -36,6 +37,7 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
     assert_equal "James S. A. Corey", book.author
     assert_equal "Book one of The Expanse", book.description
     assert_equal "The Expanse", book.series
+    assert_equal "1", book.series_position
     assert_equal 2011, book.year
     assert_equal "https://example.com/cover.jpg", book.cover_url
     assert_equal "hardcover", book.metadata_source
@@ -51,6 +53,7 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
       cover_url: "https://example.com/existing.jpg",
       year: 1999,
       series: "Existing Series",
+      series_position: "7",
       metadata_source: "openlibrary"
     )
 
@@ -64,7 +67,8 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
       cover_url: "https://example.com/fetched.jpg",
       has_audiobook: true,
       has_ebook: true,
-      series_name: "Fetched Series"
+      series_name: "Fetched Series",
+      series_position: "2"
     )
 
     result = MetadataService.stub(:book_details, details) do
@@ -77,6 +81,7 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
     assert_equal "Existing Author", book.author
     assert_equal "Existing description", book.description
     assert_equal "Existing Series", book.series
+    assert_equal "7", book.series_position
     assert_equal 1999, book.year
     assert_equal "https://example.com/existing.jpg", book.cover_url
     assert_equal "openlibrary", book.metadata_source
@@ -103,6 +108,7 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
     assert_equal 2001, book.year
     assert_equal "openlibrary", book.metadata_source
     assert_nil book.series
+    assert_nil book.series_position
   end
 
   test "returns false when there is nothing to fill" do
@@ -115,6 +121,7 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
       cover_url: "https://example.com/cover.jpg",
       year: 2020,
       series: "Known Series",
+      series_position: "9",
       metadata_source: "hardcover"
     )
 
@@ -128,7 +135,8 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
       cover_url: "https://example.com/new-cover.jpg",
       has_audiobook: true,
       has_ebook: true,
-      series_name: "Fetched Series"
+      series_name: "Fetched Series",
+      series_position: "10"
     )
 
     assert_no_changes -> { book.reload.updated_at } do
@@ -138,5 +146,7 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
 
       assert_not result
     end
+
+    assert_equal "9", book.reload.series_position
   end
 end

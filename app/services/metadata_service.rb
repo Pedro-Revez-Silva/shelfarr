@@ -8,7 +8,7 @@ class MetadataService
   # Unified result structure compatible with both sources
   SearchResult = Data.define(
     :source, :source_id, :title, :author, :description, :year,
-    :cover_url, :has_audiobook, :has_ebook, :series_name
+    :cover_url, :has_audiobook, :has_ebook, :series_name, :series_position
   ) do
     def work_id
       "#{source}:#{source_id}"
@@ -148,7 +148,8 @@ class MetadataService
         cover_url: result.cover_url,
         has_audiobook: result.has_audiobook,
         has_ebook: result.has_ebook,
-        series_name: nil
+        series_name: result.series_name,
+        series_position: result.series_position
       )
     end
 
@@ -163,7 +164,8 @@ class MetadataService
         cover_url: result.cover_url(size: :l),
         has_audiobook: nil, # Unknown from OpenLibrary
         has_ebook: nil,
-        series_name: nil
+        series_name: nil,
+        series_position: nil
       )
     end
 
@@ -178,7 +180,8 @@ class MetadataService
         cover_url: details.cover_url,
         has_audiobook: details.has_audiobook,
         has_ebook: details.has_ebook,
-        series_name: details.series_name
+        series_name: details.series_name,
+        series_position: details.series_position
       )
     end
 
@@ -193,7 +196,8 @@ class MetadataService
         cover_url: work.cover_url(size: :l),
         has_audiobook: nil,
         has_ebook: nil,
-        series_name: nil
+        series_name: nil,
+        series_position: nil
       )
     end
 

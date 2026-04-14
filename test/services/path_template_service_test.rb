@@ -59,6 +59,47 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "Stephen King/Unknown Series/The Shining", result
   end
 
+  test "supports optional suffixes for missing path variables" do
+    @book.update!(series: nil)
+    result = PathTemplateService.build_path(@book, "{author}/{series/}{title}")
+    assert_equal "Stephen King/The Shining", result
+  end
+
+  test "supports optional suffixes for present path variables" do
+    @book.update!(series: "The Dark Tower")
+    result = PathTemplateService.build_path(@book, "{author}/{series/}{title}")
+    assert_equal "Stephen King/The Dark Tower/The Shining", result
+  end
+
+  test "builds path with author sort variable" do
+    result = PathTemplateService.build_path(@book, "{authorSort}/{title}")
+    assert_equal "King, Stephen/The Shining", result
+  end
+
+  test "builds path with title sort variable" do
+    @book.update!(title: "The Shining")
+    result = PathTemplateService.build_path(@book, "{author}/{titleSort}")
+    assert_equal "Stephen King/Shining, The", result
+  end
+
+  test "builds path with series sort variable" do
+    @book.update!(series: "The Dark Tower")
+    result = PathTemplateService.build_path(@book, "{author}/{seriesSort}/{title}")
+    assert_equal "Stephen King/Dark Tower, The/The Shining", result
+  end
+
+  test "builds path with series number padding" do
+    @book.update!(series_position: "3")
+    result = PathTemplateService.build_path(@book, "{author}/{seriesNum:00} - {title}")
+    assert_equal "Stephen King/03 - The Shining", result
+  end
+
+  test "build_path removes separator when series number is missing" do
+    @book.update!(series_position: nil)
+    result = PathTemplateService.build_path(@book, "{author}/{seriesNum:00} - {title}")
+    assert_equal "Stephen King/The Shining", result
+  end
+
   test "builds path with narrator variable" do
     @book.update!(narrator: "Frank Muller")
     result = PathTemplateService.build_path(@book, "{author}/{narrator}/{title}")
@@ -148,6 +189,12 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "Template must include {title}", error
   end
 
+  test "validate_template allows filename templates without title for backward compatibility" do
+    valid, error = PathTemplateService.validate_template("{author}", mode: :filename)
+    assert valid
+    assert_nil error
+  end
+
   test "validate_template returns error for path traversal" do
     valid, error = PathTemplateService.validate_template("../{title}")
     assert_not valid
@@ -176,6 +223,30 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     valid, error = PathTemplateService.validate_template("{narrator}/{title}")
     assert valid
     assert_nil error
+  end
+
+  test "validate_template accepts optional suffix syntax" do
+    valid, error = PathTemplateService.validate_template("{author}/{series/}{title}")
+    assert valid
+    assert_nil error
+  end
+
+  test "validate_template accepts sort variables" do
+    valid, error = PathTemplateService.validate_template("{authorSort}/{titleSort}")
+    assert valid
+    assert_nil error
+  end
+
+  test "validate_template accepts series number formatting" do
+    valid, error = PathTemplateService.validate_template("{seriesNum:00} - {title}", mode: :filename)
+    assert valid
+    assert_nil error
+  end
+
+  test "validate_template rejects invalid series number formatting" do
+    valid, error = PathTemplateService.validate_template("{seriesNum:abc} - {title}", mode: :filename)
+    assert_not valid
+    assert_match(/Invalid template expressions/, error)
   end
 
   # Filename template tests
@@ -259,6 +330,46 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
   test "build_filename handles missing narrator gracefully" do
     @book.update!(narrator: nil)
     result = PathTemplateService.build_filename(@book, ".m4b", template: "{author} - {title} ({narrator})")
+    assert_equal "Stephen King - The Shining.m4b", result
+  end
+
+  test "build_filename supports optional suffixes for missing variables" do
+    @book.update!(series: nil)
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{author} - {series - }{title}")
+    assert_equal "Stephen King - The Shining.m4b", result
+  end
+
+  test "build_filename supports optional suffixes for present variables" do
+    @book.update!(series: "Dark Tower")
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{author} - {series - }{title}")
+    assert_equal "Stephen King - Dark Tower - The Shining.m4b", result
+  end
+
+  test "build_filename supports author sort variable" do
+    result = PathTemplateService.build_filename(@book, ".epub", template: "{authorSort} - {title}")
+    assert_equal "King, Stephen - The Shining.epub", result
+  end
+
+  test "build_filename supports title sort variable" do
+    result = PathTemplateService.build_filename(@book, ".epub", template: "{titleSort}")
+    assert_equal "Shining, The.epub", result
+  end
+
+  test "build_filename supports series number padding" do
+    @book.update!(series_position: "7")
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{seriesNum:000} - {title}")
+    assert_equal "007 - The Shining.m4b", result
+  end
+
+  test "build_filename omits missing series number" do
+    @book.update!(series_position: nil)
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{seriesNum:00} - {title}")
+    assert_equal "The Shining.m4b", result
+  end
+
+  test "build_filename removes surrounding separator when series number is missing" do
+    @book.update!(series_position: nil)
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{author} - {seriesNum:00} - {title}")
     assert_equal "Stephen King - The Shining.m4b", result
   end
 

@@ -120,7 +120,7 @@ class HardcoverClientTest < ActiveSupport::TestCase
         "cached_image" => "https://example.com/cover.jpg",
         "contributions" => [ { "author" => { "name" => "Test Author" } } ],
         "default_physical_edition" => { "pages" => 300 },
-        "book_series" => [ { "series" => { "name" => "Test Series" } } ]
+        "book_series" => [ { "position" => 2, "series" => { "name" => "Test Series" } } ]
       })
 
       book = HardcoverClient.book(12345)
@@ -131,6 +131,7 @@ class HardcoverClientTest < ActiveSupport::TestCase
       assert_equal 2020, book.release_year
       assert_equal 300, book.pages
       assert_equal "Test Series", book.series_name
+      assert_equal "2", book.series_position
     end
   end
 
@@ -228,7 +229,9 @@ class HardcoverClientTest < ActiveSupport::TestCase
       release_year: 2020,
       cover_url: nil,
       has_audiobook: true,
-      has_ebook: true
+      has_ebook: true,
+      series_name: nil,
+      series_position: nil
     )
 
     assert_equal "hardcover:12345", result.work_id

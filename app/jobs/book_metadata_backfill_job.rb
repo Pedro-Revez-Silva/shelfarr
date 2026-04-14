@@ -21,6 +21,6 @@ class BookMetadataBackfillJob < ApplicationJob
   def books_for_backfill(book_ids)
     return Book.where(id: book_ids) if book_ids.present?
 
-    Book.where(series: [ nil, "" ])
+    Book.where(series: [ nil, "" ]).or(Book.where(series_position: [ nil, "" ]))
   end
 end

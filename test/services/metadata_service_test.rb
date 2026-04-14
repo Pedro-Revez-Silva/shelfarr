@@ -91,6 +91,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
 
       assert_equal "hardcover", result.source
       assert_equal "Test Book", result.title
+      assert_nil result.series_position
     end
   end
 
@@ -122,12 +123,14 @@ class MetadataServiceTest < ActiveSupport::TestCase
       cover_url: "https://example.com/cover.jpg",
       has_audiobook: true,
       has_ebook: true,
-      series_name: "Test Series"
+      series_name: "Test Series",
+      series_position: "1"
     )
 
     assert_equal "hardcover:123", result.work_id
     assert_equal 2020, result.first_publish_year
     assert_nil result.cover_id
+    assert_equal "1", result.series_position
   end
 
   test "metadata_source returns configured value" do
