@@ -274,21 +274,40 @@ class PathTemplateService
     end
 
     def parse_expression(expression)
-      match = expression.match(/\A(?<name>\w+)(?<rest>.*)\z/)
-      return nil unless match
+      expression = expression.to_s
+      return nil if expression.empty?
 
-      name = match[:name]
-      rest = match[:rest].to_s
+      name_length = 0
+      expression.each_byte do |byte|
+        if byte == 95 || (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+          name_length += 1
+          next
+        end
+        break
+      end
+
+      return nil if name_length == 0
+
+      name = expression[0...name_length]
+      rest = expression[name_length..].to_s
       format = nil
       suffix = rest
 
       if rest.start_with?(":")
         format_and_suffix = rest.delete_prefix(":")
-        format_match = format_and_suffix.match(/\A(?<format>0+)(?<suffix>.*)\z/)
-        return nil unless format_match
+        return nil if format_and_suffix.empty?
+        return nil unless format_and_suffix.getbyte(0) == 48
 
-        format = format_match[:format]
-        suffix = format_match[:suffix].to_s
+        format_length = 0
+        format_and_suffix.each_byte do |byte|
+          break if byte != 48
+          format_length += 1
+        end
+
+        return nil if format_length == 0
+
+        format = format_and_suffix[0...format_length]
+        suffix = format_and_suffix[format_length..].to_s
       end
 
       {
