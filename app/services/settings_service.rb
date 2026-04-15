@@ -108,6 +108,7 @@ class SettingsService
     zlibrary_url: { type: "string", default: "https://z-library.sk", category: "zlibrary", description: "Base URL for the Z-Library site you can access (for example https://z-library.sk)" },
     zlibrary_email: { type: "string", default: "", category: "zlibrary", description: "Z-Library account email used for login" },
     zlibrary_password: { type: "string", default: "", category: "zlibrary", description: "Z-Library account password used for login" },
+    zlibrary_strict_host_check: { type: "boolean", default: true, category: "zlibrary", description: "Require download URLs to match the configured Z-Library domain. Disable if downloads fail because Z-Library serves files from a different domain (CDN)." },
 
     # Hardcover Integration
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },

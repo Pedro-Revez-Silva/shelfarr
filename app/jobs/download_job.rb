@@ -268,6 +268,8 @@ class DownloadJob < ApplicationJob
   end
 
   def zlibrary_download_host_allowed?(host)
+    return true unless SettingsService.get(:zlibrary_strict_host_check, default: true)
+
     configured_host = URI.parse(SettingsService.get(:zlibrary_url).to_s).host
     return false if configured_host.blank?
 

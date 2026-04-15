@@ -228,6 +228,8 @@ class ZLibraryClient
     end
 
     def download_host_allowed?(host)
+      return true unless SettingsService.get(:zlibrary_strict_host_check, default: true)
+
       configured_host = configured_domain
       host == configured_host || host.end_with?(".#{configured_host}")
     end
