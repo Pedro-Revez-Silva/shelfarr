@@ -174,7 +174,7 @@ module IndexerClients
         url = item["downloadUrl"]
         return nil if url.blank? || url.start_with?("magnet:")
 
-        Rails.logger.debug "[IndexerClients::Prowlarr] Received download URL from indexer '#{item['indexer']}' (#{url.length} chars): #{url.truncate(100)}"
+        Rails.logger.debug "[IndexerClients::Prowlarr] Received download URL from indexer '#{item['indexer']}' (#{url.length} chars): #{UrlRedactor.redact(url).truncate(100)}"
         url
       end
 

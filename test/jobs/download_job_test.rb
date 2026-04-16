@@ -200,6 +200,70 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "uses book metadata as usenet job name for sabnzbd" do
+    @client.destroy!
+    sabnzbd = DownloadClient.create!(
+      name: "Test SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8080",
+      api_key: "test-api-key-12345",
+      priority: 0,
+      enabled: true
+    )
+    @selected_result.update!(
+      magnet_url: nil,
+      download_url: "http://prowlarr:9696/11/download?apikey=secret&file=The+Pending+Ebook",
+      seeders: nil
+    )
+
+    logger = build_test_logger
+
+    Rails.stub(:logger, logger) do
+      VCR.turned_off do
+        stub_request(:get, "http://localhost:8080/api")
+          .with(query: hash_including(
+            "mode" => "version",
+            "apikey" => "test-api-key-12345",
+            "output" => "json"
+          ))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "version" => "4.0.0" }.to_json
+          )
+
+        request_stub = stub_request(:get, "http://localhost:8080/api")
+          .with(query: hash_including(
+            "mode" => "addurl",
+            "name" => "http://prowlarr:9696/11/download?apikey=secret&file=The+Pending+Ebook",
+            "nzbname" => "Another Author - The Pending Ebook",
+            "apikey" => "test-api-key-12345",
+            "output" => "json"
+          ))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "status" => true, "nzo_ids" => ["SABnzbd_nzo_12345"] }.to_json
+          )
+
+        DownloadJob.perform_now(@download.id)
+
+        assert_requested request_stub
+      end
+    end
+
+    @download.reload
+    assert @download.downloading?
+    assert_equal sabnzbd.id.to_s, @download.download_client_id
+    assert_equal "SABnzbd_nzo_12345", @download.external_id
+    assert_equal "usenet", @download.download_type
+
+    log_output = logger.messages.join("\n")
+    assert_includes log_output, "apikey=[REDACTED]"
+    assert_includes log_output, "file=The+Pending+Ebook"
+    assert_not_includes log_output, "apikey=secret"
+  end
+
   test "skips non-existent downloads" do
     assert_nothing_raised do
       DownloadJob.perform_now(999999)
@@ -390,6 +454,16 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal [ @request ], attention_requests
   end
 
+  test "build_usenet_job_name falls back to search result title when book metadata is blank" do
+    book = Struct.new(:author, :title).new("", "")
+    request = Struct.new(:book).new(book)
+    search_result = Struct.new(:request, :title).new(request, "Indexer Result Title")
+
+    result = DownloadJob.new.send(:build_usenet_job_name, search_result)
+
+    assert_equal "Indexer Result Title", result
+  end
+
   private
 
   def setup_zlibrary_download
@@ -451,5 +525,31 @@ class DownloadJobTest < ActiveJob::TestCase
         headers: { "Content-Type" => "application/json" },
         body: [{ "hash" => expected_hash, "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" }].to_json
       )
+  end
+
+  def build_test_logger
+    Class.new do
+      attr_reader :messages
+
+      def initialize
+        @messages = []
+      end
+
+      def debug(message)
+        @messages << message
+      end
+
+      def info(message)
+        @messages << message
+      end
+
+      def warn(message)
+        @messages << message
+      end
+
+      def error(message)
+        @messages << message
+      end
+    end.new
   end
 end

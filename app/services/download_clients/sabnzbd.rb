@@ -7,11 +7,12 @@ module DownloadClients
     # Add an NZB by URL
     def add_torrent(url, options = {})
       Rails.logger.info "[Sabnzbd] Adding URL to queue (#{url.to_s.length} chars)"
-      Rails.logger.debug "[Sabnzbd] Full URL being sent: #{url}"
+      Rails.logger.debug "[Sabnzbd] Full URL being sent: #{UrlRedactor.redact(url)}"
 
       params = {
         mode: "addurl",
         name: url,
+        nzbname: options[:nzbname].presence,
         apikey: api_key,
         output: "json"
       }

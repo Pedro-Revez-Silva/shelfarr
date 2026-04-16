@@ -180,6 +180,28 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     assert_equal "magnet:?xt=test", result.download_link
   end
 
+  test "extract_download_url redacts sensitive query params in logs" do
+    logger = Struct.new(:messages) do
+      def debug(message)
+        messages << message
+      end
+    end.new([])
+
+    item = {
+      "indexer" => "TestIndexer",
+      "downloadUrl" => "http://prowlarr:9696/11/download?apikey=secret&file=Atomic+Habits"
+    }
+
+    url = Rails.stub(:logger, logger) do
+      ProwlarrClient.send(:extract_download_url, item)
+    end
+
+    assert_equal item["downloadUrl"], url
+    assert_includes logger.messages.first, "apikey=[REDACTED]"
+    assert_includes logger.messages.first, "file=Atomic+Habits"
+    assert_not_includes logger.messages.first, "apikey=secret"
+  end
+
   test "Result.size_human returns formatted size" do
     result = ProwlarrClient::Result.new(
       guid: "test", title: "Test", indexer: "Test", size_bytes: 1073741824,

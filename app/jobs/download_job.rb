@@ -86,7 +86,7 @@ class DownloadJob < ApplicationJob
     Rails.logger.info "[DownloadJob] Fetching download URL from Anna's Archive for MD5: #{md5}"
 
     download_url = AnnaArchiveClient.get_download_url(md5)
-    Rails.logger.info "[DownloadJob] Got download URL: #{download_url.truncate(100)}"
+    Rails.logger.info "[DownloadJob] Got download URL: #{UrlRedactor.redact(download_url).truncate(100)}"
 
     # Check if it's a torrent/magnet link or direct download
     if download_url.start_with?("magnet:") || download_url.end_with?(".torrent")
@@ -399,11 +399,11 @@ class DownloadJob < ApplicationJob
 
     download_link = search_result.download_link
     Rails.logger.info "[DownloadJob] Download link type: #{is_usenet ? 'usenet' : 'torrent'}, length: #{download_link.to_s.length} chars"
-    Rails.logger.debug "[DownloadJob] Full download URL: #{download_link}"
+    Rails.logger.debug "[DownloadJob] Full download URL: #{UrlRedactor.redact(download_link)}"
 
     if is_usenet
       # SABnzbd returns a hash with nzo_ids
-      result = client.add_torrent(download_link)
+      result = client.add_torrent(download_link, nzbname: build_usenet_job_name(search_result))
       external_id = result.is_a?(Hash) ? result["nzo_ids"]&.first : nil
       success = external_id.present?
     else
@@ -467,6 +467,14 @@ class DownloadJob < ApplicationJob
                          "but Download ##{existing.id} (request ##{existing.request_id}) already has this ID. " \
                          "This indicates a potential race condition that should be investigated."
     end
+  end
+
+  def build_usenet_job_name(search_result)
+    book = search_result.request.book
+    parts = [ book.author.to_s.strip.presence, book.title.to_s.strip.presence ].compact
+    return parts.join(" - ") if parts.any?
+
+    search_result.title.to_s.strip.presence
   end
 
   def track_request_event(request, event_type, download: nil, message: nil, level: :info, details: {})
