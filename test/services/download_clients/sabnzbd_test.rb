@@ -29,6 +29,29 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent passes nzbname when provided" do
+    VCR.turned_off do
+      request_stub = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including(
+          "mode" => "addurl",
+          "name" => "http://example.com/test.nzb",
+          "nzbname" => "Another Author - The Pending Ebook",
+          "apikey" => "test-api-key-12345",
+          "output" => "json"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => true, "nzo_ids" => ["SABnzbd_nzo_12345"] }.to_json
+        )
+
+      result = @client.add_torrent("http://example.com/test.nzb", nzbname: "Another Author - The Pending Ebook")
+
+      assert result
+      assert_requested request_stub
+    end
+  end
+
   test "list_torrents returns queue and history items" do
     VCR.turned_off do
       stub_request(:get, %r{localhost:8080/api.*mode=queue})
