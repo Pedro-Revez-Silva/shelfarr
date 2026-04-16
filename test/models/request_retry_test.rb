@@ -163,6 +163,52 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_equal "request", event.source
   end
 
+  test "mark_for_attention! sends attention notification" do
+    request = @pending
+    attention_requests = []
+
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      request.mark_for_attention!("Something broke")
+    end
+
+    assert_equal [ request ], attention_requests
+  end
+
+  test "mark_for_attention! still marks request when outbound notification fails" do
+    request = @pending
+
+    OutboundNotifications::Dispatcher.stub :notify, ->(**) { raise "Webhook delivery failed" } do
+      request.mark_for_attention!("Something broke")
+    end
+
+    request.reload
+    assert request.attention_needed?
+    assert_equal "Something broke", request.issue_description
+  end
+
+  test "schedule_retry! sends attention notification when max_retries reached" do
+    max_retries = SettingsService.get(:max_retries)
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :searching,
+      retry_count: max_retries
+    )
+    attention_requests = []
+
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      result = request.schedule_retry!
+
+      assert_not result
+    end
+
+    request.reload
+    assert request.not_found?
+    assert request.attention_needed?
+    assert_equal max_retries + 1, request.retry_count
+    assert_equal [ request ], attention_requests
+  end
+
   test "retry_now! retries download when there is a selected result and failed download" do
     book = Book.create!(title: "Test Book", book_type: :ebook, open_library_work_id: "OL_RETRY_DL")
     request = Request.create!(

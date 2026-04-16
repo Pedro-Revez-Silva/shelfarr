@@ -357,6 +357,39 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "sends attention notification when no search result selected" do
+    @request.search_results.update_all(status: :pending)
+    attention_requests = []
+
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal [ @request ], attention_requests
+  end
+
+  test "sends attention notification when no download client is available" do
+    DownloadClient.destroy_all
+    attention_requests = []
+
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal [ @request ], attention_requests
+  end
+
+  test "sends attention notification when selected result has no download link" do
+    @selected_result.update!(download_url: nil, magnet_url: nil, source: "prowlarr")
+    attention_requests = []
+
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal [ @request ], attention_requests
+  end
+
   private
 
   def setup_zlibrary_download

@@ -69,6 +69,17 @@ class NotificationServiceTest < ActiveSupport::TestCase
     assert_equal "Attention Needed", notification.title
   end
 
+  test "request_attention enqueues outbound webhook delivery" do
+    assert_enqueued_with(job: OutboundWebhookDeliveryJob) do
+      NotificationService.request_attention(@request)
+    end
+
+    enqueued = enqueued_jobs.find { |job| job[:job] == OutboundWebhookDeliveryJob }
+    args = enqueued[:args].first.with_indifferent_access
+    assert_equal "request_attention", args[:event]
+    assert_equal @request.id, args[:request_id]
+  end
+
   test "request_created only enqueues outbound webhook delivery" do
     assert_no_difference "Notification.count" do
       assert_enqueued_with(job: OutboundWebhookDeliveryJob) do

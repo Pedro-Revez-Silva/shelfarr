@@ -390,6 +390,54 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "sends attention notification when download fails in client" do
+    VCR.turned_off do
+      stub_qbittorrent_auth
+      stub_qbittorrent_torrent_info(progress: 0, state: "error")
+      attention_requests = []
+
+      NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+        DownloadMonitorJob.perform_now
+      end
+
+      assert_equal [ @request ], attention_requests
+    end
+  end
+
+  test "sends attention notification when download is missing after threshold" do
+    @download.update!(not_found_count: DownloadMonitorJob::NOT_FOUND_THRESHOLD - 1)
+
+    VCR.turned_off do
+      stub_qbittorrent_auth
+      stub_qbittorrent_torrent_not_found
+      attention_requests = []
+
+      NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+        DownloadMonitorJob.perform_now
+      end
+
+      assert_equal [ @request ], attention_requests
+    end
+  end
+
+  test "sends attention notification when download stays queued past timeout" do
+    @download.update_columns(
+      status: Download.statuses[:queued],
+      external_id: nil,
+      download_client_id: nil,
+      created_at: 10.minutes.ago,
+      updated_at: 10.minutes.ago
+    )
+    SettingsService.set(:download_enqueue_timeout_minutes, 5)
+    attention_requests = []
+
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      DownloadMonitorJob.perform_now
+    end
+
+    assert_equal [ @request ], attention_requests
+  end
+
   private
 
   def stub_qbittorrent_auth

@@ -69,6 +69,18 @@ class SearchJobTest < ActiveJob::TestCase
     assert_includes @request.issue_description, "No search sources configured"
   end
 
+  test "sends attention notification when no search sources configured" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    attention_requests = []
+
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      SearchJob.perform_now(@request.id)
+    end
+
+    assert_equal [ @request ], attention_requests
+  end
+
   test "skips non-pending requests" do
     @request.update!(status: :searching)
 
@@ -120,6 +132,21 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "sends attention notification when auto-select is disabled" do
+    SettingsService.set(:auto_select_enabled, false)
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+      attention_requests = []
+
+      NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+        SearchJob.perform_now(@request.id)
+      end
+
+      assert_equal [ @request ], attention_requests
+    end
+  end
+
   test "marks for attention when auto-select fails to find suitable result" do
     SettingsService.set(:auto_select_enabled, true)
 
@@ -136,6 +163,53 @@ class SearchJobTest < ActiveJob::TestCase
       assert @request.attention_needed?
       assert_includes @request.issue_description, "none matched auto-select criteria"
     end
+  end
+
+  test "sends attention notification when auto-select fails" do
+    SettingsService.set(:auto_select_enabled, true)
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+      attention_requests = []
+
+      NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+        AutoSelectService.stub :call, OpenStruct.new(success?: false) do
+          SearchJob.perform_now(@request.id)
+        end
+      end
+
+      assert_equal [ @request ], attention_requests
+    end
+  end
+
+  test "sends attention notification on indexer authentication failure" do
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696}).to_raise(IndexerClients::Base::AuthenticationError.new("Invalid API key"))
+      attention_requests = []
+
+      NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+        SearchJob.perform_now(@request.id)
+      end
+
+      assert_equal [ @request ], attention_requests
+    end
+  end
+
+  test "sends attention notification on Anna's Archive bot protection" do
+    SettingsService.set(:prowlarr_api_key, "")
+    attention_requests = []
+
+    AnnaArchiveClient.stub :configured?, true do
+      AnnaArchiveClient.stub :search, ->(*, **) {
+        raise AnnaArchiveClient::BotProtectionError, "Configure FlareSolverr"
+      } do
+        NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+          SearchJob.perform_now(@request.id)
+        end
+      end
+    end
+
+    assert_equal [ @request ], attention_requests
   end
 
   test "does not mark for attention when auto-select succeeds" do

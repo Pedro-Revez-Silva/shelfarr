@@ -26,9 +26,12 @@ class Request < ApplicationRecord
   scope :processable, -> { pending.order(created_at: :asc) }
   scope :with_issues, -> { where(attention_needed: true).or(where(status: :failed)) }
 
-  def mark_for_attention!(description)
-    update!(attention_needed: true, issue_description: description)
-    track_diagnostic("attention_flagged", message: description, level: :warn)
+  def mark_for_attention!(description, **attributes)
+    self.class.transaction do
+      update!(attributes.merge(attention_needed: true, issue_description: description))
+      track_diagnostic("attention_flagged", message: description, level: :warn)
+    end
+    NotificationService.request_attention(self)
   end
 
   def clear_attention!
@@ -52,7 +55,11 @@ class Request < ApplicationRecord
 
     with_lock do
       if retry_count >= max_retries
-        flag_max_retries_exceeded!
+        mark_for_attention!(
+          "Maximum retry attempts (#{max_retries}) exceeded. Manual intervention required.",
+          status: :not_found,
+          retry_count: retry_count + 1
+        )
         return false
       end
 
@@ -70,16 +77,6 @@ class Request < ApplicationRecord
       )
     end
     true
-  end
-
-  # Flag request when max retries exceeded
-  def flag_max_retries_exceeded!
-    increment!(:retry_count)
-    update!(
-      status: :not_found,
-      attention_needed: true,
-      issue_description: "Maximum retry attempts (#{SettingsService.get(:max_retries)}) exceeded. Manual intervention required."
-    )
   end
 
   # Re-queue a not_found request back to pending

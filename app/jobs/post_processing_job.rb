@@ -38,7 +38,6 @@ class PostProcessingJob < ApplicationJob
       Rails.logger.error "[PostProcessingJob] Failed for download #{download.id}: #{e.message}"
       Rails.logger.error e.backtrace.first(5).join("\n")
       request.mark_for_attention!("Post-processing failed: #{e.message}")
-      NotificationService.request_attention(request)
     end
   end
 

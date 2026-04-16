@@ -431,6 +431,17 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_match /source path is blank/i, @request.issue_description
   end
 
+  test "sends attention notification when post-processing fails" do
+    @download.update!(download_path: "")
+    attention_requests = []
+
+    NotificationService.stub :request_attention, ->(req) { attention_requests << req } do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert_equal [ @request ], attention_requests
+  end
+
   test "marks request for attention when source path does not exist" do
     @download.update!(download_path: "/nonexistent/path/that/does/not/exist")
 
