@@ -49,6 +49,19 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "File uploaded successfully. Processing started.", flash[:notice]
   end
 
+  test "create with m4a audiobook starts processing" do
+    file = fixture_file_upload("test_audiobook.m4a", "audio/mp4")
+
+    assert_difference "Upload.count", 1 do
+      assert_enqueued_with(job: UploadProcessingJob) do
+        post admin_uploads_url, params: { file: file }
+      end
+    end
+
+    assert_redirected_to admin_uploads_path
+    assert_equal "File uploaded successfully. Processing started.", flash[:notice]
+  end
+
   test "create with ebook file starts processing" do
     file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
 

@@ -119,7 +119,23 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "h1", "Upload Book"
     assert_select "form[action='#{uploads_path}']"
-    assert_select "input[type='file'][name='file']"
+    assert_select "input[type='file'][name='file'][accept='.m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3']"
+  end
+
+  test "create accepts m4a audiobook uploads for regular users when enabled" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    file = fixture_file_upload("test_audiobook.m4a", "audio/mp4")
+
+    assert_difference "Upload.count", 1 do
+      assert_enqueued_with(job: UploadProcessingJob) do
+        post uploads_url, params: { file: file }
+      end
+    end
+
+    assert_redirected_to uploads_path
+    assert_equal "File uploaded successfully. Processing started.", flash[:notice]
+    assert_equal @user, Upload.order(:created_at).last.user
   end
 
   test "create redirects regular users when uploads are disabled" do
