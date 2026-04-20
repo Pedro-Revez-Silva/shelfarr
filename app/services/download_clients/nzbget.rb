@@ -237,8 +237,13 @@ module DownloadClients
     end
 
     def normalize_download_path(url)
-      url = url.presence || ""
-      url.to_s.sub(/\.\#[^\/]+$/, "")
+      path = url.presence.to_s
+      suffix_index = path.rindex(".#")
+
+      return path unless suffix_index
+      return path if path.index("/", suffix_index)
+
+      path[0...suffix_index]
     end
   end
 end

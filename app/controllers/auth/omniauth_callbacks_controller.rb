@@ -3,7 +3,6 @@
 module Auth
   class OmniauthCallbacksController < ApplicationController
     allow_unauthenticated_access only: %i[oidc failure]
-    protect_from_forgery except: :oidc
 
     def oidc
       auth_hash = request.env["omniauth.auth"]

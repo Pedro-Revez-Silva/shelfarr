@@ -312,4 +312,9 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
       assert_equal :failed, torrents.find { |t| t.hash == "3" }.state
     end
   end
+
+  test "normalize_download_path strips trailing nzbget suffixes without altering nested paths" do
+    assert_equal "/downloads/complete/Book Title", @client.send(:normalize_download_path, "/downloads/complete/Book Title.#123")
+    assert_equal "/downloads/.#staging/Book Title", @client.send(:normalize_download_path, "/downloads/.#staging/Book Title")
+  end
 end
