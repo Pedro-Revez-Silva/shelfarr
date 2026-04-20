@@ -8,7 +8,7 @@ module DownloadClients
   class Transmission < Base
     class LegacyProtocolRequired < StandardError; end
 
-    TORRENT_FIELDS = %w[
+    JSONRPC_TORRENT_FIELDS = %w[
       id
       name
       hash_string
@@ -18,6 +18,18 @@ module DownloadClients
       download_dir
       error
       error_string
+    ].freeze
+
+    LEGACY_TORRENT_FIELDS = %w[
+      id
+      name
+      hashString
+      percentDone
+      status
+      totalSize
+      downloadDir
+      error
+      errorString
     ].freeze
 
     def add_torrent(url, options = {})
@@ -49,7 +61,7 @@ module DownloadClients
     def torrent_info(hash)
       ensure_authenticated!
 
-      response = rpc_request("torrent-get", ids: [hash], fields: TORRENT_FIELDS)
+      response = rpc_request("torrent-get", ids: [hash], fields: torrent_fields)
       return nil unless response && response["torrents"].is_a?(Array)
 
       info = response["torrents"].find { |torrent| transmission_value(torrent, "hash_string", "hashString") == hash.to_s }
@@ -62,7 +74,7 @@ module DownloadClients
       ensure_authenticated!
 
       ids = filter[:ids] || "all"
-      response = rpc_request("torrent-get", ids: ids, fields: TORRENT_FIELDS)
+      response = rpc_request("torrent-get", ids: ids, fields: torrent_fields)
       torrents = response&.fetch("torrents", []) || []
 
       torrents.map { |torrent| parse_torrent(torrent) }
@@ -247,8 +259,16 @@ module DownloadClients
     end
 
     def torrent_ids
-      response = rpc_request("torrent-get", ids: "all", fields: [ "hash_string" ])
+      response = rpc_request("torrent-get", ids: "all", fields: [ torrent_hash_field ])
       response.fetch("torrents", []).map { |torrent| transmission_value(torrent, "hash_string", "hashString") }.compact
+    end
+
+    def torrent_fields
+      protocol_mode.to_sym == :legacy ? LEGACY_TORRENT_FIELDS : JSONRPC_TORRENT_FIELDS
+    end
+
+    def torrent_hash_field
+      protocol_mode.to_sym == :legacy ? "hashString" : "hash_string"
     end
 
     def prepare_torrent_submission(url)

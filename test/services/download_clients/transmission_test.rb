@@ -5,6 +5,30 @@ require "base64"
 require "bencode"
 
 class DownloadClients::TransmissionTest < ActiveSupport::TestCase
+  JSONRPC_TORRENT_FIELDS = %w[
+    id
+    name
+    hash_string
+    percent_done
+    status
+    total_size
+    download_dir
+    error
+    error_string
+  ].freeze
+
+  LEGACY_TORRENT_FIELDS = %w[
+    id
+    name
+    hashString
+    percentDone
+    status
+    totalSize
+    downloadDir
+    error
+    errorString
+  ].freeze
+
   setup do
     DownloadClient.destroy_all
     @client_record = DownloadClient.create!(
@@ -124,7 +148,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")
       stub_request(:post, "http://localhost:9091/transmission/rpc")
-        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => DownloadClients::Transmission::TORRENT_FIELDS }) }
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => JSONRPC_TORRENT_FIELDS }) }
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
@@ -164,7 +188,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     VCR.turned_off do
       session_stub = stub_session_handshake("http://localhost:9091/transmission/rpc")
       list_stub = stub_request(:post, "http://localhost:9091/transmission/rpc")
-        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => DownloadClients::Transmission::TORRENT_FIELDS }) }
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => JSONRPC_TORRENT_FIELDS }) }
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
@@ -183,7 +207,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")
       stub_request(:post, "http://localhost:9091/transmission/rpc")
-        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "missing" ], "fields" => DownloadClients::Transmission::TORRENT_FIELDS }) }
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "missing" ], "fields" => JSONRPC_TORRENT_FIELDS }) }
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
@@ -203,7 +227,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")
       stub_request(:post, "http://localhost:9091/transmission/rpc")
-        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "abc123" ], "fields" => DownloadClients::Transmission::TORRENT_FIELDS }) }
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "abc123" ], "fields" => JSONRPC_TORRENT_FIELDS }) }
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
@@ -234,13 +258,50 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "torrent_info requests Transmission JSON-RPC snake_case field names" do
+    VCR.turned_off do
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "abc123" ], "fields" => JSONRPC_TORRENT_FIELDS }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "result" => {
+              "torrents" => [
+                {
+                  "id" => 7,
+                  "name" => "Transmission Book",
+                  "hash_string" => "abc123",
+                  "percent_done" => 0.5,
+                  "status" => 4,
+                  "total_size" => 1073741824,
+                  "download_dir" => "/downloads/Transmission Book",
+                  "error" => 0,
+                  "error_string" => ""
+                }
+              ]
+            },
+            "id" => 1
+          }.to_json
+        )
+
+      info = @client.torrent_info("abc123")
+
+      assert_equal "abc123", info.hash
+      assert_equal 50, info.progress
+      assert_equal "/downloads/Transmission Book", info.download_path
+    end
+  end
+
   test "list_torrents still parses legacy field names after legacy fallback" do
     VCR.turned_off do
       Thread.current[:transmission_sessions][@client_record.id] = "session-id"
       Thread.current[:transmission_protocols][@client_record.id] = :legacy
 
       stub_request(:post, "http://localhost:9091/transmission/rpc")
-        .with { |request| legacy_request?(request, method: "torrent-get", arguments: { "ids" => "all", "fields" => DownloadClients::Transmission::TORRENT_FIELDS }) }
+        .with { |request| legacy_request?(request, method: "torrent-get", arguments: { "ids" => "all", "fields" => LEGACY_TORRENT_FIELDS }) }
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
@@ -388,7 +449,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
           body: { "result" => "success", "arguments" => {} }.to_json
         )
       legacy_list = stub_request(:post, "http://localhost:9091/transmission/rpc")
-        .with { |request| legacy_request?(request, method: "torrent-get", arguments: { "ids" => "all", "fields" => DownloadClients::Transmission::TORRENT_FIELDS }) }
+        .with { |request| legacy_request?(request, method: "torrent-get", arguments: { "ids" => "all", "fields" => LEGACY_TORRENT_FIELDS }) }
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },

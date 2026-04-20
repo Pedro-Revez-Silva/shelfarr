@@ -207,7 +207,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
             body["method"] == "torrent_get" &&
             body["params"] == {
               "ids" => [ "transmission-hash" ],
-              "fields" => DownloadClients::Transmission::TORRENT_FIELDS
+              "fields" => %w[id name hash_string percent_done status total_size download_dir error error_string]
             } &&
             body["id"] == 1
         end
