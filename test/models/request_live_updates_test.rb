@@ -43,6 +43,8 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
 
   test "download broadcasts a refresh when progress changes" do
     download = @request.downloads.create!(name: "Queued Download", status: :queued)
+    clear_enqueued_jobs
+    clear_performed_jobs
 
     streams = capture_refresh_broadcasts(@request) do
       download.update!(progress: 42)
@@ -53,6 +55,8 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
 
   test "download does not broadcast a refresh for hidden bookkeeping changes" do
     download = @request.downloads.create!(name: "Queued Download", status: :queued)
+    clear_enqueued_jobs
+    clear_performed_jobs
 
     assert_no_refresh_broadcasts(@request) do
       download.update!(not_found_count: 1)
@@ -84,19 +88,29 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
   private
 
   def capture_refresh_broadcasts(request, &block)
-    perform_enqueued_jobs do
-      capture_turbo_stream_broadcasts(request) do
-        block.call
-        wait_for_refresh_debouncer(request)
+    Turbo.with_request_id(SecureRandom.uuid) do
+      clear_enqueued_jobs
+      clear_performed_jobs
+
+      perform_enqueued_jobs do
+        capture_turbo_stream_broadcasts(request) do
+          block.call
+          wait_for_refresh_debouncer(request)
+        end
       end
     end
   end
 
   def assert_no_refresh_broadcasts(request, &block)
-    perform_enqueued_jobs do
-      assert_no_turbo_stream_broadcasts(request) do
-        block.call
-        wait_for_refresh_debouncer(request)
+    Turbo.with_request_id(SecureRandom.uuid) do
+      clear_enqueued_jobs
+      clear_performed_jobs
+
+      perform_enqueued_jobs do
+        assert_no_turbo_stream_broadcasts(request) do
+          block.call
+          wait_for_refresh_debouncer(request)
+        end
       end
     end
   end
