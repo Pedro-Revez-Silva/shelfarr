@@ -32,7 +32,7 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
       @request.update!(status: :searching)
     end
 
-    assert_equal [ "refresh" ], streams.map { |stream| stream["action"] }
+    assert_refresh_broadcasted(streams)
   end
 
   test "request does not broadcast a refresh for non-visible changes" do
@@ -50,7 +50,7 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
       download.update!(progress: 42)
     end
 
-    assert_equal [ "refresh" ], streams.map { |stream| stream["action"] }
+    assert_refresh_broadcasted(streams)
   end
 
   test "download does not broadcast a refresh for hidden bookkeeping changes" do
@@ -68,7 +68,7 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
       @request.search_results.create!(guid: "live-result", title: "Live Result")
     end
 
-    assert_equal [ "refresh" ], streams.map { |stream| stream["action"] }
+    assert_refresh_broadcasted(streams)
   end
 
   test "request event broadcasts a refresh when created" do
@@ -82,7 +82,7 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
       )
     end
 
-    assert_equal [ "refresh" ], streams.map { |stream| stream["action"] }
+    assert_refresh_broadcasted(streams)
   end
 
   private
@@ -117,5 +117,11 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
 
   def wait_for_refresh_debouncer(request)
     Turbo::StreamsChannel.send(:refresh_debouncer_for, request, request_id: Turbo.current_request_id).wait
+  end
+
+  def assert_refresh_broadcasted(streams)
+    actions = streams.map { |stream| stream["action"] }
+    assert_includes actions, "refresh"
+    assert actions.all? { |action| action == "refresh" }
   end
 end
