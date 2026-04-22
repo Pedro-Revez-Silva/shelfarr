@@ -17,6 +17,10 @@ development:
     <<: *default
     database: storage/development_queue.sqlite3
     migrations_paths: db/queue_migrate
+  cable:
+    <<: *default
+    database: storage/development_cable.sqlite3
+    migrations_paths: db/cable_migrate
 
 # Warning: The database defined as "test" will be erased and
 # re-generated from your development database when you run "rake".
@@ -29,6 +33,10 @@ test:
     <<: *default
     database: storage/test_queue.sqlite3
     migrations_paths: db/queue_migrate
+  cable:
+    <<: *default
+    database: storage/test_cable.sqlite3
+    migrations_paths: db/cable_migrate
 
 
 # Store production database in the storage/ directory, which by default

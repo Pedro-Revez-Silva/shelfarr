@@ -5,6 +5,15 @@ class Request < ApplicationRecord
   has_many :downloads, dependent: :destroy
   has_many :search_results, dependent: :destroy
 
+  SHOW_PAGE_BROADCAST_ATTRIBUTES = %w[
+    attention_needed
+    completed_at
+    issue_description
+    next_retry_at
+    retry_count
+    status
+  ].freeze
+
   enum :status, {
     pending: 0,
     searching: 1,
@@ -16,6 +25,7 @@ class Request < ApplicationRecord
   }
 
   before_validation :set_default_language, on: :create
+  after_update_commit :broadcast_show_refresh_later_if_needed
 
   validates :status, presence: true
 
@@ -251,7 +261,15 @@ class Request < ApplicationRecord
     info ? info[:name] : effective_language
   end
 
+  def broadcast_show_refresh_later
+    broadcast_refresh_later_to self
+  end
+
   private
+
+  def broadcast_show_refresh_later_if_needed
+    broadcast_show_refresh_later if (previous_changes.keys & SHOW_PAGE_BROADCAST_ATTRIBUTES).any?
+  end
 
   def track_diagnostic(event_type, message: nil, level: :info, download: nil, details: {})
     RequestEvent.record!(

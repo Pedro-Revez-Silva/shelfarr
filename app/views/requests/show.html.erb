@@ -1,3 +1,6 @@
+<%= turbo_stream_from @request %>
+<% turbo_refreshes_with(method: :morph, scroll: :preserve) %>
+
 <div class="mx-auto max-w-4xl">
   <div class="mb-6">
     <%= link_to "&larr; Back to Requests".html_safe, requests_path, class: "text-blue-400 hover:text-blue-300" %>

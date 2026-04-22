@@ -125,6 +125,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     get request_path(@pending_request)
     assert_response :success
     assert_select "h1", @pending_request.book.title
+    assert_select "meta[name='action-cable-url']", 1
+    assert_select "turbo-cable-stream-source[channel='Turbo::StreamsChannel']", 1
   end
 
   test "show keeps search results hidden from regular users" do

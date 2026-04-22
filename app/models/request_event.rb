@@ -4,6 +4,8 @@ class RequestEvent < ApplicationRecord
   belongs_to :request
   belongs_to :download, optional: true
 
+  after_create_commit :broadcast_request_show_refresh_later
+
   enum :level, {
     info: 0,
     warn: 1,
@@ -30,5 +32,11 @@ class RequestEvent < ApplicationRecord
   rescue => e
     Rails.logger.error "[RequestEvent] Failed to record #{event_type}: #{e.message}"
     nil
+  end
+
+  private
+
+  def broadcast_request_show_refresh_later
+    Request.find_by(id: request_id)&.broadcast_show_refresh_later
   end
 end

@@ -3,6 +3,8 @@
 class SearchResult < ApplicationRecord
   belongs_to :request
 
+  after_commit :broadcast_request_show_refresh_later
+
   enum :status, {
     pending: 0,
     selected: 1,
@@ -216,4 +218,9 @@ class SearchResult < ApplicationRecord
 
     nil
   end
+
+  def broadcast_request_show_refresh_later
+    Request.find_by(id: request_id)&.broadcast_show_refresh_later
+  end
+  private :broadcast_request_show_refresh_later
 end
