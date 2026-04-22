@@ -374,14 +374,11 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_match /Invalid direct download URL/, error.message
   end
 
-  test "validate_direct_download_url rejects z-library hosts outside configured family" do
+  test "validate_direct_download_url allows z-library hosts outside configured family" do
     setup_zlibrary_download
 
-    error = assert_raises RuntimeError do
-      DownloadJob.new.send(:validate_direct_download_url!, "https://evil.example/book.epub", @request.search_results.selected.first)
-    end
-
-    assert_match /Invalid direct download URL host/, error.message
+    uri = DownloadJob.new.send(:validate_direct_download_url!, "https://evil.example/book.epub", @request.search_results.selected.first)
+    assert_equal "evil.example", uri.host
   end
 
   test "validate_direct_download_response_headers rejects html content types" do

@@ -219,17 +219,8 @@ class ZLibraryClient
       unless ALLOWED_DOWNLOAD_SCHEMES.include?(uri.scheme) && uri.host.present?
         raise Error, "Z-Library returned an invalid download URL"
       end
-
-      return if download_host_allowed?(uri.host)
-
-      raise Error, "Z-Library returned a download URL outside the configured host family"
     rescue URI::InvalidURIError => e
       raise Error, "Z-Library returned an invalid download URL: #{e.message}"
-    end
-
-    def download_host_allowed?(host)
-      configured_host = configured_domain
-      host == configured_host || host.end_with?(".#{configured_host}")
     end
 
     def parse_search_results(books, limit)

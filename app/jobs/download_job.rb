@@ -258,22 +258,9 @@ class DownloadJob < ApplicationJob
     uri = URI.parse(url)
     raise "Invalid direct download URL" unless %w[http https].include?(uri.scheme) && uri.host.present?
 
-    if search_result&.from_zlibrary? && !zlibrary_download_host_allowed?(uri.host)
-      raise "Invalid direct download URL host"
-    end
-
     uri
   rescue URI::InvalidURIError => e
     raise "Invalid direct download URL: #{e.message}"
-  end
-
-  def zlibrary_download_host_allowed?(host)
-    configured_host = URI.parse(SettingsService.get(:zlibrary_url).to_s).host
-    return false if configured_host.blank?
-
-    host == configured_host || host.end_with?(".#{configured_host}")
-  rescue URI::InvalidURIError
-    false
   end
 
   def validate_direct_download_response_headers!(content_type:, content_length:)

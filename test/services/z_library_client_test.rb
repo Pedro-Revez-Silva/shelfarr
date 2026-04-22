@@ -111,7 +111,7 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "get_download_url rejects hosts outside configured family" do
+  test "get_download_url allows hosts outside configured family" do
     VCR.turned_off do
       stub_zlibrary_login_success
       stub_request(:get, "https://z-library.sk/eapi/book/999/deadbeef/file")
@@ -124,9 +124,7 @@ class ZLibraryClientTest < ActiveSupport::TestCase
           headers: { "Content-Type" => "application/json" }
         )
 
-      assert_raises ZLibraryClient::Error do
-        ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
-      end
+      assert_equal "https://evil.example/book.epub", ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
     end
   end
 
