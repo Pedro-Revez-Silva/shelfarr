@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
 
     steps:
@@ -22,10 +22,15 @@ jobs:
         with:
           bundler-cache: true
 
-      - name: Run tests
+      - name: Prepare test database
         env:
           RAILS_ENV: test
-        run: bin/rails db:test:prepare test
+        run: bin/rails db:test:prepare
+
+      - name: Run quality gate
+        env:
+          RAILS_ENV: test
+        run: bin/quality push
 
   security:
     runs-on: ubuntu-latest
@@ -39,9 +44,6 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           bundler-cache: true
-
-      - name: Scan for security vulnerabilities
-        run: bin/brakeman --no-pager -w2 --ignore-config config/brakeman.ignore || true
 
       - name: Audit gems
         run: bin/bundler-audit --update || true
