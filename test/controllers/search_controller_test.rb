@@ -40,13 +40,18 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "results shows warning when matching audiobookshelf item exists" do
+  test "results shows related titles when matching audiobookshelf items exist" do
     LibraryItem.destroy_all
     LibraryItem.create!(
       library_id: "lib-audio",
       audiobookshelf_id: "ab-1",
       title: "The Hobbit",
+      subtitle: "There and Back Again",
       author: "J.R.R. Tolkien",
+      narrator: "Andy Serkis",
+      series: "Middle-earth",
+      series_position: "0",
+      published_year: 1937,
       synced_at: Time.current
     )
 
@@ -63,10 +68,14 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :success
-    assert_match "Similar book may already exist", response.body
+    assert_match "Related titles", response.body
+    assert_match "Related titles in your library", response.body
+    assert_match "Likely match", response.body
+    assert_match "There and Back Again", response.body
+    assert_match "Andy Serkis", response.body
   end
 
-  test "results does not show warning when no similar audiobookshelf item exists" do
+  test "results does not show related titles when no similar audiobookshelf item exists" do
     LibraryItem.destroy_all
     LibraryItem.create!(
       library_id: "lib-audio",
@@ -89,6 +98,33 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :success
-    assert_no_match "Similar book may already exist", response.body
+    assert_no_match "Related titles in your library", response.body
+  end
+
+  test "results ignores missing audiobookshelf items" do
+    LibraryItem.destroy_all
+    LibraryItem.create!(
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-1",
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      missing: true,
+      synced_at: Time.current
+    )
+
+    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
+    metadata_result = result.new(
+      work_id: "work-hobbit",
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      first_publish_year: 1937
+    )
+
+    MetadataService.stub(:search, [metadata_result]) do
+      get search_results_path, params: { q: "hobbit" }
+    end
+
+    assert_response :success
+    assert_no_match "Related titles in your library", response.body
   end
 end

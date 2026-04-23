@@ -137,6 +137,8 @@
                       <% if @audiobookshelf_library_items_count.to_i > 0 %>
                         <p class="text-xs text-gray-500">
                           Cached items: <%= @audiobookshelf_library_items_count %> ·
+                          Available: <%= @audiobookshelf_available_library_items_count %> ·
+                          Missing flagged: <%= @audiobookshelf_missing_library_items_count %> ·
                           Last synced: <%= @audiobookshelf_library_items_last_synced_at ? time_ago_in_words(@audiobookshelf_library_items_last_synced_at) + " ago" : "never" %>
                         </p>
                       <% else %>
@@ -149,14 +151,26 @@
                     <div>
                       <% if @audiobookshelf_library_items.any? %>
                         <p class="text-xs text-gray-400 mb-2">Recent cached items:</p>
-                        <ul class="space-y-1 max-h-32 overflow-y-auto">
+                        <ul class="space-y-2 max-h-64 overflow-y-auto pr-1">
                           <% @audiobookshelf_library_items.each do |item| %>
-                            <li class="text-xs text-gray-300 truncate">
-                              <% item_label = [item.title, item.author].compact.join(" · ").truncate(90) %>
-                              <% if item.audiobookshelf_url.present? %>
-                                <%= link_to item_label, item.audiobookshelf_url, target: "_blank", rel: "noopener", class: "text-blue-400 hover:text-blue-300 underline" %>
-                              <% else %>
-                                <%= item_label %>
+                            <li class="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
+                              <div class="flex items-start justify-between gap-2">
+                                <% item_label = item.display_title.truncate(90) %>
+                                <% if item.audiobookshelf_url.present? %>
+                                  <%= link_to item_label, item.audiobookshelf_url, target: "_blank", rel: "noopener", class: "text-xs text-blue-400 hover:text-blue-300 underline font-medium leading-tight" %>
+                                <% else %>
+                                  <span class="text-xs text-gray-200 font-medium leading-tight"><%= item_label %></span>
+                                <% end %>
+                                <% if item.missing? %>
+                                  <span class="shrink-0 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-300">Missing</span>
+                                <% end %>
+                              </div>
+                              <% if item.author.present? %>
+                                <p class="mt-1 text-[11px] text-gray-400"><%= item.author %></p>
+                              <% end %>
+                              <% cache_details = [item.library_id, *item.detail_badges.first(4), item.identifier_label].compact %>
+                              <% if cache_details.any? %>
+                                <p class="mt-1 text-[10px] text-gray-500"><%= cache_details.join(" · ") %></p>
                               <% end %>
                             </li>
                           <% end %>
