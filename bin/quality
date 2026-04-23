@@ -1,0 +1,293 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "open3"
+require "set"
+
+ROOT = File.expand_path("..", __dir__)
+APP_BUNDLE_GEMFILE = File.join(ROOT, "Gemfile")
+TEST_ROOT = File.join(ROOT, "test")
+
+module Quality
+  module_function
+
+  MUTANT_NOISE_PATTERNS = [
+    /\Awarning: parser\/current is loading parser\/ruby33,/,
+    %r{\APlease see https://github.com/whitequark/parser#compatibility-with-ruby-mri\.?\z}
+  ].freeze
+
+  SOURCE_TEST_MAPPINGS = {
+    %r{\Aapp/controllers/(.+)_controller\.rb\z} => "test/controllers/%<match>s_controller_test.rb",
+    %r{\Aapp/jobs/(.+)\.rb\z} => "test/jobs/%<match>s_test.rb",
+    %r{\Aapp/mailers/(.+)_mailer\.rb\z} => "test/mailers/%<match>s_mailer_test.rb",
+    %r{\Aapp/models/(.+)\.rb\z} => "test/models/%<match>s_test.rb",
+    %r{\Aapp/services/(.+)\.rb\z} => "test/services/%<match>s_test.rb",
+    %r{\Aapp/helpers/(.+)_helper\.rb\z} => "test/helpers/%<match>s_helper_test.rb",
+    %r{\Aapp/channels/(.+)_channel\.rb\z} => "test/channels/%<match>s_channel_test.rb"
+  }.freeze
+
+  MUTANT_TARGET_MAPPINGS = [
+    %r{\Aapp/models/(.+)\.rb\z},
+    %r{\Aapp/services/(.+)\.rb\z}
+  ].freeze
+
+  def main(argv)
+    Dir.chdir(ROOT)
+
+    command = argv.shift
+
+    case command
+    when "all", "deep"
+      run_deep ? 0 : 1
+    when "fast"
+      run_fast(argv)
+    when "coverage"
+      run_coverage(argv) ? 0 : 1
+    when "mutant"
+      run_mutant(argv)
+    when "push"
+      run_push
+    else
+      warn usage
+      1
+    end
+  end
+
+  def run_fast(argv)
+    files =
+      if argv.delete("--staged")
+        staged_files
+      else
+        argv
+      end
+
+    return 0 if files.empty?
+
+    success = true
+
+    rubocop_files = rubocop_targets(files)
+    success &&= run("RuboCop", "bin/rubocop", "--force-exclusion", "--format", "quiet", "--fail-level", "warning",
+      *rubocop_files) unless rubocop_files.empty?
+
+    tests = related_test_files(files)
+    success &&= run("Tests", "bin/rails", "test", "--fail-fast", *tests) unless tests.empty?
+
+    success ? 0 : 1
+  end
+
+  def run_deep
+    success = true
+    success &&= run_push
+    success &&= run_coverage
+
+    expressions = all_mutant_expressions
+    success &&= run_mutant_command(expressions) unless expressions.empty?
+
+    success ? 0 : 1
+  end
+
+  def run_push
+    success = true
+    success &&= run("RuboCop", "bin/rubocop", "--force-exclusion", "--format", "quiet", "--fail-level", "warning")
+    success &&= run_brakeman
+    success &&= run("Tests", "bin/rails", "test")
+    success ? 0 : 1
+  end
+
+  def run_coverage(argv = [])
+    tests =
+      if argv.delete("--staged")
+        related_test_files(staged_files)
+      else
+        argv
+      end
+
+    command = ["bin/rails", "test"]
+    command.concat(tests) unless tests.empty?
+
+    run("Coverage", *command, env: { "COVERAGE" => "1", "PARALLEL_WORKERS" => "1" })
+  end
+
+  def run_mutant(argv)
+    staged = argv.delete("--staged")
+    expressions =
+      if argv.delete("--all")
+        all_mutant_expressions
+      elsif staged
+        mutant_expressions_from_paths(staged_files)
+      else
+        argv.flat_map { |entry| mutant_expressions_from_argument(entry) }
+      end
+
+    return 0 if staged && expressions.empty?
+
+    if expressions.empty?
+      warn usage
+      return 1
+    end
+
+    success = run_mutant_command(expressions.uniq)
+    success ? 0 : 1
+  end
+
+  def run(label, *command, env: {})
+    output, status = Open3.capture2e(app_bundle_env(env), *command)
+    return true if status.success?
+
+    warn "#{label} failed"
+    warn output unless output.empty?
+    false
+  rescue Errno::ENOENT => e
+    warn "#{label} failed"
+    warn e.message
+    false
+  end
+
+  def run_brakeman
+    output, status = Open3.capture2e(
+      app_bundle_env,
+      "bin/brakeman", "--quiet", "--no-pager", "--exit-on-warn", "--exit-on-error"
+    )
+    return true if status.success?
+
+    filtered_output = strip_brakeman_version_notice(output)
+    return true if filtered_output.empty?
+
+    warn "Brakeman failed"
+    warn filtered_output
+    false
+  rescue Errno::ENOENT => e
+    warn "Brakeman failed"
+    warn e.message
+    false
+  end
+
+  def run_mutant_command(expressions)
+    output, status = Open3.capture2e(
+      app_bundle_env("MUTANT" => "1", "PARALLEL_WORKERS" => "1"),
+      "bundle", "exec", "mutant", "run",
+      "--integration", "minitest",
+      "--usage", "opensource",
+      "--fail-fast",
+      "--include", "app",
+      "--include", "test",
+      *expressions
+    )
+    return true if status.success?
+
+    filtered_output = strip_noise(output, MUTANT_NOISE_PATTERNS)
+
+    warn "Mutant failed"
+    warn filtered_output unless filtered_output.empty?
+    false
+  rescue Errno::ENOENT => e
+    warn "Mutant failed"
+    warn e.message
+    false
+  end
+
+  def app_bundle_env(overrides = {})
+    { "BUNDLE_GEMFILE" => APP_BUNDLE_GEMFILE }.merge(overrides)
+  end
+
+  def staged_files
+    output, status = Open3.capture2("git", "diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    return [] unless status.success?
+
+    output.lines.map(&:strip).reject(&:empty?)
+  end
+
+  def rubocop_targets(files)
+    files.select { |file| rubocop_target?(file) && File.exist?(file) }.uniq
+  end
+
+  def rubocop_target?(file)
+    return true if %w[Gemfile Rakefile].include?(file)
+    return true if file.start_with?("bin/") && File.file?(file)
+
+    [".rb", ".rake"].include?(File.extname(file))
+  end
+
+  def related_test_files(files)
+    files.each_with_object(Set.new) do |file, tests|
+      if file.start_with?("test/") && file.end_with?("_test.rb")
+        tests << file if File.exist?(file)
+        next
+      end
+
+      SOURCE_TEST_MAPPINGS.each do |pattern, template|
+        next unless (match = pattern.match(file))
+
+        candidate = format(template, match: match[1])
+        tests << candidate if File.exist?(candidate)
+        break
+      end
+    end.to_a.sort
+  end
+
+  def mutant_expressions_from_paths(files)
+    files.flat_map { |file| mutant_expressions_from_argument(file) }
+  end
+
+  def all_mutant_expressions
+    test_files = Dir.glob(File.join(TEST_ROOT, "**/*_test.rb")).sort
+
+    test_files.each_with_object(Set.new) do |file, expressions|
+      File.foreach(file) do |line|
+        next unless (match = line.match(/^\s*cover\s+"([^"]+)"/))
+
+        expressions << match[1]
+      end
+    end.to_a.sort
+  end
+
+  def mutant_expressions_from_argument(argument)
+    return [argument] unless argument.end_with?(".rb")
+
+    MUTANT_TARGET_MAPPINGS.each do |pattern|
+      next unless (match = pattern.match(argument))
+
+      return ["#{camelize_path(match[1])}*"]
+    end
+
+    []
+  end
+
+  def camelize_path(path)
+    path
+      .split("/")
+      .map { |segment| segment.split("_").map(&:capitalize).join }
+      .join("::")
+  end
+
+  def strip_brakeman_version_notice(output)
+    strip_noise(output, [/\ABrakeman \S+ is not the latest version \S+\s*\z/])
+  end
+
+  def strip_noise(output, patterns)
+    output
+      .lines
+      .reject { |line| patterns.any? { |pattern| line.match?(pattern) } }
+      .join
+      .strip
+  end
+
+  def usage
+    <<~TEXT
+      Usage:
+        bin/quality fast --staged
+        bin/quality fast path/to/file.rb test/models/example_test.rb
+        bin/quality coverage
+        bin/quality coverage --staged
+        bin/quality coverage test/services/settings_service_test.rb
+        bin/quality mutant --all
+        bin/quality mutant --staged
+        bin/quality mutant SettingsService*
+        bin/quality mutant app/services/settings_service.rb
+        bin/quality push
+        bin/quality deep
+    TEXT
+  end
+end
+
+exit Quality.main(ARGV)
