@@ -83,7 +83,7 @@ module Quality
     expressions = all_mutant_expressions
     success &&= run_mutant_command(expressions) unless expressions.empty?
 
-    success ? 0 : 1
+    success
   end
 
   def run_push

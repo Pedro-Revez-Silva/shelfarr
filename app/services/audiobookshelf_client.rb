@@ -212,7 +212,7 @@ class AudiobookshelfClient
           "publisher" => metadata["publisher"] || raw_item["publisher"],
           "language" => metadata["language"] || raw_item["language"],
           "description" => metadata["description"] || raw_item["description"],
-          "isbn" => metadata["isbn"] || raw_item["isbn"],
+          "isbn" => normalize_identifier(metadata["isbn"] || raw_item["isbn"]),
           "asin" => metadata["asin"] || raw_item["asin"],
           "published_year" => extract_published_year(raw_item, metadata),
           "missing" => raw_item["isMissing"] == true
@@ -313,13 +313,24 @@ class AudiobookshelfClient
     end
 
     def extract_published_year(raw_item, metadata)
-      value = metadata["publishedYear"] || raw_item["publishedYear"] || raw_item["year"]
+      value = metadata["publishedYear"] ||
+        metadata["publishedDate"] ||
+        raw_item["publishedYear"] ||
+        raw_item["publishedDate"] ||
+        raw_item["year"]
       return nil if value.blank?
 
       match = value.to_s.match(/\A\d{4}\z|(\d{4})/)
       return nil unless match
 
       (match[0] || match[1]).to_i
+    end
+
+    def normalize_identifier(value)
+      return nil if value.blank?
+      return value.compact_blank.first.to_s if value.is_a?(Array)
+
+      value.to_s
     end
 
     def join_people(values)

@@ -185,10 +185,10 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
                     "series" => [
                       { "series" => { "name" => "Bobiverse-adjacent" }, "sequence" => "1" }
                     ],
-                    "publishedYear" => "2021",
+                    "publishedDate" => "2021-05-04",
                     "publisher" => "Ballantine Books",
                     "description" => "A lone astronaut must save Earth.",
-                    "isbn" => "9780593135204",
+                    "isbn" => [ "9780593135204", "0593135202" ],
                     "asin" => "B08GB58KD5",
                     "language" => "en"
                   }
