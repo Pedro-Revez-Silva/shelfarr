@@ -1,0 +1,59 @@
+<%= form_with model: [:admin, download_routing_rule], class: "contents" do |form| %>
+  <% if download_routing_rule.errors.any? %>
+    <div class="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 font-medium rounded-lg mt-3">
+      <h2><%= pluralize(download_routing_rule.errors.count, "error") %> prohibited this routing rule from being saved:</h2>
+      <ul class="list-disc list-inside mt-2">
+        <% download_routing_rule.errors.each do |error| %>
+          <li><%= error.full_message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div class="grid gap-5 md:grid-cols-2">
+    <div>
+      <%= form.label :provider, "Source", class: "block text-gray-300 font-medium" %>
+      <%= form.select :provider,
+        DownloadRoutingRule::PROVIDERS.map { |value, label| [label, value] },
+        {},
+        class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+    </div>
+
+    <div>
+      <%= form.label :download_type, "Download Type", class: "block text-gray-300 font-medium" %>
+      <%= form.select :download_type,
+        DownloadRoutingRule::DOWNLOAD_TYPES.map { |type| [type.titleize, type] },
+        {},
+        class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+    </div>
+  </div>
+
+  <div class="my-5">
+    <%= form.label :indexer_name, "Indexer", class: "block text-gray-300 font-medium" %>
+    <%= form.text_field :indexer_name, required: true, placeholder: "e.g., MyAnonaMouse", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+    <p class="mt-1 text-sm text-gray-500">Use the indexer name exactly as it appears on search results.</p>
+  </div>
+
+  <div class="my-5">
+    <%= form.label :download_client_id, "Download Client", class: "block text-gray-300 font-medium" %>
+    <%= form.collection_select :download_client_id,
+      DownloadClient.order(client_type: :asc, priority: :asc),
+      :id,
+      ->(client) { "#{client.name} (#{client.client_type.titleize})" },
+      { prompt: "Select a client" },
+      class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+  </div>
+
+  <div class="my-5">
+    <%= form.label :enabled, class: "flex items-center gap-2 cursor-pointer" %>
+    <div class="flex items-center">
+      <%= form.check_box :enabled, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900" %>
+      <span class="ml-2 text-gray-300">Enabled</span>
+    </div>
+  </div>
+
+  <div class="flex items-center gap-4 mt-8">
+    <%= form.submit class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+    <%= link_to "Cancel", admin_download_routing_rules_path, class: "text-gray-400 hover:text-gray-300" %>
+  </div>
+<% end %>

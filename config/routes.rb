@@ -85,6 +85,7 @@ Rails.application.routes.draw do
         post :move_down
       end
     end
+    resources :download_routing_rules, except: [ :show ]
     resources :settings, only: [ :index, :update ] do
       collection do
         patch :bulk_update

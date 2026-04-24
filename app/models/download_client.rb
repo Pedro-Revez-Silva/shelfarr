@@ -13,6 +13,7 @@ class DownloadClient < ApplicationRecord
   }
 
   has_many :downloads, dependent: :nullify
+  has_many :download_routing_rules, dependent: :destroy
 
   validates :name, presence: true, uniqueness: true
   validates :client_type, presence: true
