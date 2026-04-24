@@ -421,6 +421,35 @@ class PostProcessingJobTest < ActiveJob::TestCase
       "File should be copied using client download_path + category extraction"
   end
 
+  test "retries later when source path is not visible yet" do
+    FileUtils.rm_rf(@temp_source)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:post_processing_source_path_retries, 2)
+
+    assert_enqueued_with(job: PostProcessingJob, args: [ @download.id, 1 ]) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    @request.reload
+    assert @request.processing?
+    assert_nil @request.issue_description
+  end
+
+  test "copies when source path appears on a later retry" do
+    FileUtils.rm_rf(@temp_source)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    FileUtils.mkdir_p(@temp_source)
+    File.write(File.join(@temp_source, "audiobook.mp3"), "test audio content")
+    PostProcessingJob.perform_now(@download.id, 1)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+  end
+
   test "marks request for attention when source path is blank" do
     @download.update!(download_path: "")
 
@@ -444,8 +473,10 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
   test "marks request for attention when source path does not exist" do
     @download.update!(download_path: "/nonexistent/path/that/does/not/exist")
+    SettingsService.set(:post_processing_source_path_retries, 1)
 
-    PostProcessingJob.perform_now(@download.id)
+    PostProcessingJob.perform_now(@download.id, 1)
+
     @request.reload
 
     assert @request.attention_needed?

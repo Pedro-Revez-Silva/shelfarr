@@ -6,7 +6,7 @@
 class PostProcessingJob < ApplicationJob
   queue_as :default
 
-  def perform(download_id)
+  def perform(download_id, source_path_retry_count = 0)
     download = Download.find_by(id: download_id)
     return unless download&.completed?
 
@@ -20,6 +20,10 @@ class PostProcessingJob < ApplicationJob
     begin
       destination = build_destination_path(book, download)
       source_path = remap_download_path(download.download_path, download)
+      if source_path_unavailable?(source_path)
+        return retry_source_path_later(download, request, source_path, source_path_retry_count)
+      end
+
       copy_files(source_path, destination, book: book)
       cleanup_usenet_download(download)
 
@@ -42,6 +46,37 @@ class PostProcessingJob < ApplicationJob
   end
 
   private
+
+  def source_path_unavailable?(source_path)
+    source_path.present? && !File.exist?(source_path)
+  end
+
+  def retry_source_path_later(download, request, source_path, retry_count)
+    retry_limit = SettingsService.get(:post_processing_source_path_retries).to_i
+    if retry_count < retry_limit
+      next_retry_count = retry_count + 1
+      wait_interval = SettingsService.get(:download_check_interval).to_i.seconds
+
+      Rails.logger.warn(
+        "[PostProcessingJob] Source path not visible yet: #{source_path}. " \
+          "Retrying post-processing source check #{next_retry_count}/#{retry_limit} in #{wait_interval.to_i}s."
+      )
+
+      track_request_event(
+        request,
+        "post_processing_waiting",
+        download: download,
+        message: "Source path not visible yet; retrying post-processing",
+        level: :warn,
+        details: { source_path: source_path, retry_count: next_retry_count, retry_limit: retry_limit }
+      )
+
+      self.class.set(wait: wait_interval).perform_later(download.id, next_retry_count)
+      return
+    end
+
+    raise source_path_not_found_message(source_path)
+  end
 
   def cleanup_usenet_download(download)
     return unless SettingsService.get(:remove_completed_usenet_downloads, default: true)
@@ -90,7 +125,7 @@ class PostProcessingJob < ApplicationJob
       Rails.logger.error "[PostProcessingJob] Check path remapping settings:"
       Rails.logger.error "[PostProcessingJob]   - download_remote_path: #{SettingsService.get(:download_remote_path).inspect}"
       Rails.logger.error "[PostProcessingJob]   - download_local_path: #{SettingsService.get(:download_local_path).inspect}"
-      raise "Source path not found: #{source}. Verify path remapping settings (download_remote_path/download_local_path) match your container mount points."
+      raise source_path_not_found_message(source)
     end
 
     Rails.logger.info "[PostProcessingJob] Copying from #{source} to #{destination}"
@@ -149,8 +184,9 @@ class PostProcessingJob < ApplicationJob
     Rails.logger.info "[PostProcessingJob] Path remapping - original path from client: #{path}"
 
     candidates = build_path_candidates(path, download)
+    candidates = deduplicate_path_candidates(candidates)
 
-    # Return the first candidate that actually exists on disk
+    # Return the first candidate that actually exists on disk.
     candidates.each do |candidate|
       next if candidate[:path].blank?
 
@@ -160,7 +196,7 @@ class PostProcessingJob < ApplicationJob
       end
     end
 
-    # None found — log all candidates for debugging
+    # None found - log all candidates for debugging
     Rails.logger.warn "[PostProcessingJob] No remapped path exists on disk. Candidates tried:"
     candidates.each { |c| Rails.logger.warn "[PostProcessingJob]   #{c[:strategy]}: #{c[:path]}" }
 
@@ -211,6 +247,36 @@ class PostProcessingJob < ApplicationJob
     candidates << { strategy: "original_path", path: path }
 
     candidates
+  end
+
+  def deduplicate_path_candidates(candidates)
+    seen = {}
+
+    candidates.select do |candidate|
+      path = candidate[:path]
+      next true if path.blank?
+      next false if seen.key?(path)
+
+      seen[path] = true
+      true
+    end
+  end
+
+  def source_path_not_found_message(source)
+    "Source path not found: #{source}. Verify path remapping settings " \
+      "(download_remote_path/download_local_path) match your container mount points."
+  end
+
+  def track_request_event(request, event_type, download: nil, message: nil, level: :info, details: {})
+    RequestEvent.record!(
+      request: request,
+      download: download,
+      event_type: event_type,
+      source: self.class.name,
+      message: message,
+      level: level,
+      details: details
+    )
   end
 
   def sanitize_filename(name)
