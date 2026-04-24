@@ -57,6 +57,12 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal %w[direct torrent usenet], SettingsService.preferred_download_types
   end
 
+  test "post processing source path retries has a dedicated default" do
+    Setting.where(key: "post_processing_source_path_retries").delete_all
+
+    assert_equal 10, SettingsService.get(:post_processing_source_path_retries)
+  end
+
   test "zlibrary_configured? requires enabled flag and credentials" do
     SettingsService.set(:zlibrary_enabled, true)
     SettingsService.set(:zlibrary_url, "https://z-library.sk")

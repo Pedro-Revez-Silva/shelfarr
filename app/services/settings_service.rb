@@ -30,6 +30,7 @@ class SettingsService
     preferred_download_types: { type: "json", default: '["torrent","usenet","direct"]', category: "download", description: "Download types in preference order. Higher-ranked types are preferred when multiple result types are available." },
     download_check_interval: { type: "integer", default: 60, category: "download", description: "Seconds between download status checks" },
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
+    post_processing_source_path_retries: { type: "integer", default: 10, category: "download", description: "Number of post-processing retries while waiting for completed download files to appear" },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 
     # Audiobookshelf Integration
