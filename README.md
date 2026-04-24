@@ -161,6 +161,36 @@ bin/rails db:setup
 bin/dev
 ```
 
+### Local Quality Gate
+
+The repo includes a lightweight local quality gate powered by `lefthook`.
+
+```bash
+# Install hooks
+bundle exec lefthook install
+
+# Quiet staged-file check used by pre-commit
+bin/quality fast --staged
+
+# Quiet full check used by pre-push
+bin/quality push
+
+# Run coverage on demand
+bin/quality coverage
+bin/quality coverage --staged
+
+# Run targeted mutation testing on covered service/model tests
+bin/quality mutant --all
+bin/quality mutant SettingsService*
+
+# Run the full repo sweep
+bin/quality deep
+```
+
+Passing runs stay quiet. On failure, the command prints only the relevant tool output.
+
+Mutation testing is opt-in per test class. Add `cover "YourConstant*"` to logic-heavy Minitest classes you want `mutant` to evaluate.
+
 ## License
 
 [GPL-3.0](LICENSE)

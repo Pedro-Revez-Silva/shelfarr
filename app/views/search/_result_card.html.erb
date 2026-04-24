@@ -48,7 +48,7 @@
           <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
             <path d="M10 18a1 1 0 100-2H2a1 1 0 100-2h8V8a1 1 0 102 0v6h8a1 1 0 100 2h-8v2h8a1 1 0 100 2H10z"></path>
           </svg>
-          Similar book may already exist
+          Related titles
         </span>
       <% end %>
       <% if audiobook_status == :acquired %>
@@ -147,17 +147,28 @@
     <% end %>
     <% if audiobookshelf_matches.any? %>
       <div class="mt-2 pt-2 border-t border-gray-700">
-        <p class="text-[11px] text-amber-300">A similar book may already exist in your library:</p>
-        <ul class="text-[11px] text-amber-200 space-y-1 mt-1">
+        <p class="text-[11px] text-amber-300">Related titles in your library:</p>
+        <ul class="space-y-2 mt-2">
           <% audiobookshelf_matches.each do |match| %>
-            <li class="truncate">
-              <% label = [match.item.title, match.item.author].compact.join(" · ").truncate(70) %>
-              <% if match.item.audiobookshelf_url.present? %>
-                <%= link_to label, match.item.audiobookshelf_url, target: "_blank", rel: "noopener", class: "hover:text-amber-100 underline" %>
-              <% else %>
-                <%= label %>
+            <li class="rounded-md border border-amber-500/20 bg-amber-500/5 px-2 py-2">
+              <div class="flex items-start justify-between gap-2">
+                <% title_label = match.item.display_title.truncate(60) %>
+                <% if match.item.audiobookshelf_url.present? %>
+                  <%= link_to title_label, match.item.audiobookshelf_url, target: "_blank", rel: "noopener", class: "text-[11px] text-amber-100 hover:text-white underline font-medium leading-tight" %>
+                <% else %>
+                  <span class="text-[11px] text-amber-100 font-medium leading-tight"><%= title_label %></span>
+                <% end %>
+                <span class="shrink-0 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"><%= match.confidence_label %></span>
+              </div>
+              <% if match.item.author.present? %>
+                <p class="mt-1 text-[11px] text-amber-200/90"><%= match.item.author %></p>
               <% end %>
-              <span class="text-amber-400">(<%= match.match_type.to_s.titleize %>)</span>
+              <% detail_badges = match.item.detail_badges.first(3) %>
+              <% if detail_badges.any? || match.item.identifier_label.present? %>
+                <p class="mt-1 text-[10px] text-amber-200/70">
+                  <%= ([ *detail_badges, match.item.identifier_label ].compact).join(" · ") %>
+                </p>
+              <% end %>
             </li>
           <% end %>
         </ul>

@@ -117,8 +117,19 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
               {
                 "id" => "ab-item-1",
                 "title" => "The Hobbit",
+                "isMissing" => false,
                 "media" => {
-                  "author" => "J.R.R. Tolkien"
+                  "author" => "J.R.R. Tolkien",
+                  "metadata" => {
+                    "subtitle" => "There and Back Again",
+                    "series" => [
+                      { "name" => "Middle-earth Universe", "sequence" => "0" }
+                    ],
+                    "publishedYear" => "1937",
+                    "narratorName" => "Andy Serkis",
+                    "isbn" => "9780261103283",
+                    "language" => "en"
+                  }
                 }
               },
               {
@@ -140,13 +151,21 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
       assert_equal 2, items.size
       assert_equal "ab-item-1", items.first["audiobookshelf_id"]
       assert_equal "The Hobbit", items.first["title"]
+      assert_equal "There and Back Again", items.first["subtitle"]
       assert_equal "J.R.R. Tolkien", items.first["author"]
+      assert_equal "Andy Serkis", items.first["narrator"]
+      assert_equal "Middle-earth Universe", items.first["series"]
+      assert_equal "0", items.first["series_position"]
+      assert_equal 1937, items.first["published_year"]
+      assert_equal "9780261103283", items.first["isbn"]
+      assert_equal "en", items.first["language"]
+      assert_equal false, items.first["missing"]
       assert_equal "Good Omens", items.last["title"]
       assert_equal "Neil Gaiman, Terry Pratchett", items.last["author"]
     end
   end
 
-  test "library_items extracts title and author from media metadata" do
+  test "library_items extracts rich metadata from media metadata" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries/lib-123/items?limit=500&page=0")
         .with(headers: { "Authorization" => "Bearer test-api-key-12345" })
@@ -160,7 +179,18 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
                 "media" => {
                   "metadata" => {
                     "title" => "Project Hail Mary",
-                    "authorName" => "Andy Weir"
+                    "subtitle" => "A Novel",
+                    "authorName" => "Andy Weir",
+                    "narrators" => [ "Ray Porter" ],
+                    "series" => [
+                      { "series" => { "name" => "Bobiverse-adjacent" }, "sequence" => "1" }
+                    ],
+                    "publishedDate" => "2021-05-04",
+                    "publisher" => "Ballantine Books",
+                    "description" => "A lone astronaut must save Earth.",
+                    "isbn" => [ "9780593135204", "0593135202" ],
+                    "asin" => "B08GB58KD5",
+                    "language" => "en"
                   }
                 }
               },
@@ -172,6 +202,9 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
                     "authors" => [
                       { "name" => "Neil Gaiman" },
                       { "name" => "Terry Pratchett" }
+                    ],
+                    "narrators" => [
+                      { "name" => "Martin Jarvis" }
                     ]
                   }
                 }
@@ -185,9 +218,20 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
 
       assert_equal 2, items.size
       assert_equal "Project Hail Mary", items.first["title"]
+      assert_equal "A Novel", items.first["subtitle"]
       assert_equal "Andy Weir", items.first["author"]
+      assert_equal "Ray Porter", items.first["narrator"]
+      assert_equal "Bobiverse-adjacent", items.first["series"]
+      assert_equal "1", items.first["series_position"]
+      assert_equal 2021, items.first["published_year"]
+      assert_equal "Ballantine Books", items.first["publisher"]
+      assert_equal "A lone astronaut must save Earth.", items.first["description"]
+      assert_equal "9780593135204", items.first["isbn"]
+      assert_equal "B08GB58KD5", items.first["asin"]
+      assert_equal "en", items.first["language"]
       assert_equal "Good Omens", items.last["title"]
       assert_equal "Neil Gaiman, Terry Pratchett", items.last["author"]
+      assert_equal "Martin Jarvis", items.last["narrator"]
     end
   end
 

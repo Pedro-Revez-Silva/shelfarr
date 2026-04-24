@@ -83,6 +83,8 @@ end
 group :development do
   # Use console on exceptions pages [https://github.com/rails/web-console]
   gem "web-console"
+  # Git hooks managed in-repo
+  gem "lefthook", require: false
 end
 
 group :test do
@@ -95,4 +97,9 @@ group :test do
   gem "vcr"
   # Pin minitest to a compatible version with Rails 8.1
   gem "minitest", "~> 5.25"
+  # Coverage reporting for local and CI quality checks
+  gem "simplecov", require: false
+  # Mutation testing for targeted logic-heavy code
+  gem "mutant", require: false
+  gem "mutant-minitest", require: false
 end

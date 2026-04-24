@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_14_110000) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_22_103000) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -96,15 +96,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_14_110000) do
   end
 
   create_table "library_items", force: :cascade do |t|
+    t.string "asin"
     t.string "audiobookshelf_id", null: false
     t.string "author"
     t.datetime "created_at", null: false
+    t.text "description"
+    t.string "isbn"
+    t.string "language"
     t.string "library_id", null: false
+    t.boolean "missing", default: false, null: false
+    t.string "narrator"
+    t.integer "published_year"
+    t.string "publisher"
+    t.string "series"
+    t.string "series_position"
+    t.string "subtitle"
     t.datetime "synced_at"
     t.string "title"
     t.datetime "updated_at", null: false
+    t.index ["isbn"], name: "index_library_items_on_isbn"
     t.index ["library_id", "audiobookshelf_id"], name: "index_library_items_on_library_id_and_audiobookshelf_id", unique: true
     t.index ["library_id"], name: "index_library_items_on_library_id"
+    t.index ["missing"], name: "index_library_items_on_missing"
     t.index ["synced_at"], name: "index_library_items_on_synced_at"
   end
 

@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: false
+  commands:
+    quality:
+      run: ./bin/quality fast --staged
+
+pre-push:
+  parallel: false
+  commands:
+    quality:
+      run: ./bin/quality push
