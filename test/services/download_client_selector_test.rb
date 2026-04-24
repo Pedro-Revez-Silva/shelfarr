@@ -3,7 +3,26 @@
 require "test_helper"
 
 class DownloadClientSelectorTest < ActiveSupport::TestCase
+  RoutedResult = Struct.new(:indexer, :usenet, :source, keyword_init: true) do
+    def usenet?
+      usenet
+    end
+
+    def download_type
+      usenet? ? "usenet" : "torrent"
+    end
+
+    def from_indexer?
+      true
+    end
+
+    def from_jackett?
+      source == SearchResult::SOURCE_JACKETT
+    end
+  end
+
   setup do
+    DownloadRoutingRule.delete_all
     DownloadClient.destroy_all
     Thread.current[:qbittorrent_sessions] = {}
     Thread.current[:deluge_sessions] = {}
@@ -287,6 +306,84 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
       DownloadClientSelector.for_download(search_result)
     end
     assert_includes error.message, "No torrent download client configured"
+  end
+
+  test "uses matching routing rule before priority order" do
+    DownloadClient.create!(
+      name: "Priority Client",
+      client_type: "qbittorrent",
+      url: "http://localhost:8080",
+      username: "admin",
+      password: "password",
+      priority: 0
+    )
+    routed = DownloadClient.create!(
+      name: "Private Tracker Client",
+      client_type: "qbittorrent",
+      url: "http://localhost:9090",
+      username: "admin",
+      password: "password",
+      priority: 10
+    )
+    DownloadRoutingRule.create!(
+      provider: "prowlarr",
+      indexer_name: "MyAnonaMouse",
+      download_type: "torrent",
+      download_client: routed
+    )
+
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://localhost:8080")
+      stub_qbittorrent_connection("http://localhost:9090")
+
+      search_result = RoutedResult.new(
+        source: SearchResult::SOURCE_PROWLARR,
+        indexer: "myanonamouse",
+        usenet: false
+      )
+
+      assert_equal routed, DownloadClientSelector.for_download(search_result)
+    end
+  end
+
+  test "falls back to priority when routed client fails without retesting it" do
+    routed = DownloadClient.create!(
+      name: "Routed Client",
+      client_type: "qbittorrent",
+      url: "http://localhost:8080",
+      username: "admin",
+      password: "password",
+      priority: 10
+    )
+    fallback = DownloadClient.create!(
+      name: "Fallback Client",
+      client_type: "qbittorrent",
+      url: "http://localhost:9090",
+      username: "admin",
+      password: "password",
+      priority: 0
+    )
+    DownloadRoutingRule.create!(
+      provider: "prowlarr",
+      indexer_name: "MyAnonaMouse",
+      download_type: "torrent",
+      download_client: routed
+    )
+
+    VCR.turned_off do
+      failing_login = stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(status: 401, body: "Fails.")
+      stub_qbittorrent_connection("http://localhost:9090")
+
+      search_result = RoutedResult.new(
+        source: SearchResult::SOURCE_PROWLARR,
+        indexer: "MyAnonaMouse",
+        usenet: false
+      )
+
+      assert_equal fallback, DownloadClientSelector.for_download(search_result)
+      assert_requested failing_login, times: 1
+    end
   end
 
   private

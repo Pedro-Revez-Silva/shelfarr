@@ -42,8 +42,15 @@ class DownloadClientSelector
       raise NoClientAvailableError, "No #{download_type} download client configured"
     end
 
-    # Try each client in priority order until one succeeds connection test
-    available_clients.each do |client|
+    routed_client = DownloadRoutingRule.routed_client_for(@search_result)
+    ordered_clients = if routed_client && available_clients.include?(routed_client)
+      [ routed_client ] + available_clients.reject { |client| client.id == routed_client.id }
+    else
+      available_clients
+    end
+
+    # Try the routed client first, then fall back to priority order.
+    ordered_clients.each do |client|
       return client if client.test_connection
     end
 

@@ -1,0 +1,57 @@
+<div class="mx-auto max-w-5xl">
+  <div class="flex justify-between items-center mb-8">
+    <div>
+      <h1 class="font-bold text-4xl text-white">Download Routing</h1>
+      <p class="text-gray-400 mt-2">Route selected search results from specific indexers to specific download clients.</p>
+    </div>
+    <%= link_to "New Rule", new_admin_download_routing_rule_path, class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white" %>
+  </div>
+
+  <% if @download_routing_rules.empty? %>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-8 text-center">
+      <p class="text-gray-400 mb-4">No download routing rules configured yet.</p>
+      <%= link_to "Add your first rule", new_admin_download_routing_rule_path, class: "text-blue-400 hover:text-blue-300" %>
+    </div>
+  <% else %>
+    <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-800">
+        <thead class="bg-gray-800/50">
+          <tr>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Source</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Indexer</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Type</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Client</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Status</th>
+            <th class="px-6 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+          <% @download_routing_rules.each do |rule| %>
+            <tr class="hover:bg-gray-800/50 transition">
+              <td class="px-6 py-4 whitespace-nowrap text-gray-300"><%= rule.provider_name %></td>
+              <td class="px-6 py-4 whitespace-nowrap font-medium text-white"><%= rule.indexer_name %></td>
+              <td class="px-6 py-4 whitespace-nowrap">
+                <span class="px-2 py-1 text-xs rounded <%= rule.download_type == 'torrent' ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400' %>">
+                  <%= rule.download_type.titleize %>
+                </span>
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-gray-300">
+                <%= rule.download_client.name %>
+                <span class="text-gray-500 text-sm">(<%= rule.download_client.client_type.titleize %>)</span>
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap">
+                <span class="px-2 py-1 text-xs rounded <%= rule.enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-400' %>">
+                  <%= rule.enabled? ? "Enabled" : "Disabled" %>
+                </span>
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                <%= link_to "Edit", edit_admin_download_routing_rule_path(rule), class: "text-blue-400 hover:text-blue-300 mr-3" %>
+                <%= button_to "Delete", admin_download_routing_rule_path(rule), method: :delete, class: "text-red-400 hover:text-red-300", data: { turbo_confirm: "Are you sure you want to delete this routing rule?" } %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

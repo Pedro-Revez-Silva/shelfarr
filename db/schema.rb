@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_22_103000) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_24_120000) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -74,6 +74,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_22_103000) do
     t.index ["client_type", "priority"], name: "index_download_clients_on_client_type_and_priority"
     t.index ["enabled"], name: "index_download_clients_on_enabled"
     t.index ["name"], name: "index_download_clients_on_name", unique: true
+  end
+
+  create_table "download_routing_rules", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.integer "download_client_id", null: false
+    t.string "download_type", null: false
+    t.boolean "enabled", default: true, null: false
+    t.string "indexer_name", null: false
+    t.string "normalized_indexer_name", null: false
+    t.string "provider", null: false
+    t.datetime "updated_at", null: false
+    t.index ["download_client_id"], name: "index_download_routing_rules_on_download_client_id"
+    t.index ["enabled"], name: "index_download_routing_rules_on_enabled"
+    t.index ["provider", "normalized_indexer_name", "download_type"], name: "index_download_routing_rules_on_route", unique: true
   end
 
   create_table "downloads", force: :cascade do |t|
@@ -279,6 +293,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_22_103000) do
   end
 
   add_foreign_key "activity_logs", "users"
+  add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
   add_foreign_key "notifications", "users"
   add_foreign_key "request_events", "downloads"
