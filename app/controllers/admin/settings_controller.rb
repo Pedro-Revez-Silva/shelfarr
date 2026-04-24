@@ -322,6 +322,8 @@ module Admin
     def load_audiobookshelf_cache_summary
       @audiobookshelf_library_items = LibraryItem.by_synced_at_desc.limit(50)
       @audiobookshelf_library_items_count = LibraryItem.count
+      @audiobookshelf_available_library_items_count = LibraryItem.available_for_matching.count
+      @audiobookshelf_missing_library_items_count = LibraryItem.where(missing: true).count
       @audiobookshelf_library_items_last_synced_at = @audiobookshelf_library_items.maximum(:synced_at)
     end
 

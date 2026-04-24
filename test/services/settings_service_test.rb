@@ -3,6 +3,8 @@
 require "test_helper"
 
 class SettingsServiceTest < ActiveSupport::TestCase
+  cover "SettingsService*"
+
   setup do
     Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password]).delete_all
   end

@@ -25,7 +25,18 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
               {
                 "id" => "ab-1",
                 "title" => "The Hobbit",
-                "author" => "J.R.R. Tolkien"
+                "author" => "J.R.R. Tolkien",
+                "media" => {
+                  "metadata" => {
+                    "subtitle" => "There and Back Again",
+                    "narratorName" => "Andy Serkis",
+                    "series" => [
+                      { "name" => "Middle-earth", "sequence" => "0" }
+                    ],
+                    "publishedYear" => "1937",
+                    "isbn" => "9780261103283"
+                  }
+                }
               }
             ],
             "total" => 1
@@ -56,6 +67,14 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       assert_empty result.errors
       assert_equal 2, LibraryItem.count
       assert_not LibraryItem.exists?(audiobookshelf_id: "ab-stale")
+
+      item = LibraryItem.find_by!(library_id: "lib-audio", audiobookshelf_id: "ab-1")
+      assert_equal "There and Back Again", item.subtitle
+      assert_equal "Andy Serkis", item.narrator
+      assert_equal "Middle-earth", item.series
+      assert_equal "0", item.series_position
+      assert_equal 1937, item.published_year
+      assert_equal "9780261103283", item.isbn
     end
   end
 
@@ -116,6 +135,38 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       item = LibraryItem.find_by!(library_id: "lib-ebook", audiobookshelf_id: "ebook-1")
       assert_equal "Project Hail Mary", item.title
       assert_equal "Andy Weir", item.author
+    end
+  end
+
+  test "persists missing items but excludes them from active inventory counts" do
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [
+              {
+                "id" => "ab-missing",
+                "title" => "Lost Book",
+                "author" => "Missing Author",
+                "isMissing" => true
+              }
+            ],
+            "total" => 1
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+
+      item = LibraryItem.find_by!(library_id: "lib-audio", audiobookshelf_id: "ab-missing")
+      assert item.missing?
+      assert_equal 0, LibraryItem.available_for_matching.count
     end
   end
 end

@@ -1,7 +1,19 @@
 # frozen_string_literal: true
 
 class AudiobookshelfLibraryMatcherService
-  Match = Data.define(:item, :score, :match_type)
+  Match = Data.define(:item, :score, :match_type) do
+    def confidence_label
+      likely? ? "Likely match" : "Possible match"
+    end
+
+    def likely?
+      match_type == :likely
+    end
+
+    def possible?
+      match_type == :possible
+    end
+  end
 
   FuzzyThreshold = 85
 
@@ -28,18 +40,19 @@ class AudiobookshelfLibraryMatcherService
 
     matches = library_items.each_with_object([]) do |item, acc|
       item_title = normalize_text(item.title)
+      item_display_title = normalize_text(item.display_title)
       item_author = normalize_text(item.author)
-      next if item_title.blank? && item_author.blank?
+      next if item_title.blank? && item_display_title.blank? && item_author.blank?
 
       score = match_score(
         query_title: query_title,
         query_author: query_author,
-        item_title: item_title,
+        item_titles: [ item_title, item_display_title ].uniq,
         item_author: item_author
       )
       next if score < FuzzyThreshold
 
-      match_type = score == 100 ? :exact : :fuzzy
+      match_type = score == 100 ? :likely : :possible
       acc << Match.new(item: item, score: score, match_type: match_type)
     end
 
@@ -49,13 +62,14 @@ class AudiobookshelfLibraryMatcherService
   private
 
   def library_items
-    @library_items ||= LibraryItem.by_synced_at_desc.to_a
+    @library_items ||= LibraryItem.available_for_matching.by_synced_at_desc.to_a
   end
 
-  def match_score(query_title:, query_author:, item_title:, item_author:)
-    return 100 if query_title == item_title && query_author == item_author
+  def match_score(query_title:, query_author:, item_titles:, item_author:)
+    return 0 if item_titles.blank?
+    return 100 if item_titles.include?(query_title) && query_author == item_author
 
-    title_score = trigram_similarity(query_title, item_title)
+    title_score = item_titles.map { |item_title| trigram_similarity(query_title, item_title) }.max || 0
     return title_score if query_author.blank? || item_author.blank?
 
     author_score = trigram_similarity(query_author, item_author)

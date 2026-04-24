@@ -16,7 +16,7 @@ class SearchController < ApplicationController
       begin
         @results = MetadataService.search(@query)
         @audiobookshelf_matches = if LibraryItem.exists?
-          AudiobookshelfLibraryMatcherService.matches_for_many(@results, limit_per_result: 2)
+          AudiobookshelfLibraryMatcherService.matches_for_many(@results, limit_per_result: 3)
         else
           Array.new(@results.size) { [] }
         end

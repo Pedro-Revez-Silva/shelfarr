@@ -73,7 +73,18 @@ class AudiobookshelfLibrarySyncService
 
       cached = LibraryItem.find_or_initialize_by(library_id: library_id, audiobookshelf_id: audiobookshelf_id)
       cached.title = item["title"]
+      cached.subtitle = item["subtitle"]
       cached.author = item["author"]
+      cached.narrator = item["narrator"]
+      cached.series = item["series"]
+      cached.series_position = item["series_position"]
+      cached.publisher = item["publisher"]
+      cached.language = item["language"]
+      cached.description = item["description"]
+      cached.isbn = item["isbn"]
+      cached.asin = item["asin"]
+      cached.published_year = item["published_year"]
+      cached.missing = item["missing"] == true
       cached.synced_at = now
       cached.save!
       item_ids << audiobookshelf_id

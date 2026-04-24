@@ -199,21 +199,51 @@ class AudiobookshelfClient
       raw_items.filter_map do |raw_item|
         next unless raw_item.is_a?(Hash)
 
+        metadata = extract_book_metadata(raw_item)
+
         {
           "audiobookshelf_id" => raw_item["id"] || raw_item.dig("media", "id") || raw_item.dig("item", "id"),
-          "title" => raw_item["title"] ||
-            raw_item.dig("media", "metadata", "title") ||
-            raw_item.dig("media", "title") ||
-            raw_item.dig("metadata", "title") ||
-            raw_item.dig("book", "metadata", "title") ||
-            raw_item.dig("book", "title"),
-          "author" => extract_author(raw_item)
+          "title" => extract_title(raw_item, metadata),
+          "subtitle" => extract_subtitle(raw_item, metadata),
+          "author" => extract_author(raw_item),
+          "narrator" => extract_narrator(raw_item),
+          "series" => extract_series_name(raw_item, metadata),
+          "series_position" => extract_series_position(raw_item, metadata),
+          "publisher" => metadata["publisher"] || raw_item["publisher"],
+          "language" => metadata["language"] || raw_item["language"],
+          "description" => metadata["description"] || raw_item["description"],
+          "isbn" => normalize_identifier(metadata["isbn"] || raw_item["isbn"]),
+          "asin" => metadata["asin"] || raw_item["asin"],
+          "published_year" => extract_published_year(raw_item, metadata),
+          "missing" => raw_item["isMissing"] == true
         }
       end
     end
 
+    def extract_book_metadata(raw_item)
+      raw_item.dig("media", "metadata") ||
+        raw_item["metadata"] ||
+        raw_item.dig("book", "metadata") ||
+        {}
+    end
+
+    def extract_title(raw_item, metadata)
+      raw_item["title"] ||
+        metadata["title"] ||
+        raw_item.dig("media", "title") ||
+        raw_item.dig("book", "title")
+    end
+
+    def extract_subtitle(raw_item, metadata)
+      raw_item["subtitle"] ||
+        metadata["subtitle"] ||
+        raw_item.dig("media", "subtitle") ||
+        raw_item.dig("book", "subtitle")
+    end
+
     def extract_author(raw_item)
       return raw_item["author"] if raw_item["author"].present?
+      return raw_item["authorName"] if raw_item["authorName"].present?
       return raw_item.dig("media", "metadata", "authorName") if raw_item.dig("media", "metadata", "authorName").present?
       return raw_item.dig("media", "author") if raw_item.dig("media", "author").present?
       return raw_item.dig("metadata", "authorName") if raw_item.dig("metadata", "authorName").present?
@@ -239,6 +269,86 @@ class AudiobookshelfClient
       else
         raw_authors.to_s
       end
+    end
+
+    def extract_narrator(raw_item)
+      return raw_item["narrator"] if raw_item["narrator"].present?
+      return raw_item["narratorName"] if raw_item["narratorName"].present?
+      return raw_item.dig("media", "metadata", "narratorName") if raw_item.dig("media", "metadata", "narratorName").present?
+      return raw_item.dig("metadata", "narratorName") if raw_item.dig("metadata", "narratorName").present?
+      return raw_item.dig("book", "metadata", "narratorName") if raw_item.dig("book", "metadata", "narratorName").present?
+
+      raw_narrators = raw_item.dig("media", "metadata", "narrators") ||
+        raw_item.dig("metadata", "narrators") ||
+        raw_item.dig("book", "metadata", "narrators")
+
+      join_people(raw_narrators)
+    end
+
+    def extract_series_name(raw_item, metadata)
+      return raw_item["seriesName"] if raw_item["seriesName"].present?
+      return metadata["seriesName"] if metadata["seriesName"].present?
+
+      first_series = first_series_entry(raw_item, metadata)
+      return first_series["name"] if first_series.is_a?(Hash) && first_series["name"].present?
+      return first_series["series"]["name"] if first_series.is_a?(Hash) && first_series.dig("series", "name").present?
+
+      first_series.to_s if first_series.present?
+    end
+
+    def extract_series_position(raw_item, metadata)
+      return raw_item["seriesSequence"] if raw_item["seriesSequence"].present?
+
+      first_series = first_series_entry(raw_item, metadata)
+      return first_series["sequence"] if first_series.is_a?(Hash) && first_series["sequence"].present?
+
+      nil
+    end
+
+    def first_series_entry(raw_item, metadata)
+      series = metadata["series"] || raw_item["series"] || raw_item.dig("book", "metadata", "series")
+      return series.first if series.is_a?(Array)
+
+      series
+    end
+
+    def extract_published_year(raw_item, metadata)
+      value = metadata["publishedYear"] ||
+        metadata["publishedDate"] ||
+        raw_item["publishedYear"] ||
+        raw_item["publishedDate"] ||
+        raw_item["year"]
+      return nil if value.blank?
+
+      match = value.to_s.match(/\A\d{4}\z|(\d{4})/)
+      return nil unless match
+
+      (match[0] || match[1]).to_i
+    end
+
+    def normalize_identifier(value)
+      return nil if value.blank?
+      return value.compact_blank.first.to_s if value.is_a?(Array)
+
+      value.to_s
+    end
+
+    def join_people(values)
+      return nil if values.blank?
+
+      if values.is_a?(Array)
+        return values.join(", ") if values.all?(String)
+
+        names = values.map do |value|
+          next unless value.is_a?(Hash)
+
+          value["name"] || value["fullName"]
+        end.compact
+
+        return names.join(", ") if names.any?
+      end
+
+      values.to_s
     end
 
     def end_of_items?(page_items, data, page_size, page)
