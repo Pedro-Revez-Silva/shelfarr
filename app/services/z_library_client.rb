@@ -41,40 +41,38 @@ class ZLibraryClient
     def search(query, file_types: %w[epub pdf], limit: 50, language: nil)
       ensure_configured!
 
-      auth = login
-      Rails.logger.info "[ZLibraryClient] Searching for '#{query}'"
+      with_authenticated_retry(context: "search") do |auth|
+        Rails.logger.info "[ZLibraryClient] Searching for '#{query}'"
 
-      payload = [["message", query], ["limit", limit.to_s]]
-      Array(file_types).each { |ext| payload << ["extensions[]", ext] }
-      payload << ["languages[]", language] if language.present?
+        payload = [["message", query], ["limit", limit.to_s]]
+        Array(file_types).each { |ext| payload << ["extensions[]", ext] }
+        payload << ["languages[]", language] if language.present?
 
-      response = connection.post("https://#{auth[:domain]}/eapi/book/search") do |req|
-        req.headers["Cookie"] = cookie_header(auth)
-        req.body = URI.encode_www_form(payload)
+        response = connection.post("#{auth[:base_url]}/eapi/book/search") do |req|
+          req.headers["Cookie"] = cookie_header(auth)
+          req.body = URI.encode_www_form(payload)
+        end
+
+        data = parse_response(response, context: "search")
+        parse_search_results(data.fetch("books", []), limit)
       end
-
-      data = parse_response(response, context: "search")
-      parse_search_results(data.fetch("books", []), limit)
-    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-      raise ConnectionError, "Failed to connect to Z-Library: #{e.message}"
     end
 
     def get_download_url(id:, hash:)
       ensure_configured!
 
-      auth = login
-      response = connection.get("https://#{auth[:domain]}/eapi/book/#{id}/#{hash}/file") do |req|
-        req.headers["Cookie"] = cookie_header(auth)
+      with_authenticated_retry(context: "download lookup") do |auth|
+        response = connection.get("#{auth[:base_url]}/eapi/book/#{id}/#{hash}/file") do |req|
+          req.headers["Cookie"] = cookie_header(auth)
+        end
+
+        data = parse_response(response, context: "download lookup")
+        download_link = data.dig("file", "downloadLink")
+        raise Error, "Z-Library did not return a download link" if download_link.blank?
+
+        validate_download_url!(download_link)
+        download_link
       end
-
-      data = parse_response(response, context: "download lookup")
-      download_link = data.dig("file", "downloadLink")
-      raise Error, "Z-Library did not return a download link" if download_link.blank?
-
-      validate_download_url!(download_link)
-      download_link
-    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-      raise ConnectionError, "Failed to connect to Z-Library: #{e.message}"
     end
 
     def reset_connection!
@@ -91,9 +89,11 @@ class ZLibraryClient
       if cached.present? &&
           cached[:signature] == signature &&
           cached[:expires_at] > Time.current
+        @last_auth_from_cache = true
         return cached[:auth]
       end
 
+      @last_auth_from_cache = false
       auth = perform_login(signature)
       raise AuthenticationError, "Z-Library login failed" unless auth
 
@@ -103,40 +103,46 @@ class ZLibraryClient
     def perform_login(signature)
       email = SettingsService.get(:zlibrary_email).to_s.strip
       password = SettingsService.get(:zlibrary_password).to_s
-      domain = configured_domain
 
-      response = connection.post("https://#{domain}/eapi/user/login") do |req|
-        req.body = URI.encode_www_form(email: email, password: password)
+      configured_uris.each do |uri|
+        base_url = uri.to_s.delete_suffix("/")
+        domain = uri.host
+
+        response = connection.post("#{base_url}/eapi/user/login") do |req|
+          req.body = URI.encode_www_form(email: email, password: password)
+        end
+
+        next unless response.status == 200
+
+        data = parse_json_body(response)
+        next unless data["success"] == 1
+
+        auth = {
+          remix_userid: data.dig("user", "id")&.to_s,
+          remix_userkey: data.dig("user", "remix_userkey")&.to_s,
+          domain: domain,
+          base_url: base_url
+        }
+
+        next if auth[:remix_userid].blank? || auth[:remix_userkey].blank?
+
+        Rails.logger.info "[ZLibraryClient] Login succeeded via #{domain}"
+        @auth_cache = {
+          signature: signature,
+          auth: auth,
+          expires_at: Time.current + AUTH_TTL_SECONDS
+        }
+        return auth
+      rescue JSON::ParserError, Faraday::Error => e
+        Rails.logger.debug "[ZLibraryClient] Login failed on #{domain}: #{e.message}"
       end
 
-      return nil unless response.status == 200
-
-      data = parse_json_body(response)
-      return nil unless data["success"] == 1
-
-      auth = {
-        remix_userid: data.dig("user", "id")&.to_s,
-        remix_userkey: data.dig("user", "remix_userkey")&.to_s,
-        domain: domain
-      }
-
-      return nil if auth[:remix_userid].blank? || auth[:remix_userkey].blank?
-
-      Rails.logger.info "[ZLibraryClient] Login succeeded via #{domain}"
-      @auth_cache = {
-        signature: signature,
-        auth: auth,
-        expires_at: Time.current + AUTH_TTL_SECONDS
-      }
-      auth
-    rescue JSON::ParserError, Faraday::Error => e
-      Rails.logger.debug "[ZLibraryClient] Login failed on #{domain}: #{e.message}"
       nil
     end
 
     def ensure_configured!
       raise NotConfiguredError, "Z-Library is not configured" unless configured?
-      configured_domain
+      configured_uris
     end
 
     def credential_signature
@@ -148,15 +154,21 @@ class ZLibraryClient
       ].join("\0"))
     end
 
-    def configured_domain
-      configured_uri.host
-    end
-
-    def configured_uri
-      raw_url = SettingsService.get(:zlibrary_url).to_s.strip
+    def configured_uris
+      raw_url = SettingsService.get(:zlibrary_url).to_s
       raise ConfigurationError, "Z-Library URL is not configured" if raw_url.blank?
 
-      uri = URI.parse(raw_url)
+      raw_url.split(/[,\s]+/).filter_map do |url|
+        normalized_uri(url.strip)
+      end.uniq { |uri| [uri.scheme, uri.host, uri.port] }.tap do |uris|
+        raise ConfigurationError, "At least one valid Z-Library URL is required" if uris.empty?
+      end
+    end
+
+    def normalized_uri(url)
+      return if url.blank?
+
+      uri = URI.parse(url)
       unless ALLOWED_DOWNLOAD_SCHEMES.include?(uri.scheme) && uri.host.present?
         raise ConfigurationError, "Z-Library URL must be a valid http or https URL"
       end
@@ -172,6 +184,37 @@ class ZLibraryClient
       uri
     rescue URI::InvalidURIError => e
       raise ConfigurationError, "Z-Library URL is invalid: #{e.message}"
+    end
+
+    def with_authenticated_retry(context:)
+      attempted_retry = false
+
+      begin
+        auth = login
+        using_cached_auth = @last_auth_from_cache
+
+        yield auth
+      rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError,
+             JSON::ParserError, Error => e
+        raise ConnectionError, "Failed to connect to Z-Library: #{e.message}" if transport_error?(e) && attempted_retry
+
+        unless using_cached_auth && !attempted_retry
+          raise ConnectionError, "Failed to connect to Z-Library: #{e.message}" if transport_error?(e)
+
+          raise
+        end
+
+        Rails.logger.debug "[ZLibraryClient] #{context} failed on cached domain: #{e.message}"
+        @auth_cache = nil
+        attempted_retry = true
+        retry
+      end
+    end
+
+    def transport_error?(error)
+      error.is_a?(Faraday::ConnectionFailed) ||
+        error.is_a?(Faraday::TimeoutError) ||
+        error.is_a?(Faraday::SSLError)
     end
 
     def connection

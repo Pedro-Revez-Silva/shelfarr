@@ -245,7 +245,10 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "label", text: "Zlibrary Enabled"
     assert_select "input[name='settings[zlibrary_enabled]']"
-    assert_select "input[name='settings[zlibrary_url]']"
+    assert_select "input[type='hidden'][name='settings[zlibrary_url]']"
+    assert_select "[data-settings-form-target='zlibraryUrlList']"
+    assert_select "input[type='url'][data-settings-form-target='zlibraryUrlInput']"
+    assert_select "button[aria-label='Add Z-Library URL']"
     assert_select "input[name='settings[zlibrary_email]']"
     assert_select "input[name='settings[zlibrary_password]']"
     assert_select "a", text: "Test Z-Library Connection"
