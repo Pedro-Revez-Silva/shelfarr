@@ -149,12 +149,14 @@ class SearchJob < ApplicationJob
     apostrophe_removed = apostrophe_normalized.delete("'").squish
     punctuation_simplified = apostrophe_removed.gsub(/[^\p{Alnum}\s]/, " ").squish
 
-    [
+    variants = [
       base,
       apostrophe_normalized,
       apostrophe_removed,
       punctuation_simplified
-    ].reject(&:blank?).uniq
+    ].reject(&:blank?)
+
+    (variants + variants.map(&:downcase)).reject(&:blank?).uniq
   end
 
   def indexer_language_hint(request)

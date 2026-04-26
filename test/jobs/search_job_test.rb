@@ -390,6 +390,71 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "retries with lowercase generic query variant when mixed-case fallbacks miss" do
+    book = Book.create!(
+      title: "CARL’S DOOMSDAY SCENARIO",
+      author: "Matt Dinniman",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "book" &&
+            req.uri.query_values["query"].include?("{title:CARL’S DOOMSDAY SCENARIO}") &&
+            req.uri.query_values["query"].include?("{author:Matt Dinniman}")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      uppercase_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "CARL’S DOOMSDAY SCENARIO"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      apostrophe_removed_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "CARLS DOOMSDAY SCENARIO"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      lowercase_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "carls doomsday scenario"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ prowlarr_result_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested structured_stub
+      assert_requested uppercase_stub
+      assert_requested apostrophe_removed_stub
+      assert_requested lowercase_stub
+      assert_equal "Test Result Book", request.search_results.first.title
+    end
+  end
+
   test "sanitizes braces in structured Prowlarr query values" do
     book = Book.create!(
       title: "The {Brace} Book",
