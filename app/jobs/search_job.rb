@@ -109,10 +109,15 @@ class SearchJob < ApplicationJob
 
     return results if results.any?
 
-    fallback_query = generic_indexer_query(request)
-    Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with generic query '#{fallback_query}'"
+    fallback_queries = prowlarr_fallback_queries(request)
 
-    IndexerClient.search(fallback_query, book_type: book.book_type)
+    fallback_queries.each_with_index do |fallback_query, index|
+      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with generic query #{index + 1}/#{fallback_queries.size}: '#{fallback_query}'"
+      fallback_results = IndexerClient.search(fallback_query, book_type: book.book_type)
+      return fallback_results if fallback_results.any?
+    end
+
+    []
   end
 
   def search_generic_indexer(request)
@@ -125,6 +130,31 @@ class SearchJob < ApplicationJob
 
   def generic_indexer_query(request)
     [ request.book.title, indexer_language_hint(request) ].reject(&:blank?).join(" ")
+  end
+
+  def prowlarr_fallback_queries(request)
+    language_hint = indexer_language_hint(request)
+    title_variants = normalized_query_variants(request.book.title)
+
+    title_variants.map do |title|
+      [ title, language_hint ].reject(&:blank?).join(" ")
+    end.uniq
+  end
+
+  def normalized_query_variants(value)
+    base = value.to_s.squish
+    return [] if base.blank?
+
+    apostrophe_normalized = base.tr("’‘`´", "'").squish
+    apostrophe_removed = apostrophe_normalized.delete("'").squish
+    punctuation_simplified = apostrophe_removed.gsub(/[^\p{Alnum}\s]/, " ").squish
+
+    [
+      base,
+      apostrophe_normalized,
+      apostrophe_removed,
+      punctuation_simplified
+    ].reject(&:blank?).uniq
   end
 
   def indexer_language_hint(request)

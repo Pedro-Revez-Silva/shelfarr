@@ -337,6 +337,59 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "retries with apostrophe-normalized generic query when fallback query has no results" do
+    book = Book.create!(
+      title: "Carl’s Doomsday Scenario",
+      author: "Matt Dinniman",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "book" &&
+            req.uri.query_values["query"].include?("{title:Carl’s Doomsday Scenario}") &&
+            req.uri.query_values["query"].include?("{author:Matt Dinniman}")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      generic_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Carl’s Doomsday Scenario"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      normalized_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Carls Doomsday Scenario"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ prowlarr_result_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested structured_stub
+      assert_requested generic_stub
+      assert_requested normalized_stub
+      assert_equal "Test Result Book", request.search_results.first.title
+    end
+  end
+
   test "sanitizes braces in structured Prowlarr query values" do
     book = Book.create!(
       title: "The {Brace} Book",
