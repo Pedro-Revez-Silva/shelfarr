@@ -65,6 +65,73 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "login tries configured urls until one succeeds" do
+    SettingsService.set(:zlibrary_url, "https://offline.example\nhttps://z-library.sk")
+
+    VCR.turned_off do
+      stub_request(:post, "https://offline.example/eapi/user/login")
+        .to_raise(Faraday::SSLError.new("certificate verify failed"))
+      stub_zlibrary_login_success
+
+      auth = ZLibraryClient.send(:login)
+
+      assert_equal "z-library.sk", auth[:domain]
+      assert_requested(:post, "https://offline.example/eapi/user/login")
+      assert_requested(:post, "https://z-library.sk/eapi/user/login")
+    end
+  end
+
+  test "search uses the domain that accepted login" do
+    SettingsService.set(:zlibrary_url, "https://offline.example, https://z-library.sk")
+
+    VCR.turned_off do
+      stub_request(:post, "https://offline.example/eapi/user/login")
+        .to_return(status: 503, body: "unavailable")
+      stub_zlibrary_login_success
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(
+          status: 200,
+          body: { success: 1, books: [] }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      ZLibraryClient.search("Test Book")
+
+      assert_requested(:post, "https://z-library.sk/eapi/book/search")
+      assert_not_requested(:post, "https://offline.example/eapi/book/search")
+    end
+  end
+
+  test "search retries configured urls when cached domain fails" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-library.bz")
+
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(
+          status: 200,
+          body: { success: 1, user: { id: "12345", remix_userkey: "abc123" } }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        ).then
+        .to_return(status: 503, body: "unavailable")
+      stub_zlibrary_login_success("z-library.bz")
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(status: 503, body: "unavailable")
+      stub_request(:post, "https://z-library.bz/eapi/book/search")
+        .to_return(
+          status: 200,
+          body: { success: 1, books: [] }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      assert_equal "z-library.sk", ZLibraryClient.send(:login)[:domain]
+      ZLibraryClient.search("Test Book")
+
+      assert_requested(:post, "https://z-library.sk/eapi/book/search")
+      assert_requested(:post, "https://z-library.bz/eapi/book/search")
+    end
+  end
+
   test "search raises AuthenticationError when login fails" do
     VCR.turned_off do
       stub_zlibrary_login_failure
@@ -164,10 +231,16 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     assert_not ZLibraryClient.test_connection
   end
 
+  test "test_connection returns false when any configured url is invalid" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nnot-a-url")
+
+    assert_not ZLibraryClient.test_connection
+  end
+
   private
 
-  def stub_zlibrary_login_success
-    stub_request(:post, "https://z-library.sk/eapi/user/login")
+  def stub_zlibrary_login_success(domain = "z-library.sk")
+    stub_request(:post, "https://#{domain}/eapi/user/login")
       .with(body: "email=reader%40example.com&password=secret")
       .to_return(
         status: 200,
