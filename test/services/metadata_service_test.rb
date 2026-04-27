@@ -6,12 +6,16 @@ class MetadataServiceTest < ActiveSupport::TestCase
   setup do
     @original_source = SettingsService.get(:metadata_source)
     @original_token = SettingsService.get(:hardcover_api_token)
+    @original_hardcover_search_limit = SettingsService.get(:hardcover_search_limit)
+    @original_open_library_search_limit = SettingsService.get(:open_library_search_limit)
     HardcoverClient.reset_connection!
   end
 
   teardown do
     SettingsService.set(:metadata_source, @original_source || "auto")
     SettingsService.set(:hardcover_api_token, @original_token || "")
+    SettingsService.set(:hardcover_search_limit, @original_hardcover_search_limit || 10)
+    SettingsService.set(:open_library_search_limit, @original_open_library_search_limit || 20)
     HardcoverClient.reset_connection!
   end
 
@@ -40,6 +44,51 @@ class MetadataServiceTest < ActiveSupport::TestCase
 
       assert results.any?
       assert_equal "hardcover", results.first.source
+    end
+  end
+
+  test "search uses configured hardcover limit when no limit is provided" do
+    SettingsService.set(:metadata_source, "hardcover")
+    SettingsService.set(:hardcover_api_token, "test_token")
+    SettingsService.set(:hardcover_search_limit, 37)
+
+    VCR.turned_off do
+      stub_hardcover_search([
+        { "id" => 456, "title" => "Harry Potter", "author_names" => [ "J.K. Rowling" ],
+          "release_year" => 1997, "cached_image" => nil, "has_audiobook" => true, "has_ebook" => true }
+      ], expected_per_page: 37)
+
+      results = MetadataService.search("harry potter")
+
+      assert_equal "hardcover", results.first.source
+    end
+  end
+
+  test "search uses configured openlibrary limit when no limit is provided" do
+    SettingsService.set(:metadata_source, "openlibrary")
+    SettingsService.set(:open_library_search_limit, 43)
+
+    VCR.turned_off do
+      stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
+        .with(query: hash_including("q" => "harry potter", "limit" => "43"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "docs" => [
+              {
+                "key" => "/works/OL82563W",
+                "title" => "Harry Potter",
+                "author_name" => [ "J.K. Rowling" ],
+                "first_publish_year" => 1997
+              }
+            ]
+          }.to_json
+        )
+
+      results = MetadataService.search("harry potter")
+
+      assert_equal "openlibrary", results.first.source
     end
   end
 
@@ -168,7 +217,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
 
   private
 
-  def stub_hardcover_search(results)
+  def stub_hardcover_search(results, expected_per_page: nil)
     typesense_response = {
       "facet_counts" => [],
       "found" => results.size,
@@ -178,12 +227,18 @@ class MetadataServiceTest < ActiveSupport::TestCase
       "search_time_ms" => 5
     }
 
-    stub_request(:post, HardcoverClient::BASE_URL)
-      .to_return(
-        status: 200,
-        headers: { "Content-Type" => "application/json" },
-        body: { "data" => { "search" => { "results" => typesense_response } } }.to_json
-      )
+    stub = stub_request(:post, HardcoverClient::BASE_URL)
+    if expected_per_page
+      stub = stub.with do |request|
+        JSON.parse(request.body).dig("variables", "perPage") == expected_per_page
+      end
+    end
+
+    stub.to_return(
+      status: 200,
+      headers: { "Content-Type" => "application/json" },
+      body: { "data" => { "search" => { "results" => typesense_response } } }.to_json
+    )
   end
 
   def stub_hardcover_book(book_data)

@@ -27,7 +27,7 @@ class MetadataService
   class << self
     # Search for books across configured metadata sources
     # Returns array of SearchResult
-    def search(query, limit: 10)
+    def search(query, limit: nil)
       source = metadata_source
 
       Rails.logger.info "[MetadataService] Searching '#{query}' using source: #{source}"
