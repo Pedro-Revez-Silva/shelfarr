@@ -100,9 +100,12 @@ if [[ -f "$CONFIG_FILE" && "$OPT_RECONFIGURE" -eq 0 ]]; then
 else
   if [[ "$OPT_RECONFIGURE" -eq 1 ]]; then
     echo "  Reconfiguring..."
-    # Preserve the existing SECRET_KEY_BASE across reconfiguration
+    # Preserve existing secret keys across reconfiguration
     if [[ -f "$CONFIG_FILE" ]]; then
       EXISTING_KEY="$(grep '^export SECRET_KEY_BASE=' "$CONFIG_FILE" | cut -d'"' -f2 || true)"
+      EXISTING_AR_PRIMARY_KEY="$(grep '^export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=' "$CONFIG_FILE" | cut -d'"' -f2 || true)"
+      EXISTING_AR_DETERMINISTIC_KEY="$(grep '^export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=' "$CONFIG_FILE" | cut -d'"' -f2 || true)"
+      EXISTING_AR_KEY_DERIVATION_SALT="$(grep '^export ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=' "$CONFIG_FILE" | cut -d'"' -f2 || true)"
     fi
   fi
 
@@ -143,6 +146,20 @@ else
     SECRET_KEY_BASE="$(openssl rand -hex 64)"
     ok "Generated SECRET_KEY_BASE"
   fi
+
+  # ── ACTIVE RECORD ENCRYPTION KEYS ────────────────────────────────────────
+  # Reuse existing keys on reconfigure, generate fresh on first install
+  if [[ -n "${EXISTING_AR_PRIMARY_KEY:-}" ]]; then
+    AR_PRIMARY_KEY="$EXISTING_AR_PRIMARY_KEY"
+    AR_DETERMINISTIC_KEY="$EXISTING_AR_DETERMINISTIC_KEY"
+    AR_KEY_DERIVATION_SALT="$EXISTING_AR_KEY_DERIVATION_SALT"
+    ok "Reusing existing Active Record encryption keys"
+  else
+    AR_PRIMARY_KEY="$(openssl rand -base64 32)"
+    AR_DETERMINISTIC_KEY="$(openssl rand -base64 32)"
+    AR_KEY_DERIVATION_SALT="$(openssl rand -base64 32)"
+    ok "Generated Active Record encryption keys"
+  fi
 fi
 
 # Write (or rewrite) the config file
@@ -153,6 +170,9 @@ cat > "$CONFIG_FILE" <<EOF
 export RAILS_ENV=production
 export PORT="${PORT}"
 export SECRET_KEY_BASE="${SECRET_KEY_BASE}"
+export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY="${AR_PRIMARY_KEY}"
+export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY="${AR_DETERMINISTIC_KEY}"
+export ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT="${AR_KEY_DERIVATION_SALT}"
 export SOLID_QUEUE_IN_PUMA=1
 export RAILS_LOG_LEVEL="${RAILS_LOG_LEVEL}"
 export SHELFARR_HOST="${SHELFARR_HOST:-}"
