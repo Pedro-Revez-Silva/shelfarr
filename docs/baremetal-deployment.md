@@ -108,8 +108,6 @@ curl http://localhost:4567/up
 # → {"status":"ok"}
 ```
 
-> **Compatibility note:** The legacy `bin/baremetal-start`, `bin/baremetal-stop`, `bin/baremetal-restart`, `bin/baremetal-update`, and `bin/baremetal-install` commands still work — they delegate to `bin/shelfarr`. Existing cron entries don't need to change.
-
 ---
 
 ## Auto-start on Slot Reboot
@@ -182,7 +180,7 @@ bin/shelfarr start
 
 ### Reset encryption keys (data loss warning)
 
-If you lose `storage/.encryption_keys`, encrypted settings (API keys) will be unreadable. Restore it from a backup, or delete the database and re-run `bin/baremetal-install` to start fresh:
+If you lose `storage/.encryption_keys`, encrypted settings (API keys) will be unreadable. Restore it from a backup, or delete the database and re-run `bin/shelfarr install` to start fresh:
 
 ```bash
 rm ~/shelfarr/storage/production*.sqlite3
