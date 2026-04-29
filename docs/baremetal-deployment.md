@@ -38,27 +38,27 @@ rbenv --version
 
 ```bash
 # 1. Clone the repository
-git clone --branch feature/baremetal-deploy https://github.com/kyleslokafrey/shelfarr.git ~/shelfarr
+git clone https://github.com/pedro-revez-silva/shelfarr.git ~/shelfarr
 cd ~/shelfarr
 
 # 2. Run the install script
-bash bin/baremetal-install
+bin/shelfarr install
 ```
 
 The script will ask for:
 
 1. **Port** — the port Shelfarr listens on (any available port above 1024, e.g. `4567`). Ensure this port is reachable from your network or reverse proxy.
-2. **Host URL** *(optional)* — your public URL, e.g. `https://shelfarr.example.com`. Leave blank and set it later with `bin/baremetal-install --reconfigure`.
+2. **Host URL** *(optional)* — your public URL, e.g. `https://shelfarr.example.com`. Leave blank and set it later with `bin/shelfarr install --reconfigure`.
 
 Everything else (secret keys, database, assets) is handled automatically.
 
 Alternatively, pass values as flags to skip the prompts:
 
 ```bash
-bash bin/baremetal-install --port 4567 --host https://shelfarr.example.com
+bin/shelfarr install --port 4567 --host https://shelfarr.example.com
 ```
 
-The install script saves configuration to `.baremetal-config` (automatically loaded by all `bin/baremetal-*` scripts — no file editing required).
+The install script saves configuration to `.baremetal-config` (automatically loaded by all `bin/shelfarr` subcommands — no file editing required).
 
 ---
 
@@ -67,14 +67,14 @@ The install script saves configuration to `.baremetal-config` (automatically loa
 All configuration is stored in `.baremetal-config`, generated during install. To change the port or host URL at any time:
 
 ```bash
-bin/baremetal-install --reconfigure
+bin/shelfarr install --reconfigure
 ```
 
 Or pass specific flags to update only what you need:
 
 ```bash
-bin/baremetal-install --reconfigure --port 5000
-bin/baremetal-install --reconfigure --host https://shelfarr.example.com
+bin/shelfarr install --reconfigure --port 5000
+bin/shelfarr install --reconfigure --host https://shelfarr.example.com
 ```
 
 Your `SECRET_KEY_BASE` is preserved automatically across reconfiguration.
@@ -84,9 +84,15 @@ Your `SECRET_KEY_BASE` is preserved automatically across reconfiguration.
 ## Starting and Stopping
 
 ```bash
-bin/baremetal-start    # start in background, logs to log/production.log
-bin/baremetal-stop     # graceful shutdown
-bin/baremetal-restart  # stop + start
+bin/shelfarr start    # start in background, logs to log/production.log
+bin/shelfarr stop     # graceful shutdown
+bin/shelfarr restart  # stop + start
+```
+
+Check status:
+
+```bash
+bin/shelfarr status
 ```
 
 Check the logs:
@@ -102,6 +108,8 @@ curl http://localhost:4567/up
 # → {"status":"ok"}
 ```
 
+> **Compatibility note:** The legacy `bin/baremetal-start`, `bin/baremetal-stop`, `bin/baremetal-restart`, `bin/baremetal-update`, and `bin/baremetal-install` commands still work — they delegate to `bin/shelfarr`. Existing cron entries don't need to change.
+
 ---
 
 ## Auto-start on Slot Reboot
@@ -115,7 +123,7 @@ crontab -e
 Add this line (adjust the path if you cloned elsewhere):
 
 ```
-@reboot cd ~/shelfarr && bin/baremetal-start >> log/production.log 2>&1
+@reboot cd ~/shelfarr && bin/shelfarr start >> log/production.log 2>&1
 ```
 
 ---
@@ -144,7 +152,7 @@ Then configure **Settings → Integrations** to point at your Prowlarr, qBittorr
 
 ```bash
 cd ~/shelfarr
-bin/baremetal-update
+bin/shelfarr update
 ```
 
 This pulls the latest code, updates gems, recompiles assets, runs any new migrations, and restarts the server.
@@ -161,15 +169,15 @@ tail -50 ~/shelfarr/log/production.log
 ```
 
 Common causes:
-- **Port already in use** — run `bin/baremetal-install --reconfigure` to pick a different port
-- **No config file** — run `bin/baremetal-install` first
+- **Port already in use** — run `bin/shelfarr install --reconfigure` to pick a different port
+- **No config file** — run `bin/shelfarr install` first
 - **rbenv not on PATH** — run `source ~/.bashrc` then retry
 
 ### Stale PID file after a crash
 
 ```bash
 rm ~/shelfarr/tmp/pids/shelfarr.pid
-bin/baremetal-start
+bin/shelfarr start
 ```
 
 ### Reset encryption keys (data loss warning)
@@ -178,7 +186,7 @@ If you lose `storage/.encryption_keys`, encrypted settings (API keys) will be un
 
 ```bash
 rm ~/shelfarr/storage/production*.sqlite3
-bash bin/baremetal-install
+bin/shelfarr install
 ```
 
 ### View running jobs
