@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# bin/baremetal-stop — stop a running Shelfarr instance on a bare-metal server.
+
+set -euo pipefail
+
+SHELFARR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$SHELFARR_DIR"
+
+PIDFILE="tmp/pids/shelfarr.pid"
+
+if [[ ! -f "$PIDFILE" ]]; then
+  echo "Shelfarr does not appear to be running (no PID file found)."
+  exit 0
+fi
+
+PID="$(cat "$PIDFILE")"
+
+if kill -0 "$PID" 2>/dev/null; then
+  echo "Stopping Shelfarr (PID $PID)..."
+  kill -TERM "$PID"
+
+  # Wait up to 15 seconds for a clean shutdown
+  for i in $(seq 1 15); do
+    sleep 1
+    if ! kill -0 "$PID" 2>/dev/null; then
+      rm -f "$PIDFILE"
+      echo "Shelfarr stopped."
+      exit 0
+    fi
+  done
+
+  echo "Process did not exit after 15 s — sending SIGKILL."
+  kill -KILL "$PID" 2>/dev/null || true
+  rm -f "$PIDFILE"
+  echo "Shelfarr killed."
+else
+  echo "Process $PID is not running — removing stale PID file."
+  rm -f "$PIDFILE"
+fi

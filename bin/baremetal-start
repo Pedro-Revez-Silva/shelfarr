@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# bin/baremetal-start — start Shelfarr on a bare-metal server.
+
+set -euo pipefail
+
+SHELFARR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$SHELFARR_DIR"
+
+PIDFILE="tmp/pids/shelfarr.pid"
+LOGFILE="log/production.log"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+[[ -f .baremetal-config ]] || die ".baremetal-config not found. Run bin/baremetal-install first."
+
+# Load configuration
+# shellcheck disable=SC1091
+source .baremetal-config
+
+PORT="${PORT:-3000}"
+
+# Check if already running
+if [[ -f "$PIDFILE" ]]; then
+  PID="$(cat "$PIDFILE")"
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "Shelfarr is already running (PID $PID, port $PORT)."
+    exit 0
+  else
+    echo "Stale PID file found — removing."
+    rm -f "$PIDFILE"
+  fi
+fi
+
+mkdir -p tmp/pids log
+
+echo "Starting Shelfarr on port $PORT..."
+
+# PIDFILE is read by config/puma.rb to write the PID automatically
+nohup bundle exec rails server \
+  -b 0.0.0.0 \
+  -p "$PORT" \
+  -e "${RAILS_ENV:-production}" \
+  >> "$LOGFILE" 2>&1 &
+
+BGPID=$!
+
+# Wait briefly and confirm the process is still alive
+sleep 2
+if kill -0 "$BGPID" 2>/dev/null; then
+  # Puma writes its own PID via PIDFILE env var (set in config/puma.rb);
+  # fall back to the background PID if Puma hasn't written it yet.
+  if [[ ! -f "$PIDFILE" ]]; then
+    echo "$BGPID" > "$PIDFILE"
+  fi
+  echo "Shelfarr started (PID $(cat "$PIDFILE"), port $PORT)."
+  echo "Logs: $SHELFARR_DIR/$LOGFILE"
+else
+  die "Shelfarr failed to start. Check $LOGFILE for details."
+fi

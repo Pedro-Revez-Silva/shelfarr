@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# bin/baremetal-restart — restart Shelfarr on a bare-metal server.
+
+set -euo pipefail
+
+SHELFARR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."\ && pwd)"
+cd "$SHELFARR_DIR"
+
+"$SHELFARR_DIR/bin/baremetal-stop"
+sleep 2
+"$SHELFARR_DIR/bin/baremetal-start"
