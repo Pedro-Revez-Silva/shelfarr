@@ -1,0 +1,392 @@
+#!/usr/bin/env bash
+# bin/shelfarr — Shelfarr management CLI for bare-metal servers.
+#
+# Usage:
+#   bin/shelfarr <command> [options]
+#
+# Commands:
+#   install    First-time setup (gems, config, database, assets)
+#   start      Start Shelfarr in the background
+#   stop       Gracefully stop Shelfarr
+#   restart    Stop then start
+#   update     Pull latest code, update gems, run migrations, restart
+#   status     Show whether Shelfarr is running and for how long
+
+set -euo pipefail
+
+# shellcheck source=bin/baremetal-lib
+source "$(dirname "${BASH_SOURCE[0]}")/baremetal-lib"
+cd "$SHELFARR_DIR"
+
+# ─── install ──────────────────────────────────────────────────────────────────
+
+cmd_install() {
+  # ── Parse flags ─────────────────────────────────────────────────────────────
+  local OPT_PORT="" OPT_HOST="" OPT_LOG_LEVEL="" OPT_RECONFIGURE=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port)        OPT_PORT="$2";           shift 2 ;;
+      --port=*)      OPT_PORT="${1#*=}";       shift   ;;
+      --host)        OPT_HOST="$2";           shift 2 ;;
+      --host=*)      OPT_HOST="${1#*=}";       shift   ;;
+      --log-level)   OPT_LOG_LEVEL="$2";      shift 2 ;;
+      --log-level=*) OPT_LOG_LEVEL="${1#*=}"; shift   ;;
+      --reconfigure) OPT_RECONFIGURE=1;        shift   ;;
+      *) die "Unknown option: $1. Run 'bin/shelfarr install --help' for usage." ;;
+    esac
+  done
+
+  # ── Ruby / rbenv ─────────────────────────────────────────────────────────────
+  step "Checking Ruby..."
+
+  local REQUIRED_RUBY
+  REQUIRED_RUBY="$(cat .ruby-version 2>/dev/null || echo "3.3.6")"
+
+  if command -v rbenv &>/dev/null; then
+    ok "rbenv found: $(rbenv version)"
+    rbenv install "$REQUIRED_RUBY" --skip-existing
+    rbenv local "$REQUIRED_RUBY"
+  elif command -v ruby &>/dev/null; then
+    local CURRENT_RUBY
+    CURRENT_RUBY="$(ruby -e 'puts RUBY_VERSION')"
+    if [[ "$CURRENT_RUBY" != "$REQUIRED_RUBY" ]]; then
+      warn "System Ruby is $CURRENT_RUBY but Shelfarr requires $REQUIRED_RUBY."
+      warn "Install rbenv: https://github.com/rbenv/rbenv#installation"
+      warn "Then re-run this script. Continuing with system Ruby — things may break."
+    else
+      ok "Ruby $CURRENT_RUBY"
+    fi
+  else
+    die "Ruby not found. Install rbenv first: https://github.com/rbenv/rbenv#installation"
+  fi
+
+  # ── Bundler ──────────────────────────────────────────────────────────────────
+  step "Installing Bundler..."
+  gem install bundler --no-document --quiet
+  ok "Bundler $(bundle --version)"
+
+  step "Installing gems..."
+  bundle config set --local deployment false
+  bundle config unset --local without 2>/dev/null || true
+  bundle install --quiet
+  ok "Gems installed"
+
+  # ── Configuration ────────────────────────────────────────────────────────────
+  step "Configuring Shelfarr..."
+
+  local PORT SHELFARR_HOST RAILS_LOG_LEVEL SECRET_KEY_BASE
+  local AR_PRIMARY_KEY AR_DETERMINISTIC_KEY AR_KEY_DERIVATION_SALT
+  local EXISTING_KEY="" EXISTING_AR_PRIMARY_KEY="" EXISTING_AR_DETERMINISTIC_KEY="" EXISTING_AR_KEY_DERIVATION_SALT=""
+
+  if [[ -f "$CONFIG_FILE" && "$OPT_RECONFIGURE" -eq 0 ]]; then
+    ok "$CONFIG_FILE already exists — loading existing configuration"
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+    # Map config var names to local script var names
+    AR_PRIMARY_KEY="${ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY:-}"
+    AR_DETERMINISTIC_KEY="${ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY:-}"
+    AR_KEY_DERIVATION_SALT="${ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT:-}"
+    # Apply any flag overrides on top of the existing config
+    [[ -n "$OPT_PORT" ]]      && PORT="$OPT_PORT"
+    [[ -n "$OPT_HOST" ]]      && SHELFARR_HOST="$OPT_HOST"
+    [[ -n "$OPT_LOG_LEVEL" ]] && RAILS_LOG_LEVEL="$OPT_LOG_LEVEL"
+  else
+    if [[ "$OPT_RECONFIGURE" -eq 1 ]]; then
+      echo "  Reconfiguring..."
+      if [[ -f "$CONFIG_FILE" ]]; then
+        EXISTING_KEY="$(grep '^export SECRET_KEY_BASE=' "$CONFIG_FILE" | cut -d'"' -f2 || true)"
+        EXISTING_AR_PRIMARY_KEY="$(grep '^export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=' "$CONFIG_FILE" | cut -d'"' -f2 || true)"
+        EXISTING_AR_DETERMINISTIC_KEY="$(grep '^export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=' "$CONFIG_FILE" | cut -d'"' -f2 || true)"
+        EXISTING_AR_KEY_DERIVATION_SALT="$(grep '^export ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=' "$CONFIG_FILE" | cut -d'"' -f2 || true)"
+      fi
+    fi
+
+    # ── PORT ──────────────────────────────────────────────────────────────────
+    if [[ -n "$OPT_PORT" ]]; then
+      PORT="$OPT_PORT"
+    else
+      echo ""
+      echo "  Pick a port for Shelfarr's web UI (any available port above 1024, e.g. 4567)."
+      echo "  Ensure this port is reachable from your network or reverse proxy."
+      read -rp "  Port [4567]: " PORT
+      PORT="${PORT:-4567}"
+    fi
+
+    if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
+      die "Invalid port: $PORT. Choose a number between 1024 and 65535."
+    fi
+
+    # ── HOST (optional) ───────────────────────────────────────────────────────
+    if [[ -n "$OPT_HOST" ]]; then
+      SHELFARR_HOST="$OPT_HOST"
+    else
+      echo ""
+      echo "  Public URL for Shelfarr (e.g. https://shelfarr.example.com), if you have one."
+      echo "  Leave blank to configure later — it only affects notification links."
+      read -rp "  Host URL [leave blank]: " SHELFARR_HOST
+    fi
+
+    # ── LOG LEVEL ─────────────────────────────────────────────────────────────
+    RAILS_LOG_LEVEL="${OPT_LOG_LEVEL:-info}"
+
+    # ── SECRET KEY ────────────────────────────────────────────────────────────
+    if [[ -n "${EXISTING_KEY:-}" ]]; then
+      SECRET_KEY_BASE="$EXISTING_KEY"
+      ok "Reusing existing SECRET_KEY_BASE"
+    else
+      SECRET_KEY_BASE="$(openssl rand -hex 64)"
+      ok "Generated SECRET_KEY_BASE"
+    fi
+
+    # ── ACTIVE RECORD ENCRYPTION KEYS ─────────────────────────────────────────
+    if [[ -n "${EXISTING_AR_PRIMARY_KEY:-}" ]]; then
+      AR_PRIMARY_KEY="$EXISTING_AR_PRIMARY_KEY"
+      AR_DETERMINISTIC_KEY="$EXISTING_AR_DETERMINISTIC_KEY"
+      AR_KEY_DERIVATION_SALT="$EXISTING_AR_KEY_DERIVATION_SALT"
+      ok "Reusing existing Active Record encryption keys"
+    else
+      AR_PRIMARY_KEY="$(openssl rand -base64 32)"
+      AR_DETERMINISTIC_KEY="$(openssl rand -base64 32)"
+      AR_KEY_DERIVATION_SALT="$(openssl rand -base64 32)"
+      ok "Generated Active Record encryption keys"
+    fi
+  fi
+
+  # Write (or rewrite) the config file
+  cat > "$CONFIG_FILE" <<EOF
+# Shelfarr — bare-metal configuration
+# Generated by bin/shelfarr install on $(date -u +"%Y-%m-%d %H:%M UTC")
+# Re-run 'bin/shelfarr install --reconfigure' to change these values.
+export RAILS_ENV=production
+export PORT="${PORT}"
+export SECRET_KEY_BASE="${SECRET_KEY_BASE}"
+export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY="${AR_PRIMARY_KEY}"
+export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY="${AR_DETERMINISTIC_KEY}"
+export ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT="${AR_KEY_DERIVATION_SALT}"
+export SOLID_QUEUE_IN_PUMA=1
+export RAILS_LOG_LEVEL="${RAILS_LOG_LEVEL}"
+export SHELFARR_HOST="${SHELFARR_HOST:-}"
+EOF
+  chmod 600 "$CONFIG_FILE"
+  ok "Configuration saved to $CONFIG_FILE"
+
+  # ── Directories ──────────────────────────────────────────────────────────────
+  step "Creating required directories..."
+  mkdir -p storage tmp/pids tmp/cache tmp/sockets log
+  ok "storage/, tmp/, log/ ready"
+
+  # Source the freshly written config
+  load_config
+
+  # ── Assets ───────────────────────────────────────────────────────────────────
+  step "Precompiling assets..."
+  bundle exec rails assets:precompile --quiet
+  ok "Assets compiled"
+
+  # ── Database ─────────────────────────────────────────────────────────────────
+  step "Preparing database..."
+  DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rails db:schema:load
+  bundle exec rails db:schema:load:queue
+  bundle exec rails db:schema:load:cable
+  ok "Database ready"
+
+  step "Seeding default settings..."
+  bundle exec rails runner 'SettingsService.seed_defaults!'
+  ok "Settings seeded"
+
+  # ── Done ─────────────────────────────────────────────────────────────────────
+  echo ""
+  echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+  echo -e "${GREEN}║     Shelfarr install complete!                      ║${NC}"
+  echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "Next steps:"
+  echo -e "  1. Start Shelfarr:"
+  echo -e "     ${CYAN}bin/shelfarr start${NC}"
+  echo -e ""
+  echo -e "  2. Expose port ${CYAN}${PORT}${NC} via your firewall or reverse proxy for external access."
+  echo -e ""
+  echo -e "  3. Open Shelfarr → Settings → Paths and update the download/output"
+  echo -e "     directories to match your server's folder layout."
+  echo -e ""
+  echo -e "  To change the port or host later:"
+  echo -e "     ${CYAN}bin/shelfarr install --reconfigure${NC}"
+  echo -e ""
+  echo -e "  Full guide: ${CYAN}docs/baremetal-deployment.md${NC}"
+}
+
+# ─── start ────────────────────────────────────────────────────────────────────
+
+cmd_start() {
+  load_config
+
+  local PORT="${PORT:-3000}"
+
+  if [[ -f "$PIDFILE" ]]; then
+    local PID
+    PID="$(cat "$PIDFILE")"
+    if kill -0 "$PID" 2>/dev/null; then
+      echo "Shelfarr is already running (PID $PID, port $PORT)."
+      return 0
+    else
+      echo "Stale PID file found — removing."
+      rm -f "$PIDFILE"
+    fi
+  fi
+
+  mkdir -p tmp/pids log
+
+  echo "Starting Shelfarr on port $PORT..."
+
+  nohup bundle exec rails server \
+    -b 0.0.0.0 \
+    -p "$PORT" \
+    -e "${RAILS_ENV:-production}" \
+    >> "$LOGFILE" 2>&1 &
+
+  local BGPID=$!
+
+  sleep 2
+  if kill -0 "$BGPID" 2>/dev/null; then
+    if [[ ! -f "$PIDFILE" ]]; then
+      echo "$BGPID" > "$PIDFILE"
+    fi
+    echo "Shelfarr started (PID $(cat "$PIDFILE"), port $PORT)."
+    echo "Logs: $LOGFILE"
+  else
+    die "Shelfarr failed to start. Check $LOGFILE for details."
+  fi
+}
+
+# ─── stop ─────────────────────────────────────────────────────────────────────
+
+cmd_stop() {
+  if [[ ! -f "$PIDFILE" ]]; then
+    echo "Shelfarr does not appear to be running (no PID file found)."
+    return 0
+  fi
+
+  local PID
+  PID="$(cat "$PIDFILE")"
+
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "Stopping Shelfarr (PID $PID)..."
+    kill -TERM "$PID"
+
+    local i
+    for i in $(seq 1 15); do
+      sleep 1
+      if ! kill -0 "$PID" 2>/dev/null; then
+        rm -f "$PIDFILE"
+        echo "Shelfarr stopped."
+        return 0
+      fi
+    done
+
+    echo "Process did not exit after 15 s — sending SIGKILL."
+    kill -KILL "$PID" 2>/dev/null || true
+    rm -f "$PIDFILE"
+    echo "Shelfarr killed."
+  else
+    echo "Process $PID is not running — removing stale PID file."
+    rm -f "$PIDFILE"
+  fi
+}
+
+# ─── restart ──────────────────────────────────────────────────────────────────
+
+cmd_restart() {
+  cmd_stop
+  sleep 2
+  cmd_start
+}
+
+# ─── update ───────────────────────────────────────────────────────────────────
+
+cmd_update() {
+  [[ -f "$CONFIG_FILE" ]] || die ".baremetal-config not found. Run 'bin/shelfarr install' first."
+
+  step "Stopping Shelfarr..."
+  cmd_stop
+
+  step "Pulling latest code..."
+  git pull --ff-only
+  ok "Code updated to $(git describe --tags --always)"
+
+  step "Updating gems..."
+  bundle install --quiet
+  ok "Gems up to date"
+
+  load_config
+
+  step "Precompiling assets..."
+  bundle exec rails assets:precompile --quiet
+  ok "Assets compiled"
+
+  step "Running database migrations..."
+  bundle exec rails db:migrate
+  ok "Migrations complete"
+
+  step "Starting Shelfarr..."
+  cmd_start
+
+  echo ""
+  echo -e "${GREEN}Update complete.${NC}"
+}
+
+# ─── status ───────────────────────────────────────────────────────────────────
+
+cmd_status() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE" 2>/dev/null || true
+  fi
+
+  if [[ -f "$PIDFILE" ]]; then
+    local PID
+    PID="$(cat "$PIDFILE")"
+    if kill -0 "$PID" 2>/dev/null; then
+      local ELAPSED
+      ELAPSED="$(ps -o etime= -p "$PID" 2>/dev/null | tr -d ' ' || echo "unknown")"
+      echo "Shelfarr is running (PID $PID, port ${PORT:-unknown}, uptime $ELAPSED)."
+    else
+      echo "Shelfarr is not running (stale PID file — run 'bin/shelfarr start')."
+    fi
+  else
+    echo "Shelfarr is not running."
+  fi
+}
+
+# ─── usage ────────────────────────────────────────────────────────────────────
+
+usage() {
+  echo "Usage: bin/shelfarr <command> [options]"
+  echo ""
+  echo "Commands:"
+  echo "  install    First-time setup (gems, config, database, assets)"
+  echo "  start      Start Shelfarr in the background"
+  echo "  stop       Gracefully stop Shelfarr"
+  echo "  restart    Stop then start"
+  echo "  update     Pull latest code, update gems, run migrations, restart"
+  echo "  status     Show whether Shelfarr is running"
+  echo ""
+  echo "install options:"
+  echo "  --port PORT        Port to listen on (default: 4567)"
+  echo "  --host URL         Public URL (e.g. https://shelfarr.example.com)"
+  echo "  --log-level LEVEL  debug|info|warn|error (default: info)"
+  echo "  --reconfigure      Re-run configuration even if .baremetal-config exists"
+}
+
+# ─── dispatch ─────────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+  install)  shift; cmd_install "$@" ;;
+  start)    cmd_start ;;
+  stop)     cmd_stop ;;
+  restart)  cmd_restart ;;
+  update)   cmd_update ;;
+  status)   cmd_status ;;
+  --help|-h) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

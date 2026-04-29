@@ -1,0 +1,32 @@
+# bin/baremetal-lib — shared library for bin/shelfarr.
+# Source this file; do not execute it directly.
+#
+# Provides:
+#   SHELFARR_DIR, CONFIG_FILE, PIDFILE, LOGFILE — absolute path constants
+#   RED GREEN YELLOW CYAN NC                    — terminal color codes
+#   step() ok() warn() die()                    — output helpers
+#   load_config()                               — source .baremetal-config with validation
+
+SHELFARR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_FILE="$SHELFARR_DIR/.baremetal-config"
+PIDFILE="$SHELFARR_DIR/tmp/pids/shelfarr.pid"
+LOGFILE="$SHELFARR_DIR/log/production.log"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+step() { echo -e "\n${CYAN}==> $*${NC}"; }
+ok()   { echo -e "${GREEN}    ✓ $*${NC}"; }
+warn() { echo -e "${YELLOW}    ! $*${NC}"; }
+die()  { echo -e "${RED}ERROR: $*${NC}" >&2; exit 1; }
+
+load_config() {
+  [[ -f "$CONFIG_FILE" ]] || die ".baremetal-config not found. Run 'bin/shelfarr install' first."
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+  export PIDFILE
+  export THRUSTER_ENABLED=false
+}
