@@ -18,7 +18,7 @@ module DownloadClients
       }
       params[:cat] = config.category if config.category.present?
 
-      response = connection.get("/api", params)
+      response = connection.get("api", params)
       handle_response(response) do |data|
         Rails.logger.info "[Sabnzbd] API response: status=#{data['status']}, nzo_ids=#{data['nzo_ids']&.inspect}"
         # Return the response data so we can extract nzo_ids
@@ -47,7 +47,7 @@ module DownloadClients
 
     # Test connection to SABnzbd
     def test_connection
-      response = connection.get("/api", { mode: "version", apikey: api_key, output: "json" })
+      response = connection.get("api", { mode: "version", apikey: api_key, output: "json" })
       response.status == 200
     rescue Base::Error, Faraday::Error
       false
@@ -57,7 +57,7 @@ module DownloadClients
     # delete_files: if true, also delete downloaded files
     def remove_torrent(nzo_id, delete_files: false)
       # Try to delete from queue first
-      response = connection.get("/api", {
+      response = connection.get("api", {
         mode: "queue",
         name: "delete",
         value: nzo_id,
@@ -72,7 +72,7 @@ module DownloadClients
       end
 
       # If not in queue, try history
-      response = connection.get("/api", {
+      response = connection.get("api", {
         mode: "history",
         name: "delete",
         value: nzo_id,
@@ -130,7 +130,7 @@ module DownloadClients
     end
 
     def list_queue
-      response = connection.get("/api", { mode: "queue", apikey: api_key, output: "json" })
+      response = connection.get("api", { mode: "queue", apikey: api_key, output: "json" })
       handle_response(response) do |data|
         slots = data.dig("queue", "slots") || []
         slots.map { |s| parse_queue_item(s) }
@@ -138,7 +138,7 @@ module DownloadClients
     end
 
     def list_history(limit: 50)
-      response = connection.get("/api", { mode: "history", limit: limit, apikey: api_key, output: "json" })
+      response = connection.get("api", { mode: "history", limit: limit, apikey: api_key, output: "json" })
       handle_response(response) do |data|
         slots = data.dig("history", "slots") || []
         slots.map { |s| parse_history_item(s) }

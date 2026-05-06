@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "uri"
+
 class DownloadClient < ApplicationRecord
   encrypts :password, :api_key
 
@@ -15,9 +17,12 @@ class DownloadClient < ApplicationRecord
   has_many :downloads, dependent: :nullify
   has_many :download_routing_rules, dependent: :destroy
 
+  before_validation :normalize_url
+
   validates :name, presence: true, uniqueness: true
   validates :client_type, presence: true
   validates :url, presence: true
+  validate :url_must_be_http_url
   validates :priority, presence: true, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
   validates :torrent_verification_max_attempts,
     numericality: { only_integer: true, greater_than: 0 }
@@ -67,5 +72,22 @@ class DownloadClient < ApplicationRecord
 
   def qbittorrent_compatible?
     qbittorrent? || decypharr?
+  end
+
+  private
+
+  def normalize_url
+    self.url = url.to_s.strip if url.present?
+  end
+
+  def url_must_be_http_url
+    return if url.blank?
+
+    uri = URI.parse(url)
+    return if uri.is_a?(URI::HTTP) && uri.host.present?
+
+    errors.add(:url, "must be a valid HTTP or HTTPS URL")
+  rescue URI::InvalidURIError
+    errors.add(:url, "must be a valid HTTP or HTTPS URL")
   end
 end

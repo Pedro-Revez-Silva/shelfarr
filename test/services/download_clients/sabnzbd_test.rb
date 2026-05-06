@@ -123,6 +123,33 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection preserves path-based reverse proxy URL" do
+    VCR.turned_off do
+      [
+        [ "https://example.com/user-trailing/sabnzbd/", "https://example.com/user-trailing/sabnzbd/api" ],
+        [ "https://example.com/user-noslash/sabnzbd", "https://example.com/user-noslash/sabnzbd/api" ]
+      ].each do |base_url, api_url|
+        @client_record.update!(url: base_url)
+        client = @client_record.adapter
+
+        request_stub = stub_request(:get, api_url)
+          .with(query: hash_including(
+            "mode" => "version",
+            "apikey" => "test-api-key-12345",
+            "output" => "json"
+          ))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "version" => "4.0.0" }.to_json
+          )
+
+        assert client.test_connection, "#{base_url} should connect through #{api_url}"
+        assert_requested request_stub
+      end
+    end
+  end
+
   test "test_connection returns false on failure" do
     VCR.turned_off do
       stub_request(:get, %r{localhost:8080/api.*mode=version})
