@@ -1,6 +1,12 @@
 # frozen_string_literal: true
 
 class MigrateDownloadClientSettings < ActiveRecord::Migration[8.1]
+  class MigratedDownloadClient < ApplicationRecord
+    self.table_name = "download_clients"
+
+    encrypts :password, :api_key
+  end
+
   def up
     # Read old settings from the settings table
     url = Setting.find_by(key: "download_client_url")&.value
@@ -12,7 +18,7 @@ class MigrateDownloadClientSettings < ActiveRecord::Migration[8.1]
     api_key = Setting.find_by(key: "download_client_api_key")&.value
 
     # Create a DownloadClient record
-    DownloadClient.create!(
+    MigratedDownloadClient.create!(
       name: "#{client_type.titleize} (Migrated)",
       client_type: client_type,
       url: url,

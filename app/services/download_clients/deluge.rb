@@ -82,7 +82,7 @@ module DownloadClients
     end
 
     def authenticate!
-      response = connection.post("/json") do |req|
+      response = connection.post("json") do |req|
         req.headers["Content-Type"] = "application/json"
         req.body = {
           method: "auth.login",
@@ -103,7 +103,7 @@ module DownloadClients
     end
 
     def rpc_call(method, params = [])
-      response = connection.post("/json") do |req|
+      response = connection.post("json") do |req|
         req.headers["Content-Type"] = "application/json"
         req.headers["Cookie"] = session_cookie if session_valid?
         req.body = {

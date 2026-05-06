@@ -102,7 +102,7 @@ module DownloadClients
 
     def rpc_call(method, params = [])
       response = connection.post do |req|
-        req.url "/jsonrpc"
+        req.url "jsonrpc"
         req.headers["Content-Type"] = "application/json"
         req.body = {
           method: method,

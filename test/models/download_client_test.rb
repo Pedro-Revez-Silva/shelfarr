@@ -26,6 +26,30 @@ class DownloadClientTest < ActiveSupport::TestCase
     assert_includes client.errors[:url], "can't be blank"
   end
 
+  test "validates url is http or https with host" do
+    [
+      "localhost:8080",
+      "ftp://example.com/downloads",
+      "http:/example.com",
+      "not a url"
+    ].each do |url|
+      client = DownloadClient.new(name: "Test", client_type: "qbittorrent", url: url)
+
+      assert_not client.valid?, "#{url.inspect} should be invalid"
+      assert_includes client.errors[:url], "must be a valid HTTP or HTTPS URL"
+    end
+  end
+
+  test "normalizes url by stripping surrounding whitespace and preserving path" do
+    client = DownloadClient.create!(
+      name: "Path Client",
+      client_type: "deluge",
+      url: "  https://example.com/user/deluge/  "
+    )
+
+    assert_equal "https://example.com/user/deluge/", client.url
+  end
+
   test "validates presence of client_type" do
     client = DownloadClient.new(name: "Test", url: "http://localhost:8080")
     assert_not client.valid?

@@ -131,6 +131,32 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection preserves path-based reverse proxy URL" do
+    VCR.turned_off do
+      [
+        [ "https://example.com/user-trailing/nzbget/", "https://example.com/user-trailing/nzbget/jsonrpc" ],
+        [ "https://example.com/user-noslash/nzbget", "https://example.com/user-noslash/nzbget/jsonrpc" ]
+      ].each do |base_url, jsonrpc_url|
+        @client_record.update!(url: base_url)
+        client = @client_record.adapter
+
+        request_stub = stub_request(:post, jsonrpc_url)
+          .with(
+            body: hash_including("method" => "version"),
+            basic_auth: [ "nzbget", "tegbzn6789" ]
+          )
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "result" => "21.1" }.to_json
+          )
+
+        assert client.test_connection, "#{base_url} should connect through #{jsonrpc_url}"
+        assert_requested request_stub
+      end
+    end
+  end
+
   test "test_connection returns false on auth failure" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:6789/jsonrpc")
