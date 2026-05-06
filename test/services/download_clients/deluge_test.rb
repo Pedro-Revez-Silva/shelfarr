@@ -128,6 +128,38 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection preserves path-based reverse proxy URL" do
+    VCR.turned_off do
+      [
+        [ "https://example.com/user-trailing/deluge/", "https://example.com/user-trailing/deluge/json" ],
+        [ "https://example.com/user-noslash/deluge", "https://example.com/user-noslash/deluge/json" ]
+      ].each do |base_url, json_url|
+        @client_record.update!(url: base_url)
+        Thread.current[:deluge_sessions] = {}
+        client = @client_record.adapter
+
+        stub_request(:post, json_url)
+          .with(body: /"auth.login"/)
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+            body: { result: true, error: nil, id: 1 }.to_json
+          )
+
+        stub_request(:post, json_url)
+          .with(body: /"core.get_session_state"/)
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: [ "existing_torrent" ], error: nil, id: 1 }.to_json
+          )
+
+        assert client.test_connection, "#{base_url} should connect through #{json_url}"
+        assert_requested :post, json_url, times: 2
+      end
+    end
+  end
+
   test "torrent_info returns item by hash" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8112/json")
