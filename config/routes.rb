@@ -63,8 +63,15 @@ Rails.application.routes.draw do
   # API
   namespace :api, defaults: { format: :json } do
     namespace :v1 do
+      get "search", to: "search#index"
+      resources :requests, only: [ :create, :show ]
       resources :users, only: [ :create ]
     end
+  end
+
+  # Messaging integrations
+  namespace :integrations, defaults: { format: :json } do
+    post "telegram/webhook", to: "telegram_webhooks#create"
   end
 
   # Admin namespace
