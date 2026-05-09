@@ -25,7 +25,7 @@ module Integrations
       when "/help", "/start"
         result(help_text)
       when "/whoami"
-        result("Linked as #{user.username}.")
+        result("Telegram requests are owned by #{user.username}.")
       when "/search"
         search(arguments)
       when "/request"
@@ -47,8 +47,7 @@ module Integrations
         "/search <title or author>",
         "/request <work_id> <ebook|audiobook|both> [language]",
         "/status",
-        "/whoami",
-        "/link <username> <code>"
+        "/whoami"
       ].join("\n")
     end
 
@@ -99,7 +98,7 @@ module Integrations
     end
 
     def status
-      requests = user.requests.includes(:book).order(created_at: :desc).limit(MAX_STATUS_RESULTS)
+      requests = status_scope.includes(:book).order(created_at: :desc).limit(MAX_STATUS_RESULTS)
       return result("No requests found.") if requests.empty?
 
       lines = [ "Latest Shelfarr requests:" ]
@@ -108,6 +107,14 @@ module Integrations
       end
 
       result(lines.join("\n"))
+    end
+
+    def status_scope
+      if origin[:external_source] == "telegram" && origin[:external_chat_id].present?
+        Request.where(external_source: "telegram", external_chat_id: origin[:external_chat_id])
+      else
+        user.requests
+      end
     end
 
     def book_types_for(value)

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_08_120300) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_09_101000) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -269,6 +269,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_120300) do
     t.index ["status"], name: "index_system_healths_on_status"
   end
 
+  create_table "telegram_chat_authorizations", force: :cascade do |t|
+    t.datetime "approved_at"
+    t.integer "approved_by_id"
+    t.string "chat_id", null: false
+    t.string "chat_title"
+    t.string "code_digest"
+    t.datetime "code_generated_at"
+    t.datetime "created_at", null: false
+    t.datetime "paused_at"
+    t.string "requested_by_telegram_user_id"
+    t.string "requested_by_telegram_username"
+    t.datetime "updated_at", null: false
+    t.index ["approved_at"], name: "index_telegram_chat_authorizations_on_approved_at"
+    t.index ["approved_by_id"], name: "index_telegram_chat_authorizations_on_approved_by_id"
+    t.index ["chat_id"], name: "index_telegram_chat_authorizations_on_chat_id", unique: true
+    t.index ["code_generated_at"], name: "index_telegram_chat_authorizations_on_code_generated_at"
+    t.index ["paused_at"], name: "index_telegram_chat_authorizations_on_paused_at"
+  end
+
   create_table "telegram_updates", force: :cascade do |t|
     t.string "chat_id"
     t.string "command"
@@ -343,6 +362,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_120300) do
   add_foreign_key "requests", "users"
   add_foreign_key "search_results", "requests"
   add_foreign_key "sessions", "users"
+  add_foreign_key "telegram_chat_authorizations", "users", column: "approved_by_id"
   add_foreign_key "uploads", "books"
   add_foreign_key "uploads", "users"
 end

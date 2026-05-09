@@ -17,6 +17,14 @@ module Integrations
           new.set_webhook!(url: url)
         end
 
+        def delete_webhook!(drop_pending_updates: false)
+          new.delete_webhook!(drop_pending_updates: drop_pending_updates)
+        end
+
+        def get_updates(offset: nil, timeout: 20, limit: 20)
+          new.get_updates(offset: offset, timeout: timeout, limit: limit)
+        end
+
         def send_message(chat_id:, text:, reply_markup: nil)
           new.send_message(chat_id: chat_id, text: text, reply_markup: reply_markup)
         end
@@ -31,6 +39,21 @@ module Integrations
         secret = Configuration.webhook_secret
         payload[:secret_token] = secret if secret.present?
         post("setWebhook", payload)
+      end
+
+      def delete_webhook!(drop_pending_updates: false)
+        post("deleteWebhook", { drop_pending_updates: drop_pending_updates })
+      end
+
+      def get_updates(offset: nil, timeout: 20, limit: 20)
+        payload = {
+          timeout: timeout.to_i.clamp(0, 50),
+          limit: limit.to_i.clamp(1, 100),
+          allowed_updates: %w[message edited_message callback_query]
+        }
+        payload[:offset] = offset.to_i if offset.present?
+
+        post("getUpdates", payload)
       end
 
       def send_message(chat_id:, text:, reply_markup: nil)

@@ -88,6 +88,17 @@ class Integrations::CommandProcessorTest < ActiveSupport::TestCase
     assert_empty result.search_results
   end
 
+  test "whoami reports the configured request owner" do
+    result = Integrations::CommandProcessor.call(
+      command: "/whoami",
+      arguments: "",
+      user: @user,
+      origin: { external_source: "telegram", external_chat_id: "-100123" }
+    )
+
+    assert_equal "Telegram requests are owned by userone.", result.text
+  end
+
   test "returns usage for blank search and invalid request" do
     search = Integrations::CommandProcessor.call(command: "/search", arguments: "", user: @user, origin: {})
     request = Integrations::CommandProcessor.call(command: "/request", arguments: "work pdf", user: @user, origin: {})
@@ -119,6 +130,22 @@ class Integrations::CommandProcessorTest < ActiveSupport::TestCase
     result = Integrations::CommandProcessor.call(command: "/status", arguments: "", user: user, origin: {})
 
     assert_equal "No requests found.", result.text
+  end
+
+  test "status scopes Telegram requests to the source chat" do
+    request = requests(:pending_request)
+    request.update!(created_via: "telegram", external_source: "telegram", external_chat_id: "-100123")
+    requests(:failed_request).update!(created_via: "telegram", external_source: "telegram", external_chat_id: "-100999")
+
+    result = Integrations::CommandProcessor.call(
+      command: "/status",
+      arguments: "",
+      user: @user,
+      origin: { external_source: "telegram", external_chat_id: "-100123" }
+    )
+
+    assert_includes result.text, request.book.display_name
+    assert_not_includes result.text, requests(:failed_request).book.display_name
   end
 
   test "unknown command returns help hint" do

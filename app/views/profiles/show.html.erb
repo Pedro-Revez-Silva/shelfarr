@@ -72,25 +72,6 @@
             </dd>
           </div>
         <% end %>
-        <% if SettingsService.get(:telegram_enabled, default: false) %>
-          <div>
-            <dt class="text-gray-500">Telegram</dt>
-            <dd class="font-medium">
-              <% if @user.telegram_linked? %>
-                <span class="inline-flex items-center text-green-400">
-                  <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-                  </svg>
-                  Linked<%= @user.telegram_username.present? ? " to @#{@user.telegram_username}" : "" %>
-                </span>
-              <% elsif @user.telegram_link_token_created_at.present? && @user.telegram_link_token_created_at >= User::TELEGRAM_LINK_CODE_TTL.ago %>
-                <span class="text-yellow-400">Link code active</span>
-              <% else %>
-                <span class="text-gray-500">Not linked</span>
-              <% end %>
-            </dd>
-          </div>
-        <% end %>
       </dl>
     </div>
 
@@ -99,13 +80,6 @@
       <%= link_to "Change Password", password_profile_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
       <% if SettingsService.oidc_configured? && !@user.oidc_user? %>
         <%= button_to "Link OIDC Login", link_oidc_profile_path, method: :post, form: { data: { turbo: false } }, class: "px-4 py-2 bg-indigo-700 hover:bg-indigo-600 text-white font-medium rounded-lg transition cursor-pointer" %>
-      <% end %>
-      <% if SettingsService.get(:telegram_enabled, default: false) %>
-        <% if @user.telegram_linked? %>
-          <%= button_to "Unlink Telegram", unlink_telegram_profile_path, method: :delete, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition cursor-pointer" %>
-        <% else %>
-          <%= button_to "Generate Telegram Code", generate_telegram_link_code_profile_path, method: :post, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition cursor-pointer" %>
-        <% end %>
       <% end %>
       <%= link_to two_factor_profile_path, class: "px-4 py-2 #{@user.otp_enabled? ? 'bg-green-900/50 text-green-400 hover:bg-green-900/70' : 'bg-yellow-900/50 text-yellow-400 hover:bg-yellow-900/70'} font-medium rounded-lg transition" do %>
         <span class="flex items-center">

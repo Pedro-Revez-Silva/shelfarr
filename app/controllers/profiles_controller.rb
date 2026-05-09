@@ -81,32 +81,6 @@ class ProfilesController < ApplicationController
     redirect_to profile_path, notice: "OIDC sign-in has been removed from your account."
   end
 
-  def generate_telegram_link_code
-    @user = Current.user
-
-    unless SettingsService.get(:telegram_enabled, default: false)
-      redirect_to profile_path, alert: "Telegram must be enabled before you can link an account."
-      return
-    end
-
-    code = @user.generate_telegram_link_code!
-    ActivityTracker.track("user.telegram_link_code_generated", user: @user)
-    redirect_to profile_path, notice: "Telegram link code: #{code}. Send /link #{@user.username} #{code} to the Shelfarr bot within 15 minutes."
-  end
-
-  def unlink_telegram
-    @user = Current.user
-
-    unless @user.telegram_linked?
-      redirect_to profile_path, notice: "Your account is not linked to Telegram."
-      return
-    end
-
-    @user.unlink_telegram_identity!
-    ActivityTracker.track("user.telegram_unlinked", user: @user)
-    redirect_to profile_path, notice: "Telegram has been removed from your account."
-  end
-
   def create_api_token
     @user = Current.user
     scopes = params[:scopes].presence || %w[search:read requests:read requests:write]

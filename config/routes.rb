@@ -31,8 +31,6 @@ Rails.application.routes.draw do
     patch :update_password, on: :member
     post :link_oidc, on: :member
     delete :unlink_oidc, on: :member
-    post :generate_telegram_link_code, on: :member
-    delete :unlink_telegram, on: :member
     post :api_tokens, to: "profiles#create_api_token"
     delete "api_tokens/:id", to: "profiles#revoke_api_token", as: :api_token
     # Two-factor authentication
@@ -115,6 +113,10 @@ Rails.application.routes.draw do
         post :test_webhook
         post :test_telegram
         post :setup_telegram_webhook
+        post :approve_telegram_chat
+        post "telegram_chats/:id/pause", to: "settings#pause_telegram_chat", as: :pause_telegram_chat
+        post "telegram_chats/:id/resume", to: "settings#resume_telegram_chat", as: :resume_telegram_chat
+        delete "telegram_chats/:id", to: "settings#delete_telegram_chat", as: :delete_telegram_chat
       end
     end
     resource :bulk_operations, only: [] do

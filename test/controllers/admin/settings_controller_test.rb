@@ -517,6 +517,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
   test "setup_telegram_webhook registers webhook URL" do
     SettingsService.set(:telegram_enabled, true)
+    SettingsService.set(:telegram_update_mode, "polling")
     SettingsService.set(:telegram_bot_token, "telegram-token")
     SettingsService.set(:telegram_webhook_secret, "telegram-secret")
 
@@ -537,6 +538,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
       assert_redirected_to admin_settings_path
       assert_match /webhook configured/i, flash[:notice]
+      assert_equal "webhook", SettingsService.get(:telegram_update_mode)
       assert_requested stub
     end
   end
@@ -563,6 +565,76 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal "webhook boom", flash[:alert]
+  end
+
+  test "approve_telegram_chat approves a pending group code" do
+    authorization, code = TelegramChatAuthorization.issue!(
+      chat_id: "-100123",
+      chat_title: "Readers",
+      requested_by_telegram_user_id: "42",
+      requested_by_telegram_username: "telegramuser"
+    )
+
+    post approve_telegram_chat_admin_settings_url, params: { telegram_group_code: code }
+
+    assert_redirected_to admin_settings_path
+    assert_match /Telegram group authorized: Readers/, flash[:notice]
+    assert authorization.reload.approved?
+    assert_equal @admin, authorization.approved_by
+  end
+
+  test "approve_telegram_chat rejects invalid or expired code" do
+    post approve_telegram_chat_admin_settings_url, params: { telegram_group_code: "000000" }
+
+    assert_redirected_to admin_settings_path
+    assert_match /invalid or expired/i, flash[:alert]
+  end
+
+  test "pause_telegram_chat pauses an approved group" do
+    authorization = TelegramChatAuthorization.create!(
+      chat_id: "-100123",
+      chat_title: "Readers",
+      approved_at: Time.current,
+      approved_by: @admin
+    )
+
+    post pause_telegram_chat_admin_settings_url(authorization)
+
+    assert_redirected_to admin_settings_path
+    assert_match /Telegram group paused: Readers/, flash[:notice]
+    assert authorization.reload.paused?
+  end
+
+  test "resume_telegram_chat resumes a paused group" do
+    authorization = TelegramChatAuthorization.create!(
+      chat_id: "-100123",
+      chat_title: "Readers",
+      approved_at: Time.current,
+      approved_by: @admin,
+      paused_at: Time.current
+    )
+
+    post resume_telegram_chat_admin_settings_url(authorization)
+
+    assert_redirected_to admin_settings_path
+    assert_match /Telegram group resumed: Readers/, flash[:notice]
+    assert_not authorization.reload.paused?
+  end
+
+  test "delete_telegram_chat removes a group authorization" do
+    authorization = TelegramChatAuthorization.create!(
+      chat_id: "-100123",
+      chat_title: "Readers",
+      approved_at: Time.current,
+      approved_by: @admin
+    )
+
+    assert_difference "TelegramChatAuthorization.count", -1 do
+      delete delete_telegram_chat_admin_settings_url(authorization)
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /Telegram group removed: Readers/, flash[:notice]
   end
 
   test "test_zlibrary fails when not configured" do

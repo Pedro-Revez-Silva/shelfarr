@@ -35,15 +35,14 @@ module Integrations
       def call
         return nil unless message || callback_query
         return reply("Telegram integration is not enabled.") unless Configuration.configured?
-        return reply("This chat is not allowed to use Shelfarr.") unless Configuration.chat_allowed?(chat_id)
+        return reply("Shelfarr only accepts Telegram commands from authorized groups.") unless group_chat?
+        return paused_group_reply if Configuration.chat_paused?(chat_id)
+        return unauthorized_group_reply unless Configuration.chat_allowed?(chat_id)
 
         return handle_callback if callback_query
 
         command, arguments = parse_command
         return nil unless command
-
-        return link(arguments) if command == "/link"
-        return reply("Your Telegram account is not linked to a Shelfarr user. Generate a link code in Shelfarr, then use /link <username> <code>.") unless shelfarr_user
 
         process(command, arguments)
       end
@@ -56,12 +55,24 @@ module Integrations
         (message || callback_query&.dig("message")).dig("chat", "id").to_s
       end
 
+      def chat
+        (message || callback_query&.dig("message")).dig("chat") || {}
+      end
+
+      def group_chat?
+        %w[group supergroup].include?(chat["type"].to_s)
+      end
+
       def sender_id
         (callback_query&.dig("from", "id") || message&.dig("from", "id")).to_s
       end
 
-      def shelfarr_user
-        @shelfarr_user ||= Configuration.user_for(sender_id)
+      def sender_username
+        (callback_query&.dig("from", "username") || message&.dig("from", "username")).to_s
+      end
+
+      def request_user
+        @request_user ||= Configuration.request_user
       end
 
       def text
@@ -69,8 +80,6 @@ module Integrations
       end
 
       def handle_callback
-        return reply("Your Telegram account is not linked to a Shelfarr user.") unless shelfarr_user
-
         action, work_id, requested_type = callback_query["data"].to_s.split("|", 3)
         return reply("Unknown action.") unless action == "request"
 
@@ -78,7 +87,16 @@ module Integrations
       end
 
       def parse_command
-        token, arguments = text.split(/\s+/, 2)
+        raw_text = text
+        mention_token, remaining_text = raw_text.split(/\s+/, 2)
+
+        if mention_token&.start_with?("@")
+          return [ nil, nil ] unless bot_mentioned?(mention_token)
+
+          raw_text = remaining_text.to_s.strip
+        end
+
+        token, arguments = raw_text.split(/\s+/, 2)
         return [ nil, nil ] unless token&.start_with?("/")
 
         command, mention = token.split("@", 2)
@@ -93,22 +111,29 @@ module Integrations
           !mention.casecmp(Configuration.bot_username).zero?
       end
 
-      def link(arguments)
-        username, code = arguments.to_s.split(/\s+/, 2)
-        return reply("Usage: /link <username> <code>") if username.blank? || code.blank?
+      def bot_mentioned?(mention_token)
+        username = Configuration.bot_username
+        return false if username.blank?
 
-        user = User.active.find_by(username: username.to_s.strip.downcase)
-        return reply("Invalid or expired link code.") unless user&.telegram_link_code_valid?(code)
+        mention_token.to_s.delete_prefix("@").casecmp(username).zero?
+      end
 
-        user.link_telegram_identity!(
-          telegram_user_id: sender_id,
-          telegram_username: message.dig("from", "username")
+      def unauthorized_group_reply
+        _authorization, code = TelegramChatAuthorization.issue!(
+          chat_id: chat_id,
+          chat_title: chat["title"],
+          requested_by_telegram_user_id: sender_id,
+          requested_by_telegram_username: sender_username
         )
-        @shelfarr_user = user
 
-        reply("Telegram linked to #{user.username}.")
-      rescue ActiveRecord::RecordInvalid
-        reply("This Telegram account is already linked to another Shelfarr user.")
+        reply(
+          "This Telegram group is not authorized for Shelfarr. " \
+          "Approval code: #{code}. Enter it in Admin > Settings > Integrations > Telegram within 2 minutes."
+        )
+      end
+
+      def paused_group_reply
+        reply("This Telegram group is paused in Shelfarr. Resume it in Admin > Settings > Integrations > Telegram to process commands.")
       end
 
       def search_keyboard(results)
@@ -123,10 +148,12 @@ module Integrations
       end
 
       def process(command, arguments)
+        return reply("Telegram request owner is not configured in Shelfarr.") unless request_user
+
         result = Integrations::CommandProcessor.call(
           command: command,
           arguments: arguments,
-          user: shelfarr_user,
+          user: request_user,
           origin: {
             created_via: "telegram",
             external_source: "telegram",

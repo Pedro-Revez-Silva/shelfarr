@@ -108,6 +108,8 @@
                           <p class="mt-1 text-xs text-yellow-500">Enter Audiobookshelf URL and API key above to select from available libraries</p>
                         <% elsif key.to_s == "oidc_default_role" %>
                           <%= form.select "settings[#{key}]", options_for_select([["User", "user"], ["Admin", "admin"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                        <% elsif key.to_s == "telegram_update_mode" %>
+                          <%= form.select "settings[#{key}]", options_for_select([["Polling", "polling"], ["Webhook", "webhook"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% elsif key.to_s == "zlibrary_url" %>
                           <% zlibrary_urls = data[:value].to_s.split(/[,\s]+/).map(&:strip).reject(&:blank?).uniq %>
                           <div class="space-y-3">
@@ -292,3 +294,76 @@
     <% end %>
   </div>
 <% end %>
+
+<div class="mt-6 bg-gray-900 rounded-lg border border-gray-800">
+  <div class="px-6 py-4 border-b border-gray-800">
+    <h2 class="font-bold text-xl text-white">Telegram Group Authorization</h2>
+  </div>
+  <div class="p-6 space-y-5">
+    <div class="flex flex-col gap-4 md:flex-row md:items-start">
+      <div class="md:w-1/3">
+        <span class="font-medium text-gray-300">Approve group</span>
+        <p class="text-sm text-gray-500">When an unknown Telegram group messages the bot, Shelfarr replies with a 6-digit code that expires after 2 minutes.</p>
+      </div>
+      <div class="md:w-2/3">
+        <%= form_with url: approve_telegram_chat_admin_settings_path, method: :post, class: "flex flex-col gap-3 sm:flex-row", data: { turbo: false } do |form| %>
+          <%= form.text_field :telegram_group_code, maxlength: 6, inputmode: "numeric", pattern: "\\d{6}", placeholder: "123456", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2" %>
+          <%= form.submit "Authorize Group", class: "rounded-md px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white cursor-pointer whitespace-nowrap" %>
+        <% end %>
+      </div>
+    </div>
+
+    <% authorizations = @telegram_chat_authorizations || [] %>
+    <% if authorizations.any? %>
+      <div class="space-y-2">
+        <% authorizations.each do |authorization| %>
+          <% telegram_chat_label = authorization.chat_title.presence || authorization.chat_id %>
+          <div class="flex flex-col gap-1 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p class="text-sm font-medium text-gray-200"><%= telegram_chat_label %></p>
+              <p class="text-xs text-gray-500"><%= authorization.chat_id %></p>
+            </div>
+            <div class="flex items-center gap-3">
+              <% if authorization.paused? %>
+                <span class="text-sm text-yellow-400">Paused</span>
+              <% elsif authorization.approved? %>
+                <span class="text-sm text-green-400">Authorized</span>
+              <% elsif authorization.expired? %>
+                <span class="text-sm text-gray-500">Expired</span>
+              <% else %>
+                <span class="text-sm text-yellow-400">Pending</span>
+              <% end %>
+
+              <% if authorization.approved? %>
+                <div class="flex items-center gap-1">
+                  <% if authorization.paused? %>
+                    <%= button_to resume_telegram_chat_admin_settings_path(authorization), method: :post, form: { data: { turbo: false } }, class: "inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-gray-800 hover:text-green-300", title: "Resume #{telegram_chat_label}", "aria-label": "Resume #{telegram_chat_label}" do %>
+                      <span class="sr-only">Resume <%= telegram_chat_label %></span>
+                      <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                        <path d="M6.5 4.8v10.4c0 .6.7 1 1.2.6l7.2-5.2c.4-.3.4-.9 0-1.2L7.7 4.2c-.5-.4-1.2 0-1.2.6Z" />
+                      </svg>
+                    <% end %>
+                  <% else %>
+                    <%= button_to pause_telegram_chat_admin_settings_path(authorization), method: :post, form: { data: { turbo: false } }, class: "inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-gray-800 hover:text-yellow-300", title: "Pause #{telegram_chat_label}", "aria-label": "Pause #{telegram_chat_label}" do %>
+                      <span class="sr-only">Pause <%= telegram_chat_label %></span>
+                      <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                        <path d="M5 4.75C5 4.34 5.34 4 5.75 4h2.5c.41 0 .75.34.75.75v10.5c0 .41-.34.75-.75.75h-2.5a.75.75 0 0 1-.75-.75V4.75Zm6 0c0-.41.34-.75.75-.75h2.5c.41 0 .75.34.75.75v10.5c0 .41-.34.75-.75.75h-2.5a.75.75 0 0 1-.75-.75V4.75Z" />
+                      </svg>
+                    <% end %>
+                  <% end %>
+
+                  <%= button_to delete_telegram_chat_admin_settings_path(authorization), method: :delete, form: { data: { turbo: false, turbo_confirm: "Remove this Telegram group from Shelfarr?" } }, class: "inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-400 hover:bg-gray-800 hover:text-red-300", title: "Delete #{telegram_chat_label}", "aria-label": "Delete #{telegram_chat_label}" do %>
+                    <span class="sr-only">Delete <%= telegram_chat_label %></span>
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 7h12M9 7V5h6v2m-8 0 1 13h8l1-13M10 11v6m4-6v6" />
+                    </svg>
+                  <% end %>
+                </div>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+</div>

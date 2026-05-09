@@ -11,7 +11,20 @@ module Integrations
         end
 
         def configured?
-          enabled? && bot_token.present? && webhook_secret.present?
+          enabled? && bot_token.present? && (polling? || webhook_secret.present?)
+        end
+
+        def polling?
+          update_mode == "polling"
+        end
+
+        def webhook?
+          update_mode == "webhook"
+        end
+
+        def update_mode
+          mode = SettingsService.get(:telegram_update_mode).to_s.strip.downcase
+          %w[polling webhook].include?(mode) ? mode : "polling"
         end
 
         def bot_token
@@ -35,17 +48,21 @@ module Integrations
         end
 
         def chat_allowed?(chat_id)
+          authorization = chat_authorization(chat_id)
+          return false if authorization&.paused?
+          return true if authorization&.enabled?
+
           allowed_chat_ids.include?(chat_id.to_s)
         end
 
-        def user_for(telegram_user_id)
-          user = User.active.find_by(telegram_user_id: telegram_user_id.to_s)
-          return user if user
+        def chat_paused?(chat_id)
+          chat_authorization(chat_id)&.paused? || false
+        end
 
-          username = user_mappings[telegram_user_id.to_s]
-          return nil if username.blank?
-
-          User.active.find_by(username: username)
+        def request_user
+          username = SettingsService.get(:telegram_request_username).to_s.strip.downcase
+          user = User.active.find_by(username: username) if username.present?
+          user || User.active.admin.order(:created_at).first || User.active.order(:created_at).first
         end
 
         def webhook_secret_valid?(provided_secret)
@@ -58,14 +75,11 @@ module Integrations
           ActiveSupport::SecurityUtils.secure_compare(provided_digest, expected_digest)
         end
 
-        def user_mappings
-          raw = SettingsService.get(:telegram_user_mappings).to_s.strip
-          return {} if raw.blank?
-
-          parsed_json_mappings(raw) || parsed_line_mappings(raw)
-        end
-
         private
+
+        def chat_authorization(chat_id)
+          TelegramChatAuthorization.find_by(chat_id: chat_id.to_s)
+        end
 
         def parse_list(value)
           value.to_s.split(/[\s,]+/).map(&:strip).reject(&:blank?).uniq
@@ -73,26 +87,6 @@ module Integrations
 
         def notification_events
           parse_list(SettingsService.get(:telegram_notification_events))
-        end
-
-        def parsed_json_mappings(raw)
-          parsed = JSON.parse(raw)
-          return nil unless parsed.is_a?(Hash)
-
-          parsed.each_with_object({}) do |(telegram_id, username), mappings|
-            mappings[telegram_id.to_s] = username.to_s.strip.downcase if username.present?
-          end
-        rescue JSON::ParserError
-          nil
-        end
-
-        def parsed_line_mappings(raw)
-          raw.lines.each_with_object({}) do |line, mappings|
-            telegram_id, username = line.strip.split(/[=:]/, 2)
-            next if telegram_id.blank? || username.blank?
-
-            mappings[telegram_id.strip] = username.strip.downcase
-          end
         end
       end
     end

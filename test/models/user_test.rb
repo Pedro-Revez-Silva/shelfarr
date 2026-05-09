@@ -104,33 +104,4 @@ class UserTest < ActiveSupport::TestCase
     assert replacement.save
   end
 
-  test "generates and verifies telegram link codes" do
-    user = users(:one)
-    code = user.generate_telegram_link_code!
-
-    assert_match(/\A\d{6}\z/, code)
-    assert user.telegram_link_code_valid?(code)
-    assert_not user.telegram_link_code_valid?("000000")
-  end
-
-  test "telegram link codes expire" do
-    user = users(:one)
-    code = user.generate_telegram_link_code!
-    user.update!(telegram_link_token_created_at: (User::TELEGRAM_LINK_CODE_TTL + 1.minute).ago)
-
-    assert_not user.telegram_link_code_valid?(code)
-  end
-
-  test "link_telegram_identity clears pending link code" do
-    user = users(:one)
-    user.generate_telegram_link_code!
-
-    user.link_telegram_identity!(telegram_user_id: "42", telegram_username: "reader")
-
-    assert user.telegram_linked?
-    assert_equal "42", user.telegram_user_id
-    assert_equal "reader", user.telegram_username
-    assert_nil user.telegram_link_token_digest
-    assert_nil user.telegram_link_token_created_at
-  end
 end

@@ -5,12 +5,24 @@ require "test_helper"
 class Integrations::TelegramWebhooksControllerTest < ActionDispatch::IntegrationTest
   setup do
     SettingsService.set(:telegram_enabled, true)
+    SettingsService.set(:telegram_update_mode, "webhook")
     SettingsService.set(:telegram_bot_token, "telegram-token")
     SettingsService.set(:telegram_bot_username, "ShelfarrBot")
     SettingsService.set(:telegram_webhook_secret, "telegram-secret")
     SettingsService.set(:telegram_allowed_chat_ids, "-100123")
-    SettingsService.set(:telegram_user_mappings, "")
+    SettingsService.set(:telegram_request_username, "userone")
     @user = users(:one)
+  end
+
+  test "ignores webhook delivery while Telegram is in polling mode" do
+    SettingsService.set(:telegram_update_mode, "polling")
+
+    post integrations_telegram_webhook_path,
+      headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
+      params: telegram_update("/whoami"),
+      as: :json
+
+    assert_response :not_found
   end
 
   test "rejects webhook requests with invalid secret" do
@@ -22,9 +34,7 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     assert_response :unauthorized
   end
 
-  test "responds to commands for linked users in allowed chats" do
-    @user.update!(telegram_user_id: "42")
-
+  test "responds to commands for authorized groups" do
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
       params: telegram_update("/whoami"),
@@ -33,10 +43,30 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     assert_response :success
     body = JSON.parse(response.body)
     assert_equal "sendMessage", body["method"]
-    assert_equal "Linked as userone.", body["text"]
+    assert_equal "Telegram requests are owned by userone.", body["text"]
   end
 
-  test "refuses commands from chats that are not allow-listed" do
+  test "returns an approval code for unauthorized groups" do
+    assert_difference "TelegramChatAuthorization.count", 1 do
+      post integrations_telegram_webhook_path,
+        headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
+        params: telegram_update("/whoami", chat_id: "-100999"),
+        as: :json
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_match(/Approval code: \d{6}/, body["text"])
+
+    authorization = TelegramChatAuthorization.find_by!(chat_id: "-100999")
+    assert_equal "Shelfarr Readers", authorization.chat_title
+    assert_not authorization.approved?
+    assert authorization.code_digest.present?
+  end
+
+  test "accepts commands from approved Telegram groups" do
+    TelegramChatAuthorization.create!(chat_id: "-100999", chat_title: "Approved Group", approved_at: Time.current)
+
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
       params: telegram_update("/whoami", chat_id: "-100999"),
@@ -44,12 +74,30 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
 
     assert_response :success
     body = JSON.parse(response.body)
-    assert_equal "This chat is not allowed to use Shelfarr.", body["text"]
+    assert_equal "Telegram requests are owned by userone.", body["text"]
+  end
+
+  test "rejects paused Telegram groups without issuing a new approval code" do
+    TelegramChatAuthorization.create!(
+      chat_id: "-100123",
+      chat_title: "Paused Group",
+      approved_at: Time.current,
+      paused_at: Time.current
+    )
+
+    assert_no_difference "TelegramChatAuthorization.count" do
+      post integrations_telegram_webhook_path,
+        headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
+        params: telegram_update("/whoami"),
+        as: :json
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_includes body["text"], "paused in Shelfarr"
   end
 
   test "creates requests through Telegram command" do
-    @user.update!(telegram_user_id: "42")
-
     details = MetadataService::SearchResult.new(
       source: "openlibrary",
       source_id: "OL_TELEGRAM_REQUEST_123W",
@@ -81,13 +129,12 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     request = Request.last
     assert_equal "telegram", request.created_via
     assert_equal "telegram", request.external_source
+    assert_equal @user, request.user
     assert_equal "42", request.external_user_id
     assert_equal "-100123", request.external_chat_id
   end
 
   test "ignores duplicate telegram updates" do
-    @user.update!(telegram_user_id: "42")
-
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
       params: telegram_update("/whoami", update_id: 999),
@@ -104,8 +151,6 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
   end
 
   test "creates requests from inline callback query" do
-    @user.update!(telegram_user_id: "42")
-
     details = MetadataService::SearchResult.new(
       source: "openlibrary",
       source_id: "OL_TELEGRAM_CALLBACK_123W",
@@ -134,25 +179,18 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     assert_includes body["text"], "Request created"
   end
 
-  test "links telegram user with a profile-generated code" do
-    code = @user.generate_telegram_link_code!
-
+  test "rejects commands from private chats" do
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
-      params: telegram_update("/link userone #{code}"),
+      params: telegram_update("/whoami", chat_id: "42", chat_type: "private"),
       as: :json
 
     assert_response :success
     body = JSON.parse(response.body)
-    assert_equal "Telegram linked to userone.", body["text"]
-    assert_equal "42", @user.reload.telegram_user_id
-    assert_equal "telegramuser", @user.telegram_username
-    assert_nil @user.telegram_link_token_digest
+    assert_equal "Shelfarr only accepts Telegram commands from authorized groups.", body["text"]
   end
 
-  test "rejects invalid telegram link code" do
-    @user.generate_telegram_link_code!
-
+  test "link command is not supported for group authorization" do
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
       params: telegram_update("/link userone 000000"),
@@ -160,8 +198,7 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
 
     assert_response :success
     body = JSON.parse(response.body)
-    assert_equal "Invalid or expired link code.", body["text"]
-    assert_nil @user.reload.telegram_user_id
+    assert_equal "Unknown command. Use /help for available commands.", body["text"]
   end
 
   test "rejects malformed json payload" do
@@ -176,8 +213,6 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
   end
 
   test "ignores non command messages" do
-    @user.update!(telegram_user_id: "42")
-
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
       params: telegram_update("hello"),
@@ -188,8 +223,6 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
   end
 
   test "ignores commands addressed to another bot" do
-    @user.update!(telegram_user_id: "42")
-
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
       params: telegram_update("/whoami@OtherBot"),
@@ -199,31 +232,29 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     assert_empty response.body
   end
 
-  test "uses legacy user mapping fallback" do
-    SettingsService.set(:telegram_user_mappings, "42=userone")
-
+  test "supports mention-first commands addressed to the bot" do
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
-      params: telegram_update("/whoami"),
+      params: telegram_update("@ShelfarrBot /whoami"),
       as: :json
 
     assert_response :success
-    assert_equal "Linked as userone.", JSON.parse(response.body)["text"]
+    assert_equal "Telegram requests are owned by userone.", JSON.parse(response.body)["text"]
   end
 
-  test "handles callbacks from unlinked users" do
+  test "handles unknown callbacks" do
     post integrations_telegram_webhook_path,
       headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
-      params: telegram_callback("request|openlibrary:OL_UNLINKED_CALLBACK_123W|ebook"),
+      params: telegram_callback("unknown|openlibrary:OL_UNLINKED_CALLBACK_123W|ebook"),
       as: :json
 
     assert_response :success
-    assert_equal "Your Telegram account is not linked to a Shelfarr user.", JSON.parse(response.body)["text"]
+    assert_equal "Unknown action.", JSON.parse(response.body)["text"]
   end
 
   private
 
-  def telegram_update(text, chat_id: "-100123", sender_id: 42, update_id: 123)
+  def telegram_update(text, chat_id: "-100123", sender_id: 42, update_id: 123, chat_type: "supergroup")
     {
       update_id: update_id,
       message: {
@@ -231,7 +262,8 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
         text: text,
         chat: {
           id: chat_id,
-          type: "supergroup"
+          type: chat_type,
+          title: "Shelfarr Readers"
         },
         from: {
           id: sender_id,
