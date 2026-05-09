@@ -22,8 +22,16 @@ module Integrations
           SettingsService.get(:telegram_bot_username).to_s.strip.delete_prefix("@")
         end
 
+        def webhook_secret
+          SettingsService.get(:telegram_webhook_secret).to_s.strip
+        end
+
         def allowed_chat_ids
           parse_list(SettingsService.get(:telegram_allowed_chat_ids))
+        end
+
+        def notification_enabled_for?(event)
+          configured? && notification_events.include?(event.to_s)
         end
 
         def chat_allowed?(chat_id)
@@ -31,6 +39,9 @@ module Integrations
         end
 
         def user_for(telegram_user_id)
+          user = User.active.find_by(telegram_user_id: telegram_user_id.to_s)
+          return user if user
+
           username = user_mappings[telegram_user_id.to_s]
           return nil if username.blank?
 
@@ -56,12 +67,12 @@ module Integrations
 
         private
 
-        def webhook_secret
-          SettingsService.get(:telegram_webhook_secret).to_s.strip
-        end
-
         def parse_list(value)
           value.to_s.split(/[\s,]+/).map(&:strip).reject(&:blank?).uniq
+        end
+
+        def notification_events
+          parse_list(SettingsService.get(:telegram_notification_events))
         end
 
         def parsed_json_mappings(raw)

@@ -2,7 +2,7 @@ pre-commit:
   parallel: false
   commands:
     quality:
-      run: ./bin/quality fast --staged
+      run: ./bin/quality commit --staged
 
 pre-push:
   parallel: false

@@ -26,6 +26,120 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "index renders ordered clients" do
+    first = create_download_client(name: "First Client", url: "http://localhost:8081")
+    second = create_download_client(name: "Second Client", url: "http://localhost:8082")
+    second.update!(priority: first.priority + 1)
+
+    get admin_download_clients_url
+
+    assert_response :success
+    assert_select "h1", "Download Clients"
+    assert_select "td", "First Client"
+    assert_select "td", "Second Client"
+  end
+
+  test "new renders form with default category" do
+    get new_admin_download_client_url
+
+    assert_response :success
+    assert_select "form[action='#{admin_download_clients_path}']"
+    assert_select "input[name='download_client[category]'][value='shelfarr']"
+  end
+
+  test "show displays client details without secrets" do
+    client = create_download_client
+
+    get admin_download_client_url(client)
+
+    assert_response :success
+    assert_select "h1", client.name
+    assert_select "dd", client.client_type.titleize
+    assert_select "dd", client.url
+    assert_select "span", "Enabled"
+    assert_no_match client.password, response.body
+  end
+
+  test "create renders errors for invalid client" do
+    assert_no_difference -> { DownloadClient.count } do
+      post admin_download_clients_url, params: {
+        download_client: {
+          name: "",
+          client_type: "qbittorrent",
+          url: "",
+          torrent_verification_max_attempts: "0",
+          torrent_verification_wait_time: "-1"
+        }
+      }
+    end
+
+    assert_response :unprocessable_entity
+    assert_select "form[action='#{admin_download_clients_path}']"
+  end
+
+  test "edit renders form" do
+    client = create_download_client
+
+    get edit_admin_download_client_url(client)
+
+    assert_response :success
+    assert_select "form[action='#{admin_download_client_path(client)}']"
+  end
+
+  test "update renders errors for invalid client" do
+    client = create_download_client
+
+    patch admin_download_client_url(client), params: {
+      download_client: {
+        name: "",
+        url: ""
+      }
+    }
+
+    assert_response :unprocessable_entity
+    assert_select "form[action='#{admin_download_client_path(client)}']"
+  end
+
+  test "destroy removes client and clears monitor when none remain" do
+    client = create_download_client
+
+    assert_difference -> { DownloadClient.count }, -1 do
+      delete admin_download_client_url(client)
+    end
+
+    assert_redirected_to admin_download_clients_path
+    assert_equal "Download client was successfully deleted.", flash[:notice]
+  end
+
+  test "move actions swap priorities within same client type" do
+    first = create_download_client(name: "Priority One", url: "http://localhost:8081")
+    second = create_download_client(name: "Priority Two", url: "http://localhost:8082")
+    first.update!(priority: 0)
+    second.update!(priority: 1)
+
+    post move_down_admin_download_client_url(first)
+
+    assert_redirected_to admin_download_clients_path
+    assert_equal 1, first.reload.priority
+    assert_equal 0, second.reload.priority
+
+    post move_up_admin_download_client_url(first)
+
+    assert_redirected_to admin_download_clients_path
+    assert_equal 0, first.reload.priority
+    assert_equal 1, second.reload.priority
+  end
+
+  test "move actions ignore boundary clients" do
+    client = create_download_client
+    client.update!(priority: 0)
+
+    post move_up_admin_download_client_url(client)
+
+    assert_redirected_to admin_download_clients_path
+    assert_equal 0, client.reload.priority
+  end
+
   test "test action updates system health to down when connection fails" do
     client = create_download_client
 
@@ -114,8 +228,8 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
 
   private
 
-  def create_download_client
-    DownloadClient.create!(
+  def create_download_client(**attributes)
+    DownloadClient.create!({
       name: "Test qBittorrent",
       client_type: "qbittorrent",
       url: "http://localhost:8080",
@@ -125,6 +239,6 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
       torrent_verification_wait_time: 2,
       priority: 0,
       enabled: true
-    )
+    }.merge(attributes))
   end
 end

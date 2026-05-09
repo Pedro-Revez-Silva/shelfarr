@@ -13,13 +13,14 @@ class RequestCreationService
     end
   end
 
-  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil)
+  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {})
     @user = user
     @work_id = work_id.to_s.strip
     @book_types = normalize_book_types(book_types)
     @metadata_attrs = metadata_attrs.to_h.symbolize_keys
     @notes = notes
     @language = language
+    @origin = origin.to_h.symbolize_keys
   end
 
   def call
@@ -58,7 +59,7 @@ class RequestCreationService
 
   private
 
-  attr_reader :user, :work_id, :book_types, :metadata_attrs, :notes, :language
+  attr_reader :user, :work_id, :book_types, :metadata_attrs, :notes, :language, :origin
 
   def failure(message)
     Result.new(created_requests: [], warnings: [], errors: [ message ])
@@ -101,11 +102,23 @@ class RequestCreationService
     user.requests.build(book: book, status: :pending).tap do |request|
       request.notes = notes if notes.present?
       request.language = language if language.present?
+      request.created_via = origin.fetch(:created_via, "web")
+      request.external_source = origin[:external_source]
+      request.external_user_id = origin[:external_user_id]
+      request.external_chat_id = origin[:external_chat_id]
     end
   end
 
   def after_create(request)
-    ActivityTracker.track("request.created", trackable: request, user: user)
+    ActivityTracker.track(
+      "request.created",
+      trackable: request,
+      user: user,
+      details: {
+        created_via: request.created_via,
+        external_source: request.external_source
+      }.compact
+    )
     NotificationService.request_created(request)
     SearchJob.perform_later(request.id) if enqueue_search_immediately_for?(request)
   end

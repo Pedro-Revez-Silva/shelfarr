@@ -37,6 +37,8 @@ module Quality
     command = argv.shift
 
     case command
+    when "commit"
+      run_commit(argv)
     when "all", "deep"
       run_deep ? 0 : 1
     when "fast"
@@ -72,6 +74,12 @@ module Quality
     tests = related_test_files(files)
     success &&= run("Tests", "bin/rails", "test", "--fail-fast", *tests) unless tests.empty?
 
+    success ? 0 : 1
+  end
+
+  def run_commit(argv)
+    success = run_fast(argv)
+    success &&= run_coverage
     success ? 0 : 1
   end
 
@@ -275,6 +283,7 @@ module Quality
   def usage
     <<~TEXT
       Usage:
+        bin/quality commit --staged
         bin/quality fast --staged
         bin/quality fast path/to/file.rb test/models/example_test.rb
         bin/quality coverage

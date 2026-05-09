@@ -191,4 +191,68 @@ class SearchResultTest < ActiveSupport::TestCase
     refute result.auto_select_allowed_by_preferences?
     assert_equal 12, result.preference_adjustment
   end
+
+  test "language helpers return display name flag and request match" do
+    request = requests(:pending_request)
+    request.update!(language: "en")
+    result = SearchResult.new(request: request, detected_language: "en")
+
+    assert_equal "English", result.language_display_name
+    assert_equal "GB", result.language_flag
+    assert result.language_matches_request?
+  end
+
+  test "language helpers tolerate missing and unknown languages" do
+    assert_nil SearchResult.new.language_display_name
+    assert_nil SearchResult.new.language_flag
+
+    result = SearchResult.new(detected_language: "xx")
+
+    assert_equal "xx", result.language_display_name
+    assert_nil result.language_flag
+    assert result.language_matches_request?
+  end
+
+  test "language_matches_request returns false for mismatch" do
+    request = requests(:pending_request)
+    request.update!(language: "fr")
+    result = SearchResult.new(request: request, detected_language: "en")
+
+    assert_not result.language_matches_request?
+  end
+
+  test "confidence helpers classify scores" do
+    SettingsService.set(:auto_select_confidence_threshold, 80)
+
+    assert_not SearchResult.new.high_confidence?
+    assert_equal :unknown, SearchResult.new.confidence_level
+    assert SearchResult.new(confidence_score: 80).high_confidence?
+    assert_equal :high, SearchResult.new(confidence_score: 90).confidence_level
+    assert_equal :medium, SearchResult.new(confidence_score: 70).confidence_level
+    assert_equal :low, SearchResult.new(confidence_score: 69).confidence_level
+  end
+
+  test "format helpers fall back when score metadata is absent" do
+    result = SearchResult.new(title: "The Pending Ebook - EPUB")
+
+    assert_equal [], result.detected_extensions
+    assert_nil result.primary_extension
+    assert_nil result.audiobook_structure
+    assert_nil result.audio_bitrate_kbps
+    assert result.auto_select_allowed_by_preferences?
+    assert_equal 0, result.preference_adjustment
+  end
+
+  test "source helpers identify source families and display names" do
+    assert SearchResult.new(source: nil).from_prowlarr?
+    assert SearchResult.new(source: SearchResult::SOURCE_JACKETT).from_jackett?
+    assert SearchResult.new(source: SearchResult::SOURCE_JACKETT).from_indexer?
+    assert SearchResult.new(source: SearchResult::SOURCE_ANNA_ARCHIVE).from_anna_archive?
+    assert SearchResult.new(source: SearchResult::SOURCE_ZLIBRARY).from_zlibrary?
+
+    assert_equal "Custom Jackett", SearchResult.new(source: SearchResult::SOURCE_JACKETT, indexer: "Custom Jackett").source_display_name
+    assert_equal "Anna's Archive", SearchResult.new(source: SearchResult::SOURCE_ANNA_ARCHIVE).source_display_name
+    assert_equal "Z-Library", SearchResult.new(source: SearchResult::SOURCE_ZLIBRARY).source_display_name
+    assert_equal "Prowlarr", SearchResult.new.source_display_name
+  end
 end

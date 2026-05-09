@@ -1,0 +1,50 @@
+<div class="mx-auto max-w-4xl">
+  <div class="flex items-center justify-between mb-8">
+    <h1 class="font-bold text-4xl text-white"><%= @download_client.name %></h1>
+    <div class="flex items-center gap-3">
+      <%= button_to "Test", test_admin_download_client_path(@download_client), method: :post, class: "rounded-md px-4 py-2 bg-green-700 hover:bg-green-600 text-white" %>
+      <%= link_to "Edit", edit_admin_download_client_path(@download_client), class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white" %>
+      <%= link_to "Back", admin_download_clients_path, class: "rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white" %>
+    </div>
+  </div>
+
+  <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+    <dl class="divide-y divide-gray-800">
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">Type</dt>
+        <dd class="md:col-span-2 text-gray-100"><%= @download_client.client_type.titleize %></dd>
+      </div>
+
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">URL</dt>
+        <dd class="md:col-span-2 text-gray-100 break-all"><%= @download_client.url %></dd>
+      </div>
+
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">Category</dt>
+        <dd class="md:col-span-2 text-gray-100"><%= @download_client.category.presence || "None" %></dd>
+      </div>
+
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">Priority</dt>
+        <dd class="md:col-span-2 text-gray-100"><%= @download_client.priority + 1 %></dd>
+      </div>
+
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">Status</dt>
+        <dd class="md:col-span-2">
+          <span class="px-2 py-1 text-xs rounded <%= @download_client.enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-400' %>">
+            <%= @download_client.enabled? ? "Enabled" : "Disabled" %>
+          </span>
+        </dd>
+      </div>
+
+      <% if @download_client.download_path.present? %>
+        <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+          <dt class="text-sm font-medium text-gray-400">Download Path</dt>
+          <dd class="md:col-span-2 text-gray-100 break-all"><%= @download_client.download_path %></dd>
+        </div>
+      <% end %>
+    </dl>
+  </div>
+</div>

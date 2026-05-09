@@ -1,0 +1,37 @@
+<div class="mx-auto max-w-4xl">
+  <div class="flex items-center justify-between mb-8">
+    <h1 class="font-bold text-4xl text-white"><%= @user.name %></h1>
+    <div class="flex items-center gap-3">
+      <%= link_to "Edit", edit_admin_user_path(@user), class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white" %>
+      <%= link_to "Back", admin_users_path, class: "rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white" %>
+    </div>
+  </div>
+
+  <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+    <dl class="divide-y divide-gray-800">
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">Username</dt>
+        <dd class="md:col-span-2 text-gray-100"><%= @user.username %></dd>
+      </div>
+
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">Role</dt>
+        <dd class="md:col-span-2">
+          <span class="px-2 py-1 text-xs rounded <%= @user.admin? ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-700 text-gray-300' %>">
+            <%= @user.role.titleize %>
+          </span>
+        </dd>
+      </div>
+
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">Created</dt>
+        <dd class="md:col-span-2 text-gray-100"><%= @user.created_at.strftime("%b %d, %Y") %></dd>
+      </div>
+
+      <div class="px-6 py-4 grid gap-1 md:grid-cols-3">
+        <dt class="text-sm font-medium text-gray-400">Requests</dt>
+        <dd class="md:col-span-2 text-gray-100"><%= @user.requests.count %></dd>
+      </div>
+    </dl>
+  </div>
+</div>

@@ -7,5 +7,5 @@ SimpleCov.start "rails" do
   add_filter "/db/"
   add_filter "/test/"
 
-  minimum_coverage line: 55, branch: 40
+  minimum_coverage line: 90, branch: 40
 end

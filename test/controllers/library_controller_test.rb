@@ -95,4 +95,108 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "code", false
   end
+
+  test "retry post processing requires admin" do
+    post retry_post_processing_library_path(@acquired_audiobook)
+
+    assert_redirected_to library_index_path
+    assert_equal "Only admins can retry post-processing", flash[:alert]
+  end
+
+  test "retry post processing redirects when no retryable download exists" do
+    sign_out
+    sign_in_as(@admin)
+
+    post retry_post_processing_library_path(@acquired_audiobook)
+
+    assert_redirected_to library_path(@acquired_audiobook)
+    assert_equal "No retryable post-processing found for this book", flash[:alert]
+  end
+
+  test "retry post processing clears attention and queues job" do
+    sign_out
+    sign_in_as(@admin)
+    request = Request.create!(
+      book: @acquired_audiobook,
+      user: @user,
+      status: :processing,
+      attention_needed: true,
+      issue_description: "Post-processing failed"
+    )
+    download = request.downloads.create!(name: "Finished", status: :completed)
+
+    assert_enqueued_with(job: PostProcessingJob, args: [ download.id ]) do
+      post retry_post_processing_library_path(@acquired_audiobook)
+    end
+
+    assert_redirected_to library_path(@acquired_audiobook)
+    assert_equal "Post-processing has been queued for retry.", flash[:notice]
+    assert_not request.reload.attention_needed?
+    assert_nil request.issue_description
+  end
+
+  test "destroy requires admin" do
+    delete library_path(@acquired_audiobook)
+
+    assert_redirected_to library_index_path
+    assert_equal "Only admins can delete books from the library", flash[:alert]
+    assert Book.exists?(@acquired_audiobook.id)
+  end
+
+  test "destroy removes book and associated requests" do
+    sign_out
+    sign_in_as(@admin)
+    Request.create!(book: @acquired_audiobook, user: @user, status: :completed)
+
+    assert_difference -> { Book.count }, -1 do
+      delete library_path(@acquired_audiobook)
+    end
+
+    assert_redirected_to library_index_path
+    assert_equal "\"#{@acquired_audiobook.title}\" has been removed from the library", flash[:notice]
+    assert_empty Request.where(book_id: @acquired_audiobook.id)
+  end
+
+  test "destroy deletes file inside configured output directory" do
+    sign_out
+    sign_in_as(@admin)
+    Dir.mktmpdir("shelfarr-library-test") do |dir|
+      file_path = File.join(dir, "book.epub")
+      File.write(file_path, "book")
+      SettingsService.set(:ebook_output_path, dir)
+      book = Book.create!(
+        title: "Temporary Ebook",
+        author: "Test Author",
+        book_type: :ebook,
+        file_path: file_path
+      )
+
+      delete library_path(book), params: { delete_files: "1" }
+
+      assert_redirected_to library_index_path
+      assert_not File.exist?(file_path)
+      assert_not Book.exists?(book.id)
+    end
+  end
+
+  test "destroy does not delete file outside configured output directories" do
+    sign_out
+    sign_in_as(@admin)
+    Dir.mktmpdir("shelfarr-library-test") do |dir|
+      file_path = File.join(dir, "outside.epub")
+      File.write(file_path, "book")
+      SettingsService.set(:ebook_output_path, File.join(dir, "allowed"))
+      book = Book.create!(
+        title: "Outside Ebook",
+        author: "Test Author",
+        book_type: :ebook,
+        file_path: file_path
+      )
+
+      delete library_path(book), params: { delete_files: "1" }
+
+      assert_redirected_to library_index_path
+      assert File.exist?(file_path)
+    end
+  end
 end

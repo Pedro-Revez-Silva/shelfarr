@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_25_100000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_08_120300) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -26,6 +26,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_25_100000) do
     t.index ["trackable_type", "trackable_id"], name: "index_activity_logs_on_trackable"
     t.index ["trackable_type", "trackable_id"], name: "index_activity_logs_on_trackable_type_and_trackable_id"
     t.index ["user_id"], name: "index_activity_logs_on_user_id"
+  end
+
+  create_table "api_tokens", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "expires_at"
+    t.datetime "last_used_at"
+    t.string "name", null: false
+    t.datetime "revoked_at"
+    t.text "scopes", default: "[]", null: false
+    t.string "token_digest", null: false
+    t.string "token_prefix", null: false
+    t.datetime "updated_at", null: false
+    t.integer "user_id"
+    t.index ["revoked_at"], name: "index_api_tokens_on_revoked_at"
+    t.index ["token_digest"], name: "index_api_tokens_on_token_digest", unique: true
+    t.index ["token_prefix"], name: "index_api_tokens_on_token_prefix"
+    t.index ["user_id"], name: "index_api_tokens_on_user_id"
   end
 
   create_table "books", force: :cascade do |t|
@@ -173,6 +190,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_25_100000) do
     t.integer "book_id", null: false
     t.datetime "completed_at"
     t.datetime "created_at", null: false
+    t.string "created_via", default: "web", null: false
+    t.string "external_chat_id"
+    t.string "external_source"
+    t.string "external_user_id"
     t.text "issue_description"
     t.string "language"
     t.datetime "next_retry_at"
@@ -183,6 +204,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_25_100000) do
     t.integer "user_id", null: false
     t.index ["attention_needed"], name: "index_requests_on_attention_needed"
     t.index ["book_id"], name: "index_requests_on_book_id"
+    t.index ["created_via"], name: "index_requests_on_created_via"
+    t.index ["external_source", "external_user_id"], name: "index_requests_on_external_source_and_external_user_id"
     t.index ["next_retry_at"], name: "index_requests_on_next_retry_at"
     t.index ["status"], name: "index_requests_on_status"
     t.index ["user_id", "status"], name: "index_requests_on_user_id_and_status"
@@ -246,6 +269,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_25_100000) do
     t.index ["status"], name: "index_system_healths_on_status"
   end
 
+  create_table "telegram_updates", force: :cascade do |t|
+    t.string "chat_id"
+    t.string "command"
+    t.datetime "created_at", null: false
+    t.string "telegram_user_id"
+    t.string "update_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["telegram_user_id", "created_at"], name: "index_telegram_updates_on_telegram_user_id_and_created_at"
+    t.index ["update_id"], name: "index_telegram_updates_on_update_id", unique: true
+  end
+
   create_table "uploads", force: :cascade do |t|
     t.integer "book_id"
     t.integer "book_type"
@@ -284,15 +318,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_25_100000) do
     t.string "otp_secret"
     t.string "password_digest", null: false
     t.integer "role", default: 0, null: false
+    t.datetime "telegram_link_token_created_at"
+    t.string "telegram_link_token_digest"
+    t.string "telegram_user_id"
+    t.string "telegram_username"
     t.datetime "updated_at", null: false
     t.string "username", null: false
     t.index ["deleted_at"], name: "index_users_on_deleted_at"
     t.index ["oidc_provider", "oidc_uid"], name: "index_users_on_oidc_provider_and_uid_unique", unique: true, where: "deleted_at IS NULL AND oidc_provider IS NOT NULL AND oidc_uid IS NOT NULL"
     t.index ["role"], name: "index_users_on_role"
+    t.index ["telegram_link_token_digest"], name: "index_users_on_telegram_link_token_digest"
+    t.index ["telegram_user_id"], name: "index_users_on_telegram_user_id_unique", unique: true, where: "deleted_at IS NULL AND telegram_user_id IS NOT NULL"
     t.index ["username"], name: "index_users_on_username", unique: true, where: "deleted_at IS NULL"
   end
 
   add_foreign_key "activity_logs", "users"
+  add_foreign_key "api_tokens", "users"
   add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
   add_foreign_key "notifications", "users"

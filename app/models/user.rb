@@ -2,8 +2,11 @@ class User < ApplicationRecord
   class OidcIdentityAlreadyLinkedError < StandardError; end
   class OidcIdentityConflictError < StandardError; end
 
+  TELEGRAM_LINK_CODE_TTL = 15.minutes
+
   has_secure_password
   has_many :sessions, dependent: :destroy
+  has_many :api_tokens, class_name: "APIToken", dependent: :destroy
   has_many :requests, dependent: :destroy
   has_many :uploads, dependent: :destroy
   has_many :notifications, dependent: :destroy
@@ -26,6 +29,9 @@ class User < ApplicationRecord
   validates :oidc_uid, presence: true, if: -> { oidc_provider.present? }
   validates :oidc_uid, uniqueness: {
     scope: :oidc_provider,
+    conditions: -> { where(deleted_at: nil) }
+  }, allow_nil: true
+  validates :telegram_user_id, uniqueness: {
     conditions: -> { where(deleted_at: nil) }
   }, allow_nil: true
   validates :password, length: { minimum: 12 },
@@ -178,6 +184,46 @@ class User < ApplicationRecord
 
   def unlink_oidc_identity!
     update!(oidc_provider: nil, oidc_uid: nil)
+  end
+
+  def telegram_linked?
+    telegram_user_id.present?
+  end
+
+  def generate_telegram_link_code!
+    code = format("%06d", SecureRandom.random_number(1_000_000))
+    update!(
+      telegram_link_token_digest: Digest::SHA256.hexdigest(code),
+      telegram_link_token_created_at: Time.current
+    )
+    code
+  end
+
+  def telegram_link_code_valid?(code)
+    return false if telegram_link_token_digest.blank?
+    return false if telegram_link_token_created_at.blank?
+    return false if telegram_link_token_created_at < TELEGRAM_LINK_CODE_TTL.ago
+
+    provided_digest = Digest::SHA256.hexdigest(code.to_s.strip)
+    ActiveSupport::SecurityUtils.secure_compare(provided_digest, telegram_link_token_digest)
+  end
+
+  def link_telegram_identity!(telegram_user_id:, telegram_username: nil)
+    update!(
+      telegram_user_id: telegram_user_id.to_s,
+      telegram_username: telegram_username.to_s.strip.presence,
+      telegram_link_token_digest: nil,
+      telegram_link_token_created_at: nil
+    )
+  end
+
+  def unlink_telegram_identity!
+    update!(
+      telegram_user_id: nil,
+      telegram_username: nil,
+      telegram_link_token_digest: nil,
+      telegram_link_token_created_at: nil
+    )
   end
 
   # Find existing user or create new one from OIDC auth data

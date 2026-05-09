@@ -73,6 +73,77 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action='#{unlink_oidc_profile_path}']"
   end
 
+  test "show displays telegram link controls when telegram is enabled" do
+    SettingsService.set(:telegram_enabled, true)
+
+    get profile_path
+
+    assert_response :success
+    assert_select "dt", "Telegram"
+    assert_select "form[action='#{generate_telegram_link_code_profile_path}']"
+    assert_select "button", "Generate Telegram Code"
+  end
+
+  test "generate_telegram_link_code requires telegram to be enabled" do
+    SettingsService.set(:telegram_enabled, false)
+
+    post generate_telegram_link_code_profile_path
+
+    assert_redirected_to profile_path
+    assert_match(/Telegram must be enabled/i, flash[:alert])
+    assert_nil @user.reload.telegram_link_token_digest
+  end
+
+  test "generate_telegram_link_code stores a temporary code digest" do
+    SettingsService.set(:telegram_enabled, true)
+
+    post generate_telegram_link_code_profile_path
+
+    assert_redirected_to profile_path
+    assert_match(%r{/link #{@user.username} \d{6}}, flash[:notice])
+    assert @user.reload.telegram_link_token_digest.present?
+    assert @user.telegram_link_token_created_at.present?
+  end
+
+  test "unlink_telegram removes linked telegram identity" do
+    @user.update!(telegram_user_id: "42", telegram_username: "reader")
+
+    delete unlink_telegram_profile_path
+
+    assert_redirected_to profile_path
+    assert_match(/removed from your account/i, flash[:notice])
+    assert_not @user.reload.telegram_linked?
+    assert_nil @user.telegram_username
+  end
+
+  test "create_api_token creates a scoped token for current user" do
+    assert_difference "@user.api_tokens.count", 1 do
+      post api_tokens_profile_path, params: {
+        name: "Mobile",
+        scopes: [ "search:read", "requests:read" ]
+      }
+    end
+
+    assert_redirected_to profile_path
+    assert_match(/API token created: shf_/, flash[:notice])
+    token = @user.api_tokens.last
+    assert_equal "Mobile", token.name
+    assert_equal %w[search:read requests:read], token.scope_list
+  end
+
+  test "revoke_api_token revokes current user's token" do
+    token, = APIToken.issue!(
+      name: "Mobile",
+      user: @user,
+      scopes: %w[search:read]
+    )
+
+    delete api_token_profile_path(token)
+
+    assert_redirected_to profile_path
+    assert token.reload.revoked?
+  end
+
   test "edit displays form" do
     get edit_profile_path
     assert_response :success

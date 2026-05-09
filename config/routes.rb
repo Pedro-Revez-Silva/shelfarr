@@ -31,6 +31,10 @@ Rails.application.routes.draw do
     patch :update_password, on: :member
     post :link_oidc, on: :member
     delete :unlink_oidc, on: :member
+    post :generate_telegram_link_code, on: :member
+    delete :unlink_telegram, on: :member
+    post :api_tokens, to: "profiles#create_api_token"
+    delete "api_tokens/:id", to: "profiles#revoke_api_token", as: :api_token
     # Two-factor authentication
     get :two_factor, on: :member
     post :enable_two_factor, on: :member
@@ -64,7 +68,11 @@ Rails.application.routes.draw do
   namespace :api, defaults: { format: :json } do
     namespace :v1 do
       get "search", to: "search#index"
-      resources :requests, only: [ :create, :show ]
+      resources :requests, only: [ :index, :create, :show, :destroy ] do
+        member do
+          post :retry
+        end
+      end
       resources :users, only: [ :create ]
     end
   end
@@ -105,6 +113,8 @@ Rails.application.routes.draw do
         post :test_hardcover
         post :test_oidc
         post :test_webhook
+        post :test_telegram
+        post :setup_telegram_webhook
       end
     end
     resource :bulk_operations, only: [] do

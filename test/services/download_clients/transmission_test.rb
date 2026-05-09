@@ -144,6 +144,35 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent falls back to new torrent ids when response has no hash" do
+    VCR.turned_off do
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => [ "hash_string" ] }) }
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "jsonrpc" => "2.0", "result" => { "torrents" => [ { "hash_string" => "existing" } ] }, "id" => 1 }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "jsonrpc" => "2.0", "result" => { "torrents" => [ { "hash_string" => "existing" }, { "hash_string" => "new-from-list" } ] }, "id" => 1 }.to_json
+          }
+        )
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_add", params: { "filename" => "magnet:?xt=urn:btih:new" }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => {}, "id" => 1 }.to_json
+        )
+
+      assert_equal "new-from-list", @client.add_torrent("magnet:?xt=urn:btih:new")
+    end
+  end
+
   test "list_torrents returns array of TorrentInfo" do
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")
@@ -367,6 +396,43 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "parse_response handles http legacy and json-rpc error branches" do
+    unauthorized = transmission_response(status: 401, body: {})
+    assert_raises(DownloadClients::Base::AuthenticationError) do
+      @client.send(:parse_response, unauthorized, "session-get", :jsonrpc)
+    end
+
+    server_error = transmission_response(status: 500, body: {})
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:parse_response, server_error, "session-get", :jsonrpc)
+    end
+
+    unexpected_body = transmission_response(status: 200, body: "not a hash")
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:parse_response, unexpected_body, "session-get", :jsonrpc)
+    end
+
+    assert_raises(DownloadClients::Transmission::LegacyProtocolRequired) do
+      @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "success" }), "session-get", :jsonrpc)
+    end
+
+    assert_raises(DownloadClients::Base::AuthenticationError) do
+      @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "session" }), "session-get", :legacy)
+    end
+
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "failure" }), "torrent-add", :legacy)
+    end
+
+    assert_equal({}, @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "success" }), "session-get", :legacy))
+  end
+
+  test "parse_jsonrpc_response rejects missing result hash" do
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:parse_jsonrpc_response, { "jsonrpc" => "2.0", "result" => "ok" }, "session-get")
+    end
+  end
+
   test "remove_torrent returns true on success" do
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")
@@ -475,6 +541,57 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "resolve_torrent_source follows redirects and extracts magnets" do
+    VCR.turned_off do
+      stub_request(:get, "http://example.com/start")
+        .to_return(status: 302, headers: { "Location" => "/landing" }, body: "")
+      stub_request(:get, "http://example.com/landing")
+        .to_return(status: 200, body: "<a href=\"magnet:?xt=urn:btih:abc\">torrent</a>")
+
+      source = @client.send(:resolve_torrent_source, "http://example.com/start")
+
+      assert_equal "magnet:?xt=urn:btih:abc", source[:url]
+    end
+  end
+
+  test "resolve_torrent_source handles invalid urls failed requests and too many redirects" do
+    assert_nil @client.send(:resolve_torrent_source, "http://[bad")
+
+    VCR.turned_off do
+      stub_request(:get, "http://example.com/fail").to_timeout
+      assert_nil @client.send(:resolve_torrent_source, "http://example.com/fail")
+
+      stub_request(:get, %r{http://example.com/loop})
+        .to_return(status: 302, headers: { "Location" => "http://example.com/loop" }, body: "")
+      source = @client.send(:resolve_torrent_source, "http://example.com/loop")
+      assert_equal "http://example.com/loop", source[:url]
+    end
+  end
+
+  test "normalizes torrent data urls states and rpc urls" do
+    valid_torrent = { "info" => { "name" => "Book", "piece length" => 16_384, "pieces" => "x" * 20, "length" => 1 } }.bencode
+
+    assert @client.send(:valid_torrent_data?, valid_torrent)
+    assert_not @client.send(:valid_torrent_data?, "not-bencode")
+    assert_nil @client.send(:normalized_torrent_url, "ftp://example.com/file.torrent")
+    assert_equal "magnet:?xt=urn:btih:abc", @client.send(:absolutize_redirect_url, "http://example.com/base", "magnet:?xt=urn:btih:abc")
+    assert_nil @client.send(:absolutize_redirect_url, "http://example.com/base", "ftp://example.com/file")
+    assert_nil @client.send(:absolutize_redirect_url, "http://example.com/base", "http://[bad")
+
+    assert_equal :paused, @client.send(:normalize_state, 0)
+    assert_equal :queued, @client.send(:normalize_state, 1)
+    assert_equal :queued, @client.send(:normalize_state, 3)
+    assert_equal :queued, @client.send(:normalize_state, 5)
+    assert_equal :completed, @client.send(:normalize_state, 6)
+    assert_equal :downloading, @client.send(:normalize_state, 99)
+    assert_equal :failed, @client.send(:normalize_state, 4, error: 3)
+
+    @client_record.update!(url: "http://localhost:9091/transmission/rpc/")
+    assert_equal "http://localhost:9091/transmission/rpc", @client_record.adapter.send(:rpc_url)
+    @client_record.update!(url: "http://[bad")
+    assert_equal "http://[bad", @client_record.adapter.send(:rpc_url)
+  end
+
   test "uses basic authentication header when username and password are set" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:9091/transmission/rpc")
@@ -546,5 +663,9 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     body["method"] == method &&
       body["arguments"] == arguments &&
       body["tag"] == 1
+  end
+
+  def transmission_response(status:, body:, headers: {})
+    Struct.new(:status, :body, :headers).new(status, body, headers)
   end
 end

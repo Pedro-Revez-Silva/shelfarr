@@ -62,4 +62,28 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
       )
     end
   end
+
+  test "stores request origin metadata" do
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "openlibrary:OL_ORIGIN_SERVICE_123W",
+      book_types: [ "ebook" ],
+      metadata_attrs: {
+        title: "Origin Service Book"
+      },
+      origin: {
+        created_via: "telegram",
+        external_source: "telegram",
+        external_user_id: "42",
+        external_chat_id: "-100123"
+      }
+    )
+
+    assert result.success?
+    request = result.created_requests.first
+    assert_equal "telegram", request.created_via
+    assert_equal "telegram", request.external_source
+    assert_equal "42", request.external_user_id
+    assert_equal "-100123", request.external_chat_id
+  end
 end

@@ -7,10 +7,23 @@ class API::V1::ApplicationController < ActionController::API
 
   private
 
+  def require_scope!(scope)
+    return if Current.api_scope?(scope)
+
+    render json: { errors: [ "Missing API scope: #{scope}" ] }, status: :forbidden
+  end
+
   def authenticate!
     scheme, token = request.authorization.to_s.split(" ", 2)
     return unauthorized! unless scheme&.casecmp("Bearer")&.zero?
     return unauthorized! if token.blank?
+
+    api_token = APIToken.authenticate(token)
+    if api_token
+      Current.api_token = api_token
+      Current.api_user = api_token.user
+      return
+    end
 
     expected_token = SettingsService.api_token
     return unauthorized! if expected_token.blank?
@@ -18,7 +31,10 @@ class API::V1::ApplicationController < ActionController::API
     token_digest = Digest::SHA256.hexdigest(token)
     expected_digest = Digest::SHA256.hexdigest(expected_token)
 
-    return if ActiveSupport::SecurityUtils.secure_compare(token_digest, expected_digest)
+    if ActiveSupport::SecurityUtils.secure_compare(token_digest, expected_digest)
+      Current.legacy_api_token_authenticated = true
+      return
+    end
 
     unauthorized!
   end

@@ -206,6 +206,132 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "uses extracted metadata when available" do
+    extracted = MetadataExtractorService::Result.new(
+      title: "Extracted Title",
+      author: "Extracted Author",
+      year: 2024,
+      description: "Embedded description",
+      narrator: "Narrator",
+      success: true
+    )
+
+    MetadataExtractorService.stub(:extract, extracted) do
+      VCR.turned_off do
+        stub_open_library_search("Extracted Title Extracted Author")
+
+        UploadProcessingJob.perform_now(@upload.id)
+      end
+    end
+
+    assert_equal "Extracted Title", @upload.reload.parsed_title
+    assert_equal 90, @upload.match_confidence
+  end
+
+  test "fetch_metadata returns nil for blank title and service errors" do
+    job = UploadProcessingJob.new
+
+    assert_nil job.send(:fetch_metadata, "", "Author")
+
+    MetadataService.stub(:search, ->(*) { raise MetadataService::Error, "offline" }) do
+      assert_nil job.send(:fetch_metadata, "Title", "Author")
+    end
+  end
+
+  test "fetch_metadata returns best reasonable metadata match" do
+    job = UploadProcessingJob.new
+    weak = MetadataService::SearchResult.new(
+      source: "openlibrary",
+      source_id: "OL_WEAK",
+      title: "Different",
+      author: "Other",
+      description: nil,
+      year: nil,
+      cover_url: nil,
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil
+    )
+    strong = MetadataService::SearchResult.new(
+      source: "openlibrary",
+      source_id: "OL_STRONG",
+      title: "Mistborn",
+      author: "Brandon Sanderson",
+      description: nil,
+      year: nil,
+      cover_url: nil,
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil
+    )
+
+    MetadataService.stub(:search, [weak, strong]) do
+      assert_equal strong, job.send(:fetch_metadata, "Mistborn", "Brandon Sanderson")
+    end
+  end
+
+  test "score_result handles exact title author bonus and blank values" do
+    job = UploadProcessingJob.new
+    result = MetadataService::SearchResult.new(
+      source: "openlibrary",
+      source_id: "OL_SCORE",
+      title: "Mistborn",
+      author: "Brandon Sanderson",
+      description: nil,
+      year: nil,
+      cover_url: nil,
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil
+    )
+
+    assert_operator job.send(:score_result, result, "Mistborn", "Brandon Sanderson"), :>=, 90
+    assert_operator job.send(:score_result, result, "Mistborn", nil), :>=, 60
+    assert_equal 0, job.send(:string_similarity, "", "Mistborn")
+  end
+
+  test "handle_duplicate_filename increments existing path" do
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "Book.epub")
+      File.write(path, "one")
+      File.write(File.join(dir, "Book (2).epub"), "two")
+
+      assert_equal File.join(dir, "Book (3).epub"), UploadProcessingJob.new.send(:handle_duplicate_filename, path)
+    end
+  end
+
+  test "move_to_library copies across filesystems when rename fails" do
+    book = Book.create!(title: "Copy Book", author: "Copy Author", book_type: :audiobook)
+    destination = File.join(@temp_audiobook_dest, "Copy Author", "Copy Book")
+    expected_file = File.join(destination, "Copy Author - Copy Book.m4b")
+
+    FileUtils.stub(:mv, ->(*) { raise Errno::EXDEV }) do
+      UploadProcessingJob.new.send(:move_to_library, @upload, book)
+    end
+
+    assert File.exist?(expected_file)
+    assert_not File.exist?(@test_file)
+  end
+
+  test "trigger_library_scan uses configured library and swallows client errors" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "audio-lib")
+    book = books(:audiobook_acquired)
+    scanned = []
+
+    AudiobookshelfClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
+      UploadProcessingJob.new.send(:trigger_library_scan, book)
+    end
+
+    assert_equal ["audio-lib"], scanned
+
+    AudiobookshelfClient.stub(:scan_library, ->(*) { raise AudiobookshelfClient::Error, "scan failed" }) do
+      assert_nothing_raised { UploadProcessingJob.new.send(:trigger_library_scan, book) }
+    end
+  end
+
   private
 
   def stub_open_library_search(query)

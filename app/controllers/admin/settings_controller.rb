@@ -236,6 +236,31 @@ module Admin
       respond_with_flash(alert: e.message)
     end
 
+    def test_telegram
+      unless Integrations::Telegram::Configuration.configured?
+        respond_with_flash(alert: "Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
+        return
+      end
+
+      response = Integrations::Telegram::Client.get_me
+      username = response.dig("result", "username") || "bot"
+      respond_with_flash(notice: "Telegram connection successful: @#{username}")
+    rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
+      respond_with_flash(alert: e.message)
+    end
+
+    def setup_telegram_webhook
+      unless Integrations::Telegram::Configuration.configured?
+        respond_with_flash(alert: "Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
+        return
+      end
+
+      Integrations::Telegram::Client.set_webhook!(url: integrations_telegram_webhook_url)
+      respond_with_flash(notice: "Telegram webhook configured: #{integrations_telegram_webhook_url}")
+    rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
+      respond_with_flash(alert: e.message)
+    end
+
     private
 
     def respond_with_flash(notice: nil, alert: nil)

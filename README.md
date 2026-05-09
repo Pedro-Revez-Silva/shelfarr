@@ -169,8 +169,8 @@ The repo includes a lightweight local quality gate powered by `lefthook`.
 # Install hooks
 bundle exec lefthook install
 
-# Quiet staged-file check used by pre-commit
-bin/quality fast --staged
+# Quiet staged-file check plus the 90% coverage gate used by pre-commit
+bin/quality commit --staged
 
 # Quiet full check used by pre-push
 bin/quality push

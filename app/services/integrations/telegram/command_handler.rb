@@ -3,10 +3,7 @@
 module Integrations
   module Telegram
     class CommandHandler
-      MAX_SEARCH_RESULTS = 5
-      MAX_STATUS_RESULTS = 5
-
-      Response = Data.define(:chat_id, :text) do
+      Response = Data.define(:chat_id, :text, :reply_markup) do
         def deliverable?
           chat_id.present? && text.present?
         end
@@ -15,9 +12,11 @@ module Integrations
           {
             method: "sendMessage",
             chat_id: chat_id,
-            text: text,
+            text: text.to_s.truncate(3900),
             disable_web_page_preview: true
-          }
+          }.tap do |payload|
+            payload[:reply_markup] = reply_markup if reply_markup.present?
+          end
         end
       end
 
@@ -30,43 +29,35 @@ module Integrations
       def initialize(payload:)
         @payload = payload.to_h
         @message = @payload["message"] || @payload["edited_message"]
+        @callback_query = @payload["callback_query"]
       end
 
       def call
-        return nil unless message
+        return nil unless message || callback_query
         return reply("Telegram integration is not enabled.") unless Configuration.configured?
         return reply("This chat is not allowed to use Shelfarr.") unless Configuration.chat_allowed?(chat_id)
-        return reply("Your Telegram account is not linked to a Shelfarr user.") unless shelfarr_user
+
+        return handle_callback if callback_query
 
         command, arguments = parse_command
         return nil unless command
 
-        case command
-        when "/help", "/start"
-          help
-        when "/whoami"
-          reply("Linked as #{shelfarr_user.username}.")
-        when "/search"
-          search(arguments)
-        when "/request"
-          create_request(arguments)
-        when "/status"
-          status
-        else
-          reply("Unknown command. Use /help for available commands.")
-        end
+        return link(arguments) if command == "/link"
+        return reply("Your Telegram account is not linked to a Shelfarr user. Generate a link code in Shelfarr, then use /link <username> <code>.") unless shelfarr_user
+
+        process(command, arguments)
       end
 
       private
 
-      attr_reader :payload, :message
+      attr_reader :payload, :message, :callback_query
 
       def chat_id
-        message.dig("chat", "id").to_s
+        (message || callback_query&.dig("message")).dig("chat", "id").to_s
       end
 
       def sender_id
-        message.dig("from", "id").to_s
+        (callback_query&.dig("from", "id") || message&.dig("from", "id")).to_s
       end
 
       def shelfarr_user
@@ -75,6 +66,15 @@ module Integrations
 
       def text
         message["text"].to_s.strip
+      end
+
+      def handle_callback
+        return reply("Your Telegram account is not linked to a Shelfarr user.") unless shelfarr_user
+
+        action, work_id, requested_type = callback_query["data"].to_s.split("|", 3)
+        return reply("Unknown action.") unless action == "request"
+
+        process("/request", [ work_id, requested_type ].compact.join(" "))
       end
 
       def parse_command
@@ -93,95 +93,56 @@ module Integrations
           !mention.casecmp(Configuration.bot_username).zero?
       end
 
-      def help
-        reply(
-          [
-            "Shelfarr commands:",
-            "/search <title or author>",
-            "/request <work_id> <ebook|audiobook|both> [language]",
-            "/status",
-            "/whoami"
-          ].join("\n")
+      def link(arguments)
+        username, code = arguments.to_s.split(/\s+/, 2)
+        return reply("Usage: /link <username> <code>") if username.blank? || code.blank?
+
+        user = User.active.find_by(username: username.to_s.strip.downcase)
+        return reply("Invalid or expired link code.") unless user&.telegram_link_code_valid?(code)
+
+        user.link_telegram_identity!(
+          telegram_user_id: sender_id,
+          telegram_username: message.dig("from", "username")
         )
+        @shelfarr_user = user
+
+        reply("Telegram linked to #{user.username}.")
+      rescue ActiveRecord::RecordInvalid
+        reply("This Telegram account is already linked to another Shelfarr user.")
       end
 
-      def search(query)
-        return reply("Usage: /search <title or author>") if query.blank?
-
-        results = MetadataService.search(query, limit: MAX_SEARCH_RESULTS)
-        return reply("No results found for #{query}.") if results.empty?
-
-        lines = [ "Search results for #{query}:" ]
-        results.each_with_index do |result, index|
-          lines << "#{index + 1}. #{result.title}#{author_suffix(result)}"
-          lines << "   #{result.work_id}"
-          lines << "   /request #{result.work_id} ebook"
-        end
-
-        reply(lines.join("\n"))
-      rescue HardcoverClient::ConnectionError, OpenLibraryClient::ConnectionError
-        reply("Shelfarr could not reach the metadata service.")
-      rescue HardcoverClient::Error, OpenLibraryClient::Error, MetadataService::Error
-        reply("Search failed. Try again later.")
+      def search_keyboard(results)
+        {
+          inline_keyboard: results.map do |result|
+            [
+              { text: "Ebook: #{result.title.to_s.truncate(24)}", callback_data: "request|#{result.work_id}|ebook" },
+              { text: "Audio", callback_data: "request|#{result.work_id}|audiobook" }
+            ]
+          end
+        }
       end
 
-      def create_request(arguments)
-        work_id, requested_type, language = arguments.to_s.split(/\s+/, 3)
-        book_types = book_types_for(requested_type)
-
-        if work_id.blank? || book_types.empty?
-          return reply("Usage: /request <work_id> <ebook|audiobook|both> [language]")
-        end
-
-        result = RequestCreationService.call(
+      def process(command, arguments)
+        result = Integrations::CommandProcessor.call(
+          command: command,
+          arguments: arguments,
           user: shelfarr_user,
-          work_id: work_id,
-          book_types: book_types,
-          language: language
+          origin: {
+            created_via: "telegram",
+            external_source: "telegram",
+            external_user_id: sender_id,
+            external_chat_id: chat_id
+          }
         )
 
-        if result.success?
-          created = result.created_requests.map { |request| "#{request.book.book_type}: #{request.book.display_name}" }
-          lines = [ "Request created:", *created ]
-          lines << "Warnings: #{result.warnings.join('; ')}" if result.warnings.any?
-          lines << "Errors: #{result.errors.join('; ')}" if result.errors.any?
-          reply(lines.join("\n"))
-        else
-          reply("Request could not be created: #{result.errors.join('; ')}")
-        end
+        reply(
+          result.text,
+          reply_markup: result.search_results.any? ? search_keyboard(result.search_results) : nil
+        )
       end
 
-      def status
-        requests = shelfarr_user.requests.includes(:book).order(created_at: :desc).limit(MAX_STATUS_RESULTS)
-        return reply("No requests found.") if requests.empty?
-
-        lines = [ "Latest Shelfarr requests:" ]
-        requests.each do |request|
-          lines << "#{request.book.display_name} (#{request.book.book_type}) - #{request.status}"
-        end
-
-        reply(lines.join("\n"))
-      end
-
-      def book_types_for(value)
-        case value.to_s.downcase
-        when "ebook"
-          [ "ebook" ]
-        when "audiobook"
-          [ "audiobook" ]
-        when "both"
-          [ "ebook", "audiobook" ]
-        else
-          []
-        end
-      end
-
-      def author_suffix(result)
-        result.author.present? ? " by #{result.author}" : ""
-      end
-
-      def reply(text)
-        Response.new(chat_id: chat_id, text: text)
+      def reply(text, reply_markup: nil)
+        Response.new(chat_id: chat_id, text: text, reply_markup: reply_markup)
       end
     end
   end

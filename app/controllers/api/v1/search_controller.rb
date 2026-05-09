@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class API::V1::SearchController < API::V1::ApplicationController
+  before_action -> { require_scope!("search:read") }
+
   def index
     query = params[:q].to_s.strip
     if query.blank?

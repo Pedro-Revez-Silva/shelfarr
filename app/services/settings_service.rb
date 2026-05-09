@@ -130,7 +130,8 @@ class SettingsService
     telegram_bot_username: { type: "string", default: "", category: "telegram", description: "Bot username without @. Commands addressed to other bots are ignored." },
     telegram_webhook_secret: { type: "string", default: "", category: "telegram", description: "Telegram webhook secret checked against X-Telegram-Bot-Api-Secret-Token" },
     telegram_allowed_chat_ids: { type: "string", default: "", category: "telegram", description: "Comma or newline-separated Telegram chat IDs allowed to use the bot" },
-    telegram_user_mappings: { type: "string", default: "", category: "telegram", description: "Map Telegram user IDs to Shelfarr usernames. Use lines like 123456=userone or a JSON object." },
+    telegram_user_mappings: { type: "string", default: "", category: "telegram", description: "Legacy fallback mapping for Telegram user IDs to Shelfarr usernames. Prefer user-owned link codes from Profile." },
+    telegram_notification_events: { type: "string", default: "request_completed,request_failed,request_attention", category: "telegram", description: "Comma-separated request lifecycle events sent to linked Telegram users" },
 
     # OIDC/SSO Authentication
     oidc_enabled: { type: "boolean", default: false, category: "oidc", description: "Enable OpenID Connect (OIDC) single sign-on authentication" },
