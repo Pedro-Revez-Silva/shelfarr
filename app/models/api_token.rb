@@ -3,6 +3,7 @@
 class APIToken < ApplicationRecord
   TOKEN_PREFIX = "shf_"
   AVAILABLE_SCOPES = %w[search:read requests:read requests:write requests:admin users:write].freeze
+  SELF_SERVICE_SCOPES = %w[search:read requests:read requests:write].freeze
 
   belongs_to :user, optional: true
 

@@ -60,8 +60,8 @@ module Integrations
       lines = [ "Search results for #{query}:" ]
       results.each_with_index do |search_result, index|
         lines << "#{index + 1}. #{search_result.title}#{author_suffix(search_result)}"
-        lines << "   #{search_result.work_id}"
       end
+      lines << "Choose a format below."
 
       result(lines.join("\n"), search_results: results)
     rescue HardcoverClient::ConnectionError, OpenLibraryClient::ConnectionError
@@ -87,7 +87,7 @@ module Integrations
       )
 
       if creation.success?
-        created = creation.created_requests.map { |request| "#{request.book.book_type}: #{request.book.display_name}" }
+        created = creation.created_requests.map { |request| "#{request.book.display_name} (#{request.book.book_type})" }
         lines = [ "Request created:", *created ]
         lines << "Warnings: #{creation.warnings.join('; ')}" if creation.warnings.any?
         lines << "Errors: #{creation.errors.join('; ')}" if creation.errors.any?

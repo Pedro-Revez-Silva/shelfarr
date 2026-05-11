@@ -138,10 +138,11 @@ module Integrations
 
       def search_keyboard(results)
         {
-          inline_keyboard: results.map do |result|
+          inline_keyboard: results.each_with_index.map do |result, index|
+            label = index + 1
             [
-              { text: "Ebook: #{result.title.to_s.truncate(24)}", callback_data: "request|#{result.work_id}|ebook" },
-              { text: "Audio", callback_data: "request|#{result.work_id}|audiobook" }
+              { text: "#{label}. Ebook", callback_data: "request|#{result.work_id}|ebook" },
+              { text: "#{label}. Audio", callback_data: "request|#{result.work_id}|audiobook" }
             ]
           end
         }

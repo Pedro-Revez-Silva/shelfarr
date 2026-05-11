@@ -98,6 +98,32 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal %w[search:read requests:read], token.scope_list
   end
 
+  test "create_api_token rejects privileged scopes for regular users" do
+    assert_no_difference "@user.api_tokens.count" do
+      post api_tokens_profile_path, params: {
+        name: "Escalated",
+        scopes: [ "search:read", "users:write", "requests:admin" ]
+      }
+    end
+
+    assert_redirected_to profile_path
+    assert_equal "API token scopes are not allowed.", flash[:alert]
+  end
+
+  test "create_api_token allows privileged scopes for admins" do
+    sign_in_as(users(:two))
+
+    assert_difference "users(:two).api_tokens.count", 1 do
+      post api_tokens_profile_path, params: {
+        name: "Admin API",
+        scopes: [ "requests:admin", "users:write" ]
+      }
+    end
+
+    assert_redirected_to profile_path
+    assert_equal %w[requests:admin users:write], users(:two).api_tokens.last.scope_list
+  end
+
   test "revoke_api_token revokes current user's token" do
     token, = APIToken.issue!(
       name: "Mobile",

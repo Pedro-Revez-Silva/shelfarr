@@ -101,6 +101,27 @@ class TelegramPollingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "ensure_running does not enqueue when a polling job is already pending" do
+    TelegramPollingJob.stub(:polling_job_pending?, true) do
+      assert_no_enqueued_jobs(only: TelegramPollingJob) do
+        TelegramPollingJob.ensure_running!
+      end
+    end
+  end
+
+  test "perform does not schedule another polling job when another one is pending" do
+    VCR.turned_off do
+      stub_request(:post, "https://api.telegram.org/bottelegram-token/getUpdates")
+        .to_return(status: 200, body: { ok: true, result: [] }.to_json, headers: { "Content-Type" => "application/json" })
+
+      TelegramPollingJob.stub(:polling_job_pending?, true) do
+        assert_no_enqueued_jobs(only: TelegramPollingJob) do
+          TelegramPollingJob.perform_now
+        end
+      end
+    end
+  end
+
   private
 
   def telegram_update(text, update_id:)

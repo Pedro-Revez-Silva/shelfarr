@@ -83,7 +83,12 @@ class ProfilesController < ApplicationController
 
   def create_api_token
     @user = Current.user
-    scopes = params[:scopes].presence || %w[search:read requests:read requests:write]
+    scopes = permitted_api_token_scopes
+    unless scopes
+      redirect_to profile_path, alert: "API token scopes are not allowed."
+      return
+    end
+
     token, raw_token = APIToken.issue!(
       name: params[:name].presence || "API token",
       user: @user,
@@ -190,5 +195,14 @@ class ProfilesController < ApplicationController
 
   def password_params
     params.require(:user).permit(:password, :password_confirmation)
+  end
+
+  def permitted_api_token_scopes
+    requested = APIToken.normalize_scopes(params[:scopes].presence || APIToken::SELF_SERVICE_SCOPES)
+    allowed = Current.user.admin? ? APIToken::AVAILABLE_SCOPES : APIToken::SELF_SERVICE_SCOPES
+
+    return nil if (requested - allowed).any?
+
+    requested
   end
 end

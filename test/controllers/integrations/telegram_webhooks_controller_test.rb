@@ -77,6 +77,37 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     assert_equal "Telegram requests are owned by userone.", body["text"]
   end
 
+  test "returns concise search results with numbered request buttons" do
+    search_result = MetadataService::SearchResult.new(
+      source: "openlibrary",
+      source_id: "OL_TELEGRAM_SEARCH_123W",
+      title: "Telegram Search Book With A Very Long Title",
+      author: "Telegram Author",
+      description: nil,
+      year: 2024,
+      cover_url: nil,
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil
+    )
+
+    MetadataService.stub(:search, [ search_result ]) do
+      post integrations_telegram_webhook_path,
+        headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
+        params: telegram_update("/search Telegram Search", update_id: 124),
+        as: :json
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_includes body["text"], "1. Telegram Search Book With A Very Long Title by Telegram Author"
+    assert_includes body["text"], "Choose a format below."
+    assert_not_includes body["text"], search_result.work_id
+    assert_equal "1. Ebook", body.dig("reply_markup", "inline_keyboard", 0, 0, "text")
+    assert_equal "1. Audio", body.dig("reply_markup", "inline_keyboard", 0, 1, "text")
+  end
+
   test "rejects paused Telegram groups without issuing a new approval code" do
     TelegramChatAuthorization.create!(
       chat_id: "-100123",

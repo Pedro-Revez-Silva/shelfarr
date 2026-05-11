@@ -43,6 +43,8 @@ class Integrations::CommandProcessorTest < ActiveSupport::TestCase
       )
 
       assert_includes result.text, "Command Search Book"
+      assert_includes result.text, "Choose a format below."
+      assert_not_includes result.text, search_result.work_id
       assert_equal [ search_result ], result.search_results
     end
   end

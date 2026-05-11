@@ -7,11 +7,13 @@ class TelegramPollingJob < ApplicationJob
   POLL_INTERVAL_SECONDS = 1
 
   queue_as :default
+  limits_concurrency key: "telegram_polling", duration: 1.minute, on_conflict: :discard
 
   class << self
     def ensure_running!
       return unless Integrations::Telegram::Configuration.configured?
       return unless Integrations::Telegram::Configuration.polling?
+      return if polling_job_pending?
 
       next_run_at = Rails.cache.read(SCHEDULE_CACHE_KEY).to_i
       return if next_run_at > Time.current.to_i
@@ -25,6 +27,16 @@ class TelegramPollingJob < ApplicationJob
       Rails.cache.delete(SCHEDULE_CACHE_KEY)
     end
 
+    def polling_job_pending?(excluding_active_job_id: nil)
+      return false unless solid_queue_adapter?
+
+      scope = SolidQueue::Job.where(class_name: name, finished_at: nil)
+      scope = scope.where.not(active_job_id: excluding_active_job_id) if excluding_active_job_id.present?
+      scope.exists?
+    rescue ActiveRecord::StatementInvalid, NameError
+      false
+    end
+
     private
 
     def reserve_schedule!
@@ -33,6 +45,10 @@ class TelegramPollingJob < ApplicationJob
         POLL_INTERVAL_SECONDS.seconds.from_now.to_i,
         expires_in: [ POLL_TIMEOUT_SECONDS + 30, 60 ].max.seconds
       )
+    end
+
+    def solid_queue_adapter?
+      ActiveJob::Base.queue_adapter.class.name == "ActiveJob::QueueAdapters::SolidQueueAdapter"
     end
   end
 
@@ -82,6 +98,8 @@ class TelegramPollingJob < ApplicationJob
   end
 
   def schedule_next_run
+    return if self.class.polling_job_pending?(excluding_active_job_id: job_id)
+
     self.class.send(:reserve_schedule!)
     TelegramPollingJob.set(wait: POLL_INTERVAL_SECONDS.seconds).perform_later
   end

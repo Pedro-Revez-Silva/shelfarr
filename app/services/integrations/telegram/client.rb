@@ -46,14 +46,15 @@ module Integrations
       end
 
       def get_updates(offset: nil, timeout: 20, limit: 20)
+        polling_timeout = timeout.to_i.clamp(0, 50)
         payload = {
-          timeout: timeout.to_i.clamp(0, 50),
+          timeout: polling_timeout,
           limit: limit.to_i.clamp(1, 100),
           allowed_updates: %w[message edited_message callback_query]
         }
         payload[:offset] = offset.to_i if offset.present?
 
-        post("getUpdates", payload)
+        post("getUpdates", payload, request_timeout: polling_timeout + 5)
       end
 
       def send_message(chat_id:, text:, reply_markup: nil)
@@ -70,10 +71,10 @@ module Integrations
 
       private
 
-      def post(method, payload)
+      def post(method, payload, request_timeout: nil)
         raise ConfigurationError, "Telegram bot token is not configured." if Configuration.bot_token.blank?
 
-        response = connection.post(method) do |req|
+        response = connection(request_timeout: request_timeout).post(method) do |req|
           req.headers["Content-Type"] = "application/json"
           req.body = payload.to_json
         end
@@ -87,9 +88,9 @@ module Integrations
         raise DeliveryError, "Telegram connection failed: #{e.message}"
       end
 
-      def connection
+      def connection(request_timeout: nil)
         Faraday.new(url: "https://api.telegram.org/bot#{Configuration.bot_token}/") do |f|
-          f.options.timeout = 10
+          f.options.timeout = request_timeout || 10
           f.options.open_timeout = 5
         end
       end
