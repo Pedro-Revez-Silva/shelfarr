@@ -1,4 +1,6 @@
 class API::V1::UsersController < API::V1::ApplicationController
+  before_action -> { require_scope!("users:write") }
+
   def create
     user = User.new(user_params)
 

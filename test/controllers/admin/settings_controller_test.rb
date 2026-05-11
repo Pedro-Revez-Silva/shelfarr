@@ -228,6 +228,25 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal true, SettingsService.auto_approve_requests?
   end
 
+  test "update stores a single setting" do
+    patch admin_setting_url("max_retries"), params: {
+      setting: { value: "7" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "Setting updated.", flash[:notice]
+    assert_equal 7, SettingsService.get(:max_retries)
+  end
+
+  test "update rejects invalid single path template" do
+    patch admin_setting_url("audiobook_path_template"), params: {
+      setting: { value: "{invalid_var}" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert flash[:alert].present?
+  end
+
   test "index shows webhook settings" do
     get admin_settings_url
 
@@ -452,6 +471,172 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_match /invalid/i, flash[:alert]
   end
 
+  test "test_telegram succeeds when bot token works" do
+    SettingsService.set(:telegram_enabled, true)
+    SettingsService.set(:telegram_bot_token, "telegram-token")
+    SettingsService.set(:telegram_webhook_secret, "telegram-secret")
+
+    VCR.turned_off do
+      stub_request(:post, "https://api.telegram.org/bottelegram-token/getMe")
+        .to_return(
+          status: 200,
+          body: { ok: true, result: { username: "ShelfarrBot" } }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      post test_telegram_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match /@ShelfarrBot/, flash[:notice]
+    end
+  end
+
+  test "test_telegram fails when not configured" do
+    SettingsService.set(:telegram_enabled, false)
+    SettingsService.set(:telegram_bot_token, "")
+    SettingsService.set(:telegram_webhook_secret, "")
+
+    post test_telegram_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not fully configured/i, flash[:alert]
+  end
+
+  test "test_telegram reports client errors" do
+    SettingsService.set(:telegram_enabled, true)
+    SettingsService.set(:telegram_bot_token, "telegram-token")
+    SettingsService.set(:telegram_webhook_secret, "telegram-secret")
+
+    Integrations::Telegram::Client.stub(:get_me, -> { raise Integrations::Telegram::Client::DeliveryError, "boom" }) do
+      post test_telegram_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_equal "boom", flash[:alert]
+  end
+
+  test "setup_telegram_webhook registers webhook URL" do
+    SettingsService.set(:telegram_enabled, true)
+    SettingsService.set(:telegram_update_mode, "polling")
+    SettingsService.set(:telegram_bot_token, "telegram-token")
+    SettingsService.set(:telegram_webhook_secret, "telegram-secret")
+
+    VCR.turned_off do
+      stub = stub_request(:post, "https://api.telegram.org/bottelegram-token/setWebhook")
+        .with do |request|
+          body = JSON.parse(request.body)
+          body["url"].include?("/integrations/telegram/webhook") &&
+            body["secret_token"] == "telegram-secret"
+        end
+        .to_return(
+          status: 200,
+          body: { ok: true, result: true }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      post setup_telegram_webhook_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match /webhook configured/i, flash[:notice]
+      assert_equal "webhook", SettingsService.get(:telegram_update_mode)
+      assert_requested stub
+    end
+  end
+
+  test "setup_telegram_webhook fails when not configured" do
+    SettingsService.set(:telegram_enabled, false)
+    SettingsService.set(:telegram_bot_token, "")
+    SettingsService.set(:telegram_webhook_secret, "")
+
+    post setup_telegram_webhook_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not fully configured/i, flash[:alert]
+  end
+
+  test "setup_telegram_webhook reports client errors" do
+    SettingsService.set(:telegram_enabled, true)
+    SettingsService.set(:telegram_bot_token, "telegram-token")
+    SettingsService.set(:telegram_webhook_secret, "telegram-secret")
+
+    Integrations::Telegram::Client.stub(:set_webhook!, ->(url:) { raise Integrations::Telegram::Client::DeliveryError, "webhook boom" }) do
+      post setup_telegram_webhook_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_equal "webhook boom", flash[:alert]
+  end
+
+  test "approve_telegram_chat approves a pending group code" do
+    authorization, code = TelegramChatAuthorization.issue!(
+      chat_id: "-100123",
+      chat_title: "Readers",
+      requested_by_telegram_user_id: "42",
+      requested_by_telegram_username: "telegramuser"
+    )
+
+    post approve_telegram_chat_admin_settings_url, params: { telegram_group_code: code }
+
+    assert_redirected_to admin_settings_path
+    assert_match /Telegram group authorized: Readers/, flash[:notice]
+    assert authorization.reload.approved?
+    assert_equal @admin, authorization.approved_by
+  end
+
+  test "approve_telegram_chat rejects invalid or expired code" do
+    post approve_telegram_chat_admin_settings_url, params: { telegram_group_code: "000000" }
+
+    assert_redirected_to admin_settings_path
+    assert_match /invalid or expired/i, flash[:alert]
+  end
+
+  test "pause_telegram_chat pauses an approved group" do
+    authorization = TelegramChatAuthorization.create!(
+      chat_id: "-100123",
+      chat_title: "Readers",
+      approved_at: Time.current,
+      approved_by: @admin
+    )
+
+    post pause_telegram_chat_admin_settings_url(authorization)
+
+    assert_redirected_to admin_settings_path
+    assert_match /Telegram group paused: Readers/, flash[:notice]
+    assert authorization.reload.paused?
+  end
+
+  test "resume_telegram_chat resumes a paused group" do
+    authorization = TelegramChatAuthorization.create!(
+      chat_id: "-100123",
+      chat_title: "Readers",
+      approved_at: Time.current,
+      approved_by: @admin,
+      paused_at: Time.current
+    )
+
+    post resume_telegram_chat_admin_settings_url(authorization)
+
+    assert_redirected_to admin_settings_path
+    assert_match /Telegram group resumed: Readers/, flash[:notice]
+    assert_not authorization.reload.paused?
+  end
+
+  test "delete_telegram_chat removes a group authorization" do
+    authorization = TelegramChatAuthorization.create!(
+      chat_id: "-100123",
+      chat_title: "Readers",
+      approved_at: Time.current,
+      approved_by: @admin
+    )
+
+    assert_difference "TelegramChatAuthorization.count", -1 do
+      delete delete_telegram_chat_admin_settings_url(authorization)
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /Telegram group removed: Readers/, flash[:notice]
+  end
+
   test "test_zlibrary fails when not configured" do
     SettingsService.set(:zlibrary_enabled, false)
     SettingsService.set(:zlibrary_url, "")
@@ -476,6 +661,20 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_match /successful/i, flash[:notice]
+  end
+
+  test "test_zlibrary fails when connection fails" do
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    ZLibraryClient.stub :test_connection, false do
+      post test_zlibrary_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
   end
 
   # Test connection tests for Audiobookshelf
@@ -538,6 +737,18 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       assert_redirected_to admin_settings_path
       assert flash[:alert].present?
     end
+  end
+
+  test "test_audiobookshelf reports client errors" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    AudiobookshelfClient.stub(:test_connection, -> { raise AudiobookshelfClient::Error, "abs boom" }) do
+      post test_audiobookshelf_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /abs boom/, flash[:alert]
   end
 
   test "test_audiobookshelf handles malformed urls" do
@@ -632,6 +843,40 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       assert_redirected_to admin_settings_path
       assert flash[:alert].present?
     end
+  end
+
+  test "test_oidc fails when discovery document is incomplete" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+
+    VCR.turned_off do
+      stub_request(:get, "https://auth.example.com/.well-known/openid-configuration")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { issuer: "https://auth.example.com" }.to_json
+        )
+
+      post test_oidc_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /incomplete/i, flash[:alert]
+  end
+
+  test "test_oidc fails when discovery document is not json" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+
+    VCR.turned_off do
+      stub_request(:get, "https://auth.example.com/.well-known/openid-configuration")
+        .to_return(status: 200, body: "not-json")
+
+      post test_oidc_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /not valid JSON/i, flash[:alert]
   end
 
   test "test_oidc handles connection errors" do
@@ -770,6 +1015,21 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "test_oidc reports generic errors" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+
+    VCR.turned_off do
+      stub_request(:get, "https://auth.example.com/.well-known/openid-configuration")
+        .to_raise(StandardError.new("unexpected"))
+
+      post test_oidc_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /unexpected/, flash[:alert]
+  end
+
   # Connection cache reset tests
   test "bulk_update uses new audiobookshelf url after settings change" do
     SettingsService.set(:audiobookshelf_url, "http://old.example.com")
@@ -879,6 +1139,59 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     FlaresolverrClient.reset_connection!
     SettingsService.set(:flaresolverr_url, "")
+  end
+
+  test "test_flaresolverr reports client errors" do
+    SettingsService.set(:flaresolverr_url, "http://localhost:8191")
+
+    FlaresolverrClient.stub(:test_connection, -> { raise FlaresolverrClient::Error, "flare boom" }) do
+      post test_flaresolverr_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /flare boom/, flash[:alert]
+  end
+
+  test "test_hardcover fails when not configured" do
+    SettingsService.set(:hardcover_api_token, "")
+
+    post test_hardcover_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not configured/i, flash[:alert]
+  end
+
+  test "test_hardcover succeeds when connection works" do
+    SettingsService.set(:hardcover_api_token, "token")
+
+    HardcoverClient.stub(:test_connection, true) do
+      post test_hardcover_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
+  end
+
+  test "test_hardcover fails when connection fails" do
+    SettingsService.set(:hardcover_api_token, "token")
+
+    HardcoverClient.stub(:test_connection, false) do
+      post test_hardcover_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
+  end
+
+  test "test_hardcover reports client errors" do
+    SettingsService.set(:hardcover_api_token, "token")
+
+    HardcoverClient.stub(:test_connection, -> { raise HardcoverClient::Error, "hard boom" }) do
+      post test_hardcover_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /hard boom/, flash[:alert]
   end
 
   test "test_flaresolverr returns turbo stream when requested" do

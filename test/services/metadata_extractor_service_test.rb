@@ -105,7 +105,82 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
     File.delete(epub_path) if epub_path && File.exist?(epub_path)
   end
 
+  test "extracts metadata from PDF info" do
+    require "pdf-reader"
+    fake_reader = Struct.new(:info).new(
+      {
+        Title: "PDF Book",
+        Author: "PDF Author",
+        CreationDate: "created 2024"
+      }
+    )
+
+    PDF::Reader.stub(:new, fake_reader) do
+      result = MetadataExtractorService.send(:extract_pdf, "book.pdf")
+
+      assert result.success
+      assert_equal "PDF Book", result.title
+      assert_equal "PDF Author", result.author
+      assert_equal 2024, result.year
+    end
+  end
+
+  test "parses MP4 metadata atoms" do
+    file = StringIO.new(
+      mp4_atom([0xA9].pack("C") + "nam", "M4B Title") +
+        mp4_atom([0xA9].pack("C") + "ART", "M4B Author") +
+        mp4_atom([0xA9].pack("C") + "alb", "M4B Album") +
+        mp4_atom("aART", "Album Author") +
+        mp4_atom([0xA9].pack("C") + "day", "2020") +
+        mp4_atom("desc", "Description") +
+        mp4_atom([0xA9].pack("C") + "wrt", "Narrator")
+    )
+    file.set_encoding(Encoding::BINARY)
+
+    metadata = MetadataExtractorService.send(:parse_mp4_atoms, file)
+
+    assert_equal "M4B Title", metadata[:title]
+    assert_equal "M4B Author", metadata[:artist]
+    assert_equal "M4B Album", metadata[:album]
+    assert_equal "Album Author", metadata[:album_artist]
+    assert_equal "2020", metadata[:year]
+    assert_equal "Description", metadata[:description]
+    assert_equal "Narrator", metadata[:narrator]
+  end
+
+  test "extracts m4b metadata from parsed atoms" do
+    Tempfile.create(["book", ".m4b"]) do |file|
+      file.binmode
+      file.write(mp4_atom([0xA9].pack("C") + "nam", "M4B Title") + mp4_atom([0xA9].pack("C") + "ART", "M4B Author"))
+      file.flush
+
+      result = MetadataExtractorService.extract(file.path)
+
+      assert result.success
+      assert_equal "M4B Title", result.title
+      assert_equal "M4B Author", result.author
+    end
+  end
+
+  test "read_mp4_data_atom returns nil for invalid sizes" do
+    assert_nil MetadataExtractorService.send(:read_mp4_data_atom, StringIO.new, 12)
+    assert_nil MetadataExtractorService.send(:read_mp4_data_atom, StringIO.new("short"), 20)
+  end
+
+  test "parse helpers clean strings and years" do
+    assert_equal 1999, MetadataExtractorService.send(:parse_year, "published 1999-01-01")
+    assert_nil MetadataExtractorService.send(:parse_year, "unknown")
+    assert_equal "Trimmed", MetadataExtractorService.send(:clean_string, "  Trimmed  ")
+    assert_nil MetadataExtractorService.send(:clean_string, "  ")
+  end
+
   private
+
+  def mp4_atom(type, value)
+    value = value.b
+    data = [16 + value.bytesize].pack("N") + "data" + ("\0" * 8).b + value
+    ([8 + data.bytesize].pack("N") + type.b + data).b
+  end
 
   def create_test_epub(title:, author:, date:)
     require "zip"

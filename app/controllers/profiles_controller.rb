@@ -3,6 +3,7 @@
 class ProfilesController < ApplicationController
   def show
     @user = Current.user
+    @api_tokens = @user.api_tokens.order(created_at: :desc)
     @stats = {
       total_requests: @user.requests.count,
       completed_requests: @user.requests.completed.count,
@@ -78,6 +79,35 @@ class ProfilesController < ApplicationController
 
     ActivityTracker.track("user.oidc_unlinked", user: @user)
     redirect_to profile_path, notice: "OIDC sign-in has been removed from your account."
+  end
+
+  def create_api_token
+    @user = Current.user
+    scopes = permitted_api_token_scopes
+    unless scopes
+      redirect_to profile_path, alert: "API token scopes are not allowed."
+      return
+    end
+
+    token, raw_token = APIToken.issue!(
+      name: params[:name].presence || "API token",
+      user: @user,
+      scopes: scopes
+    )
+
+    ActivityTracker.track("user.api_token_created", user: @user, details: { api_token_id: token.id, scopes: token.scope_list })
+    redirect_to profile_path, notice: "API token created: #{raw_token}. Copy it now; Shelfarr will not show it again."
+  rescue ActiveRecord::RecordInvalid => e
+    redirect_to profile_path, alert: e.record.errors.full_messages.to_sentence
+  end
+
+  def revoke_api_token
+    @user = Current.user
+    token = @user.api_tokens.find(params[:id])
+    token.revoke!
+
+    ActivityTracker.track("user.api_token_revoked", user: @user, details: { api_token_id: token.id })
+    redirect_to profile_path, notice: "API token revoked."
   end
 
   # Two-factor authentication setup
@@ -165,5 +195,14 @@ class ProfilesController < ApplicationController
 
   def password_params
     params.require(:user).permit(:password, :password_confirmation)
+  end
+
+  def permitted_api_token_scopes
+    requested = APIToken.normalize_scopes(params[:scopes].presence || APIToken::SELF_SERVICE_SCOPES)
+    allowed = Current.user.admin? ? APIToken::AVAILABLE_SCOPES : APIToken::SELF_SERVICE_SCOPES
+
+    return nil if (requested - allowed).any?
+
+    requested
   end
 end

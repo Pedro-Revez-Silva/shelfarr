@@ -59,58 +59,24 @@ class RequestsController < ApplicationController
     # Support both single book_type (legacy) and multiple book_types[]
     book_types = params[:book_types].presence || [ params[:book_type] ].compact
 
-    if work_id.blank? || book_types.empty?
-      redirect_to search_path, alert: "Missing required information"
-      return
-    end
+    result = RequestCreationService.call(
+      user: Current.user,
+      work_id: work_id,
+      book_types: book_types,
+      metadata_attrs: request_metadata_attrs,
+      notes: params[:notes],
+      language: params[:language]
+    )
 
-    created_requests = []
-    warnings = []
-    errors = []
-
-    book_types.each do |book_type|
-      # Check for duplicates
-      duplicate_check = DuplicateDetectionService.check(
-        work_id: work_id,
-        book_type: book_type
-      )
-
-      if duplicate_check.block?
-        errors << "#{book_type.titleize}: #{duplicate_check.message}"
-        next
-      end
-
-      warnings << duplicate_check.message if duplicate_check.warn?
-
-      # Find or create the book based on metadata source
-      book = find_or_create_book_for_source(work_id, book_type)
-
-      request = Current.user.requests.build(book: book, status: :pending)
-      request.notes = params[:notes] if params[:notes].present?
-      request.language = params[:language] if params[:language].present?
-
-      if request.save
-        ActivityTracker.track("request.created", trackable: request)
-        NotificationService.request_created(request)
-        created_requests << request
-
-        if enqueue_search_immediately_for?(request)
-          SearchJob.perform_later(request.id)
-        end
-      else
-        errors << "#{book_type.titleize}: #{request.errors.full_messages.join(', ')}"
-      end
-    end
-
-    if created_requests.empty?
-      redirect_to search_path, alert: errors.join(". ")
-    elsif created_requests.length == 1
-      flash_message = "Request created for #{created_requests.first.book.display_name}"
-      flash_message += " (#{warnings.join(', ')})" if warnings.any?
-      redirect_to created_requests.first, notice: flash_message
+    if result.created_requests.empty?
+      redirect_to search_path, alert: result.errors.join(". ")
+    elsif result.created_requests.length == 1
+      flash_message = "Request created for #{result.created_requests.first.book.display_name}"
+      flash_message += " (#{result.warnings.join(', ')})" if result.warnings.any?
+      redirect_to result.created_requests.first, notice: flash_message
     else
-      flash_message = "#{created_requests.length} requests created for #{created_requests.first.book.title}"
-      flash_message += " (#{warnings.join(', ')})" if warnings.any?
+      flash_message = "#{result.created_requests.length} requests created for #{result.created_requests.first.book.title}"
+      flash_message += " (#{result.warnings.join(', ')})" if result.warnings.any?
       redirect_to requests_path, notice: flash_message
     end
   end
@@ -183,11 +149,6 @@ class RequestsController < ApplicationController
   end
 
   private
-
-  def enqueue_search_immediately_for?(request)
-    SettingsService.get(:immediate_search_enabled, default: false) ||
-      (!request.user.admin? && SettingsService.auto_approve_requests?)
-  end
 
   def send_single_file(path, book)
     filename = File.basename(path)
@@ -328,19 +289,12 @@ class RequestsController < ApplicationController
     end
   end
 
-  def find_or_create_book_for_source(work_id, book_type)
-    book = Book.find_or_initialize_by_work_id(work_id, book_type: book_type)
-    BookMetadataBackfillService.apply!(
-      book,
-      work_id: work_id,
-      fallback_attrs: {
-        title: params[:title],
-        author: params[:author],
-        cover_url: params[:cover_url],
-        year: params[:first_publish_year]
-      }
-    )
-
-    book
+  def request_metadata_attrs
+    {
+      title: params[:title],
+      author: params[:author],
+      cover_url: params[:cover_url],
+      first_publish_year: params[:first_publish_year]
+    }
   end
 end

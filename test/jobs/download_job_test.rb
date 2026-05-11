@@ -102,6 +102,63 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_includes @request.issue_description, "No torrent download client configured"
   end
 
+  test "marks for attention on download client authentication error" do
+    job = DownloadJob.new
+
+    job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::AuthenticationError, "bad credentials" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert_includes @request.reload.issue_description, "authentication failed"
+  end
+
+  test "marks for attention on download client connection error" do
+    job = DownloadJob.new
+
+    job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::ConnectionError, "offline" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert_includes @request.reload.issue_description, "Failed to connect"
+  end
+
+  test "marks for attention on generic download client error" do
+    job = DownloadJob.new
+
+    job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::Error, "client boom" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert_includes @request.reload.issue_description, "Download client error"
+  end
+
+  test "marks for attention on anna archive error" do
+    @selected_result.update!(source: SearchResult::SOURCE_ANNA_ARCHIVE, guid: "md5")
+    job = DownloadJob.new
+
+    job.stub(:handle_anna_archive_download, ->(*) { raise AnnaArchiveClient::Error, "anna boom" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert_includes @request.reload.issue_description, "Anna's Archive error"
+  end
+
+  test "marks for attention on z-library error" do
+    @selected_result.update!(source: SearchResult::SOURCE_ZLIBRARY, guid: "missing")
+    job = DownloadJob.new
+
+    job.stub(:handle_zlibrary_download, ->(*) { raise ZLibraryClient::Error, "z boom" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert_includes @request.reload.issue_description, "Z-Library error"
+  end
+
   test "skips non-queued downloads" do
     @download.update!(status: :downloading)
 
@@ -415,6 +472,62 @@ class DownloadJobTest < ActiveJob::TestCase
       end
 
       assert_match /not a valid PDF/, error.message
+    end
+  end
+
+  test "verify_downloaded_ebook rejects html and invalid epub and mobi files" do
+    Dir.mktmpdir do |dir|
+      html_path = File.join(dir, "book.epub")
+      File.binwrite(html_path, "<!doctype html><html></html>")
+      assert_raises(RuntimeError) { DownloadJob.new.send(:verify_downloaded_ebook!, html_path, expected_extension: "epub") }
+      assert_not File.exist?(html_path)
+
+      epub_path = File.join(dir, "bad.epub")
+      File.binwrite(epub_path, "not a zip")
+      assert_raises(RuntimeError) { DownloadJob.new.send(:verify_downloaded_ebook!, epub_path, expected_extension: "epub") }
+
+      mobi_path = File.join(dir, "bad.mobi")
+      File.binwrite(mobi_path, "x" * 80)
+      assert_raises(RuntimeError) { DownloadJob.new.send(:verify_downloaded_ebook!, mobi_path, expected_extension: "mobi") }
+    end
+  end
+
+  test "verify_downloaded_ebook rejects missing and empty files" do
+    Dir.mktmpdir do |dir|
+      missing_path = File.join(dir, "missing.epub")
+      assert_raises(RuntimeError) { DownloadJob.new.send(:verify_downloaded_ebook!, missing_path) }
+
+      empty_path = File.join(dir, "empty.epub")
+      File.write(empty_path, "")
+      assert_raises(RuntimeError) { DownloadJob.new.send(:verify_downloaded_ebook!, empty_path) }
+    end
+  end
+
+  test "send_to_torrent_client marks attention when client returns no hash" do
+    client = Object.new
+    def client.add_torrent(_url)
+      nil
+    end
+
+    DownloadClientSelector.stub(:for_torrent, @client) do
+      @client.stub(:adapter, client) do
+        DownloadJob.new.send(:send_to_torrent_client, @download, @selected_result, "magnet:?xt=urn:btih:test")
+      end
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+  end
+
+  test "check_for_duplicate_external_id logs duplicates without raising" do
+    existing = @request.downloads.create!(
+      name: "Existing",
+      status: :downloading,
+      external_id: "same-hash"
+    )
+
+    assert_nothing_raised do
+      DownloadJob.new.send(:check_for_duplicate_external_id, existing.external_id, @download.id)
     end
   end
 

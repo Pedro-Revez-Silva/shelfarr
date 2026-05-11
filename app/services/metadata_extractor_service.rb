@@ -190,19 +190,19 @@ class MetadataExtractorService
           file.read(4) if type == "meta"
           # Continue parsing inside these containers
           next
-        when "\xA9nam" # Title
+        when "\xA9nam".b # Title
           metadata[:title] = read_mp4_data_atom(file, size)
-        when "\xA9ART" # Artist
+        when "\xA9ART".b # Artist
           metadata[:artist] = read_mp4_data_atom(file, size)
-        when "\xA9alb" # Album
+        when "\xA9alb".b # Album
           metadata[:album] = read_mp4_data_atom(file, size)
         when "aART" # Album artist
           metadata[:album_artist] = read_mp4_data_atom(file, size)
-        when "\xA9day" # Year
+        when "\xA9day".b # Year
           metadata[:year] = read_mp4_data_atom(file, size)
         when "desc" # Description
           metadata[:description] = read_mp4_data_atom(file, size)
-        when "\xA9wrt" # Narrator (sometimes stored as composer)
+        when "\xA9wrt".b # Narrator (sometimes stored as composer)
           metadata[:narrator] = read_mp4_data_atom(file, size)
         else
           # Skip unknown atoms

@@ -5,6 +5,7 @@ module Admin
     def index
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
+      load_telegram_chat_authorizations
       load_audiobookshelf_cache_summary
     end
 
@@ -41,6 +42,7 @@ module Admin
 
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
+      load_telegram_chat_authorizations
       load_audiobookshelf_cache_summary
 
       respond_to do |format|
@@ -67,6 +69,7 @@ module Admin
     rescue ArgumentError => e
       @settings_by_category = SettingsService.all_by_category
       @audiobookshelf_libraries = fetch_audiobookshelf_libraries
+      load_telegram_chat_authorizations
       load_audiobookshelf_cache_summary
 
       respond_to do |format|
@@ -236,7 +239,71 @@ module Admin
       respond_with_flash(alert: e.message)
     end
 
+    def test_telegram
+      unless Integrations::Telegram::Configuration.configured?
+        respond_with_flash(alert: "Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
+        return
+      end
+
+      response = Integrations::Telegram::Client.get_me
+      username = response.dig("result", "username") || "bot"
+      respond_with_flash(notice: "Telegram connection successful: @#{username}")
+    rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
+      respond_with_flash(alert: e.message)
+    end
+
+    def setup_telegram_webhook
+      unless SettingsService.get(:telegram_enabled, default: false) && Integrations::Telegram::Configuration.bot_token.present? && Integrations::Telegram::Configuration.webhook_secret.present?
+        respond_with_flash(alert: "Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
+        return
+      end
+
+      SettingsService.set(:telegram_update_mode, "webhook")
+      TelegramPollingJob.clear_schedule!
+      Integrations::Telegram::Client.set_webhook!(url: integrations_telegram_webhook_url)
+      respond_with_flash(notice: "Telegram webhook configured: #{integrations_telegram_webhook_url}")
+    rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
+      respond_with_flash(alert: e.message)
+    end
+
+    def approve_telegram_chat
+      code = params[:telegram_group_code].to_s.strip
+      authorization = TelegramChatAuthorization.approve_code!(code, approved_by: Current.user)
+
+      if authorization
+        respond_with_flash(notice: "Telegram group authorized: #{authorization.chat_title.presence || authorization.chat_id}")
+      else
+        respond_with_flash(alert: "Telegram group code is invalid or expired.")
+      end
+    end
+
+    def pause_telegram_chat
+      authorization = TelegramChatAuthorization.find(params[:id])
+      authorization.pause!
+
+      respond_with_flash(notice: "Telegram group paused: #{telegram_chat_label(authorization)}")
+    end
+
+    def resume_telegram_chat
+      authorization = TelegramChatAuthorization.find(params[:id])
+      authorization.resume!
+
+      respond_with_flash(notice: "Telegram group resumed: #{telegram_chat_label(authorization)}")
+    end
+
+    def delete_telegram_chat
+      authorization = TelegramChatAuthorization.find(params[:id])
+      label = telegram_chat_label(authorization)
+      authorization.destroy!
+
+      respond_with_flash(notice: "Telegram group removed: #{label}")
+    end
+
     private
+
+    def telegram_chat_label(authorization)
+      authorization.chat_title.presence || authorization.chat_id
+    end
 
     def respond_with_flash(notice: nil, alert: nil)
       respond_to do |format|
@@ -247,6 +314,10 @@ module Admin
           render turbo_stream: turbo_stream.update("flash", partial: "shared/flash")
         end
       end
+    end
+
+    def load_telegram_chat_authorizations
+      @telegram_chat_authorizations = TelegramChatAuthorization.order(approved_at: :desc, updated_at: :desc)
     end
 
     def run_service_health_check(service_name)
@@ -283,6 +354,9 @@ module Admin
         HardcoverClient.reset_connection!
         run_service_health_check("hardcover")
       end
+      if changed_keys.any? { |k| k.start_with?("telegram") }
+        sync_telegram_transport
+      end
       if changed_keys.any? { |k| k.start_with?("audiobook_output_path") || k.start_with?("ebook_output_path") }
         run_service_health_check_now("output_paths")
       end
@@ -317,6 +391,22 @@ module Admin
     rescue AudiobookshelfClient::Error => e
       Rails.logger.warn "[SettingsController] Failed to fetch Audiobookshelf libraries: #{e.message}"
       []
+    end
+
+    def sync_telegram_transport
+      if Integrations::Telegram::Configuration.polling?
+        TelegramPollingJob.clear_schedule!
+        if Integrations::Telegram::Configuration.configured?
+          begin
+            Integrations::Telegram::Client.delete_webhook!(drop_pending_updates: false)
+          rescue => e
+            Rails.logger.warn "[SettingsController] Failed to clear Telegram webhook for polling mode: #{e.message}"
+          end
+          TelegramPollingJob.ensure_running!
+        end
+      else
+        TelegramPollingJob.clear_schedule!
+      end
     end
 
     def load_audiobookshelf_cache_summary

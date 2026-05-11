@@ -73,6 +73,70 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action='#{unlink_oidc_profile_path}']"
   end
 
+  test "show does not display legacy telegram link controls when telegram is enabled" do
+    SettingsService.set(:telegram_enabled, true)
+
+    get profile_path
+
+    assert_response :success
+    assert_select "dt", text: "Telegram", count: 0
+    assert_select "button", text: "Generate Telegram Code", count: 0
+  end
+
+  test "create_api_token creates a scoped token for current user" do
+    assert_difference "@user.api_tokens.count", 1 do
+      post api_tokens_profile_path, params: {
+        name: "Mobile",
+        scopes: [ "search:read", "requests:read" ]
+      }
+    end
+
+    assert_redirected_to profile_path
+    assert_match(/API token created: shf_/, flash[:notice])
+    token = @user.api_tokens.last
+    assert_equal "Mobile", token.name
+    assert_equal %w[search:read requests:read], token.scope_list
+  end
+
+  test "create_api_token rejects privileged scopes for regular users" do
+    assert_no_difference "@user.api_tokens.count" do
+      post api_tokens_profile_path, params: {
+        name: "Escalated",
+        scopes: [ "search:read", "users:write", "requests:admin" ]
+      }
+    end
+
+    assert_redirected_to profile_path
+    assert_equal "API token scopes are not allowed.", flash[:alert]
+  end
+
+  test "create_api_token allows privileged scopes for admins" do
+    sign_in_as(users(:two))
+
+    assert_difference "users(:two).api_tokens.count", 1 do
+      post api_tokens_profile_path, params: {
+        name: "Admin API",
+        scopes: [ "requests:admin", "users:write" ]
+      }
+    end
+
+    assert_redirected_to profile_path
+    assert_equal %w[requests:admin users:write], users(:two).api_tokens.last.scope_list
+  end
+
+  test "revoke_api_token revokes current user's token" do
+    token, = APIToken.issue!(
+      name: "Mobile",
+      user: @user,
+      scopes: %w[search:read]
+    )
+
+    delete api_token_profile_path(token)
+
+    assert_redirected_to profile_path
+    assert token.reload.revoked?
+  end
+
   test "edit displays form" do
     get edit_profile_path
     assert_response :success

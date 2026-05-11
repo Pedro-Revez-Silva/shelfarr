@@ -1,4 +1,6 @@
 class Request < ApplicationRecord
+  CREATED_VIA_VALUES = %w[web api telegram].freeze
+
   belongs_to :book
   belongs_to :user
   has_many :request_events, dependent: :destroy
@@ -28,6 +30,7 @@ class Request < ApplicationRecord
   after_update_commit :broadcast_show_refresh_later_if_needed
 
   validates :status, presence: true
+  validates :created_via, presence: true, inclusion: { in: CREATED_VIA_VALUES }
 
   scope :active, -> { where(status: [ :pending, :searching, :downloading, :processing ]) }
   scope :needs_attention, -> { where(attention_needed: true) }

@@ -124,6 +124,16 @@ class SettingsService
     webhook_events: { type: "string", default: "request_created,request_completed,request_failed,request_attention", category: "webhook", description: "Comma-separated webhook events to send" },
     webhook_topic: { type: "string", default: "", category: "webhook", description: "Optional topic field included in webhook JSON payload (required by ntfy when posting to the server base URL)" },
 
+    # Telegram Bot
+    telegram_enabled: { type: "boolean", default: false, category: "telegram", description: "Enable the Telegram command integration" },
+    telegram_update_mode: { type: "string", default: "polling", category: "telegram", description: "How Shelfarr receives Telegram updates. Polling works for local installs; webhook is optional for public HTTPS deployments." },
+    telegram_bot_token: { type: "string", default: "", category: "telegram", description: "Bot token from BotFather. Required before accepting Telegram commands." },
+    telegram_bot_username: { type: "string", default: "", category: "telegram", description: "Bot username without @. Commands addressed to other bots are ignored." },
+    telegram_webhook_secret: { type: "string", default: "", category: "telegram", description: "Telegram webhook secret checked against X-Telegram-Bot-Api-Secret-Token" },
+    telegram_allowed_chat_ids: { type: "string", default: "", category: "telegram", description: "Manual fallback allowlist for Telegram group chat IDs. Prefer approving groups with the pairing code below." },
+    telegram_request_username: { type: "string", default: "", category: "telegram", description: "Shelfarr username used as the owner for Telegram group requests. Defaults to the first admin." },
+    telegram_notification_events: { type: "string", default: "request_completed,request_failed,request_attention", category: "telegram", description: "Comma-separated request lifecycle events sent back to the authorized Telegram group that created the request" },
+
     # OIDC/SSO Authentication
     oidc_enabled: { type: "boolean", default: false, category: "oidc", description: "Enable OpenID Connect (OIDC) single sign-on authentication" },
     oidc_auto_redirect: { type: "boolean", default: false, category: "oidc", description: "Automatically start OIDC sign-in for unauthenticated users. Use /session/new?local=1 to access the local login form." },
@@ -154,6 +164,7 @@ class SettingsService
     "updates" => "Updates",
     "security" => "Security",
     "webhook" => "Webhook Notifications",
+    "telegram" => "Telegram Bot",
     "oidc" => "OIDC/SSO Authentication"
   }.freeze
 

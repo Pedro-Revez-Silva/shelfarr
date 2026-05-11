@@ -4,14 +4,18 @@ module OutboundNotifications
   class Dispatcher
     class << self
       def notify(event:, request:, title:, message:)
-        return unless OutboundNotifications::WebhookDelivery.enabled_for?(event)
+        if OutboundNotifications::WebhookDelivery.enabled_for?(event)
+          OutboundWebhookDeliveryJob.perform_later(
+            event: event,
+            request_id: request&.id,
+            title: title,
+            message: message
+          )
+        end
 
-        OutboundWebhookDeliveryJob.perform_later(
-          event: event,
-          request_id: request&.id,
-          title: title,
-          message: message
-        )
+        if request&.id && Integrations::Telegram::Configuration.notification_enabled_for?(event)
+          TelegramNotificationDeliveryJob.perform_later(event: event, request_id: request.id)
+        end
       end
     end
   end
