@@ -57,7 +57,8 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     assert_select "dd", client.client_type.titleize
     assert_select "dd", client.url
     assert_select "span", "Enabled"
-    assert_no_match client.password, response.body
+    assert_select "dt", text: "Password", count: 0
+    assert_select "dt", text: "API Key", count: 0
   end
 
   test "create renders errors for invalid client" do
@@ -169,7 +170,6 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
             client_type: "qbittorrent",
             url: "http://localhost:8081",
             username: "admin",
-            password: SecureRandom.base58(24),
             category: "shelfarr",
             enabled: "1",
             torrent_verification_max_attempts: "12",
@@ -234,7 +234,6 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
       client_type: "qbittorrent",
       url: "http://localhost:8080",
       username: "admin",
-      password: SecureRandom.base58(24),
       torrent_verification_max_attempts: 10,
       torrent_verification_wait_time: 2,
       priority: 0,
