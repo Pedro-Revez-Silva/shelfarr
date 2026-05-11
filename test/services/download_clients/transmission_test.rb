@@ -588,7 +588,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
 
     @client_record.update!(url: "http://localhost:9091/transmission/rpc/")
     assert_equal "http://localhost:9091/transmission/rpc", @client_record.adapter.send(:rpc_url)
-    @client_record.update!(url: "http://[bad")
+    @client_record.url = "http://[bad"
     assert_equal "http://[bad", @client_record.adapter.send(:rpc_url)
   end
 
