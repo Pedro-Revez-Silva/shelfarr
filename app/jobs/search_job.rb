@@ -100,19 +100,24 @@ class SearchJob < ApplicationJob
 
     Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} book query for title='#{book.title}' author='#{book.author}' extra='#{query}' (type: #{book.book_type})"
 
-    results = IndexerClient.search(
+    structured_results = IndexerClient.search(
       query,
       book_type: book.book_type,
       title: book.title,
       author: book.author
     )
 
-    return results if results.any?
+    return structured_results if structured_results.any? && !book.ebook?
 
     fallback_query = generic_indexer_query(request)
-    Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with generic query '#{fallback_query}'"
+    if structured_results.any?
+      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} ebook search found #{structured_results.count} structured results for request ##{request.id}; supplementing with generic query '#{fallback_query}'"
+    else
+      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with generic query '#{fallback_query}'"
+    end
 
-    IndexerClient.search(fallback_query, book_type: book.book_type)
+    generic_results = IndexerClient.search(fallback_query, book_type: book.book_type)
+    merge_indexer_results(structured_results, generic_results)
   end
 
   def search_generic_indexer(request)
@@ -312,5 +317,17 @@ class SearchJob < ApplicationJob
     language = request.effective_language
     info = ReleaseParserService.language_info(language)
     info[:name]
+  end
+
+  def merge_indexer_results(*result_groups)
+    seen = {}
+
+    result_groups.flatten.each_with_object([]) do |result, merged|
+      key = result.guid.presence || [ result.indexer, result.title, result.download_link ].join("|")
+      next if seen[key]
+
+      seen[key] = true
+      merged << result
+    end
   end
 end
