@@ -436,7 +436,8 @@ module DownloadClients
         req.headers["Origin"] = base_url
       end
 
-      if auth_response.status == 200 && auth_response.body == "Ok."
+      if (auth_response.status == 200 && auth_response.body == "Ok.") ||
+         (auth_response.status == 204 && auth_response.headers["set-cookie"].present?)
         session = extract_session_cookie(auth_response.headers["set-cookie"])
         if session
           session_key[:cookie_name] = session[:name]
@@ -570,7 +571,7 @@ module DownloadClients
     end
 
     def session_cookie_pattern
-      /\b(?<name>#{Regexp.escape(default_session_cookie_name)})=(?<value>[^;]+)/
+      /\b(?<name>(?:QBT_)?SID(?:_\d+)?)=(?<value>[^;]+)/
     end
 
     def default_session_cookie_name
