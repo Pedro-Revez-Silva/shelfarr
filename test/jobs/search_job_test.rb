@@ -248,6 +248,7 @@ class SearchJobTest < ActiveJob::TestCase
           headers: { "Content-Type" => "application/json" },
           body: [ prowlarr_result_payload ].to_json
         )
+      stub_prowlarr_generic_search_empty
 
       assert_nothing_raised do
         SearchJob.perform_now(@request.id)
@@ -274,6 +275,7 @@ class SearchJobTest < ActiveJob::TestCase
           headers: { "Content-Type" => "application/json" },
           body: [ prowlarr_result_payload ].to_json
         )
+      stub_prowlarr_generic_search_empty
 
       assert_nothing_raised do
         SearchJob.perform_now(@request.id)
@@ -295,6 +297,7 @@ class SearchJobTest < ActiveJob::TestCase
           headers: { "Content-Type" => "application/json" },
           body: [ prowlarr_result_payload ].to_json
         )
+      stub_prowlarr_generic_search_empty
 
       assert_nothing_raised do
         SearchJob.perform_now(@request.id)
@@ -337,6 +340,62 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "supplements partial Prowlarr ebook results with generic title search" do
+    book = Book.create!(
+      title: "Frieren: Beyond Journey's End, Vol. 1",
+      author: "Kanehito Yamada",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    structured_payload = prowlarr_result_payload.merge(
+      "guid" => "mam-frieren-prelude",
+      "title" => "Frieren: Beyond Journey's End -Prelude-, Vol. 1 by Mei Hachimoku [ENG / EPUB]",
+      "indexer" => "MyAnonaMouse"
+    )
+    generic_payload = prowlarr_result_payload.merge(
+      "guid" => "nyaa-frieren-v01",
+      "title" => "Frieren - Beyond Journey's End v01 (2021) (Digital) (danke-Empire)",
+      "indexer" => "Nyaa.si"
+    )
+
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values["query"]
+          req.uri.query_values["type"] == "book" &&
+            query.include?("{title:Frieren: Beyond Journey's End, Vol. 1}") &&
+            query.include?("{author:Kanehito Yamada}")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ structured_payload ].to_json
+        )
+
+      generic_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Frieren: Beyond Journey's End, Vol. 1"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ generic_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested structured_stub
+      assert_requested generic_stub
+      assert_equal [
+        "Frieren - Beyond Journey's End v01 (2021) (Digital) (danke-Empire)",
+        "Frieren: Beyond Journey's End -Prelude-, Vol. 1 by Mei Hachimoku [ENG / EPUB]"
+      ].sort,
+        request.search_results.pluck(:title).sort
+    end
+  end
+
   test "sanitizes braces in structured Prowlarr query values" do
     book = Book.create!(
       title: "The {Brace} Book",
@@ -360,6 +419,7 @@ class SearchJobTest < ActiveJob::TestCase
           headers: { "Content-Type" => "application/json" },
           body: [ prowlarr_result_payload ].to_json
         )
+      stub_prowlarr_generic_search_empty
 
       SearchJob.perform_now(request.id)
       request.reload
@@ -590,6 +650,16 @@ class SearchJobTest < ActiveJob::TestCase
 
   def stub_prowlarr_search_empty
     stub_request(:get, %r{localhost:9696/api/v1/search})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: [].to_json
+      )
+  end
+
+  def stub_prowlarr_generic_search_empty
+    stub_request(:get, %r{localhost:9696/api/v1/search})
+      .with { |req| req.uri.query_values["type"] == "search" }
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },
