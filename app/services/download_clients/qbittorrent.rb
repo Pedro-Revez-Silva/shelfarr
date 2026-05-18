@@ -57,6 +57,8 @@ module DownloadClients
         # This path is only taken if hash extraction failed
         Rails.logger.warn "[Qbittorrent] Falling back to polling for hash detection (race condition possible)"
         find_newly_added_torrent_hash(existing_hashes, category: category)
+      when 409
+        handle_add_conflict(precomputed_hash)
       when 401, 403
         clear_session!
         raise Base::AuthenticationError, "qBittorrent authentication failed"
@@ -244,8 +246,16 @@ module DownloadClients
     end
 
     def extract_hash_from_magnet(url)
-      match = url.match(/btih:([a-fA-F0-9]+)/i)
-      match[1]&.downcase if match
+      decoded_url = URI.decode_www_form_component(url.to_s)
+      match = decoded_url.match(/btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})/i)
+      return nil unless match
+
+      hash = match[1]
+      return hash.downcase if hash.match?(/\A[a-fA-F0-9]{40}\z/)
+
+      base32_to_hex(hash)
+    rescue ArgumentError
+      nil
     end
 
     # Check if URL points to a .torrent file
@@ -320,6 +330,21 @@ module DownloadClients
     rescue BEncode::DecodeError => e
       Rails.logger.warn "[Qbittorrent] Failed to parse torrent file (not valid bencode): #{e.message}"
       nil
+    end
+
+    def base32_to_hex(value)
+      alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+      bits = value.upcase.each_char.map do |char|
+        index = alphabet.index(char)
+        return nil unless index
+
+        index.to_s(2).rjust(5, "0")
+      end.join
+
+      bytes = bits.scan(/.{8}/).map { |byte| byte.to_i(2) }
+      return nil unless bytes.length == 20
+
+      bytes.pack("C*").unpack1("H*")
     end
 
     def normalized_torrent_url(raw_url)
@@ -417,6 +442,16 @@ module DownloadClients
       end
 
       Rails.logger.warn "[Qbittorrent] No new torrent detected after #{max_wait_seconds} seconds"
+      nil
+    end
+
+    def handle_add_conflict(precomputed_hash)
+      if precomputed_hash.present? && verify_torrent_added(precomputed_hash)
+        Rails.logger.info "[Qbittorrent] Torrent #{precomputed_hash} already exists in #{config.name}; treating 409 as successful add"
+        return precomputed_hash
+      end
+
+      Rails.logger.error "[Qbittorrent] Failed to add torrent: 409 - Conflict"
       nil
     end
 

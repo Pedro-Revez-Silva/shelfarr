@@ -994,6 +994,69 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent treats qBittorrent 409 conflict as success when torrent already exists" do
+    @client_record.update!(torrent_verification_max_attempts: 1, torrent_verification_wait_time: 0)
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 409, body: "Conflict")
+
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => "a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "name" => "Already Added", "progress" => 0.1, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+
+      assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
+    end
+  end
+
+  test "add_torrent extracts base32 magnet hash for qBittorrent conflict recovery" do
+    @client_record.update!(torrent_verification_max_attempts: 1, torrent_verification_wait_time: 0)
+
+    VCR.turned_off do
+      magnet_url = "magnet:?xt=urn:btih:UGZMHVHF62Q3FQ6U4X3KDMWD2TS7NINS&dn=Test"
+
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .with(body: hash_including("urls" => magnet_url))
+        .to_return(status: 409, body: "Conflict")
+
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => "a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "name" => "Base32 Magnet", "progress" => 0.1, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+        )
+
+      result = @client.add_torrent(magnet_url)
+
+      assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
+    end
+  end
+
+  test "magnet hash extraction prefers 40 character hex over base32" do
+    hash = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+
+    assert_equal hash, @client.send(:extract_hash_from_magnet, "magnet:?xt=urn:btih:#{hash}")
+  end
+
   test "add_torrent retries verification when torrent takes time to appear" do
     VCR.turned_off do
       # Stub authentication
