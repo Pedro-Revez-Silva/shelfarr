@@ -159,6 +159,60 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search falls back to HTML results when eAPI returns 400" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(
+          status: 400,
+          body: { success: 0, error: "Some errors occured." }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      html_stub = stub_request(:get, "https://z-library.sk/s/Test%20Book?extensions%5B%5D=EPUB&extensions%5B%5D=PDF&languages%5B%5D=english")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=abc123" })
+        .to_return(
+          status: 200,
+          body: zlibrary_search_html,
+          headers: { "Content-Type" => "text/html" }
+        )
+
+      results = ZLibraryClient.search("Test Book", language: "english")
+
+      assert_equal 1, results.size
+      assert_equal "999", results.first.id
+      assert_equal "deadbeef", results.first.hash
+      assert_equal "Test Book", results.first.title
+      assert_equal "Author One, Author Two", results.first.author
+      assert_equal 2024, results.first.year
+      assert_equal "epub", results.first.file_type
+      assert_equal 1_572_864, results.first.file_size
+      assert_equal "en", results.first.language
+      assert_requested(html_stub)
+    end
+  end
+
+  test "search falls back to HTML results when eAPI returns generic error payload" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(
+          status: 200,
+          body: { success: 0, error: "Some errors occured. Error identificator: ." }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      stub_request(:get, "https://z-library.sk/s/Test%20Book?extensions%5B%5D=EPUB&extensions%5B%5D=PDF")
+        .to_return(
+          status: 200,
+          body: zlibrary_search_html,
+          headers: { "Content-Type" => "text/html" }
+        )
+
+      assert_equal "999", ZLibraryClient.search("Test Book").first.id
+    end
+  end
+
   test "get_download_url validates returned URL scheme" do
     VCR.turned_off do
       stub_zlibrary_login_success
@@ -175,6 +229,29 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       assert_raises ZLibraryClient::Error do
         ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
       end
+    end
+  end
+
+  test "get_download_url falls back to HTML book page when eAPI returns 400" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:get, "https://z-library.sk/eapi/book/999/deadbeef/file")
+        .to_return(
+          status: 400,
+          body: { success: 0, error: "Some errors occured." }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      html_stub = stub_request(:get, "https://z-library.sk/book/999/deadbeef")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=abc123" })
+        .to_return(
+          status: 200,
+          body: '<html><a class="btn btn-default addDownloadedBook" href="/dl/999/deadbeef/book.epub">Download</a></html>',
+          headers: { "Content-Type" => "text/html" }
+        )
+
+      assert_equal "https://z-library.sk/dl/999/deadbeef/book.epub", ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
+      assert_requested(html_stub)
     end
   end
 
@@ -252,5 +329,25 @@ class ZLibraryClientTest < ActiveSupport::TestCase
   def stub_zlibrary_login_failure
     stub_request(:post, "https://z-library.sk/eapi/user/login")
       .to_return(status: 500, body: "server error")
+  end
+
+  def zlibrary_search_html
+    <<~HTML
+      <html>
+        <div id="searchResultBox">
+          <div class="book-item">
+            <z-bookcard id="999"
+                        href="/book/999/deadbeef/test-book"
+                        year="2024"
+                        language="English"
+                        extension="EPUB"
+                        filesize="1.5 MB">
+              <div slot="title">Test Book</div>
+              <div slot="author">Author One; Author Two</div>
+            </z-bookcard>
+          </div>
+        </div>
+      </html>
+    HTML
   end
 end
