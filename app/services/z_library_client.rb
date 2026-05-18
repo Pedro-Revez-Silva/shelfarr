@@ -50,12 +50,12 @@ class ZLibraryClient
         Array(file_types).each { |ext| payload << [ "extensions[]", ext ] }
         payload << [ "languages[]", language ] if language.present?
 
-        response = connection.post("#{auth[:base_url]}/eapi/book/search") do |req|
-          req.headers["Cookie"] = cookie_header(auth)
-          req.body = URI.encode_www_form(payload)
-        end
+        response = post_search(auth, payload)
 
         if search_html_fallback_response?(response)
+          alternate_results = search_eapi_alternate_domains(auth, payload, limit)
+          return alternate_results if alternate_results
+
           Rails.logger.warn "[ZLibraryClient] eAPI search unavailable; falling back to HTML search"
           return search_html(auth, query, file_types: file_types, limit: limit, language: language)
         end
@@ -69,11 +69,12 @@ class ZLibraryClient
       ensure_configured!
 
       with_authenticated_retry(context: "download lookup") do |auth|
-        response = connection.get("#{auth[:base_url]}/eapi/book/#{id}/#{hash}/file") do |req|
-          req.headers["Cookie"] = cookie_header(auth)
-        end
+        response = get_file_response(auth, id: id, hash: hash)
 
         if download_html_fallback_response?(response)
+          alternate_download_url = get_download_url_from_alternate_domains(auth, id: id, hash: hash)
+          return alternate_download_url if alternate_download_url
+
           Rails.logger.warn "[ZLibraryClient] eAPI download lookup unavailable; falling back to HTML book page"
           return get_html_download_url(auth, id: id, hash: hash)
         end
@@ -120,36 +121,49 @@ class ZLibraryClient
         base_url = uri.to_s.delete_suffix("/")
         domain = uri.host
 
-        response = connection.post("#{base_url}/eapi/user/login") do |req|
-          req.body = URI.encode_www_form(email: email, password: password)
-        end
-
-        next unless response.status == 200
-
-        data = parse_json_body(response)
-        next unless data["success"] == 1
-
-        auth = {
-          remix_userid: data.dig("user", "id")&.to_s,
-          remix_userkey: data.dig("user", "remix_userkey")&.to_s,
-          domain: domain,
-          base_url: base_url
-        }
-
-        next if auth[:remix_userid].blank? || auth[:remix_userkey].blank?
+        auth = authenticate_uri(uri)
+        next unless auth
 
         Rails.logger.info "[ZLibraryClient] Login succeeded via #{domain}"
-        @auth_cache = {
-          signature: signature,
-          auth: auth,
-          expires_at: Time.current + AUTH_TTL_SECONDS
-        }
+        cache_auth(signature, auth)
         return auth
       rescue JSON::ParserError, Faraday::Error => e
         Rails.logger.debug "[ZLibraryClient] Login failed on #{domain}: #{e.message}"
       end
 
       nil
+    end
+
+    def authenticate_uri(uri)
+      email = SettingsService.get(:zlibrary_email).to_s.strip
+      password = SettingsService.get(:zlibrary_password).to_s
+      base_url = uri.to_s.delete_suffix("/")
+
+      response = connection.post("#{base_url}/eapi/user/login") do |req|
+        req.body = URI.encode_www_form(email: email, password: password)
+      end
+
+      return unless response.status == 200
+
+      data = parse_json_body(response)
+      return unless data["success"] == 1
+
+      auth = {
+        remix_userid: data.dig("user", "id")&.to_s,
+        remix_userkey: data.dig("user", "remix_userkey")&.to_s,
+        domain: uri.host,
+        base_url: base_url
+      }
+
+      auth if auth[:remix_userid].present? && auth[:remix_userkey].present?
+    end
+
+    def cache_auth(signature, auth)
+      @auth_cache = {
+        signature: signature,
+        auth: auth,
+        expires_at: Time.current + AUTH_TTL_SECONDS
+      }
     end
 
     def ensure_configured!
@@ -245,6 +259,19 @@ class ZLibraryClient
       "remix_userid=#{auth[:remix_userid]}; remix_userkey=#{auth[:remix_userkey]}"
     end
 
+    def post_search(auth, payload)
+      connection.post("#{auth[:base_url]}/eapi/book/search") do |req|
+        req.headers["Cookie"] = cookie_header(auth)
+        req.body = URI.encode_www_form(payload)
+      end
+    end
+
+    def get_file_response(auth, id:, hash:)
+      connection.get("#{auth[:base_url]}/eapi/book/#{id}/#{hash}/file") do |req|
+        req.headers["Cookie"] = cookie_header(auth)
+      end
+    end
+
     def parse_response(response, context:)
       case response.status
       when 200
@@ -267,6 +294,52 @@ class ZLibraryClient
       return response.body if response.body.is_a?(Hash)
 
       JSON.parse(response.body)
+    end
+
+    def search_eapi_alternate_domains(current_auth, payload, limit)
+      each_alternate_auth(current_auth) do |auth|
+        response = post_search(auth, payload)
+        next if search_html_fallback_response?(response)
+
+        data = parse_response(response, context: "search")
+        return parse_search_results(data.fetch("books", []), limit)
+      end
+
+      nil
+    end
+
+    def get_download_url_from_alternate_domains(current_auth, id:, hash:)
+      each_alternate_auth(current_auth) do |auth|
+        response = get_file_response(auth, id: id, hash: hash)
+        next if download_html_fallback_response?(response)
+
+        data = parse_response(response, context: "download lookup")
+        download_link = data.dig("file", "downloadLink")
+        next if download_link.blank?
+
+        validate_download_url!(download_link)
+        return download_link
+      end
+
+      nil
+    end
+
+    def each_alternate_auth(current_auth)
+      signature = credential_signature
+
+      configured_uris.each do |uri|
+        base_url = uri.to_s.delete_suffix("/")
+        next if base_url == current_auth[:base_url]
+
+        auth = authenticate_uri(uri)
+        next unless auth
+
+        Rails.logger.info "[ZLibraryClient] Retrying eAPI via #{auth[:domain]}"
+        cache_auth(signature, auth)
+        yield auth
+      rescue JSON::ParserError, Faraday::Error, Error => e
+        Rails.logger.debug "[ZLibraryClient] eAPI retry failed on #{uri.host}: #{e.message}"
+      end
     end
 
     def search_html(auth, query, file_types:, limit:, language:)

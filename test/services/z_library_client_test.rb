@@ -132,6 +132,47 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search retries alternate eAPI domain before HTML fallback" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-library.bz")
+
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_zlibrary_login_success("z-library.bz")
+
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(
+          status: 400,
+          body: { success: 0, error: "Some errors occured." }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      bz_search = stub_request(:post, "https://z-library.bz/eapi/book/search")
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            books: [
+              {
+                id: 123,
+                hash: "feedbeef",
+                name: "Recovered via API",
+                author: "Author",
+                extension: "epub"
+              }
+            ]
+          }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      results = ZLibraryClient.search("Test Book")
+
+      assert_equal "123", results.first.id
+      assert_equal "Recovered via API", results.first.title
+      assert_requested(bz_search)
+      assert_not_requested(:get, %r{https://z-library\.sk/s/})
+    end
+  end
+
   test "search raises AuthenticationError when login fails" do
     VCR.turned_off do
       stub_zlibrary_login_failure
@@ -252,6 +293,36 @@ class ZLibraryClientTest < ActiveSupport::TestCase
 
       assert_equal "https://z-library.sk/dl/999/deadbeef/book.epub", ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
       assert_requested(html_stub)
+    end
+  end
+
+  test "get_download_url retries alternate eAPI domain before HTML fallback" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-library.bz")
+
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_zlibrary_login_success("z-library.bz")
+
+      stub_request(:get, "https://z-library.sk/eapi/book/999/deadbeef/file")
+        .to_return(
+          status: 400,
+          body: { success: 0, error: "Some errors occured." }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      bz_lookup = stub_request(:get, "https://z-library.bz/eapi/book/999/deadbeef/file")
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            file: { downloadLink: "https://download.z-library.bz/books/test-book.epub" }
+          }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      assert_equal "https://download.z-library.bz/books/test-book.epub", ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
+      assert_requested(bz_lookup)
+      assert_not_requested(:get, "https://z-library.sk/book/999/deadbeef")
     end
   end
 
