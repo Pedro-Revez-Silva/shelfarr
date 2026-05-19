@@ -207,15 +207,16 @@ class PostProcessingJob < ApplicationJob
 
   def build_path_candidates(path, download)
     candidates = []
-    remote_path = SettingsService.get(:download_remote_path)
-    local_path = SettingsService.get(:download_local_path, default: "/downloads")
+    normalized_path = normalize_path_separators(path)
+    remote_path = normalize_path_separators(SettingsService.get(:download_remote_path))
+    local_path = normalize_path_separators(SettingsService.get(:download_local_path, default: "/downloads"))
     category = download.download_client&.category
-    client_download_path = download.download_client&.download_path
-    basename = File.basename(path)
+    client_download_path = normalize_path_separators(download.download_client&.download_path)
+    basename = File.basename(normalized_path)
 
     # 1. Global remote_path → local_path prefix replacement
-    if remote_path.present? && path.start_with?(remote_path)
-      candidates << { strategy: "global_prefix_remap", path: path.sub(remote_path, local_path) }
+    if remote_path.present? && path_prefix_match?(normalized_path, remote_path)
+      candidates << { strategy: "global_prefix_remap", path: replace_path_prefix(normalized_path, remote_path, local_path) }
     end
 
     # 2. local_path/category/basename — most common torrent client layout
@@ -225,10 +226,10 @@ class PostProcessingJob < ApplicationJob
 
     # 3. Category-aware sibling remap — when remote_path points to a sibling folder
     #    e.g., remote=/mnt/Torrents/Completed, path=/mnt/Torrents/shelfarr/File
-    if category.present? && remote_path.present? && path.include?("/#{category}/")
-      category_idx = path.index("/#{category}/")
-      remote_base = path[0...category_idx]
-      relative_after_base = path[(category_idx)..]
+    if category.present? && remote_path.present? && normalized_path.include?("/#{category}/")
+      category_idx = normalized_path.index("/#{category}/")
+      remote_base = normalized_path[0...category_idx]
+      relative_after_base = normalized_path[(category_idx)..]
 
       if remote_base == File.dirname(remote_path)
         candidates << { strategy: "category_sibling_remap", path: File.join(File.dirname(local_path), relative_after_base) }
@@ -247,6 +248,21 @@ class PostProcessingJob < ApplicationJob
     candidates << { strategy: "original_path", path: path }
 
     candidates
+  end
+
+  def normalize_path_separators(path)
+    path.to_s.tr("\\", "/") if path.present?
+  end
+
+  def path_prefix_match?(path, prefix)
+    return false unless path.start_with?(prefix)
+
+    path.length == prefix.length || prefix.end_with?("/") || path[prefix.length] == "/"
+  end
+
+  def replace_path_prefix(path, remote_path, local_path)
+    suffix = path.delete_prefix(remote_path).sub(%r{\A/+}, "")
+    suffix.present? ? File.join(local_path, suffix) : local_path
   end
 
   def deduplicate_path_candidates(candidates)

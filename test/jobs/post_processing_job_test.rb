@@ -392,6 +392,46 @@ class PostProcessingJobTest < ActiveJob::TestCase
       "File should be copied using category-aware sibling remapping"
   end
 
+  test "remaps Windows download path backslashes after global prefix replacement" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    File.write(File.join(@temp_source, "Windows Book.epub"), "test ebook content")
+
+    @book.update!(book_type: :ebook)
+    @download.update!(download_path: "D:\\QbittorrentMove\\Windows Book.epub")
+
+    SettingsService.set(:download_remote_path, "D:\\QbittorrentMove")
+    SettingsService.set(:download_local_path, @temp_source)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub")),
+      "Windows backslashes should be converted to container path separators"
+  end
+
+  test "remaps Windows download path when remote path uses forward slashes" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    File.write(File.join(@temp_source, "Forward Remote.mobi"), "test ebook content")
+
+    @book.update!(book_type: :ebook)
+    @download.update!(download_path: "D:\\QbittorrentMove\\Forward Remote.mobi")
+
+    SettingsService.set(:download_remote_path, "D:/QbittorrentMove")
+    SettingsService.set(:download_local_path, @temp_source)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.mobi")),
+      "Windows client paths should match normalized remote path mappings"
+  end
+
   test "remaps path using client download_path with category" do
     # Scenario: client has a download_path and category, global remote doesn't match
     category_dir = File.join(@temp_source, "Test Audiobook")
