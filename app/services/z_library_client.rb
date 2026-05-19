@@ -420,11 +420,11 @@ class ZLibraryClient
     end
 
     def search_html_fallback_response?(response)
-      response.status == 400 || generic_zlibrary_error?(response)
+      response.status == 400 || eapi_html_response?(response) || generic_zlibrary_error?(response)
     end
 
     def download_html_fallback_response?(response)
-      response.status == 400 || generic_zlibrary_error?(response)
+      response.status == 400 || eapi_html_response?(response) || generic_zlibrary_error?(response)
     end
 
     def generic_zlibrary_error?(response)
@@ -434,6 +434,16 @@ class ZLibraryClient
       data["success"] == 0 && data["error"].to_s.match?(/Some errors? occurr?ed/i)
     rescue JSON::ParserError
       false
+    end
+
+    def eapi_html_response?(response)
+      return false unless response.status == 200
+
+      content_type = response.headers["content-type"].to_s
+      body = response.body.to_s.lstrip
+
+      content_type.match?(%r{text/html|application/xhtml\+xml}i) ||
+        body.start_with?("<!doctype", "<!DOCTYPE", "<html", "<HTML")
     end
 
     def validate_download_url!(url)

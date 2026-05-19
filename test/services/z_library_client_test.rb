@@ -233,6 +233,28 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search falls back to HTML results when eAPI returns HTML" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(
+          status: 200,
+          body: "<!doctype html><html><body>Unavailable</body></html>",
+          headers: { "Content-Type" => "text/html" }
+        )
+
+      html_stub = stub_request(:get, "https://z-library.sk/s/Test%20Book?extensions%5B%5D=EPUB&extensions%5B%5D=PDF")
+        .to_return(
+          status: 200,
+          body: zlibrary_search_html,
+          headers: { "Content-Type" => "text/html" }
+        )
+
+      assert_equal "999", ZLibraryClient.search("Test Book").first.id
+      assert_requested(html_stub)
+    end
+  end
+
   test "search falls back to HTML results when eAPI returns generic error payload" do
     VCR.turned_off do
       stub_zlibrary_login_success
@@ -281,6 +303,29 @@ class ZLibraryClientTest < ActiveSupport::TestCase
           status: 400,
           body: { success: 0, error: "Some errors occured." }.to_json,
           headers: { "Content-Type" => "application/json" }
+        )
+
+      html_stub = stub_request(:get, "https://z-library.sk/book/999/deadbeef")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=abc123" })
+        .to_return(
+          status: 200,
+          body: '<html><a class="btn btn-default addDownloadedBook" href="/dl/999/deadbeef/book.epub">Download</a></html>',
+          headers: { "Content-Type" => "text/html" }
+        )
+
+      assert_equal "https://z-library.sk/dl/999/deadbeef/book.epub", ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
+      assert_requested(html_stub)
+    end
+  end
+
+  test "get_download_url falls back to HTML book page when eAPI returns HTML" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:get, "https://z-library.sk/eapi/book/999/deadbeef/file")
+        .to_return(
+          status: 200,
+          body: "<html><body>Unavailable</body></html>",
+          headers: { "Content-Type" => "text/html" }
         )
 
       html_stub = stub_request(:get, "https://z-library.sk/book/999/deadbeef")

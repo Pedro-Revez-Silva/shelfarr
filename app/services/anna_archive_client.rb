@@ -119,16 +119,18 @@ class AnnaArchiveClient
 
     def with_base_url_rotation(context:)
       last_error = nil
+      bot_protection_error = nil
 
       ordered_base_urls.each do |base_url|
         return yield(base_url).tap { remember_working_base_url(base_url) }
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError,
              ConnectionError, BotProtectionError, RetryableError => e
         last_error = e
+        bot_protection_error ||= e if e.is_a?(BotProtectionError)
         Rails.logger.debug "[AnnaArchiveClient] #{context} failed on #{base_url}: #{e.message}"
       end
 
-      raise_rotation_error(last_error, context: context)
+      raise_rotation_error(bot_protection_error || last_error, context: context)
     end
 
     def fetch_with_protection_bypass(path, base_url:)

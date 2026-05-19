@@ -188,6 +188,25 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search preserves BotProtectionError when later configured URLs fail" do
+    VCR.turned_off do
+      SettingsService.set(:anna_archive_url, "https://annas-archive.org\nhttps://offline.example")
+
+      stub_request(:get, /annas-archive\.org\/search/)
+        .to_return(status: 403, body: "Forbidden")
+      stub_request(:get, /offline\.example\/search/)
+        .to_raise(Faraday::ConnectionFailed.new("Connection failed"))
+
+      error = assert_raises AnnaArchiveClient::BotProtectionError do
+        AnnaArchiveClient.search("test query")
+      end
+
+      assert_includes error.message, "FlareSolverr"
+      assert_requested :get, /annas-archive\.org\/search/
+      assert_requested :get, /offline\.example\/search/
+    end
+  end
+
   test "search uses FlareSolverr when configured" do
     VCR.turned_off do
       SettingsService.set(:flaresolverr_url, "http://localhost:8191")
