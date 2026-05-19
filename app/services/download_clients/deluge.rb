@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "base64"
+require "bencode"
+
 module DownloadClients
   # Deluge Web API client
   class Deluge < Base
@@ -24,11 +27,10 @@ module DownloadClients
       ensure_authenticated!
 
       params = build_add_params(options)
+      prepared = prepare_torrent_submission(url)
       existing_ids = torrent_ids
 
-      # Deluge typically accepts torrent URLs and magnet links via add_torrent_url
-      # Some deployments return no direct ID, so we keep a session-state fallback.
-      result = rpc_call("core.add_torrent_url", [url, params])
+      result = submit_torrent(prepared, params)
 
       return result if result.is_a?(String) && result.present?
 
@@ -237,6 +239,139 @@ module DownloadClients
 
     def clear_session!
       session.delete(:cookie)
+    end
+
+    def prepare_torrent_submission(url)
+      return { url: url } if url.blank?
+      return { url: url } if url.start_with?("magnet:")
+
+      source = resolve_torrent_source(url)
+      return { url: url } if source.blank?
+
+      resolved_url = source[:url].presence || url
+      return { url: resolved_url } if resolved_url.start_with?("magnet:")
+
+      torrent_data = source[:torrent_data]
+      return { url: resolved_url } unless valid_torrent_data?(torrent_data)
+
+      {
+        url: resolved_url,
+        filename: torrent_filename(resolved_url),
+        torrent_data: torrent_data
+      }
+    end
+
+    def submit_torrent(prepared, params)
+      url = prepared[:url].to_s
+
+      if prepared[:torrent_data].present?
+        rpc_call(
+          "core.add_torrent_file",
+          [
+            prepared[:filename],
+            Base64.strict_encode64(prepared[:torrent_data]),
+            params
+          ]
+        )
+      elsif url.start_with?("magnet:")
+        rpc_call("core.add_torrent_magnet", [ url, params ])
+      else
+        rpc_call("core.add_torrent_url", [ url, params ])
+      end
+    end
+
+    def resolve_torrent_source(raw_url)
+      normalized_url = normalized_torrent_url(raw_url)
+      return nil unless normalized_url
+
+      current_url = normalized_url
+      max_redirects = 10
+
+      max_redirects.times do
+        response = torrent_download_connection.get do |req|
+          req.url current_url
+        end
+
+        location = response.headers["location"]
+        if response.status.between?(300, 399) && location.present?
+          redirected_url = absolutize_redirect_url(current_url, location)
+          return { url: current_url } if redirected_url.blank?
+          return { url: redirected_url } if redirected_url.start_with?("magnet:")
+
+          current_url = redirected_url
+          next
+        end
+
+        magnet = extract_magnet_from_body(response.body.to_s)
+        return { url: magnet } if magnet.present?
+        return { url: current_url, torrent_data: response.body } if response.success? && response.body.present?
+
+        return { url: current_url }
+      end
+
+      Rails.logger.warn "[Deluge] Too many redirects while fetching torrent: #{normalized_url.truncate(100)}"
+      { url: current_url }
+    rescue URI::InvalidURIError => e
+      Rails.logger.warn "[Deluge] Invalid torrent URL: #{e.message}"
+      nil
+    rescue Faraday::Error => e
+      Rails.logger.warn "[Deluge] Failed to download torrent file for direct upload: #{e.message}"
+      nil
+    end
+
+    def valid_torrent_data?(torrent_data)
+      return false if torrent_data.blank?
+
+      parsed = BEncode.load(torrent_data.dup)
+      parsed.is_a?(Hash) && parsed["info"].is_a?(Hash)
+    rescue BEncode::DecodeError
+      false
+    end
+
+    def normalized_torrent_url(raw_url)
+      uri = URI.parse(raw_url.to_s.strip)
+      return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+      uri.to_s
+    rescue URI::InvalidURIError => e
+      Rails.logger.warn "[Deluge] Invalid torrent URL: #{e.message}"
+      nil
+    end
+
+    def torrent_download_connection
+      Faraday.new do |f|
+        f.adapter Faraday.default_adapter
+        f.options.timeout = 30
+        f.options.open_timeout = 10
+        f.headers["Accept"] = "*/*"
+        f.headers["User-Agent"] = "Shelfarr/1.0"
+      end
+    end
+
+    def absolutize_redirect_url(base_url, location)
+      return location if location.start_with?("magnet:")
+
+      resolved = URI.join(base_url, location).to_s
+      uri = URI.parse(resolved)
+      return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+      resolved
+    rescue URI::InvalidURIError
+      nil
+    end
+
+    def extract_magnet_from_body(body)
+      body.match(/magnet:\?[^\s"'<>]+/i)&.to_s
+    end
+
+    def torrent_filename(url)
+      path = URI.parse(url).path
+      filename = File.basename(path.to_s)
+      filename = "shelfarr.torrent" if filename.blank? || filename == "/"
+      filename = "#{filename}.torrent" unless filename.end_with?(".torrent")
+      filename
+    rescue URI::InvalidURIError
+      "shelfarr.torrent"
     end
 
     def extract_error_message(error)

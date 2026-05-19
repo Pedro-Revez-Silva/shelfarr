@@ -17,7 +17,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     Thread.current[:deluge_sessions] = {}
   end
 
-  test "add_torrent adds torrent and returns id" do
+  test "add_torrent adds magnet and returns id" do
     VCR.turned_off do
       # Login (auth.login)
       stub_request(:post, "http://localhost:8112/json")
@@ -37,9 +37,9 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           body: { result: [ "known_torrent_id" ], error: nil, id: 1 }.to_json
         )
 
-      # add_torrent_url returns id directly
+      # add_torrent_magnet returns id directly
       stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"core.add_torrent_url"/)
+        .with(body: /"core.add_torrent_magnet"/)
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
@@ -48,6 +48,101 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
 
       result = @client.add_torrent("magnet:?xt=urn:btih:abcdef")
       assert_equal "new_torrent_id", result
+    end
+  end
+
+  test "add_torrent submits resolved magnet when torrent URL redirects to magnet" do
+    VCR.turned_off do
+      magnet_url = "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.get_session_state"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { result: [ "known_torrent_id" ], error: nil, id: 1 }.to_json
+        )
+
+      stub_request(:get, "http://prowlarr:9696/api/v1/indexer/download/123")
+        .to_return(status: 301, headers: { "Location" => magnet_url })
+
+      add_stub = stub_request(:post, "http://localhost:8112/json")
+        .with do |request|
+          body = JSON.parse(request.body)
+          body["method"] == "core.add_torrent_magnet" && body["params"].first == magnet_url
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { result: "magnet_torrent_id", error: nil, id: 1 }.to_json
+        )
+
+      result = @client.add_torrent("http://prowlarr:9696/api/v1/indexer/download/123")
+
+      assert_equal "magnet_torrent_id", result
+      assert_requested(add_stub)
+    end
+  end
+
+  test "add_torrent uploads fetched torrent payload via add_torrent_file" do
+    VCR.turned_off do
+      torrent_data = {
+        "info" => {
+          "name" => "Deluge Book.epub",
+          "piece length" => 16_384,
+          "pieces" => "s" * 20,
+          "length" => 512
+        }
+      }.bencode
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.get_session_state"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { result: [ "known_torrent_id" ], error: nil, id: 1 }.to_json
+        )
+
+      stub_request(:get, "http://prowlarr:9696/api/v1/indexer/download/456.torrent")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/x-bittorrent" },
+          body: torrent_data
+        )
+
+      add_stub = stub_request(:post, "http://localhost:8112/json")
+        .with do |request|
+          body = JSON.parse(request.body)
+          body["method"] == "core.add_torrent_file" &&
+            body["params"][0] == "456.torrent" &&
+            body["params"][1] == Base64.strict_encode64(torrent_data)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { result: "file_torrent_id", error: nil, id: 1 }.to_json
+        )
+
+      result = @client.add_torrent("http://prowlarr:9696/api/v1/indexer/download/456.torrent")
+
+      assert_equal "file_torrent_id", result
+      assert_requested(add_stub)
     end
   end
 
