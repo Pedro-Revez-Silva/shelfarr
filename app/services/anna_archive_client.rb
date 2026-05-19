@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "uri"
+
 # Client for interacting with Anna's Archive
 # Search via HTML scraping, downloads via member API
 class AnnaArchiveClient
@@ -8,8 +10,10 @@ class AnnaArchiveClient
   class ConnectionError < Error; end
   class AuthenticationError < Error; end
   class NotConfiguredError < Error; end
+  class ConfigurationError < Error; end
   class ScrapingError < Error; end
   class BotProtectionError < Error; end
+  class RetryableError < Error; end
 
   # Data structure for search results
   Result = Data.define(
@@ -24,6 +28,9 @@ class AnnaArchiveClient
       file_size
     end
   end
+
+  DEFAULT_BASE_URL = "https://annas-archive.se"
+  ALLOWED_BASE_URL_SCHEMES = %w[http https].freeze
 
   class << self
     # Check if Anna's Archive is configured (has API key)
@@ -44,13 +51,10 @@ class AnnaArchiveClient
       ensure_configured!
 
       url = build_search_url(query, file_types, language: language)
-      full_url = "#{base_url}#{url}"
       Rails.logger.info "[AnnaArchiveClient] Searching: #{url}"
 
-      html = fetch_with_protection_bypass(full_url)
+      html = fetch_with_rotation(url, context: "search")
       parse_search_results(html, limit)
-    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-      raise ConnectionError, "Failed to connect to Anna's Archive: #{e.message}"
     end
 
     # Get download URL (torrent) via fast_download API
@@ -65,39 +69,76 @@ class AnnaArchiveClient
         domain_index: domain_index
       }
 
-      response = connection.get("/dyn/api/fast_download.json", params)
-      data = JSON.parse(response.body)
+      with_base_url_rotation(context: "download API") do |base_url|
+        response = connection_for(base_url).get("/dyn/api/fast_download.json", params)
+        raise RetryableError, "API request failed with status #{response.status}" unless response.status == 200
 
-      if data["error"]
-        raise Error, "Anna's Archive API error: #{data['error']}"
+        data = JSON.parse(response.body)
+
+        if data["error"]
+          raise Error, "Anna's Archive API error: #{data['error']}"
+        end
+
+        download_url = data["download_url"]
+        raise Error, "No download URL returned" if download_url.blank?
+
+        download_url
+      rescue JSON::ParserError => e
+        raise RetryableError, "Failed to parse Anna's Archive response: #{e.message}"
       end
+    end
 
-      download_url = data["download_url"]
-      raise Error, "No download URL returned" if download_url.blank?
+    def info_url(md5)
+      "#{preferred_base_url}/md5/#{md5}"
+    end
 
-      download_url
-    rescue JSON::ParserError => e
-      raise Error, "Failed to parse Anna's Archive response: #{e.message}"
-    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-      raise ConnectionError, "Failed to connect to Anna's Archive API: #{e.message}"
+    def reset_connection!
+      @connections = nil
+      @working_base_url = nil
     end
 
     # Test connection by fetching search page
     def test_connection
-      response = connection.get("/")
-      response.status == 200
-    rescue Error, Faraday::Error
+      configured_base_urls.any? do |base_url|
+        response = connection_for(base_url).get("/")
+        response.status == 200
+      rescue Faraday::Error
+        false
+      end
+    rescue Error
       false
     end
 
     private
 
-    def fetch_with_protection_bypass(url)
+    def fetch_with_rotation(path, context:)
+      with_base_url_rotation(context: context) do |base_url|
+        fetch_with_protection_bypass(path, base_url: base_url)
+      end
+    end
+
+    def with_base_url_rotation(context:)
+      last_error = nil
+
+      ordered_base_urls.each do |base_url|
+        return yield(base_url).tap { remember_working_base_url(base_url) }
+      rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError,
+             ConnectionError, BotProtectionError, RetryableError => e
+        last_error = e
+        Rails.logger.debug "[AnnaArchiveClient] #{context} failed on #{base_url}: #{e.message}"
+      end
+
+      raise_rotation_error(last_error, context: context)
+    end
+
+    def fetch_with_protection_bypass(path, base_url:)
+      url = "#{base_url}#{path}"
+
       if FlaresolverrClient.configured?
         Rails.logger.info "[AnnaArchiveClient] Using FlareSolverr for request"
         FlaresolverrClient.get(url)
       else
-        response = connection.get(url)
+        response = connection_for(base_url).get(path)
 
         # Detect bot protection
         if response.status == 403 || bot_protection_detected?(response.body)
@@ -105,7 +146,7 @@ class AnnaArchiveClient
                                     "Please configure FlareSolverr URL in settings."
         end
 
-        raise Error, "Search failed with status #{response.status}" unless response.status == 200
+        raise RetryableError, "Search failed with status #{response.status}" unless response.status == 200
         response.body
       end
     rescue FlaresolverrClient::Error => e
@@ -126,10 +167,13 @@ class AnnaArchiveClient
       unless configured?
         raise NotConfiguredError, "Anna's Archive is not configured or enabled"
       end
+
+      configured_base_urls
     end
 
-    def connection
-      @connection ||= Faraday.new(url: base_url) do |f|
+    def connection_for(base_url)
+      @connections ||= {}
+      @connections[base_url] ||= Faraday.new(url: base_url) do |f|
         f.request :url_encoded
         f.adapter Faraday.default_adapter
         f.headers["User-Agent"] = "Shelfarr/1.0"
@@ -138,8 +182,67 @@ class AnnaArchiveClient
       end
     end
 
-    def base_url
-      SettingsService.get(:anna_archive_url, default: "https://annas-archive.org")
+    def configured_base_urls
+      raw_url = SettingsService.get(:anna_archive_url, default: DEFAULT_BASE_URL).to_s
+      raw_url = DEFAULT_BASE_URL if raw_url.blank?
+
+      raw_url.split(/[,\s]+/).filter_map do |url|
+        normalize_base_url(url.strip)
+      end.uniq.tap do |urls|
+        raise ConfigurationError, "At least one valid Anna's Archive URL is required" if urls.empty?
+      end
+    end
+
+    def normalize_base_url(url)
+      return if url.blank?
+
+      uri = URI.parse(url)
+      unless ALLOWED_BASE_URL_SCHEMES.include?(uri.scheme) && uri.host.present?
+        raise ConfigurationError, "Anna's Archive URL must be a valid http or https URL"
+      end
+
+      if uri.path.present? && uri.path != "/"
+        raise ConfigurationError, "Anna's Archive URL must not include a path"
+      end
+
+      if uri.query.present? || uri.fragment.present? || uri.userinfo.present?
+        raise ConfigurationError, "Anna's Archive URL must only include the site origin"
+      end
+
+      uri.to_s.delete_suffix("/")
+    rescue URI::InvalidURIError => e
+      raise ConfigurationError, "Anna's Archive URL is invalid: #{e.message}"
+    end
+
+    def ordered_base_urls
+      urls = configured_base_urls
+      return urls unless @working_base_url && urls.include?(@working_base_url)
+
+      [ @working_base_url, *(urls - [ @working_base_url ]) ]
+    end
+
+    def remember_working_base_url(base_url)
+      @working_base_url = base_url
+    end
+
+    def preferred_base_url
+      urls = configured_base_urls
+      return @working_base_url if @working_base_url && urls.include?(@working_base_url)
+
+      urls.first
+    rescue ConfigurationError
+      DEFAULT_BASE_URL
+    end
+
+    def raise_rotation_error(error, context:)
+      case error
+      when nil
+        raise ConnectionError, "Failed to connect to Anna's Archive #{context}"
+      when Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError
+        raise ConnectionError, "Failed to connect to Anna's Archive #{context}: #{error.message}"
+      else
+        raise error
+      end
     end
 
     def api_key

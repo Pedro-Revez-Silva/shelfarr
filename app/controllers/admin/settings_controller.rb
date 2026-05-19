@@ -347,6 +347,9 @@ module Admin
       if changed_keys.any? { |k| k == "flaresolverr_url" }
         FlaresolverrClient.reset_connection!
       end
+      if changed_keys.any? { |k| k.start_with?("anna_archive") }
+        AnnaArchiveClient.reset_connection!
+      end
       if changed_keys.any? { |k| k.start_with?("zlibrary") }
         ZLibraryClient.reset_connection!
       end

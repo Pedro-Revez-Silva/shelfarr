@@ -6,11 +6,7 @@ export default class extends Controller {
     "status",
     "indexerProvider",
     "prowlarrFields",
-    "jackettFields",
-    "zlibraryUrlField",
-    "zlibraryUrlInput",
-    "zlibraryUrlList",
-    "zlibraryUrlError"
+    "jackettFields"
   ];
 
   connect() {
@@ -66,45 +62,48 @@ export default class extends Controller {
     this.autoSave(event);
   }
 
-  addZlibraryUrl(event) {
+  addUrl(event) {
     event.preventDefault();
 
-    if (!this.hasZlibraryUrlInputTarget || !this.hasZlibraryUrlFieldTarget) return;
+    const container = this.urlListContainer(event);
+    if (!container) return;
 
-    const result = this.normalizeZlibraryUrl(this.zlibraryUrlInputTarget.value);
+    const input = this.urlListInput(container);
+    const result = this.normalizeUrl(input.value);
     if (!result.valid) {
-      this.showZlibraryUrlError(result.error);
+      this.showUrlListError(container, result.error);
       return;
     }
 
-    const urls = this.zlibraryUrls();
+    const urls = this.urlListUrls(container);
     if (urls.includes(result.value)) {
-      this.showZlibraryUrlError("This URL is already in the list.");
+      this.showUrlListError(container, "This URL is already in the list.");
       return;
     }
 
     urls.push(result.value);
-    this.setZlibraryUrls(urls);
-    this.zlibraryUrlInputTarget.value = "";
-    this.hideZlibraryUrlError();
+    this.setUrlListUrls(container, urls);
+    input.value = "";
+    this.hideUrlListError(container);
   }
 
-  removeZlibraryUrl(event) {
+  removeUrl(event) {
     event.preventDefault();
 
-    if (!this.hasZlibraryUrlFieldTarget) return;
+    const container = this.urlListContainer(event);
+    if (!container) return;
 
-    const url = event.currentTarget.dataset.zlibraryUrl;
-    const urls = this.zlibraryUrls().filter((existingUrl) => existingUrl !== url);
+    const url = event.currentTarget.dataset.urlListValue;
+    const urls = this.urlListUrls(container).filter((existingUrl) => existingUrl !== url);
 
-    this.setZlibraryUrls(urls);
-    this.hideZlibraryUrlError();
+    this.setUrlListUrls(container, urls);
+    this.hideUrlListError(container);
   }
 
-  handleZlibraryUrlKeydown(event) {
+  handleUrlKeydown(event) {
     if (event.key !== "Enter") return;
 
-    this.addZlibraryUrl(event);
+    this.addUrl(event);
   }
 
   submitForm() {
@@ -145,31 +144,53 @@ export default class extends Controller {
     }
   }
 
-  zlibraryUrls() {
-    return this.zlibraryUrlFieldTarget.value
+  urlListContainer(event) {
+    return event.currentTarget.closest("[data-url-list]");
+  }
+
+  urlListField(container) {
+    return container.querySelector("[data-url-list-field]");
+  }
+
+  urlListInput(container) {
+    return container.querySelector("[data-url-list-input]");
+  }
+
+  urlListList(container) {
+    return container.querySelector("[data-url-list-list]");
+  }
+
+  urlListError(container) {
+    return container.querySelector("[data-url-list-error]");
+  }
+
+  urlListUrls(container) {
+    return this.urlListField(container).value
       .split(/\s+/)
       .map((url) => url.trim())
       .filter((url) => url.length > 0);
   }
 
-  setZlibraryUrls(urls) {
+  setUrlListUrls(container, urls) {
     const uniqueUrls = [...new Set(urls)];
+    const field = this.urlListField(container);
 
-    this.zlibraryUrlFieldTarget.value = uniqueUrls.join("\n");
-    this.zlibraryUrlFieldTarget.dispatchEvent(new Event("change", { bubbles: true }));
-    this.renderZlibraryUrlPills(uniqueUrls);
+    field.value = uniqueUrls.join("\n");
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    this.renderUrlListPills(container, uniqueUrls);
   }
 
-  renderZlibraryUrlPills(urls) {
-    if (!this.hasZlibraryUrlListTarget) return;
+  renderUrlListPills(container, urls) {
+    const list = this.urlListList(container);
+    if (!list) return;
 
-    this.zlibraryUrlListTarget.replaceChildren(...urls.map((url) => this.buildZlibraryUrlPill(url)));
+    list.replaceChildren(...urls.map((url) => this.buildUrlListPill(url)));
   }
 
-  buildZlibraryUrlPill(url) {
+  buildUrlListPill(url) {
     const pill = document.createElement("span");
     pill.className = "inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-800 px-3 py-1 text-sm text-gray-200";
-    pill.dataset.zlibraryUrl = url;
+    pill.dataset.urlListValue = url;
 
     const label = document.createElement("span");
     label.className = "break-all";
@@ -178,8 +199,8 @@ export default class extends Controller {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "rounded-full p-1 text-gray-400 transition hover:bg-gray-700 hover:text-white";
-    button.dataset.action = "click->settings-form#removeZlibraryUrl";
-    button.dataset.zlibraryUrl = url;
+    button.dataset.action = "click->settings-form#removeUrl";
+    button.dataset.urlListValue = url;
     button.setAttribute("aria-label", `Remove ${url}`);
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -201,7 +222,7 @@ export default class extends Controller {
     return pill;
   }
 
-  normalizeZlibraryUrl(value) {
+  normalizeUrl(value) {
     const rawValue = value.trim();
     if (rawValue.length === 0) {
       return { valid: false, error: "Enter a URL before adding it." };
@@ -225,17 +246,19 @@ export default class extends Controller {
     }
   }
 
-  showZlibraryUrlError(message) {
-    if (!this.hasZlibraryUrlErrorTarget) return;
+  showUrlListError(container, message) {
+    const error = this.urlListError(container);
+    if (!error) return;
 
-    this.zlibraryUrlErrorTarget.textContent = message;
-    this.zlibraryUrlErrorTarget.classList.remove("hidden");
+    error.textContent = message;
+    error.classList.remove("hidden");
   }
 
-  hideZlibraryUrlError() {
-    if (!this.hasZlibraryUrlErrorTarget) return;
+  hideUrlListError(container) {
+    const error = this.urlListError(container);
+    if (!error) return;
 
-    this.zlibraryUrlErrorTarget.textContent = "";
-    this.zlibraryUrlErrorTarget.classList.add("hidden");
+    error.textContent = "";
+    error.classList.add("hidden");
   }
 }

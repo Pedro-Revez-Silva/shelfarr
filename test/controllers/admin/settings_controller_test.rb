@@ -265,12 +265,21 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "label", text: "Zlibrary Enabled"
     assert_select "input[name='settings[zlibrary_enabled]']"
     assert_select "input[type='hidden'][name='settings[zlibrary_url]']"
-    assert_select "[data-settings-form-target='zlibraryUrlList']"
-    assert_select "input[type='url'][data-settings-form-target='zlibraryUrlInput']"
+    assert_select "[data-url-list] [data-url-list-list]"
+    assert_select "input[type='url'][data-url-list-input]"
     assert_select "button[aria-label='Add Z-Library URL']"
     assert_select "input[name='settings[zlibrary_email]']"
     assert_select "input[name='settings[zlibrary_password]']"
     assert_select "a", text: "Test Z-Library Connection"
+  end
+
+  test "index shows Anna's Archive URL list setting" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Anna Archive Url"
+    assert_select "input[type='hidden'][name='settings[anna_archive_url]']"
+    assert_select "button[aria-label=\"Add Anna's Archive URL\"]"
   end
 
   test "bulk_update validates path templates" do

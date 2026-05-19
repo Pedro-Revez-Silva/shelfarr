@@ -228,7 +228,7 @@ class SearchJob < ApplicationJob
       sr.leechers = nil
       sr.download_url = nil  # Will be fetched via API when downloading
       sr.magnet_url = nil
-      sr.info_url = "#{SettingsService.get(:anna_archive_url)}/md5/#{result.md5}"
+      sr.info_url = AnnaArchiveClient.info_url(result.md5)
       sr.published_at = nil
       sr.source = SearchResult::SOURCE_ANNA_ARCHIVE
       sr.detected_language = result.language

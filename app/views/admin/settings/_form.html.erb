@@ -110,26 +110,29 @@
                           <%= form.select "settings[#{key}]", options_for_select([["User", "user"], ["Admin", "admin"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% elsif key.to_s == "telegram_update_mode" %>
                           <%= form.select "settings[#{key}]", options_for_select([["Polling", "polling"], ["Webhook", "webhook"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
-                        <% elsif key.to_s == "zlibrary_url" %>
-                          <% zlibrary_urls = data[:value].to_s.split(/[,\s]+/).map(&:strip).reject(&:blank?).uniq %>
-                          <div class="space-y-3">
+                        <% elsif %w[anna_archive_url zlibrary_url].include?(key.to_s) %>
+                          <% url_list_urls = data[:value].to_s.split(/[,\s]+/).map(&:strip).reject(&:blank?).uniq %>
+                          <% url_list_name = key.to_s == "zlibrary_url" ? "Z-Library" : "Anna's Archive" %>
+                          <% url_list_placeholder = key.to_s == "zlibrary_url" ? "https://z-library.example" : "https://annas-archive.example" %>
+                          <div class="space-y-3"
+                               data-url-list
+                               data-url-list-label="<%= url_list_name %>">
                             <%= form.hidden_field "settings[#{key}]",
-                                value: zlibrary_urls.join("\n"),
+                                value: url_list_urls.join("\n"),
                                 id: "settings_#{key}",
                                 data: {
-                                  settings_form_target: "zlibraryUrlField",
+                                  url_list_field: true,
                                   action: "change->settings-form#autoSave"
                                 } %>
-                            <div class="flex flex-wrap gap-2"
-                                 data-settings-form-target="zlibraryUrlList">
-                              <% zlibrary_urls.each do |url| %>
+                            <div class="flex flex-wrap gap-2" data-url-list-list>
+                              <% url_list_urls.each do |url| %>
                                 <span class="inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-800 px-3 py-1 text-sm text-gray-200"
-                                      data-zlibrary-url="<%= url %>">
+                                      data-url-list-value="<%= url %>">
                                   <span class="break-all"><%= url %></span>
                                   <button type="button"
                                           class="rounded-full p-1 text-gray-400 transition hover:bg-gray-700 hover:text-white"
-                                          data-action="click->settings-form#removeZlibraryUrl"
-                                          data-zlibrary-url="<%= url %>"
+                                          data-action="click->settings-form#removeUrl"
+                                          data-url-list-value="<%= url %>"
                                           aria-label="Remove <%= url %>">
                                     <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -140,20 +143,20 @@
                             </div>
                             <div class="flex flex-col gap-2 sm:flex-row">
                               <input type="url"
-                                     placeholder="https://z-library.example"
+                                     placeholder="<%= url_list_placeholder %>"
                                      class="min-w-0 flex-grow rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                     data-settings-form-target="zlibraryUrlInput"
-                                     data-action="keydown->settings-form#handleZlibraryUrlKeydown">
+                                     data-url-list-input
+                                     data-action="keydown->settings-form#handleUrlKeydown">
                               <button type="button"
                                       class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-blue-600 text-white transition hover:bg-blue-500"
-                                      data-action="click->settings-form#addZlibraryUrl"
-                                      aria-label="Add Z-Library URL">
+                                      data-action="click->settings-form#addUrl"
+                                      aria-label="Add <%= url_list_name %> URL">
                                 <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14M5 12h14" />
                                 </svg>
                               </button>
                             </div>
-                            <p class="hidden text-xs text-red-400" data-settings-form-target="zlibraryUrlError"></p>
+                            <p class="hidden text-xs text-red-400" data-url-list-error></p>
                           </div>
                         <% elsif key.to_s.include?("password") || key.to_s.include?("api_key") || key.to_s.include?("token") || key.to_s.include?("secret") %>
                           <%= form.password_field "settings[#{key}]", value: data[:value], placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
