@@ -18,6 +18,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     get search_path
     assert_response :success
     assert_select "input[type='text']"
+    assert_select "[data-controller='search'][data-search-debounce-value='700']"
   end
 
   test "results returns search results" do
@@ -63,7 +64,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       first_publish_year: 1937
     )
 
-    MetadataService.stub(:search, [metadata_result]) do
+    MetadataService.stub(:search, [ metadata_result ]) do
       get search_results_path, params: { q: "hobbit" }
     end
 
@@ -93,7 +94,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       first_publish_year: 1949
     )
 
-    MetadataService.stub(:search, [metadata_result]) do
+    MetadataService.stub(:search, [ metadata_result ]) do
       get search_results_path, params: { q: "1984" }
     end
 
@@ -120,7 +121,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       first_publish_year: 1937
     )
 
-    MetadataService.stub(:search, [metadata_result]) do
+    MetadataService.stub(:search, [ metadata_result ]) do
       get search_results_path, params: { q: "hobbit" }
     end
 

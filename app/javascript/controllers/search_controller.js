@@ -6,17 +6,20 @@ export default class extends Controller {
   static targets = ["input", "results", "spinner"]
   static values = {
     url: String,
-    debounce: { type: Number, default: 300 }
+    debounce: { type: Number, default: 700 }
   }
 
   connect() {
     this.timeout = null
+    this.currentAbortController = null
+    this.requestSequence = 0
   }
 
   disconnect() {
     if (this.timeout) {
       clearTimeout(this.timeout)
     }
+    this.abortCurrentRequest()
   }
 
   search() {
@@ -26,6 +29,7 @@ export default class extends Controller {
     if (this.timeout) {
       clearTimeout(this.timeout)
     }
+    this.abortCurrentRequest()
 
     // If query is empty, clear results
     if (query.length === 0) {
@@ -36,13 +40,10 @@ export default class extends Controller {
 
     // Don't search for very short queries
     if (query.length < 2) {
+      this.hideSpinner()
       return
     }
 
-    // Show spinner
-    this.showSpinner()
-
-    // Debounce the search
     this.timeout = setTimeout(() => {
       this.performSearch(query)
     }, this.debounceValue)
@@ -50,22 +51,42 @@ export default class extends Controller {
 
   async performSearch(query) {
     const url = `${this.urlValue}?q=${encodeURIComponent(query)}`
+    const requestId = ++this.requestSequence
+    const abortController = new AbortController()
+
+    this.currentAbortController = abortController
+    this.showSpinner()
 
     try {
       const response = await fetch(url, {
+        signal: abortController.signal,
         headers: {
           "Accept": "text/vnd.turbo-stream.html"
         }
       })
 
-      if (response.ok) {
+      if (response.ok && requestId === this.requestSequence && this.inputTarget.value.trim() === query) {
         const html = await response.text()
         Turbo.renderStreamMessage(html)
       }
     } catch (error) {
+      if (error.name === "AbortError") {
+        return
+      }
+
       console.error("Search failed:", error)
     } finally {
-      this.hideSpinner()
+      if (this.currentAbortController === abortController) {
+        this.currentAbortController = null
+        this.hideSpinner()
+      }
+    }
+  }
+
+  abortCurrentRequest() {
+    if (this.currentAbortController) {
+      this.currentAbortController.abort()
+      this.currentAbortController = null
     }
   }
 
