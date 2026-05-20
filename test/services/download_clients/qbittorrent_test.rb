@@ -82,6 +82,74 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent accepts whitespace-padded success response" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.\n")
+
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "name" => "Test", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+
+      assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
+    end
+  end
+
+  test "add_torrent returns torrent id from qBittorrent JSON success response" do
+    VCR.turned_off do
+      info_dict = {
+        "name" => "JSON Response Book.epub",
+        "piece length" => 16384,
+        "pieces" => "j" * 20,
+        "length" => 512
+      }
+      torrent_data = { "info" => info_dict }.bencode
+      expected_hash = Digest::SHA1.hexdigest(info_dict.bencode).downcase
+
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, "http://prowlarr:9696/api/v1/indexer/download/456")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/x-bittorrent" },
+          body: torrent_data
+        )
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "success_count" => 1,
+            "failure_count" => 0,
+            "pending_count" => 0,
+            "added_torrent_ids" => [ expected_hash ]
+          }.to_json
+        )
+
+      result = @client.add_torrent("http://prowlarr:9696/api/v1/indexer/download/456")
+
+      assert_equal expected_hash, result
+    end
+  end
+
   test "add_torrent falls back to polling when torrent file cannot be downloaded" do
     VCR.turned_off do
       # Stub authentication

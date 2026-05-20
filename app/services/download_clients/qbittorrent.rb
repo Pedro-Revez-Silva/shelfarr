@@ -36,8 +36,10 @@ module DownloadClients
 
       case response.status
       when 200
-        # qBittorrent returns "Ok." on success or empty body
-        return nil unless response.body == "Ok." || response.body.blank?
+        success_response = parse_add_torrent_success_response(response.body)
+        return nil unless success_response
+
+        return success_response[:torrent_id] if success_response[:torrent_id].present?
 
         # Return pre-computed hash if available (eliminates race condition)
         if precomputed_hash.present?
@@ -411,6 +413,34 @@ module DownloadClients
       payload.merge!(build_add_torrent_params(options: options))
 
       upload_conn.post("api/v2/torrents/add", payload)
+    end
+
+    def parse_add_torrent_success_response(body)
+      # qBittorrent < 5 returned "Ok." or an empty body. Newer versions return JSON
+      # with added_torrent_ids, which is the most reliable external ID source.
+      return {} if body.blank?
+      return {} if body.is_a?(String) && body.strip == "Ok."
+
+      data = parse_json_response_body(body)
+      return nil unless data.is_a?(Hash)
+
+      torrent_id = Array(data["added_torrent_ids"]).first.presence
+      success_count = data["success_count"].to_i
+      pending_count = data["pending_count"].to_i
+
+      return { torrent_id: torrent_id } if torrent_id.present?
+      return {} if success_count.positive? || pending_count.positive?
+
+      nil
+    end
+
+    def parse_json_response_body(body)
+      return body if body.is_a?(Hash)
+      return nil unless body.is_a?(String)
+
+      JSON.parse(body)
+    rescue JSON::ParserError
+      nil
     end
 
     # Fetch torrent hashes as a Set, optionally filtered by category
