@@ -10,6 +10,7 @@ module OutboundNotifications
     USERNAME = "Shelfarr"
 
     MAX_CONTENT_LENGTH = 2_000
+    MAX_EMBED_TOTAL_LENGTH = 6_000
     MAX_EMBED_TITLE_LENGTH = 256
     MAX_EMBED_DESCRIPTION_LENGTH = 4_096
     MAX_FIELD_NAME_LENGTH = 256
@@ -130,6 +131,31 @@ module OutboundNotifications
         }
 
         embed.delete(:fields) if embed[:fields].empty?
+        enforce_embed_total_limit(embed)
+      end
+
+      def enforce_embed_total_limit(embed)
+        fields = embed[:fields] || []
+        fixed_length = embed[:title].to_s.length +
+          embed[:description].to_s.length +
+          embed.dig(:footer, :text).to_s.length +
+          fields.sum { |field| field[:name].to_s.length }
+        remaining = MAX_EMBED_TOTAL_LENGTH - fixed_length
+
+        if remaining <= 0
+          embed.delete(:fields)
+          embed[:description] = truncate(embed[:description], MAX_EMBED_TOTAL_LENGTH - embed[:title].to_s.length - embed.dig(:footer, :text).to_s.length)
+          return embed
+        end
+
+        embed[:fields] = fields.filter_map do |field|
+          next if remaining <= 0
+
+          value = truncate(field[:value], remaining)
+          remaining -= value.length
+          field.merge(value: value)
+        end
+        embed.delete(:fields) if embed[:fields].empty?
         embed
       end
 
@@ -170,7 +196,12 @@ module OutboundNotifications
       end
 
       def truncate(value, limit)
-        value.to_s.truncate(limit)
+        text = value.to_s
+        return "" if limit <= 0
+        return text if text.length <= limit
+        return text[0, limit] if limit <= 3
+
+        text.truncate(limit)
       end
 
       def response_error_message(response)

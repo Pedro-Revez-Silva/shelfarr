@@ -75,6 +75,33 @@ class OutboundNotifications::DiscordDeliveryTest < ActiveSupport::TestCase
     assert_includes error.message, "Cannot send an empty message"
   end
 
+  test "deliver! keeps Discord embed under aggregate character limit" do
+    long_text = "x" * 10_000
+    @request.book.update!(title: long_text, author: long_text)
+    @request.user.update!(username: long_text)
+
+    stub = stub_request(:post, "https://discord.com/api/webhooks/123/token?wait=true")
+      .with do |request|
+        embed = JSON.parse(request.body)["embeds"].first
+        total = embed["title"].to_s.length +
+          embed["description"].to_s.length +
+          embed.dig("footer", "text").to_s.length +
+          embed.fetch("fields", []).sum { |field| field["name"].to_s.length + field["value"].to_s.length }
+
+        total <= 6_000
+      end
+      .to_return(status: 200, body: { id: "message-id" }.to_json, headers: { "Content-Type" => "application/json" })
+
+    OutboundNotifications::DiscordDelivery.deliver!(
+      event: "request_completed",
+      title: long_text,
+      message: long_text,
+      request: @request
+    )
+
+    assert_requested(stub)
+  end
+
   test "deliver! reports Discord rate limits" do
     stub_request(:post, "https://discord.com/api/webhooks/123/token?wait=true")
       .to_return(status: 429, body: { message: "You are being rate limited.", retry_after: 1.5 }.to_json, headers: { "Content-Type" => "application/json" })
