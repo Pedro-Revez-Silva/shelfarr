@@ -38,6 +38,21 @@ class NotificationServiceTest < ActiveSupport::TestCase
     assert_equal @request.id, args[:request_id]
   end
 
+  test "request_completed enqueues Discord delivery when configured" do
+    SettingsService.set(:discord_enabled, true)
+    SettingsService.set(:discord_webhook_url, "https://discord.com/api/webhooks/123/token")
+    SettingsService.set(:discord_events, "request_completed")
+
+    assert_enqueued_with(job: DiscordNotificationDeliveryJob) do
+      NotificationService.request_completed(@request)
+    end
+
+    enqueued = enqueued_jobs.find { |job| job[:job] == DiscordNotificationDeliveryJob }
+    args = enqueued[:args].first.with_indifferent_access
+    assert_equal "request_completed", args[:event]
+    assert_equal @request.id, args[:request_id]
+  end
+
   test "request_failed creates notification" do
     assert_difference "Notification.count", 1 do
       NotificationService.request_failed(@request)

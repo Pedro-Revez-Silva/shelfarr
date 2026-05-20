@@ -124,6 +124,11 @@ class SettingsService
     webhook_events: { type: "string", default: "request_created,request_completed,request_failed,request_attention", category: "webhook", description: "Comma-separated webhook events to send" },
     webhook_topic: { type: "string", default: "", category: "webhook", description: "Optional topic field included in webhook JSON payload (required by ntfy when posting to the server base URL)" },
 
+    # Discord Notifications
+    discord_enabled: { type: "boolean", default: false, category: "discord", description: "Send native Discord webhook notifications for request lifecycle events" },
+    discord_webhook_url: { type: "string", default: "", category: "discord", description: "Incoming Discord webhook URL for the channel that should receive notifications" },
+    discord_events: { type: "string", default: "request_created,request_completed,request_failed,request_attention", category: "discord", description: "Comma-separated Discord notification events to send" },
+
     # Telegram Bot
     telegram_enabled: { type: "boolean", default: false, category: "telegram", description: "Enable the Telegram command integration" },
     telegram_update_mode: { type: "string", default: "polling", category: "telegram", description: "How Shelfarr receives Telegram updates. Polling works for local installs; webhook is optional for public HTTPS deployments." },
@@ -164,6 +169,7 @@ class SettingsService
     "updates" => "Updates",
     "security" => "Security",
     "webhook" => "Webhook Notifications",
+    "discord" => "Discord Notifications",
     "telegram" => "Telegram Bot",
     "oidc" => "OIDC/SSO Authentication"
   }.freeze

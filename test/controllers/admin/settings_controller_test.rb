@@ -258,6 +258,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a", text: "Send Test Webhook"
   end
 
+  test "index shows Discord notification settings" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Discord Enabled"
+    assert_select "input[name='settings[discord_enabled]']"
+    assert_select "input[type='password'][name='settings[discord_webhook_url]']"
+    assert_select "input[name='settings[discord_events]']"
+    assert_select "a", text: "Send Test Discord"
+  end
+
   test "index shows z-library settings and test button" do
     get admin_settings_url
 
@@ -475,6 +486,47 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:webhook_url, "ht!tp://bad")
 
     post test_webhook_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /invalid/i, flash[:alert]
+  end
+
+  test "test_discord fails when disabled" do
+    SettingsService.set(:discord_enabled, false)
+    SettingsService.set(:discord_webhook_url, "https://discord.com/api/webhooks/123/token")
+
+    post test_discord_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not enabled/i, flash[:alert]
+  end
+
+  test "test_discord succeeds when Discord accepts payload" do
+    SettingsService.set(:discord_enabled, true)
+    SettingsService.set(:discord_webhook_url, "https://discord.com/api/webhooks/123/token")
+
+    VCR.turned_off do
+      stub_request(:post, "https://discord.com/api/webhooks/123/token?wait=true")
+        .with do |request|
+          json = JSON.parse(request.body)
+          json["username"] == "Shelfarr" &&
+            json["allowed_mentions"] == { "parse" => [] } &&
+            json["embeds"].first["title"] == "Shelfarr Test"
+        end
+        .to_return(status: 200, body: { id: "message-id" }.to_json, headers: { "Content-Type" => "application/json" })
+
+      post test_discord_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match /successfully/i, flash[:notice]
+    end
+  end
+
+  test "test_discord handles invalid webhook URL" do
+    SettingsService.set(:discord_enabled, true)
+    SettingsService.set(:discord_webhook_url, "ht!tp://bad")
+
+    post test_discord_admin_settings_url
 
     assert_redirected_to admin_settings_path
     assert_match /invalid/i, flash[:alert]
