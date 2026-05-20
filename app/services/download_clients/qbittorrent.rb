@@ -35,7 +35,7 @@ module DownloadClients
       end
 
       case response.status
-      when 200
+      when 200, 202
         success_response = parse_add_torrent_success_response(response.body)
         return nil unless success_response
 

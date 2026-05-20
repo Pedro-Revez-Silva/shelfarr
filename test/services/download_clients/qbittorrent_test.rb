@@ -150,6 +150,42 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent accepts qBittorrent async JSON success response" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, "http://example.com/file.torrent")
+        .to_timeout
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(
+          status: 202,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "success_count" => 0,
+            "failure_count" => 0,
+            "pending_count" => 1,
+            "added_torrent_ids" => []
+          }.to_json
+        )
+
+      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+        .to_return(
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "async123" } ].to_json }
+        )
+
+      result = @client.add_torrent("http://example.com/file.torrent")
+
+      assert_equal "async123", result
+    end
+  end
+
   test "add_torrent falls back to polling when torrent file cannot be downloaded" do
     VCR.turned_off do
       # Stub authentication
