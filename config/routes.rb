@@ -111,6 +111,7 @@ Rails.application.routes.draw do
         post :test_hardcover
         post :test_oidc
         post :test_webhook
+        post :test_discord
         post :test_telegram
         post :setup_telegram_webhook
         post :approve_telegram_chat

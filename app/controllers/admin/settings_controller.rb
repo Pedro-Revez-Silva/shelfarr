@@ -239,6 +239,20 @@ module Admin
       respond_with_flash(alert: e.message)
     end
 
+    def test_discord
+      OutboundNotifications::DiscordDelivery.deliver!(
+        event: OutboundNotifications::DiscordDelivery::TEST_EVENT,
+        title: "Shelfarr Test",
+        message: "Test notification from Shelfarr"
+      )
+
+      respond_with_flash(notice: "Discord test sent successfully!")
+    rescue OutboundNotifications::DiscordDelivery::ConfigurationError => e
+      respond_with_flash(alert: e.message)
+    rescue OutboundNotifications::DiscordDelivery::DeliveryError => e
+      respond_with_flash(alert: e.message)
+    end
+
     def test_telegram
       unless Integrations::Telegram::Configuration.configured?
         respond_with_flash(alert: "Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
