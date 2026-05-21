@@ -2,6 +2,18 @@
     multipart: true,
     class: "space-y-6",
     data: { controller: "upload-form" } do |f| %>
+  <% request_context ||= nil %>
+
+  <% if request_context %>
+    <%= hidden_field_tag :request_id, request_context.id %>
+    <div class="rounded-lg border border-blue-500/20 bg-blue-500/10 p-4">
+      <h2 class="text-sm font-medium text-blue-300">Fulfill Request</h2>
+      <p class="mt-1 text-sm text-blue-100/80">
+        This upload will fulfill <strong><%= request_context.book.display_name %></strong>
+        as a <%= request_context.book.book_type %> request after processing succeeds.
+      </p>
+    </div>
+  <% end %>
 
   <div class="border-2 border-dashed border-gray-700 rounded-lg p-8 text-center bg-gray-900"
        data-upload-form-target="dropzone"

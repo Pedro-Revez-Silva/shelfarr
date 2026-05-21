@@ -2,6 +2,7 @@
 
 class UploadsController < ApplicationController
   before_action :require_upload_access, only: [ :new, :create ]
+  before_action :set_request_context, only: [ :new, :create ]
   before_action :set_upload, only: [ :show ]
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
 
@@ -13,16 +14,16 @@ class UploadsController < ApplicationController
   end
 
   def new
-    @upload = Upload.new
+    @upload = Upload.new(request: @request)
   end
 
   def create
-    result = UploadCreator.call(user: Current.user, uploaded_file: params[:file])
+    result = UploadCreator.call(user: Current.user, uploaded_file: params[:file], request: @request)
 
     if result.success?
-      redirect_to uploads_path, notice: result.notice
+      redirect_to upload_success_location, notice: result.notice
     else
-      redirect_to new_upload_path, alert: result.alert
+      redirect_to upload_failure_location, alert: result.alert
     end
   end
 
@@ -39,6 +40,26 @@ class UploadsController < ApplicationController
 
   def set_upload
     @upload = policy_scope(Upload).find(params[:id])
+  end
+
+  def set_request_context
+    return if params[:request_id].blank?
+
+    @request = Request.includes(:book).find(params[:request_id])
+    unless Current.user.admin? || @request.user == Current.user
+      redirect_to uploads_path, alert: "You cannot upload files for this request."
+      return
+    end
+
+    redirect_to @request, alert: "This request is already completed." if @request.completed?
+  end
+
+  def upload_success_location
+    @request || uploads_path
+  end
+
+  def upload_failure_location
+    @request ? new_upload_path(request_id: @request.id) : new_upload_path
   end
 
   def record_not_found

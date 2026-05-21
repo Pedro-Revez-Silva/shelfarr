@@ -36,6 +36,27 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "new shows request upload context" do
+    request = requests(:pending_request)
+
+    get new_admin_upload_url(request_id: request.id)
+
+    assert_response :success
+    assert_select "input[name='request_id'][value='#{request.id}']"
+    assert_select "h2", "Fulfill Request"
+    assert_select "p", text: /#{request.book.display_name}/
+  end
+
+  test "new redirects away from completed request upload context" do
+    request = requests(:pending_request)
+    request.complete!
+
+    get new_admin_upload_url(request_id: request.id)
+
+    assert_redirected_to request_path(request)
+    assert_equal "This request is already completed.", flash[:alert]
+  end
+
   test "create with valid file starts processing" do
     file = fixture_file_upload("test_audiobook.m4b", "audio/mp4")
 
@@ -47,6 +68,33 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_uploads_path
     assert_equal "File uploaded successfully. Processing started.", flash[:notice]
+  end
+
+  test "create with request links upload and redirects to request" do
+    request = requests(:pending_request)
+    file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+
+    assert_difference "Upload.count", 1 do
+      assert_enqueued_with(job: UploadProcessingJob) do
+        post admin_uploads_url, params: { file: file, request_id: request.id }
+      end
+    end
+
+    upload = Upload.order(:created_at).last
+    assert_equal request, upload.request
+    assert_redirected_to request_path(request)
+  end
+
+  test "create with request rejects mismatched file type" do
+    request = requests(:pending_request)
+    file = fixture_file_upload("test_audiobook.m4b", "audio/mp4")
+
+    assert_no_difference "Upload.count" do
+      post admin_uploads_url, params: { file: file, request_id: request.id }
+    end
+
+    assert_redirected_to new_admin_upload_path(request_id: request.id)
+    assert_includes flash[:alert], "does not match"
   end
 
   test "create with m4a audiobook starts processing" do

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_09_101000) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_21_120000) do
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -312,12 +312,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_09_101000) do
     t.string "parsed_author"
     t.string "parsed_title"
     t.datetime "processed_at"
+    t.integer "request_id"
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false
     t.integer "user_id", null: false
     t.index ["book_id"], name: "index_uploads_on_book_id"
     t.index ["book_type"], name: "index_uploads_on_book_type"
     t.index ["processed_at"], name: "index_uploads_on_processed_at"
+    t.index ["request_id"], name: "index_uploads_on_request_id"
     t.index ["status"], name: "index_uploads_on_status"
     t.index ["user_id"], name: "index_uploads_on_user_id"
   end
@@ -364,5 +366,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_09_101000) do
   add_foreign_key "sessions", "users"
   add_foreign_key "telegram_chat_authorizations", "users", column: "approved_by_id"
   add_foreign_key "uploads", "books"
+  add_foreign_key "uploads", "requests"
   add_foreign_key "uploads", "users"
 end

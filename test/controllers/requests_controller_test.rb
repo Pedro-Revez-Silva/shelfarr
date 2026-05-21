@@ -129,6 +129,45 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "turbo-cable-stream-source[channel='Turbo::StreamsChannel']", 1
   end
 
+  test "show links admins to upload a file for an open request" do
+    sign_out
+    sign_in_as(@admin)
+
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_select "a[href='#{new_admin_upload_path(request_id: @pending_request.id)}']", text: "Upload File"
+  end
+
+  test "show links regular users to request upload when uploads are enabled" do
+    SettingsService.set(:allow_user_uploads, true)
+
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_select "a[href='#{new_upload_path(request_id: @pending_request.id)}']", text: "Upload File"
+  end
+
+  test "show hides request upload link from regular users when uploads are disabled" do
+    SettingsService.set(:allow_user_uploads, false)
+
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_select "a[href='#{new_upload_path(request_id: @pending_request.id)}']", count: 0
+  end
+
+  test "show hides request upload link for completed requests" do
+    @pending_request.complete!
+    sign_out
+    sign_in_as(@admin)
+
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_select "a[href='#{new_admin_upload_path(request_id: @pending_request.id)}']", count: 0
+  end
+
   test "show keeps search results hidden from regular users" do
     @pending_request.update!(status: :searching)
 
@@ -503,6 +542,24 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_redirected_to requests_path
+  end
+
+  test "destroy removes linked uploads" do
+    upload = Upload.create!(
+      user: @user,
+      request: @pending_request,
+      original_filename: "manual.epub",
+      file_path: "/tmp/manual.epub",
+      status: :pending
+    )
+
+    assert_difference "Request.count", -1 do
+      assert_difference "Upload.count", -1 do
+        delete request_path(@pending_request)
+      end
+    end
+
+    assert_not Upload.exists?(upload.id)
   end
 
   test "destroy does not clean up book with file" do

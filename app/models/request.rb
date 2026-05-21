@@ -6,6 +6,7 @@ class Request < ApplicationRecord
   has_many :request_events, dependent: :destroy
   has_many :downloads, dependent: :destroy
   has_many :search_results, dependent: :destroy
+  has_many :uploads, dependent: :destroy
 
   SHOW_PAGE_BROADCAST_ATTRIBUTES = %w[
     attention_needed

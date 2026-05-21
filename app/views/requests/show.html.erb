@@ -260,6 +260,12 @@
               class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
         <% end %>
 
+        <% if allowed_to?(:new?, Upload) && !@request.completed? %>
+          <% request_upload_path = Current.user.admin? ? new_admin_upload_path(request_id: @request.id) : new_upload_path(request_id: @request.id) %>
+          <%= link_to "Upload File", request_upload_path,
+              class: "px-4 py-2 bg-green-600 hover:bg-green-500 text-white font-medium rounded-lg transition" %>
+        <% end %>
+
         <% if @request.can_be_cancelled? %>
           <button type="button"
                   class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition"

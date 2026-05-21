@@ -119,6 +119,88 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "targeted upload completes the existing request" do
+    request = requests(:pending_request)
+    ebook_file = File.join(@temp_source, "Archived Ebook.epub")
+    File.write(ebook_file, "test ebook content")
+    download = request.downloads.create!(name: "Previous download", status: :queued)
+    paused_download = request.downloads.create!(name: "Paused download", status: :paused)
+
+    upload = Upload.create!(
+      user: @user,
+      request: request,
+      original_filename: "Archived Ebook.epub",
+      file_path: ebook_file,
+      file_size: 100,
+      status: :pending
+    )
+
+    assert_no_difference "Book.count" do
+      UploadProcessingJob.perform_now(upload.id)
+    end
+
+    upload.reload
+    request.reload
+
+    assert upload.completed?
+    assert_equal request.book, upload.book
+    assert request.completed?
+    assert request.completed_at.present?
+    assert_not request.attention_needed?
+    assert download.reload.failed?
+    assert paused_download.reload.failed?
+    assert_equal File.join(@temp_ebook_dest, request.book.author, request.book.title), request.book.file_path
+    assert request.request_events.exists?(event_type: "upload_fulfilled")
+  end
+
+  test "targeted upload fails if request completed before processing" do
+    request = requests(:pending_request)
+    ebook_file = File.join(@temp_source, "Late Ebook.epub")
+    File.write(ebook_file, "test ebook content")
+    upload = Upload.create!(
+      user: @user,
+      request: request,
+      original_filename: "Late Ebook.epub",
+      file_path: ebook_file,
+      file_size: 100,
+      status: :pending
+    )
+    request.complete!
+
+    UploadProcessingJob.perform_now(upload.id)
+
+    upload.reload
+    assert upload.failed?
+    assert_equal "Request is already completed", upload.error_message
+    assert_nil upload.book
+    assert_nil request.book.reload.file_path
+    assert File.exist?(ebook_file)
+  end
+
+  test "targeted upload fails if request is already being completed" do
+    request = requests(:pending_request)
+    ebook_file = File.join(@temp_source, "Already Processing.epub")
+    File.write(ebook_file, "test ebook content")
+    upload = Upload.create!(
+      user: @user,
+      request: request,
+      original_filename: "Already Processing.epub",
+      file_path: ebook_file,
+      file_size: 100,
+      status: :pending
+    )
+    request.update!(status: :processing)
+
+    UploadProcessingJob.perform_now(upload.id)
+
+    upload.reload
+    assert upload.failed?
+    assert_equal "Request is already being completed", upload.error_message
+    assert_nil upload.book
+    assert_nil request.book.reload.file_path
+    assert File.exist?(ebook_file)
+  end
+
   test "backfills existing matched book with metadata when needed" do
     original_source = SettingsService.get(:metadata_source)
     original_token = SettingsService.get(:hardcover_api_token)

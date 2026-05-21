@@ -16,8 +16,13 @@ class UploadProcessingJob < ApplicationJob
     Rails.logger.info "[UploadProcessingJob] Processing upload #{upload.id}: #{upload.original_filename}"
 
     upload.update!(status: :processing)
+    target_request = upload.request
+    target_request_original_status = nil
+    target_request_claimed = false
 
     begin
+      raise "Request is already completed" if target_request&.completed?
+
       # Step 1: Extract metadata from the actual file
       extracted = MetadataExtractorService.extract(upload.file_path)
 
@@ -39,12 +44,12 @@ class UploadProcessingJob < ApplicationJob
         match_confidence: extracted.present? ? 90 : parsed.confidence
       )
 
-      # Step 3: Determine book type from file extension
-      book_type = upload.infer_book_type
+      # Step 3: Determine book type from explicit request or file extension
+      book_type = target_request&.book&.book_type || upload.infer_book_type
       upload.update!(book_type: book_type)
 
       # Step 4: Search metadata sources for enrichment
-      metadata = fetch_metadata(title, author)
+      metadata = target_request ? nil : fetch_metadata(title, author)
 
       if metadata
         Rails.logger.info "[UploadProcessingJob] Found metadata from #{metadata.source}: '#{metadata.title}' by #{metadata.author}"
@@ -55,10 +60,17 @@ class UploadProcessingJob < ApplicationJob
       # Wrap critical operations in transaction for atomicity
       book = nil
       destination = nil
+      completed_request = nil
 
       ActiveRecord::Base.transaction do
+        if target_request
+          target_request_original_status = target_request.reload.status
+          claim_target_request!(target_request)
+          target_request_claimed = true
+        end
+
         # Step 5: Find or create book with metadata
-        book = find_or_create_book_with_metadata(
+        book = target_request&.book || find_or_create_book_with_metadata(
           metadata: metadata,
           extracted: extracted,
           parsed: parsed,
@@ -78,16 +90,20 @@ class UploadProcessingJob < ApplicationJob
           status: :completed,
           processed_at: Time.current
         )
+
+        completed_request = complete_target_request!(target_request, upload) if target_request
       end
 
       # Step 8: Trigger Audiobookshelf scan if configured (outside transaction)
       trigger_library_scan(book) if book && AudiobookshelfClient.configured?
+      NotificationService.request_completed(completed_request) if completed_request
 
       Rails.logger.info "[UploadProcessingJob] Completed processing upload #{upload.id}"
 
     rescue => e
       Rails.logger.error "[UploadProcessingJob] Failed for upload #{upload.id}: #{e.message}"
       Rails.logger.error e.backtrace.first(5).join("\n")
+      restore_target_request_status(target_request, target_request_original_status) if target_request_claimed
 
       upload.update!(
         status: :failed,
@@ -248,6 +264,49 @@ class UploadProcessingJob < ApplicationJob
       book.cover_url.blank? ||
       book.year.blank? ||
       book.description.blank?
+  end
+
+  def complete_target_request!(request, upload)
+    return if request.completed?
+
+    request.downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
+      request.cancel_download(download)
+    end
+    request.complete!
+    RequestEvent.record!(
+      request: request,
+      event_type: "upload_fulfilled",
+      source: "upload",
+      message: "Request fulfilled by manual upload",
+      details: { upload_id: upload.id }
+    )
+    request
+  end
+
+  def claim_target_request!(request)
+    claimable_statuses = Request.statuses.values_at("pending", "searching", "not_found", "downloading", "failed")
+    claimed = Request.where(id: request.id, status: claimable_statuses).update_all(
+      status: Request.statuses[:processing],
+      updated_at: Time.current
+    )
+    request.reload
+
+    return if claimed == 1
+
+    raise "Request is already completed" if request.completed?
+
+    raise "Request is already being completed"
+  end
+
+  def restore_target_request_status(request, original_status)
+    return if request.blank? || original_status.blank?
+
+    request.reload
+    return if request.completed? || !request.processing?
+
+    request.update!(status: original_status)
+  rescue => e
+    Rails.logger.warn "[UploadProcessingJob] Failed to restore request #{request.id} status after upload failure: #{e.message}"
   end
 
   def move_to_library(upload, book)
