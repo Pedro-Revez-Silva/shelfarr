@@ -122,6 +122,74 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type='file'][name='file'][accept='.m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3']"
   end
 
+  test "new shows own request upload context when uploads are enabled" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    request = requests(:pending_request)
+
+    get new_upload_url(request_id: request.id)
+
+    assert_response :success
+    assert_select "input[name='request_id'][value='#{request.id}']"
+    assert_select "h2", "Fulfill Request"
+  end
+
+  test "new rejects request upload context for another user's request" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    request = requests(:failed_request)
+    request.update!(user: @admin)
+
+    get new_upload_url(request_id: request.id)
+
+    assert_redirected_to uploads_path
+    assert_equal "You cannot upload files for this request.", flash[:alert]
+  end
+
+  test "new redirects away from completed request upload context" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    request = requests(:pending_request)
+    request.complete!
+
+    get new_upload_url(request_id: request.id)
+
+    assert_redirected_to request_path(request)
+    assert_equal "This request is already completed.", flash[:alert]
+  end
+
+  test "create with own request links upload and redirects to request" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    request = requests(:pending_request)
+    file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+
+    assert_difference "Upload.count", 1 do
+      assert_enqueued_with(job: UploadProcessingJob) do
+        post uploads_url, params: { file: file, request_id: request.id }
+      end
+    end
+
+    upload = Upload.order(:created_at).last
+    assert_equal request, upload.request
+    assert_redirected_to request_path(request)
+  end
+
+  test "create rejects another user's request upload context" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    request = requests(:failed_request)
+    request.update!(user: @admin)
+    file = fixture_file_upload("test_audiobook.m4b", "audio/mp4")
+
+    assert_no_difference "Upload.count" do
+      post uploads_url, params: { file: file, request_id: request.id }
+    end
+
+    assert_redirected_to uploads_path
+    assert_equal "You cannot upload files for this request.", flash[:alert]
+  end
+
   test "create accepts m4a audiobook uploads for regular users when enabled" do
     SettingsService.set(:allow_user_uploads, true)
     sign_in_as(@user)

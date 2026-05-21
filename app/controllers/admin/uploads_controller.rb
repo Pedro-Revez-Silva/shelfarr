@@ -2,6 +2,7 @@
 
 module Admin
   class UploadsController < BaseController
+    before_action :set_request_context, only: [:new, :create]
     before_action :set_upload, only: [:show, :destroy, :retry]
 
     def index
@@ -9,16 +10,16 @@ module Admin
     end
 
     def new
-      @upload = Upload.new
+      @upload = Upload.new(request: @request)
     end
 
     def create
-      result = UploadCreator.call(user: Current.user, uploaded_file: params[:file])
+      result = UploadCreator.call(user: Current.user, uploaded_file: params[:file], request: @request)
 
       if result.success?
-        redirect_to admin_uploads_path, notice: result.notice
+        redirect_to upload_success_location, notice: result.notice
       else
-        redirect_to new_admin_upload_path, alert: result.alert
+        redirect_to upload_failure_location, alert: result.alert
       end
     end
 
@@ -51,6 +52,21 @@ module Admin
 
     def set_upload
       @upload = Upload.find(params[:id])
+    end
+
+    def set_request_context
+      return if params[:request_id].blank?
+
+      @request = Request.includes(:book).find(params[:request_id])
+      redirect_to @request, alert: "This request is already completed." if @request.completed?
+    end
+
+    def upload_success_location
+      @request || admin_uploads_path
+    end
+
+    def upload_failure_location
+      @request ? new_admin_upload_path(request_id: @request.id) : new_admin_upload_path
     end
   end
 end

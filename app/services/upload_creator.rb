@@ -5,13 +5,14 @@ class UploadCreator
     end
   end
 
-  def self.call(user:, uploaded_file:)
-    new(user:, uploaded_file:).call
+  def self.call(user:, uploaded_file:, request: nil)
+    new(user:, uploaded_file:, request:).call
   end
 
-  def initialize(user:, uploaded_file:)
+  def initialize(user:, uploaded_file:, request: nil)
     @user = user
     @uploaded_file = uploaded_file
+    @request = request
   end
 
   def call
@@ -24,10 +25,15 @@ class UploadCreator
       )
     end
 
+    if request.present? && inferred_book_type(extension) != request.book.book_type
+      return Result.new(alert: "Uploaded file type does not match this #{request.book.book_type} request")
+    end
+
     temp_path = save_uploaded_file
 
     upload = Upload.new(
       user: user,
+      request: request,
       original_filename: uploaded_file.original_filename,
       file_path: temp_path,
       file_size: uploaded_file.size,
@@ -46,7 +52,11 @@ class UploadCreator
 
   private
 
-  attr_reader :user, :uploaded_file
+  attr_reader :user, :uploaded_file, :request
+
+  def inferred_book_type(extension)
+    Upload::AUDIOBOOK_EXTENSIONS.include?(extension) ? "audiobook" : "ebook"
+  end
 
   def save_uploaded_file
     upload_dir = Rails.root.join("tmp", "uploads")

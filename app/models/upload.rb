@@ -3,6 +3,7 @@
 class Upload < ApplicationRecord
   belongs_to :user
   belongs_to :book, optional: true
+  belongs_to :request, optional: true
 
   enum :status, {
     pending: 0,
@@ -20,6 +21,8 @@ class Upload < ApplicationRecord
 
   validates :original_filename, presence: true
   validates :status, presence: true
+
+  before_destroy :remove_unprocessed_file
 
   scope :recent, -> { order(created_at: :desc) }
   scope :pending_or_processing, -> { where(status: [:pending, :processing]) }
@@ -51,5 +54,14 @@ class Upload < ApplicationRecord
     when "completed" then "Completed"
     when "failed" then "Failed: #{error_message}"
     end
+  end
+
+  private
+
+  def remove_unprocessed_file
+    return if completed?
+    return if file_path.blank?
+
+    FileUtils.rm_f(file_path)
   end
 end
