@@ -33,7 +33,7 @@
       <div>
         <label class="cursor-pointer">
           <span class="text-blue-400 hover:text-blue-300 font-medium">
-            <%= bulk_upload ? "Choose files" : "Choose a file" %>
+            <%= bulk_upload ? "Choose files," : "Choose a file" %>
           </span>
           <input type="file"
                  name="<%= bulk_upload ? 'files[]' : 'file' %>"
@@ -44,9 +44,8 @@
                  accept=".m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3">
         </label>
         <% if bulk_upload %>
-          <span class="text-gray-500">, </span>
           <label class="cursor-pointer">
-            <span class="text-blue-400 hover:text-blue-300 font-medium">choose a folder</span>
+            <span class="text-blue-400 hover:text-blue-300 font-medium">a folder</span>
             <input type="file"
                    name="files[]"
                    class="hidden"
@@ -57,7 +56,7 @@
                    data-action="change->upload-form#folderSelected">
           </label>
         <% end %>
-        <span class="text-gray-500"> or drag and drop <%= bulk_upload ? "files/folders" : "a file" %></span>
+        <span class="text-gray-500"> or drag and drop <%= bulk_upload ? "files or folders" : "a file" %></span>
       </div>
 
       <p class="text-sm text-gray-500">
