@@ -8,6 +8,7 @@
 # 5. Renames file and moves to library location
 class UploadProcessingJob < ApplicationJob
   queue_as :default
+  limits_concurrency to: 1, key: "upload_processing"
 
   def perform(upload_id)
     upload = Upload.find_by(id: upload_id)

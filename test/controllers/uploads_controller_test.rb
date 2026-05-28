@@ -92,13 +92,29 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_difference "Upload.count", 1 do
       assert_enqueued_with(job: UploadProcessingJob) do
-        post uploads_url, params: { file: file }
+        post uploads_url, params: { file: [ file ] }
       end
     end
 
     assert_redirected_to uploads_path
     assert_equal "File uploaded successfully. Processing started.", flash[:notice]
     assert_equal @user, Upload.order(:created_at).last.user
+  end
+
+  test "create with multiple valid files starts processing for each" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    file1 = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+    file2 = fixture_file_upload("test_audiobook.m4b", "audio/mp4")
+
+    assert_difference "Upload.count", 2 do
+      assert_enqueued_jobs 2, only: UploadProcessingJob do
+        post uploads_url, params: { file: [ file1, file2 ] }
+      end
+    end
+
+    assert_redirected_to uploads_path
+    assert_equal "2 files uploaded successfully. Processing started.", flash[:notice]
   end
 
   test "new redirects regular users when uploads are disabled" do
@@ -119,7 +135,7 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "h1", "Upload Book"
     assert_select "form[action='#{uploads_path}']"
-    assert_select "input[type='file'][name='file'][accept='.m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3']"
+    assert_select "input[type='file'][name='file[]'][accept='.m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3']"
   end
 
   test "new shows own request upload context when uploads are enabled" do
@@ -166,7 +182,7 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_difference "Upload.count", 1 do
       assert_enqueued_with(job: UploadProcessingJob) do
-        post uploads_url, params: { file: file, request_id: request.id }
+        post uploads_url, params: { file: [ file ], request_id: request.id }
       end
     end
 
@@ -183,7 +199,7 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     file = fixture_file_upload("test_audiobook.m4b", "audio/mp4")
 
     assert_no_difference "Upload.count" do
-      post uploads_url, params: { file: file, request_id: request.id }
+      post uploads_url, params: { file: [ file ], request_id: request.id }
     end
 
     assert_redirected_to uploads_path
@@ -197,7 +213,7 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_difference "Upload.count", 1 do
       assert_enqueued_with(job: UploadProcessingJob) do
-        post uploads_url, params: { file: file }
+        post uploads_url, params: { file: [ file ] }
       end
     end
 
@@ -211,7 +227,7 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
 
     assert_no_difference "Upload.count" do
-      post uploads_url, params: { file: file }
+      post uploads_url, params: { file: [ file ] }
     end
 
     assert_redirected_to root_path

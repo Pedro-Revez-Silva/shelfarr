@@ -14,6 +14,8 @@ services:
       - /mnt/media/ebooks:/ebooks
       # SABnzbd completed downloads folder for post-processing
       - /mnt/media/Torrents/Completed:/downloads
+      # Directory for new books to be automatically processed
+      - ./watch:/watch
     environment:
       - RAILS_ENV=production
       - RAILS_MASTER_KEY=${RAILS_MASTER_KEY}

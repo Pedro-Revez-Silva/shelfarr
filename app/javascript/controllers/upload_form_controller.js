@@ -20,19 +20,20 @@ export default class extends Controller {
     const files = event.dataTransfer.files
     if (files.length > 0) {
       this.inputTarget.files = files
-      this.showFilename(files[0].name)
+      this.showFilenames(files)
     }
   }
 
   fileSelected(event) {
     const files = event.target.files
     if (files.length > 0) {
-      this.showFilename(files[0].name)
+      this.showFilenames(files)
     }
   }
 
-  showFilename(name) {
+  showFilenames(files) {
     this.filenameTarget.classList.remove("hidden")
-    this.filenameTarget.querySelector("span").textContent = name
+    const names = Array.from(files).map(f => f.name).join(", ")
+    this.filenameTarget.querySelector("span").textContent = names
   }
 }

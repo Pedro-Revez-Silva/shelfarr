@@ -23,6 +23,8 @@ services:
       - /path/to/ebooks:/ebooks
       # Download client completed folder (where downloads land before processing)
       - /path/to/downloads:/downloads
+      # Directory for new books to be automatically processed
+      - /path/to/watch:/watch
     environment:
       - SOLID_QUEUE_IN_PUMA=1
       # Optional: Set user/group ID to match the owner of your mounted volumes

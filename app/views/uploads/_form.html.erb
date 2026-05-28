@@ -29,10 +29,11 @@
 
       <div>
         <label class="cursor-pointer">
-          <span class="text-blue-400 hover:text-blue-300 font-medium">Choose a file</span>
+          <span class="text-blue-400 hover:text-blue-300 font-medium">Choose files</span>
           <input type="file"
-                 name="file"
+                 name="file[]"
                  class="hidden"
+                 multiple
                  data-upload-form-target="input"
                  data-action="change->upload-form#fileSelected"
                  accept=".m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3">

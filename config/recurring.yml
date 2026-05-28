@@ -22,6 +22,10 @@ default: &default
     class: BookMetadataBackfillJob
     queue: default
     schedule: at 3am every day
+  watch_directory:
+    class: WatchDirectoryJob
+    queue: default
+    schedule: every minute
   update_check:
     class: UpdateCheckJob
     queue: default

@@ -18,12 +18,24 @@ class UploadsController < ApplicationController
   end
 
   def create
-    result = UploadCreator.call(user: Current.user, uploaded_file: params[:file], request: @request)
+    uploaded_files = Array(params[:file])
+    results = uploaded_files.map do |file|
+      UploadCreator.call(user: Current.user, uploaded_file: file, request: @request)
+    end
 
-    if result.success?
-      redirect_to upload_success_location, notice: result.notice
+    success_count = results.count(&:success?)
+    failure_count = results.count { |r| !r.success? }
+
+    if success_count > 0 && failure_count == 0
+      notice = success_count == 1 ? "File uploaded successfully." : "#{success_count} files uploaded successfully."
+      redirect_to upload_success_location, notice: "#{notice} Processing started."
+    elsif success_count > 0 && failure_count > 0
+      flash[:notice] = "#{success_count} files uploaded successfully."
+      flash[:alert] = "#{failure_count} files failed to upload: #{results.reject(&:success?).map(&:alert).uniq.join(', ')}"
+      redirect_to upload_success_location
     else
-      redirect_to upload_failure_location, alert: result.alert
+      alert = results.first&.alert || "Please select a file to upload"
+      redirect_to upload_failure_location, alert: alert
     end
   end
 

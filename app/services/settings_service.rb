@@ -51,6 +51,8 @@ class SettingsService
     ebook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for ebooks (extension added automatically). Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series - }." },
     download_remote_path: { type: "string", default: "", category: "paths", description: "Download client path (host path, e.g., /mnt/media/Torrents/Completed)" },
     download_local_path: { type: "string", default: "/downloads", category: "paths", description: "Container path for downloads (e.g., /downloads)" },
+    watch_directory_path: { type: "string", default: "/watch", category: "paths", description: "Directory to monitor for new books" },
+    watch_directory_interval: { type: "integer", default: 15, category: "paths", description: "Minutes between watch directory scans. Set to 0 to disable." },
 
     # Queue Settings
     immediate_search_enabled: { type: "boolean", default: false, category: "queue", description: "Start searching immediately when a request is created (instead of waiting for queue cycle)" },
