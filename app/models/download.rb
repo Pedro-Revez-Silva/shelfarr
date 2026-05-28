@@ -1,6 +1,7 @@
 class Download < ApplicationRecord
   belongs_to :request
   belongs_to :download_client, optional: true
+  belongs_to :search_result, optional: true
   has_many :request_events, dependent: :nullify
 
   SHOW_PAGE_BROADCAST_ATTRIBUTES = %w[name progress size_bytes status].freeze

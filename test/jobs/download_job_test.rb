@@ -35,6 +35,7 @@ class DownloadJobTest < ActiveJob::TestCase
     @download = @request.downloads.create!(
       name: @selected_result.title,
       size_bytes: @selected_result.size_bytes,
+      search_result: @selected_result,
       status: :queued
     )
   end
@@ -64,6 +65,7 @@ class DownloadJobTest < ActiveJob::TestCase
 
   test "marks for attention when no search result selected" do
     # Remove the selected result
+    @download.update!(search_result: nil)
     @request.search_results.selected.destroy_all
 
     DownloadJob.perform_now(@download.id)
@@ -76,10 +78,8 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "marks for attention when result has no download link" do
-    # Replace selected with no-link result
-    @request.search_results.selected.destroy_all
     no_link = search_results(:no_link_result)
-    no_link.update!(status: :selected)
+    @download.update!(search_result: no_link)
 
     DownloadJob.perform_now(@download.id)
     @download.reload
@@ -88,6 +88,29 @@ class DownloadJobTest < ActiveJob::TestCase
     assert @download.failed?
     assert @request.attention_needed?
     assert_includes @request.issue_description, "no download link"
+  end
+
+  test "uses the download search result instead of the current selected result" do
+    no_link = search_results(:no_link_result)
+    @download.update!(search_result: no_link)
+
+    DownloadJob.perform_now(@download.id)
+    @download.reload
+
+    assert @download.failed?
+  end
+
+  test "falls back to selected result for existing downloads without association" do
+    @download.update!(search_result: nil)
+
+    VCR.turned_off do
+      stub_qbittorrent_success
+
+      DownloadJob.perform_now(@download.id)
+      @download.reload
+
+      assert @download.downloading?
+    end
   end
 
   test "marks for attention when no download client configured" do

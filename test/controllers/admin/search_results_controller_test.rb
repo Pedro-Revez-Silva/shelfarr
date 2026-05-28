@@ -68,6 +68,17 @@ module Admin
       assert_match(/seeds/, response.body)
     end
 
+    test "index allows selecting rejected downloadable results" do
+      @pending_result.update!(status: :rejected)
+
+      get admin_request_search_results_path(@request_record)
+      assert_response :success
+
+      assert_select "form[action='#{select_admin_request_search_result_path(@request_record, @pending_result)}']" do
+        assert_select "button", text: "Select Instead"
+      end
+    end
+
     # === Select ===
 
     test "select creates download and updates statuses" do
@@ -77,11 +88,24 @@ module Admin
 
       @pending_result.reload
       @request_record.reload
+      download = @request_record.downloads.order(:created_at).last
 
       assert @pending_result.selected?
       assert @request_record.downloading?
+      assert_equal @pending_result, download.search_result
       # Uses redirect_back with fallback to requests_path
       assert_redirected_to requests_path
+    end
+
+    test "select can override a rejected result" do
+      @pending_result.update!(status: :rejected)
+
+      assert_difference -> { Download.count }, 1 do
+        post select_admin_request_search_result_path(@request_record, @pending_result)
+      end
+
+      assert @pending_result.reload.selected?
+      assert @selected_result.reload.rejected?
     end
 
     test "select marks other results as rejected" do

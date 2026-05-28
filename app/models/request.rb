@@ -112,6 +112,7 @@ class Request < ApplicationRecord
         download = downloads.create!(
           name: selected_result.title,
           size_bytes: selected_result.size_bytes,
+          search_result: selected_result,
           status: :queued
         )
 
@@ -213,12 +214,17 @@ class Request < ApplicationRecord
 
     download = nil
     ActiveRecord::Base.transaction do
+      downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
+        cancel_download(download)
+      end
+
       search_results.where.not(id: search_result.id).update_all(status: :rejected)
       search_result.update!(status: :selected)
 
       download = downloads.create!(
         name: search_result.title,
         size_bytes: search_result.size_bytes,
+        search_result: search_result,
         status: :queued
       )
 
