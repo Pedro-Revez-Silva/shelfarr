@@ -249,6 +249,44 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "show links admins to search results after auto selection" do
+    @pending_request.update!(status: :downloading)
+    sign_out
+    sign_in_as(@admin)
+
+    get request_path(@pending_request)
+    assert_response :success
+
+    assert_select "a[href='#{admin_request_search_results_path(@pending_request)}']", text: "Manage Results"
+  end
+
+  test "show hides completed search result controls from regular users" do
+    @pending_request.update!(status: :downloading)
+
+    get request_path(@pending_request)
+    assert_response :success
+
+    assert_select "a[href='#{admin_request_search_results_path(@pending_request)}']", count: 0
+    assert_select "h3", text: "Search Results Available", count: 0
+  end
+
+  test "index shows results and retry actions independently" do
+    @failed_request.search_results.create!(
+      guid: "failed-result-guid",
+      title: "Failed Result",
+      download_url: "http://example.com/failed.torrent",
+      status: :rejected
+    )
+    sign_out
+    sign_in_as(@admin)
+
+    get requests_path
+    assert_response :success
+
+    assert_select "button", text: /View Results/
+    assert_select "form[action='#{retry_request_path(@failed_request)}']"
+  end
+
   test "new requires work_id and title" do
     get new_request_path
     assert_redirected_to search_path

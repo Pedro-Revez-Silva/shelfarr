@@ -2,6 +2,7 @@
 
 class SearchResult < ApplicationRecord
   belongs_to :request
+  has_many :downloads, dependent: :nullify
 
   after_commit :broadcast_request_show_refresh_later
 

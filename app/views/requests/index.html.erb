@@ -73,7 +73,7 @@
   <% else %>
     <div class="space-y-4">
       <% @requests.each do |request| %>
-        <% has_view_results = Current.user.admin? && request.searching? && request.search_results.any? %>
+        <% has_view_results = Current.user.admin? && request.search_results.any? %>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition" <%= "data-controller=search-results" if has_view_results %>>
           <div class="flex gap-4">
             <div class="flex-shrink-0 w-16 aspect-[2/3] bg-gray-800 rounded shadow overflow-hidden">
@@ -134,7 +134,7 @@
 
               <%# Error description and action buttons row %>
               <% if Current.user.admin? %>
-                <% has_retry = request.can_retry? && !has_view_results %>
+                <% has_retry = request.can_retry? %>
                 <% has_cancel = request.can_be_cancelled? %>
                 <% has_issue = request.issue_description.present? %>
                 <% if has_view_results || has_retry || has_cancel || has_issue %>
@@ -155,7 +155,8 @@
                               class="inline-flex items-center px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition whitespace-nowrap">
                             View Results (<%= request.search_results.count %>)
                           </button>
-                        <% elsif has_retry %>
+                        <% end %>
+                        <% if has_retry %>
                           <%= button_to retry_request_path(request), method: :post,
                               class: "inline-flex items-center px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition whitespace-nowrap" do %>
                             Retry

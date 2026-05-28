@@ -26,7 +26,7 @@ class DownloadJob < ApplicationJob
       details: { request_status: download.request.status }
     )
 
-    search_result = download.request.search_results.selected.first
+    search_result = download.search_result || download.request.search_results.selected.first
 
     unless search_result
       Rails.logger.error "[DownloadJob] No selected search result for download ##{download.id}"

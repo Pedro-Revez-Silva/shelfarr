@@ -117,12 +117,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_21_120000) do
     t.integer "not_found_count", default: 0, null: false
     t.integer "progress", default: 0
     t.integer "request_id", null: false
+    t.integer "search_result_id"
     t.bigint "size_bytes"
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false
     t.index ["download_client_id"], name: "index_downloads_on_download_client_id"
     t.index ["external_id"], name: "index_downloads_on_external_id"
     t.index ["request_id"], name: "index_downloads_on_request_id"
+    t.index ["search_result_id"], name: "index_downloads_on_search_result_id"
     t.index ["status"], name: "index_downloads_on_status"
   end
 
@@ -357,6 +359,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_21_120000) do
   add_foreign_key "api_tokens", "users"
   add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
+  add_foreign_key "downloads", "search_results", on_delete: :nullify
   add_foreign_key "notifications", "users"
   add_foreign_key "request_events", "downloads"
   add_foreign_key "request_events", "requests"

@@ -524,6 +524,33 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_not completed.can_be_cancelled?
   end
 
+  test "select_result! associates the download with the selected result" do
+    request = requests(:pending_request)
+    result = search_results(:pending_result)
+
+    download = request.select_result!(result)
+
+    assert_equal result, download.search_result
+  end
+
+  test "select_result! cancels active downloads before queueing override" do
+    request = requests(:pending_request)
+    original_result = search_results(:selected_result)
+    replacement_result = search_results(:pending_result)
+    active_download = request.downloads.create!(
+      name: original_result.title,
+      search_result: original_result,
+      status: :queued
+    )
+
+    assert_difference -> { request.downloads.count }, 1 do
+      request.select_result!(replacement_result)
+    end
+
+    assert active_download.reload.failed?
+    assert_equal replacement_result, request.downloads.order(:created_at).last.search_result
+  end
+
   test "cancel! removes active downloads from download client" do
     book = Book.create!(title: "Cancel Test Book", book_type: :ebook, open_library_work_id: "OL_CANCEL_TEST")
     request = Request.create!(
