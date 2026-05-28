@@ -1,12 +1,64 @@
 class UploadCreator
-  Result = Struct.new(:upload, :notice, :alert, keyword_init: true) do
+  Result = Struct.new(:upload, :uploads, :notice, :alert, :success, keyword_init: true) do
     def success?
-      alert.blank?
+      success.nil? ? alert.blank? : success
     end
   end
 
   def self.call(user:, uploaded_file:, request: nil)
     new(user:, uploaded_file:, request:).call
+  end
+
+  def self.call_many(user:, uploaded_files:, request: nil, skip_unsupported: false)
+    submitted_files = Array(uploaded_files).compact_blank
+    return Result.new(alert: "Please select a file to upload", success: false) if submitted_files.empty?
+
+    files = submitted_files
+    files = files.select { |file| supported_file?(file) } if skip_unsupported
+    if skip_unsupported && files.empty?
+      return Result.new(alert: "No supported ebook or audiobook files found in the selected folder", success: false)
+    end
+
+    if request.present? && files.many?
+      return Result.new(alert: "Please upload one file when fulfilling a request", success: false)
+    end
+
+    return call(user:, uploaded_file: files.first, request:) if files.one? && !skip_unsupported
+
+    uploads = []
+    failures = []
+
+    files.each do |file|
+      result = call(user:, uploaded_file: file, request:)
+      if result.success?
+        uploads << result.upload
+      else
+        failures << [ file.original_filename, result.alert ]
+      end
+    end
+
+    if uploads.empty?
+      return Result.new(alert: bulk_failure_message(failures), success: false)
+    end
+
+    Result.new(
+      uploads: uploads,
+      notice: "#{uploads.size} #{'file'.pluralize(uploads.size)} uploaded successfully. Processing started.",
+      alert: bulk_failure_message(failures),
+      success: true
+    )
+  end
+
+  def self.bulk_failure_message(failures)
+    return if failures.empty?
+
+    failed_files = failures.map { |filename, alert| "#{filename}: #{alert}" }.join("; ")
+    "#{failures.size} #{'file'.pluralize(failures.size)} failed to upload: #{failed_files}"
+  end
+
+  def self.supported_file?(uploaded_file)
+    extension = File.extname(uploaded_file.original_filename).delete(".").downcase
+    Upload::SUPPORTED_EXTENSIONS.include?(extension)
   end
 
   def initialize(user:, uploaded_file:, request: nil)

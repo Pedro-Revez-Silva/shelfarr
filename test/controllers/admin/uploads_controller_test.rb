@@ -34,6 +34,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
   test "new shows upload form" do
     get new_admin_upload_url
     assert_response :success
+    assert_select "input[type='file'][name='files[]'][multiple]"
   end
 
   test "new shows request upload context" do
@@ -43,6 +44,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "input[name='request_id'][value='#{request.id}']"
+    assert_select "input[type='file'][name='file']"
     assert_select "h2", "Fulfill Request"
     assert_select "p", text: /#{request.book.display_name}/
   end
@@ -68,6 +70,48 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_uploads_path
     assert_equal "File uploaded successfully. Processing started.", flash[:notice]
+  end
+
+  test "create with multiple files starts processing each file" do
+    audiobook = fixture_file_upload("test_audiobook.m4b", "audio/mp4")
+    ebook = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+
+    assert_difference "Upload.count", 2 do
+      assert_enqueued_jobs 2, only: UploadProcessingJob do
+        post admin_uploads_url, params: { files: [ audiobook, ebook ] }
+      end
+    end
+
+    assert_redirected_to admin_uploads_path
+    assert_equal "2 files uploaded successfully. Processing started.", flash[:notice]
+  end
+
+  test "create from folder skips unsupported files" do
+    audiobook = fixture_file_upload("test_audiobook.m4b", "audio/mp4")
+    text = fixture_file_upload("test.txt", "text/plain")
+
+    assert_difference "Upload.count", 1 do
+      assert_enqueued_jobs 1, only: UploadProcessingJob do
+        post admin_uploads_url, params: { files: [ audiobook, text ], upload_mode: "folder" }
+      end
+    end
+
+    assert_redirected_to admin_uploads_path
+    assert_equal "1 file uploaded successfully. Processing started.", flash[:notice]
+    assert_nil flash[:alert]
+  end
+
+  test "create with request rejects multiple files" do
+    request = requests(:pending_request)
+    first_file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+    second_file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+
+    assert_no_difference "Upload.count" do
+      post admin_uploads_url, params: { files: [ first_file, second_file ], request_id: request.id }
+    end
+
+    assert_redirected_to new_admin_upload_path(request_id: request.id)
+    assert_equal "Please upload one file when fulfilling a request", flash[:alert]
   end
 
   test "create with request links upload and redirects to request" do
