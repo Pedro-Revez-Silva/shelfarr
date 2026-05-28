@@ -2,8 +2,8 @@
 
 module Admin
   class UploadsController < BaseController
-    before_action :set_request_context, only: [:new, :create]
-    before_action :set_upload, only: [:show, :destroy, :retry]
+    before_action :set_request_context, only: [ :new, :create ]
+    before_action :set_upload, only: [ :show, :destroy, :retry ]
 
     def index
       @uploads = Upload.includes(:user, :book).recent
@@ -14,10 +14,17 @@ module Admin
     end
 
     def create
-      result = UploadCreator.call(user: Current.user, uploaded_file: params[:file], request: @request)
+      result = UploadCreator.call_many(
+        user: Current.user,
+        uploaded_files: upload_files,
+        request: @request,
+        skip_unsupported: folder_upload?
+      )
 
       if result.success?
-        redirect_to upload_success_location, notice: result.notice
+        flash[:notice] = result.notice if result.notice.present?
+        flash[:alert] = result.alert if result.alert.present?
+        redirect_to upload_success_location
       else
         redirect_to upload_failure_location, alert: result.alert
       end
@@ -67,6 +74,14 @@ module Admin
 
     def upload_failure_location
       @request ? new_admin_upload_path(request_id: @request.id) : new_admin_upload_path
+    end
+
+    def upload_files
+      params[:files].presence || params[:file]
+    end
+
+    def folder_upload?
+      params[:upload_mode] == "folder"
     end
   end
 end

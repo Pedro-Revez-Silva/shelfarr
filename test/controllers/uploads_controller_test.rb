@@ -119,7 +119,7 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "h1", "Upload Book"
     assert_select "form[action='#{uploads_path}']"
-    assert_select "input[type='file'][name='file'][accept='.m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3']"
+    assert_select "input[type='file'][name='files[]'][multiple][accept='.m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3']"
   end
 
   test "new shows own request upload context when uploads are enabled" do
@@ -131,6 +131,7 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "input[name='request_id'][value='#{request.id}']"
+    assert_select "input[type='file'][name='file']"
     assert_select "h2", "Fulfill Request"
   end
 
@@ -173,6 +174,85 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     upload = Upload.order(:created_at).last
     assert_equal request, upload.request
     assert_redirected_to request_path(request)
+  end
+
+  test "create accepts multiple files for regular users when enabled" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    audiobook = fixture_file_upload("test_audiobook.m4b", "audio/mp4")
+    ebook = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+
+    assert_difference "Upload.count", 2 do
+      assert_enqueued_jobs 2, only: UploadProcessingJob do
+        post uploads_url, params: { files: [ audiobook, ebook ] }
+      end
+    end
+
+    assert_redirected_to uploads_path
+    assert_equal "2 files uploaded successfully. Processing started.", flash[:notice]
+  end
+
+  test "create partially accepts multiple files for regular users when enabled" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    ebook = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+    text = fixture_file_upload("test.txt", "text/plain")
+
+    assert_difference "Upload.count", 1 do
+      assert_enqueued_jobs 1, only: UploadProcessingJob do
+        post uploads_url, params: { files: [ ebook, text ] }
+      end
+    end
+
+    assert_redirected_to uploads_path
+    assert_equal "1 file uploaded successfully. Processing started.", flash[:notice]
+    assert_includes flash[:alert], "test.txt"
+    assert_includes flash[:alert], "Unsupported file type"
+  end
+
+  test "create from folder skips unsupported files for regular users when enabled" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    ebook = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+    text = fixture_file_upload("test.txt", "text/plain")
+
+    assert_difference "Upload.count", 1 do
+      assert_enqueued_jobs 1, only: UploadProcessingJob do
+        post uploads_url, params: { files: [ ebook, text ], upload_mode: "folder" }
+      end
+    end
+
+    assert_redirected_to uploads_path
+    assert_equal "1 file uploaded successfully. Processing started.", flash[:notice]
+    assert_nil flash[:alert]
+  end
+
+  test "create from folder rejects folders without supported files" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    text = fixture_file_upload("test.txt", "text/plain")
+
+    assert_no_difference "Upload.count" do
+      post uploads_url, params: { files: [ text ], upload_mode: "folder" }
+    end
+
+    assert_redirected_to new_upload_path
+    assert_equal "No supported ebook or audiobook files found in the selected folder", flash[:alert]
+  end
+
+  test "create rejects multiple files for request upload context" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    request = requests(:pending_request)
+    first_file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+    second_file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+
+    assert_no_difference "Upload.count" do
+      post uploads_url, params: { files: [ first_file, second_file ], request_id: request.id }
+    end
+
+    assert_redirected_to new_upload_path(request_id: request.id)
+    assert_equal "Please upload one file when fulfilling a request", flash[:alert]
   end
 
   test "create rejects another user's request upload context" do
