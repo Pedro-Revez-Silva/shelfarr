@@ -2,11 +2,14 @@
 
 require "net/http"
 require "uri"
+require "tempfile"
 
 class DownloadJob < ApplicationJob
   queue_as :default
 
   MAX_DIRECT_DOWNLOAD_BYTES = 512.megabytes
+  MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES = 2.gigabytes
+  MAX_DIRECT_DOWNLOAD_REDIRECTS = 5
 
   def perform(download_id)
     download = Download.find_by(id: download_id)
@@ -42,6 +45,8 @@ class DownloadJob < ApplicationJob
         handle_anna_archive_download(download, search_result)
       elsif search_result.from_zlibrary?
         handle_zlibrary_download(download, search_result)
+      elsif search_result.from_librivox?
+        handle_librivox_download(download, search_result)
       else
         handle_standard_download(download, search_result)
       end
@@ -75,6 +80,11 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Z-Library error: #{e.message}")
+    rescue LibrivoxClient::Error => e
+      Rails.logger.error "[DownloadJob] LibriVox error for download ##{download.id}: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+      download.update!(status: :failed)
+      download.request.mark_for_attention!("LibriVox error: #{e.message}")
     end
   end
 
@@ -107,6 +117,49 @@ class DownloadJob < ApplicationJob
     download_url = ZLibraryClient.get_download_url(id: book_id, hash: file_hash)
 
     handle_direct_http_download(download, search_result, download_url)
+  end
+
+  def handle_librivox_download(download, search_result)
+    raise LibrivoxClient::Error, "Selected LibriVox result is missing a download URL" if search_result.download_url.blank?
+
+    book = download.request.book
+    base_path = SettingsService.get(:audiobook_output_path, default: "/audiobooks")
+    destination_dir = PathTemplateService.build_destination(book, base_path: base_path)
+
+    Rails.logger.info "[DownloadJob] Downloading LibriVox audiobook to: #{destination_dir}"
+    FileUtils.mkdir_p(destination_dir)
+
+    Tempfile.create([ "shelfarr-librivox-", ".zip" ]) do |archive|
+      archive.binmode
+      download_file_via_http(
+        search_result,
+        search_result.download_url,
+        archive.path,
+        max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES
+      )
+      verify_downloaded_zip!(archive.path)
+      extract_zip_to_directory(archive.path, destination_dir)
+    end
+
+    download.update!(
+      status: :completed,
+      download_path: destination_dir,
+      download_type: "direct"
+    )
+
+    book.update!(file_path: destination_dir)
+    download.request.complete!
+    trigger_library_scan(book) if AudiobookshelfClient.configured?
+    NotificationService.request_completed(download.request)
+    track_request_event(download.request, "completed", download: download, message: "LibriVox download completed")
+
+    Rails.logger.info "[DownloadJob] LibriVox download completed: #{destination_dir}"
+  rescue => e
+    Rails.logger.error "[DownloadJob] LibriVox download failed: #{e.message}"
+    Rails.logger.error e.backtrace.first(5).join("\n")
+    track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
+    download.update!(status: :failed)
+    download.request.mark_for_attention!("LibriVox download failed: #{e.message}")
   end
 
   def handle_direct_http_download(download, search_result, download_url)
@@ -218,34 +271,62 @@ class DownloadJob < ApplicationJob
     result
   end
 
-  def download_file_via_http(search_result, url, destination)
+  def download_file_via_http(search_result, url, destination, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES)
     uri = validate_direct_download_url!(url, search_result)
 
     Rails.logger.info "[DownloadJob] Starting HTTP download..."
 
     bytes_written = 0
+    redirects_followed = 0
+    download_complete = false
 
-    Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https", open_timeout: 30, read_timeout: 300) do |http|
-      request = Net::HTTP::Get.new(uri)
-      request["User-Agent"] = "Shelfarr/1.0"
+    loop do
+      response_handled = false
 
-      http.request(request) do |response|
-        raise "Direct download failed with status #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+      Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https", open_timeout: 30, read_timeout: 300) do |http|
+        request = Net::HTTP::Get.new(uri)
+        request["User-Agent"] = "Shelfarr/1.0"
 
-        validate_direct_download_response_headers!(
-          content_type: response["Content-Type"],
-          content_length: response["Content-Length"]
-        )
+        http.request(request) do |response|
+          if response.is_a?(Net::HTTPRedirection)
+            redirects_followed += 1
+            raise "Direct download exceeded redirect limit" if redirects_followed > MAX_DIRECT_DOWNLOAD_REDIRECTS
 
-        File.open(destination, "wb") do |dest|
-          response.read_body do |chunk|
-            bytes_written += chunk.bytesize
-            raise "Direct download exceeds size limit of #{MAX_DIRECT_DOWNLOAD_BYTES / 1.megabyte} MB" if bytes_written > MAX_DIRECT_DOWNLOAD_BYTES
+            location = response["Location"]
+            raise "Direct download redirect missing Location" if location.blank?
 
-            dest.write(chunk)
+            uri = validate_direct_download_url!(URI.join(uri, normalize_direct_download_url(location)).to_s, search_result)
+            Rails.logger.info "[DownloadJob] Following HTTP redirect to #{uri.host}"
+            response_handled = true
+            next
           end
+
+          raise "Direct download failed with status #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+          validate_direct_download_response_headers!(
+            content_type: response["Content-Type"],
+            content_length: response["Content-Length"],
+            max_bytes: max_bytes
+          )
+
+          File.open(destination, "wb") do |dest|
+            response.read_body do |chunk|
+              bytes_written += chunk.bytesize
+              raise "Direct download exceeds size limit of #{max_bytes / 1.megabyte} MB" if bytes_written > max_bytes
+
+              dest.write(chunk)
+            end
+          end
+
+          response_handled = true
+          download_complete = true
         end
       end
+
+      break if download_complete
+      next if response_handled
+
+      raise "Direct download failed without a response"
     end
 
     file_size = File.size(destination)
@@ -255,7 +336,7 @@ class DownloadJob < ApplicationJob
   end
 
   def validate_direct_download_url!(url, search_result = nil)
-    uri = URI.parse(url)
+    uri = URI.parse(normalize_direct_download_url(url))
     raise "Invalid direct download URL" unless %w[http https].include?(uri.scheme) && uri.host.present?
 
     uri
@@ -263,7 +344,11 @@ class DownloadJob < ApplicationJob
     raise "Invalid direct download URL: #{e.message}"
   end
 
-  def validate_direct_download_response_headers!(content_type:, content_length:)
+  def normalize_direct_download_url(url)
+    url.to_s.strip.gsub(" ", "%20")
+  end
+
+  def validate_direct_download_response_headers!(content_type:, content_length:, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES)
     normalized_content_type = content_type.to_s.split(";").first.to_s.downcase
 
     if normalized_content_type.present? &&
@@ -275,8 +360,8 @@ class DownloadJob < ApplicationJob
     end
 
     length = content_length.to_i if content_length.present?
-    if length.present? && length > MAX_DIRECT_DOWNLOAD_BYTES
-      raise "Direct download exceeds size limit of #{MAX_DIRECT_DOWNLOAD_BYTES / 1.megabyte} MB"
+    if length.present? && length > max_bytes
+      raise "Direct download exceeds size limit of #{max_bytes / 1.megabyte} MB"
     end
   end
 
@@ -304,6 +389,52 @@ class DownloadJob < ApplicationJob
     end
   rescue Errno::ENOENT => e
     raise "Downloaded file is missing: #{e.message}"
+  end
+
+  def verify_downloaded_zip!(path)
+    raise "Downloaded file does not exist" unless File.exist?(path)
+
+    file_size = File.size(path)
+    raise "Downloaded file is empty" if file_size.zero?
+
+    head = File.binread(path, [ 512, file_size ].min)
+    lowered = head.downcase
+    if lowered.include?("<html") || lowered.include?("<!doctype")
+      FileUtils.rm_f(path)
+      raise "Downloaded file is an HTML page, not an audiobook archive"
+    end
+
+    raise "Downloaded file is not a valid ZIP archive" unless head.start_with?("PK\x03\x04")
+  rescue Errno::ENOENT => e
+    raise "Downloaded file is missing: #{e.message}"
+  end
+
+  def extract_zip_to_directory(zip_path, destination_dir)
+    require "zip"
+
+    destination_root = File.expand_path(destination_dir)
+    extracted_files = 0
+
+    Zip::File.open(zip_path) do |zipfile|
+      zipfile.each do |entry|
+        next if entry.directory?
+
+        target = File.expand_path(File.join(destination_root, entry.name))
+        unless target.start_with?("#{destination_root}#{File::SEPARATOR}")
+          raise "ZIP archive contains an unsafe path: #{entry.name}"
+        end
+
+        FileUtils.mkdir_p(File.dirname(target))
+        entry.get_input_stream do |input|
+          File.open(target, "wb") { |output| IO.copy_stream(input, output) }
+        end
+        extracted_files += 1
+      end
+    end
+
+    raise "ZIP archive did not contain any files" if extracted_files.zero?
+  rescue Zip::Error => e
+    raise "Failed to extract audiobook archive: #{e.message}"
   end
 
   def trigger_library_scan(book)

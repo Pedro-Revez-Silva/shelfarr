@@ -13,7 +13,7 @@ class SettingsService
     },
     "direct" => {
       label: "Direct",
-      description: "Integration downloads such as Anna's Archive and Z-Library"
+      description: "Integration downloads such as Anna's Archive, Z-Library, and LibriVox"
     }
   }.freeze
 
@@ -112,6 +112,11 @@ class SettingsService
     zlibrary_email: { type: "string", default: "", category: "zlibrary", description: "Z-Library account email used for login" },
     zlibrary_password: { type: "string", default: "", category: "zlibrary", description: "Z-Library account password used for login" },
 
+    # LibriVox
+    librivox_enabled: { type: "boolean", default: false, category: "librivox", description: "Enable LibriVox as a free public-domain audiobook source" },
+    librivox_url: { type: "string", default: "https://librivox.org", category: "librivox", description: "LibriVox base URL" },
+    librivox_search_limit: { type: "integer", default: 20, category: "librivox", description: "Maximum number of LibriVox audiobook results to return" },
+
     # Hardcover Integration
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
     metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover first, OpenLibrary fallback), hardcover, or openlibrary" },
@@ -158,6 +163,7 @@ class SettingsService
     "audiobookshelf" => "Audiobookshelf",
     "anna_archive" => "Anna's Archive",
     "zlibrary" => "Z-Library",
+    "librivox" => "LibriVox",
     "hardcover" => "Hardcover",
     "paths" => "Output Paths",
     "queue" => "Queue Settings",
@@ -292,6 +298,10 @@ class SettingsService
         configured?(:zlibrary_url) &&
         configured?(:zlibrary_email) &&
         configured?(:zlibrary_password)
+    end
+
+    def librivox_configured?
+      get(:librivox_enabled, default: false) && configured?(:librivox_url)
     end
 
     def flaresolverr_configured?

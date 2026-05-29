@@ -17,6 +17,7 @@ class SearchResult < ApplicationRecord
   SOURCE_JACKETT = "jackett"
   SOURCE_ANNA_ARCHIVE = "anna_archive"
   SOURCE_ZLIBRARY = "zlibrary"
+  SOURCE_LIBRIVOX = "librivox"
 
   validates :guid, presence: true, uniqueness: { scope: :request_id }
   validates :title, presence: true
@@ -28,7 +29,7 @@ class SearchResult < ApplicationRecord
     type_order_sql = ordered_types.each_with_index.map { |type, index| "WHEN '#{type}' THEN #{index}" }.join(" ")
     download_type_sql = <<~SQL.squish
       CASE
-        WHEN source IN ('#{SOURCE_ANNA_ARCHIVE}', '#{SOURCE_ZLIBRARY}') THEN 'direct'
+        WHEN source IN ('#{SOURCE_ANNA_ARCHIVE}', '#{SOURCE_ZLIBRARY}', '#{SOURCE_LIBRIVOX}') THEN 'direct'
         WHEN download_url IS NOT NULL AND magnet_url IS NULL AND seeders IS NULL THEN 'usenet'
         ELSE 'torrent'
       END
@@ -76,7 +77,7 @@ class SearchResult < ApplicationRecord
   end
 
   def direct_download?
-    from_anna_archive? || from_zlibrary?
+    from_anna_archive? || from_zlibrary? || from_librivox?
   end
 
   def download_type
@@ -196,6 +197,10 @@ class SearchResult < ApplicationRecord
     source == SOURCE_ZLIBRARY
   end
 
+  def from_librivox?
+    source == SOURCE_LIBRIVOX
+  end
+
   def source_display_name
     case source
     when SOURCE_JACKETT
@@ -204,6 +209,8 @@ class SearchResult < ApplicationRecord
       "Anna's Archive"
     when SOURCE_ZLIBRARY
       "Z-Library"
+    when SOURCE_LIBRIVOX
+      "LibriVox"
     else
       indexer.presence || "Prowlarr"
     end

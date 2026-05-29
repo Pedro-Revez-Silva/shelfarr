@@ -284,6 +284,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a", text: "Test Z-Library Connection"
   end
 
+  test "index shows LibriVox settings and test button" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Librivox Enabled"
+    assert_select "input[name='settings[librivox_enabled]']"
+    assert_select "input[name='settings[librivox_url]']"
+    assert_select "input[name='settings[librivox_search_limit]']"
+    assert_select "a", text: "Test LibriVox Connection"
+  end
+
   test "index shows Anna's Archive URL list setting" do
     get admin_settings_url
 
@@ -732,6 +743,37 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     ZLibraryClient.stub :test_connection, false do
       post test_zlibrary_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
+  end
+
+  test "test_librivox fails when disabled" do
+    SettingsService.set(:librivox_enabled, false)
+
+    post test_librivox_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not enabled/i, flash[:alert]
+  end
+
+  test "test_librivox succeeds when connection works" do
+    SettingsService.set(:librivox_enabled, true)
+
+    LibrivoxClient.stub :test_connection, true do
+      post test_librivox_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
+  end
+
+  test "test_librivox fails when connection fails" do
+    SettingsService.set(:librivox_enabled, true)
+
+    LibrivoxClient.stub :test_connection, false do
+      post test_librivox_admin_settings_url
     end
 
     assert_redirected_to admin_settings_path
