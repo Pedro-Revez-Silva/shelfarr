@@ -11,7 +11,10 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_url, "https://z-library.sk")
     SettingsService.set(:zlibrary_email, "")
     SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:librivox_enabled, false)
+    SettingsService.set(:librivox_url, "https://librivox.org")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
+    LibrivoxClient.reset_connection! if defined?(LibrivoxClient)
   end
 
   teardown do
@@ -19,7 +22,10 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_url, "https://z-library.sk")
     SettingsService.set(:zlibrary_email, "")
     SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:librivox_enabled, false)
+    SettingsService.set(:librivox_url, "https://librivox.org")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
+    LibrivoxClient.reset_connection! if defined?(LibrivoxClient)
   end
 
   test "updates request status to searching" do
@@ -600,6 +606,54 @@ class SearchJobTest < ActiveJob::TestCase
     @request.reload
     assert @request.not_found?
     assert_not @request.attention_needed?
+  end
+
+  test "includes librivox results for audiobook requests" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:librivox_enabled, true)
+    book = books(:audiobook_acquired)
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+    result = LibrivoxClient::Result.new(
+      id: "253",
+      title: "Pride and Prejudice",
+      author: "Jane Austen",
+      language: "en",
+      year: "1813",
+      file_type: "audiobook zip",
+      download_url: "https://archive.org/compress/pride_and_prejudice_librivox/formats=64KBPS%20MP3",
+      info_url: "https://librivox.org/pride-and-prejudice-by-jane-austen/",
+      duration: "13:06:44"
+    )
+
+    LibrivoxClient.stub :search, ->(title:, author:, language: nil, **) {
+      assert_equal book.title, title
+      assert_equal book.author, author
+      assert_equal "en", language
+      [ result ]
+    } do
+      SearchJob.perform_now(request.id)
+    end
+
+    request.reload
+    saved_result = request.search_results.first
+    assert_equal SearchResult::SOURCE_LIBRIVOX, saved_result.source
+    assert_equal "librivox:253", saved_result.guid
+    assert_equal "LibriVox", saved_result.indexer
+    assert_equal result.download_url, saved_result.download_url
+    assert_includes saved_result.title, "[AUDIOBOOK ZIP]"
+  end
+
+  test "skips librivox for ebook requests" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:librivox_enabled, true)
+
+    LibrivoxClient.stub :search, ->(*) { flunk "LibriVox should only be searched for audiobooks" } do
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    assert @request.attention_needed?
+    assert_includes @request.issue_description, "No search sources configured"
   end
 
   test "uses jackett when explicitly selected as the indexer provider" do

@@ -190,6 +190,19 @@ module Admin
       end
     end
 
+    def test_librivox
+      unless LibrivoxClient.configured?
+        respond_with_flash(alert: "LibriVox is not enabled.")
+        return
+      end
+
+      if LibrivoxClient.test_connection
+        respond_with_flash(notice: "LibriVox connection successful!")
+      else
+        respond_with_flash(alert: "LibriVox connection failed.")
+      end
+    end
+
     def test_oidc
       unless SettingsService.get(:oidc_enabled, default: false)
         respond_with_flash(alert: "OIDC is not enabled. Enable it first.")
@@ -366,6 +379,9 @@ module Admin
       end
       if changed_keys.any? { |k| k.start_with?("zlibrary") }
         ZLibraryClient.reset_connection!
+      end
+      if changed_keys.any? { |k| k.start_with?("librivox") }
+        LibrivoxClient.reset_connection!
       end
       if changed_keys.any? { |k| k.start_with?("hardcover") }
         HardcoverClient.reset_connection!

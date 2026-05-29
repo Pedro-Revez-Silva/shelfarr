@@ -6,7 +6,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
   cover "SettingsService*"
 
   setup do
-    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password]).delete_all
+    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password librivox_enabled librivox_url]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -73,5 +73,15 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
     SettingsService.set(:zlibrary_enabled, false)
     assert_not SettingsService.zlibrary_configured?
+  end
+
+  test "librivox_configured? requires enabled flag and URL" do
+    SettingsService.set(:librivox_enabled, true)
+    SettingsService.set(:librivox_url, "https://librivox.org")
+
+    assert SettingsService.librivox_configured?
+
+    SettingsService.set(:librivox_enabled, false)
+    assert_not SettingsService.librivox_configured?
   end
 end

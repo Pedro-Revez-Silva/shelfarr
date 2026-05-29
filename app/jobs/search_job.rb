@@ -17,10 +17,11 @@ class SearchJob < ApplicationJob
     indexer_available = IndexerClient.configured?
     anna_available = AnnaArchiveClient.configured? && request.book.ebook?
     zlibrary_available = !anna_available && ZLibraryClient.configured? && request.book.ebook?
+    librivox_available = LibrivoxClient.configured? && request.book.audiobook?
 
-    unless indexer_available || anna_available || zlibrary_available
+    unless indexer_available || anna_available || zlibrary_available || librivox_available
       Rails.logger.error "[SearchJob] No search sources configured"
-      request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, or Z-Library in Admin Settings.")
+      request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, or LibriVox in Admin Settings.")
       return
     end
 
@@ -44,6 +45,12 @@ class SearchJob < ApplicationJob
       zlibrary_results = search_zlibrary(request)
       all_results.concat(zlibrary_results)
       Rails.logger.info "[SearchJob] Found #{zlibrary_results.count} Z-Library results"
+    end
+
+    if librivox_available
+      librivox_results = search_librivox(request)
+      all_results.concat(librivox_results)
+      Rails.logger.info "[SearchJob] Found #{librivox_results.count} LibriVox results"
     end
 
     if all_results.any?
@@ -179,6 +186,19 @@ class SearchJob < ApplicationJob
     []
   end
 
+  def search_librivox(request)
+    book = request.book
+    language = request.effective_language
+    Rails.logger.debug "[SearchJob] Searching LibriVox for title='#{book.title}' author='#{book.author}' (language: #{language})"
+
+    LibrivoxClient.search(title: book.title, author: book.author, language: language).map do |result|
+      { result: result, source: SearchResult::SOURCE_LIBRIVOX }
+    end
+  rescue LibrivoxClient::Error => e
+    Rails.logger.warn "[SearchJob] LibriVox search failed: #{e.message}"
+    []
+  end
+
   def save_results(request, tagged_results)
     request.search_results.destroy_all
 
@@ -191,6 +211,8 @@ class SearchJob < ApplicationJob
         save_anna_archive_result(request, result)
       when SearchResult::SOURCE_ZLIBRARY
         save_zlibrary_result(request, result)
+      when SearchResult::SOURCE_LIBRIVOX
+        save_librivox_result(request, result)
       else
         save_indexer_result(request, result, source)
       end
@@ -249,6 +271,32 @@ class SearchJob < ApplicationJob
       sr.source = SearchResult::SOURCE_ZLIBRARY
       sr.detected_language = result.language
     end
+  end
+
+  def save_librivox_result(request, result)
+    request.search_results.find_or_create_by!(guid: "librivox:#{result.id}") do |sr|
+      sr.title = build_librivox_title(result)
+      sr.indexer = "LibriVox"
+      sr.size_bytes = nil
+      sr.seeders = nil
+      sr.leechers = nil
+      sr.download_url = result.download_url
+      sr.magnet_url = nil
+      sr.info_url = result.info_url
+      sr.published_at = nil
+      sr.source = SearchResult::SOURCE_LIBRIVOX
+      sr.detected_language = result.language
+    end
+  end
+
+  def build_librivox_title(result)
+    parts = []
+    parts << result.title if result.title.present?
+    parts << "- #{result.author}" if result.author.present?
+    parts << "[AUDIOBOOK ZIP]"
+    parts << "[#{result.language_display_name}]" if result.respond_to?(:language_display_name) && result.language_display_name.present?
+    parts << "(#{result.year})" if result.year.present?
+    parts.join(" ")
   end
 
   def build_direct_source_title(result)

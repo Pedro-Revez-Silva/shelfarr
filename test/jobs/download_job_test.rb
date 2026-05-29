@@ -4,6 +4,7 @@ require "test_helper"
 require "base64"
 require "bencode"
 require "digest/sha1"
+require "tempfile"
 
 class DownloadJobTest < ActiveJob::TestCase
   setup do
@@ -428,6 +429,55 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal "direct", @zlibrary_download.download_type
   end
 
+  test "librivox download extracts audiobook zip into audiobook output path" do
+    Dir.mktmpdir do |dir|
+      setup_librivox_download(output_path: dir)
+      zip_body = build_zip_archive("chapter_01.mp3" => "audio-data")
+
+      VCR.turned_off do
+        stub_request(:get, "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3")
+          .to_return(
+            status: 302,
+            headers: {
+              "Location" => "https://ia801600.us.archive.org/zip_dir.php?path=/35/items/test_librivox.zip&formats=64KBPS MP3"
+            }
+          )
+        stub_request(:get, "https://ia801600.us.archive.org/zip_dir.php?path=/35/items/test_librivox.zip&formats=64KBPS%20MP3")
+          .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+        DownloadJob.perform_now(@librivox_download.id)
+      end
+
+      @librivox_download.reload
+      @librivox_request.reload
+      assert @librivox_download.completed?
+      assert_equal "direct", @librivox_download.download_type
+      assert @librivox_request.completed?
+      assert_equal @librivox_request.book.file_path, @librivox_download.download_path
+      assert File.exist?(File.join(@librivox_download.download_path, "chapter_01.mp3"))
+    end
+  end
+
+  test "librivox download rejects unsafe zip paths" do
+    Dir.mktmpdir do |dir|
+      setup_librivox_download(output_path: dir)
+      zip_body = build_zip_archive("../escape.mp3" => "audio-data")
+
+      VCR.turned_off do
+        stub_request(:get, "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3")
+          .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+        DownloadJob.perform_now(@librivox_download.id)
+      end
+
+      @librivox_download.reload
+      @librivox_request.reload
+      assert @librivox_download.failed?
+      assert @librivox_request.attention_needed?
+      assert_not File.exist?(File.join(dir, "escape.mp3"))
+    end
+  end
+
   test "z-library download rejects html error pages" do
     setup_zlibrary_download
 
@@ -620,6 +670,45 @@ class DownloadJobTest < ActiveJob::TestCase
       size_bytes: 1_000_000,
       status: :queued
     )
+  end
+
+  def setup_librivox_download(output_path:)
+    SettingsService.set(:librivox_enabled, true)
+    SettingsService.set(:audiobook_output_path, output_path)
+
+    book = Book.create!(
+      title: "Test LibriVox Book",
+      author: "Jane Austen",
+      book_type: :audiobook
+    )
+    @librivox_request = Request.create!(book: book, user: users(:one), status: :downloading)
+    librivox_result = @librivox_request.search_results.create!(
+      guid: "librivox:253",
+      title: "Test LibriVox Book - Jane Austen [AUDIOBOOK ZIP] [English]",
+      indexer: "LibriVox",
+      source: SearchResult::SOURCE_LIBRIVOX,
+      download_url: "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3",
+      status: :selected
+    )
+    @librivox_download = @librivox_request.downloads.create!(
+      name: librivox_result.title,
+      search_result: librivox_result,
+      status: :queued
+    )
+  end
+
+  def build_zip_archive(entries)
+    require "zip"
+
+    Tempfile.create([ "shelfarr-test-", ".zip" ]) do |file|
+      file.close
+      Zip::File.open(file.path, create: true) do |zipfile|
+        entries.each do |name, content|
+          zipfile.get_output_stream(name) { |stream| stream.write(content) }
+        end
+      end
+      File.binread(file.path)
+    end
   end
 
   def stub_qbittorrent_success
