@@ -186,6 +186,13 @@
       font-weight: 500;
     }
 
+    .nav-link.page { font-weight: 500; color: var(--text); }
+    .nav-link.page.current {
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-left-color: var(--accent);
+    }
+
     /* ---------- Content ---------- */
     .content {
       flex: 1;
@@ -430,7 +437,7 @@
     <div class="topbar-spacer"></div>
     <nav class="topbar-links">
       <a href="index.html" class="label-hide">Home</a>
-      <a href="index.html#install" class="label-hide">Install</a>
+      <a href="getting-started.html" class="label-hide">Getting Started</a>
       <a class="gh" href="https://github.com/Pedro-Revez-Silva/shelfarr" target="_blank" rel="noopener">GitHub</a>
     </nav>
   </header>
@@ -440,7 +447,12 @@
   <div class="layout">
     <aside class="sidebar" id="sidebar">
       <div class="nav-group">
-        <div class="nav-group-title">Getting Started</div>
+        <div class="nav-group-title">Documentation</div>
+        <a class="nav-link page" href="getting-started.html">Getting Started</a>
+        <a class="nav-link page current" href="configuration.html">Settings Reference</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">On This Page</div>
         <a class="nav-link" href="#overview">Overview</a>
       </div>
       <div class="nav-group">

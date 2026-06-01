@@ -100,8 +100,9 @@ After logging in, go to **Admin → Settings**:
 | Output Paths | Where to place completed audiobooks/ebooks |
 | Audiobookshelf | URL + API key for library integration (optional) |
 
-For a full field-by-field reference (types, defaults, and descriptions), use the website guide:
-- **Configuration Guide**: `docs/configuration.html`
+For more, see the documentation site:
+- **Getting Started** (install + setup walkthrough): `docs/getting-started.html`
+- **Settings Reference** (every field, type and default): `docs/configuration.html`
 
 ### OIDC/SSO Setup
 
