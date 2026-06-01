@@ -597,7 +597,7 @@
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
               <tr><td class="key"><code>anna_archive_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Enable Anna's Archive as an additional ebook search source.</td></tr>
-              <tr><td class="key"><code>anna_archive_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>annas-archive.se</code></td><td class="desc">Base URLs to try. Shelfarr uses the first reachable URL.</td></tr>
+              <tr><td class="key"><code>anna_archive_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>https://annas-archive.se</code></td><td class="desc">Base URLs to try. Shelfarr uses the first reachable URL.</td></tr>
               <tr><td class="key"><code>anna_archive_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Member API key (requires a donation).</td></tr>
               <tr><td class="key"><code>flaresolverr_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">FlareSolverr endpoint for bypassing DDoS protection (e.g. <code>http://flaresolverr:8191</code>).</td></tr>
               <tr><td class="key"><code>zlibrary_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Enable the unofficial Z-Library fallback. May break if the service changes.</td></tr>
@@ -732,11 +732,11 @@
             <tbody>
               <tr><td class="key"><code>discord_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Send native Discord webhook notifications.</td></tr>
               <tr><td class="key"><code>discord_webhook_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Incoming Discord webhook URL for the target channel.</td></tr>
-              <tr><td class="key"><code>discord_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>created,…,attention</code></td><td class="desc">Comma-separated Discord events to send.</td></tr>
+              <tr><td class="key"><code>discord_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>request_created,request_completed,request_failed,request_attention</code></td><td class="desc">Comma-separated Discord events to send.</td></tr>
               <tr><td class="key"><code>webhook_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Send generic JSON webhook notifications.</td></tr>
               <tr><td class="key"><code>webhook_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Webhook endpoint URL. A JSON payload is sent per enabled event.</td></tr>
               <tr><td class="key"><code>webhook_token</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Optional Bearer token for webhook authentication.</td></tr>
-              <tr><td class="key"><code>webhook_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>created,…,attention</code></td><td class="desc">Comma-separated webhook events to send.</td></tr>
+              <tr><td class="key"><code>webhook_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>request_created,request_completed,request_failed,request_attention</code></td><td class="desc">Comma-separated webhook events to send.</td></tr>
               <tr><td class="key"><code>webhook_topic</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Optional topic field in the payload (required by ntfy on the base URL).</td></tr>
               <tr><td class="key"><code>telegram_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Enable the Telegram command and notification integration.</td></tr>
               <tr><td class="key"><code>telegram_update_mode</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>polling</code></td><td class="desc">How updates are received: <code>polling</code> (local) or <code>webhook</code> (public HTTPS).</td></tr>
@@ -745,7 +745,7 @@
               <tr><td class="key"><code>telegram_webhook_secret</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Secret checked against <code>X-Telegram-Bot-Api-Secret-Token</code> (webhook mode).</td></tr>
               <tr><td class="key"><code>telegram_allowed_chat_ids</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Fallback allowlist of group chat IDs. Prefer pairing-code approval.</td></tr>
               <tr><td class="key"><code>telegram_request_username</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Shelfarr username that owns Telegram group requests. Defaults to the first admin.</td></tr>
-              <tr><td class="key"><code>telegram_notification_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>completed,failed,attention</code></td><td class="desc">Events sent back to the authorized group that created the request.</td></tr>
+              <tr><td class="key"><code>telegram_notification_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>request_completed,request_failed,request_attention</code></td><td class="desc">Events sent back to the authorized group that created the request.</td></tr>
             </tbody>
           </table>
         </div>
