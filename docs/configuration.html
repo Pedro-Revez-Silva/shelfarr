@@ -3,675 +3,829 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Shelfarr Configuration Guide</title>
-  <meta name="description" content="Shelfarr configuration reference for global settings and download client fields.">
+  <title>Configuration · Shelfarr Docs</title>
+  <meta name="description" content="Shelfarr configuration reference: every setting, its type, default and meaning, plus download client fields and path templates.">
   <link rel="icon" href="logo.png" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-primary: #030712;
-      --bg-secondary: #111827;
-      --bg-card: #1f2937;
-      --text-primary: #f9fafb;
-      --text-secondary: #9ca3af;
-      --text-muted: #6b7280;
-      --accent: #1d4ed8;
-      --accent-hover: #2563eb;
-      --border: #374151;
-      --ok-bg: #14532d;
-      --ok-text: #bbf7d0;
-      --warn-bg: #78350f;
-      --warn-text: #fde68a;
+      --bg: #0a0d13;
+      --bg-elevated: #0e131c;
+      --sidebar-bg: #0b0f17;
+      --card: #121823;
+      --border: #1e2735;
+      --border-strong: #2a3547;
+      --text: #e7ecf3;
+      --text-dim: #98a3b3;
+      --text-muted: #6b7787;
+      --accent: #4f8cff;
+      --accent-strong: #2563eb;
+      --accent-soft: rgba(79, 140, 255, 0.12);
+      --code: #cfe0ff;
+      --topbar-h: 60px;
+
+      --t-string: #6ea8fe;
+      --t-string-bg: rgba(110, 168, 254, 0.12);
+      --t-integer: #5fd0a0;
+      --t-integer-bg: rgba(95, 208, 160, 0.12);
+      --t-boolean: #f0b75f;
+      --t-boolean-bg: rgba(240, 183, 95, 0.12);
+      --t-json: #c191f5;
+      --t-json-bg: rgba(193, 145, 245, 0.12);
     }
 
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      line-height: 1.6;
+      font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
     }
 
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 0 24px;
+    a { color: inherit; }
+
+    code, .mono {
+      font-family: 'IBM Plex Mono', 'SF Mono', Monaco, Consolas, monospace;
     }
 
-    nav {
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      padding: 14px 0;
-      background: rgba(3, 7, 18, 0.92);
+    /* ---------- Top bar ---------- */
+    .topbar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: var(--topbar-h);
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 22px;
+      background: rgba(10, 13, 19, 0.85);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--border);
     }
 
-    nav .container {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 24px;
-    }
-
-    .logo {
+    .brand {
       display: flex;
       align-items: center;
       gap: 10px;
-      color: var(--text-primary);
-      text-decoration: none;
-      font-size: 1.35rem;
       font-weight: 700;
+      font-size: 1.15rem;
+      text-decoration: none;
+      letter-spacing: -0.01em;
     }
 
-    .logo img {
-      width: 30px;
-      height: 30px;
-      border-radius: 6px;
+    .brand img { width: 26px; height: 26px; border-radius: 6px; }
+
+    .brand .docs-tag {
+      font-weight: 500;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      border: 1px solid var(--border-strong);
+      background: var(--accent-soft);
+      padding: 2px 7px;
+      border-radius: 5px;
     }
 
-    .links {
+    .topbar-spacer { flex: 1; }
+
+    .topbar-links {
       display: flex;
       align-items: center;
-      gap: 18px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
+      gap: 6px;
     }
 
-    .links a {
-      color: var(--text-secondary);
+    .topbar-links a {
       text-decoration: none;
-      font-size: 0.92rem;
+      color: var(--text-dim);
+      font-size: 0.9rem;
+      padding: 7px 12px;
+      border-radius: 7px;
+      transition: color 0.15s, background 0.15s;
     }
 
-    .links a:hover {
-      color: var(--text-primary);
+    .topbar-links a:hover { color: var(--text); background: var(--bg-elevated); }
+
+    .topbar-links a.gh {
+      border: 1px solid var(--border-strong);
+      color: var(--text);
     }
 
-    .btn {
-      display: inline-flex;
+    .menu-toggle {
+      display: none;
+      background: none;
+      border: 1px solid var(--border-strong);
+      color: var(--text);
+      width: 38px; height: 38px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1.1rem;
       align-items: center;
       justify-content: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
+    }
+
+    /* ---------- Layout ---------- */
+    .layout {
+      display: flex;
+      align-items: flex-start;
+      padding-top: var(--topbar-h);
+    }
+
+    /* ---------- Sidebar ---------- */
+    .sidebar {
+      position: sticky;
+      top: var(--topbar-h);
+      width: 290px;
+      flex-shrink: 0;
+      height: calc(100vh - var(--topbar-h));
+      overflow-y: auto;
+      padding: 28px 14px 60px 24px;
+      border-right: 1px solid var(--border);
+      background: var(--sidebar-bg);
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-strong) transparent;
+    }
+
+    .sidebar::-webkit-scrollbar { width: 8px; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
+
+    .nav-group { margin-bottom: 22px; }
+
+    .nav-group-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--text-muted);
+      padding: 0 12px;
+      margin-bottom: 8px;
+    }
+
+    .nav-link {
+      display: block;
       text-decoration: none;
+      color: var(--text-dim);
       font-size: 0.9rem;
-      color: var(--text-primary);
-      background: var(--bg-card);
+      padding: 7px 12px;
+      border-radius: 8px;
+      border-left: 2px solid transparent;
+      transition: color 0.15s, background 0.15s, border-color 0.15s;
     }
 
-    .btn:hover {
-      border-color: var(--accent);
+    .nav-link:hover { color: var(--text); background: var(--bg-elevated); }
+
+    .nav-link.active {
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-left-color: var(--accent);
+      font-weight: 500;
     }
 
-    .btn-primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
+    /* ---------- Content ---------- */
+    .content {
+      flex: 1;
+      min-width: 0;
+      padding: 44px 48px 100px;
     }
 
-    .btn-primary:hover {
-      background: var(--accent-hover);
-      border-color: var(--accent-hover);
-    }
+    .article { max-width: 880px; margin: 0 auto; }
 
-    main {
-      padding: 32px 0 60px;
+    .breadcrumb {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 18px;
     }
-
-    .hero {
-      background: linear-gradient(180deg, rgba(29, 78, 216, 0.16), rgba(29, 78, 216, 0));
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 28px;
-      margin-bottom: 26px;
-    }
+    .breadcrumb a { color: var(--text-dim); text-decoration: none; }
+    .breadcrumb a:hover { color: var(--accent); }
 
     h1 {
-      font-size: clamp(1.9rem, 3.5vw, 2.7rem);
-      margin-bottom: 10px;
+      font-size: 2.5rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.1;
+      margin-bottom: 14px;
     }
 
-    .subtitle {
-      color: var(--text-secondary);
-      max-width: 900px;
+    .lead {
+      font-size: 1.12rem;
+      color: var(--text-dim);
+      margin-bottom: 28px;
+      max-width: 70ch;
     }
 
-    .hero-actions {
-      margin-top: 16px;
+    section[id] { scroll-margin-top: calc(var(--topbar-h) + 18px); }
+
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: -0.015em;
+      margin: 52px 0 6px;
+      padding-top: 8px;
+      scroll-margin-top: calc(var(--topbar-h) + 18px);
+    }
+
+    h2 .anchor {
+      opacity: 0;
+      margin-left: 8px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 400;
+      transition: opacity 0.15s;
+    }
+    h2:hover .anchor { opacity: 1; }
+
+    .section-desc {
+      color: var(--text-dim);
+      font-size: 0.96rem;
+      margin: 8px 0 18px;
+    }
+
+    p code, li code, td code, .section-desc code {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1px 6px;
+      font-size: 0.83em;
+      color: var(--code);
+      white-space: nowrap;
+    }
+
+    /* ---------- Callouts ---------- */
+    .callout {
       display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    .note {
-      margin-top: 14px;
-      padding: 10px 12px;
+      gap: 12px;
+      margin: 22px 0;
+      padding: 14px 16px;
       border-radius: 10px;
-      border: 1px solid var(--border);
-      background: var(--bg-secondary);
-      color: var(--text-secondary);
+      border: 1px solid var(--border-strong);
+      background: var(--bg-elevated);
       font-size: 0.92rem;
+      color: var(--text-dim);
     }
+    .callout .ico { flex-shrink: 0; font-size: 1.05rem; line-height: 1.5; }
+    .callout strong { color: var(--text); font-weight: 600; }
 
-    .pills {
-      margin-top: 12px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
+    .callout.warn { border-color: #6b4a12; background: rgba(240, 183, 95, 0.07); }
+    .callout.warn .ico { filter: saturate(1.4); }
 
-    .pill {
-      font-size: 0.8rem;
-      padding: 3px 8px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      color: var(--text-secondary);
-      background: var(--bg-secondary);
-    }
-
-    .section {
-      margin-top: 26px;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      overflow: hidden;
-    }
-
-    .section h2 {
-      font-size: 1.3rem;
-      padding: 18px 20px;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .section .description {
-      padding: 0 20px 14px;
-      color: var(--text-secondary);
-      font-size: 0.95rem;
-    }
-
+    /* ---------- Tables ---------- */
     .table-wrap {
-      overflow-x: auto;
+      margin: 18px 0 8px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: auto;
+      background: var(--card);
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 860px;
-    }
+    table { width: 100%; border-collapse: collapse; min-width: 720px; }
 
-    th,
-    td {
+    thead th {
       text-align: left;
-      padding: 12px 14px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      padding: 12px 16px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    tbody td {
+      padding: 13px 16px;
       border-top: 1px solid var(--border);
       vertical-align: top;
       font-size: 0.9rem;
+      color: var(--text-dim);
     }
 
-    th {
-      color: var(--text-secondary);
+    tbody tr:first-child td { border-top: none; }
+    tbody tr:hover td { background: rgba(79, 140, 255, 0.04); }
+
+    td.key { white-space: nowrap; }
+    td.key code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--code);
+      font-weight: 500;
+      font-size: 0.86rem;
+      white-space: nowrap;
+    }
+
+    td.default code {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1px 7px;
+      color: var(--text);
       font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      background: rgba(17, 24, 39, 0.85);
-      border-top: 0;
-      position: sticky;
-      top: 0;
-      z-index: 1;
     }
+    td.desc { color: var(--text-dim); }
+    td.desc code { white-space: normal; }
 
-    code {
-      font-family: 'SF Mono', Monaco, Consolas, 'Courier New', monospace;
-      color: #dbeafe;
-      font-size: 0.82rem;
-    }
-
-    .type {
-      color: var(--text-primary);
-      font-weight: 600;
-    }
-
-    .tag {
-      display: inline-flex;
+    .badge {
+      display: inline-block;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.74rem;
+      font-weight: 500;
+      padding: 2px 9px;
       border-radius: 999px;
-      font-size: 0.75rem;
-      padding: 2px 8px;
-      border: 1px solid;
+      border: 1px solid currentColor;
+      white-space: nowrap;
+    }
+    .t-string  { color: var(--t-string);  background: var(--t-string-bg); }
+    .t-integer { color: var(--t-integer); background: var(--t-integer-bg); }
+    .t-boolean { color: var(--t-boolean); background: var(--t-boolean-bg); }
+    .t-json    { color: var(--t-json);    background: var(--t-json-bg); }
+
+    .req {
+      display: inline-block;
+      font-size: 0.72rem;
       font-weight: 600;
+      padding: 2px 9px;
+      border-radius: 999px;
+      white-space: nowrap;
     }
+    .req-yes { color: var(--t-integer); background: var(--t-integer-bg); border: 1px solid var(--t-integer); }
+    .req-no  { color: var(--text-muted); background: var(--bg-elevated); border: 1px solid var(--border-strong); }
 
-    .tag-required {
-      background: var(--ok-bg);
-      color: var(--ok-text);
-      border-color: #166534;
+    /* ---------- Variable chips ---------- */
+    .var-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 8px;
+      margin: 16px 0 6px;
     }
-
-    .tag-optional {
-      background: var(--bg-card);
-      color: var(--text-secondary);
-      border-color: var(--border);
+    .var-grid .var {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.82rem;
+      color: var(--code);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
     }
+    .var-grid .var span { color: var(--text-muted); display: block; font-size: 0.72rem; margin-top: 2px; }
 
-    .warning {
-      margin-top: 16px;
-      padding: 10px 12px;
-      border-radius: 10px;
-      background: var(--warn-bg);
-      color: var(--warn-text);
-      border: 1px solid #92400e;
-      font-size: 0.88rem;
-    }
-
-    footer {
-      margin-top: 36px;
-      padding-top: 20px;
+    /* ---------- Footer ---------- */
+    .doc-footer {
+      margin-top: 64px;
+      padding-top: 24px;
       border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 14px;
       color: var(--text-muted);
       font-size: 0.85rem;
     }
+    .doc-footer a { color: var(--text-dim); text-decoration: none; }
+    .doc-footer a:hover { color: var(--accent); }
 
-    @media (max-width: 900px) {
-      .links {
-        display: none;
-      }
+    /* ---------- Scrim (mobile) ---------- */
+    .scrim {
+      display: none;
+      position: fixed;
+      inset: var(--topbar-h) 0 0 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 30;
+    }
 
-      .hero,
-      .section {
-        border-radius: 12px;
+    /* ---------- Responsive ---------- */
+    @media (max-width: 1000px) {
+      .menu-toggle { display: flex; }
+      .topbar-links .label-hide { display: none; }
+      .sidebar {
+        position: fixed;
+        top: var(--topbar-h);
+        left: 0;
+        z-index: 40;
+        width: 280px;
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+        box-shadow: 0 0 40px rgba(0,0,0,0.4);
       }
+      .sidebar.open { transform: translateX(0); }
+      .scrim.show { display: block; }
+      .content { padding: 32px 22px 80px; }
+      h1 { font-size: 2rem; }
     }
   </style>
 </head>
 <body>
-  <nav>
-    <div class="container">
-      <a href="index.html" class="logo">
-        <img src="logo.png" alt="Shelfarr">
-        Shelfarr
-      </a>
-      <div class="links">
-        <a href="index.html#features">Features</a>
-        <a href="index.html#integrations">Integrations</a>
-        <a href="index.html#faq">FAQ</a>
-        <a href="https://github.com/Pedro-Revez-Silva/shelfarr">GitHub</a>
+  <header class="topbar">
+    <button class="menu-toggle" id="menuToggle" aria-label="Toggle navigation">☰</button>
+    <a href="index.html" class="brand">
+      <img src="logo.png" alt="">
+      Shelfarr
+      <span class="docs-tag">Docs</span>
+    </a>
+    <div class="topbar-spacer"></div>
+    <nav class="topbar-links">
+      <a href="index.html" class="label-hide">Home</a>
+      <a href="index.html#install" class="label-hide">Install</a>
+      <a class="gh" href="https://github.com/Pedro-Revez-Silva/shelfarr" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="scrim" id="scrim"></div>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="nav-group">
+        <div class="nav-group-title">Getting Started</div>
+        <a class="nav-link" href="#overview">Overview</a>
       </div>
-    </div>
-  </nav>
+      <div class="nav-group">
+        <div class="nav-group-title">Connections</div>
+        <a class="nav-link" href="#indexers">Indexers</a>
+        <a class="nav-link" href="#download-clients">Download Clients</a>
+        <a class="nav-link" href="#audiobookshelf">Audiobookshelf</a>
+        <a class="nav-link" href="#metadata">Metadata Sources</a>
+        <a class="nav-link" href="#direct-downloads">Direct Ebook Downloads</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Library &amp; Processing</div>
+        <a class="nav-link" href="#paths">Output Paths &amp; Templates</a>
+        <a class="nav-link" href="#download-settings">Download Settings</a>
+        <a class="nav-link" href="#queue">Queue &amp; Retry</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Result Selection</div>
+        <a class="nav-link" href="#auto-select">Auto-Selection</a>
+        <a class="nav-link" href="#formats">Format Preferences</a>
+        <a class="nav-link" href="#language">Language &amp; Matching</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Notifications</div>
+        <a class="nav-link" href="#notifications">Discord, Telegram &amp; Webhooks</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Access &amp; Security</div>
+        <a class="nav-link" href="#security">Security</a>
+        <a class="nav-link" href="#oidc">OIDC / SSO</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">Maintenance</div>
+        <a class="nav-link" href="#health">Health &amp; Updates</a>
+      </div>
+    </aside>
 
-  <main>
-    <div class="container">
-      <section class="hero">
-        <h1>Configuration Guide</h1>
-        <p class="subtitle">
-          This page documents Shelfarr settings and download client fields. It is intended as a complete
-          reference for admins configuring integrations, paths, queue behavior, authentication, and metadata sources.
+    <main class="content">
+      <article class="article">
+        <div class="breadcrumb"><a href="index.html">Shelfarr</a> / Configuration</div>
+        <h1>Configuration</h1>
+        <p class="lead">
+          A field-by-field reference for every Shelfarr setting &mdash; its type, default and what it does.
+          Use it while configuring integrations, paths, queue behaviour, result selection, notifications and authentication.
         </p>
-        <div class="hero-actions">
-          <a class="btn btn-primary" href="index.html#install">Quick Start</a>
-          <a class="btn" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/README.md">README</a>
-        </div>
-        <p class="note">
-          Most settings live in <strong>Admin &rarr; Settings</strong>. Download clients are managed in
-          <strong>Admin &rarr; Download Clients</strong>, and per-indexer routing in <strong>Admin &rarr; Download Routing</strong>.
-        </p>
-        <div class="pills">
-          <span class="pill">Path vars: {author}</span>
-          <span class="pill">{authorSort}</span>
-          <span class="pill">{title}</span>
-          <span class="pill">{titleSort}</span>
-          <span class="pill">{year}</span>
-          <span class="pill">{publisher}</span>
-          <span class="pill">{language}</span>
-          <span class="pill">{series}</span>
-          <span class="pill">{seriesSort}</span>
-          <span class="pill">{seriesNum:00}</span>
-          <span class="pill">{narrator}</span>
-        </div>
-      </section>
 
-      <section class="section">
-        <h2>Download Client Fields</h2>
-        <p class="description">Fields available when creating or editing clients in Admin &rarr; Download Clients.</p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Field</th>
-                <th>Required</th>
-                <th>Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>name</code></td>
-                <td><span class="tag tag-required">Required</span></td>
-                <td>Display name shown in Shelfarr (example: <code>Home qBittorrent</code>).</td>
-              </tr>
-              <tr>
-                <td><code>client_type</code></td>
-                <td><span class="tag tag-required">Required</span></td>
-                <td>Client adapter: <code>qbittorrent</code>, <code>decypharr</code>, <code>deluge</code>, <code>transmission</code> (torrent), <code>sabnzbd</code>, <code>nzbget</code> (usenet).</td>
-              </tr>
-              <tr>
-                <td><code>url</code></td>
-                <td><span class="tag tag-required">Required</span></td>
-                <td>Base URL including protocol and port.</td>
-              </tr>
-              <tr>
-                <td><code>username</code></td>
-                <td><span class="tag tag-optional">Optional</span></td>
-                <td>Required by clients that use user/password authentication.</td>
-              </tr>
-              <tr>
-                <td><code>password</code></td>
-                <td><span class="tag tag-optional">Optional</span></td>
-                <td>Password for authenticated clients. Stored encrypted.</td>
-              </tr>
-              <tr>
-                <td><code>api_key</code></td>
-                <td><span class="tag tag-optional">Optional</span></td>
-                <td>API key used by SABnzbd. Stored encrypted.</td>
-              </tr>
-              <tr>
-                <td><code>category</code></td>
-                <td><span class="tag tag-optional">Optional</span></td>
-                <td>Category/tag applied in the download client (for routing and filtering).</td>
-              </tr>
-              <tr>
-                <td><code>download_path</code></td>
-                <td><span class="tag tag-optional">Optional</span></td>
-                <td>Client-specific completed download path override.</td>
-              </tr>
-              <tr>
-                <td><code>enabled</code></td>
-                <td><span class="tag tag-required">Required</span></td>
-                <td>When disabled, Shelfarr will not use the client for new downloads.</td>
-              </tr>
-              <tr>
-                <td><code>priority</code></td>
-                <td><span class="tag tag-required">Required</span></td>
-                <td>Order within the same type. Lower values are preferred first.</td>
-              </tr>
-              <tr>
-                <td><code>torrent_verification_max_attempts</code></td>
-                <td><span class="tag tag-optional">Optional</span></td>
-                <td>Torrent clients only. Times Shelfarr re-checks that a torrent was accepted (default <code>10</code>).</td>
-              </tr>
-              <tr>
-                <td><code>torrent_verification_wait_time</code></td>
-                <td><span class="tag tag-optional">Optional</span></td>
-                <td>Torrent clients only. Seconds to wait between verification attempts (default <code>2</code>).</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="description">Use <strong>Admin &rarr; Download Routing</strong> to send specific indexers to specific clients per download type.</p>
-      </section>
+        <section id="overview">
+          <div class="callout">
+            <span class="ico">⚙️</span>
+            <div>
+              Most settings live in <strong>Admin &rarr; Settings</strong>. Download clients are managed under
+              <strong>Admin &rarr; Download Clients</strong>, and per-indexer routing under
+              <strong>Admin &rarr; Download Routing</strong>. Per-user API tokens are created from
+              <strong>Profile &rarr; API tokens</strong>.
+            </div>
+          </div>
+          <div class="callout">
+            <span class="ico">🧩</span>
+            <div>
+              You don't need everything. A minimal setup is one indexer (or a direct ebook source), one download
+              client, and your output paths. Everything else is optional and has a sensible default.
+            </div>
+          </div>
+        </section>
 
-      <section class="section">
-        <h2>Indexers (Prowlarr &amp; Jackett)</h2>
+        <h2 id="indexers">Indexers <a class="anchor" href="#indexers" aria-label="Link to Indexers">#</a></h2>
+        <p class="section-desc">Shelfarr searches indexers through Prowlarr or Jackett. Pick one provider with <code>indexer_provider</code>.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>indexer_provider</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Active indexer provider: <code>prowlarr</code>, <code>jackett</code>, or <code>none</code>. Leave unset on upgrades to keep legacy Prowlarr config.</td></tr>
-              <tr><td><code>prowlarr_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Base URL for Prowlarr (e.g. <code>http://localhost:9696</code>).</td></tr>
-              <tr><td><code>prowlarr_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>API key from Prowlarr &rarr; Settings &rarr; General.</td></tr>
-              <tr><td><code>prowlarr_tags</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Comma-separated tag IDs or names to filter indexers (empty = all).</td></tr>
-              <tr><td><code>jackett_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Base URL for Jackett (e.g. <code>http://localhost:9117</code>).</td></tr>
-              <tr><td><code>jackett_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>API key from the Jackett dashboard.</td></tr>
-              <tr><td><code>jackett_indexer_filter</code></td><td class="type">string</td><td><code>all</code></td><td>Torznab indexer filter. Use <code>all</code> or a Jackett filter such as <code>tag:books</code>.</td></tr>
+              <tr><td class="key"><code>indexer_provider</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Active provider: <code>prowlarr</code>, <code>jackett</code> or <code>none</code>. Leave unset on upgrades to keep legacy Prowlarr config.</td></tr>
+              <tr><td class="key"><code>prowlarr_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Base URL for Prowlarr (e.g. <code>http://localhost:9696</code>).</td></tr>
+              <tr><td class="key"><code>prowlarr_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API key from Prowlarr &rarr; Settings &rarr; General.</td></tr>
+              <tr><td class="key"><code>prowlarr_tags</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Comma-separated tag IDs or names to filter indexers (empty = all).</td></tr>
+              <tr><td class="key"><code>jackett_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Base URL for Jackett (e.g. <code>http://localhost:9117</code>).</td></tr>
+              <tr><td class="key"><code>jackett_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API key from the Jackett dashboard.</td></tr>
+              <tr><td class="key"><code>jackett_indexer_filter</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>all</code></td><td class="desc">Torznab indexer filter. Use <code>all</code> or a Jackett filter such as <code>tag:books</code>.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Download Settings</h2>
+        <h2 id="download-clients">Download Clients <a class="anchor" href="#download-clients" aria-label="Link to Download Clients">#</a></h2>
+        <p class="section-desc">Each client is created in <strong>Admin &rarr; Download Clients</strong>. Supported adapters: <code>qbittorrent</code>, <code>decypharr</code>, <code>deluge</code>, <code>transmission</code> (torrent) and <code>sabnzbd</code>, <code>nzbget</code> (usenet).</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Field</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="key"><code>name</code></td><td><span class="req req-yes">Required</span></td><td class="desc">Display name shown in Shelfarr (e.g. <code>Home qBittorrent</code>).</td></tr>
+              <tr><td class="key"><code>client_type</code></td><td><span class="req req-yes">Required</span></td><td class="desc">Which adapter to use, from the list above.</td></tr>
+              <tr><td class="key"><code>url</code></td><td><span class="req req-yes">Required</span></td><td class="desc">Base URL including protocol and port.</td></tr>
+              <tr><td class="key"><code>username</code></td><td><span class="req req-no">Optional</span></td><td class="desc">Required by clients that use user/password authentication.</td></tr>
+              <tr><td class="key"><code>password</code></td><td><span class="req req-no">Optional</span></td><td class="desc">Password for authenticated clients. Stored encrypted.</td></tr>
+              <tr><td class="key"><code>api_key</code></td><td><span class="req req-no">Optional</span></td><td class="desc">API key used by SABnzbd. Stored encrypted.</td></tr>
+              <tr><td class="key"><code>category</code></td><td><span class="req req-no">Optional</span></td><td class="desc">Category/tag applied in the download client, for routing and filtering.</td></tr>
+              <tr><td class="key"><code>download_path</code></td><td><span class="req req-no">Optional</span></td><td class="desc">Client-specific completed download path override.</td></tr>
+              <tr><td class="key"><code>enabled</code></td><td><span class="req req-yes">Required</span></td><td class="desc">When disabled, Shelfarr won't use the client for new downloads.</td></tr>
+              <tr><td class="key"><code>priority</code></td><td><span class="req req-yes">Required</span></td><td class="desc">Order within the same type. Lower values are preferred first.</td></tr>
+              <tr><td class="key"><code>torrent_verification_max_attempts</code></td><td><span class="req req-no">Optional</span></td><td class="desc">Torrent clients only. Times Shelfarr re-checks a torrent was accepted (default <code>10</code>).</td></tr>
+              <tr><td class="key"><code>torrent_verification_wait_time</code></td><td><span class="req req-no">Optional</span></td><td class="desc">Torrent clients only. Seconds between verification attempts (default <code>2</code>).</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          <span class="ico">🧭</span>
+          <div>Use <strong>Admin &rarr; Download Routing</strong> to send specific indexers to specific clients per download type.</div>
+        </div>
+
+        <h2 id="audiobookshelf">Audiobookshelf <a class="anchor" href="#audiobookshelf" aria-label="Link to Audiobookshelf">#</a></h2>
+        <p class="section-desc">Optional. When configured, Shelfarr triggers library scans after a download lands and enriches metadata.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>preferred_download_types</code></td><td class="type">json</td><td><code>["torrent","usenet","direct"]</code></td><td>Download types in preference order. Higher-ranked types win when multiple result types are available.</td></tr>
-              <tr><td><code>download_check_interval</code></td><td class="type">integer</td><td><code>60</code></td><td>Seconds between download status checks.</td></tr>
-              <tr><td><code>download_enqueue_timeout_minutes</code></td><td class="type">integer</td><td><code>5</code></td><td>Minutes a download may stay queued before being flagged as never dispatched.</td></tr>
-              <tr><td><code>post_processing_source_path_retries</code></td><td class="type">integer</td><td><code>10</code></td><td>Retries while waiting for completed download files to appear.</td></tr>
-              <tr><td><code>remove_completed_usenet_downloads</code></td><td class="type">boolean</td><td><code>true</code></td><td>Remove completed usenet jobs from the client after import.</td></tr>
+              <tr><td class="key"><code>audiobookshelf_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Base URL for Audiobookshelf (e.g. <code>http://localhost:13378</code>).</td></tr>
+              <tr><td class="key"><code>audiobookshelf_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API token from Audiobookshelf user settings.</td></tr>
+              <tr><td class="key"><code>audiobookshelf_audiobook_library_id</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Library ID for audiobooks.</td></tr>
+              <tr><td class="key"><code>audiobookshelf_ebook_library_id</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Library ID for ebooks.</td></tr>
+              <tr><td class="key"><code>audiobookshelf_library_sync_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>3600</code></td><td class="desc">Seconds between automatic library sync jobs.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Audiobookshelf</h2>
+        <h2 id="metadata">Metadata Sources <a class="anchor" href="#metadata" aria-label="Link to Metadata Sources">#</a></h2>
+        <p class="section-desc">Open Library is always available. Hardcover is optional and used first when <code>metadata_source</code> is <code>auto</code>.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>audiobookshelf_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Base URL for Audiobookshelf.</td></tr>
-              <tr><td><code>audiobookshelf_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>API token from Audiobookshelf user settings.</td></tr>
-              <tr><td><code>audiobookshelf_audiobook_library_id</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Audiobooks library ID.</td></tr>
-              <tr><td><code>audiobookshelf_ebook_library_id</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Ebooks library ID.</td></tr>
-              <tr><td><code>audiobookshelf_library_sync_interval</code></td><td class="type">integer</td><td><code>3600</code></td><td>Seconds between automatic library sync jobs.</td></tr>
+              <tr><td class="key"><code>metadata_source</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>auto</code></td><td class="desc">Primary source: <code>auto</code> (Hardcover first, Open Library fallback), <code>hardcover</code> or <code>openlibrary</code>.</td></tr>
+              <tr><td class="key"><code>hardcover_api_token</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API token from <code>hardcover.app/account/api</code>.</td></tr>
+              <tr><td class="key"><code>hardcover_search_limit</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>10</code></td><td class="desc">Max search results from Hardcover.</td></tr>
+              <tr><td class="key"><code>open_library_search_limit</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>20</code></td><td class="desc">Max search results from Open Library.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Output Paths & Templates</h2>
+        <h2 id="direct-downloads">Direct Ebook Downloads <a class="anchor" href="#direct-downloads" aria-label="Link to Direct Ebook Downloads">#</a></h2>
+        <p class="section-desc">Optional sources that download ebooks directly, without an indexer or torrent client.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>audiobook_output_path</code></td><td class="type">string</td><td><code>/audiobooks</code></td><td>Destination directory for completed audiobooks.</td></tr>
-              <tr><td><code>ebook_output_path</code></td><td class="type">string</td><td><code>/ebooks</code></td><td>Destination directory for completed ebooks.</td></tr>
-              <tr><td><code>audiobook_path_template</code></td><td class="type">string</td><td><code>{author}/{title}</code></td><td>Folder template for audiobooks.</td></tr>
-              <tr><td><code>ebook_path_template</code></td><td class="type">string</td><td><code>{author}/{title}</code></td><td>Folder template for ebooks.</td></tr>
-              <tr><td><code>audiobook_filename_template</code></td><td class="type">string</td><td><code>{author} - {title}</code></td><td>Filename template for audiobooks (extension appended automatically).</td></tr>
-              <tr><td><code>ebook_filename_template</code></td><td class="type">string</td><td><code>{author} - {title}</code></td><td>Filename template for ebooks (extension appended automatically).</td></tr>
-              <tr><td><code>download_remote_path</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Download client host path (for remote path mapping).</td></tr>
-              <tr><td><code>download_local_path</code></td><td class="type">string</td><td><code>/downloads</code></td><td>Container-visible path where downloaded files appear.</td></tr>
+              <tr><td class="key"><code>anna_archive_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Enable Anna's Archive as an additional ebook search source.</td></tr>
+              <tr><td class="key"><code>anna_archive_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>annas-archive.se</code></td><td class="desc">Base URLs to try. Shelfarr uses the first reachable URL.</td></tr>
+              <tr><td class="key"><code>anna_archive_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Member API key (requires a donation).</td></tr>
+              <tr><td class="key"><code>flaresolverr_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">FlareSolverr endpoint for bypassing DDoS protection (e.g. <code>http://flaresolverr:8191</code>).</td></tr>
+              <tr><td class="key"><code>zlibrary_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Enable the unofficial Z-Library fallback. May break if the service changes.</td></tr>
+              <tr><td class="key"><code>zlibrary_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(built-in list)</code></td><td class="desc">Base URLs to try. Shelfarr uses the first that accepts your login.</td></tr>
+              <tr><td class="key"><code>zlibrary_email</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Z-Library account email used for login.</td></tr>
+              <tr><td class="key"><code>zlibrary_password</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Z-Library account password. Stored encrypted.</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="warning">Template validation requires <code>{title}</code>. Path templates cannot contain <code>..</code> or start with <code>/</code>.</div>
-      </section>
 
-      <section class="section">
-        <h2>Queue, Retry & Search Limits</h2>
+        <h2 id="paths">Output Paths &amp; Templates <a class="anchor" href="#paths" aria-label="Link to Output Paths">#</a></h2>
+        <p class="section-desc">Where completed books are placed, and how their folders and filenames are named.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>immediate_search_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Search immediately when requests are created (instead of waiting for the queue cycle).</td></tr>
-              <tr><td><code>auto_approve_requests</code></td><td class="type">boolean</td><td><code>false</code></td><td>Automatically enqueue searches for requests created by non-admin users.</td></tr>
-              <tr><td><code>queue_batch_size</code></td><td class="type">integer</td><td><code>5</code></td><td>Requests processed per queue run.</td></tr>
-              <tr><td><code>rate_limit_delay</code></td><td class="type">integer</td><td><code>2</code></td><td>Seconds between API calls.</td></tr>
-              <tr><td><code>max_retries</code></td><td class="type">integer</td><td><code>10</code></td><td>Retry attempts before request is flagged for attention.</td></tr>
-              <tr><td><code>retry_base_delay_hours</code></td><td class="type">integer</td><td><code>24</code></td><td>Base delay before retrying not_found requests.</td></tr>
-              <tr><td><code>retry_max_delay_days</code></td><td class="type">integer</td><td><code>7</code></td><td>Maximum retry delay cap.</td></tr>
-              <tr><td><code>open_library_search_limit</code></td><td class="type">integer</td><td><code>20</code></td><td>Max Open Library search results returned.</td></tr>
-              <tr><td><code>hardcover_search_limit</code></td><td class="type">integer</td><td><code>10</code></td><td>Max Hardcover search results returned.</td></tr>
+              <tr><td class="key"><code>audiobook_output_path</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>/audiobooks</code></td><td class="desc">Destination directory for completed audiobooks.</td></tr>
+              <tr><td class="key"><code>ebook_output_path</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>/ebooks</code></td><td class="desc">Destination directory for completed ebooks.</td></tr>
+              <tr><td class="key"><code>audiobook_path_template</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>{author}/{title}</code></td><td class="desc">Folder template for audiobooks.</td></tr>
+              <tr><td class="key"><code>ebook_path_template</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>{author}/{title}</code></td><td class="desc">Folder template for ebooks.</td></tr>
+              <tr><td class="key"><code>audiobook_filename_template</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>{author} - {title}</code></td><td class="desc">Filename template for audiobooks (extension appended automatically).</td></tr>
+              <tr><td class="key"><code>ebook_filename_template</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>{author} - {title}</code></td><td class="desc">Filename template for ebooks (extension appended automatically).</td></tr>
+              <tr><td class="key"><code>download_remote_path</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Download client host path, for remote path mapping.</td></tr>
+              <tr><td class="key"><code>download_local_path</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>/downloads</code></td><td class="desc">Container-visible path where downloaded files appear.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
+        <p class="section-desc" style="margin-top:24px"><strong>Template variables</strong> &mdash; available in both path and filename templates:</p>
+        <div class="var-grid">
+          <div class="var">{author}<span>Primary author</span></div>
+          <div class="var">{authorSort}<span>Sortable author</span></div>
+          <div class="var">{title}<span>Book title</span></div>
+          <div class="var">{titleSort}<span>Sortable title</span></div>
+          <div class="var">{year}<span>Publish year</span></div>
+          <div class="var">{publisher}<span>Publisher</span></div>
+          <div class="var">{language}<span>Language code</span></div>
+          <div class="var">{series}<span>Series name</span></div>
+          <div class="var">{seriesSort}<span>Sortable series</span></div>
+          <div class="var">{seriesNum:00}<span>Padded number</span></div>
+          <div class="var">{narrator}<span>Narrator</span></div>
+        </div>
+        <div class="callout warn">
+          <span class="ico">⚠️</span>
+          <div>
+            Templates must include <code>{title}</code>. Optional suffix text is allowed inside braces, e.g.
+            <code>{series/}</code> or <code>{series - }</code>, which is dropped when the value is empty.
+            Path templates cannot contain <code>..</code> or start with <code>/</code>.
+          </div>
+        </div>
 
-      <section class="section">
-        <h2>Auto-Selection</h2>
+        <h2 id="download-settings">Download Settings <a class="anchor" href="#download-settings" aria-label="Link to Download Settings">#</a></h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>auto_select_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Automatically select the best result without admin review.</td></tr>
-              <tr><td><code>auto_select_min_seeders</code></td><td class="type">integer</td><td><code>1</code></td><td>Minimum seeders required for torrent auto-selection.</td></tr>
-              <tr><td><code>auto_select_confidence_threshold</code></td><td class="type">integer</td><td><code>90</code></td><td>Minimum confidence score (0-100) for auto-selection.</td></tr>
+              <tr><td class="key"><code>preferred_download_types</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>["torrent","usenet","direct"]</code></td><td class="desc">Download types in preference order. Higher-ranked types win when multiple result types are available.</td></tr>
+              <tr><td class="key"><code>download_check_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>60</code></td><td class="desc">Seconds between download status checks.</td></tr>
+              <tr><td class="key"><code>download_enqueue_timeout_minutes</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>5</code></td><td class="desc">Minutes a download may stay queued before being flagged as never dispatched.</td></tr>
+              <tr><td class="key"><code>post_processing_source_path_retries</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>10</code></td><td class="desc">Retries while waiting for completed download files to appear.</td></tr>
+              <tr><td class="key"><code>remove_completed_usenet_downloads</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>true</code></td><td class="desc">Remove completed usenet jobs from the client after import.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Format Preferences</h2>
-        <p class="description">Formats are comma-separated lists. Approved/rejected lists gate auto-selection; preferred lists are ranked best-to-worst.</p>
+        <h2 id="queue">Queue &amp; Retry <a class="anchor" href="#queue" aria-label="Link to Queue and Retry">#</a></h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>ebook_preferred_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Ebook formats in preference order, best to worst.</td></tr>
-              <tr><td><code>ebook_approved_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Ebook formats that may be auto-selected (blank = allow any).</td></tr>
-              <tr><td><code>ebook_rejected_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Ebook formats that must never be auto-selected.</td></tr>
-              <tr><td><code>audiobook_preferred_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Audiobook formats in preference order, best to worst.</td></tr>
-              <tr><td><code>audiobook_approved_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Audiobook formats that may be auto-selected (blank = allow any).</td></tr>
-              <tr><td><code>audiobook_rejected_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Audiobook formats that must never be auto-selected.</td></tr>
-              <tr><td><code>audiobook_prefer_single_file</code></td><td class="type">boolean</td><td><code>false</code></td><td>Prefer single-file releases (e.g. <code>.m4b</code>) over chapter-split releases.</td></tr>
-              <tr><td><code>audiobook_prefer_higher_bitrate</code></td><td class="type">boolean</td><td><code>false</code></td><td>Prefer higher bitrate releases when bitrate can be inferred from the title.</td></tr>
+              <tr><td class="key"><code>immediate_search_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Search immediately when a request is created, instead of waiting for the queue cycle.</td></tr>
+              <tr><td class="key"><code>auto_approve_requests</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Automatically enqueue searches for requests created by non-admin users.</td></tr>
+              <tr><td class="key"><code>queue_batch_size</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>5</code></td><td class="desc">Requests processed per queue run.</td></tr>
+              <tr><td class="key"><code>rate_limit_delay</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>2</code></td><td class="desc">Seconds between API calls.</td></tr>
+              <tr><td class="key"><code>max_retries</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>10</code></td><td class="desc">Retry attempts before a request is flagged for attention.</td></tr>
+              <tr><td class="key"><code>retry_base_delay_hours</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>24</code></td><td class="desc">Base delay before retrying not-found requests.</td></tr>
+              <tr><td class="key"><code>retry_max_delay_days</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>7</code></td><td class="desc">Maximum retry delay cap.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Language &amp; Matching</h2>
+        <h2 id="auto-select">Auto-Selection <a class="anchor" href="#auto-select" aria-label="Link to Auto-Selection">#</a></h2>
+        <p class="section-desc">When enabled, Shelfarr picks the best result automatically instead of waiting for admin review.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>default_language</code></td><td class="type">string</td><td><code>en</code></td><td>Default language for new requests.</td></tr>
-              <tr><td><code>enabled_languages</code></td><td class="type">json</td><td><code>["en"]</code></td><td>Languages selectable when creating requests.</td></tr>
-              <tr><td><code>min_match_confidence</code></td><td class="type">integer</td><td><code>50</code></td><td>Minimum confidence score (0-100) to display a search result.</td></tr>
+              <tr><td class="key"><code>auto_select_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Automatically select the best result without admin review.</td></tr>
+              <tr><td class="key"><code>auto_select_min_seeders</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>1</code></td><td class="desc">Minimum seeders required for torrent auto-selection.</td></tr>
+              <tr><td class="key"><code>auto_select_confidence_threshold</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>90</code></td><td class="desc">Minimum confidence score (0&ndash;100) for auto-selection.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Metadata Sources</h2>
-        <p class="description">Open Library is always available. Hardcover is optional and used first when <code>metadata_source</code> is <code>auto</code>.</p>
+        <h2 id="formats">Format Preferences <a class="anchor" href="#formats" aria-label="Link to Format Preferences">#</a></h2>
+        <p class="section-desc">Comma-separated format lists. Approved/rejected lists gate auto-selection; preferred lists are ranked best&rarr;worst.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>metadata_source</code></td><td class="type">string</td><td><code>auto</code></td><td>Primary metadata source: <code>auto</code> (Hardcover first, Open Library fallback), <code>hardcover</code>, or <code>openlibrary</code>.</td></tr>
-              <tr><td><code>hardcover_api_token</code></td><td class="type">string</td><td><code>(empty)</code></td><td>API token from <code>hardcover.app/account/api</code>.</td></tr>
-              <tr><td><code>hardcover_search_limit</code></td><td class="type">integer</td><td><code>10</code></td><td>Max search results from Hardcover.</td></tr>
+              <tr><td class="key"><code>ebook_preferred_formats</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>[]</code></td><td class="desc">Ebook formats in preference order, best to worst.</td></tr>
+              <tr><td class="key"><code>ebook_approved_formats</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>[]</code></td><td class="desc">Ebook formats that may be auto-selected (blank = allow any).</td></tr>
+              <tr><td class="key"><code>ebook_rejected_formats</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>[]</code></td><td class="desc">Ebook formats that must never be auto-selected.</td></tr>
+              <tr><td class="key"><code>audiobook_preferred_formats</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>[]</code></td><td class="desc">Audiobook formats in preference order, best to worst.</td></tr>
+              <tr><td class="key"><code>audiobook_approved_formats</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>[]</code></td><td class="desc">Audiobook formats that may be auto-selected (blank = allow any).</td></tr>
+              <tr><td class="key"><code>audiobook_rejected_formats</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>[]</code></td><td class="desc">Audiobook formats that must never be auto-selected.</td></tr>
+              <tr><td class="key"><code>audiobook_prefer_single_file</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Prefer single-file releases (e.g. <code>.m4b</code>) over chapter-split releases.</td></tr>
+              <tr><td class="key"><code>audiobook_prefer_higher_bitrate</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Prefer higher bitrate releases when bitrate can be inferred from the title.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Direct Ebook Downloads</h2>
-        <p class="description">Optional sources that download ebooks directly, without an indexer or torrent client.</p>
+        <h2 id="language">Language &amp; Matching <a class="anchor" href="#language" aria-label="Link to Language and Matching">#</a></h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>anna_archive_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable Anna's Archive as an additional ebook search source.</td></tr>
-              <tr><td><code>anna_archive_url</code></td><td class="type">string</td><td><code>https://annas-archive.se</code></td><td>Base URLs to try. Shelfarr uses the first reachable URL.</td></tr>
-              <tr><td><code>anna_archive_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Member API key (requires a donation).</td></tr>
-              <tr><td><code>flaresolverr_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>FlareSolverr endpoint for bypassing DDoS protection (e.g. <code>http://flaresolverr:8191</code>).</td></tr>
-              <tr><td><code>zlibrary_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable the unofficial Z-Library fallback. May break if the service changes.</td></tr>
-              <tr><td><code>zlibrary_url</code></td><td class="type">string</td><td><code>(built-in list)</code></td><td>Base URLs to try. Shelfarr uses the first that accepts your login.</td></tr>
-              <tr><td><code>zlibrary_email</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Z-Library account email used for login.</td></tr>
-              <tr><td><code>zlibrary_password</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Z-Library account password. Stored encrypted.</td></tr>
+              <tr><td class="key"><code>default_language</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>en</code></td><td class="desc">Default language for new requests.</td></tr>
+              <tr><td class="key"><code>enabled_languages</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>["en"]</code></td><td class="desc">Languages selectable when creating requests.</td></tr>
+              <tr><td class="key"><code>min_match_confidence</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>50</code></td><td class="desc">Minimum confidence score (0&ndash;100) to display a search result.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Notifications</h2>
-        <p class="description">Events are comma-separated: <code>request_created</code>, <code>request_completed</code>, <code>request_failed</code>, <code>request_attention</code>. In-app notifications are always on.</p>
+        <h2 id="notifications">Notifications <a class="anchor" href="#notifications" aria-label="Link to Notifications">#</a></h2>
+        <p class="section-desc">In-app notifications are always on. The events below are comma-separated: <code>request_created</code>, <code>request_completed</code>, <code>request_failed</code>, <code>request_attention</code>.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>discord_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Send native Discord webhook notifications.</td></tr>
-              <tr><td><code>discord_webhook_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Incoming Discord webhook URL for the target channel.</td></tr>
-              <tr><td><code>discord_events</code></td><td class="type">string</td><td><code>request_created,...,request_attention</code></td><td>Comma-separated Discord events to send.</td></tr>
-              <tr><td><code>webhook_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Send generic JSON webhook notifications.</td></tr>
-              <tr><td><code>webhook_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Webhook endpoint URL. A JSON payload is sent per enabled event.</td></tr>
-              <tr><td><code>webhook_token</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Optional Bearer token for webhook authentication.</td></tr>
-              <tr><td><code>webhook_events</code></td><td class="type">string</td><td><code>request_created,...,request_attention</code></td><td>Comma-separated webhook events to send.</td></tr>
-              <tr><td><code>webhook_topic</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Optional topic field in the payload (required by ntfy on the base URL).</td></tr>
-              <tr><td><code>telegram_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable the Telegram command and notification integration.</td></tr>
-              <tr><td><code>telegram_update_mode</code></td><td class="type">string</td><td><code>polling</code></td><td>How updates are received: <code>polling</code> (local) or <code>webhook</code> (public HTTPS).</td></tr>
-              <tr><td><code>telegram_bot_token</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Bot token from BotFather.</td></tr>
-              <tr><td><code>telegram_bot_username</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Bot username without <code>@</code>.</td></tr>
-              <tr><td><code>telegram_webhook_secret</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Secret checked against <code>X-Telegram-Bot-Api-Secret-Token</code> (webhook mode).</td></tr>
-              <tr><td><code>telegram_allowed_chat_ids</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Fallback allowlist of group chat IDs. Prefer pairing-code approval.</td></tr>
-              <tr><td><code>telegram_request_username</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Shelfarr username that owns Telegram group requests. Defaults to the first admin.</td></tr>
-              <tr><td><code>telegram_notification_events</code></td><td class="type">string</td><td><code>request_completed,request_failed,request_attention</code></td><td>Events sent back to the authorized group that created the request.</td></tr>
+              <tr><td class="key"><code>discord_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Send native Discord webhook notifications.</td></tr>
+              <tr><td class="key"><code>discord_webhook_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Incoming Discord webhook URL for the target channel.</td></tr>
+              <tr><td class="key"><code>discord_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>created,…,attention</code></td><td class="desc">Comma-separated Discord events to send.</td></tr>
+              <tr><td class="key"><code>webhook_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Send generic JSON webhook notifications.</td></tr>
+              <tr><td class="key"><code>webhook_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Webhook endpoint URL. A JSON payload is sent per enabled event.</td></tr>
+              <tr><td class="key"><code>webhook_token</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Optional Bearer token for webhook authentication.</td></tr>
+              <tr><td class="key"><code>webhook_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>created,…,attention</code></td><td class="desc">Comma-separated webhook events to send.</td></tr>
+              <tr><td class="key"><code>webhook_topic</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Optional topic field in the payload (required by ntfy on the base URL).</td></tr>
+              <tr><td class="key"><code>telegram_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Enable the Telegram command and notification integration.</td></tr>
+              <tr><td class="key"><code>telegram_update_mode</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>polling</code></td><td class="desc">How updates are received: <code>polling</code> (local) or <code>webhook</code> (public HTTPS).</td></tr>
+              <tr><td class="key"><code>telegram_bot_token</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Bot token from BotFather.</td></tr>
+              <tr><td class="key"><code>telegram_bot_username</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Bot username without <code>@</code>.</td></tr>
+              <tr><td class="key"><code>telegram_webhook_secret</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Secret checked against <code>X-Telegram-Bot-Api-Secret-Token</code> (webhook mode).</td></tr>
+              <tr><td class="key"><code>telegram_allowed_chat_ids</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Fallback allowlist of group chat IDs. Prefer pairing-code approval.</td></tr>
+              <tr><td class="key"><code>telegram_request_username</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Shelfarr username that owns Telegram group requests. Defaults to the first admin.</td></tr>
+              <tr><td class="key"><code>telegram_notification_events</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>completed,failed,attention</code></td><td class="desc">Events sent back to the authorized group that created the request.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Security</h2>
+        <h2 id="security">Security <a class="anchor" href="#security" aria-label="Link to Security">#</a></h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>auth_disabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Disable password auth (username-only, trusted networks only). Can also be set via <code>DISABLE_AUTH</code>.</td></tr>
-              <tr><td><code>session_max_age_days</code></td><td class="type">integer</td><td><code>30</code></td><td>Session lifetime before forced re-login.</td></tr>
-              <tr><td><code>login_lockout_threshold</code></td><td class="type">integer</td><td><code>5</code></td><td>Failed attempts before temporary lockout.</td></tr>
-              <tr><td><code>login_lockout_duration_minutes</code></td><td class="type">integer</td><td><code>15</code></td><td>Lockout duration in minutes.</td></tr>
-              <tr><td><code>allow_user_uploads</code></td><td class="type">boolean</td><td><code>false</code></td><td>Allow non-admin users to upload book files directly to fulfill requests.</td></tr>
-              <tr><td><code>api_token</code></td><td class="type">string</td><td><code>(generated per install)</code></td><td>Legacy global API token. Prefer per-user tokens from <strong>Profile &rarr; API tokens</strong>.</td></tr>
+              <tr><td class="key"><code>auth_disabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Disable password auth (username-only, trusted networks only). Can also be set via <code>DISABLE_AUTH</code>.</td></tr>
+              <tr><td class="key"><code>session_max_age_days</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>30</code></td><td class="desc">Session lifetime before forced re-login.</td></tr>
+              <tr><td class="key"><code>login_lockout_threshold</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>5</code></td><td class="desc">Failed attempts before temporary lockout.</td></tr>
+              <tr><td class="key"><code>login_lockout_duration_minutes</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>15</code></td><td class="desc">Lockout duration in minutes.</td></tr>
+              <tr><td class="key"><code>allow_user_uploads</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Allow non-admin users to upload book files directly to fulfill requests.</td></tr>
+              <tr><td class="key"><code>api_token</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(generated)</code></td><td class="desc">Legacy global API token. Prefer per-user tokens from <strong>Profile &rarr; API tokens</strong>.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>OIDC / SSO Authentication</h2>
+        <h2 id="oidc">OIDC / SSO Authentication <a class="anchor" href="#oidc" aria-label="Link to OIDC">#</a></h2>
+        <p class="section-desc">Single sign-on via OpenID Connect &mdash; works with Authentik, Authelia, Keycloak and others.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>oidc_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable OpenID Connect single sign-on.</td></tr>
-              <tr><td><code>oidc_auto_redirect</code></td><td class="type">boolean</td><td><code>false</code></td><td>Auto-start OIDC sign-in for unauthenticated users. Use <code>/session/new?local=1</code> for the local form.</td></tr>
-              <tr><td><code>oidc_provider_name</code></td><td class="type">string</td><td><code>SSO</code></td><td>Display name shown on the login button.</td></tr>
-              <tr><td><code>oidc_issuer</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Issuer URL (e.g. <code>https://auth.example.com/realms/master</code>).</td></tr>
-              <tr><td><code>oidc_client_id</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Client ID from your identity provider.</td></tr>
-              <tr><td><code>oidc_client_secret</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Client secret from your identity provider.</td></tr>
-              <tr><td><code>oidc_scopes</code></td><td class="type">string</td><td><code>openid profile email</code></td><td>Space-separated scopes to request.</td></tr>
-              <tr><td><code>oidc_link_existing_users</code></td><td class="type">boolean</td><td><code>false</code></td><td>Link an unlinked local user whose username matches the OIDC username or email prefix.</td></tr>
-              <tr><td><code>oidc_auto_create_users</code></td><td class="type">boolean</td><td><code>false</code></td><td>Auto-create new users on first OIDC login.</td></tr>
-              <tr><td><code>oidc_default_role</code></td><td class="type">string</td><td><code>user</code></td><td>Default role for auto-created users (<code>user</code> or <code>admin</code>).</td></tr>
+              <tr><td class="key"><code>oidc_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Enable OpenID Connect single sign-on.</td></tr>
+              <tr><td class="key"><code>oidc_auto_redirect</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Auto-start OIDC sign-in for unauthenticated users. Use <code>/session/new?local=1</code> for the local form.</td></tr>
+              <tr><td class="key"><code>oidc_provider_name</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>SSO</code></td><td class="desc">Display name shown on the login button.</td></tr>
+              <tr><td class="key"><code>oidc_issuer</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Issuer URL (e.g. <code>https://auth.example.com/realms/master</code>).</td></tr>
+              <tr><td class="key"><code>oidc_client_id</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Client ID from your identity provider.</td></tr>
+              <tr><td class="key"><code>oidc_client_secret</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Client secret from your identity provider.</td></tr>
+              <tr><td class="key"><code>oidc_scopes</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>openid profile email</code></td><td class="desc">Space-separated scopes to request.</td></tr>
+              <tr><td class="key"><code>oidc_link_existing_users</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Link an unlinked local user whose username matches the OIDC username or email prefix.</td></tr>
+              <tr><td class="key"><code>oidc_auto_create_users</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Auto-create new users on first OIDC login.</td></tr>
+              <tr><td class="key"><code>oidc_default_role</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>user</code></td><td class="desc">Default role for auto-created users (<code>user</code> or <code>admin</code>).</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <section class="section">
-        <h2>Health &amp; Updates</h2>
+        <h2 id="health">Health &amp; Updates <a class="anchor" href="#health" aria-label="Link to Health and Updates">#</a></h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>health_check_interval</code></td><td class="type">integer</td><td><code>300</code></td><td>Seconds between system health checks (default: 5 minutes).</td></tr>
-              <tr><td><code>github_repo</code></td><td class="type">string</td><td><code>Pedro-Revez-Silva/shelfarr</code></td><td>Repository used for update-availability checks.</td></tr>
+              <tr><td class="key"><code>health_check_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>300</code></td><td class="desc">Seconds between system health checks (default: 5 minutes).</td></tr>
+              <tr><td class="key"><code>github_repo</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>Pedro-Revez-Silva/shelfarr</code></td><td class="desc">Repository used for update-availability checks.</td></tr>
             </tbody>
           </table>
         </div>
-      </section>
 
-      <footer>
-        <p>Last updated for Shelfarr settings currently defined in <code>SettingsService::DEFINITIONS</code>.</p>
-      </footer>
-    </div>
-  </main>
+        <div class="doc-footer">
+          <span>Reference generated from <code>SettingsService::DEFINITIONS</code>.</span>
+          <a href="https://github.com/Pedro-Revez-Silva/shelfarr" target="_blank" rel="noopener">Shelfarr on GitHub &rarr;</a>
+        </div>
+      </article>
+    </main>
+  </div>
+
+  <script>
+    // Mobile sidebar toggle
+    const sidebar = document.getElementById('sidebar');
+    const scrim = document.getElementById('scrim');
+    const toggle = document.getElementById('menuToggle');
+    function closeNav() { sidebar.classList.remove('open'); scrim.classList.remove('show'); }
+    toggle.addEventListener('click', () => {
+      sidebar.classList.toggle('open');
+      scrim.classList.toggle('show');
+    });
+    scrim.addEventListener('click', closeNav);
+    sidebar.addEventListener('click', (e) => { if (e.target.classList.contains('nav-link')) closeNav(); });
+
+    // Scroll-spy: highlight the section currently scrolled to
+    const links = Array.from(document.querySelectorAll('.nav-link'));
+    const byId = new Map(links.map(a => [a.getAttribute('href').slice(1), a]));
+    const targets = Array.from(document.querySelectorAll('section[id], h2[id]'));
+    let activeId = null;
+    function syncActive() {
+      const y = window.scrollY + 110;
+      let current = targets[0].id;
+      for (const t of targets) {
+        if (t.getBoundingClientRect().top + window.scrollY <= y) current = t.id;
+      }
+      // Near the bottom, activate the last section
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) {
+        current = targets[targets.length - 1].id;
+      }
+      if (current === activeId) return;
+      activeId = current;
+      links.forEach(a => a.classList.remove('active'));
+      const a = byId.get(current);
+      if (a) a.classList.add('active');
+    }
+    window.addEventListener('scroll', syncActive, { passive: true });
+    window.addEventListener('resize', syncActive, { passive: true });
+    syncActive();
+  </script>
 </body>
 </html>
