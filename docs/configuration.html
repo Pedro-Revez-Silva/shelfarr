@@ -461,7 +461,7 @@
         <a class="nav-link" href="#download-clients">Download Clients</a>
         <a class="nav-link" href="#audiobookshelf">Audiobookshelf</a>
         <a class="nav-link" href="#metadata">Metadata Sources</a>
-        <a class="nav-link" href="#direct-downloads">Direct Ebook Downloads</a>
+        <a class="nav-link" href="#direct-downloads">Direct Downloads</a>
       </div>
       <div class="nav-group">
         <div class="nav-group-title">Library &amp; Processing</div>
@@ -512,7 +512,7 @@
           <div class="callout">
             <span class="ico">🧩</span>
             <div>
-              You don't need everything. A minimal setup is one indexer (or a direct ebook source), one download
+              You don't need everything. A minimal setup is one indexer (or a direct source), one download
               client, and your output paths. Everything else is optional and has a sensible default.
             </div>
           </div>
@@ -590,8 +590,8 @@
           </table>
         </div>
 
-        <h2 id="direct-downloads">Direct Ebook Downloads <a class="anchor" href="#direct-downloads" aria-label="Link to Direct Ebook Downloads">#</a></h2>
-        <p class="section-desc">Optional sources that download ebooks directly, without an indexer or torrent client.</p>
+        <h2 id="direct-downloads">Direct Downloads <a class="anchor" href="#direct-downloads" aria-label="Link to Direct Downloads">#</a></h2>
+        <p class="section-desc">Optional sources that download directly, without an indexer or download client. Anna's Archive and Z-Library cover ebooks; LibriVox provides free public-domain audiobooks.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
@@ -604,6 +604,9 @@
               <tr><td class="key"><code>zlibrary_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(built-in list)</code></td><td class="desc">Base URLs to try. Shelfarr uses the first that accepts your login.</td></tr>
               <tr><td class="key"><code>zlibrary_email</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Z-Library account email used for login.</td></tr>
               <tr><td class="key"><code>zlibrary_password</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Z-Library account password. Stored encrypted.</td></tr>
+              <tr><td class="key"><code>librivox_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Enable LibriVox as a free public-domain audiobook source.</td></tr>
+              <tr><td class="key"><code>librivox_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>https://librivox.org</code></td><td class="desc">LibriVox base URL.</td></tr>
+              <tr><td class="key"><code>librivox_search_limit</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>20</code></td><td class="desc">Maximum number of LibriVox audiobook results to return.</td></tr>
             </tbody>
           </table>
         </div>

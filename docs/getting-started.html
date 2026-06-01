@@ -201,7 +201,7 @@
         <a class="nav-link" href="#guide-indexers">Indexers</a>
         <a class="nav-link" href="#guide-clients">Download Clients</a>
         <a class="nav-link" href="#guide-abs">Audiobookshelf</a>
-        <a class="nav-link" href="#guide-direct">Direct Ebook Sources</a>
+        <a class="nav-link" href="#guide-direct">Direct Downloads</a>
         <a class="nav-link" href="#guide-notifications">Notifications</a>
         <a class="nav-link" href="#guide-auth">Authentication &amp; SSO</a>
         <a class="nav-link" href="#guide-api">API Access</a>
@@ -238,7 +238,7 @@
           <div class="callout tip">
             <span class="ico">💡</span>
             <div>Almost everything is optional. The only hard requirement is one way to <em>find</em> books
-              (an indexer or a direct ebook source) and somewhere to <em>put</em> them (your output paths).</div>
+              (an indexer or a direct source) and somewhere to <em>put</em> them (your output paths).</div>
           </div>
         </section>
 
@@ -248,7 +248,7 @@
           <ol class="steps">
             <li><span class="step-title">Discover</span> A user searches metadata (Open Library, or Hardcover if configured) and finds the title and format they want &mdash; ebook or audiobook.</li>
             <li><span class="step-title">Request</span> The request is created. Admin requests (and, optionally, everyone's) are queued for searching immediately; otherwise an admin approves them.</li>
-            <li><span class="step-title">Search</span> Shelfarr queries your indexer (Prowlarr or Jackett) and any enabled direct ebook sources, then scores the results against your format preferences and language.</li>
+            <li><span class="step-title">Search</span> Shelfarr queries your indexer (Prowlarr or Jackett) and any enabled direct sources, then scores the results against your format preferences and language.</li>
             <li><span class="step-title">Select</span> The best result is chosen automatically (when auto-selection is on) or presented for an admin to pick.</li>
             <li><span class="step-title">Download</span> The release is sent to a matching download client &mdash; routed by type, priority and any per-indexer routing rules.</li>
             <li><span class="step-title">Import</span> When the download finishes, files are renamed and moved into your output folders using your path and filename templates.</li>
@@ -324,7 +324,7 @@ services:
           <p class="section-desc">Once you're logged in as the admin, wire up the essentials. Each step links to its full field reference.</p>
           <ol class="steps">
             <li><span class="step-title">Create your admin account</span> Register the first user at <code>http://&lt;server&gt;:5056</code>. Add more users later from <strong>Admin &rarr; Users</strong>.</li>
-            <li><span class="step-title">Connect an indexer</span> In <strong>Admin &rarr; Settings &rarr; Indexer</strong>, choose Prowlarr or Jackett and enter its URL and API key. See the <a class="inline" href="#guide-indexers">indexer guide</a>. <em>(Skip if you'll only use direct ebook sources.)</em></li>
+            <li><span class="step-title">Connect an indexer</span> In <strong>Admin &rarr; Settings &rarr; Indexer</strong>, choose Prowlarr or Jackett and enter its URL and API key. See the <a class="inline" href="#guide-indexers">indexer guide</a>. <em>(Skip if you'll only use direct sources.)</em></li>
             <li><span class="step-title">Add a download client</span> In <strong>Admin &rarr; Download Clients</strong>, add qBittorrent, SABnzbd, Deluge, Transmission or NZBGet. See the <a class="inline" href="#guide-clients">download client guide</a>.</li>
             <li><span class="step-title">Confirm your output paths</span> In <strong>Admin &rarr; Settings &rarr; Output Paths</strong>, make sure <code>/audiobooks</code> and <code>/ebooks</code> match the volumes you mounted, and tune the <a class="inline" href="configuration.html#paths">path templates</a> if you like.</li>
             <li><span class="step-title">(Optional) Connect Audiobookshelf</span> Add its URL, an API token and your library IDs in <strong>Admin &rarr; Settings &rarr; Audiobookshelf</strong>. See the <a class="inline" href="#guide-abs">Audiobookshelf guide</a>.</li>
@@ -384,13 +384,15 @@ services:
         </section>
 
         <section id="guide-direct">
-          <h2>Direct Ebook Sources <a class="anchor" href="#guide-direct">#</a></h2>
-          <p>For ebooks you don't need an indexer or torrent client at all &mdash; Shelfarr can download directly.</p>
-          <h3>Anna's Archive</h3>
+          <h2>Direct Downloads <a class="anchor" href="#guide-direct">#</a></h2>
+          <p>Some books can be fetched directly, with no indexer or download client involved &mdash; ebooks from Anna's Archive and Z-Library, and free public-domain audiobooks from LibriVox. Enable whichever sources you want; they run alongside your indexer.</p>
+          <h3>Anna's Archive <span style="color:var(--text-muted);font-weight:400;font-size:0.85rem">(ebooks)</span></h3>
           <p>Enable <code>anna_archive_enabled</code>. Fast (member) downloads need an <code>anna_archive_api_key</code> from a donation. If the site is behind anti-bot protection, point <code>flaresolverr_url</code> at a <a class="inline" href="https://github.com/FlareSolverr/FlareSolverr" target="_blank" rel="noopener">FlareSolverr</a> instance.</p>
-          <h3>Z-Library</h3>
+          <h3>Z-Library <span style="color:var(--text-muted);font-weight:400;font-size:0.85rem">(ebooks)</span></h3>
           <p>Enable <code>zlibrary_enabled</code> and provide your account <code>zlibrary_email</code> and <code>zlibrary_password</code>. This is an unofficial integration and may break if the service changes &mdash; treat it as a fallback.</p>
-          <p class="section-desc">Full field list: <a class="inline" href="configuration.html#direct-downloads">Settings reference &rarr; Direct Ebook Downloads</a>.</p>
+          <h3>LibriVox <span style="color:var(--text-muted);font-weight:400;font-size:0.85rem">(audiobooks)</span></h3>
+          <p>Enable <code>librivox_enabled</code> for free, public-domain audiobooks read by volunteers &mdash; no account or API key required. Great for classics and out-of-copyright titles when no other audiobook source has them.</p>
+          <p class="section-desc">Full field list: <a class="inline" href="configuration.html#direct-downloads">Settings reference &rarr; Direct Downloads</a>.</p>
         </section>
 
         <section id="guide-notifications">
