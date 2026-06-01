@@ -319,23 +319,27 @@
           <a class="btn" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/README.md">README</a>
         </div>
         <p class="note">
-          Settings are configured in <strong>Admin -> Settings</strong>. Download client-specific settings are configured in
-          <strong>Admin -> Download Clients</strong>.
+          Most settings live in <strong>Admin &rarr; Settings</strong>. Download clients are managed in
+          <strong>Admin &rarr; Download Clients</strong>, and per-indexer routing in <strong>Admin &rarr; Download Routing</strong>.
         </p>
         <div class="pills">
           <span class="pill">Path vars: {author}</span>
+          <span class="pill">{authorSort}</span>
           <span class="pill">{title}</span>
+          <span class="pill">{titleSort}</span>
           <span class="pill">{year}</span>
           <span class="pill">{publisher}</span>
           <span class="pill">{language}</span>
           <span class="pill">{series}</span>
+          <span class="pill">{seriesSort}</span>
+          <span class="pill">{seriesNum:00}</span>
           <span class="pill">{narrator}</span>
         </div>
       </section>
 
       <section class="section">
         <h2>Download Client Fields</h2>
-        <p class="description">Fields available when creating or editing clients in Admin -> Download Clients.</p>
+        <p class="description">Fields available when creating or editing clients in Admin &rarr; Download Clients.</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -354,7 +358,7 @@
               <tr>
                 <td><code>client_type</code></td>
                 <td><span class="tag tag-required">Required</span></td>
-                <td>Client adapter: <code>qbittorrent</code>, <code>sabnzbd</code>, <code>nzbget</code>, <code>deluge</code>, <code>transmission</code>.</td>
+                <td>Client adapter: <code>qbittorrent</code>, <code>decypharr</code>, <code>deluge</code>, <code>transmission</code> (torrent), <code>sabnzbd</code>, <code>nzbget</code> (usenet).</td>
               </tr>
               <tr>
                 <td><code>url</code></td>
@@ -396,20 +400,35 @@
                 <td><span class="tag tag-required">Required</span></td>
                 <td>Order within the same type. Lower values are preferred first.</td>
               </tr>
+              <tr>
+                <td><code>torrent_verification_max_attempts</code></td>
+                <td><span class="tag tag-optional">Optional</span></td>
+                <td>Torrent clients only. Times Shelfarr re-checks that a torrent was accepted (default <code>10</code>).</td>
+              </tr>
+              <tr>
+                <td><code>torrent_verification_wait_time</code></td>
+                <td><span class="tag tag-optional">Optional</span></td>
+                <td>Torrent clients only. Seconds to wait between verification attempts (default <code>2</code>).</td>
+              </tr>
             </tbody>
           </table>
         </div>
+        <p class="description">Use <strong>Admin &rarr; Download Routing</strong> to send specific indexers to specific clients per download type.</p>
       </section>
 
       <section class="section">
-        <h2>Prowlarr</h2>
+        <h2>Indexers (Prowlarr &amp; Jackett)</h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>prowlarr_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Base URL for Prowlarr.</td></tr>
-              <tr><td><code>prowlarr_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>API key from Prowlarr settings.</td></tr>
-              <tr><td><code>prowlarr_tags</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Comma-separated tag IDs or names to filter indexers.</td></tr>
+              <tr><td><code>indexer_provider</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Active indexer provider: <code>prowlarr</code>, <code>jackett</code>, or <code>none</code>. Leave unset on upgrades to keep legacy Prowlarr config.</td></tr>
+              <tr><td><code>prowlarr_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Base URL for Prowlarr (e.g. <code>http://localhost:9696</code>).</td></tr>
+              <tr><td><code>prowlarr_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>API key from Prowlarr &rarr; Settings &rarr; General.</td></tr>
+              <tr><td><code>prowlarr_tags</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Comma-separated tag IDs or names to filter indexers (empty = all).</td></tr>
+              <tr><td><code>jackett_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Base URL for Jackett (e.g. <code>http://localhost:9117</code>).</td></tr>
+              <tr><td><code>jackett_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>API key from the Jackett dashboard.</td></tr>
+              <tr><td><code>jackett_indexer_filter</code></td><td class="type">string</td><td><code>all</code></td><td>Torznab indexer filter. Use <code>all</code> or a Jackett filter such as <code>tag:books</code>.</td></tr>
             </tbody>
           </table>
         </div>
@@ -421,9 +440,11 @@
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>preferred_download_type</code></td><td class="type">string</td><td><code>torrent</code></td><td>Preferred type when both torrent and usenet are available.</td></tr>
+              <tr><td><code>preferred_download_types</code></td><td class="type">json</td><td><code>["torrent","usenet","direct"]</code></td><td>Download types in preference order. Higher-ranked types win when multiple result types are available.</td></tr>
               <tr><td><code>download_check_interval</code></td><td class="type">integer</td><td><code>60</code></td><td>Seconds between download status checks.</td></tr>
-              <tr><td><code>remove_completed_usenet_downloads</code></td><td class="type">boolean</td><td><code>true</code></td><td>Remove completed usenet jobs after import.</td></tr>
+              <tr><td><code>download_enqueue_timeout_minutes</code></td><td class="type">integer</td><td><code>5</code></td><td>Minutes a download may stay queued before being flagged as never dispatched.</td></tr>
+              <tr><td><code>post_processing_source_path_retries</code></td><td class="type">integer</td><td><code>10</code></td><td>Retries while waiting for completed download files to appear.</td></tr>
+              <tr><td><code>remove_completed_usenet_downloads</code></td><td class="type">boolean</td><td><code>true</code></td><td>Remove completed usenet jobs from the client after import.</td></tr>
             </tbody>
           </table>
         </div>
@@ -471,7 +492,8 @@
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>immediate_search_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Search immediately when requests are created.</td></tr>
+              <tr><td><code>immediate_search_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Search immediately when requests are created (instead of waiting for the queue cycle).</td></tr>
+              <tr><td><code>auto_approve_requests</code></td><td class="type">boolean</td><td><code>false</code></td><td>Automatically enqueue searches for requests created by non-admin users.</td></tr>
               <tr><td><code>queue_batch_size</code></td><td class="type">integer</td><td><code>5</code></td><td>Requests processed per queue run.</td></tr>
               <tr><td><code>rate_limit_delay</code></td><td class="type">integer</td><td><code>2</code></td><td>Seconds between API calls.</td></tr>
               <tr><td><code>max_retries</code></td><td class="type">integer</td><td><code>10</code></td><td>Retry attempts before request is flagged for attention.</td></tr>
@@ -485,60 +507,162 @@
       </section>
 
       <section class="section">
-        <h2>Health, Auto-Selection & Language</h2>
+        <h2>Auto-Selection</h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>health_check_interval</code></td><td class="type">integer</td><td><code>300</code></td><td>Seconds between health checks.</td></tr>
-              <tr><td><code>auto_select_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Automatically select best result without admin review.</td></tr>
-              <tr><td><code>auto_select_min_seeders</code></td><td class="type">integer</td><td><code>1</code></td><td>Minimum seeders for torrent auto-selection.</td></tr>
-              <tr><td><code>auto_select_confidence_threshold</code></td><td class="type">integer</td><td><code>90</code></td><td>Minimum confidence score for auto-selection.</td></tr>
+              <tr><td><code>auto_select_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Automatically select the best result without admin review.</td></tr>
+              <tr><td><code>auto_select_min_seeders</code></td><td class="type">integer</td><td><code>1</code></td><td>Minimum seeders required for torrent auto-selection.</td></tr>
+              <tr><td><code>auto_select_confidence_threshold</code></td><td class="type">integer</td><td><code>90</code></td><td>Minimum confidence score (0-100) for auto-selection.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Format Preferences</h2>
+        <p class="description">Formats are comma-separated lists. Approved/rejected lists gate auto-selection; preferred lists are ranked best-to-worst.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>ebook_preferred_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Ebook formats in preference order, best to worst.</td></tr>
+              <tr><td><code>ebook_approved_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Ebook formats that may be auto-selected (blank = allow any).</td></tr>
+              <tr><td><code>ebook_rejected_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Ebook formats that must never be auto-selected.</td></tr>
+              <tr><td><code>audiobook_preferred_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Audiobook formats in preference order, best to worst.</td></tr>
+              <tr><td><code>audiobook_approved_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Audiobook formats that may be auto-selected (blank = allow any).</td></tr>
+              <tr><td><code>audiobook_rejected_formats</code></td><td class="type">json</td><td><code>[]</code></td><td>Audiobook formats that must never be auto-selected.</td></tr>
+              <tr><td><code>audiobook_prefer_single_file</code></td><td class="type">boolean</td><td><code>false</code></td><td>Prefer single-file releases (e.g. <code>.m4b</code>) over chapter-split releases.</td></tr>
+              <tr><td><code>audiobook_prefer_higher_bitrate</code></td><td class="type">boolean</td><td><code>false</code></td><td>Prefer higher bitrate releases when bitrate can be inferred from the title.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Language &amp; Matching</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
               <tr><td><code>default_language</code></td><td class="type">string</td><td><code>en</code></td><td>Default language for new requests.</td></tr>
-              <tr><td><code>enabled_languages</code></td><td class="type">json</td><td><code>["en"]</code></td><td>Languages selectable in request forms.</td></tr>
-              <tr><td><code>min_match_confidence</code></td><td class="type">integer</td><td><code>50</code></td><td>Minimum confidence score to display result candidates.</td></tr>
+              <tr><td><code>enabled_languages</code></td><td class="type">json</td><td><code>["en"]</code></td><td>Languages selectable when creating requests.</td></tr>
+              <tr><td><code>min_match_confidence</code></td><td class="type">integer</td><td><code>50</code></td><td>Minimum confidence score (0-100) to display a search result.</td></tr>
             </tbody>
           </table>
         </div>
       </section>
 
       <section class="section">
-        <h2>Integrations & Metadata Sources</h2>
+        <h2>Metadata Sources</h2>
+        <p class="description">Open Library is always available. Hardcover is optional and used first when <code>metadata_source</code> is <code>auto</code>.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>anna_archive_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable Anna's Archive as an ebook search source.</td></tr>
-              <tr><td><code>anna_archive_url</code></td><td class="type">string</td><td><code>https://annas-archive.se</code></td><td>Base URL for Anna's Archive.</td></tr>
-              <tr><td><code>anna_archive_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Member API key for Anna's Archive.</td></tr>
-              <tr><td><code>flaresolverr_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>FlareSolverr endpoint for anti-bot bypass.</td></tr>
-              <tr><td><code>hardcover_api_token</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Hardcover API token.</td></tr>
-              <tr><td><code>metadata_source</code></td><td class="type">string</td><td><code>auto</code></td><td><code>auto</code>, <code>hardcover</code>, or <code>openlibrary</code>.</td></tr>
-              <tr><td><code>github_repo</code></td><td class="type">string</td><td><code>Pedro-Revez-Silva/shelfarr</code></td><td>Repository used for update checks.</td></tr>
+              <tr><td><code>metadata_source</code></td><td class="type">string</td><td><code>auto</code></td><td>Primary metadata source: <code>auto</code> (Hardcover first, Open Library fallback), <code>hardcover</code>, or <code>openlibrary</code>.</td></tr>
+              <tr><td><code>hardcover_api_token</code></td><td class="type">string</td><td><code>(empty)</code></td><td>API token from <code>hardcover.app/account/api</code>.</td></tr>
+              <tr><td><code>hardcover_search_limit</code></td><td class="type">integer</td><td><code>10</code></td><td>Max search results from Hardcover.</td></tr>
             </tbody>
           </table>
         </div>
       </section>
 
       <section class="section">
-        <h2>Security & OIDC</h2>
+        <h2>Direct Ebook Downloads</h2>
+        <p class="description">Optional sources that download ebooks directly, without an indexer or torrent client.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>auth_disabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Disable password auth (trusted networks only). Can also be toggled via <code>DISABLE_AUTH</code>.</td></tr>
+              <tr><td><code>anna_archive_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable Anna's Archive as an additional ebook search source.</td></tr>
+              <tr><td><code>anna_archive_url</code></td><td class="type">string</td><td><code>https://annas-archive.se</code></td><td>Base URLs to try. Shelfarr uses the first reachable URL.</td></tr>
+              <tr><td><code>anna_archive_api_key</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Member API key (requires a donation).</td></tr>
+              <tr><td><code>flaresolverr_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>FlareSolverr endpoint for bypassing DDoS protection (e.g. <code>http://flaresolverr:8191</code>).</td></tr>
+              <tr><td><code>zlibrary_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable the unofficial Z-Library fallback. May break if the service changes.</td></tr>
+              <tr><td><code>zlibrary_url</code></td><td class="type">string</td><td><code>(built-in list)</code></td><td>Base URLs to try. Shelfarr uses the first that accepts your login.</td></tr>
+              <tr><td><code>zlibrary_email</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Z-Library account email used for login.</td></tr>
+              <tr><td><code>zlibrary_password</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Z-Library account password. Stored encrypted.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Notifications</h2>
+        <p class="description">Events are comma-separated: <code>request_created</code>, <code>request_completed</code>, <code>request_failed</code>, <code>request_attention</code>. In-app notifications are always on.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>discord_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Send native Discord webhook notifications.</td></tr>
+              <tr><td><code>discord_webhook_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Incoming Discord webhook URL for the target channel.</td></tr>
+              <tr><td><code>discord_events</code></td><td class="type">string</td><td><code>request_created,...,request_attention</code></td><td>Comma-separated Discord events to send.</td></tr>
+              <tr><td><code>webhook_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Send generic JSON webhook notifications.</td></tr>
+              <tr><td><code>webhook_url</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Webhook endpoint URL. A JSON payload is sent per enabled event.</td></tr>
+              <tr><td><code>webhook_token</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Optional Bearer token for webhook authentication.</td></tr>
+              <tr><td><code>webhook_events</code></td><td class="type">string</td><td><code>request_created,...,request_attention</code></td><td>Comma-separated webhook events to send.</td></tr>
+              <tr><td><code>webhook_topic</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Optional topic field in the payload (required by ntfy on the base URL).</td></tr>
+              <tr><td><code>telegram_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable the Telegram command and notification integration.</td></tr>
+              <tr><td><code>telegram_update_mode</code></td><td class="type">string</td><td><code>polling</code></td><td>How updates are received: <code>polling</code> (local) or <code>webhook</code> (public HTTPS).</td></tr>
+              <tr><td><code>telegram_bot_token</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Bot token from BotFather.</td></tr>
+              <tr><td><code>telegram_bot_username</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Bot username without <code>@</code>.</td></tr>
+              <tr><td><code>telegram_webhook_secret</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Secret checked against <code>X-Telegram-Bot-Api-Secret-Token</code> (webhook mode).</td></tr>
+              <tr><td><code>telegram_allowed_chat_ids</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Fallback allowlist of group chat IDs. Prefer pairing-code approval.</td></tr>
+              <tr><td><code>telegram_request_username</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Shelfarr username that owns Telegram group requests. Defaults to the first admin.</td></tr>
+              <tr><td><code>telegram_notification_events</code></td><td class="type">string</td><td><code>request_completed,request_failed,request_attention</code></td><td>Events sent back to the authorized group that created the request.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Security</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>auth_disabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Disable password auth (username-only, trusted networks only). Can also be set via <code>DISABLE_AUTH</code>.</td></tr>
               <tr><td><code>session_max_age_days</code></td><td class="type">integer</td><td><code>30</code></td><td>Session lifetime before forced re-login.</td></tr>
               <tr><td><code>login_lockout_threshold</code></td><td class="type">integer</td><td><code>5</code></td><td>Failed attempts before temporary lockout.</td></tr>
               <tr><td><code>login_lockout_duration_minutes</code></td><td class="type">integer</td><td><code>15</code></td><td>Lockout duration in minutes.</td></tr>
-              <tr><td><code>api_token</code></td><td class="type">string</td><td><code>(generated per install)</code></td><td>Token for API authentication.</td></tr>
-              <tr><td><code>oidc_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable OIDC login.</td></tr>
-              <tr><td><code>oidc_provider_name</code></td><td class="type">string</td><td><code>SSO</code></td><td>Button label on login page.</td></tr>
-              <tr><td><code>oidc_issuer</code></td><td class="type">string</td><td><code>(empty)</code></td><td>OIDC issuer URL.</td></tr>
-              <tr><td><code>oidc_client_id</code></td><td class="type">string</td><td><code>(empty)</code></td><td>OIDC client ID.</td></tr>
-              <tr><td><code>oidc_client_secret</code></td><td class="type">string</td><td><code>(empty)</code></td><td>OIDC client secret.</td></tr>
-              <tr><td><code>oidc_scopes</code></td><td class="type">string</td><td><code>openid profile email</code></td><td>Space-separated scopes.</td></tr>
-              <tr><td><code>oidc_auto_create_users</code></td><td class="type">boolean</td><td><code>false</code></td><td>Auto-create local users on first OIDC login.</td></tr>
-              <tr><td><code>oidc_default_role</code></td><td class="type">string</td><td><code>user</code></td><td>Default role assigned when auto-creating users.</td></tr>
+              <tr><td><code>allow_user_uploads</code></td><td class="type">boolean</td><td><code>false</code></td><td>Allow non-admin users to upload book files directly to fulfill requests.</td></tr>
+              <tr><td><code>api_token</code></td><td class="type">string</td><td><code>(generated per install)</code></td><td>Legacy global API token. Prefer per-user tokens from <strong>Profile &rarr; API tokens</strong>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>OIDC / SSO Authentication</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>oidc_enabled</code></td><td class="type">boolean</td><td><code>false</code></td><td>Enable OpenID Connect single sign-on.</td></tr>
+              <tr><td><code>oidc_auto_redirect</code></td><td class="type">boolean</td><td><code>false</code></td><td>Auto-start OIDC sign-in for unauthenticated users. Use <code>/session/new?local=1</code> for the local form.</td></tr>
+              <tr><td><code>oidc_provider_name</code></td><td class="type">string</td><td><code>SSO</code></td><td>Display name shown on the login button.</td></tr>
+              <tr><td><code>oidc_issuer</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Issuer URL (e.g. <code>https://auth.example.com/realms/master</code>).</td></tr>
+              <tr><td><code>oidc_client_id</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Client ID from your identity provider.</td></tr>
+              <tr><td><code>oidc_client_secret</code></td><td class="type">string</td><td><code>(empty)</code></td><td>Client secret from your identity provider.</td></tr>
+              <tr><td><code>oidc_scopes</code></td><td class="type">string</td><td><code>openid profile email</code></td><td>Space-separated scopes to request.</td></tr>
+              <tr><td><code>oidc_link_existing_users</code></td><td class="type">boolean</td><td><code>false</code></td><td>Link an unlinked local user whose username matches the OIDC username or email prefix.</td></tr>
+              <tr><td><code>oidc_auto_create_users</code></td><td class="type">boolean</td><td><code>false</code></td><td>Auto-create new users on first OIDC login.</td></tr>
+              <tr><td><code>oidc_default_role</code></td><td class="type">string</td><td><code>user</code></td><td>Default role for auto-created users (<code>user</code> or <code>admin</code>).</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Health &amp; Updates</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>health_check_interval</code></td><td class="type">integer</td><td><code>300</code></td><td>Seconds between system health checks (default: 5 minutes).</td></tr>
+              <tr><td><code>github_repo</code></td><td class="type">string</td><td><code>Pedro-Revez-Silva/shelfarr</code></td><td>Repository used for update-availability checks.</td></tr>
             </tbody>
           </table>
         </div>

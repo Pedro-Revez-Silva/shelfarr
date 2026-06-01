@@ -690,14 +690,14 @@
         <div class="feature-content">
           <h2>Beautiful Book Discovery</h2>
           <p>
-            Browse millions of books through Open Library's vast catalog.
-            See covers, descriptions and edition details at a glance.
+            Browse millions of books through Open Library and Hardcover.
+            See covers, descriptions, series and edition details at a glance.
           </p>
           <ul class="feature-list">
             <li><span class="check">✓</span> Search by title, author, or ISBN</li>
-            <li><span class="check">✓</span> View book covers and descriptions</li>
+            <li><span class="check">✓</span> Rich metadata with series and narrator details</li>
             <li><span class="check">✓</span> Choose between audiobook or ebook formats</li>
-            <li><span class="check">✓</span> One-click request for your library</li>
+            <li><span class="check">✓</span> One-click request, or upload your own files</li>
           </ul>
         </div>
         <div class="feature-visual">
@@ -714,13 +714,13 @@
           <h2>Automated Acquisition</h2>
           <p>
             Let Shelfarr handle the heavy lifting. It searches your indexers,
-            selects the best results and manages downloads automatically.
+            scores results against your format preferences and manages downloads automatically.
           </p>
           <ul class="feature-list">
-            <li><span class="check">✓</span> Prowlarr integration for indexer search</li>
-            <li><span class="check">✓</span> Anna's Archive for direct ebook downloads</li>
-            <li><span class="check">✓</span> qBittorrent & SABnzbd support</li>
-            <li><span class="check">✓</span> Multiple download clients with priority</li>
+            <li><span class="check">✓</span> Prowlarr &amp; Jackett indexer search</li>
+            <li><span class="check">✓</span> Anna's Archive &amp; Z-Library direct ebook downloads</li>
+            <li><span class="check">✓</span> qBittorrent, SABnzbd, NZBGet, Deluge &amp; Transmission</li>
+            <li><span class="check">✓</span> Auto-selection and per-indexer download routing</li>
           </ul>
         </div>
         <div class="feature-visual">
@@ -739,7 +739,7 @@
       <div class="integration-flow">
         <div class="integration-item">
           <div class="integration-icon">🔍</div>
-          <span class="integration-name">Open Library</span>
+          <span class="integration-name">Open Library / Hardcover</span>
         </div>
         <span class="integration-arrow">→</span>
         <div class="integration-item">
@@ -749,12 +749,12 @@
         <span class="integration-arrow">→</span>
         <div class="integration-item">
           <div class="integration-icon">🔎</div>
-          <span class="integration-name">Prowlarr</span>
+          <span class="integration-name">Prowlarr / Jackett</span>
         </div>
         <span class="integration-arrow">→</span>
         <div class="integration-item">
           <div class="integration-icon">⬇️</div>
-          <span class="integration-name">qBit / SABnzbd</span>
+          <span class="integration-name">Download Clients</span>
         </div>
         <span class="integration-arrow">→</span>
         <div class="integration-item">
@@ -771,7 +771,7 @@
       <div class="features-grid">
         <div class="feature-card">
           <div class="feature-card-icon">👥</div>
-          <h3>Multi-User Support</h3>
+          <h3>Multi-User &amp; Roles</h3>
           <p>Users request books, admins approve and manage. Role-based access keeps things organized.</p>
         </div>
         <div class="feature-card">
@@ -787,27 +787,42 @@
         <div class="feature-card">
           <div class="feature-card-icon">🔔</div>
           <h3>Notifications</h3>
-          <p>Stay informed with in-app notifications when your requested books are ready.</p>
+          <p>In-app, Discord, Telegram and generic webhook notifications for every request event.</p>
         </div>
         <div class="feature-card">
           <div class="feature-card-icon">📖</div>
-          <h3>Anna's Archive</h3>
+          <h3>Anna's Archive &amp; Z-Library</h3>
           <p>Direct ebook downloads without needing a torrent client. Just search and download.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card-icon">⬆️</div>
+          <h3>Manual Uploads</h3>
+          <p>Upload your own ebook or audiobook files to fulfill a request when automation can't find it.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card-icon">🎚️</div>
+          <h3>Format Preferences</h3>
+          <p>Preferred, approved and rejected formats, plus bitrate and single-file rules for auto-selection.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card-icon">🧭</div>
+          <h3>Download Routing</h3>
+          <p>Route specific indexers to specific download clients per torrent or usenet result.</p>
         </div>
         <div class="feature-card">
           <div class="feature-card-icon">📂</div>
           <h3>Smart Organization</h3>
-          <p>Files are automatically organized by author and title, ready for Audiobookshelf.</p>
+          <p>Path and filename templates organize files by author, series and title, ready for Audiobookshelf.</p>
         </div>
         <div class="feature-card">
           <div class="feature-card-icon">🔄</div>
           <h3>Library Sync</h3>
-          <p>Automatic library scans after downloads complete. Your books appear instantly.</p>
+          <p>Automatic Audiobookshelf scans after downloads complete. Your books appear instantly.</p>
         </div>
         <div class="feature-card">
-          <div class="feature-card-icon">📖</div>
-          <h3>Library View</h3>
-          <p>Browse your completed books directly in Shelfarr with download options.</p>
+          <div class="feature-card-icon">🔌</div>
+          <h3>REST API</h3>
+          <p>Scoped, user-owned API tokens for search and request automation under <code>/api/v1</code>.</p>
         </div>
         <div class="feature-card">
           <div class="feature-card-icon">🐳</div>
@@ -824,11 +839,11 @@
       <div class="faq-grid">
         <div class="faq-item">
           <h3>Do I need Prowlarr?</h3>
-          <p>Not necessarily. You can use Anna's Archive for ebooks without any indexer. For audiobooks and more sources, Prowlarr is recommended.</p>
+          <p>Not necessarily. You can use Anna's Archive or Z-Library for ebooks without any indexer. For audiobooks and more sources, Prowlarr or Jackett is recommended.</p>
         </div>
         <div class="faq-item">
           <h3>What download clients are supported?</h3>
-          <p>qBittorrent for torrents and SABnzbd for usenet. You can configure multiple clients with priority ordering.</p>
+          <p>qBittorrent, Deluge and Transmission for torrents, plus SABnzbd and NZBGet for usenet. Configure multiple clients with priority ordering and per-indexer routing.</p>
         </div>
         <div class="faq-item">
           <h3>Does it work without Audiobookshelf?</h3>
@@ -867,7 +882,7 @@
 <span class="comment"># Edit paths in docker-compose.yml, then start</span>
 <span class="cmd">docker-compose</span> up -d
 
-<span class="comment"># Access at http://localhost:3000</span></pre>
+<span class="comment"># Access at http://localhost:5056 — the first user to register becomes admin</span></pre>
       </div>
     </div>
   </section>
