@@ -22,7 +22,13 @@
 
 ---
 
-**The missing piece**: The video stack has Jellyseerr + Sonarr/Radarr + Jellyfin. For books, only the library exists (Audiobookshelf). Shelfarr fills the gap—think Readarr meets Jellyseerr, but for books that actually works.
+Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelfarr searches your indexers and direct sources, downloads the best release and delivers it to Audiobookshelf — the same request-and-automate workflow the video stack gets from Jellyseerr + Sonarr/Radarr.
+
+<p align="center">
+  <a href="https://shelfarr.org"><strong>Website</strong></a> &nbsp;·&nbsp;
+  <a href="https://shelfarr.org/getting-started.html"><strong>Documentation</strong></a> &nbsp;·&nbsp;
+  <a href="https://shelfarr.org/configuration.html">Settings Reference</a>
+</p>
 
 <p align="center">
   <img src="docs/screenshot-dashboard.png" alt="Shelfarr Dashboard" width="800">
@@ -30,16 +36,18 @@
 
 ## Features
 
-- **Book Discovery** — Search millions of books via Open Library
-- **Smart Acquisition** — Searches Prowlarr indexers, downloads via qBittorrent or SABnzbd
-- **Anna's Archive** — Direct ebook downloads without needing a torrent client
-- **Auto-Processing** — Organizes files by author/title and delivers to Audiobookshelf
-- **Library Sync** — Automatic library scans after downloads complete
+- **Book Discovery** — Search millions of titles via Open Library and Hardcover
+- **Smart Acquisition** — Search Prowlarr or Jackett indexers; download via qBittorrent, SABnzbd, NZBGet, Deluge or Transmission
+- **Direct Downloads** — Ebooks from Anna's Archive and Z-Library, public-domain audiobooks from LibriVox — no torrent client needed
+- **Auto-Selection & Format Preferences** — Pick the best release automatically, scored by your preferred formats, bitrate and language
+- **Auto-Processing** — Rename and organize files with path/filename templates, then deliver to Audiobookshelf
+- **Library Sync** — Automatic Audiobookshelf scans after downloads complete
+- **Manual Uploads** — Upload your own files to fulfill a request
 - **Multi-User** — Role-based access with user requests and admin controls
-- **Two-Factor Auth** — TOTP-based 2FA with backup codes
-- **OIDC/SSO** — Single sign-on via OpenID Connect (Authentik, Authelia, Keycloak, etc.)
-- **Notifications** — In-app notifications when your books are ready
-- **Multiple Download Clients** — Configure multiple clients with priority ordering
+- **Authentication** — TOTP-based 2FA with backup codes, plus OIDC/SSO (Authentik, Authelia, Keycloak, etc.)
+- **Notifications** — In-app, Discord, Telegram and webhook notifications for request events
+- **Download Routing** — Route specific indexers to specific clients, with priority ordering
+- **REST API** — Scoped, per-user API tokens under `/api/v1`
 
 ## Quick Start
 
@@ -57,7 +65,7 @@ mv docker-compose.example.yml docker-compose.yml
 #    - /path/to/downloads → your download client's completed folder
 
 # 3. Start
-docker-compose up -d
+docker compose up -d
 ```
 
 A secret key is auto-generated on first run and saved to the data volume.
@@ -95,14 +103,12 @@ After logging in, go to **Admin → Settings**:
 
 | Setting | Description |
 |---------|-------------|
-| Prowlarr URL + API Key | For indexer searches |
-| Download Client | qBittorrent or SABnzbd connection |
+| Indexer | Prowlarr or Jackett URL + API key for searches |
+| Download Clients | qBittorrent, SABnzbd, NZBGet, Deluge or Transmission (Admin → Download Clients) |
 | Output Paths | Where to place completed audiobooks/ebooks |
 | Audiobookshelf | URL + API key for library integration (optional) |
 
-For more, see the documentation site:
-- **Getting Started** (install + setup walkthrough): `docs/getting-started.html`
-- **Settings Reference** (every field, type and default): `docs/configuration.html`
+📖 **[Read the docs](https://shelfarr.org/getting-started.html)** for a full install and setup walkthrough, plus a **[settings reference](https://shelfarr.org/configuration.html)** describing every option, its type and default.
 
 ### OIDC/SSO Setup
 
@@ -132,20 +138,21 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 
 | Service | Purpose |
 |---------|---------|
-| **Open Library** | Book metadata and search |
-| **Anna's Archive** | Direct ebook downloads |
-| **Prowlarr** | Indexer management |
-| **qBittorrent** | Torrent downloads |
-| **SABnzbd** | Usenet downloads |
+| **Open Library** / **Hardcover** | Book metadata and search |
+| **Prowlarr** / **Jackett** | Indexer management |
+| **qBittorrent**, **Deluge**, **Transmission** | Torrent downloads |
+| **SABnzbd**, **NZBGet** | Usenet downloads |
+| **Anna's Archive** / **Z-Library** | Direct ebook downloads |
+| **LibriVox** | Public-domain audiobook downloads |
 | **Audiobookshelf** | Library management |
+| **Discord** / **Telegram** / **Webhooks** | Notifications |
 
 ## Requirements
 
 - Docker
-- At least one of:
-  - Prowlarr (for indexer searches)
-  - Anna's Archive (for direct ebook downloads)
-- Download client (qBittorrent or SABnzbd) — optional if using Anna's Archive for ebooks
+- At least one way to find books:
+  - An indexer — Prowlarr or Jackett — plus a download client (qBittorrent, SABnzbd, NZBGet, Deluge or Transmission), **and/or**
+  - A direct source — Anna's Archive or Z-Library (ebooks), LibriVox (audiobooks)
 - Audiobookshelf (optional, for library integration)
 
 ## Development
