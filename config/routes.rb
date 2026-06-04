@@ -108,6 +108,7 @@ Rails.application.routes.draw do
         post :test_audiobookshelf
         post :test_flaresolverr
         post :test_zlibrary
+        post :test_gutenberg
         post :test_librivox
         post :test_hardcover
         post :test_oidc

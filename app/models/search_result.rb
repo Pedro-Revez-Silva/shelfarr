@@ -17,6 +17,7 @@ class SearchResult < ApplicationRecord
   SOURCE_JACKETT = "jackett"
   SOURCE_ANNA_ARCHIVE = "anna_archive"
   SOURCE_ZLIBRARY = "zlibrary"
+  SOURCE_GUTENBERG = "gutenberg"
   SOURCE_LIBRIVOX = "librivox"
 
   validates :guid, presence: true, uniqueness: { scope: :request_id }
@@ -29,7 +30,7 @@ class SearchResult < ApplicationRecord
     type_order_sql = ordered_types.each_with_index.map { |type, index| "WHEN '#{type}' THEN #{index}" }.join(" ")
     download_type_sql = <<~SQL.squish
       CASE
-        WHEN source IN ('#{SOURCE_ANNA_ARCHIVE}', '#{SOURCE_ZLIBRARY}', '#{SOURCE_LIBRIVOX}') THEN 'direct'
+        WHEN source IN ('#{SOURCE_ANNA_ARCHIVE}', '#{SOURCE_ZLIBRARY}', '#{SOURCE_GUTENBERG}', '#{SOURCE_LIBRIVOX}') THEN 'direct'
         WHEN download_url IS NOT NULL AND magnet_url IS NULL AND seeders IS NULL THEN 'usenet'
         ELSE 'torrent'
       END
@@ -77,7 +78,7 @@ class SearchResult < ApplicationRecord
   end
 
   def direct_download?
-    from_anna_archive? || from_zlibrary? || from_librivox?
+    from_anna_archive? || from_zlibrary? || from_gutenberg? || from_librivox?
   end
 
   def download_type
@@ -197,6 +198,10 @@ class SearchResult < ApplicationRecord
     source == SOURCE_ZLIBRARY
   end
 
+  def from_gutenberg?
+    source == SOURCE_GUTENBERG
+  end
+
   def from_librivox?
     source == SOURCE_LIBRIVOX
   end
@@ -209,6 +214,8 @@ class SearchResult < ApplicationRecord
       "Anna's Archive"
     when SOURCE_ZLIBRARY
       "Z-Library"
+    when SOURCE_GUTENBERG
+      "Project Gutenberg"
     when SOURCE_LIBRIVOX
       "LibriVox"
     else

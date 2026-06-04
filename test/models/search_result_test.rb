@@ -150,6 +150,19 @@ class SearchResultTest < ActiveSupport::TestCase
     assert anna_result.downloadable?, "Anna's Archive results should always be downloadable via API"
   end
 
+  test "downloadable? returns true for Project Gutenberg direct results" do
+    result = SearchResult.new(
+      request: requests(:pending_request),
+      guid: "gutenberg-1342",
+      title: "Project Gutenberg Book",
+      source: SearchResult::SOURCE_GUTENBERG,
+      download_url: "https://www.gutenberg.org/ebooks/1342.epub3.images"
+    )
+
+    assert result.downloadable?
+    assert_equal "direct", result.download_type
+  end
+
   test "download_link prefers magnet_url over download_url" do
     result = SearchResult.new(
       magnet_url: "magnet:?xt=test",
@@ -249,10 +262,12 @@ class SearchResultTest < ActiveSupport::TestCase
     assert SearchResult.new(source: SearchResult::SOURCE_JACKETT).from_indexer?
     assert SearchResult.new(source: SearchResult::SOURCE_ANNA_ARCHIVE).from_anna_archive?
     assert SearchResult.new(source: SearchResult::SOURCE_ZLIBRARY).from_zlibrary?
+    assert SearchResult.new(source: SearchResult::SOURCE_GUTENBERG).from_gutenberg?
 
     assert_equal "Custom Jackett", SearchResult.new(source: SearchResult::SOURCE_JACKETT, indexer: "Custom Jackett").source_display_name
     assert_equal "Anna's Archive", SearchResult.new(source: SearchResult::SOURCE_ANNA_ARCHIVE).source_display_name
     assert_equal "Z-Library", SearchResult.new(source: SearchResult::SOURCE_ZLIBRARY).source_display_name
+    assert_equal "Project Gutenberg", SearchResult.new(source: SearchResult::SOURCE_GUTENBERG).source_display_name
     assert_equal "Prowlarr", SearchResult.new.source_display_name
   end
 end

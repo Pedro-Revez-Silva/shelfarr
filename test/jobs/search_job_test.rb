@@ -13,8 +13,11 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_password, "")
     SettingsService.set(:librivox_enabled, false)
     SettingsService.set(:librivox_url, "https://librivox.org")
+    SettingsService.set(:gutenberg_enabled, false)
+    SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     LibrivoxClient.reset_connection! if defined?(LibrivoxClient)
+    GutenbergClient.reset_connection! if defined?(GutenbergClient)
   end
 
   teardown do
@@ -24,8 +27,11 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_password, "")
     SettingsService.set(:librivox_enabled, false)
     SettingsService.set(:librivox_url, "https://librivox.org")
+    SettingsService.set(:gutenberg_enabled, false)
+    SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     LibrivoxClient.reset_connection! if defined?(LibrivoxClient)
+    GutenbergClient.reset_connection! if defined?(GutenbergClient)
   end
 
   test "updates request status to searching" do
@@ -641,6 +647,54 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "LibriVox", saved_result.indexer
     assert_equal result.download_url, saved_result.download_url
     assert_includes saved_result.title, "[AUDIOBOOK ZIP]"
+  end
+
+  test "includes Project Gutenberg results for ebook requests" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:gutenberg_enabled, true)
+    result = GutenbergClient::Result.new(
+      id: "1342",
+      title: "Pride and Prejudice",
+      author: "Austen, Jane",
+      language: "en",
+      year: nil,
+      file_type: "epub",
+      download_url: "https://www.gutenberg.org/ebooks/1342.epub3.images?download=1",
+      info_url: "https://www.gutenberg.org/ebooks/1342"
+    )
+
+    GutenbergClient.stub :search, ->(title:, author:, language: nil, **) {
+      assert_equal @request.book.title, title
+      assert_equal @request.book.author, author
+      assert_equal "en", language
+      [ result ]
+    } do
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    saved_result = @request.search_results.first
+    assert_equal SearchResult::SOURCE_GUTENBERG, saved_result.source
+    assert_equal "gutenberg:1342", saved_result.guid
+    assert_equal "Project Gutenberg", saved_result.indexer
+    assert_equal result.download_url, saved_result.download_url
+    assert_equal "en", saved_result.detected_language
+    assert_includes saved_result.title, "[EPUB]"
+  end
+
+  test "skips Project Gutenberg for audiobook requests" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:gutenberg_enabled, true)
+    book = books(:audiobook_acquired)
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    GutenbergClient.stub :search, ->(*) { flunk "Project Gutenberg should only be searched for ebooks" } do
+      SearchJob.perform_now(request.id)
+    end
+
+    request.reload
+    assert request.attention_needed?
+    assert_includes request.issue_description, "No search sources configured"
   end
 
   test "skips librivox for ebook requests" do

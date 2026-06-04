@@ -45,6 +45,8 @@ class DownloadJob < ApplicationJob
         handle_anna_archive_download(download, search_result)
       elsif search_result.from_zlibrary?
         handle_zlibrary_download(download, search_result)
+      elsif search_result.from_gutenberg?
+        handle_gutenberg_download(download, search_result)
       elsif search_result.from_librivox?
         handle_librivox_download(download, search_result)
       else
@@ -85,6 +87,11 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("LibriVox error: #{e.message}")
+    rescue GutenbergClient::Error => e
+      Rails.logger.error "[DownloadJob] Project Gutenberg error for download ##{download.id}: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+      download.update!(status: :failed)
+      download.request.mark_for_attention!("Project Gutenberg error: #{e.message}")
     end
   end
 
@@ -117,6 +124,12 @@ class DownloadJob < ApplicationJob
     download_url = ZLibraryClient.get_download_url(id: book_id, hash: file_hash)
 
     handle_direct_http_download(download, search_result, download_url)
+  end
+
+  def handle_gutenberg_download(download, search_result)
+    raise GutenbergClient::Error, "Selected Project Gutenberg result is missing a download URL" if search_result.download_url.blank?
+
+    handle_direct_http_download(download, search_result, search_result.download_url)
   end
 
   def handle_librivox_download(download, search_result)

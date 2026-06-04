@@ -17,11 +17,12 @@ class SearchJob < ApplicationJob
     indexer_available = IndexerClient.configured?
     anna_available = AnnaArchiveClient.configured? && request.book.ebook?
     zlibrary_available = !anna_available && ZLibraryClient.configured? && request.book.ebook?
+    gutenberg_available = GutenbergClient.configured? && request.book.ebook?
     librivox_available = LibrivoxClient.configured? && request.book.audiobook?
 
-    unless indexer_available || anna_available || zlibrary_available || librivox_available
+    unless indexer_available || anna_available || zlibrary_available || gutenberg_available || librivox_available
       Rails.logger.error "[SearchJob] No search sources configured"
-      request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, or LibriVox in Admin Settings.")
+      request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, or LibriVox in Admin Settings.")
       return
     end
 
@@ -45,6 +46,12 @@ class SearchJob < ApplicationJob
       zlibrary_results = search_zlibrary(request)
       all_results.concat(zlibrary_results)
       Rails.logger.info "[SearchJob] Found #{zlibrary_results.count} Z-Library results"
+    end
+
+    if gutenberg_available
+      gutenberg_results = search_gutenberg(request)
+      all_results.concat(gutenberg_results)
+      Rails.logger.info "[SearchJob] Found #{gutenberg_results.count} Project Gutenberg results"
     end
 
     if librivox_available
@@ -199,6 +206,19 @@ class SearchJob < ApplicationJob
     []
   end
 
+  def search_gutenberg(request)
+    book = request.book
+    language = request.effective_language
+    Rails.logger.debug "[SearchJob] Searching Project Gutenberg for title='#{book.title}' author='#{book.author}' (language: #{language})"
+
+    GutenbergClient.search(title: book.title, author: book.author, language: language).map do |result|
+      { result: result, source: SearchResult::SOURCE_GUTENBERG }
+    end
+  rescue GutenbergClient::Error => e
+    Rails.logger.warn "[SearchJob] Project Gutenberg search failed: #{e.message}"
+    []
+  end
+
   def save_results(request, tagged_results)
     request.search_results.destroy_all
 
@@ -211,6 +231,8 @@ class SearchJob < ApplicationJob
         save_anna_archive_result(request, result)
       when SearchResult::SOURCE_ZLIBRARY
         save_zlibrary_result(request, result)
+      when SearchResult::SOURCE_GUTENBERG
+        save_gutenberg_result(request, result)
       when SearchResult::SOURCE_LIBRIVOX
         save_librivox_result(request, result)
       else
@@ -289,6 +311,22 @@ class SearchJob < ApplicationJob
     end
   end
 
+  def save_gutenberg_result(request, result)
+    request.search_results.find_or_create_by!(guid: "gutenberg:#{result.id}") do |sr|
+      sr.title = build_direct_source_title(result)
+      sr.indexer = "Project Gutenberg"
+      sr.size_bytes = nil
+      sr.seeders = nil
+      sr.leechers = nil
+      sr.download_url = result.download_url
+      sr.magnet_url = nil
+      sr.info_url = result.info_url
+      sr.published_at = nil
+      sr.source = SearchResult::SOURCE_GUTENBERG
+      sr.detected_language = result.language
+    end
+  end
+
   def build_librivox_title(result)
     parts = []
     parts << result.title if result.title.present?
@@ -304,6 +342,7 @@ class SearchJob < ApplicationJob
     parts << result.title if result.title.present?
     parts << "- #{result.author}" if result.author.present?
     parts << "[#{result.file_type.upcase}]" if result.file_type.present?
+    parts << "[#{result.language_display_name}]" if result.respond_to?(:language_display_name) && result.language_display_name.present?
     parts << "(#{result.year})" if result.year.present?
     parts.join(" ")
   end
