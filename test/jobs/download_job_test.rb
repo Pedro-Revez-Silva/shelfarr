@@ -418,6 +418,23 @@ class DownloadJobTest < ActiveJob::TestCase
     assert filename.end_with?(".epub") || filename.end_with?(".pdf") || filename.end_with?(".mobi")
   end
 
+  test "infer_filename_from_url normalizes Gutenberg pseudo extensions" do
+    job = DownloadJob.new
+
+    assert_equal "1342.epub", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/1342.epub3.images?download=1", @selected_result)
+    assert_equal "2.mobi", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/2.kf8.images", @selected_result)
+    assert_equal "3.mobi", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/3.kindle.noimages", @selected_result)
+  end
+
+  test "infer_filename_from_url ignores unsupported URL extensions without ebook hints" do
+    job = DownloadJob.new
+    filename = job.send(:infer_filename_from_url, "https://example.com/download/release.v1", @selected_result)
+
+    assert_not_equal "release.epub", filename
+    assert_includes filename, @selected_result.request.book.author
+    assert_includes filename, @selected_result.request.book.title
+  end
+
   test "z-library download completes via direct http download" do
     setup_zlibrary_download
 
@@ -453,6 +470,7 @@ class DownloadJobTest < ActiveJob::TestCase
       assert_equal "direct", @gutenberg_download.download_type
       assert @gutenberg_request.completed?
       assert File.exist?(@gutenberg_download.download_path)
+      assert_equal "1342.epub", File.basename(@gutenberg_download.download_path)
       assert_equal File.dirname(@gutenberg_download.download_path), @gutenberg_request.book.file_path
     end
   end
