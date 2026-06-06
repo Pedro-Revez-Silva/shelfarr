@@ -6,7 +6,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
   cover "SettingsService*"
 
   setup do
-    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password librivox_enabled librivox_url]).delete_all
+    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -83,5 +83,15 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
     SettingsService.set(:librivox_enabled, false)
     assert_not SettingsService.librivox_configured?
+  end
+
+  test "gutenberg_configured? requires enabled flag and URL" do
+    SettingsService.set(:gutenberg_enabled, true)
+    SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+
+    assert SettingsService.gutenberg_configured?
+
+    SettingsService.set(:gutenberg_enabled, false)
+    assert_not SettingsService.gutenberg_configured?
   end
 end

@@ -10,6 +10,7 @@ class DownloadJob < ApplicationJob
   MAX_DIRECT_DOWNLOAD_BYTES = 512.megabytes
   MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES = 2.gigabytes
   MAX_DIRECT_DOWNLOAD_REDIRECTS = 5
+  DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
 
   def perform(download_id)
     download = Download.find_by(id: download_id)
@@ -45,6 +46,8 @@ class DownloadJob < ApplicationJob
         handle_anna_archive_download(download, search_result)
       elsif search_result.from_zlibrary?
         handle_zlibrary_download(download, search_result)
+      elsif search_result.from_gutenberg?
+        handle_gutenberg_download(download, search_result)
       elsif search_result.from_librivox?
         handle_librivox_download(download, search_result)
       else
@@ -85,6 +88,11 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("LibriVox error: #{e.message}")
+    rescue GutenbergClient::Error => e
+      Rails.logger.error "[DownloadJob] Project Gutenberg error for download ##{download.id}: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+      download.update!(status: :failed)
+      download.request.mark_for_attention!("Project Gutenberg error: #{e.message}")
     end
   end
 
@@ -117,6 +125,12 @@ class DownloadJob < ApplicationJob
     download_url = ZLibraryClient.get_download_url(id: book_id, hash: file_hash)
 
     handle_direct_http_download(download, search_result, download_url)
+  end
+
+  def handle_gutenberg_download(download, search_result)
+    raise GutenbergClient::Error, "Selected Project Gutenberg result is missing a download URL" if search_result.download_url.blank?
+
+    handle_direct_http_download(download, search_result, search_result.download_url)
   end
 
   def handle_librivox_download(download, search_result)
@@ -220,36 +234,68 @@ class DownloadJob < ApplicationJob
     # URL-decode the filename (converts %20 to space, %3A to colon, etc.)
     filename_from_url = URI.decode_www_form_component(filename_from_url) if filename_from_url.present?
 
-    # If URL has a valid filename with extension, use it
-    if filename_from_url.present? && filename_from_url.include?(".")
-      return sanitize_filename(filename_from_url)
-    end
+    # If URL has a valid filename, use it after normalizing source-specific suffixes.
+    inferred_extension = infer_extension(url, search_result)
+    normalized_filename = normalize_url_filename(filename_from_url, inferred_extension)
+    return normalized_filename if normalized_filename.present?
 
     # Fall back to constructing from search result
     book = search_result.request.book
     title = book.title.presence || "Unknown"
     author = book.author.presence || "Unknown"
 
-    # Infer extension from search result or URL
-    extension = infer_extension(url, search_result)
-
-    sanitize_filename("#{author} - #{title}.#{extension}")
+    sanitize_filename("#{author} - #{title}.#{inferred_extension}")
   end
 
   def infer_extension(url, search_result)
+    normalized_url = url.to_s.downcase
+
     # Check URL for extension hints
-    return "epub" if url.include?("epub")
-    return "pdf" if url.include?("pdf")
-    return "mobi" if url.include?("mobi")
+    return "epub" if normalized_url.include?("epub")
+    return "pdf" if normalized_url.include?("pdf")
+    if normalized_url.include?("mobi") || normalized_url.include?("kf8") || normalized_url.match?(/\.kindle(\.|[?#]|\z)/)
+      return "mobi"
+    end
+    return "azw3" if normalized_url.include?("azw3")
 
     # Check search result title
     title = search_result.title.to_s.downcase
     return "epub" if title.include?("epub")
     return "pdf" if title.include?("pdf")
     return "mobi" if title.include?("mobi")
+    return "azw3" if title.include?("azw3")
 
     # Default to epub
     "epub"
+  end
+
+  def normalize_url_filename(filename, inferred_extension)
+    return nil if filename.blank?
+
+    current_extension = File.extname(filename).delete(".").downcase
+    return sanitize_filename(filename) if DIRECT_EBOOK_EXTENSIONS.include?(current_extension)
+    return nil unless filename.include?(".") && DIRECT_EBOOK_EXTENSIONS.include?(inferred_extension)
+    return nil unless url_filename_extension_hint?(filename, inferred_extension)
+
+    base = File.basename(filename, ".*")
+    base = base.sub(/\.epub3\z/i, "") if inferred_extension == "epub"
+    base = base.sub(/\.kf8\z/i, "") if inferred_extension == "mobi"
+    base = base.sub(/\.kindle\z/i, "") if inferred_extension == "mobi"
+    base = base.sub(/\.#{Regexp.escape(inferred_extension)}\z/i, "")
+    return nil if base.blank?
+
+    sanitize_filename("#{base}.#{inferred_extension}")
+  end
+
+  def url_filename_extension_hint?(filename, inferred_extension)
+    normalized = filename.to_s.downcase
+    extension = Regexp.escape(inferred_extension)
+
+    return true if normalized.match?(/\.#{extension}(\.|\z)/)
+    return true if inferred_extension == "epub" && normalized.match?(/\.epub3(\.|\z)/)
+    return true if inferred_extension == "mobi" && normalized.match?(/\.(kf8|kindle)(\.|\z)/)
+
+    false
   end
 
   def sanitize_filename(name)

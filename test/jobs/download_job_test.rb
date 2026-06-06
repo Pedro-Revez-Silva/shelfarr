@@ -15,6 +15,8 @@ class DownloadJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_url, "https://z-library.sk")
     SettingsService.set(:zlibrary_email, "")
     SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:gutenberg_enabled, false)
+    SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
 
     # Create a qBittorrent client
     @client = DownloadClient.create!(
@@ -31,6 +33,7 @@ class DownloadJobTest < ActiveJob::TestCase
     Thread.current[:qbittorrent_sessions] = {}
     Thread.current[:transmission_protocols] = {}
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
+    GutenbergClient.reset_connection! if defined?(GutenbergClient)
 
     # Create a queued download
     @download = @request.downloads.create!(
@@ -46,7 +49,10 @@ class DownloadJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_url, "https://z-library.sk")
     SettingsService.set(:zlibrary_email, "")
     SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:gutenberg_enabled, false)
+    SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
+    GutenbergClient.reset_connection! if defined?(GutenbergClient)
   end
 
   test "updates download status to downloading on success" do
@@ -412,6 +418,23 @@ class DownloadJobTest < ActiveJob::TestCase
     assert filename.end_with?(".epub") || filename.end_with?(".pdf") || filename.end_with?(".mobi")
   end
 
+  test "infer_filename_from_url normalizes Gutenberg pseudo extensions" do
+    job = DownloadJob.new
+
+    assert_equal "1342.epub", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/1342.epub3.images?download=1", @selected_result)
+    assert_equal "2.mobi", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/2.kf8.images", @selected_result)
+    assert_equal "3.mobi", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/3.kindle.noimages", @selected_result)
+  end
+
+  test "infer_filename_from_url ignores unsupported URL extensions without ebook hints" do
+    job = DownloadJob.new
+    filename = job.send(:infer_filename_from_url, "https://example.com/download/release.v1", @selected_result)
+
+    assert_not_equal "release.epub", filename
+    assert_includes filename, @selected_result.request.book.author
+    assert_includes filename, @selected_result.request.book.title
+  end
+
   test "z-library download completes via direct http download" do
     setup_zlibrary_download
 
@@ -427,6 +450,29 @@ class DownloadJobTest < ActiveJob::TestCase
     @zlibrary_download.reload
     assert @zlibrary_download.completed?
     assert_equal "direct", @zlibrary_download.download_type
+  end
+
+  test "Project Gutenberg download completes via direct http download" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(status: 200, body: "PK\x03\x04" + ("x" * 1024), headers: { "Content-Type" => "application/epub+zip" })
+
+        DownloadJob.perform_now(@gutenberg_download.id)
+      end
+
+      @gutenberg_download.reload
+      @gutenberg_request.reload
+      assert @gutenberg_download.completed?
+      assert_equal "direct", @gutenberg_download.download_type
+      assert @gutenberg_request.completed?
+      assert File.exist?(@gutenberg_download.download_path)
+      assert_equal "1342.epub", File.basename(@gutenberg_download.download_path)
+      assert_equal File.dirname(@gutenberg_download.download_path), @gutenberg_request.book.file_path
+    end
   end
 
   test "librivox download extracts audiobook zip into audiobook output path" do
@@ -693,6 +739,31 @@ class DownloadJobTest < ActiveJob::TestCase
     @librivox_download = @librivox_request.downloads.create!(
       name: librivox_result.title,
       search_result: librivox_result,
+      status: :queued
+    )
+  end
+
+  def setup_gutenberg_download(output_path:)
+    SettingsService.set(:gutenberg_enabled, true)
+    SettingsService.set(:ebook_output_path, output_path)
+
+    book = Book.create!(
+      title: "Pride and Prejudice",
+      author: "Austen, Jane",
+      book_type: :ebook
+    )
+    @gutenberg_request = Request.create!(book: book, user: users(:one), status: :downloading)
+    gutenberg_result = @gutenberg_request.search_results.create!(
+      guid: "gutenberg:1342",
+      title: "Pride and Prejudice - Austen, Jane [EPUB]",
+      indexer: "Project Gutenberg",
+      source: SearchResult::SOURCE_GUTENBERG,
+      download_url: "https://www.gutenberg.org/ebooks/1342.epub3.images?download=1",
+      status: :selected
+    )
+    @gutenberg_download = @gutenberg_request.downloads.create!(
+      name: gutenberg_result.title,
+      search_result: gutenberg_result,
       status: :queued
     )
   end

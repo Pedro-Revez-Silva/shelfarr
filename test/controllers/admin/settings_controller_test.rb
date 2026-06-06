@@ -295,6 +295,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a", text: "Test LibriVox Connection"
   end
 
+  test "index shows Project Gutenberg settings and test button" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Gutenberg Enabled"
+    assert_select "input[name='settings[gutenberg_enabled]']"
+    assert_select "input[name='settings[gutenberg_url]']"
+    assert_select "input[name='settings[gutenberg_search_limit]']"
+    assert_select "a", text: "Test Project Gutenberg Connection"
+  end
+
   test "index shows Anna's Archive URL list setting" do
     get admin_settings_url
 
@@ -774,6 +785,37 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     LibrivoxClient.stub :test_connection, false do
       post test_librivox_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
+  end
+
+  test "test_gutenberg fails when disabled" do
+    SettingsService.set(:gutenberg_enabled, false)
+
+    post test_gutenberg_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not enabled/i, flash[:alert]
+  end
+
+  test "test_gutenberg succeeds when connection works" do
+    SettingsService.set(:gutenberg_enabled, true)
+
+    GutenbergClient.stub :test_connection, true do
+      post test_gutenberg_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
+  end
+
+  test "test_gutenberg fails when connection fails" do
+    SettingsService.set(:gutenberg_enabled, true)
+
+    GutenbergClient.stub :test_connection, false do
+      post test_gutenberg_admin_settings_url
     end
 
     assert_redirected_to admin_settings_path

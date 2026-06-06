@@ -13,7 +13,7 @@ class SettingsService
     },
     "direct" => {
       label: "Direct",
-      description: "Integration downloads such as Anna's Archive, Z-Library, and LibriVox"
+      description: "Integration downloads such as Anna's Archive, Z-Library, Project Gutenberg, and LibriVox"
     }
   }.freeze
 
@@ -117,6 +117,11 @@ class SettingsService
     librivox_url: { type: "string", default: "https://librivox.org", category: "librivox", description: "LibriVox base URL" },
     librivox_search_limit: { type: "integer", default: 20, category: "librivox", description: "Maximum number of LibriVox audiobook results to return" },
 
+    # Project Gutenberg
+    gutenberg_enabled: { type: "boolean", default: false, category: "gutenberg", description: "Enable Project Gutenberg as a free public-domain ebook source" },
+    gutenberg_url: { type: "string", default: "https://www.gutenberg.org", category: "gutenberg", description: "Project Gutenberg OPDS catalog base URL" },
+    gutenberg_search_limit: { type: "integer", default: 10, category: "gutenberg", description: "Maximum number of Project Gutenberg ebook results to return" },
+
     # Hardcover Integration
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
     metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover first, OpenLibrary fallback), hardcover, or openlibrary" },
@@ -163,6 +168,7 @@ class SettingsService
     "audiobookshelf" => "Audiobookshelf",
     "anna_archive" => "Anna's Archive",
     "zlibrary" => "Z-Library",
+    "gutenberg" => "Project Gutenberg",
     "librivox" => "LibriVox",
     "hardcover" => "Hardcover",
     "paths" => "Output Paths",
@@ -302,6 +308,10 @@ class SettingsService
 
     def librivox_configured?
       get(:librivox_enabled, default: false) && configured?(:librivox_url)
+    end
+
+    def gutenberg_configured?
+      get(:gutenberg_enabled, default: false) && configured?(:gutenberg_url)
     end
 
     def flaresolverr_configured?
