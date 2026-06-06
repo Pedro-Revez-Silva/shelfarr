@@ -67,16 +67,16 @@ class SearchJob < ApplicationJob
 
   def search_indexer_safely(request)
     results = search_indexer(request)
-    [results, nil]
+    [ results, nil ]
   rescue IndexerClients::Base::AuthenticationError => e
     Rails.logger.error "[SearchJob] #{IndexerClient.display_name} authentication failed: #{e.message}"
-    [[], e]
+    [ [], e ]
   rescue IndexerClients::Base::ConnectionError => e
     Rails.logger.error "[SearchJob] #{IndexerClient.display_name} connection error for request ##{request.id}: #{e.message}"
-    [[], e]
+    [ [], e ]
   rescue IndexerClients::Base::Error => e
     Rails.logger.error "[SearchJob] #{IndexerClient.display_name} error for request ##{request.id}: #{e.message}"
-    [[], e]
+    [ [], e ]
   end
 
   def handle_no_results(request, indexer_error)
@@ -114,17 +114,21 @@ class SearchJob < ApplicationJob
       author: book.author
     )
 
-    return structured_results if structured_results.any? && !book.ebook?
-
     fallback_query = generic_indexer_query(request)
-    if structured_results.any?
-      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} ebook search found #{structured_results.count} structured results for request ##{request.id}; supplementing with generic query '#{fallback_query}'"
-    else
+    results = structured_results
+
+    if structured_results.empty?
       Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with generic query '#{fallback_query}'"
+      results = merge_indexer_results(results, IndexerClient.search(fallback_query, book_type: book.book_type))
+    elsif book.ebook?
+      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} ebook search found #{structured_results.count} structured results for request ##{request.id}; supplementing with generic query '#{fallback_query}'"
+      results = merge_indexer_results(results, IndexerClient.search(fallback_query, book_type: book.book_type))
+    elsif !strong_indexer_match?(results, request)
+      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search found no strong match for request ##{request.id}; supplementing with generic query '#{fallback_query}'"
+      results = merge_indexer_results(results, IndexerClient.search(fallback_query, book_type: book.book_type))
     end
 
-    generic_results = IndexerClient.search(fallback_query, book_type: book.book_type)
-    merge_indexer_results(structured_results, generic_results)
+    supplement_with_broad_search(request, results)
   end
 
   def search_generic_indexer(request)
@@ -132,11 +136,12 @@ class SearchJob < ApplicationJob
     query = generic_indexer_query(request)
     Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for: #{query} (type: #{book.book_type})"
 
-    IndexerClient.search(query, book_type: book.book_type)
+    results = IndexerClient.search(query, book_type: book.book_type)
+    supplement_with_broad_search(request, results)
   end
 
   def generic_indexer_query(request)
-    [ request.book.title, indexer_language_hint(request) ].reject(&:blank?).join(" ")
+    [ request.book.title, request.book.author, indexer_language_hint(request) ].reject(&:blank?).join(" ")
   end
 
   def indexer_language_hint(request)
@@ -174,7 +179,7 @@ class SearchJob < ApplicationJob
 
   def search_zlibrary(request)
     book = request.book
-    query = [book.title, book.author].compact.join(" ")
+    query = [ book.title, book.author ].compact.join(" ")
     language = zlibrary_language_filter(request)
     Rails.logger.debug "[SearchJob] Searching Z-Library for: #{query} (language: #{language || 'any'})"
 
@@ -376,6 +381,61 @@ class SearchJob < ApplicationJob
 
       seen[key] = true
       merged << result
+    end
+  end
+
+  def supplement_with_broad_search(request, results)
+    query = generic_indexer_query(request)
+    Rails.logger.info "[SearchJob] Supplementing #{IndexerClient.display_name} search for request ##{request.id} without category restrictions using '#{query}'"
+
+    broad_results = IndexerClient.search(query, categories: [])
+    merge_indexer_results(results, filter_broad_results(broad_results, request))
+  rescue IndexerClients::Base::Error => e
+    Rails.logger.warn "[SearchJob] #{IndexerClient.display_name} broad search failed for request ##{request.id}: #{e.message}"
+    results
+  end
+
+  def strong_indexer_match?(results, request)
+    threshold = SettingsService.get(:min_match_confidence)
+
+    Array(results).any? do |result|
+      score_result = ReleaseScorer.score(search_result_for_scoring(result), request)
+      score_result.total >= threshold
+    end
+  end
+
+  def search_result_for_scoring(result)
+    SearchResult.new(
+      title: result.title,
+      seeders: result.seeders,
+      download_url: result.download_url,
+      magnet_url: result.magnet_url
+    )
+  end
+
+  def filter_broad_results(results, request)
+    threshold = SettingsService.get(:min_match_confidence)
+
+    Array(results).select do |result|
+      compatible_result_categories?(result, request.book.book_type) &&
+        ReleaseScorer.score(search_result_for_scoring(result), request).total >= threshold
+    end
+  end
+
+  def compatible_result_categories?(result, book_type)
+    category_ids = Array(result.category_ids).map(&:to_i)
+    known_category_ids = category_ids.reject { |id| id.zero? || id.between?(8000, 8999) }
+    return true if known_category_ids.empty?
+
+    case book_type&.to_sym
+    when :audiobook
+      specific_audio_ids = known_category_ids.reject { |id| (id % 1000).zero? }
+      ids_to_check = specific_audio_ids.presence || known_category_ids
+      ids_to_check.any? { |id| [ 3000, 3030, 3050 ].include?(id) }
+    when :ebook
+      known_category_ids.any? { |id| id.between?(7000, 7999) }
+    else
+      true
     end
   end
 end

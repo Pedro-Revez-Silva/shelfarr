@@ -312,6 +312,11 @@ class SearchJobTest < ActiveJob::TestCase
   end
 
   test "falls back to generic Prowlarr search when book search returns no results" do
+    generic_payload = prowlarr_result_payload.merge(
+      "guid" => "generic-strong-match",
+      "title" => "#{@request.book.title} #{@request.book.author} EPUB"
+    )
+
     VCR.turned_off do
       structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
@@ -329,12 +334,25 @@ class SearchJobTest < ActiveJob::TestCase
       fallback_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           req.uri.query_values["type"] == "search" &&
-            req.uri.query_values["query"] == @request.book.title
+            req.uri.query_values["query"] == "#{@request.book.title} #{@request.book.author}" &&
+            category_query_param?(req)
         end
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: [ prowlarr_result_payload ].to_json
+          body: [ generic_payload ].to_json
+        )
+
+      broad_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "#{@request.book.title} #{@request.book.author}" &&
+            !category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
         )
 
       SearchJob.perform_now(@request.id)
@@ -342,7 +360,160 @@ class SearchJobTest < ActiveJob::TestCase
 
       assert_requested structured_stub
       assert_requested fallback_stub
-      assert_equal "Test Result Book", @request.search_results.first.title
+      assert_requested broad_stub
+      assert_equal generic_payload["title"], @request.search_results.first.title
+    end
+  end
+
+  test "uses categoryless Prowlarr fallback when categorized results are weak" do
+    broad_payload = prowlarr_result_payload.merge(
+      "guid" => "broad-strong-match",
+      "title" => "#{@request.book.title} #{@request.book.author} EPUB",
+      "categories" => [ { "id" => 7020, "name" => "Books/EBook" } ]
+    )
+    movie_payload = prowlarr_result_payload.merge(
+      "guid" => "broad-movie-match",
+      "title" => "#{@request.book.title} #{@request.book.author} Movie",
+      "categories" => [ { "id" => 2000, "name" => "Movies" } ]
+    )
+
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ prowlarr_result_payload ].to_json
+        )
+
+      categorized_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" && category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      broad_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "#{@request.book.title} #{@request.book.author}" &&
+            !category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ broad_payload, movie_payload ].to_json
+        )
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert_requested structured_stub
+      assert_requested categorized_stub
+      assert_requested broad_stub
+      assert_includes @request.search_results.pluck(:title), broad_payload["title"]
+      assert_not_includes @request.search_results.pluck(:title), movie_payload["title"]
+    end
+  end
+
+  test "uses categoryless Prowlarr complement even when categorized audiobook result is strong" do
+    book = Book.create!(
+      title: "Strong Audio",
+      author: "Narrator Author",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    payload = prowlarr_result_payload.merge(
+      "guid" => "strong-audiobook-match",
+      "title" => "Strong Audio Narrator Author Audiobook M4B"
+    )
+    broad_payload = prowlarr_result_payload.merge(
+      "guid" => "broad-audiobook-match",
+      "title" => "Strong Audio Narrator Author Audiobook Complete",
+      "categories" => [ { "id" => 3030, "name" => "Audio/Audiobook" } ]
+    )
+    movie_payload = prowlarr_result_payload.merge(
+      "guid" => "broad-audiobook-movie",
+      "title" => "Strong Audio Narrator Author Movie",
+      "categories" => [ { "id" => 2000, "name" => "Movies" } ]
+    )
+
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ payload ].to_json
+        )
+
+      broad_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Strong Audio Narrator Author" &&
+            !category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ broad_payload, movie_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested structured_stub
+      assert_requested broad_stub
+      assert_equal [ broad_payload["title"], payload["title"] ].sort, request.search_results.pluck(:title).sort
+      assert_not_includes request.search_results.pluck(:title), movie_payload["title"]
+    end
+  end
+
+  test "keeps categorized results when categoryless Prowlarr complement fails" do
+    payload = prowlarr_result_payload.merge(
+      "guid" => "categorized-strong-match",
+      "title" => "#{@request.book.title} #{@request.book.author} EPUB"
+    )
+
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ payload ].to_json
+        )
+
+      categorized_generic_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "#{@request.book.title} #{@request.book.author}" &&
+            category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      broad_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "#{@request.book.title} #{@request.book.author}" &&
+            !category_query_param?(req)
+        end
+        .to_raise(Faraday::TimeoutError.new("timeout"))
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert_requested structured_stub
+      assert_requested categorized_generic_stub
+      assert_requested broad_stub
+      assert_equal [ payload["title"] ], @request.search_results.pluck(:title)
     end
   end
 
@@ -381,12 +552,25 @@ class SearchJobTest < ActiveJob::TestCase
       generic_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           req.uri.query_values["type"] == "search" &&
-            req.uri.query_values["query"] == "Frieren: Beyond Journey's End, Vol. 1"
+            req.uri.query_values["query"] == "Frieren: Beyond Journey's End, Vol. 1 Kanehito Yamada" &&
+            category_query_param?(req)
         end
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
           body: [ generic_payload ].to_json
+        )
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Frieren: Beyond Journey's End, Vol. 1 Kanehito Yamada" &&
+            !category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
         )
 
       SearchJob.perform_now(request.id)
@@ -434,7 +618,7 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
-  test "keeps Jackett on title-only generic search" do
+  test "uses title and author for Jackett text search" do
     SettingsService.set(:indexer_provider, "jackett")
     SettingsService.set(:jackett_url, "http://localhost:9117")
     SettingsService.set(:jackett_api_key, "jackett-key")
@@ -452,13 +636,53 @@ class SearchJobTest < ActiveJob::TestCase
           query = req.uri.query_values["q"]
           req.uri.query_values["t"] == "search" &&
             query.include?(@request.book.title) &&
-            !query.include?(@request.book.author)
+            query.include?(@request.book.author)
         end
         .to_return(status: 200, body: body, headers: { "Content-Type" => "application/xml" })
 
       assert_nothing_raised do
         SearchJob.perform_now(@request.id)
       end
+    end
+  end
+
+  test "uses categoryless Jackett fallback when categorized search is weak" do
+    SettingsService.set(:indexer_provider, "jackett")
+    SettingsService.set(:jackett_url, "http://localhost:9117")
+    SettingsService.set(:jackett_api_key, "jackett-key")
+
+    empty_body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+        <channel></channel>
+      </rss>
+    XML
+    result_body = jackett_result_xml(
+      title: "#{@request.book.title} #{@request.book.author} EPUB",
+      guid: "jackett-broad-guid"
+    )
+
+    VCR.turned_off do
+      categorized_stub = stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with do |req|
+          req.uri.query_values["t"] == "search" && category_query_param?(req)
+        end
+        .to_return(status: 200, body: empty_body, headers: { "Content-Type" => "application/xml" })
+
+      broad_stub = stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with do |req|
+          req.uri.query_values["t"] == "search" &&
+            req.uri.query_values["q"] == "#{@request.book.title} #{@request.book.author}" &&
+            !category_query_param?(req)
+        end
+        .to_return(status: 200, body: result_body, headers: { "Content-Type" => "application/xml" })
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert_requested categorized_stub
+      assert_requested broad_stub
+      assert_equal "#{@request.book.title} #{@request.book.author} EPUB", @request.search_results.first.title
     end
   end
 
@@ -529,7 +753,7 @@ class SearchJobTest < ActiveJob::TestCase
     ZLibraryClient.stub :search, ->(query, language: nil, **) {
       assert_includes query, @request.book.title
       assert_equal "english", language
-      [result]
+      [ result ]
     } do
       SearchJob.perform_now(@request.id)
     end
@@ -561,7 +785,7 @@ class SearchJobTest < ActiveJob::TestCase
       language: "en"
     )
 
-    ZLibraryClient.stub :search, [result] do
+    ZLibraryClient.stub :search, [ result ] do
       assert_nothing_raised do
         SearchJob.perform_now(@request.id)
       end
@@ -734,5 +958,27 @@ class SearchJobTest < ActiveJob::TestCase
       "infoUrl" => "http://example.com/info",
       "publishDate" => "2024-01-15T10:00:00Z"
     }
+  end
+
+  def category_query_param?(request)
+    request.uri.query.to_s.match?(/(?:^|&)(?:categories(?:%5B%5D)?|cat)=/)
+  end
+
+  def jackett_result_xml(title:, guid:)
+    <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+        <channel>
+          <item>
+            <title>#{title}</title>
+            <guid>#{guid}</guid>
+            <link>https://example.com/details/#{guid}</link>
+            <jackettindexer>JackettBooks</jackettindexer>
+            <enclosure url="magnet:?xt=urn:btih:#{guid}" length="12345" type="application/x-bittorrent" />
+            <torznab:attr name="seeders" value="12" />
+          </item>
+        </channel>
+      </rss>
+    XML
   end
 end

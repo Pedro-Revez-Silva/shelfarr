@@ -53,7 +53,8 @@ class ProwlarrClientTest < ActiveSupport::TestCase
               "downloadUrl" => "http://example.com/download/abc123",
               "magnetUrl" => "magnet:?xt=urn:btih:abc123",
               "infoUrl" => "http://example.com/info/abc123",
-              "publishDate" => "2024-01-15T10:00:00Z"
+              "publishDate" => "2024-01-15T10:00:00Z",
+              "categories" => [ { "id" => 7020, "name" => "Books/EBook" } ]
             }
           ].to_json
         )
@@ -70,6 +71,7 @@ class ProwlarrClientTest < ActiveSupport::TestCase
       assert_equal "TestIndexer", result.indexer
       assert_equal 50, result.seeders
       assert_equal "magnet:?xt=urn:btih:abc123", result.download_link
+      assert_equal [ 7020 ], result.category_ids
     end
   end
 

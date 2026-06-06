@@ -29,6 +29,7 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
             <pubDate>Mon, 01 Jan 2024 12:00:00 GMT</pubDate>
             <jackettindexer>Books</jackettindexer>
             <enclosure url="magnet:?xt=urn:btih:123" length="1048576" type="application/x-bittorrent" />
+            <torznab:attr name="category" value="3030" />
             <torznab:attr name="seeders" value="42" />
             <torznab:attr name="peers" value="7" />
             <torznab:attr name="size" value="1048576" />
@@ -54,6 +55,7 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
       assert_equal 1_048_576, result.size_bytes
       assert_equal "magnet:?xt=urn:btih:123", result.magnet_url
       assert_equal "magnet:?xt=urn:btih:123", result.download_link
+      assert_equal [ 3030 ], result.category_ids
     end
   end
 

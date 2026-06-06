@@ -113,7 +113,7 @@ module IndexerClients
         tags.to_a.flat_map do |tag|
           case tag
           when Hash
-            [tag["id"], tag["label"], tag["name"]]
+            [ tag["id"], tag["label"], tag["name"] ]
           else
             tag
           end
@@ -166,8 +166,16 @@ module IndexerClients
           download_url: extract_download_url(item),
           magnet_url: extract_magnet_url(item),
           info_url: item["infoUrl"],
-          published_at: parse_date(item["publishDate"])
+          published_at: parse_date(item["publishDate"]),
+          category_ids: extract_category_ids(item)
         )
+      end
+
+      def extract_category_ids(item)
+        Array(item["categories"]).filter_map do |category|
+          value = category.is_a?(Hash) ? category["id"] || category["Id"] || category["ID"] : category
+          Integer(value, exception: false)
+        end.uniq
       end
 
       def extract_download_url(item)

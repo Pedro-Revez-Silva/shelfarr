@@ -3,6 +3,14 @@
 module IndexerClients
   class Jackett < Base
     DEFAULT_INDEXER_FILTER = "all"
+    CATEGORY_NAME_IDS = {
+      "audio" => 3000,
+      "audio/audiobook" => 3030,
+      "audio/other" => 3050,
+      "books" => 7000,
+      "books/ebook" => 7020,
+      "books/other" => 7050
+    }.freeze
 
     class << self
       def search(query, categories: nil, book_type: nil, limit: 100, **)
@@ -112,8 +120,19 @@ module IndexerClients
           download_url: extract_download_url(enclosure_url),
           magnet_url: extract_magnet_url(enclosure_url),
           info_url: link,
-          published_at: parse_date(item.at_xpath("pubDate")&.text)
+          published_at: parse_date(item.at_xpath("pubDate")&.text),
+          category_ids: extract_category_ids(item)
         )
+      end
+
+      def extract_category_ids(item)
+        attr_categories = item.xpath("attr[@name='category']").map { |attr| attr["value"] }
+        rss_categories = item.xpath("category").map(&:text)
+
+        (attr_categories + rss_categories).filter_map do |category|
+          value = category.to_s.strip
+          Integer(value, exception: false) || CATEGORY_NAME_IDS[value.downcase]
+        end.uniq
       end
 
       def integer_attr(value)
