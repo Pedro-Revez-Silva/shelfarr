@@ -2,6 +2,30 @@ class SettingsService
   DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
+  INDEXER_SEARCH_SCOPES = %w[broad strict unrestricted custom].freeze
+  INDEXER_SEARCH_SCOPE_OPTIONS = {
+    "broad" => {
+      label: "Broad (recommended)",
+      description: "Search Shelfarr's book categories, then supplement with an unrestricted search filtered by match quality."
+    },
+    "strict" => {
+      label: "Strict",
+      description: "Search only Shelfarr's default book categories."
+    },
+    "unrestricted" => {
+      label: "Unrestricted",
+      description: "Search without category filters and rely on match quality filtering."
+    },
+    "custom" => {
+      label: "Custom",
+      description: "Search only the custom category IDs configured below."
+    }
+  }.freeze
+  DEFAULT_INDEXER_CATEGORY_IDS = {
+    audiobook: [ 3030 ],
+    ebook: [ 7020, 7000 ],
+    all_books: [ 3030, 7020, 7000 ]
+  }.freeze
   DOWNLOAD_TYPE_OPTIONS = {
     "torrent" => {
       label: "Torrent",
@@ -21,6 +45,9 @@ class SettingsService
   DEFINITIONS = {
     # Indexer Integration
     indexer_provider: { type: "string", default: "", category: "indexer", description: "Active indexer provider. Leave unset on upgrades to keep legacy Prowlarr configuration." },
+    indexer_search_scope: { type: "string", default: "broad", category: "indexer", description: "How broadly Shelfarr should search indexer categories." },
+    indexer_custom_audiobook_categories: { type: "string", default: "", category: "indexer", description: "Comma-separated audiobook category IDs used when search scope is Custom. Leave blank to use Shelfarr defaults." },
+    indexer_custom_ebook_categories: { type: "string", default: "", category: "indexer", description: "Comma-separated ebook category IDs used when search scope is Custom. Leave blank to use Shelfarr defaults." },
     prowlarr_url: { type: "string", default: "", category: "indexer", description: "Base URL for Prowlarr instance (e.g., http://localhost:9696)" },
     prowlarr_api_key: { type: "string", default: "", category: "indexer", description: "API key from Prowlarr Settings > General" },
     prowlarr_tags: { type: "string", default: "", category: "indexer", description: "Comma-separated tag IDs or names to filter Prowlarr indexers (leave empty for all indexers)" },
@@ -287,6 +314,31 @@ class SettingsService
       end
     end
 
+    def active_indexer_search_scope
+      scope = get(:indexer_search_scope).to_s.strip.downcase
+      INDEXER_SEARCH_SCOPES.include?(scope) ? scope : "broad"
+    end
+
+    def broad_indexer_search_scope?
+      active_indexer_search_scope == "broad"
+    end
+
+    def unrestricted_indexer_search_scope?
+      active_indexer_search_scope == "unrestricted"
+    end
+
+    def indexer_category_ids_for(book_type)
+      return [] if unrestricted_indexer_search_scope?
+
+      ids = if active_indexer_search_scope == "custom"
+        custom_indexer_category_ids_for(book_type)
+      else
+        []
+      end
+
+      ids.presence || default_indexer_category_ids_for(book_type)
+    end
+
     def download_client_configured?
       DownloadClient.enabled.exists?
     end
@@ -377,6 +429,13 @@ class SettingsService
       end
     end
 
+    def indexer_search_scope_options
+      INDEXER_SEARCH_SCOPES.map do |scope|
+        INDEXER_SEARCH_SCOPE_OPTIONS.fetch(scope)
+          .merge(value: scope)
+      end
+    end
+
     def format_preferences_for(book_type)
       type = book_type.to_s
       return default_format_preferences unless %w[audiobook ebook].include?(type)
@@ -404,6 +463,41 @@ class SettingsService
         normalized = value.to_s.strip.downcase
         normalized if DOWNLOAD_TYPES.include?(normalized)
       end.uniq
+    end
+
+    def custom_indexer_category_ids_for(book_type)
+      key = case book_type&.to_sym
+      when :audiobook
+        :indexer_custom_audiobook_categories
+      when :ebook
+        :indexer_custom_ebook_categories
+      else
+        nil
+      end
+
+      if key
+        normalize_category_ids(get(key))
+      else
+        (normalize_category_ids(get(:indexer_custom_audiobook_categories)) +
+          normalize_category_ids(get(:indexer_custom_ebook_categories))).uniq
+      end
+    end
+
+    def default_indexer_category_ids_for(book_type)
+      case book_type&.to_sym
+      when :audiobook
+        DEFAULT_INDEXER_CATEGORY_IDS[:audiobook]
+      when :ebook
+        DEFAULT_INDEXER_CATEGORY_IDS[:ebook]
+      else
+        DEFAULT_INDEXER_CATEGORY_IDS[:all_books]
+      end
+    end
+
+    def normalize_category_ids(values)
+      Array(values).flat_map { |value| value.to_s.split(/[,\s]+/) }.filter_map do |value|
+        Integer(value.strip, exception: false)
+      end.reject(&:zero?).uniq
     end
 
     def normalized_list_setting(key)

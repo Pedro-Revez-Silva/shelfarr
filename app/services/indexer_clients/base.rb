@@ -9,12 +9,6 @@ module IndexerClients
     class AuthenticationError < Error; end
     class NotConfiguredError < Error; end
 
-    CATEGORIES = {
-      audiobook: [3030],
-      ebook: [7020, 7000],
-      all_books: [3030, 7020, 7000]
-    }.freeze
-
     class << self
       def search(...)
         raise NotImplementedError
@@ -39,14 +33,7 @@ module IndexerClients
       private
 
       def categories_for_type(book_type)
-        case book_type&.to_sym
-        when :audiobook
-          CATEGORIES[:audiobook]
-        when :ebook
-          CATEGORIES[:ebook]
-        else
-          CATEGORIES[:all_books]
-        end
+        SettingsService.indexer_category_ids_for(book_type)
       end
 
       def ensure_configured!

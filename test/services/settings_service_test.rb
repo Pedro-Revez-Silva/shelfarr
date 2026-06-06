@@ -6,7 +6,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
   cover "SettingsService*"
 
   setup do
-    Setting.where(key: %w[indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url]).delete_all
+    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -55,6 +55,38 @@ class SettingsServiceTest < ActiveSupport::TestCase
     SettingsService.set(:preferred_download_types, %w[direct torrent])
 
     assert_equal %w[direct torrent usenet], SettingsService.preferred_download_types
+  end
+
+  test "indexer search scope defaults to broad" do
+    assert_equal "broad", SettingsService.active_indexer_search_scope
+    assert SettingsService.broad_indexer_search_scope?
+  end
+
+  test "indexer search scope ignores invalid values" do
+    SettingsService.set(:indexer_search_scope, "unknown")
+
+    assert_equal "broad", SettingsService.active_indexer_search_scope
+  end
+
+  test "indexer category ids use default categories" do
+    assert_equal [ 3030 ], SettingsService.indexer_category_ids_for(:audiobook)
+    assert_equal [ 7020, 7000 ], SettingsService.indexer_category_ids_for(:ebook)
+  end
+
+  test "indexer category ids use custom categories when configured" do
+    SettingsService.set(:indexer_search_scope, "custom")
+    SettingsService.set(:indexer_custom_audiobook_categories, "3030, 3010\n3040")
+    SettingsService.set(:indexer_custom_ebook_categories, "7020 7050")
+
+    assert_equal [ 3030, 3010, 3040 ], SettingsService.indexer_category_ids_for(:audiobook)
+    assert_equal [ 7020, 7050 ], SettingsService.indexer_category_ids_for(:ebook)
+  end
+
+  test "unrestricted indexer search scope sends no categories" do
+    SettingsService.set(:indexer_search_scope, "unrestricted")
+
+    assert_equal [], SettingsService.indexer_category_ids_for(:audiobook)
+    assert SettingsService.unrestricted_indexer_search_scope?
   end
 
   test "post processing source path retries has a dedicated default" do
