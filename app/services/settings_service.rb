@@ -46,8 +46,8 @@ class SettingsService
     # Indexer Integration
     indexer_provider: { type: "string", default: "", category: "indexer", description: "Active indexer provider. Leave unset on upgrades to keep legacy Prowlarr configuration." },
     indexer_search_scope: { type: "string", default: "broad", category: "indexer", description: "How broadly Shelfarr should search indexer categories." },
-    indexer_custom_audiobook_categories: { type: "string", default: "", category: "indexer", description: "Comma-separated audiobook category IDs used when search scope is Custom. Leave blank to use Shelfarr defaults." },
-    indexer_custom_ebook_categories: { type: "string", default: "", category: "indexer", description: "Comma-separated ebook category IDs used when search scope is Custom. Leave blank to use Shelfarr defaults." },
+    indexer_custom_audiobook_categories: { type: "string", default: "", category: "indexer", description: "Audiobook category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
+    indexer_custom_ebook_categories: { type: "string", default: "", category: "indexer", description: "Ebook category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
     prowlarr_url: { type: "string", default: "", category: "indexer", description: "Base URL for Prowlarr instance (e.g., http://localhost:9696)" },
     prowlarr_api_key: { type: "string", default: "", category: "indexer", description: "API key from Prowlarr Settings > General" },
     prowlarr_tags: { type: "string", default: "", category: "indexer", description: "Comma-separated tag IDs or names to filter Prowlarr indexers (leave empty for all indexers)" },
