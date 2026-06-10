@@ -306,7 +306,9 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
                   "percent_done" => 0.5,
                   "status" => 4,
                   "total_size" => 1073741824,
-                  "download_dir" => "/downloads/Transmission Book",
+                  # Transmission reports the PARENT download dir here, not the
+                  # per-torrent path; the content lives at download_dir/name.
+                  "download_dir" => "/downloads",
                   "error" => 0,
                   "error_string" => ""
                 }
@@ -321,6 +323,75 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
       assert_equal "abc123", info.hash
       assert_equal 50, info.progress
       assert_equal "/downloads/Transmission Book", info.download_path
+    end
+  end
+
+  test "torrent_info reports the per-torrent content path (download_dir + name)" do
+    VCR.turned_off do
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "abc123" ], "fields" => JSONRPC_TORRENT_FIELDS }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "result" => {
+              "torrents" => [
+                {
+                  "hash_string" => "abc123",
+                  "name" => "Some Author - Some Book",
+                  "percent_done" => 1.0,
+                  "status" => 6,
+                  "total_size" => 1073741824,
+                  "download_dir" => "/mnt/media/transmission",
+                  "error" => 0
+                }
+              ]
+            },
+            "id" => 1
+          }.to_json
+        )
+
+      info = @client.torrent_info("abc123")
+
+      # download_dir is the parent; the importable path is download_dir/name,
+      # mirroring qBittorrent's content_path. Reporting the bare parent here
+      # makes PostProcessingJob import the whole download root.
+      assert_equal "/mnt/media/transmission/Some Author - Some Book", info.download_path
+    end
+  end
+
+  test "torrent_info falls back to download_dir when name is blank" do
+    VCR.turned_off do
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "abc123" ], "fields" => JSONRPC_TORRENT_FIELDS }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "result" => {
+              "torrents" => [
+                {
+                  "hash_string" => "abc123",
+                  "name" => "",
+                  "percent_done" => 1.0,
+                  "status" => 6,
+                  "total_size" => 1073741824,
+                  "download_dir" => "/downloads",
+                  "error" => 0
+                }
+              ]
+            },
+            "id" => 1
+          }.to_json
+        )
+
+      info = @client.torrent_info("abc123")
+
+      assert_equal "/downloads", info.download_path
     end
   end
 
@@ -358,7 +429,9 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
       assert_equal 75, torrent.progress
       assert_equal :downloading, torrent.state
       assert_equal 2048, torrent.size_bytes
-      assert_equal "/downloads/legacy", torrent.download_path
+      # downloadDir is the parent; download_path is the per-torrent content path
+      # (downloadDir/name), same as the JSON-RPC path.
+      assert_equal "/downloads/legacy/Legacy Transmission Book", torrent.download_path
     end
   end
 

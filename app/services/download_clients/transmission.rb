@@ -373,13 +373,24 @@ module DownloadClients
     end
 
     def parse_torrent(data)
+      name = data["name"]
+      download_dir = transmission_value(data, "download_dir", "downloadDir").to_s
+      # Transmission's RPC exposes only the parent download directory
+      # (`downloadDir`), never the torrent's own content path. Join it with the
+      # torrent name so `download_path` points at the actual per-torrent
+      # file/folder, mirroring qBittorrent's `content_path`. PostProcessingJob
+      # resolves the import source from this value (via File.basename and the
+      # remote->local prefix remap), so reporting the bare parent dir makes it
+      # import the entire download root instead of just this torrent.
+      content_path = name.present? && download_dir.present? ? File.join(download_dir, name) : download_dir
+
       Base::TorrentInfo.new(
         hash: transmission_value(data, "hash_string", "hashString"),
-        name: data["name"],
+        name: name,
         progress: normalize_progress(transmission_value(data, "percent_done", "percentDone")),
         state: normalize_state(data["status"], error: data["error"]),
         size_bytes: transmission_value(data, "total_size", "totalSize"),
-        download_path: transmission_value(data, "download_dir", "downloadDir").to_s
+        download_path: content_path
       )
     end
 
