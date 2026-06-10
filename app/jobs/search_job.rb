@@ -19,10 +19,11 @@ class SearchJob < ApplicationJob
     zlibrary_available = !anna_available && ZLibraryClient.configured? && request.book.ebook?
     gutenberg_available = GutenbergClient.configured? && request.book.ebook?
     librivox_available = LibrivoxClient.configured? && request.book.audiobook?
+    custom_providers = AcquisitionProvider.enabled.for_book_type(request.book.book_type).by_priority.to_a
 
-    unless indexer_available || anna_available || zlibrary_available || gutenberg_available || librivox_available
+    unless indexer_available || anna_available || zlibrary_available || gutenberg_available || librivox_available || custom_providers.any?
       Rails.logger.error "[SearchJob] No search sources configured"
-      request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, or LibriVox in Admin Settings.")
+      request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, or a custom acquisition provider.")
       return
     end
 
@@ -58,6 +59,12 @@ class SearchJob < ApplicationJob
       librivox_results = search_librivox(request)
       all_results.concat(librivox_results)
       Rails.logger.info "[SearchJob] Found #{librivox_results.count} LibriVox results"
+    end
+
+    custom_providers.each do |provider|
+      provider_results = search_custom_provider(request, provider)
+      all_results.concat(provider_results)
+      Rails.logger.info "[SearchJob] Found #{provider_results.count} custom provider results from #{provider.name}"
     end
 
     if all_results.any?
@@ -227,6 +234,15 @@ class SearchJob < ApplicationJob
     []
   end
 
+  def search_custom_provider(request, provider)
+    provider.client.search(request).select(&:downloadable?).map do |result|
+      { result: result, source: SearchResult::SOURCE_CUSTOM, provider: provider }
+    end
+  rescue CustomAcquisitionProviderClient::Error => e
+    Rails.logger.warn "[SearchJob] Custom provider #{provider.name} search failed: #{e.message}"
+    []
+  end
+
   def save_results(request, tagged_results)
     request.search_results.destroy_all
 
@@ -243,6 +259,8 @@ class SearchJob < ApplicationJob
         save_gutenberg_result(request, result)
       when SearchResult::SOURCE_LIBRIVOX
         save_librivox_result(request, result)
+      when SearchResult::SOURCE_CUSTOM
+        save_custom_provider_result(request, result, tagged[:provider])
       else
         save_indexer_result(request, result, source)
       end
@@ -333,6 +351,36 @@ class SearchJob < ApplicationJob
       sr.source = SearchResult::SOURCE_GUTENBERG
       sr.detected_language = result.language
     end
+  end
+
+  def save_custom_provider_result(request, result, provider)
+    request.search_results.find_or_create_by!(
+      acquisition_provider: provider,
+      provider_result_id: result.provider_result_id
+    ) do |sr|
+      sr.guid = "custom:#{provider.id}:#{result.provider_result_id}"
+      sr.title = build_custom_provider_title(result)
+      sr.indexer = provider.name
+      sr.size_bytes = result.size_bytes
+      sr.seeders = nil
+      sr.leechers = nil
+      sr.download_url = result.download_url
+      sr.magnet_url = result.magnet_url
+      sr.info_url = result.info_url
+      sr.published_at = result.published_at
+      sr.source = SearchResult::SOURCE_CUSTOM
+      sr.detected_language = result.language
+      sr.provider_payload = result.payload
+    end
+  end
+
+  def build_custom_provider_title(result)
+    parts = []
+    parts << result.title if result.title.present?
+    parts << "- #{result.author}" if result.author.present?
+    parts << "[#{result.file_type.to_s.upcase}]" if result.file_type.present?
+    parts << "[#{result.language}]" if result.language.present?
+    parts.join(" ")
   end
 
   def build_librivox_title(result)

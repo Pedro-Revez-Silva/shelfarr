@@ -1,0 +1,38 @@
+<div class="mx-auto max-w-3xl">
+  <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-8">
+    <h1 class="font-bold text-3xl sm:text-4xl text-white break-words"><%= @provider.name %></h1>
+    <div class="flex flex-wrap gap-3 shrink-0">
+      <%= button_to "Test", test_admin_acquisition_provider_path(@provider), method: :post, class: "rounded-md px-4 py-2 bg-green-700 hover:bg-green-600 text-white" %>
+      <%= link_to "Edit", edit_admin_acquisition_provider_path(@provider), class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white" %>
+      <%= link_to "Back", admin_acquisition_providers_path, class: "rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white" %>
+    </div>
+  </div>
+
+  <dl class="bg-gray-900 border border-gray-800 rounded-lg divide-y divide-gray-800">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
+      <dt class="text-gray-400">URL</dt>
+      <dd class="md:col-span-2 text-gray-100 break-all"><%= @provider.url %></dd>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
+      <dt class="text-gray-400">Media Types</dt>
+      <dd class="md:col-span-2 text-gray-100">
+        <% media = [] %>
+        <% media << "Ebooks" if @provider.supports_ebooks? %>
+        <% media << "Audiobooks" if @provider.supports_audiobooks? %>
+        <%= media.join(", ") %>
+      </dd>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
+      <dt class="text-gray-400">Timeout</dt>
+      <dd class="md:col-span-2 text-gray-100"><%= @provider.timeout_seconds %> seconds</dd>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
+      <dt class="text-gray-400">Private Network</dt>
+      <dd class="md:col-span-2 text-gray-100"><%= @provider.allow_private_network? ? "Allowed" : "Blocked" %></dd>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
+      <dt class="text-gray-400">Status</dt>
+      <dd class="md:col-span-2 text-gray-100"><%= @provider.enabled? ? "Enabled" : "Disabled" %></dd>
+    </div>
+  </dl>
+</div>

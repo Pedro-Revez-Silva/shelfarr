@@ -98,6 +98,11 @@ Rails.application.routes.draw do
         post :move_down
       end
     end
+    resources :acquisition_providers do
+      member do
+        post :test
+      end
+    end
     resources :download_routing_rules, except: [ :show ]
     resources :settings, only: [ :index, :update ] do
       collection do

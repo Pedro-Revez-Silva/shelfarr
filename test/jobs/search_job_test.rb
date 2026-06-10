@@ -1078,6 +1078,99 @@ class SearchJobTest < ActiveJob::TestCase
     assert_includes saved_result.title, "[EPUB]"
   end
 
+  test "includes custom acquisition provider results" do
+    SettingsService.set(:prowlarr_api_key, "")
+    provider = AcquisitionProvider.create!(
+      name: "Local Provider",
+      url: "http://provider.test",
+      supports_ebooks: true,
+      supports_audiobooks: false
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://provider.test/search")
+        .with do |request|
+          body = JSON.parse(request.body)
+          body["book"]["title"] == @request.book.title &&
+            body["book"]["book_type"] == "ebook"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            results: [
+              {
+                id: "provider-1",
+                title: "The Pending Ebook",
+                author: "Another Author",
+                format: "epub",
+                language: "en",
+                size_bytes: 1000,
+                download_type: "direct",
+                info_url: "https://provider.test/books/provider-1"
+              }
+            ]
+          }.to_json
+        )
+
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    saved_result = @request.search_results.first
+    assert_equal SearchResult::SOURCE_CUSTOM, saved_result.source
+    assert_equal provider, saved_result.acquisition_provider
+    assert_equal "provider-1", saved_result.provider_result_id
+    assert_equal "custom:#{provider.id}:provider-1", saved_result.guid
+    assert_equal "direct", saved_result.download_type
+    assert saved_result.downloadable?
+  end
+
+  test "skips unavailable custom acquisition provider results" do
+    SettingsService.set(:prowlarr_api_key, "")
+    provider = AcquisitionProvider.create!(
+      name: "Availability Provider",
+      url: "http://availability-provider.test",
+      supports_ebooks: true,
+      supports_audiobooks: false
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://availability-provider.test/search")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            results: [
+              {
+                id: "provider-available",
+                title: "Available Provider Result",
+                format: "epub",
+                direct_url: "https://files.test/available.epub",
+                availability: "available"
+              },
+              {
+                id: "provider-unavailable",
+                title: "Unavailable Provider Result",
+                format: "epub",
+                direct_url: "https://files.test/unavailable.epub",
+                availability: "temporarily_unavailable"
+              }
+            ]
+          }.to_json
+        )
+
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    assert_equal [ "provider-available" ], @request.search_results.pluck(:provider_result_id)
+    saved_result = @request.search_results.first
+    assert_equal provider, saved_result.acquisition_provider
+    assert_equal "direct", saved_result.download_type
+    assert saved_result.downloadable?
+  end
+
   test "skips Project Gutenberg for audiobook requests" do
     SettingsService.set(:prowlarr_api_key, "")
     SettingsService.set(:gutenberg_enabled, true)

@@ -1,0 +1,86 @@
+<div class="mx-auto max-w-5xl">
+  <div class="flex flex-wrap items-center justify-between gap-3 mb-8">
+    <h1 class="font-bold text-3xl sm:text-4xl text-white">Acquisition Providers</h1>
+    <%= link_to "New Provider", new_admin_acquisition_provider_path, class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white whitespace-nowrap" %>
+  </div>
+
+  <% if @providers.empty? %>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-8 text-center">
+      <p class="text-gray-400 mb-4">No custom acquisition providers configured yet.</p>
+      <%= link_to "Add your first provider", new_admin_acquisition_provider_path, class: "text-blue-400 hover:text-blue-300" %>
+    </div>
+  <% else %>
+    <%# Card list on small screens; the table below takes over from md: up %>
+    <div class="md:hidden space-y-4">
+      <% @providers.each do |provider| %>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <%= link_to provider.name, admin_acquisition_provider_path(provider), class: "font-medium text-white hover:text-blue-300 break-words" %>
+              <p class="mt-1 text-sm text-gray-400 break-all"><%= provider.url %></p>
+            </div>
+            <span class="shrink-0 px-2 py-1 text-xs rounded <%= provider.enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-400' %>">
+              <%= provider.enabled? ? "Enabled" : "Disabled" %>
+            </span>
+          </div>
+
+          <p class="mt-2 text-sm text-gray-500">
+            Priority <%= provider.priority + 1 %> &middot;
+            <%= [
+              ("Ebooks" if provider.supports_ebooks?),
+              ("Audiobooks" if provider.supports_audiobooks?)
+            ].compact.join(", ") %>
+          </p>
+
+          <div class="mt-3 pt-3 border-t border-gray-800 flex items-center gap-6 text-sm font-medium">
+            <%= button_to "Test", test_admin_acquisition_provider_path(provider), method: :post, class: "py-1 text-green-400 hover:text-green-300" %>
+            <%= link_to "Edit", edit_admin_acquisition_provider_path(provider), class: "py-1 text-blue-400 hover:text-blue-300" %>
+            <%= button_to "Delete", admin_acquisition_provider_path(provider), method: :delete, class: "py-1 text-red-400 hover:text-red-300", data: { turbo_confirm: "Delete this acquisition provider?" } %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+
+    <div class="hidden md:block bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-800">
+        <thead class="bg-gray-800/50">
+          <tr>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Priority</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Name</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">URL</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Media</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Status</th>
+            <th class="px-6 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+          <% @providers.each do |provider| %>
+            <tr class="hover:bg-gray-800/50 transition">
+              <td class="px-6 py-4 whitespace-nowrap text-gray-300 font-medium"><%= provider.priority + 1 %></td>
+              <td class="px-6 py-4 whitespace-nowrap">
+                <%= link_to provider.name, admin_acquisition_provider_path(provider), class: "font-medium text-white hover:text-blue-300" %>
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-gray-400 text-sm"><%= provider.url %></td>
+              <td class="px-6 py-4 whitespace-nowrap text-gray-400 text-sm">
+                <%= [
+                  ("Ebooks" if provider.supports_ebooks?),
+                  ("Audiobooks" if provider.supports_audiobooks?)
+                ].compact.join(", ") %>
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap">
+                <span class="px-2 py-1 text-xs rounded <%= provider.enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-700 text-gray-400' %>">
+                  <%= provider.enabled? ? "Enabled" : "Disabled" %>
+                </span>
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                <%= button_to "Test", test_admin_acquisition_provider_path(provider), method: :post, class: "text-green-400 hover:text-green-300 mr-3" %>
+                <%= link_to "Edit", edit_admin_acquisition_provider_path(provider), class: "text-blue-400 hover:text-blue-300 mr-3" %>
+                <%= button_to "Delete", admin_acquisition_provider_path(provider), method: :delete, class: "text-red-400 hover:text-red-300", data: { turbo_confirm: "Delete this acquisition provider?" } %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

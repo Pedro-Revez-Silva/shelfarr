@@ -6,6 +6,10 @@ require "mutant/minitest/coverage"
 require_relative "test_helpers/session_test_helper"
 require_relative "support/vcr_setup"
 
+# Resolve hostnames to a fixed public test address instead of doing real DNS
+# lookups. Tests for OutboundUrlGuard itself swap the resolver as needed.
+OutboundUrlGuard.resolver = ->(host) { [ "203.0.113.10" ] }
+
 module ActiveSupport
   class TestCase
     # Run tests in parallel with specified workers

@@ -330,7 +330,7 @@ class DownloadJobTest < ActiveJob::TestCase
           .to_return(
             status: 200,
             headers: { "Content-Type" => "application/json" },
-            body: { "status" => true, "nzo_ids" => ["SABnzbd_nzo_12345"] }.to_json
+            body: { "status" => true, "nzo_ids" => [ "SABnzbd_nzo_12345" ] }.to_json
           )
 
         DownloadJob.perform_now(@download.id)
@@ -473,6 +473,282 @@ class DownloadJobTest < ActiveJob::TestCase
       assert_equal "1342.epub", File.basename(@gutenberg_download.download_path)
       assert_equal File.dirname(@gutenberg_download.download_path), @gutenberg_request.book.file_path
     end
+  end
+
+  test "custom provider download acquires direct URL and completes via HTTP" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .with do |request|
+            body = JSON.parse(request.body)
+            body["provider_result_id"] == "custom-epub-1"
+          end
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "https://files.test/custom-book.epub" }.to_json
+          )
+
+        stub_request(:get, "https://files.test/custom-book.epub")
+          .to_return(status: 200, body: "PK\x03\x04" + ("x" * 1024), headers: { "Content-Type" => "application/epub+zip" })
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      @custom_provider_request.reload
+      assert @custom_provider_download.completed?
+      assert_equal "direct", @custom_provider_download.download_type
+      assert @custom_provider_request.completed?
+      assert File.exist?(@custom_provider_download.download_path)
+      assert_equal "custom-book.epub", File.basename(@custom_provider_download.download_path)
+    end
+  end
+
+  test "custom provider direct audiobook file downloads into audiobook output path" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_audiobook_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .with do |request|
+            body = JSON.parse(request.body)
+            body["provider_result_id"] == "custom-audio-1"
+          end
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "https://files.test/custom-audiobook.m4b" }.to_json
+          )
+
+        stub_request(:get, "https://files.test/custom-audiobook.m4b")
+          .to_return(status: 200, body: "M4B audio data", headers: { "Content-Type" => "audio/mp4" })
+
+        DownloadJob.perform_now(@custom_provider_audiobook_download.id)
+      end
+
+      @custom_provider_audiobook_download.reload
+      @custom_provider_audiobook_request.reload
+      assert @custom_provider_audiobook_download.completed?
+      assert_equal "direct", @custom_provider_audiobook_download.download_type
+      assert @custom_provider_audiobook_request.completed?
+      assert File.exist?(@custom_provider_audiobook_download.download_path)
+      assert_equal "custom-audiobook.m4b", File.basename(@custom_provider_audiobook_download.download_path)
+      assert_equal File.dirname(@custom_provider_audiobook_download.download_path), @custom_provider_audiobook_request.book.file_path
+    end
+  end
+
+  test "custom provider torrent acquisition dispatches magnet to torrent client" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+      magnet = "magnet:?xt=urn:btih:#{"a" * 40}"
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "torrent", magnet_url: magnet }.to_json
+          )
+        stub_qbittorrent_connection("http://localhost:8080")
+        stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+          .to_return(status: 200, body: "Ok.")
+        stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [ { "hash" => "a" * 40, "name" => "Custom Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Custom Torrent" } ].to_json
+          )
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      assert @custom_provider_download.downloading?
+      assert_equal "torrent", @custom_provider_download.download_type
+      assert_equal "a" * 40, @custom_provider_download.external_id
+    end
+  end
+
+  test "custom provider usenet acquisition dispatches NZB URL to usenet client" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+      @client.destroy!
+      DownloadClient.create!(
+        name: "Test SABnzbd",
+        client_type: "sabnzbd",
+        url: "http://localhost:8080",
+        api_key: "test-api-key-12345",
+        priority: 0,
+        enabled: true
+      )
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "usenet", nzb_url: "https://files.test/custom-book.nzb" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api")
+          .with(query: hash_including("mode" => "version"))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "version" => "4.0.0" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api")
+          .with(query: hash_including(
+            "mode" => "addurl",
+            "name" => "https://files.test/custom-book.nzb"
+          ))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "status" => true, "nzo_ids" => [ "SABnzbd_nzo_67890" ] }.to_json
+          )
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      assert @custom_provider_download.downloading?
+      assert_equal "usenet", @custom_provider_download.download_type
+      assert_equal "SABnzbd_nzo_67890", @custom_provider_download.external_id
+    end
+  end
+
+  test "custom provider acquisition with unsupported artifact type fails with attention" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "ftp", direct_url: "ftp://files.test/book.epub" }.to_json
+          )
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      @custom_provider_request.reload
+      assert @custom_provider_download.failed?
+      assert @custom_provider_request.attention_needed?
+    end
+  end
+
+  test "custom provider direct download to a private address is blocked by default" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "http://192.168.1.5/book.epub" }.to_json
+          )
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      @custom_provider_request.reload
+      assert @custom_provider_download.failed?
+      assert @custom_provider_request.attention_needed?
+      assert_not_requested :get, "http://192.168.1.5/book.epub"
+    end
+  end
+
+  test "custom provider direct download to a private address works when provider allows private network" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+      @custom_provider_download.search_result.acquisition_provider.update!(allow_private_network: true)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "http://192.168.1.5/custom-book.epub" }.to_json
+          )
+        stub_request(:get, "http://192.168.1.5/custom-book.epub")
+          .to_return(status: 200, body: "PK\x03\x04" + ("x" * 1024), headers: { "Content-Type" => "application/epub+zip" })
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      assert @custom_provider_download.completed?
+    end
+  end
+
+  test "custom provider direct download never follows metadata addresses even with private network allowed" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+      @custom_provider_download.search_result.acquisition_provider.update!(allow_private_network: true)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "http://169.254.169.254/latest/meta-data" }.to_json
+          )
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      assert @custom_provider_download.failed?
+      assert_not_requested :get, "http://169.254.169.254/latest/meta-data"
+    end
+  end
+
+  test "direct download redirects to private addresses are blocked" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "https://files.test/custom-book.epub" }.to_json
+          )
+        stub_request(:get, "https://files.test/custom-book.epub")
+          .to_return(status: 302, headers: { "Location" => "http://10.0.0.5/internal-secret" })
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      assert @custom_provider_download.failed?
+      assert_not_requested :get, "http://10.0.0.5/internal-secret"
+    end
+  end
+
+  test "validate_direct_download_url rejects private addresses for non-custom sources" do
+    error = assert_raises RuntimeError do
+      DownloadJob.new.send(:validate_direct_download_url!, "http://127.0.0.1/book.epub")
+    end
+
+    assert_match(/Invalid direct download URL/, error.message)
+  end
+
+  test "infer_audiobook_extension requires format context for ambiguous words like opus" do
+    job = DownloadJob.new
+    result = Struct.new(:title)
+
+    assert_nil job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Live at the Opus House"))
+    assert_equal "opus", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title [OPUS]"))
+    assert_equal "opus", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title .opus"))
+    assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title MP3 64kbps"))
   end
 
   test "librivox download extracts audiobook zip into audiobook output path" do
@@ -768,6 +1044,70 @@ class DownloadJobTest < ActiveJob::TestCase
     )
   end
 
+  def setup_custom_provider_download(output_path:)
+    SettingsService.set(:ebook_output_path, output_path)
+
+    provider = AcquisitionProvider.create!(
+      name: "Local Provider",
+      url: "http://provider.test",
+      supports_ebooks: true,
+      supports_audiobooks: false
+    )
+    book = Book.create!(
+      title: "Custom Provider Book",
+      author: "Provider Author",
+      book_type: :ebook
+    )
+    @custom_provider_request = Request.create!(book: book, user: users(:one), status: :downloading)
+    custom_result = @custom_provider_request.search_results.create!(
+      guid: "custom:#{provider.id}:custom-epub-1",
+      title: "Custom Provider Book - Provider Author [EPUB]",
+      indexer: provider.name,
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "custom-epub-1",
+      provider_payload: { "download_type" => "direct", "format" => "epub" },
+      status: :selected
+    )
+    @custom_provider_download = @custom_provider_request.downloads.create!(
+      name: custom_result.title,
+      search_result: custom_result,
+      status: :queued
+    )
+  end
+
+  def setup_custom_provider_audiobook_download(output_path:)
+    SettingsService.set(:audiobook_output_path, output_path)
+
+    provider = AcquisitionProvider.create!(
+      name: "Local Audio Provider",
+      url: "http://provider.test",
+      supports_ebooks: false,
+      supports_audiobooks: true
+    )
+    book = Book.create!(
+      title: "Custom Provider Audiobook",
+      author: "Provider Narrator",
+      book_type: :audiobook
+    )
+    @custom_provider_audiobook_request = Request.create!(book: book, user: users(:one), status: :downloading)
+    custom_result = @custom_provider_audiobook_request.search_results.create!(
+      guid: "custom:#{provider.id}:custom-audio-1",
+      title: "Custom Provider Audiobook - Provider Narrator [M4B]",
+      indexer: provider.name,
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "custom-audio-1",
+      provider_payload: { "download_type" => "direct", "format" => "m4b" },
+      status: :selected
+    )
+    @custom_provider_audiobook_download = @custom_provider_audiobook_request.downloads.create!(
+      name: custom_result.title,
+      search_result: custom_result,
+      status: :queued
+    )
+  end
+
   def build_zip_archive(entries)
     require "zip"
 
@@ -816,7 +1156,7 @@ class DownloadJobTest < ActiveJob::TestCase
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },
-        body: [{ "hash" => expected_hash, "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" }].to_json
+        body: [ { "hash" => expected_hash, "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" } ].to_json
       )
   end
 

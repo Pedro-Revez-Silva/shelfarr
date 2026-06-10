@@ -86,7 +86,6 @@ module Quality
   def run_deep
     success = true
     success &&= run_push
-    success &&= run_coverage
 
     expressions = all_mutant_expressions
     success &&= run_mutant_command(expressions) unless expressions.empty?
@@ -99,6 +98,7 @@ module Quality
     success &&= run("RuboCop", "bin/rubocop", "--force-exclusion", "--format", "quiet", "--fail-level", "warning")
     success &&= run_brakeman
     success &&= run("Tests", "bin/rails", "test")
+    success &&= run_coverage
     success ? 0 : 1
   end
 
