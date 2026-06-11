@@ -10,7 +10,24 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_21_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_06_07_120000) do
+  create_table "acquisition_providers", force: :cascade do |t|
+    t.boolean "allow_private_network", default: false, null: false
+    t.string "api_key"
+    t.datetime "created_at", null: false
+    t.boolean "enabled", default: true, null: false
+    t.string "name", null: false
+    t.integer "priority", default: 0, null: false
+    t.boolean "supports_audiobooks", default: true, null: false
+    t.boolean "supports_ebooks", default: true, null: false
+    t.integer "timeout_seconds", default: 30, null: false
+    t.datetime "updated_at", null: false
+    t.string "url", null: false
+    t.index ["enabled"], name: "index_acquisition_providers_on_enabled"
+    t.index ["name"], name: "index_acquisition_providers_on_name", unique: true
+    t.index ["priority"], name: "index_acquisition_providers_on_priority"
+  end
+
   create_table "activity_logs", force: :cascade do |t|
     t.string "action", null: false
     t.string "controller"
@@ -215,6 +232,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_21_120000) do
   end
 
   create_table "search_results", force: :cascade do |t|
+    t.integer "acquisition_provider_id"
     t.integer "confidence_score"
     t.datetime "created_at", null: false
     t.string "detected_language"
@@ -224,6 +242,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_21_120000) do
     t.string "info_url"
     t.integer "leechers"
     t.string "magnet_url"
+    t.json "provider_payload", default: {}
+    t.string "provider_result_id"
     t.datetime "published_at"
     t.integer "request_id", null: false
     t.json "score_breakdown"
@@ -233,6 +253,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_21_120000) do
     t.integer "status", default: 0, null: false
     t.string "title", null: false
     t.datetime "updated_at", null: false
+    t.index ["acquisition_provider_id", "provider_result_id"], name: "index_search_results_on_provider_result"
+    t.index ["acquisition_provider_id"], name: "index_search_results_on_acquisition_provider_id"
     t.index ["request_id", "guid"], name: "index_search_results_on_request_id_and_guid", unique: true
     t.index ["request_id"], name: "index_search_results_on_request_id"
     t.index ["status"], name: "index_search_results_on_status"
@@ -365,6 +387,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_21_120000) do
   add_foreign_key "request_events", "requests"
   add_foreign_key "requests", "books"
   add_foreign_key "requests", "users"
+  add_foreign_key "search_results", "acquisition_providers"
   add_foreign_key "search_results", "requests"
   add_foreign_key "sessions", "users"
   add_foreign_key "telegram_chat_authorizations", "users", column: "approved_by_id"

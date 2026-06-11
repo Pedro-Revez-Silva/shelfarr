@@ -11,6 +11,12 @@ class DownloadJob < ApplicationJob
   MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES = 2.gigabytes
   MAX_DIRECT_DOWNLOAD_REDIRECTS = 5
   DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
+  DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
+  DIRECT_AUDIOBOOK_FILE_EXTENSIONS = %w[m4b mp3 m4a aac flac ogg opus].freeze
+  DIRECT_AUDIOBOOK_EXTENSIONS = (DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS + DIRECT_AUDIOBOOK_FILE_EXTENSIONS).freeze
+  # Extensions that are also ordinary words ("Live at the Opus") and need
+  # format-style context (".opus", "[opus]", "(opus)") in a title to count.
+  AMBIGUOUS_AUDIOBOOK_EXTENSIONS = %w[opus].freeze
 
   def perform(download_id)
     download = Download.find_by(id: download_id)
@@ -50,6 +56,8 @@ class DownloadJob < ApplicationJob
         handle_gutenberg_download(download, search_result)
       elsif search_result.from_librivox?
         handle_librivox_download(download, search_result)
+      elsif search_result.from_custom_provider?
+        handle_custom_provider_download(download, search_result)
       else
         handle_standard_download(download, search_result)
       end
@@ -93,6 +101,11 @@ class DownloadJob < ApplicationJob
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
       download.request.mark_for_attention!("Project Gutenberg error: #{e.message}")
+    rescue CustomAcquisitionProviderClient::Error => e
+      Rails.logger.error "[DownloadJob] Custom provider error for download ##{download.id}: #{e.message}"
+      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+      download.update!(status: :failed)
+      download.request.mark_for_attention!("Custom provider error: #{e.message}")
     end
   end
 
@@ -136,18 +149,73 @@ class DownloadJob < ApplicationJob
   def handle_librivox_download(download, search_result)
     raise LibrivoxClient::Error, "Selected LibriVox result is missing a download URL" if search_result.download_url.blank?
 
+    handle_direct_audiobook_archive_download(download, search_result, search_result.download_url, source_name: "LibriVox")
+  rescue => e
+    Rails.logger.error "[DownloadJob] LibriVox download failed: #{e.message}"
+    Rails.logger.error e.backtrace.first(5).join("\n")
+    track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
+    download.update!(status: :failed)
+    download.request.mark_for_attention!("LibriVox download failed: #{e.message}")
+  end
+
+  def handle_custom_provider_download(download, search_result)
+    provider = search_result.acquisition_provider
+    raise CustomAcquisitionProviderClient::ResponseError, "Selected custom provider result is missing its provider" unless provider&.enabled?
+
+    Rails.logger.info "[DownloadJob] Acquiring custom provider result from #{provider.name}"
+    acquisition = provider.client.acquire(search_result)
+
+    case acquisition.download_type
+    when "direct"
+      if download.request.book.audiobook?
+        handle_direct_audiobook_download(download, search_result, acquisition.direct_url, source_name: provider.name)
+      else
+        handle_direct_http_download(download, search_result, acquisition.direct_url)
+      end
+    when "torrent"
+      torrent_url = acquisition.magnet_url.presence || acquisition.direct_url
+      send_to_torrent_client(download, search_result, validate_dispatch_url!(torrent_url, search_result))
+    when "usenet"
+      nzb_url = acquisition.nzb_url.presence || acquisition.direct_url
+      send_to_usenet_client(download, search_result, validate_dispatch_url!(nzb_url, search_result))
+    else
+      raise CustomAcquisitionProviderClient::ResponseError, "Unsupported custom provider artifact type: #{acquisition.download_type}"
+    end
+  rescue CustomAcquisitionProviderClient::Error
+    raise
+  rescue => e
+    Rails.logger.error "[DownloadJob] Custom provider download failed: #{e.message}"
+    Rails.logger.error e.backtrace.first(5).join("\n")
+    track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
+    download.update!(status: :failed)
+    download.request.mark_for_attention!("Custom provider download failed: #{e.message}")
+  end
+
+  def handle_direct_audiobook_download(download, search_result, download_url, source_name:)
+    extension = infer_audiobook_extension(download_url, search_result)
+
+    if DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS.include?(extension)
+      handle_direct_audiobook_archive_download(download, search_result, download_url, source_name: source_name)
+    elsif DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(extension)
+      handle_direct_audiobook_file_download(download, search_result, download_url, extension: extension, source_name: source_name)
+    else
+      raise "#{source_name} returned an unsupported audiobook direct download type"
+    end
+  end
+
+  def handle_direct_audiobook_archive_download(download, search_result, download_url, source_name:)
     book = download.request.book
     base_path = SettingsService.get(:audiobook_output_path, default: "/audiobooks")
     destination_dir = PathTemplateService.build_destination(book, base_path: base_path)
 
-    Rails.logger.info "[DownloadJob] Downloading LibriVox audiobook to: #{destination_dir}"
+    Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook to: #{destination_dir}"
     FileUtils.mkdir_p(destination_dir)
 
-    Tempfile.create([ "shelfarr-librivox-", ".zip" ]) do |archive|
+    Tempfile.create([ "shelfarr-audiobook-", ".zip" ]) do |archive|
       archive.binmode
       download_file_via_http(
         search_result,
-        search_result.download_url,
+        download_url,
         archive.path,
         max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES
       )
@@ -165,15 +233,45 @@ class DownloadJob < ApplicationJob
     download.request.complete!
     trigger_library_scan(book) if AudiobookshelfClient.configured?
     NotificationService.request_completed(download.request)
-    track_request_event(download.request, "completed", download: download, message: "LibriVox download completed")
+    track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
 
-    Rails.logger.info "[DownloadJob] LibriVox download completed: #{destination_dir}"
+    Rails.logger.info "[DownloadJob] #{source_name} download completed: #{destination_dir}"
+  end
+
+  def handle_direct_audiobook_file_download(download, search_result, download_url, extension:, source_name:)
+    book = download.request.book
+    base_path = SettingsService.get(:audiobook_output_path, default: "/audiobooks")
+    destination_dir = PathTemplateService.build_destination(book, base_path: base_path)
+    filename = infer_audiobook_filename_from_url(download_url, search_result, extension)
+    destination_path = File.join(destination_dir, filename)
+
+    Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook file to: #{destination_path}"
+    FileUtils.mkdir_p(destination_dir)
+
+    download_file_via_http(
+      search_result,
+      download_url,
+      destination_path,
+      max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES
+    )
+    verify_downloaded_audiobook_file!(destination_path)
+
+    download.update!(
+      status: :completed,
+      download_path: destination_path,
+      download_type: "direct"
+    )
+
+    book.update!(file_path: destination_dir)
+    download.request.complete!
+    trigger_library_scan(book) if AudiobookshelfClient.configured?
+    NotificationService.request_completed(download.request)
+    track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
+
+    Rails.logger.info "[DownloadJob] #{source_name} download completed: #{destination_path}"
   rescue => e
-    Rails.logger.error "[DownloadJob] LibriVox download failed: #{e.message}"
-    Rails.logger.error e.backtrace.first(5).join("\n")
-    track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
-    download.update!(status: :failed)
-    download.request.mark_for_attention!("LibriVox download failed: #{e.message}")
+    FileUtils.rm_f(destination_path) if defined?(destination_path) && destination_path.present?
+    raise e
   end
 
   def handle_direct_http_download(download, search_result, download_url)
@@ -269,6 +367,50 @@ class DownloadJob < ApplicationJob
     "epub"
   end
 
+  def infer_audiobook_extension(url, search_result)
+    extension = extension_from_url(url, DIRECT_AUDIOBOOK_EXTENSIONS)
+    return extension if extension.present?
+
+    title = search_result.title.to_s.downcase
+    DIRECT_AUDIOBOOK_EXTENSIONS.find { |candidate| title_format_hint?(title, candidate) }
+  end
+
+  def title_format_hint?(title, extension)
+    escaped = Regexp.escape(extension)
+    return title.match?(/[\[\(.]#{escaped}[\]\)]?(\b|\z)/) if AMBIGUOUS_AUDIOBOOK_EXTENSIONS.include?(extension)
+
+    title.match?(/\b#{escaped}\b/)
+  end
+
+  def infer_audiobook_filename_from_url(url, search_result, extension)
+    filename_from_url = filename_from_url(url)
+    return sanitize_filename(filename_from_url) if filename_from_url.present? &&
+      File.extname(filename_from_url).delete(".").downcase == extension
+
+    book = search_result.request.book
+    title = book.title.presence || "Unknown"
+    author = book.author.presence || "Unknown"
+    sanitize_filename("#{author} - #{title}.#{extension}")
+  end
+
+  def extension_from_url(url, allowed_extensions)
+    uri = URI.parse(normalize_direct_download_url(url))
+    extension = File.extname(uri.path).delete(".").downcase
+    return extension if allowed_extensions.include?(extension)
+
+    nil
+  rescue URI::InvalidURIError
+    nil
+  end
+
+  def filename_from_url(url)
+    uri = URI.parse(normalize_direct_download_url(url))
+    filename = File.basename(uri.path)
+    URI.decode_www_form_component(filename) if filename.present?
+  rescue URI::InvalidURIError
+    nil
+  end
+
   def normalize_url_filename(filename, inferred_extension)
     return nil if filename.blank?
 
@@ -318,7 +460,7 @@ class DownloadJob < ApplicationJob
   end
 
   def download_file_via_http(search_result, url, destination, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES)
-    uri = validate_direct_download_url!(url, search_result)
+    endpoint = validate_direct_download_url!(url, search_result)
 
     Rails.logger.info "[DownloadJob] Starting HTTP download..."
 
@@ -329,8 +471,15 @@ class DownloadJob < ApplicationJob
     loop do
       response_handled = false
 
-      Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https", open_timeout: 30, read_timeout: 300) do |http|
-        request = Net::HTTP::Get.new(uri)
+      Net::HTTP.start(
+        endpoint.host,
+        endpoint.port,
+        use_ssl: endpoint.use_ssl?,
+        ipaddr: endpoint.ipaddr,
+        open_timeout: 30,
+        read_timeout: 300
+      ) do |http|
+        request = Net::HTTP::Get.new(endpoint.uri)
         request["User-Agent"] = "Shelfarr/1.0"
 
         http.request(request) do |response|
@@ -341,8 +490,8 @@ class DownloadJob < ApplicationJob
             location = response["Location"]
             raise "Direct download redirect missing Location" if location.blank?
 
-            uri = validate_direct_download_url!(URI.join(uri, normalize_direct_download_url(location)).to_s, search_result)
-            Rails.logger.info "[DownloadJob] Following HTTP redirect to #{uri.host}"
+            endpoint = validate_direct_download_url!(URI.join(endpoint.uri, normalize_direct_download_url(location)).to_s, search_result)
+            Rails.logger.info "[DownloadJob] Following HTTP redirect to #{endpoint.host}"
             response_handled = true
             next
           end
@@ -382,12 +531,27 @@ class DownloadJob < ApplicationJob
   end
 
   def validate_direct_download_url!(url, search_result = nil)
-    uri = URI.parse(normalize_direct_download_url(url))
-    raise "Invalid direct download URL" unless %w[http https].include?(uri.scheme) && uri.host.present?
-
-    uri
-  rescue URI::InvalidURIError => e
+    OutboundUrlGuard.validate!(
+      normalize_direct_download_url(url),
+      allow_private: allow_private_download?(search_result)
+    )
+  rescue OutboundUrlGuard::BlockedUrlError => e
     raise "Invalid direct download URL: #{e.message}"
+  end
+
+  def allow_private_download?(search_result)
+    return false unless search_result&.from_custom_provider?
+
+    search_result.acquisition_provider&.allow_private_network? || false
+  end
+
+  def validate_dispatch_url!(url, search_result)
+    return url if url.to_s.start_with?("magnet:")
+
+    OutboundUrlGuard.validate!(url, allow_private: allow_private_download?(search_result))
+    url
+  rescue OutboundUrlGuard::BlockedUrlError => e
+    raise CustomAcquisitionProviderClient::ResponseError, "Refused download URL from custom provider: #{e.message}"
   end
 
   def normalize_direct_download_url(url)
@@ -417,7 +581,7 @@ class DownloadJob < ApplicationJob
     file_size = File.size(path)
     raise "Downloaded file is empty" if file_size.zero?
 
-    head = File.binread(path, [512, file_size].min)
+    head = File.binread(path, [ 512, file_size ].min)
     lowered = head.downcase
     if lowered.include?("<html") || lowered.include?("<!doctype")
       FileUtils.rm_f(path)
@@ -430,7 +594,7 @@ class DownloadJob < ApplicationJob
     when "pdf"
       raise "Downloaded file is not a valid PDF" unless head.start_with?("%PDF")
     when "mobi"
-      mobi_signature = File.binread(path, [68, file_size].min).byteslice(60, 8)
+      mobi_signature = File.binread(path, [ 68, file_size ].min).byteslice(60, 8)
       raise "Downloaded file is not a valid MOBI" unless mobi_signature == "BOOKMOBI"
     end
   rescue Errno::ENOENT => e
@@ -451,6 +615,22 @@ class DownloadJob < ApplicationJob
     end
 
     raise "Downloaded file is not a valid ZIP archive" unless head.start_with?("PK\x03\x04")
+  rescue Errno::ENOENT => e
+    raise "Downloaded file is missing: #{e.message}"
+  end
+
+  def verify_downloaded_audiobook_file!(path)
+    raise "Downloaded file does not exist" unless File.exist?(path)
+
+    file_size = File.size(path)
+    raise "Downloaded file is empty" if file_size.zero?
+
+    head = File.binread(path, [ 512, file_size ].min)
+    lowered = head.downcase
+    if lowered.include?("<html") || lowered.include?("<!doctype")
+      FileUtils.rm_f(path)
+      raise "Downloaded file is an HTML page, not an audiobook"
+    end
   rescue Errno::ENOENT => e
     raise "Downloaded file is missing: #{e.message}"
   end
@@ -542,6 +722,50 @@ class DownloadJob < ApplicationJob
       download.update!(status: :failed)
       download.request.mark_for_attention!("Failed to add to #{client_record.name}")
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
+    end
+  end
+
+  def send_to_usenet_client(download, search_result, nzb_url)
+    client_record = DownloadClient.usenet_clients.enabled.by_priority.find(&:test_connection)
+    raise DownloadClientSelector::NoClientAvailableError, "No usenet client available (all failed connection test)" unless client_record
+
+    client = client_record.adapter
+    Rails.logger.info "[DownloadJob] Using client '#{client_record.name}' for custom usenet download ##{download.id}"
+
+    result = client.add_torrent(nzb_url, nzbname: build_usenet_job_name(search_result))
+    external_id = result.is_a?(Hash) ? result["nzo_ids"]&.first : nil
+
+    if external_id.present?
+      check_for_duplicate_external_id(external_id, download.id)
+
+      download.update!(
+        status: :downloading,
+        download_client: client_record,
+        external_id: external_id,
+        download_type: "usenet"
+      )
+      track_request_event(
+        download.request,
+        "dispatched",
+        download: download,
+        message: "Sent usenet download to #{client_record.name}",
+        details: {
+          client_name: client_record.name,
+          download_type: "usenet",
+          external_id: external_id
+        }
+      )
+    else
+      track_request_event(
+        download.request,
+        "dispatch_failed",
+        download: download,
+        message: "Client did not return an external ID",
+        level: :error,
+        details: { client_name: client_record.name, download_type: "usenet" }
+      )
+      download.update!(status: :failed)
+      download.request.mark_for_attention!("Failed to add to #{client_record.name}")
     end
   end
 
@@ -652,5 +876,4 @@ class DownloadJob < ApplicationJob
       details: details
     )
   end
-
 end

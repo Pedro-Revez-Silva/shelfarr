@@ -2,6 +2,8 @@
 
 Shelfarr exposes a JSON API under `/api/v1`.
 
+For custom HTTP search/acquisition integrations called by Shelfarr, see [Custom Acquisition Providers](custom-acquisition-providers.md).
+
 ## Authentication
 
 Use bearer authentication:

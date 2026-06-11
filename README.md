@@ -48,6 +48,7 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 - **Notifications** — In-app, Discord, Telegram and webhook notifications for request events
 - **Download Routing** — Route specific indexers to specific clients, with priority ordering
 - **REST API** — Scoped, per-user API tokens under `/api/v1`
+- **Custom Acquisition Providers** — Trusted HTTP providers can contribute search results and resolve selected items into direct, torrent or usenet artifacts
 
 ## Quick Start
 
@@ -183,7 +184,7 @@ bundle exec lefthook install
 # Quiet staged-file check plus the 90% coverage gate used by pre-commit
 bin/quality commit --staged
 
-# Quiet full check used by pre-push
+# Quiet full check plus coverage gate used by pre-push
 bin/quality push
 
 # Run coverage on demand

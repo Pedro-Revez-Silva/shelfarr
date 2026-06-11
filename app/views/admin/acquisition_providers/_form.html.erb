@@ -1,0 +1,67 @@
+<%= form_with model: [:admin, provider], class: "contents" do |form| %>
+  <% if provider.errors.any? %>
+    <div class="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 font-medium rounded-lg mt-3">
+      <h2><%= pluralize(provider.errors.count, "error") %> prohibited this provider from being saved:</h2>
+      <ul class="list-disc list-inside mt-2">
+        <% provider.errors.each do |error| %>
+          <li><%= error.full_message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div class="my-5">
+    <%= form.label :name, class: "block text-gray-300 font-medium" %>
+    <%= form.text_field :name, required: true, placeholder: "e.g., Local Provider", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+  </div>
+
+  <div class="my-5">
+    <%= form.label :url, "Base URL", class: "block text-gray-300 font-medium" %>
+    <%= form.url_field :url, required: true, placeholder: "http://localhost:4567", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+    <p class="mt-1 text-sm text-gray-500">Provider must expose POST /search and POST /acquire. GET /health is used for the test button.</p>
+  </div>
+
+  <div class="my-5">
+    <%= form.label :api_key, "Bearer Token", class: "block text-gray-300 font-medium" %>
+    <%= form.password_field :api_key, placeholder: provider.persisted? && provider.api_key.present? ? "Leave blank to keep current" : "Optional token", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+  </div>
+
+  <div class="grid gap-5 md:grid-cols-2">
+    <div>
+      <%= form.label :timeout_seconds, "Timeout Seconds", class: "block text-gray-300 font-medium" %>
+      <%= form.number_field :timeout_seconds, min: 1, max: 120, class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+    </div>
+
+    <div class="space-y-3">
+      <span class="block text-gray-300 font-medium">Media Types</span>
+      <label class="flex items-center gap-2 text-gray-300">
+        <%= form.check_box :supports_ebooks, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900" %>
+        <span>Ebooks</span>
+      </label>
+      <label class="flex items-center gap-2 text-gray-300">
+        <%= form.check_box :supports_audiobooks, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900" %>
+        <span>Audiobooks</span>
+      </label>
+    </div>
+  </div>
+
+  <div class="my-5">
+    <label class="flex items-center gap-2 text-gray-300">
+      <%= form.check_box :allow_private_network, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900" %>
+      <span>Allow private network</span>
+    </label>
+    <p class="mt-1 text-sm text-gray-500">Allow this provider and its download links to use private network addresses (e.g., localhost or 192.168.x.x). Enable for providers running on your local network.</p>
+  </div>
+
+  <div class="my-5">
+    <label class="flex items-center gap-2 text-gray-300">
+      <%= form.check_box :enabled, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900" %>
+      <span>Enabled</span>
+    </label>
+  </div>
+
+  <div class="flex items-center gap-4 mt-8">
+    <%= form.submit class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+    <%= link_to "Cancel", admin_acquisition_providers_path, class: "text-gray-400 hover:text-gray-300" %>
+  </div>
+<% end %>

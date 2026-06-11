@@ -2,6 +2,7 @@
 
 class SearchResult < ApplicationRecord
   belongs_to :request
+  belongs_to :acquisition_provider, optional: true
   has_many :downloads, dependent: :nullify
 
   after_commit :broadcast_request_show_refresh_later
@@ -19,6 +20,7 @@ class SearchResult < ApplicationRecord
   SOURCE_ZLIBRARY = "zlibrary"
   SOURCE_GUTENBERG = "gutenberg"
   SOURCE_LIBRIVOX = "librivox"
+  SOURCE_CUSTOM = "custom"
 
   validates :guid, presence: true, uniqueness: { scope: :request_id }
   validates :title, presence: true
@@ -28,8 +30,27 @@ class SearchResult < ApplicationRecord
   scope :preferred_first, -> {
     ordered_types = SettingsService.preferred_download_types
     type_order_sql = ordered_types.each_with_index.map { |type, index| "WHEN '#{type}' THEN #{index}" }.join(" ")
+    custom_type_sql = <<~SQL.squish
+      LOWER(COALESCE(
+        json_extract(provider_payload, '$.download_type'),
+        json_extract(provider_payload, '$.type'),
+        ''
+      ))
+    SQL
+    custom_direct_url_sql = "NULLIF(json_extract(provider_payload, '$.direct_url'), '')"
+    custom_nzb_url_sql = "NULLIF(json_extract(provider_payload, '$.nzb_url'), '')"
+    custom_magnet_url_sql = "NULLIF(json_extract(provider_payload, '$.magnet_url'), '')"
+    type_aliases_sql = CustomAcquisitionProviderClient::DOWNLOAD_TYPE_ALIASES.transform_values { |aliases|
+      aliases.map { |value| "'#{value}'" }.join(", ")
+    }
     download_type_sql = <<~SQL.squish
       CASE
+        WHEN source = '#{SOURCE_CUSTOM}' AND #{custom_type_sql} IN (#{type_aliases_sql["direct"]}) THEN 'direct'
+        WHEN source = '#{SOURCE_CUSTOM}' AND #{custom_type_sql} IN (#{type_aliases_sql["usenet"]}) THEN 'usenet'
+        WHEN source = '#{SOURCE_CUSTOM}' AND #{custom_type_sql} IN (#{type_aliases_sql["torrent"]}) THEN 'torrent'
+        WHEN source = '#{SOURCE_CUSTOM}' AND #{custom_type_sql} = '' AND #{custom_direct_url_sql} IS NOT NULL THEN 'direct'
+        WHEN source = '#{SOURCE_CUSTOM}' AND #{custom_type_sql} = '' AND #{custom_nzb_url_sql} IS NOT NULL THEN 'usenet'
+        WHEN source = '#{SOURCE_CUSTOM}' AND #{custom_type_sql} = '' AND #{custom_magnet_url_sql} IS NOT NULL THEN 'torrent'
         WHEN source IN ('#{SOURCE_ANNA_ARCHIVE}', '#{SOURCE_ZLIBRARY}', '#{SOURCE_GUTENBERG}', '#{SOURCE_LIBRIVOX}') THEN 'direct'
         WHEN download_url IS NOT NULL AND magnet_url IS NULL AND seeders IS NULL THEN 'usenet'
         ELSE 'torrent'
@@ -56,6 +77,12 @@ class SearchResult < ApplicationRecord
   }
 
   def downloadable?
+    if from_custom_provider?
+      return false unless acquisition_provider&.enabled?
+      return false unless custom_provider_available?
+
+      return true
+    end
     return true if direct_download?
 
     download_url.present? || magnet_url.present?
@@ -78,10 +105,15 @@ class SearchResult < ApplicationRecord
   end
 
   def direct_download?
-    from_anna_archive? || from_zlibrary? || from_gutenberg? || from_librivox?
+    from_anna_archive? ||
+      from_zlibrary? ||
+      from_gutenberg? ||
+      from_librivox? ||
+      (from_custom_provider? && custom_provider_download_type == "direct")
   end
 
   def download_type
+    return custom_provider_download_type if from_custom_provider? && custom_provider_download_type.present?
     return "direct" if direct_download?
     return "usenet" if usenet?
     return "torrent" if torrent?
@@ -206,6 +238,10 @@ class SearchResult < ApplicationRecord
     source == SOURCE_LIBRIVOX
   end
 
+  def from_custom_provider?
+    source == SOURCE_CUSTOM
+  end
+
   def source_display_name
     case source
     when SOURCE_JACKETT
@@ -218,12 +254,37 @@ class SearchResult < ApplicationRecord
       "Project Gutenberg"
     when SOURCE_LIBRIVOX
       "LibriVox"
+    when SOURCE_CUSTOM
+      acquisition_provider&.name || indexer.presence || "Custom Provider"
     else
       indexer.presence || "Prowlarr"
     end
   end
 
   private
+
+  def custom_provider_download_type
+    value = provider_payload_value(:download_type) || provider_payload_value(:type)
+    normalized = CustomAcquisitionProviderClient.normalize_download_type(value)
+    return normalized if normalized.present?
+
+    return "direct" if provider_payload_value(:direct_url).present?
+    return "torrent" if provider_payload_value(:magnet_url).present?
+    return "usenet" if provider_payload_value(:nzb_url).present?
+
+    nil
+  end
+
+  def custom_provider_available?
+    availability = provider_payload_value(:availability).to_s.strip.downcase
+    availability.blank? || availability == "available"
+  end
+
+  def provider_payload_value(key)
+    return nil unless provider_payload.is_a?(Hash)
+
+    provider_payload[key.to_s]
+  end
 
   def score_detail(key)
     return nil unless score_breakdown.is_a?(Hash)

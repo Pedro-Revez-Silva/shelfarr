@@ -93,7 +93,89 @@ class SearchResultTest < ActiveSupport::TestCase
 
     SettingsService.set(:preferred_download_types, %w[direct usenet torrent])
 
-    assert_equal [direct_result, usenet_result, torrent_result], request.search_results.best_first.to_a
+    assert_equal [ direct_result, usenet_result, torrent_result ], request.search_results.best_first.to_a
+  end
+
+  test "best_first treats custom provider direct results as direct" do
+    request = requests(:pending_request)
+    request.search_results.destroy_all
+    provider = AcquisitionProvider.create!(
+      name: "Custom Provider",
+      url: "http://provider.test"
+    )
+
+    torrent_result = request.search_results.create!(
+      guid: "custom-torrent",
+      title: "Custom torrent result",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "torrent",
+      provider_payload: { "download_type" => "torrent" },
+      confidence_score: 80
+    )
+    direct_result = request.search_results.create!(
+      guid: "custom-direct",
+      title: "Custom direct result",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "direct",
+      provider_payload: { "download_type" => "direct" },
+      confidence_score: 80
+    )
+
+    SettingsService.set(:preferred_download_types, %w[direct torrent usenet])
+
+    assert_equal [ direct_result, torrent_result ], request.search_results.best_first.to_a
+  end
+
+  test "best_first respects explicit custom provider type before URL inference" do
+    request = requests(:pending_request)
+    request.search_results.destroy_all
+    provider = AcquisitionProvider.create!(
+      name: "Typed Custom Provider",
+      url: "http://typed-provider.test"
+    )
+
+    direct_result = request.search_results.create!(
+      guid: "custom-direct-url",
+      title: "Custom direct result",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "direct-url",
+      provider_payload: {
+        "download_type" => "direct",
+        "direct_url" => "https://files.test/book.epub"
+      },
+      confidence_score: 99
+    )
+    torrent_result = request.search_results.create!(
+      guid: "custom-torrent-url",
+      title: "Custom torrent result",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "torrent-url",
+      provider_payload: {
+        "download_type" => "torrent",
+        "direct_url" => "https://files.test/book.torrent"
+      },
+      confidence_score: 80
+    )
+    usenet_result = request.search_results.create!(
+      guid: "custom-usenet-url",
+      title: "Custom usenet result",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "usenet-url",
+      provider_payload: {
+        "download_type" => "usenet",
+        "direct_url" => "https://files.test/book.nzb"
+      },
+      confidence_score: 70
+    )
+
+    SettingsService.set(:preferred_download_types, %w[usenet torrent direct])
+
+    assert_equal [ usenet_result, torrent_result, direct_result ], request.search_results.best_first.to_a
   end
 
   test "best_first falls back to legacy preferred download type" do
@@ -121,7 +203,7 @@ class SearchResultTest < ActiveSupport::TestCase
       description: "Legacy preferred download type"
     )
 
-    assert_equal [usenet_result, torrent_result], request.search_results.best_first.to_a
+    assert_equal [ usenet_result, torrent_result ], request.search_results.best_first.to_a
   end
 
   # === Methods ===
@@ -161,6 +243,66 @@ class SearchResultTest < ActiveSupport::TestCase
 
     assert result.downloadable?
     assert_equal "direct", result.download_type
+  end
+
+  test "custom provider direct results are downloadable before acquisition" do
+    provider = AcquisitionProvider.new(name: "Custom Provider", url: "http://provider.test")
+    result = SearchResult.new(
+      request: requests(:pending_request),
+      guid: "custom-direct",
+      title: "Custom Provider Book",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "provider-1",
+      provider_payload: { "download_type" => "direct" },
+      download_url: nil,
+      magnet_url: nil
+    )
+
+    assert result.downloadable?
+    assert result.direct_download?
+    assert_equal "direct", result.download_type
+  end
+
+  test "custom provider unavailable results are not downloadable" do
+    provider = AcquisitionProvider.new(name: "Custom Provider", url: "http://provider.test")
+    result = SearchResult.new(
+      request: requests(:pending_request),
+      guid: "custom-unavailable",
+      title: "Custom Provider Book",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "provider-unavailable",
+      provider_payload: {
+        "download_type" => "direct",
+        "availability" => "temporarily_unavailable"
+      }
+    )
+
+    assert_not result.downloadable?
+  end
+
+  test "custom provider results infer download type from payload URLs" do
+    provider = AcquisitionProvider.new(name: "Custom Provider", url: "http://provider.test")
+    direct_result = SearchResult.new(
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_payload: { "direct_url" => "https://files.test/book.epub" }
+    )
+    usenet_result = SearchResult.new(
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_payload: { "nzb_url" => "https://files.test/book.nzb" }
+    )
+    torrent_result = SearchResult.new(
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_payload: { "magnet_url" => "magnet:?xt=urn:btih:abc123" }
+    )
+
+    assert_equal "direct", direct_result.download_type
+    assert_equal "usenet", usenet_result.download_type
+    assert_equal "torrent", torrent_result.download_type
   end
 
   test "download_link prefers magnet_url over download_url" do
