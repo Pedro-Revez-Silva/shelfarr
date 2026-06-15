@@ -822,6 +822,24 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_match /failed/i, flash[:alert]
   end
 
+  test "test_google_books succeeds when connection works" do
+    GoogleBooksClient.stub :test_connection, true do
+      post test_google_books_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
+  end
+
+  test "test_google_books fails when connection fails" do
+    GoogleBooksClient.stub :test_connection, false do
+      post test_google_books_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
+  end
+
   # Test connection tests for Audiobookshelf
   test "test_audiobookshelf fails when not configured" do
     SettingsService.set(:audiobookshelf_url, "")

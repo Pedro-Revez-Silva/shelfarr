@@ -177,6 +177,21 @@ module Admin
       respond_with_flash(alert: "Hardcover error: #{e.message}")
     end
 
+    def test_google_books
+      health = SystemHealth.for_service("google_books")
+
+      if GoogleBooksClient.test_connection
+        health.check_succeeded!(message: "Connection successful")
+        respond_with_flash(notice: "Google Books connection successful!")
+      else
+        health.check_failed!(message: "Failed to connect to Google Books")
+        respond_with_flash(alert: "Google Books connection failed.")
+      end
+    rescue GoogleBooksClient::Error => e
+      health&.check_failed!(message: e.message)
+      respond_with_flash(alert: "Google Books error: #{e.message}")
+    end
+
     def test_zlibrary
       unless ZLibraryClient.configured?
         respond_with_flash(alert: "Z-Library is not configured. Enable it and enter your account credentials first.")

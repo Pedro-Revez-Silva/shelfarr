@@ -116,6 +116,7 @@ Rails.application.routes.draw do
         post :test_gutenberg
         post :test_librivox
         post :test_hardcover
+        post :test_google_books
         post :test_oidc
         post :test_webhook
         post :test_discord

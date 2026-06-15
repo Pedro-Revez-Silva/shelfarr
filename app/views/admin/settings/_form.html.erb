@@ -11,7 +11,7 @@
     },
     "integrations" => {
       label: "Integrations",
-      categories: %w[audiobookshelf hardcover open_library discord telegram]
+      categories: %w[audiobookshelf hardcover open_library google_books discord telegram]
     },
     "system" => {
       label: "Queue & System",
@@ -247,6 +247,16 @@
                     </div>
                     <div class="md:w-2/3">
                       <%= link_to "Test Hardcover Connection", test_hardcover_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+                    </div>
+                  </div>
+                <% elsif category == "google_books" %>
+                  <div class="flex flex-col md:flex-row md:items-start gap-4 pt-4 border-t border-gray-800">
+                    <div class="md:w-1/3">
+                      <span class="font-medium text-gray-300">Test Connection</span>
+                      <p class="text-sm text-gray-500">Verify the Google Books API is reachable</p>
+                    </div>
+                    <div class="md:w-2/3">
+                      <%= link_to "Test Google Books Connection", test_google_books_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
                     </div>
                   </div>
                 <% elsif category == "zlibrary" %>
