@@ -10,7 +10,7 @@ class SystemHealth < ApplicationRecord
     not_configured: 3
   }
 
-  SERVICES = %w[indexer download_client download_paths output_paths audiobookshelf hardcover].freeze
+  SERVICES = %w[indexer download_client download_paths output_paths audiobookshelf hardcover google_books].freeze
 
   validates :service, presence: true, uniqueness: true
   validates :status, presence: true

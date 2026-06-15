@@ -14,6 +14,7 @@ class HealthCheckJob < ApplicationJob
       check_output_paths
       check_audiobookshelf
       check_hardcover
+      check_google_books
       schedule_next_run
     end
   end
@@ -28,6 +29,7 @@ class HealthCheckJob < ApplicationJob
     when "output_paths" then check_output_paths
     when "audiobookshelf" then check_audiobookshelf
     when "hardcover" then check_hardcover
+    when "google_books" then check_google_books
     else
       Rails.logger.warn "[HealthCheckJob] Unknown service: #{service}"
     end
@@ -223,6 +225,21 @@ class HealthCheckJob < ApplicationJob
   rescue => e
     health.check_failed!(message: "Error: #{e.message}")
     Rails.logger.error "[HealthCheckJob] Hardcover check failed: #{e.message}"
+  end
+
+  def check_google_books
+    health = SystemHealth.for_service("google_books")
+
+    if GoogleBooksClient.test_connection
+      health.check_succeeded!(message: "Connection successful")
+    else
+      health.check_failed!(message: "Failed to connect to Google Books")
+    end
+  rescue GoogleBooksClient::ConnectionError => e
+    health.check_failed!(message: "Connection error: #{e.message}")
+  rescue => e
+    health.check_failed!(message: "Error: #{e.message}")
+    Rails.logger.error "[HealthCheckJob] Google Books check failed: #{e.message}"
   end
 
   def schedule_next_run

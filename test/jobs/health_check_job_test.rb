@@ -7,6 +7,15 @@ class HealthCheckJobTest < ActiveJob::TestCase
     SystemHealth.destroy_all
     DownloadClient.destroy_all
     Thread.current[:qbittorrent_sessions] = {}
+
+    # Google Books has no config gate, so the health check always calls it.
+    # Stub it benignly by default; individual tests may override.
+    stub_request(:get, %r{https://www\.googleapis\.com/books/v1/volumes})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "totalItems" => 0, "items" => [] }.to_json
+      )
   end
 
   test "schedules next run after checking" do
