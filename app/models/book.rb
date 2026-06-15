@@ -24,6 +24,8 @@ class Book < ApplicationRecord
   def unified_work_id
     if hardcover_id.present?
       "hardcover:#{hardcover_id}"
+    elsif google_books_id.present?
+      "googlebooks:#{google_books_id}"
     elsif open_library_work_id.present?
       "openlibrary:#{open_library_work_id}"
     end
@@ -47,6 +49,8 @@ class Book < ApplicationRecord
     case source
     when "hardcover"
       find_by(hardcover_id: source_id, book_type: book_type)
+    when "googlebooks"
+      find_by(google_books_id: source_id, book_type: book_type)
     else
       find_by(open_library_work_id: source_id, book_type: book_type)
     end
@@ -58,6 +62,8 @@ class Book < ApplicationRecord
     case source
     when "hardcover"
       find_or_initialize_by(hardcover_id: source_id, book_type: book_type)
+    when "googlebooks"
+      find_or_initialize_by(google_books_id: source_id, book_type: book_type)
     else
       find_or_initialize_by(open_library_work_id: source_id, book_type: book_type)
     end
