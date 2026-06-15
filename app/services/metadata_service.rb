@@ -37,6 +37,8 @@ class MetadataService
         search_hardcover(query, limit)
       when "openlibrary"
         search_openlibrary(query, limit)
+      when "googlebooks"
+        search_googlebooks(query, limit)
       else # "auto"
         search_with_fallback(query, limit)
       end
@@ -53,6 +55,8 @@ class MetadataService
         fetch_hardcover_details(id)
       when "openlibrary", "OL"
         fetch_openlibrary_details(id)
+      when "googlebooks"
+        fetch_googlebooks_details(id)
       else
         raise ArgumentError, "Unknown metadata source: #{source}"
       end
@@ -74,6 +78,12 @@ class MetadataService
         false
       end
 
+      results[:googlebooks] = begin
+        GoogleBooksClient.test_connection
+      rescue
+        false
+      end
+
       results
     end
 
@@ -85,6 +95,7 @@ class MetadataService
     # Check if any metadata source is available
     def available?
       metadata_source == "openlibrary" ||
+        metadata_source == "googlebooks" ||
         (metadata_source == "hardcover" && HardcoverClient.configured?) ||
         (metadata_source == "auto") # OpenLibrary always available as fallback
     end
@@ -123,7 +134,15 @@ class MetadataService
 
       # Fallback to OpenLibrary
       results = search_openlibrary(query, limit)
-      Rails.logger.info "[MetadataService] Found #{results.size} results from OpenLibrary"
+      if results.any?
+        Rails.logger.info "[MetadataService] Found #{results.size} results from OpenLibrary"
+        return results
+      end
+
+      # Final fallback to Google Books
+      Rails.logger.info "[MetadataService] No OpenLibrary results, falling back to Google Books"
+      results = search_googlebooks(query, limit)
+      Rails.logger.info "[MetadataService] Found #{results.size} results from Google Books"
       results
     end
 
@@ -135,6 +154,19 @@ class MetadataService
     def fetch_openlibrary_details(work_id)
       work = OpenLibraryClient.work(work_id)
       normalize_openlibrary_work(work)
+    end
+
+    def search_googlebooks(query, limit)
+      results = GoogleBooksClient.search(query, limit: limit)
+      results.map { |r| normalize_googlebooks_result(r) }
+    rescue GoogleBooksClient::Error => e
+      Rails.logger.error "[MetadataService] Google Books search failed: #{e.message}"
+      []
+    end
+
+    def fetch_googlebooks_details(id)
+      volume = GoogleBooksClient.volume(id)
+      normalize_googlebooks_details(volume)
     end
 
     def normalize_hardcover_result(result)
@@ -196,6 +228,38 @@ class MetadataService
         cover_url: work.cover_url(size: :l),
         has_audiobook: nil,
         has_ebook: nil,
+        series_name: nil,
+        series_position: nil
+      )
+    end
+
+    def normalize_googlebooks_result(result)
+      SearchResult.new(
+        source: "googlebooks",
+        source_id: result.id,
+        title: result.title,
+        author: result.author,
+        description: truncate_description(result.description),
+        year: result.year,
+        cover_url: result.cover_url,
+        has_audiobook: nil,
+        has_ebook: result.has_ebook,
+        series_name: nil,
+        series_position: nil
+      )
+    end
+
+    def normalize_googlebooks_details(volume)
+      SearchResult.new(
+        source: "googlebooks",
+        source_id: volume.id,
+        title: volume.title,
+        author: volume.author,
+        description: volume.description,
+        year: volume.year,
+        cover_url: volume.cover_url,
+        has_audiobook: nil,
+        has_ebook: volume.has_ebook,
         series_name: nil,
         series_position: nil
       )

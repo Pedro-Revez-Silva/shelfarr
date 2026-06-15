@@ -215,6 +215,91 @@ class MetadataServiceTest < ActiveSupport::TestCase
     assert_not MetadataService.available?
   end
 
+  test "search uses googlebooks when source is googlebooks" do
+    SettingsService.set(:metadata_source, "googlebooks")
+
+    VCR.turned_off do
+      stub_request(:get, "#{GoogleBooksClient::BASE_URL}/volumes")
+        .with(query: hash_including("q" => "harry potter"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "items" => [
+              {
+                "id" => "vol1",
+                "volumeInfo" => { "title" => "Harry Potter", "authors" => [ "J.K. Rowling" ], "publishedDate" => "1997" },
+                "accessInfo" => { "epub" => { "isAvailable" => true } }
+              }
+            ]
+          }.to_json
+        )
+
+      results = MetadataService.search("harry potter")
+
+      assert results.any?
+      assert_equal "googlebooks", results.first.source
+      assert_equal "googlebooks:vol1", results.first.work_id
+    end
+  end
+
+  test "search falls back to googlebooks when hardcover and openlibrary are empty in auto mode" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_api_token, "")
+
+    VCR.turned_off do
+      stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
+        .with(query: hash_including("q" => "obscure title"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "docs" => [] }.to_json
+        )
+      stub_request(:get, "#{GoogleBooksClient::BASE_URL}/volumes")
+        .with(query: hash_including("q" => "obscure title"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "items" => [
+              { "id" => "vol9", "volumeInfo" => { "title" => "Fallback Book" }, "accessInfo" => {} }
+            ]
+          }.to_json
+        )
+
+      results = MetadataService.search("obscure title")
+
+      assert results.any?
+      assert_equal "googlebooks", results.first.source
+    end
+  end
+
+  test "book_details handles googlebooks work_id" do
+    VCR.turned_off do
+      stub_request(:get, "#{GoogleBooksClient::BASE_URL}/volumes/vol1")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "id" => "vol1",
+            "volumeInfo" => { "title" => "Test Book", "authors" => [ "Author" ], "publishedDate" => "2020", "description" => "Desc" },
+            "accessInfo" => { "epub" => { "isAvailable" => true } }
+          }.to_json
+        )
+
+      result = MetadataService.book_details("googlebooks:vol1")
+
+      assert_equal "googlebooks", result.source
+      assert_equal "Test Book", result.title
+      assert_equal "vol1", result.source_id
+    end
+  end
+
+  test "available? returns true when googlebooks source" do
+    SettingsService.set(:metadata_source, "googlebooks")
+    assert MetadataService.available?
+  end
+
   private
 
   def stub_hardcover_search(results, expected_per_page: nil)
