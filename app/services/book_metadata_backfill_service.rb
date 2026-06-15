@@ -53,7 +53,7 @@ class BookMetadataBackfillService
     end
 
     def metadata_lookup_errors
-      errors = [ HardcoverClient::Error, OpenLibraryClient::Error, MetadataService::Error, ArgumentError ]
+      errors = [ HardcoverClient::Error, OpenLibraryClient::Error, GoogleBooksClient::Error, MetadataService::Error, ArgumentError ]
       errors << VCR::Errors::UnhandledHTTPRequestError if defined?(VCR::Errors::UnhandledHTTPRequestError)
       errors << WebMock::NetConnectNotAllowedError if defined?(WebMock::NetConnectNotAllowedError)
       errors
