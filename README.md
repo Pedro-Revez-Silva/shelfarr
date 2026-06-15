@@ -37,7 +37,7 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 ## Features
 
 - **Book Discovery** — Search millions of titles via Open Library and Hardcover
-- **Smart Acquisition** — Search Prowlarr or Jackett indexers; download via qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet
+- **Smart Acquisition** — Search Prowlarr, Jackett or Newznab/NZBHydra2 indexers; download via qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet
 - **Direct Downloads** — Ebooks from Anna's Archive and Z-Library, public-domain audiobooks from LibriVox — no torrent client needed
 - **Auto-Selection & Format Preferences** — Pick the best release automatically, scored by your preferred formats, bitrate and language
 - **Auto-Processing** — Rename and organize files with path/filename templates, then deliver to Audiobookshelf
@@ -104,7 +104,7 @@ After logging in, go to **Admin → Settings**:
 
 | Setting | Description |
 |---------|-------------|
-| Indexer | Prowlarr or Jackett URL + API key for searches |
+| Indexer | Prowlarr, Jackett or Newznab/NZBHydra2 URL + API key for searches |
 | Download Clients | qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet (Admin → Download Clients) |
 | Output Paths | Where to place completed audiobooks/ebooks |
 | Audiobookshelf | URL + API key for library integration (optional) |
@@ -140,7 +140,7 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 | Service | Purpose |
 |---------|---------|
 | **Open Library** / **Hardcover** | Book metadata and search |
-| **Prowlarr** / **Jackett** | Indexer management |
+| **Prowlarr** / **Jackett** / **NZBHydra2** | Indexer management |
 | **qBittorrent**, **Decypharr**, **Deluge**, **Transmission** | Torrent downloads |
 | **SABnzbd**, **NZBGet** | Usenet downloads |
 | **Anna's Archive** / **Z-Library** | Direct ebook downloads |
@@ -152,7 +152,7 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 
 - Docker
 - At least one way to find books:
-  - An indexer — Prowlarr or Jackett — plus a download client (qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet), **and/or**
+  - An indexer — Prowlarr, Jackett or Newznab/NZBHydra2 — plus a download client (qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet), **and/or**
   - A direct source — Anna's Archive or Z-Library (ebooks), LibriVox (audiobooks)
 - Audiobookshelf (optional, for library integration)
 

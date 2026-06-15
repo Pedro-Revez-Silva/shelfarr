@@ -54,6 +54,8 @@ class SettingsService
     jackett_url: { type: "string", default: "", category: "indexer", description: "Base URL for Jackett instance (e.g., http://localhost:9117)" },
     jackett_api_key: { type: "string", default: "", category: "indexer", description: "API key from Jackett dashboard" },
     jackett_indexer_filter: { type: "string", default: "all", category: "indexer", description: "Jackett indexer filter for Torznab queries. Use 'all' for every indexer, or a specific Jackett filter such as 'tag:books'." },
+    newznab_url: { type: "string", default: "", category: "indexer", description: "Newznab-compatible API URL for NZBHydra2 or another Newznab provider (e.g., http://localhost:5076)" },
+    newznab_api_key: { type: "string", default: "", category: "indexer", description: "API key from NZBHydra2 or your Newznab provider" },
 
     # Download Settings (clients are now managed separately via Admin > Download Clients)
     preferred_download_types: { type: "json", default: '["torrent","usenet","direct"]', category: "download", description: "Download types in preference order. Higher-ranked types are preferred when multiple result types are available." },
@@ -299,9 +301,13 @@ class SettingsService
       configured?(:jackett_url) && configured?(:jackett_api_key)
     end
 
+    def newznab_configured?
+      configured?(:newznab_url) && configured?(:newznab_api_key)
+    end
+
     def active_indexer_provider
       provider = get(:indexer_provider).to_s.strip
-      return provider if %w[none prowlarr jackett].include?(provider)
+      return provider if %w[none prowlarr jackett newznab].include?(provider)
 
       return "prowlarr" if prowlarr_configured?
 
@@ -314,6 +320,8 @@ class SettingsService
         prowlarr_configured?
       when "jackett"
         jackett_configured?
+      when "newznab"
+        newznab_configured?
       else
         false
       end

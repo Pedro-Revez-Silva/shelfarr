@@ -4,6 +4,10 @@
 # Files are COPIED (not moved) to preserve seeding for torrent downloads.
 # Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
+  EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
+  EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
+  EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
+
   queue_as :default
 
   def perform(download_id, source_path_retry_count = 0)
@@ -129,6 +133,7 @@ class PostProcessingJob < ApplicationJob
     end
 
     Rails.logger.info "[PostProcessingJob] Copying from #{source} to #{destination}"
+    validate_ebook_source!(source) if book&.ebook?
     FileUtils.mkdir_p(destination)
 
     if File.directory?(source)
@@ -139,22 +144,138 @@ class PostProcessingJob < ApplicationJob
       files = Dir.entries(source).reject { |f| f.start_with?(".") }
       Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to copy"
       files.each do |file|
-        FileCopyService.cp_r(File.join(source, file), destination)
+        source_file = File.join(source, file)
+
+        if book&.ebook?
+          copy_ebook_directory_entry(source_file, destination, book)
+        else
+          FileCopyService.cp_r(source_file, destination)
+        end
       end
     else
       # Copy single file with renamed filename based on template
-      extension = File.extname(source)
-      new_filename = book ? PathTemplateService.build_filename(book, extension) : File.basename(source)
-      destination_file = File.join(destination, new_filename)
-
-      # Handle duplicate filenames
-      destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
-
-      Rails.logger.info "[PostProcessingJob] Renaming file to: #{new_filename}"
-      FileCopyService.cp(source, destination_file)
+      copy_renamed_file(source, destination, book)
     end
 
     Rails.logger.info "[PostProcessingJob] Copy completed successfully"
+  end
+
+  def copy_ebook_directory_entry(source_file, destination, book)
+    if File.directory?(source_file)
+      Dir.entries(source_file).reject { |f| f.start_with?(".") }.each do |file|
+        copy_ebook_directory_entry(File.join(source_file, file), destination, book)
+      end
+    elsif ebook_file?(source_file)
+      copy_renamed_file(source_file, destination, book)
+    else
+      copy_sidecar_file(source_file, destination)
+    end
+  end
+
+  def validate_ebook_source!(source)
+    paths = if File.directory?(source)
+      ebook_directory_files(source)
+    else
+      [ source ]
+    end
+
+    paths.each do |path|
+      next if allowed_ebook_import_file?(path)
+
+      raise "Unsupported ebook import file type: #{File.basename(path)}"
+    end
+  end
+
+  def ebook_directory_files(source)
+    Dir.entries(source).reject { |f| f.start_with?(".") }.flat_map do |file|
+      path = File.join(source, file)
+      File.directory?(path) && !File.symlink?(path) ? ebook_directory_files(path) : path
+    end
+  end
+
+  def allowed_ebook_import_file?(path)
+    return false if File.symlink?(path)
+    return false unless File.file?(path)
+
+    extension = File.extname(path).delete_prefix(".").downcase
+    EBOOK_ALLOWED_EXTENSIONS.include?(extension) && valid_ebook_import_content?(path, extension)
+  end
+
+  def valid_ebook_import_content?(path, extension)
+    file_size = File.size(path)
+    return false if file_size.zero?
+
+    head = File.binread(path, [ 512, file_size ].min)
+    return false if executable_file_signature?(head)
+
+    case extension
+    when "epub", "cbz"
+      head.start_with?("PK\x03\x04")
+    when "pdf"
+      head.start_with?("%PDF")
+    when "mobi", "azw", "azw3"
+      head.byteslice(60, 8) == "BOOKMOBI" || head.include?("BOOKMOBI")
+    when "cbr"
+      head.start_with?("Rar!\x1A\x07\x00") || head.start_with?("Rar!\x1A\x07\x01\x00")
+    when "djvu"
+      head.start_with?("AT&TFORM") && %w[DJVU DJVM].include?(head.byteslice(12, 4))
+    when "jpg", "jpeg"
+      head.start_with?("\xFF\xD8\xFF".b)
+    when "png"
+      head.start_with?("\x89PNG\r\n\x1A\n".b)
+    when "webp"
+      head.start_with?("RIFF") && head.byteslice(8, 4) == "WEBP"
+    when "opf"
+      text_file_content?(head) && head.downcase.include?("<package")
+    when "nfo", "txt"
+      text_file_content?(head)
+    else
+      false
+    end
+  rescue Errno::ENOENT, Errno::EACCES
+    false
+  end
+
+  def executable_file_signature?(head)
+    head.start_with?("MZ") ||
+      head.start_with?("\x7FELF".b) ||
+      head.start_with?("\xFE\xED\xFA\xCE".b) ||
+      head.start_with?("\xFE\xED\xFA\xCF".b) ||
+      head.start_with?("\xCE\xFA\xED\xFE".b) ||
+      head.start_with?("\xCF\xFA\xED\xFE".b)
+  end
+
+  def text_file_content?(head)
+    return false if head.include?("\x00")
+
+    head.bytes.all? do |byte|
+      byte == 9 || byte == 10 || byte == 12 || byte == 13 || byte >= 32
+    end
+  end
+
+  def copy_sidecar_file(source_file, destination)
+    destination_file = File.join(destination, File.basename(source_file))
+    destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
+    FileCopyService.cp(source_file, destination_file)
+  end
+
+  def copy_renamed_file(source, destination, book)
+    destination_file = renamed_destination_file(source, destination, book)
+    Rails.logger.info "[PostProcessingJob] Renaming file to: #{File.basename(destination_file)}"
+    FileCopyService.cp(source, destination_file)
+  end
+
+  def renamed_destination_file(source, destination, book)
+    extension = File.extname(source)
+    new_filename = book ? PathTemplateService.build_filename(book, extension) : File.basename(source)
+    destination_file = File.join(destination, new_filename)
+
+    destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
+    destination_file
+  end
+
+  def ebook_file?(path)
+    EBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete_prefix(".").downcase)
   end
 
   def handle_duplicate_filename(path)

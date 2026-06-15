@@ -121,6 +121,125 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent saves into a per-category subdirectory of the download dir" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+
+      # session-get is hit twice: once to negotiate auth, once by
+      # category_save_path; both 200s expose the parent download dir.
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "session_get", params: {}) }
+        .to_return(
+          {
+            status: 409,
+            headers: { "x-transmission-session-id" => "session-id" },
+            body: { "result" => "session", "arguments" => {} }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "jsonrpc" => "2.0", "result" => { "download_dir" => "/downloads" }, "id" => 1 }.to_json
+          }
+        )
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => [ "hash_string" ] }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrents" => [] }, "id" => 1 }.to_json
+        )
+      add_stub = stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with do |request|
+          jsonrpc_request?(request, method: "torrent_add", params: {
+            "filename" => "magnet:?xt=urn:btih:abcdef",
+            "download_dir" => "/downloads/shelfarr"
+          })
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrent_added" => { "hash_string" => "new-torrent-id" } }, "id" => 1 }.to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+
+      assert_equal "new-torrent-id", result
+      assert_requested(add_stub)
+    end
+  end
+
+  test "add_torrent uses the hyphenated download-dir key for the category in legacy RPC" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      Thread.current[:transmission_sessions][@client_record.id] = "session-id"
+      Thread.current[:transmission_protocols][@client_record.id] = :legacy
+
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| legacy_request?(request, method: "session-get", arguments: {}) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "success", "arguments" => { "download-dir" => "/downloads" } }.to_json
+        )
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| legacy_request?(request, method: "torrent-get", arguments: { "ids" => "all", "fields" => [ "hashString" ] }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "success", "arguments" => { "torrents" => [] } }.to_json
+        )
+      add_stub = stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with do |request|
+          legacy_request?(request, method: "torrent-add", arguments: {
+            "filename" => "magnet:?xt=urn:btih:abcdef",
+            "download-dir" => "/downloads/shelfarr"
+          })
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "success", "arguments" => { "torrent-added" => { "hashString" => "new-torrent-id" } } }.to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+
+      assert_equal "new-torrent-id", result
+      assert_requested(add_stub)
+    end
+  end
+
+  test "add_torrent prefers an explicit save_path over the configured category" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => [ "hash_string" ] }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrents" => [] }, "id" => 1 }.to_json
+        )
+      add_stub = stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with do |request|
+          jsonrpc_request?(request, method: "torrent_add", params: {
+            "filename" => "magnet:?xt=urn:btih:abcdef",
+            "download_dir" => "/downloads/explicit"
+          })
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrent_added" => { "hash_string" => "new-torrent-id" } }, "id" => 1 }.to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:abcdef", save_path: "/downloads/explicit")
+
+      assert_equal "new-torrent-id", result
+      assert_requested(add_stub)
+    end
+  end
+
   test "add_torrent returns existing torrent id when duplicate" do
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")
@@ -306,7 +425,9 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
                   "percent_done" => 0.5,
                   "status" => 4,
                   "total_size" => 1073741824,
-                  "download_dir" => "/downloads/Transmission Book",
+                  # Transmission reports the PARENT download dir here, not the
+                  # per-torrent path; the content lives at download_dir/name.
+                  "download_dir" => "/downloads",
                   "error" => 0,
                   "error_string" => ""
                 }
@@ -321,6 +442,75 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
       assert_equal "abc123", info.hash
       assert_equal 50, info.progress
       assert_equal "/downloads/Transmission Book", info.download_path
+    end
+  end
+
+  test "torrent_info reports the per-torrent content path (download_dir + name)" do
+    VCR.turned_off do
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "abc123" ], "fields" => JSONRPC_TORRENT_FIELDS }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "result" => {
+              "torrents" => [
+                {
+                  "hash_string" => "abc123",
+                  "name" => "Some Author - Some Book",
+                  "percent_done" => 1.0,
+                  "status" => 6,
+                  "total_size" => 1073741824,
+                  "download_dir" => "/mnt/media/transmission",
+                  "error" => 0
+                }
+              ]
+            },
+            "id" => 1
+          }.to_json
+        )
+
+      info = @client.torrent_info("abc123")
+
+      # download_dir is the parent; the importable path is download_dir/name,
+      # mirroring qBittorrent's content_path. Reporting the bare parent here
+      # makes PostProcessingJob import the whole download root.
+      assert_equal "/mnt/media/transmission/Some Author - Some Book", info.download_path
+    end
+  end
+
+  test "torrent_info falls back to download_dir when name is blank" do
+    VCR.turned_off do
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => [ "abc123" ], "fields" => JSONRPC_TORRENT_FIELDS }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "result" => {
+              "torrents" => [
+                {
+                  "hash_string" => "abc123",
+                  "name" => "",
+                  "percent_done" => 1.0,
+                  "status" => 6,
+                  "total_size" => 1073741824,
+                  "download_dir" => "/downloads",
+                  "error" => 0
+                }
+              ]
+            },
+            "id" => 1
+          }.to_json
+        )
+
+      info = @client.torrent_info("abc123")
+
+      assert_equal "/downloads", info.download_path
     end
   end
 
@@ -358,7 +548,9 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
       assert_equal 75, torrent.progress
       assert_equal :downloading, torrent.state
       assert_equal 2048, torrent.size_bytes
-      assert_equal "/downloads/legacy", torrent.download_path
+      # downloadDir is the parent; download_path is the per-torrent content path
+      # (downloadDir/name), same as the JSON-RPC path.
+      assert_equal "/downloads/legacy/Legacy Transmission Book", torrent.download_path
     end
   end
 

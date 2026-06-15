@@ -492,7 +492,7 @@ module Admin
     end
 
     def indexer_setting_key?(key)
-      key.start_with?("indexer_") || key.start_with?("prowlarr") || key.start_with?("jackett")
+      key.start_with?("indexer_") || key.start_with?("prowlarr") || key.start_with?("jackett") || key.start_with?("newznab")
     end
   end
 end

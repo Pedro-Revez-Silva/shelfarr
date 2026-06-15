@@ -351,6 +351,67 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not_includes log_output, "apikey=secret"
   end
 
+  test "sends selected newznab result directly to a usenet client" do
+    @client.destroy!
+    sabnzbd = DownloadClient.create!(
+      name: "Test SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8080",
+      api_key: "test-api-key-12345",
+      priority: 0,
+      enabled: true
+    )
+    newznab_result = @request.search_results.create!(
+      guid: "newznab-guid-123",
+      title: "Newznab Ebook Result",
+      indexer: "NZBHydra Books",
+      source: SearchResult::SOURCE_NEWZNAB,
+      download_url: "http://nzbhydra:5076/getnzb/api/123?apikey=secret",
+      magnet_url: nil,
+      seeders: nil,
+      status: :selected
+    )
+    @download.update!(search_result: newznab_result)
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including(
+          "mode" => "version",
+          "apikey" => "test-api-key-12345",
+          "output" => "json"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "version" => "4.0.0" }.to_json
+        )
+
+      request_stub = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including(
+          "mode" => "addurl",
+          "name" => "http://nzbhydra:5076/getnzb/api/123?apikey=secret",
+          "nzbname" => "Another Author - The Pending Ebook",
+          "apikey" => "test-api-key-12345",
+          "output" => "json"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => true, "nzo_ids" => [ "SABnzbd_nzo_newznab" ] }.to_json
+        )
+
+      DownloadJob.perform_now(@download.id)
+
+      assert_requested request_stub
+    end
+
+    @download.reload
+    assert @download.downloading?
+    assert_equal sabnzbd.id.to_s, @download.download_client_id
+    assert_equal "SABnzbd_nzo_newznab", @download.external_id
+    assert_equal "usenet", @download.download_type
+  end
+
   test "skips non-existent downloads" do
     assert_nothing_raised do
       DownloadJob.perform_now(999999)

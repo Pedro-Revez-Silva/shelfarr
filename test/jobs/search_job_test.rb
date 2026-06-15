@@ -1234,6 +1234,41 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "uses newznab when explicitly selected as the indexer provider" do
+    SettingsService.set(:indexer_provider, "newznab")
+    SettingsService.set(:newznab_url, "http://localhost:5076")
+    SettingsService.set(:newznab_api_key, "newznab-key")
+
+    body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+        <channel>
+          <item>
+            <title>Newznab Search Result</title>
+            <guid>newznab-guid-1</guid>
+            <link>https://example.com/details/1</link>
+            <enclosure url="http://localhost:5076/getnzb/api/1?apikey=newznab-key" length="12345" type="application/x-nzb" />
+            <newznab:attr name="hydraIndexerName" value="NZBHydra Books" />
+          </item>
+        </channel>
+      </rss>
+    XML
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:5076/api")
+        .with(query: hash_including("apikey" => "newznab-key", "t" => "search"))
+        .to_return(status: 200, body: body, headers: { "Content-Type" => "application/xml" })
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert @request.search_results.any?
+      assert_equal SearchResult::SOURCE_NEWZNAB, @request.search_results.first.source
+      assert_equal "NZBHydra Books", @request.search_results.first.indexer
+      assert @request.search_results.first.usenet?
+    end
+  end
+
   private
 
   def stub_prowlarr_search_with_results

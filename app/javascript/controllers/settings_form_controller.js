@@ -6,7 +6,8 @@ export default class extends Controller {
     "status",
     "indexerProvider",
     "prowlarrFields",
-    "jackettFields"
+    "jackettFields",
+    "newznabFields"
   ];
 
   connect() {
@@ -141,6 +142,10 @@ export default class extends Controller {
 
     if (this.hasJackettFieldsTarget) {
       this.jackettFieldsTarget.classList.toggle("hidden", provider !== "jackett");
+    }
+
+    if (this.hasNewznabFieldsTarget) {
+      this.newznabFieldsTarget.classList.toggle("hidden", provider !== "newznab");
     }
   }
 
