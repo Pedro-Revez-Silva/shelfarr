@@ -180,6 +180,12 @@ module Admin
     def test_google_books
       health = SystemHealth.for_service("google_books")
 
+      unless GoogleBooksClient.configured?
+        health.mark_not_configured!
+        respond_with_flash(alert: "Google Books is not configured. Enter an API key first.")
+        return
+      end
+
       if GoogleBooksClient.test_connection
         health.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "Google Books connection successful!")

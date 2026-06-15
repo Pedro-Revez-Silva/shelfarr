@@ -230,6 +230,11 @@ class HealthCheckJob < ApplicationJob
   def check_google_books
     health = SystemHealth.for_service("google_books")
 
+    unless GoogleBooksClient.configured?
+      health.mark_not_configured!
+      return
+    end
+
     if GoogleBooksClient.test_connection
       health.check_succeeded!(message: "Connection successful")
     else

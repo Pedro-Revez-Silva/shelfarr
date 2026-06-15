@@ -155,7 +155,7 @@ class SettingsService
     hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
 
     # Google Books
-    google_books_api_key: { type: "string", default: "", category: "google_books", description: "Optional Google Books API key. Leave blank to use the shared anonymous quota, or provide a key for a dedicated quota (console.cloud.google.com)." },
+    google_books_api_key: { type: "string", default: "", category: "google_books", description: "Google Books API key (required to enable Google Books). Create one at https://console.cloud.google.com/apis/library/books.googleapis.com" },
     google_books_search_limit: { type: "integer", default: 20, category: "google_books", description: "Maximum number of search results to return from Google Books" },
 
     # Webhook Notifications

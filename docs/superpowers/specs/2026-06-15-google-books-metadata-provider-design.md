@@ -11,11 +11,15 @@ and Hardcover providers. Google Books is queried through its public REST API
 
 ## Decisions
 
-- **API key: optional.** Requests are sent without a key by default (shared per-IP
-  quota). An optional key can be configured to obtain a dedicated quota. Mirrors the
-  "works without configuration" behaviour of Open Library.
+- **API key: required.** Google Books is only enabled once an API key is configured
+  (mirrors how Hardcover is gated on its token). `GoogleBooksClient.configured?` returns
+  true only when `google_books_api_key` is present, and the admin settings UI provides a
+  direct "Get API Key" link to
+  `https://console.cloud.google.com/apis/library/books.googleapis.com`.
+  (Revised from the original "optional key" decision at the user's request.)
 - **Auto fallback order:** Hardcover → Open Library → Google Books. Google Books is the
-  last resort, queried only when Open Library returns no results.
+  last resort, queried only when Open Library returns no results *and* a key is
+  configured.
 - **`metadata_source` setting stays a free-text field.** Only its description is updated
   to mention the new `googlebooks` value.
 

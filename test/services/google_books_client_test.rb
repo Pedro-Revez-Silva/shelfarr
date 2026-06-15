@@ -134,6 +134,9 @@ class GoogleBooksClientTest < ActiveSupport::TestCase
   end
 
   test "test_connection returns true on success" do
+    original_key = SettingsService.get(:google_books_api_key)
+    SettingsService.set(:google_books_api_key, "secret-key")
+
     VCR.turned_off do
       stub_request(:get, "#{GoogleBooksClient::BASE_URL}/volumes")
         .with(query: hash_including("q" => "ruby"))
@@ -145,9 +148,14 @@ class GoogleBooksClientTest < ActiveSupport::TestCase
 
       assert_equal true, GoogleBooksClient.test_connection
     end
+  ensure
+    SettingsService.set(:google_books_api_key, original_key || "")
   end
 
   test "test_connection returns false on error" do
+    original_key = SettingsService.get(:google_books_api_key)
+    SettingsService.set(:google_books_api_key, "secret-key")
+
     VCR.turned_off do
       stub_request(:get, "#{GoogleBooksClient::BASE_URL}/volumes")
         .with(query: hash_including("q" => "ruby"))
@@ -155,9 +163,28 @@ class GoogleBooksClientTest < ActiveSupport::TestCase
 
       assert_equal false, GoogleBooksClient.test_connection
     end
+  ensure
+    SettingsService.set(:google_books_api_key, original_key || "")
   end
 
-  test "configured? is always true" do
+  test "test_connection returns false when not configured" do
+    original_key = SettingsService.get(:google_books_api_key)
+    SettingsService.set(:google_books_api_key, "")
+
+    assert_equal false, GoogleBooksClient.test_connection
+  ensure
+    SettingsService.set(:google_books_api_key, original_key || "")
+  end
+
+  test "configured? requires an api key" do
+    original_key = SettingsService.get(:google_books_api_key)
+
+    SettingsService.set(:google_books_api_key, "")
+    assert_not GoogleBooksClient.configured?
+
+    SettingsService.set(:google_books_api_key, "secret-key")
     assert GoogleBooksClient.configured?
+  ensure
+    SettingsService.set(:google_books_api_key, original_key || "")
   end
 end

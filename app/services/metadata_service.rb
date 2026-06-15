@@ -78,10 +78,8 @@ class MetadataService
         false
       end
 
-      results[:googlebooks] = begin
-        GoogleBooksClient.test_connection
-      rescue
-        false
+      if GoogleBooksClient.configured?
+        results[:googlebooks] = GoogleBooksClient.test_connection rescue false
       end
 
       results
@@ -95,7 +93,7 @@ class MetadataService
     # Check if any metadata source is available
     def available?
       metadata_source == "openlibrary" ||
-        metadata_source == "googlebooks" ||
+        (metadata_source == "googlebooks" && GoogleBooksClient.configured?) ||
         (metadata_source == "hardcover" && HardcoverClient.configured?) ||
         (metadata_source == "auto") # OpenLibrary always available as fallback
     end
@@ -157,6 +155,8 @@ class MetadataService
     end
 
     def search_googlebooks(query, limit)
+      return [] unless GoogleBooksClient.configured?
+
       results = GoogleBooksClient.search(query, limit: limit)
       results.map { |r| normalize_googlebooks_result(r) }
     rescue GoogleBooksClient::Error => e

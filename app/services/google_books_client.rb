@@ -37,9 +37,9 @@ class GoogleBooksClient
   end
 
   class << self
-    # Google Books works without configuration; key is optional.
+    # Google Books requires an API key to be enabled.
     def configured?
-      true
+      SettingsService.get(:google_books_api_key).present?
     end
 
     # Search for books by query. Returns array of SearchResult.
@@ -64,6 +64,8 @@ class GoogleBooksClient
 
     # Test API reachability with a minimal query.
     def test_connection
+      return false unless configured?
+
       search("ruby", limit: 1)
       true
     rescue Error => e

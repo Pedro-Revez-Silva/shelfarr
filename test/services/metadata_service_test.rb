@@ -8,6 +8,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
     @original_token = SettingsService.get(:hardcover_api_token)
     @original_hardcover_search_limit = SettingsService.get(:hardcover_search_limit)
     @original_open_library_search_limit = SettingsService.get(:open_library_search_limit)
+    @original_google_books_api_key = SettingsService.get(:google_books_api_key)
     HardcoverClient.reset_connection!
   end
 
@@ -16,6 +17,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
     SettingsService.set(:hardcover_api_token, @original_token || "")
     SettingsService.set(:hardcover_search_limit, @original_hardcover_search_limit || 10)
     SettingsService.set(:open_library_search_limit, @original_open_library_search_limit || 20)
+    SettingsService.set(:google_books_api_key, @original_google_books_api_key || "")
     HardcoverClient.reset_connection!
   end
 
@@ -217,6 +219,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
 
   test "search uses googlebooks when source is googlebooks" do
     SettingsService.set(:metadata_source, "googlebooks")
+    SettingsService.set(:google_books_api_key, "test_key")
 
     VCR.turned_off do
       stub_request(:get, "#{GoogleBooksClient::BASE_URL}/volumes")
@@ -246,6 +249,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
   test "search falls back to googlebooks when hardcover and openlibrary are empty in auto mode" do
     SettingsService.set(:metadata_source, "auto")
     SettingsService.set(:hardcover_api_token, "")
+    SettingsService.set(:google_books_api_key, "test_key")
 
     VCR.turned_off do
       stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
@@ -295,9 +299,16 @@ class MetadataServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "available? returns true when googlebooks source" do
+  test "available? returns true when googlebooks source and configured" do
     SettingsService.set(:metadata_source, "googlebooks")
+    SettingsService.set(:google_books_api_key, "test_key")
     assert MetadataService.available?
+  end
+
+  test "available? returns false when googlebooks source and not configured" do
+    SettingsService.set(:metadata_source, "googlebooks")
+    SettingsService.set(:google_books_api_key, "")
+    assert_not MetadataService.available?
   end
 
   private

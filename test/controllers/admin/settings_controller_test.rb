@@ -822,7 +822,18 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_match /failed/i, flash[:alert]
   end
 
+  test "test_google_books fails when not configured" do
+    SettingsService.set(:google_books_api_key, "")
+
+    post test_google_books_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not configured/i, flash[:alert]
+  end
+
   test "test_google_books succeeds when connection works" do
+    SettingsService.set(:google_books_api_key, "test-key")
+
     GoogleBooksClient.stub :test_connection, true do
       post test_google_books_admin_settings_url
     end
@@ -832,6 +843,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "test_google_books fails when connection fails" do
+    SettingsService.set(:google_books_api_key, "test-key")
+
     GoogleBooksClient.stub :test_connection, false do
       post test_google_books_admin_settings_url
     end
