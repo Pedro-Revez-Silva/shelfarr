@@ -41,7 +41,8 @@ module DownloadClients
       args[:metainfo] = prepared[:metainfo] if prepared[:metainfo].present?
       args[:filename] = prepared[:url] if prepared[:metainfo].blank?
       args[:paused] = options[:paused] unless options[:paused].nil?
-      args[:download_dir] = options[:save_path] if options[:save_path].present?
+      save_path = options[:save_path].presence || category_save_path
+      apply_download_dir!(args, save_path) if save_path.present?
 
       response = rpc_request("torrent-add", args)
       added = transmission_value(response, "torrent_added", "torrent-added")
@@ -110,6 +111,35 @@ module DownloadClients
       # We trigger one request to negotiate the current RPC protocol and fetch session id.
       rpc_request("session-get")
       true
+    end
+
+    # Honor config.category by saving into a per-category subdirectory of the
+    # session download dir. Transmission has no native category/label concept
+    # (unlike qBittorrent's `category` or Deluge's `label`), so the only way to
+    # keep a client's downloads out of the shared download root is to compute the
+    # save path ourselves. Returns nil when no category is configured.
+    def category_save_path
+      category = config.category.presence
+      return nil unless category
+
+      session = rpc_request("session-get")
+      base = transmission_value(session, "download_dir", "download-dir").to_s
+      return nil if base.blank?
+
+      File.join(base, category)
+    end
+
+    # Set the per-torrent download directory on a torrent-add arg hash using the
+    # protocol-correct key. Transmission's torrent-add expects a hyphenated
+    # `download-dir` argument in classic RPC, but snake_case `download_dir` in
+    # JSON-RPC 2.0 (Transmission 4.1+). request_payload only rewrites the method
+    # name, never arg keys, so the key has to be chosen here -- otherwise the dir
+    # is silently ignored and the torrent lands in the session default dir.
+    # protocol_mode is populated by the ensure_authenticated! call at the top of
+    # add_torrent; default to the classic key when it is somehow unset.
+    def apply_download_dir!(args, save_path)
+      key = protocol_mode.to_s == "jsonrpc" ? :download_dir : "download-dir"
+      args[key] = save_path
     end
 
     def rpc_request(method, args = {})

@@ -121,6 +121,125 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent saves into a per-category subdirectory of the download dir" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+
+      # session-get is hit twice: once to negotiate auth, once by
+      # category_save_path; both 200s expose the parent download dir.
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "session_get", params: {}) }
+        .to_return(
+          {
+            status: 409,
+            headers: { "x-transmission-session-id" => "session-id" },
+            body: { "result" => "session", "arguments" => {} }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "jsonrpc" => "2.0", "result" => { "download_dir" => "/downloads" }, "id" => 1 }.to_json
+          }
+        )
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => [ "hash_string" ] }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrents" => [] }, "id" => 1 }.to_json
+        )
+      add_stub = stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with do |request|
+          jsonrpc_request?(request, method: "torrent_add", params: {
+            "filename" => "magnet:?xt=urn:btih:abcdef",
+            "download_dir" => "/downloads/shelfarr"
+          })
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrent_added" => { "hash_string" => "new-torrent-id" } }, "id" => 1 }.to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+
+      assert_equal "new-torrent-id", result
+      assert_requested(add_stub)
+    end
+  end
+
+  test "add_torrent uses the hyphenated download-dir key for the category in legacy RPC" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      Thread.current[:transmission_sessions][@client_record.id] = "session-id"
+      Thread.current[:transmission_protocols][@client_record.id] = :legacy
+
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| legacy_request?(request, method: "session-get", arguments: {}) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "success", "arguments" => { "download-dir" => "/downloads" } }.to_json
+        )
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| legacy_request?(request, method: "torrent-get", arguments: { "ids" => "all", "fields" => [ "hashString" ] }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "success", "arguments" => { "torrents" => [] } }.to_json
+        )
+      add_stub = stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with do |request|
+          legacy_request?(request, method: "torrent-add", arguments: {
+            "filename" => "magnet:?xt=urn:btih:abcdef",
+            "download-dir" => "/downloads/shelfarr"
+          })
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "success", "arguments" => { "torrent-added" => { "hashString" => "new-torrent-id" } } }.to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+
+      assert_equal "new-torrent-id", result
+      assert_requested(add_stub)
+    end
+  end
+
+  test "add_torrent prefers an explicit save_path over the configured category" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => [ "hash_string" ] }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrents" => [] }, "id" => 1 }.to_json
+        )
+      add_stub = stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with do |request|
+          jsonrpc_request?(request, method: "torrent_add", params: {
+            "filename" => "magnet:?xt=urn:btih:abcdef",
+            "download_dir" => "/downloads/explicit"
+          })
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrent_added" => { "hash_string" => "new-torrent-id" } }, "id" => 1 }.to_json
+        )
+
+      result = @client.add_torrent("magnet:?xt=urn:btih:abcdef", save_path: "/downloads/explicit")
+
+      assert_equal "new-torrent-id", result
+      assert_requested(add_stub)
+    end
+  end
+
   test "add_torrent returns existing torrent id when duplicate" do
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")
