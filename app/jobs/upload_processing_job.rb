@@ -7,6 +7,9 @@
 # 4. Creates book with proper metadata
 # 5. Renames file and moves to library location
 class UploadProcessingJob < ApplicationJob
+  MAX_AUDIOBOOK_ZIP_EXTRACTED_BYTES = 2.gigabytes
+  MAX_AUDIOBOOK_ZIP_FILES = 10_000
+
   queue_as :default
 
   def perform(upload_id)
@@ -319,6 +322,12 @@ class UploadProcessingJob < ApplicationJob
     destination_dir = build_destination_path(book)
     FileUtils.mkdir_p(destination_dir)
 
+    if book.audiobook? && File.extname(upload.original_filename).casecmp?(".zip")
+      extract_zip_upload_to_directory(source_path, destination_dir)
+      FileUtils.rm_f(source_path)
+      return destination_dir
+    end
+
     # Rename file to standardized format: "Author - Title.ext"
     extension = File.extname(upload.original_filename)
     new_filename = build_filename(book, extension)
@@ -339,6 +348,56 @@ class UploadProcessingJob < ApplicationJob
     end
 
     destination_dir
+  end
+
+  def extract_zip_upload_to_directory(
+    zip_path,
+    destination_dir,
+    max_bytes: MAX_AUDIOBOOK_ZIP_EXTRACTED_BYTES,
+    max_files: MAX_AUDIOBOOK_ZIP_FILES
+  )
+    require "zip"
+
+    destination_root = File.expand_path(destination_dir)
+
+    Zip::File.open(zip_path) do |zipfile|
+      files = zipfile.reject(&:directory?)
+      validate_zip_upload_entries!(files, destination_root, max_bytes: max_bytes, max_files: max_files)
+
+      files.each do |entry|
+        target = File.expand_path(File.join(destination_root, entry.name))
+        FileUtils.mkdir_p(File.dirname(target))
+        entry.get_input_stream do |input|
+          File.open(target, "wb") { |output| IO.copy_stream(input, output) }
+        end
+      end
+    end
+  rescue Zip::Error => e
+    raise "Failed to extract audiobook archive: #{e.message}"
+  end
+
+  def validate_zip_upload_entries!(entries, destination_root, max_bytes:, max_files:)
+    raise "ZIP archive did not contain any files" if entries.empty?
+    raise "ZIP archive contains too many files (max #{max_files})" if entries.size > max_files
+
+    total_size = 0
+    targets = {}
+
+    entries.each do |entry|
+      target = File.expand_path(File.join(destination_root, entry.name))
+      unless target.start_with?("#{destination_root}#{File::SEPARATOR}")
+        raise "ZIP archive contains an unsafe path: #{entry.name}"
+      end
+      raise "ZIP archive contains duplicate file path: #{entry.name}" if targets[target]
+      raise "ZIP archive would overwrite an existing file: #{entry.name}" if File.exist?(target)
+
+      targets[target] = true
+
+      total_size += entry.size.to_i
+      if total_size > max_bytes
+        raise "ZIP archive exceeds #{max_bytes / 1.megabyte} MB extracted size limit"
+      end
+    end
   end
 
   def build_filename(book, extension)
