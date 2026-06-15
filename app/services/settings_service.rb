@@ -151,8 +151,12 @@ class SettingsService
 
     # Hardcover Integration
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
-    metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover first, OpenLibrary fallback), hardcover, or openlibrary" },
+    metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover, then OpenLibrary, then Google Books), hardcover, openlibrary, or googlebooks" },
     hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
+
+    # Google Books
+    google_books_api_key: { type: "string", default: "", category: "google_books", description: "Optional Google Books API key. Leave blank to use the shared anonymous quota, or provide a key for a dedicated quota (console.cloud.google.com)." },
+    google_books_search_limit: { type: "integer", default: 20, category: "google_books", description: "Maximum number of search results to return from Google Books" },
 
     # Webhook Notifications
     webhook_enabled: { type: "boolean", default: false, category: "webhook", description: "Send outbound webhook notifications for request lifecycle events" },
@@ -198,6 +202,7 @@ class SettingsService
     "gutenberg" => "Project Gutenberg",
     "librivox" => "LibriVox",
     "hardcover" => "Hardcover",
+    "google_books" => "Google Books",
     "paths" => "Output Paths",
     "queue" => "Queue Settings",
     "open_library" => "Open Library",
