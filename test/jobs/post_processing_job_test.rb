@@ -395,7 +395,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
   test "remaps Windows download path backslashes after global prefix replacement" do
     FileUtils.rm_rf(@temp_source)
     FileUtils.mkdir_p(@temp_source)
-    File.write(File.join(@temp_source, "Windows Book.epub"), "test ebook content")
+    write_valid_ebook_file(File.join(@temp_source, "Windows Book.epub"))
 
     @book.update!(book_type: :ebook)
     @download.update!(download_path: "D:\\QbittorrentMove\\Windows Book.epub")
@@ -412,10 +412,126 @@ class PostProcessingJobTest < ActiveJob::TestCase
       "Windows backslashes should be converted to container path separators"
   end
 
+  test "renames ebook files copied from a source directory" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Jurassic Park by Michael Crichton.epub"))
+
+    @book.update!(
+      title: "Jurassic Park",
+      author: "Michael Crichton",
+      book_type: :ebook,
+      year: 1990
+    )
+
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_path_template, "{author}/{title}")
+    SettingsService.set(:ebook_filename_template, "{author} - {title} ({year})")
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, "Michael Crichton", "Jurassic Park")
+    assert File.exist?(File.join(expected_dest, "Michael Crichton - Jurassic Park (1990).epub")),
+      "Ebook file from a directory source should use the filename template"
+    assert_not File.exist?(File.join(expected_dest, "Jurassic Park by Michael Crichton.epub")),
+      "Original ebook filename should not be copied into the library"
+  end
+
+  test "renames ebook files copied from nested source directories" do
+    FileUtils.rm_rf(@temp_source)
+    nested_source = File.join(@temp_source, "Calibre Export")
+    FileUtils.mkdir_p(nested_source)
+    write_valid_ebook_file(File.join(nested_source, "Jurassic Park by Michael Crichton.epub"))
+
+    @book.update!(
+      title: "Jurassic Park",
+      author: "Michael Crichton",
+      book_type: :ebook,
+      year: 1990
+    )
+
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_path_template, "{author}/{title}")
+    SettingsService.set(:ebook_filename_template, "{author} - {title} ({year})")
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, "Michael Crichton", "Jurassic Park")
+    assert File.exist?(File.join(expected_dest, "Michael Crichton - Jurassic Park (1990).epub")),
+      "Nested ebook file should use the filename template"
+    assert_not File.exist?(File.join(expected_dest, "Calibre Export")),
+      "Nested source folder should not be copied when it only contained renamed ebook files"
+    assert_not File.exist?(File.join(expected_dest, "Calibre Export", "Jurassic Park by Michael Crichton.epub")),
+      "Nested original ebook filename should not be copied into the library"
+  end
+
+  test "copies nested ebook sidecars beside the renamed ebook" do
+    FileUtils.rm_rf(@temp_source)
+    nested_source = File.join(@temp_source, "Calibre Export")
+    FileUtils.mkdir_p(nested_source)
+    write_valid_ebook_file(File.join(nested_source, "Jurassic Park by Michael Crichton.epub"))
+    File.binwrite(File.join(nested_source, "cover.jpg"), "\xFF\xD8\xFFvalid cover content".b)
+
+    @book.update!(
+      title: "Jurassic Park",
+      author: "Michael Crichton",
+      book_type: :ebook,
+      year: 1990
+    )
+
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_path_template, "{author}/{title}")
+    SettingsService.set(:ebook_filename_template, "{author} - {title} ({year})")
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, "Michael Crichton", "Jurassic Park")
+    assert File.exist?(File.join(expected_dest, "Michael Crichton - Jurassic Park (1990).epub"))
+    assert File.exist?(File.join(expected_dest, "cover.jpg"))
+    assert_not File.exist?(File.join(expected_dest, "Calibre Export"))
+  end
+
+  test "imports bundled DjVu ebooks" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Bundled Book.djvu"))
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.djvu"))
+  end
+
+  test "imports ebook directories with non UTF-8 nfo sidecars" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Valid Book.epub"))
+    File.binwrite(File.join(@temp_source, "release.nfo"), "Release Info\n" + 0xB3.chr)
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+    assert File.exist?(File.join(expected_dest, "release.nfo"))
+  end
+
   test "remaps Windows download path when remote path uses forward slashes" do
     FileUtils.rm_rf(@temp_source)
     FileUtils.mkdir_p(@temp_source)
-    File.write(File.join(@temp_source, "Forward Remote.mobi"), "test ebook content")
+    write_valid_ebook_file(File.join(@temp_source, "Forward Remote.mobi"))
 
     @book.update!(book_type: :ebook)
     @download.update!(download_path: "D:\\QbittorrentMove\\Forward Remote.mobi")
@@ -523,7 +639,103 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_match /source path not found/i, @request.issue_description
   end
 
+  test "marks ebook directory import for attention when it contains unsupported files" do
+    FileUtils.rm_rf(@temp_source)
+    nested_source = File.join(@temp_source, "Nested")
+    FileUtils.mkdir_p(nested_source)
+    write_valid_ebook_file(File.join(@temp_source, "Valid Book.epub"))
+    File.write(File.join(nested_source, "payload.exe"), "bad executable content")
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    @request.reload
+    assert @request.attention_needed?
+    assert_match /unsupported ebook import file type/i, @request.issue_description
+    assert_not File.exist?(File.join(expected_dest, "payload.exe"))
+    assert_not File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+  end
+
+  test "marks single file ebook import for attention when extension is unsupported" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    source_file = File.join(@temp_source, "payload.exe")
+    File.write(source_file, "bad executable content")
+
+    @book.update!(book_type: :ebook)
+    @download.update!(download_path: source_file)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    @request.reload
+    assert @request.attention_needed?
+    assert_match /unsupported ebook import file type/i, @request.issue_description
+    assert_not File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.exe"))
+  end
+
+  test "marks ebook import for attention when allowed ebook extension has invalid content" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    source_file = File.join(@temp_source, "payload.epub")
+    File.binwrite(source_file, "MZ bad executable content")
+
+    @book.update!(book_type: :ebook)
+    @download.update!(download_path: source_file)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    @request.reload
+    assert @request.attention_needed?
+    assert_match /unsupported ebook import file type/i, @request.issue_description
+    assert_not File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+  end
+
+  test "marks ebook directory import for attention when image sidecar has invalid content" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Valid Book.epub"))
+    File.binwrite(File.join(@temp_source, "cover.jpg"), "MZ bad executable content")
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    @request.reload
+    assert @request.attention_needed?
+    assert_match /unsupported ebook import file type/i, @request.issue_description
+    assert_not File.exist?(File.join(expected_dest, "cover.jpg"))
+    assert_not File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+  end
+
   private
+
+  def write_valid_ebook_file(path)
+    case File.extname(path).delete_prefix(".").downcase
+    when "epub", "cbz"
+      File.binwrite(path, "PK\x03\x04valid ebook content")
+    when "mobi", "azw", "azw3"
+      File.binwrite(path, ("\0" * 60) + "BOOKMOBI")
+    when "pdf"
+      File.binwrite(path, "%PDF-1.7\n")
+    when "djvu"
+      File.binwrite(path, "AT&TFORM\0\0\0\0DJVM")
+    else
+      raise "Unsupported test ebook extension: #{path}"
+    end
+  end
 
   def stub_audiobookshelf_library(base_path)
     stub_request(:get, "http://localhost:13378/api/libraries/lib-123")
