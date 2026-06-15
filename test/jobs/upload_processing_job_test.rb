@@ -417,13 +417,20 @@ class UploadProcessingJobTest < ActiveJob::TestCase
   private
 
   def stub_open_library_search(query)
-    # Stub Open Library search to return empty results
+    # Stub the metadata fallback chain to return empty results
     # This allows tests to focus on file operations and book creation
     stub_request(:get, %r{https://openlibrary\.org/search\.json})
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },
         body: { numFound: 0, docs: [] }.to_json
+      )
+    # Google Books is the final fallback in auto mode; stub it empty too
+    stub_request(:get, %r{https://www\.googleapis\.com/books/v1/volumes})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { totalItems: 0, items: [] }.to_json
       )
   end
 
