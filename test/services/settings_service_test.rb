@@ -6,7 +6,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
   cover "SettingsService*"
 
   setup do
-    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url]).delete_all
+    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -27,6 +27,15 @@ class SettingsServiceTest < ActiveSupport::TestCase
     SettingsService.set(:jackett_api_key, "jackett-key")
 
     assert_equal "jackett", SettingsService.active_indexer_provider
+    assert SettingsService.active_indexer_configured?
+  end
+
+  test "active_indexer_provider respects explicit newznab selection" do
+    SettingsService.set(:indexer_provider, "newznab")
+    SettingsService.set(:newznab_url, "http://localhost:5076")
+    SettingsService.set(:newznab_api_key, "newznab-key")
+
+    assert_equal "newznab", SettingsService.active_indexer_provider
     assert SettingsService.active_indexer_configured?
   end
 

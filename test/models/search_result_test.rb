@@ -402,11 +402,14 @@ class SearchResultTest < ActiveSupport::TestCase
     assert SearchResult.new(source: nil).from_prowlarr?
     assert SearchResult.new(source: SearchResult::SOURCE_JACKETT).from_jackett?
     assert SearchResult.new(source: SearchResult::SOURCE_JACKETT).from_indexer?
+    assert SearchResult.new(source: SearchResult::SOURCE_NEWZNAB).from_newznab?
+    assert SearchResult.new(source: SearchResult::SOURCE_NEWZNAB).from_indexer?
     assert SearchResult.new(source: SearchResult::SOURCE_ANNA_ARCHIVE).from_anna_archive?
     assert SearchResult.new(source: SearchResult::SOURCE_ZLIBRARY).from_zlibrary?
     assert SearchResult.new(source: SearchResult::SOURCE_GUTENBERG).from_gutenberg?
 
     assert_equal "Custom Jackett", SearchResult.new(source: SearchResult::SOURCE_JACKETT, indexer: "Custom Jackett").source_display_name
+    assert_equal "NZBHydra Books", SearchResult.new(source: SearchResult::SOURCE_NEWZNAB, indexer: "NZBHydra Books").source_display_name
     assert_equal "Anna's Archive", SearchResult.new(source: SearchResult::SOURCE_ANNA_ARCHIVE).source_display_name
     assert_equal "Z-Library", SearchResult.new(source: SearchResult::SOURCE_ZLIBRARY).source_display_name
     assert_equal "Project Gutenberg", SearchResult.new(source: SearchResult::SOURCE_GUTENBERG).source_display_name

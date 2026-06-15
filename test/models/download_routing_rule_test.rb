@@ -5,11 +5,15 @@ require "test_helper"
 class DownloadRoutingRuleTest < ActiveSupport::TestCase
   Result = Struct.new(:source, :indexer, :download_type, keyword_init: true) do
     def from_indexer?
-      source.in?([SearchResult::SOURCE_PROWLARR, SearchResult::SOURCE_JACKETT]) || source.blank?
+      source.in?([SearchResult::SOURCE_PROWLARR, SearchResult::SOURCE_JACKETT, SearchResult::SOURCE_NEWZNAB]) || source.blank?
     end
 
     def from_jackett?
       source == SearchResult::SOURCE_JACKETT
+    end
+
+    def from_newznab?
+      source == SearchResult::SOURCE_NEWZNAB
     end
   end
 
@@ -70,6 +74,14 @@ class DownloadRoutingRuleTest < ActiveSupport::TestCase
     result = Result.new(source: SearchResult::SOURCE_JACKETT, indexer: "Books", download_type: "torrent")
 
     assert_equal jackett_rule, DownloadRoutingRule.for_result(result)
+  end
+
+  test "finds newznab route separately from other indexer providers" do
+    newznab_rule = create_rule(provider: "newznab", indexer_name: "NZBHydra Books", download_type: "usenet", download_client: create_client(name: "SAB", client_type: "sabnzbd", api_key: "key"))
+    create_rule(provider: "prowlarr", indexer_name: "NZBHydra Books", download_type: "usenet", download_client: create_client(name: "Other SAB", client_type: "sabnzbd", url: "http://other-sab", api_key: "key"))
+    result = Result.new(source: SearchResult::SOURCE_NEWZNAB, indexer: "NZBHydra Books", download_type: "usenet")
+
+    assert_equal newznab_rule, DownloadRoutingRule.for_result(result)
   end
 
   test "ignores disabled routes" do
