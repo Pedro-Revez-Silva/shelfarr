@@ -16,6 +16,7 @@ class SearchResult < ApplicationRecord
   # Source constants
   SOURCE_PROWLARR = "prowlarr"
   SOURCE_JACKETT = "jackett"
+  SOURCE_NEWZNAB = "newznab"
   SOURCE_ANNA_ARCHIVE = "anna_archive"
   SOURCE_ZLIBRARY = "zlibrary"
   SOURCE_GUTENBERG = "gutenberg"
@@ -218,8 +219,12 @@ class SearchResult < ApplicationRecord
     source == SOURCE_JACKETT
   end
 
+  def from_newznab?
+    source == SOURCE_NEWZNAB
+  end
+
   def from_indexer?
-    from_prowlarr? || from_jackett?
+    from_prowlarr? || from_jackett? || from_newznab?
   end
 
   def from_anna_archive?
@@ -246,6 +251,8 @@ class SearchResult < ApplicationRecord
     case source
     when SOURCE_JACKETT
       indexer.presence || "Jackett"
+    when SOURCE_NEWZNAB
+      indexer.presence || "NZBHydra2 / Newznab"
     when SOURCE_ANNA_ARCHIVE
       "Anna's Archive"
     when SOURCE_ZLIBRARY

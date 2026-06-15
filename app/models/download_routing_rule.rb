@@ -3,7 +3,8 @@
 class DownloadRoutingRule < ApplicationRecord
   PROVIDERS = {
     "prowlarr" => "Prowlarr",
-    "jackett" => "Jackett"
+    "jackett" => "Jackett",
+    "newznab" => "NZBHydra2 / Newznab"
   }.freeze
   DOWNLOAD_TYPES = %w[torrent usenet].freeze
 
@@ -50,7 +51,10 @@ class DownloadRoutingRule < ApplicationRecord
     private
 
     def provider_for_result(search_result)
-      search_result.from_jackett? ? "jackett" : "prowlarr"
+      return "jackett" if search_result.from_jackett?
+      return "newznab" if search_result.respond_to?(:from_newznab?) && search_result.from_newznab?
+
+      "prowlarr"
     end
   end
 

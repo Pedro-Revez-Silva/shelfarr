@@ -519,18 +519,20 @@
         </section>
 
         <h2 id="indexers">Indexers <a class="anchor" href="#indexers" aria-label="Link to Indexers">#</a></h2>
-        <p class="section-desc">Shelfarr searches indexers through Prowlarr or Jackett. Pick one provider with <code>indexer_provider</code>.</p>
+        <p class="section-desc">Shelfarr searches indexers through Prowlarr, Jackett or Newznab/NZBHydra2. Pick one provider with <code>indexer_provider</code>.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td class="key"><code>indexer_provider</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Active provider: <code>prowlarr</code>, <code>jackett</code> or <code>none</code>. Leave unset on upgrades to keep legacy Prowlarr config.</td></tr>
+              <tr><td class="key"><code>indexer_provider</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Active provider: <code>prowlarr</code>, <code>jackett</code>, <code>newznab</code> or <code>none</code>. Leave unset on upgrades to keep legacy Prowlarr config.</td></tr>
               <tr><td class="key"><code>prowlarr_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Base URL for Prowlarr (e.g. <code>http://localhost:9696</code>).</td></tr>
               <tr><td class="key"><code>prowlarr_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API key from Prowlarr &rarr; Settings &rarr; General.</td></tr>
               <tr><td class="key"><code>prowlarr_tags</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Comma-separated tag IDs or names to filter indexers (empty = all).</td></tr>
               <tr><td class="key"><code>jackett_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Base URL for Jackett (e.g. <code>http://localhost:9117</code>).</td></tr>
               <tr><td class="key"><code>jackett_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API key from the Jackett dashboard.</td></tr>
               <tr><td class="key"><code>jackett_indexer_filter</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>all</code></td><td class="desc">Torznab indexer filter. Use <code>all</code> or a Jackett filter such as <code>tag:books</code>.</td></tr>
+              <tr><td class="key"><code>newznab_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Base URL or <code>/api</code> endpoint for NZBHydra2 or another Newznab-compatible provider (e.g. <code>http://localhost:5076</code>).</td></tr>
+              <tr><td class="key"><code>newznab_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API key from NZBHydra2 or your Newznab provider.</td></tr>
             </tbody>
           </table>
         </div>

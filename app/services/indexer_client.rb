@@ -3,7 +3,8 @@
 class IndexerClient
   PROVIDERS = {
     "prowlarr" => IndexerClients::Prowlarr,
-    "jackett" => IndexerClients::Jackett
+    "jackett" => IndexerClients::Jackett,
+    "newznab" => IndexerClients::Newznab
   }.freeze
 
   class << self

@@ -80,14 +80,14 @@ module IndexerClients
         when 200
           yield response.body
         when 401, 403
-          raise AuthenticationError, "Invalid Jackett API key"
+          raise AuthenticationError, "Invalid #{display_name} API key"
         when 404
-          raise Error, "Jackett endpoint not found"
+          raise Error, "#{display_name} endpoint not found"
         else
-          raise Error, "Jackett API error: #{response.status}"
+          raise Error, "#{display_name} API error: #{response.status}"
         end
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-        raise ConnectionError, "Failed to connect to Jackett: #{e.message}"
+        raise ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
       end
 
       def parse_results(xml, limit:)
@@ -98,7 +98,7 @@ module IndexerClients
 
         doc.xpath("//rss/channel/item").first(limit).map { |item| parse_item(item) }
       rescue Nokogiri::XML::SyntaxError => e
-        raise Error, "Failed to parse Jackett response: #{e.message}"
+        raise Error, "Failed to parse #{display_name} response: #{e.message}"
       end
 
       def parse_item(item)
@@ -113,7 +113,7 @@ module IndexerClients
         Result.new(
           guid: item.at_xpath("guid")&.text.to_s.strip.presence || enclosure_url || link || SecureRandom.uuid,
           title: item.at_xpath("title")&.text.to_s.strip,
-          indexer: item.at_xpath("jackettindexer")&.text.to_s.strip.presence || item.at_xpath("comments")&.text.to_s.strip.presence || "Jackett",
+          indexer: indexer_name_for(item, attrs),
           size_bytes: integer_attr(enclosure_length) || integer_attr(item.at_xpath("size")&.text) || integer_attr(attrs["size"]),
           seeders: integer_attr(attrs["seeders"]),
           leechers: integer_attr(attrs["peers"]) || integer_attr(attrs["leechers"]),
@@ -123,6 +123,12 @@ module IndexerClients
           published_at: parse_date(item.at_xpath("pubDate")&.text),
           category_ids: extract_category_ids(item)
         )
+      end
+
+      def indexer_name_for(item, _attrs)
+        item.at_xpath("jackettindexer")&.text.to_s.strip.presence ||
+          item.at_xpath("comments")&.text.to_s.strip.presence ||
+          display_name
       end
 
       def extract_category_ids(item)
