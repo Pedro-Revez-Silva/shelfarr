@@ -153,6 +153,119 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     assert request.request_events.exists?(event_type: "upload_fulfilled")
   end
 
+  test "targeted audiobook zip upload extracts files into library" do
+    request = requests(:failed_request)
+    zip_file = File.join(@temp_source, "Third Author - The Failed Audiobook.zip")
+    build_zip_archive(
+      zip_file,
+      "chapter_01.mp3" => "audio-one",
+      "disc_02/chapter_02.mp3" => "audio-two"
+    )
+
+    upload = Upload.create!(
+      user: @user,
+      request: request,
+      original_filename: "Third Author - The Failed Audiobook.zip",
+      file_path: zip_file,
+      file_size: File.size(zip_file),
+      status: :pending
+    )
+
+    UploadProcessingJob.perform_now(upload.id)
+
+    upload.reload
+    request.reload
+
+    expected_path = File.join(@temp_audiobook_dest, "Third Author", "The Failed Audiobook")
+
+    assert upload.completed?
+    assert request.completed?
+    assert_equal expected_path, request.book.reload.file_path
+    assert File.exist?(File.join(expected_path, "chapter_01.mp3"))
+    assert File.exist?(File.join(expected_path, "disc_02", "chapter_02.mp3"))
+    assert_not File.exist?(File.join(expected_path, "Third Author - The Failed Audiobook.zip"))
+    assert_not File.exist?(zip_file)
+  end
+
+  test "targeted audiobook zip upload rejects unsafe archive paths" do
+    request = requests(:failed_request)
+    zip_file = File.join(@temp_source, "Unsafe Audiobook.zip")
+    build_zip_archive(zip_file, "../escape.mp3" => "audio")
+
+    upload = Upload.create!(
+      user: @user,
+      request: request,
+      original_filename: "Unsafe Audiobook.zip",
+      file_path: zip_file,
+      file_size: File.size(zip_file),
+      status: :pending
+    )
+
+    UploadProcessingJob.perform_now(upload.id)
+
+    upload.reload
+    request.reload
+
+    assert upload.failed?
+    assert_includes upload.error_message, "unsafe path"
+    assert request.failed?
+    assert_nil request.book.reload.file_path
+    assert File.exist?(zip_file)
+    assert_not File.exist?(File.join(@temp_audiobook_dest, "Third Author", "escape.mp3"))
+  end
+
+  test "audiobook zip extraction rejects archives over extracted size limit" do
+    zip_file = File.join(@temp_source, "Oversized Audiobook.zip")
+    destination = File.join(@temp_audiobook_dest, "Oversized")
+    build_zip_archive(zip_file, "chapter_01.mp3" => "audio-data")
+
+    error = assert_raises(RuntimeError) do
+      UploadProcessingJob.new.send(:extract_zip_upload_to_directory, zip_file, destination, max_bytes: 5)
+    end
+
+    assert_includes error.message, "extracted size limit"
+    assert_not File.exist?(File.join(destination, "chapter_01.mp3"))
+  end
+
+  test "audiobook zip extraction rejects archives with too many files" do
+    zip_file = File.join(@temp_source, "Too Many Files.zip")
+    destination = File.join(@temp_audiobook_dest, "Too Many Files")
+    build_zip_archive(
+      zip_file,
+      "chapter_01.mp3" => "audio-one",
+      "chapter_02.mp3" => "audio-two"
+    )
+
+    error = assert_raises(RuntimeError) do
+      UploadProcessingJob.new.send(:extract_zip_upload_to_directory, zip_file, destination, max_files: 1)
+    end
+
+    assert_includes error.message, "too many files"
+    assert_not File.exist?(File.join(destination, "chapter_01.mp3"))
+    assert_not File.exist?(File.join(destination, "chapter_02.mp3"))
+  end
+
+  test "audiobook zip extraction rejects files that would overwrite existing library files" do
+    zip_file = File.join(@temp_source, "Existing File.zip")
+    destination = File.join(@temp_audiobook_dest, "Existing File")
+    existing_file = File.join(destination, "chapter_01.mp3")
+    FileUtils.mkdir_p(destination)
+    File.write(existing_file, "existing-audio")
+    build_zip_archive(
+      zip_file,
+      "chapter_02.mp3" => "new-audio",
+      "chapter_01.mp3" => "replacement-audio"
+    )
+
+    error = assert_raises(RuntimeError) do
+      UploadProcessingJob.new.send(:extract_zip_upload_to_directory, zip_file, destination)
+    end
+
+    assert_includes error.message, "overwrite an existing file"
+    assert_equal "existing-audio", File.read(existing_file)
+    assert_not File.exist?(File.join(destination, "chapter_02.mp3"))
+  end
+
   test "targeted upload fails if request completed before processing" do
     request = requests(:pending_request)
     ebook_file = File.join(@temp_source, "Late Ebook.epub")
@@ -349,7 +462,7 @@ class UploadProcessingJobTest < ActiveJob::TestCase
       series_position: nil
     )
 
-    MetadataService.stub(:search, [weak, strong]) do
+    MetadataService.stub(:search, [ weak, strong ]) do
       assert_equal strong, job.send(:fetch_metadata, "Mistborn", "Brandon Sanderson")
     end
   end
@@ -407,7 +520,7 @@ class UploadProcessingJobTest < ActiveJob::TestCase
       UploadProcessingJob.new.send(:trigger_library_scan, book)
     end
 
-    assert_equal ["audio-lib"], scanned
+    assert_equal [ "audio-lib" ], scanned
 
     AudiobookshelfClient.stub(:scan_library, ->(*) { raise AudiobookshelfClient::Error, "scan failed" }) do
       assert_nothing_raised { UploadProcessingJob.new.send(:trigger_library_scan, book) }
@@ -425,6 +538,16 @@ class UploadProcessingJobTest < ActiveJob::TestCase
         headers: { "Content-Type" => "application/json" },
         body: { numFound: 0, docs: [] }.to_json
       )
+  end
+
+  def build_zip_archive(path, entries)
+    require "zip"
+
+    Zip::File.open(path, create: true) do |zipfile|
+      entries.each do |name, content|
+        zipfile.get_output_stream(name) { |stream| stream.write(content) }
+      end
+    end
   end
 
   def stub_hardcover_upload_metadata_search(query:, id:, series_position:)
