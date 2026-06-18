@@ -59,14 +59,14 @@ module Integrations
 
       lines = [ "Search results for #{query}:" ]
       results.each_with_index do |search_result, index|
-        lines << "#{index + 1}. #{search_result.title}#{author_suffix(search_result)}"
+        lines << "#{index + 1}. #{search_result.title}#{author_suffix(search_result)}#{source_suffix(search_result)}"
       end
       lines << "Choose a format below."
 
       result(lines.join("\n"), search_results: results)
-    rescue HardcoverClient::ConnectionError, OpenLibraryClient::ConnectionError
+    rescue HardcoverClient::ConnectionError, GoogleBooksClient::ConnectionError, OpenLibraryClient::ConnectionError
       result("Shelfarr could not reach the metadata service.")
-    rescue HardcoverClient::Error, OpenLibraryClient::Error, MetadataService::Error
+    rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, MetadataService::Error
       result("Search failed. Try again later.")
     end
 
@@ -132,6 +132,10 @@ module Integrations
 
     def author_suffix(search_result)
       search_result.author.present? ? " by #{search_result.author}" : ""
+    end
+
+    def source_suffix(search_result)
+      search_result.source_name.present? ? " (#{search_result.source_name})" : ""
     end
 
     def result(text, search_results: [])

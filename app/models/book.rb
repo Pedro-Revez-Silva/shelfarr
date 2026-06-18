@@ -1,4 +1,10 @@
 class Book < ApplicationRecord
+  METADATA_SOURCE_NAMES = {
+    "hardcover" => "Hardcover",
+    "google_books" => "Google Books",
+    "openlibrary" => "Open Library"
+  }.freeze
+
   has_many :requests, dependent: :restrict_with_error
   has_many :uploads, dependent: :nullify
 
@@ -20,10 +26,41 @@ class Book < ApplicationRecord
     author.present? ? "#{title} by #{author}" : title
   end
 
+  def metadata_source_name
+    return nil if unified_work_id.blank?
+
+    source, = Book.parse_work_id(unified_work_id)
+    METADATA_SOURCE_NAMES.fetch(source, source.titleize)
+  end
+
+  def metadata_source_url
+    return nil if unified_work_id.blank?
+
+    source, source_id = Book.parse_work_id(unified_work_id)
+    return nil if source_id.blank?
+
+    case source
+    when "hardcover"
+      "https://hardcover.app/books/#{source_id}"
+    when "google_books"
+      "https://books.google.com/books?id=#{source_id}"
+    when "openlibrary"
+      "https://openlibrary.org/works/#{source_id}"
+    end
+  end
+
+  def metadata_source_attribution
+    return nil if metadata_source_name.blank?
+
+    "Metadata from #{metadata_source_name}"
+  end
+
   # Returns unified work_id in format "source:id"
   def unified_work_id
     if hardcover_id.present?
       "hardcover:#{hardcover_id}"
+    elsif google_books_id.present?
+      "google_books:#{google_books_id}"
     elsif open_library_work_id.present?
       "openlibrary:#{open_library_work_id}"
     end
@@ -47,6 +84,8 @@ class Book < ApplicationRecord
     case source
     when "hardcover"
       find_by(hardcover_id: source_id, book_type: book_type)
+    when "google_books"
+      find_by(google_books_id: source_id, book_type: book_type)
     else
       find_by(open_library_work_id: source_id, book_type: book_type)
     end
@@ -58,6 +97,8 @@ class Book < ApplicationRecord
     case source
     when "hardcover"
       find_or_initialize_by(hardcover_id: source_id, book_type: book_type)
+    when "google_books"
+      find_or_initialize_by(google_books_id: source_id, book_type: book_type)
     else
       find_or_initialize_by(open_library_work_id: source_id, book_type: book_type)
     end

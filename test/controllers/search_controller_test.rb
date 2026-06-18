@@ -22,9 +22,11 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "results returns search results" do
-    with_cassette("open_library/search_harry_potter") do
-      get search_results_path, params: { q: "harry potter" }
-      assert_response :success
+    GoogleBooksClient.stub(:search, []) do
+      with_cassette("open_library/search_harry_potter") do
+        get search_results_path, params: { q: "harry potter" }
+        assert_response :success
+      end
     end
   end
 
@@ -34,10 +36,12 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "results handles turbo stream format" do
-    with_cassette("open_library/search_fiction") do
-      get search_results_path, params: { q: "fiction" }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
-      assert_response :success
-      assert_match "turbo-stream", response.body
+    GoogleBooksClient.stub(:search, []) do
+      with_cassette("open_library/search_fiction") do
+        get search_results_path, params: { q: "fiction" }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+        assert_response :success
+        assert_match "turbo-stream", response.body
+      end
     end
   end
 
@@ -56,12 +60,11 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       synced_at: Time.current
     )
 
-    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
-    metadata_result = result.new(
-      work_id: "work-hobbit",
+    metadata_result = metadata_result(
+      source_id: "OL_HOBBITW",
       title: "The Hobbit",
       author: "J.R.R. Tolkien",
-      first_publish_year: 1937
+      year: 1937
     )
 
     MetadataService.stub(:search, [ metadata_result ]) do
@@ -86,12 +89,11 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       synced_at: Time.current
     )
 
-    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
-    metadata_result = result.new(
-      work_id: "work-1984",
+    metadata_result = metadata_result(
+      source_id: "OL_1984W",
       title: "1984",
       author: "George Orwell",
-      first_publish_year: 1949
+      year: 1949
     )
 
     MetadataService.stub(:search, [ metadata_result ]) do
@@ -113,12 +115,11 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       synced_at: Time.current
     )
 
-    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
-    metadata_result = result.new(
-      work_id: "work-hobbit",
+    metadata_result = metadata_result(
+      source_id: "OL_HOBBITW",
       title: "The Hobbit",
       author: "J.R.R. Tolkien",
-      first_publish_year: 1937
+      year: 1937
     )
 
     MetadataService.stub(:search, [ metadata_result ]) do
@@ -127,5 +128,23 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_no_match "Related titles in your library", response.body
+  end
+
+  private
+
+  def metadata_result(source_id:, title:, author:, year:)
+    MetadataService::SearchResult.new(
+      source: "openlibrary",
+      source_id: source_id,
+      title: title,
+      author: author,
+      description: nil,
+      year: year,
+      cover_url: nil,
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil
+    )
   end
 end

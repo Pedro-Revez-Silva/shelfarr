@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Unified service for fetching book metadata from configured sources
-# Orchestrates Hardcover (primary) and OpenLibrary (fallback) based on settings
+# Orchestrates Hardcover, Google Books, and OpenLibrary based on settings
 class MetadataService
   class Error < StandardError; end
 
@@ -10,6 +10,12 @@ class MetadataService
     :source, :source_id, :title, :author, :description, :year,
     :cover_url, :has_audiobook, :has_ebook, :series_name, :series_position
   ) do
+    SOURCE_NAMES = {
+      "hardcover" => "Hardcover",
+      "google_books" => "Google Books",
+      "openlibrary" => "Open Library"
+    }.freeze
+
     def work_id
       "#{source}:#{source_id}"
     end
@@ -21,6 +27,29 @@ class MetadataService
 
     def cover_id
       nil
+    end
+
+    def source_name
+      SOURCE_NAMES.fetch(source.to_s, source.to_s.titleize)
+    end
+
+    def source_url
+      case source.to_s
+      when "hardcover"
+        "https://hardcover.app/books/#{source_id}" if source_id.present?
+      when "google_books"
+        "https://books.google.com/books?id=#{source_id}" if source_id.present?
+      when "openlibrary"
+        "https://openlibrary.org/works/#{source_id}" if source_id.present?
+      end
+    end
+
+    def source_attribution
+      "Metadata from #{source_name}"
+    end
+
+    def google_books?
+      source.to_s == "google_books"
     end
   end
 
@@ -35,6 +64,8 @@ class MetadataService
       case source
       when "hardcover"
         search_hardcover(query, limit)
+      when "google_books"
+        search_google_books(query, limit)
       when "openlibrary"
         search_openlibrary(query, limit)
       else # "auto"
@@ -51,6 +82,8 @@ class MetadataService
       case source
       when "hardcover"
         fetch_hardcover_details(id)
+      when "google_books"
+        fetch_google_books_details(id)
       when "openlibrary", "OL"
         fetch_openlibrary_details(id)
       else
@@ -65,6 +98,8 @@ class MetadataService
       if HardcoverClient.configured?
         results[:hardcover] = HardcoverClient.test_connection rescue false
       end
+
+      results[:google_books] = GoogleBooksClient.test_connection rescue false
 
       # OpenLibrary doesn't require configuration
       results[:openlibrary] = begin
@@ -85,8 +120,9 @@ class MetadataService
     # Check if any metadata source is available
     def available?
       metadata_source == "openlibrary" ||
+        metadata_source == "google_books" ||
         (metadata_source == "hardcover" && HardcoverClient.configured?) ||
-        (metadata_source == "auto") # OpenLibrary always available as fallback
+        (metadata_source == "auto") # OpenLibrary and Google Books are always available as fallbacks
     end
 
     private
@@ -109,6 +145,14 @@ class MetadataService
       []
     end
 
+    def search_google_books(query, limit)
+      results = GoogleBooksClient.search(query, limit: limit)
+      results.map { |r| normalize_google_books_result(r) }
+    rescue GoogleBooksClient::Error => e
+      Rails.logger.error "[MetadataService] Google Books search failed: #{e.message}"
+      []
+    end
+
     def search_with_fallback(query, limit)
       # Try Hardcover first if configured
       if HardcoverClient.configured?
@@ -121,9 +165,17 @@ class MetadataService
         Rails.logger.info "[MetadataService] No Hardcover results, falling back to OpenLibrary"
       end
 
-      # Fallback to OpenLibrary
+      # Keep OpenLibrary ahead of Google Books to preserve existing work-id matching.
       results = search_openlibrary(query, limit)
-      Rails.logger.info "[MetadataService] Found #{results.size} results from OpenLibrary"
+      if results.any?
+        Rails.logger.info "[MetadataService] Found #{results.size} results from OpenLibrary"
+        return results
+      end
+
+      Rails.logger.info "[MetadataService] No OpenLibrary results, falling back to Google Books"
+
+      results = search_google_books(query, limit)
+      Rails.logger.info "[MetadataService] Found #{results.size} results from Google Books"
       results
     end
 
@@ -135,6 +187,11 @@ class MetadataService
     def fetch_openlibrary_details(work_id)
       work = OpenLibraryClient.work(work_id)
       normalize_openlibrary_work(work)
+    end
+
+    def fetch_google_books_details(id)
+      details = GoogleBooksClient.book(id)
+      normalize_google_books_details(details)
     end
 
     def normalize_hardcover_result(result)
@@ -169,6 +226,22 @@ class MetadataService
       )
     end
 
+    def normalize_google_books_result(result)
+      SearchResult.new(
+        source: "google_books",
+        source_id: result.id,
+        title: result.title,
+        author: result.author,
+        description: truncate_description(result.description),
+        year: result.first_publish_year,
+        cover_url: result.cover_url,
+        has_audiobook: nil,
+        has_ebook: result.has_ebook,
+        series_name: nil,
+        series_position: nil
+      )
+    end
+
     def normalize_hardcover_details(details)
       SearchResult.new(
         source: "hardcover",
@@ -196,6 +269,22 @@ class MetadataService
         cover_url: work.cover_url(size: :l),
         has_audiobook: nil,
         has_ebook: nil,
+        series_name: nil,
+        series_position: nil
+      )
+    end
+
+    def normalize_google_books_details(details)
+      SearchResult.new(
+        source: "google_books",
+        source_id: details.id,
+        title: details.title,
+        author: details.author,
+        description: details.description,
+        year: details.release_year,
+        cover_url: details.cover_url,
+        has_audiobook: nil,
+        has_ebook: details.has_ebook,
         series_name: nil,
         series_position: nil
       )

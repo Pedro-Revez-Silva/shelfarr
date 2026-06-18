@@ -141,6 +141,15 @@
 
   <%# Title & Author (always visible) %>
   <div class="p-3 bg-gray-900">
+    <div class="mb-2">
+      <% if result.source_url.present? %>
+        <%= link_to result.source_name, result.source_url, target: "_blank", rel: "noopener", title: result.source_attribution, class: "inline-flex max-w-full items-center rounded-full border border-gray-700 bg-gray-950 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400 transition hover:border-gray-500 hover:text-gray-200" %>
+      <% else %>
+        <span title="<%= result.source_attribution %>" class="inline-flex max-w-full items-center rounded-full border border-gray-700 bg-gray-950 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">
+          <%= result.source_name %>
+        </span>
+      <% end %>
+    </div>
     <h3 class="font-semibold text-white text-sm leading-tight line-clamp-2"><%= result.title %></h3>
     <% if result.author.present? %>
       <p class="text-xs text-gray-400 mt-1 truncate"><%= result.author %></p>

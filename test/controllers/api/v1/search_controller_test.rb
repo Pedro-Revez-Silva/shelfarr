@@ -32,6 +32,8 @@ class API::V1::SearchControllerTest < ActionDispatch::IntegrationTest
     body = JSON.parse(response.body)
     assert_equal "openlibrary:OL_API_SEARCH_123W", body.dig("results", 0, "work_id")
     assert_equal "API Search Book", body.dig("results", 0, "title")
+    assert_equal "Open Library", body.dig("results", 0, "source_name")
+    assert_equal "https://openlibrary.org/works/OL_API_SEARCH_123W", body.dig("results", 0, "source_url")
   end
 
   test "requires a query" do

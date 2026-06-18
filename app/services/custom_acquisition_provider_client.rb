@@ -174,6 +174,7 @@ class CustomAcquisitionProviderClient
         isbn: book.isbn,
         open_library_work_id: book.open_library_work_id,
         open_library_edition_id: book.open_library_edition_id,
+        google_books_id: book.google_books_id,
         hardcover_id: book.hardcover_id
       }.compact
     }

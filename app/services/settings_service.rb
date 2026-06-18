@@ -95,6 +95,10 @@ class SettingsService
     # Open Library
     open_library_search_limit: { type: "integer", default: 20, category: "open_library", description: "Maximum number of search results to return" },
 
+    # Google Books
+    google_books_api_key: { type: "string", default: "", category: "google_books", description: "Optional Google Books API key. Leave blank to use anonymous public access; add a key for dedicated quota and more reliable requests." },
+    google_books_search_limit: { type: "integer", default: 20, category: "google_books", description: "Maximum number of Google Books search results to return" },
+
     # Health Monitoring
     health_check_interval: { type: "integer", default: 300, category: "health", description: "Seconds between system health checks (default: 5 minutes)" },
 
@@ -153,7 +157,7 @@ class SettingsService
 
     # Hardcover Integration
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
-    metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover first, OpenLibrary fallback), hardcover, or openlibrary" },
+    metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover, OpenLibrary, Google Books), hardcover, openlibrary, or google_books" },
     hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
 
     # Webhook Notifications
@@ -200,6 +204,7 @@ class SettingsService
     "gutenberg" => "Project Gutenberg",
     "librivox" => "LibriVox",
     "hardcover" => "Hardcover",
+    "google_books" => "Google Books",
     "paths" => "Output Paths",
     "queue" => "Queue Settings",
     "open_library" => "Open Library",

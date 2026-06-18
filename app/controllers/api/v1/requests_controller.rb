@@ -141,7 +141,10 @@ class API::V1::RequestsController < API::V1::ApplicationController
         title: request.book.title,
         author: request.book.author,
         book_type: request.book.book_type,
-        work_id: request.book.unified_work_id
+        work_id: request.book.unified_work_id,
+        metadata_source_name: request.book.metadata_source_name,
+        metadata_source_url: request.book.metadata_source_url,
+        metadata_source_attribution: request.book.metadata_source_attribution
       },
       user: {
         id: request.user_id,
