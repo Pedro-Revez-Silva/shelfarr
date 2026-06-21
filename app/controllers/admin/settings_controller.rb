@@ -114,30 +114,30 @@ module Admin
 
       unless AudiobookshelfClient.configured?
         health.mark_not_configured!
-        respond_with_flash(alert: "Audiobookshelf is not configured. Enter URL and API key first.")
+        respond_with_flash(alert: "#{AudiobookshelfClient.display_name} is not configured. Enter connection details first.")
         return
       end
 
       if AudiobookshelfClient.test_connection
         health.check_succeeded!(message: "Connection successful")
-        respond_with_flash(notice: "Audiobookshelf connection successful!")
+        respond_with_flash(notice: "#{AudiobookshelfClient.display_name} connection successful!")
       else
-        health.check_failed!(message: "Failed to connect to Audiobookshelf")
-        respond_with_flash(alert: "Audiobookshelf connection failed.")
+        health.check_failed!(message: "Failed to connect to #{AudiobookshelfClient.display_name}")
+        respond_with_flash(alert: "#{AudiobookshelfClient.display_name} connection failed.")
       end
     rescue AudiobookshelfClient::Error => e
       health&.check_failed!(message: e.message)
-      respond_with_flash(alert: "Audiobookshelf error: #{e.message}")
+      respond_with_flash(alert: "#{AudiobookshelfClient.display_name} error: #{e.message}")
     end
 
     def sync_audiobookshelf_library
       unless AudiobookshelfClient.configured?
-        redirect_to admin_settings_path, alert: "Audiobookshelf is not configured. Enter URL and API key first."
+        redirect_to admin_settings_path, alert: "#{AudiobookshelfClient.display_name} is not configured. Enter connection details first."
         return
       end
 
       AudiobookshelfLibrarySyncJob.perform_later
-      redirect_to admin_settings_path, notice: "Audiobookshelf library sync started."
+      redirect_to admin_settings_path, notice: "#{AudiobookshelfClient.display_name} library sync started."
     end
 
     # FlareSolverr is not tracked in SystemHealth::SERVICES, so no SystemHealth sync here
@@ -408,7 +408,7 @@ module Admin
     def handle_settings_side_effects(changed_keys)
       return if changed_keys.blank?
 
-      if changed_keys.any? { |k| k.start_with?("audiobookshelf") }
+      if changed_keys.any? { |k| library_platform_setting_key?(k) }
         AudiobookshelfClient.reset_connection!
         AudiobookshelfLibrarySyncJob.perform_later if AudiobookshelfClient.configured?
         run_service_health_check("audiobookshelf")
@@ -480,7 +480,7 @@ module Admin
 
       AudiobookshelfClient.libraries
     rescue AudiobookshelfClient::Error => e
-      Rails.logger.warn "[SettingsController] Failed to fetch Audiobookshelf libraries: #{e.message}"
+      Rails.logger.warn "[SettingsController] Failed to fetch #{AudiobookshelfClient.display_name} libraries: #{e.message}"
       []
     end
 
@@ -518,6 +518,10 @@ module Admin
 
     def metadata_provider_setting?(key)
       MetadataProviderStatus.provider_for_setting(key).present?
+    end
+
+    def library_platform_setting_key?(key)
+      key.start_with?("audiobookshelf") || key.start_with?("bookorbit") || key == "library_platform"
     end
   end
 end

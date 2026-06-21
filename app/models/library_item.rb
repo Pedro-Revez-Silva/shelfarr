@@ -10,10 +10,18 @@ class LibraryItem < ApplicationRecord
   scope :available_for_matching, -> { where.not(missing: true) }
 
   def audiobookshelf_url
-    base_url = SettingsService.get(:audiobookshelf_url)
+    base_url = if SettingsService.bookorbit_library_platform?
+      SettingsService.get(:bookorbit_url)
+    else
+      SettingsService.get(:audiobookshelf_url)
+    end
     return nil if base_url.blank? || audiobookshelf_id.blank?
 
-    "#{base_url.to_s.chomp("/")}/item/#{audiobookshelf_id}"
+    if SettingsService.bookorbit_library_platform?
+      "#{base_url.to_s.chomp("/")}/book/#{audiobookshelf_id}"
+    else
+      "#{base_url.to_s.chomp("/")}/item/#{audiobookshelf_id}"
+    end
   end
 
   def display_title

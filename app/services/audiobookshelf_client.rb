@@ -10,7 +10,7 @@ class AudiobookshelfClient
 
   Library = Data.define(:id, :name, :folders, :media_type) do
     def folder_paths
-      folders.map { |f| f["fullPath"] }
+      folders.map { |f| f["fullPath"] || f["path"] }.compact
     end
 
     def audiobook_library?
@@ -25,6 +25,8 @@ class AudiobookshelfClient
   class << self
     # GET /api/libraries - List all libraries with folder paths
     def libraries
+      return translate_bookorbit_errors { ::BookOrbitClient.libraries } if bookorbit?
+
       ensure_configured!
 
       response = request { connection.get("/api/libraries") }
@@ -35,6 +37,8 @@ class AudiobookshelfClient
 
     # GET /api/libraries/:id - Get single library
     def library(id)
+      return translate_bookorbit_errors { ::BookOrbitClient.library(id) } if bookorbit?
+
       ensure_configured!
 
       response = request { connection.get("/api/libraries/#{id}") }
@@ -43,6 +47,8 @@ class AudiobookshelfClient
 
     # POST /api/libraries/:id/scan - Trigger library scan
     def scan_library(id)
+      return translate_bookorbit_errors { ::BookOrbitClient.scan_library(id) } if bookorbit?
+
       ensure_configured!
 
       response = request { connection.post("/api/libraries/#{id}/scan") }
@@ -51,6 +57,8 @@ class AudiobookshelfClient
 
     # GET /api/libraries/:id/items - List all items in a library
     def library_items(id, page_size: 500)
+      return translate_bookorbit_errors { ::BookOrbitClient.library_items(id, page_size: page_size) } if bookorbit?
+
       ensure_configured!
 
       items = []
@@ -71,6 +79,8 @@ class AudiobookshelfClient
 
     # GET /api/libraries/:id/items - Find item by path
     def find_item_by_path(path)
+      return nil if bookorbit?
+
       ensure_configured!
 
       # Normalize path for comparison
@@ -103,6 +113,8 @@ class AudiobookshelfClient
 
     # DELETE /api/library-items/:id - Delete a library item
     def delete_item(item_id)
+      return false if bookorbit?
+
       ensure_configured!
 
       response = request { connection.delete("/api/library-items/#{item_id}") }
@@ -111,6 +123,8 @@ class AudiobookshelfClient
 
     # Find and delete item by path
     def delete_item_by_path(path)
+      return translate_bookorbit_errors { ::BookOrbitClient.delete_item_by_path(path) } if bookorbit?
+
       item = find_item_by_path(path)
       return false unless item
 
@@ -122,6 +136,8 @@ class AudiobookshelfClient
     end
 
     def test_connection
+      return translate_bookorbit_errors { ::BookOrbitClient.test_connection } if bookorbit?
+
       ensure_configured!
       libraries.any?
     rescue Error
@@ -130,12 +146,33 @@ class AudiobookshelfClient
 
     def reset_connection!
       @connection = nil
+      ::BookOrbitClient.reset_connection!
+    end
+
+    def display_name
+      bookorbit? ? "BookOrbit" : "Audiobookshelf"
     end
 
     private
 
+    def bookorbit?
+      SettingsService.bookorbit_library_platform?
+    end
+
+    def translate_bookorbit_errors
+      yield
+    rescue ::BookOrbitClient::AuthenticationError => e
+      raise AuthenticationError, e.message
+    rescue ::BookOrbitClient::ConnectionError => e
+      raise ConnectionError, e.message
+    rescue ::BookOrbitClient::NotConfiguredError => e
+      raise NotConfiguredError, e.message
+    rescue ::BookOrbitClient::Error => e
+      raise Error, e.message
+    end
+
     def ensure_configured!
-      raise NotConfiguredError, "Audiobookshelf is not configured" unless configured?
+      raise NotConfiguredError, "#{display_name} is not configured" unless configured?
     end
 
     def request

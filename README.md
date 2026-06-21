@@ -40,8 +40,8 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 - **Smart Acquisition** — Search Prowlarr, Jackett or Newznab/NZBHydra2 indexers; download via qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet
 - **Direct Downloads** — Ebooks from Anna's Archive and Z-Library, public-domain audiobooks from LibriVox — no torrent client needed
 - **Auto-Selection & Format Preferences** — Pick the best release automatically, scored by your preferred formats, bitrate and language
-- **Auto-Processing** — Rename and organize files with path/filename templates, then deliver to Audiobookshelf
-- **Library Sync** — Automatic Audiobookshelf scans after downloads complete
+- **Auto-Processing** — Rename and organize files with path/filename templates, then deliver to Audiobookshelf or BookOrbit watched folders
+- **Library Sync** — Automatic Audiobookshelf or BookOrbit scans after downloads complete
 - **Manual Uploads** — Upload your own files to fulfill a request
 - **Multi-User** — Role-based access with user requests and admin controls
 - **Authentication** — TOTP-based 2FA with backup codes, plus OIDC/SSO (Authentik, Authelia, Keycloak, etc.)
@@ -107,7 +107,7 @@ After logging in, go to **Admin → Settings**:
 | Indexer | Prowlarr, Jackett or Newznab/NZBHydra2 URL + API key for searches |
 | Download Clients | qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet (Admin → Download Clients) |
 | Output Paths | Where to place completed audiobooks/ebooks |
-| Audiobookshelf | URL + API key for library integration (optional) |
+| Library Platform | Audiobookshelf URL + API key, or BookOrbit URL + username/password for library integration (optional) |
 
 📖 **[Read the docs](https://shelfarr.org/getting-started.html)** for a full install and setup walkthrough, plus a **[settings reference](https://shelfarr.org/configuration.html)** describing every option, its type and default.
 
@@ -145,7 +145,7 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 | **SABnzbd**, **NZBGet** | Usenet downloads |
 | **Anna's Archive** / **Z-Library** | Direct ebook downloads |
 | **LibriVox** | Public-domain audiobook downloads |
-| **Audiobookshelf** | Library management |
+| **Audiobookshelf** / **BookOrbit** | Library management |
 | **Discord** / **Telegram** / **Webhooks** | Notifications |
 
 ## Requirements
@@ -154,7 +154,9 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 - At least one way to find books:
   - An indexer — Prowlarr, Jackett or Newznab/NZBHydra2 — plus a download client (qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet), **and/or**
   - A direct source — Anna's Archive or Z-Library (ebooks), LibriVox (audiobooks)
-- Audiobookshelf (optional, for library integration)
+- Audiobookshelf or BookOrbit (optional, for library integration)
+
+BookOrbit support uses BookOrbit's current `/api/v1` endpoints for library listing, inventory sync, and scan triggers. Shelfarr still delivers files through configured output paths; direct Book Dock upload/finalize is not implemented because BookOrbit does not currently publish a stable external API for that workflow.
 
 ## Development
 
