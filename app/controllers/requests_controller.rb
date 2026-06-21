@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class RequestsController < ApplicationController
-  before_action :set_request, only: [ :show, :destroy, :retry ]
+  before_action :set_request, only: [ :show, :destroy, :retry, :manual_magnet ]
   before_action :set_request_for_download, only: [ :download ]
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
 
@@ -117,6 +117,18 @@ class RequestsController < ApplicationController
 
     @request.retry_now!
     redirect_back fallback_location: @request, notice: "Request has been queued for retry."
+  end
+
+  def manual_magnet
+    unless Current.user.admin?
+      redirect_to @request, alert: "You don't have permission to add magnet links"
+      return
+    end
+
+    @request.add_manual_magnet!(params[:magnet_url])
+    redirect_to @request, notice: "Magnet link queued for download."
+  rescue ArgumentError => e
+    redirect_to @request, alert: e.message
   end
 
   def download

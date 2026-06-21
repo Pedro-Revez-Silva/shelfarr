@@ -222,6 +222,21 @@
         </div>
       <% end %>
 
+      <% if Current.user.admin? && !@request.completed? %>
+        <div class="mt-6 pt-6 border-t border-gray-800">
+          <h3 class="text-sm font-medium text-gray-500 mb-2">Manual Magnet Link</h3>
+          <p class="text-sm text-gray-400 mb-3">Paste a magnet link to send it to the configured torrent client for this request.</p>
+          <%= form_with url: manual_magnet_request_path(@request), method: :post, local: true, class: "flex flex-col sm:flex-row gap-3" do |f| %>
+            <%= f.text_field :magnet_url,
+                name: :magnet_url,
+                placeholder: "magnet:?xt=urn:btih:...",
+                class: "flex-1 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500" %>
+            <%= f.submit "Add Magnet",
+                class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition text-sm" %>
+          <% end %>
+        </div>
+      <% end %>
+
       <% if @request.downloads.any? %>
         <div class="mt-6 pt-6 border-t border-gray-800">
           <h3 class="text-sm font-medium text-gray-500 mb-2">Downloads</h3>
