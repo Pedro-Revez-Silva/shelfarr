@@ -216,4 +216,49 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
   ensure
     LibraryPlatformClient.reset_connections!
   end
+
+  test "syncs library items through Grimmory facade" do
+    SettingsService.set(:library_platform, "grimmory")
+    SettingsService.set(:grimmory_url, "http://localhost:5173")
+    SettingsService.set(:grimmory_username, "admin")
+    SettingsService.set(:grimmory_password, "secret")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "grim-lib")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    LibraryPlatformClient.reset_connections!
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:5173/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "grimmory-token" }.to_json
+        )
+      stub_request(:get, "http://localhost:5173/api/v1/libraries/grim-lib/book")
+        .with(headers: { "Authorization" => "Bearer grimmory-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            {
+              "id" => "grim-1",
+              "title" => "Nettle & Bone",
+              "authors" => [ "T. Kingfisher" ],
+              "publishedYear" => 2022
+            }
+          ].to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 1, result.items_synced
+      item = LibraryItem.find_by!(library_platform: "grimmory", library_id: "grim-lib", audiobookshelf_id: "grim-1")
+      assert_equal "Nettle & Bone", item.title
+      assert_equal "T. Kingfisher", item.author
+      assert_equal 2022, item.published_year
+    end
+  ensure
+    LibraryPlatformClient.reset_connections!
+  end
 end

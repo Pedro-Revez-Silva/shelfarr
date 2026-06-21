@@ -8,7 +8,8 @@ class LibraryPlatformClient
 
   DISPLAY_NAMES = {
     "audiobookshelf" => "Audiobookshelf",
-    "bookorbit" => "BookOrbit"
+    "bookorbit" => "BookOrbit",
+    "grimmory" => "Grimmory"
   }.freeze
 
   class << self
@@ -51,6 +52,7 @@ class LibraryPlatformClient
     def reset_connections!
       AudiobookshelfClient.reset_connection!
       BookOrbitClient.reset_connection!
+      GrimmoryClient.reset_connection!
     end
 
     def reset_connection!
@@ -84,6 +86,8 @@ class LibraryPlatformClient
       case platform.to_s
       when "bookorbit"
         BookOrbitClient
+      when "grimmory"
+        GrimmoryClient
       else
         AudiobookshelfClient
       end
@@ -93,6 +97,8 @@ class LibraryPlatformClient
       case platform.to_s
       when "bookorbit"
         SettingsService.get(:bookorbit_url)
+      when "grimmory"
+        SettingsService.get(:grimmory_url)
       else
         SettingsService.get(:audiobookshelf_url)
       end

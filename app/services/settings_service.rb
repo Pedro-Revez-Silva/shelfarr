@@ -2,7 +2,7 @@ class SettingsService
   DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
-  LIBRARY_PLATFORMS = %w[audiobookshelf bookorbit].freeze
+  LIBRARY_PLATFORMS = %w[audiobookshelf bookorbit grimmory].freeze
   INDEXER_SEARCH_SCOPES = %w[broad strict unrestricted custom].freeze
   INDEXER_SEARCH_SCOPE_OPTIONS = {
     "broad" => {
@@ -67,12 +67,15 @@ class SettingsService
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 
     # Library Platform Integration
-    library_platform: { type: "string", default: "audiobookshelf", category: "audiobookshelf", description: "Library platform to sync and scan: audiobookshelf or bookorbit" },
+    library_platform: { type: "string", default: "audiobookshelf", category: "audiobookshelf", description: "Library platform to sync and scan: audiobookshelf, bookorbit, or grimmory" },
     audiobookshelf_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for Audiobookshelf (e.g., http://localhost:13378)" },
     audiobookshelf_api_key: { type: "string", default: "", category: "audiobookshelf", description: "API token from Audiobookshelf user settings" },
     bookorbit_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for BookOrbit (e.g., http://localhost:3000)" },
     bookorbit_username: { type: "string", default: "", category: "audiobookshelf", description: "BookOrbit username with library access and scan permissions" },
     bookorbit_password: { type: "string", default: "", category: "audiobookshelf", description: "BookOrbit password used to obtain an API access token" },
+    grimmory_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for Grimmory (e.g., http://localhost:5173)" },
+    grimmory_username: { type: "string", default: "", category: "audiobookshelf", description: "Grimmory username with library access and refresh permissions" },
+    grimmory_password: { type: "string", default: "", category: "audiobookshelf", description: "Grimmory password used to obtain an API access token" },
     audiobookshelf_audiobook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for audiobooks on the active library platform" },
     audiobookshelf_ebook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for ebooks on the active library platform" },
     audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
@@ -237,6 +240,9 @@ class SettingsService
     bookorbit_url: "BookOrbit URL",
     bookorbit_username: "BookOrbit Username",
     bookorbit_password: "BookOrbit Password",
+    grimmory_url: "Grimmory URL",
+    grimmory_username: "Grimmory Username",
+    grimmory_password: "Grimmory Password",
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
     audiobookshelf_library_sync_interval: "Library Sync Interval"
@@ -387,8 +393,11 @@ class SettingsService
     end
 
     def library_platform_configured?
-      if bookorbit_library_platform?
+      case active_library_platform
+      when "bookorbit"
         bookorbit_configured?
+      when "grimmory"
+        grimmory_configured?
       else
         audiobookshelf_credentials_configured?
       end
@@ -402,6 +411,10 @@ class SettingsService
       configured?(:bookorbit_url) && configured?(:bookorbit_username) && configured?(:bookorbit_password)
     end
 
+    def grimmory_configured?
+      configured?(:grimmory_url) && configured?(:grimmory_username) && configured?(:grimmory_password)
+    end
+
     def active_library_platform
       platform = get(:library_platform).to_s.strip.downcase
       LIBRARY_PLATFORMS.include?(platform) ? platform : "audiobookshelf"
@@ -409,6 +422,10 @@ class SettingsService
 
     def bookorbit_library_platform?
       active_library_platform == "bookorbit"
+    end
+
+    def grimmory_library_platform?
+      active_library_platform == "grimmory"
     end
 
     def anna_archive_configured?
