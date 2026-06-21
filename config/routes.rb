@@ -56,6 +56,7 @@ Rails.application.routes.draw do
   resources :requests, only: [ :index, :show, :new, :create, :destroy ] do
     member do
       get :download
+      post :manual_magnet
       post :retry
     end
   end
