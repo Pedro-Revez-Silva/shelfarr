@@ -91,6 +91,12 @@ class Book < ApplicationRecord
     end
   end
 
+  def self.find_by_any_work_id(work_ids, book_type:)
+    Array(work_ids).filter_map do |work_id|
+      find_by_work_id(work_id, book_type: book_type)
+    end.first
+  end
+
   # Find or initialize a book by work_id and book_type
   def self.find_or_initialize_by_work_id(work_id, book_type:)
     source, source_id = parse_work_id(work_id)
@@ -101,6 +107,20 @@ class Book < ApplicationRecord
       find_or_initialize_by(google_books_id: source_id, book_type: book_type)
     else
       find_or_initialize_by(open_library_work_id: source_id, book_type: book_type)
+    end
+  end
+
+  def assign_work_id(work_id)
+    source, source_id = self.class.parse_work_id(work_id)
+    return if source_id.blank?
+
+    case source
+    when "hardcover"
+      self.hardcover_id ||= source_id
+    when "google_books"
+      self.google_books_id ||= source_id
+    else
+      self.open_library_work_id ||= source_id
     end
   end
 end

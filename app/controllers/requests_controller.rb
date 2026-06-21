@@ -44,6 +44,7 @@ class RequestsController < ApplicationController
     @author = params[:author]
     @cover_url = params[:cover_url]
     @first_publish_year = params[:first_publish_year]
+    @source_work_ids = Array(params[:source_work_ids]).compact_blank
 
     if @work_id.blank? || @title.blank?
       redirect_to search_path, alert: "Missing book information"
@@ -65,7 +66,8 @@ class RequestsController < ApplicationController
       book_types: book_types,
       metadata_attrs: request_metadata_attrs,
       notes: params[:notes],
-      language: params[:language]
+      language: params[:language],
+      source_work_ids: params[:source_work_ids]
     )
 
     if result.created_requests.empty?

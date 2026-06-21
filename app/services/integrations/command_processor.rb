@@ -135,7 +135,13 @@ module Integrations
     end
 
     def source_suffix(search_result)
-      search_result.source_name.present? ? " (#{search_result.source_name})" : ""
+      source_names = if search_result.respond_to?(:sources)
+        search_result.sources.map { |source| source[:source_name] }
+      else
+        [ search_result.source_name ]
+      end.compact_blank
+
+      source_names.any? ? " (#{source_names.join(', ')})" : ""
     end
 
     def result(text, search_results: [])

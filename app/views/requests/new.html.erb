@@ -37,13 +37,16 @@
       <%= hidden_field_tag :author, @author %>
       <%= hidden_field_tag :cover_url, @cover_url %>
       <%= hidden_field_tag :first_publish_year, @first_publish_year %>
+      <% @source_work_ids.each do |source_work_id| %>
+        <%= hidden_field_tag "source_work_ids[]", source_work_id %>
+      <% end %>
 
       <div>
         <label class="block text-sm font-medium text-gray-300 mb-3">Select format(s):</label>
         <div class="grid grid-cols-2 gap-4">
           <%
-            audiobook_check = DuplicateDetectionService.check(work_id: @work_id, book_type: 'audiobook')
-            ebook_check = DuplicateDetectionService.check(work_id: @work_id, book_type: 'ebook')
+            audiobook_check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @source_work_ids, book_type: 'audiobook')
+            ebook_check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @source_work_ids, book_type: 'ebook')
           %>
 
           <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= audiobook_check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:border-purple-500' %>" data-format="audiobook">

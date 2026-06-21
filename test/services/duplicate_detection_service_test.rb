@@ -80,6 +80,26 @@ class DuplicateDetectionServiceTest < ActiveSupport::TestCase
     assert_equal request, result.existing_request
   end
 
+  test "blocks request when any candidate source matches active request" do
+    book = Book.create!(
+      title: "Pending Google Book",
+      book_type: :ebook,
+      google_books_id: "gb-pending"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending)
+
+    result = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_DIFFERENT_W",
+      source_work_ids: [ "google_books:gb-pending" ],
+      book_type: "ebook"
+    )
+
+    assert result.block?
+    assert_includes result.message, "active request"
+    assert_equal book, result.existing_book
+    assert_equal request, result.existing_request
+  end
+
   test "warns when same work exists as different type" do
     Book.create!(
       title: "Has Audiobook",

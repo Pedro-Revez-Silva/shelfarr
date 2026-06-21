@@ -33,6 +33,7 @@ class API::V1::RequestsController < API::V1::ApplicationController
       metadata_attrs: create_params.slice(:title, :author, :cover_url, :year, :first_publish_year),
       notes: create_params[:notes],
       language: create_params[:language],
+      source_work_ids: create_params[:source_work_ids],
       origin: {
         created_via: "api",
         external_source: create_params[:external_source].presence || "api",
@@ -117,6 +118,7 @@ class API::V1::RequestsController < API::V1::ApplicationController
       :external_source,
       :external_user_id,
       :external_chat_id,
+      source_work_ids: [],
       book_types: []
     )
   end

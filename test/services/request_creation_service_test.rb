@@ -86,4 +86,44 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal "42", request.external_user_id
     assert_equal "-100123", request.external_chat_id
   end
+
+  test "stores all candidate source identifiers on created book" do
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "openlibrary:OL_MULTI_SOURCE_W",
+      source_work_ids: [ "openlibrary:OL_MULTI_SOURCE_W", "google_books:gb-multi-source" ],
+      book_types: [ "ebook" ],
+      metadata_attrs: {
+        title: "Multi Source Book",
+        author: "Source Author"
+      }
+    )
+
+    assert result.success?
+    book = result.created_requests.first.book
+    assert_equal "OL_MULTI_SOURCE_W", book.open_library_work_id
+    assert_equal "gb-multi-source", book.google_books_id
+  end
+
+  test "blocks duplicate using alternate source identifier" do
+    book = Book.create!(
+      title: "Existing Google Book",
+      book_type: :ebook,
+      google_books_id: "gb-existing"
+    )
+    Request.create!(book: book, user: @user, status: :pending)
+
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "openlibrary:OL_NEW_SOURCE_W",
+      source_work_ids: [ "google_books:gb-existing" ],
+      book_types: [ "ebook" ],
+      metadata_attrs: {
+        title: "Existing Google Book"
+      }
+    )
+
+    assert_not result.success?
+    assert_includes result.errors.join, "already has an active request"
+  end
 end

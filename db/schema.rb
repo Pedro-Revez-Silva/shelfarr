@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_15_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_06_15_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -171,6 +171,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_15_000000) do
     t.index ["library_id"], name: "index_library_items_on_library_id"
     t.index ["missing"], name: "index_library_items_on_missing"
     t.index ["synced_at"], name: "index_library_items_on_synced_at"
+  end
+
+  create_table "metadata_provider_statuses", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.integer "failure_count", default: 0, null: false
+    t.string "last_error"
+    t.datetime "last_failure_at"
+    t.datetime "last_success_at"
+    t.string "provider", null: false
+    t.datetime "rate_limited_until"
+    t.string "status", default: "unknown", null: false
+    t.datetime "updated_at", null: false
+    t.index ["provider"], name: "index_metadata_provider_statuses_on_provider", unique: true
   end
 
   create_table "notifications", force: :cascade do |t|

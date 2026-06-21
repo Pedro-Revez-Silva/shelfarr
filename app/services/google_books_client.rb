@@ -13,8 +13,13 @@ class GoogleBooksClient
 
   SearchResult = Data.define(
     :id, :title, :author, :description, :published_date,
-    :cover_url, :has_ebook, :language
+    :cover_url, :has_ebook, :language, :isbn_10, :isbn_13,
+    :publisher, :page_count, :source_url
   ) do
+    def initialize(id:, title:, author:, description:, published_date:, cover_url:, has_ebook:, language:, isbn_10: nil, isbn_13: nil, publisher: nil, page_count: nil, source_url: nil)
+      super
+    end
+
     def work_id
       "google_books:#{id}"
     end
@@ -30,8 +35,13 @@ class GoogleBooksClient
 
   BookDetails = Data.define(
     :id, :title, :author, :description, :published_date,
-    :cover_url, :has_ebook, :language, :page_count, :categories
+    :cover_url, :has_ebook, :language, :page_count, :categories,
+    :isbn_10, :isbn_13, :publisher, :source_url
   ) do
+    def initialize(id:, title:, author:, description:, published_date:, cover_url:, has_ebook:, language:, page_count:, categories:, isbn_10: nil, isbn_13: nil, publisher: nil, source_url: nil)
+      super
+    end
+
     def work_id
       "google_books:#{id}"
     end
@@ -134,7 +144,12 @@ class GoogleBooksClient
         published_date: volume["publishedDate"],
         cover_url: extract_cover_url(volume),
         has_ebook: ebook_available?(item),
-        language: volume["language"]
+        language: volume["language"],
+        isbn_10: industry_identifier(volume, "ISBN_10"),
+        isbn_13: industry_identifier(volume, "ISBN_13"),
+        publisher: volume["publisher"],
+        page_count: volume["pageCount"],
+        source_url: volume["canonicalVolumeLink"].presence || volume["infoLink"]
       )
     end
 
@@ -152,8 +167,16 @@ class GoogleBooksClient
         has_ebook: ebook_available?(item),
         language: volume["language"],
         page_count: volume["pageCount"],
-        categories: Array(volume["categories"])
+        categories: Array(volume["categories"]),
+        isbn_10: industry_identifier(volume, "ISBN_10"),
+        isbn_13: industry_identifier(volume, "ISBN_13"),
+        publisher: volume["publisher"],
+        source_url: volume["canonicalVolumeLink"].presence || volume["infoLink"]
       )
+    end
+
+    def industry_identifier(volume, type)
+      Array(volume["industryIdentifiers"]).find { |identifier| identifier["type"] == type }&.dig("identifier")
     end
 
     def extract_cover_url(volume)

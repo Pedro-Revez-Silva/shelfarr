@@ -9,6 +9,11 @@ class MetadataServiceTest < ActiveSupport::TestCase
     @original_hardcover_search_limit = SettingsService.get(:hardcover_search_limit)
     @original_open_library_search_limit = SettingsService.get(:open_library_search_limit)
     @original_google_books_search_limit = SettingsService.get(:google_books_search_limit)
+    @original_google_books_enabled = SettingsService.get(:google_books_enabled)
+    @original_open_library_enabled = SettingsService.get(:open_library_enabled)
+    @original_hardcover_enabled = SettingsService.get(:hardcover_enabled)
+    @original_provider_priority = SettingsService.get(:metadata_provider_priority)
+    MetadataProviderStatus.delete_all
     HardcoverClient.reset_connection!
     GoogleBooksClient.reset_connection!
   end
@@ -19,6 +24,11 @@ class MetadataServiceTest < ActiveSupport::TestCase
     SettingsService.set(:hardcover_search_limit, @original_hardcover_search_limit || 10)
     SettingsService.set(:open_library_search_limit, @original_open_library_search_limit || 20)
     SettingsService.set(:google_books_search_limit, @original_google_books_search_limit || 20)
+    SettingsService.set(:google_books_enabled, @original_google_books_enabled.nil? ? true : @original_google_books_enabled)
+    SettingsService.set(:open_library_enabled, @original_open_library_enabled.nil? ? true : @original_open_library_enabled)
+    SettingsService.set(:hardcover_enabled, @original_hardcover_enabled.nil? ? true : @original_hardcover_enabled)
+    SettingsService.set(:metadata_provider_priority, @original_provider_priority || "hardcover,openlibrary,google_books")
+    MetadataProviderStatus.delete_all
     HardcoverClient.reset_connection!
     GoogleBooksClient.reset_connection!
   end
@@ -170,6 +180,96 @@ class MetadataServiceTest < ActiveSupport::TestCase
 
       assert results.any?
       assert_equal "openlibrary", results.first.source
+    end
+  end
+
+  test "search aggregates matching openlibrary and google books results" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_api_token, "")
+
+    VCR.turned_off do
+      stub_openlibrary_search([
+        {
+          "key" => "/works/OL_AGGREGATE_W",
+          "title" => "The Hobbit",
+          "author_name" => [ "J.R.R. Tolkien" ],
+          "first_publish_year" => 1937
+        }
+      ])
+      stub_google_books_search([
+        google_books_item("gb-aggregate", "The Hobbit", "J.R.R. Tolkien", isbn_13: "9780547928227", published_date: "1937-09-21")
+      ])
+
+      results = MetadataService.search("harry potter")
+
+      assert_equal 1, results.size
+      assert_equal "openlibrary", results.first.source
+      assert_equal "isbn:9780547928227", results.first.canonical_key
+      assert_equal [ "openlibrary", "google_books" ], results.first.sources.map { |source| source[:source] }
+      assert results.first.google_books?
+    end
+  end
+
+  test "search keeps meaningful editions separate when isbns conflict" do
+    SettingsService.set(:metadata_source, "google_books")
+
+    VCR.turned_off do
+      stub_google_books_search([
+        google_books_item("gb-paperback", "Dune", "Frank Herbert", isbn_13: "9780441172719"),
+        google_books_item("gb-hardcover", "Dune", "Frank Herbert", isbn_13: "9780593099322")
+      ])
+
+      results = MetadataService.search("harry potter")
+
+      assert_equal 2, results.size
+      assert_equal [ "gb-paperback", "gb-hardcover" ], results.map(&:source_id)
+    end
+  end
+
+  test "search returns healthy provider candidates when google books is rate limited" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_api_token, "")
+
+    VCR.turned_off do
+      stub_openlibrary_search([
+        {
+          "key" => "/works/OL_HEALTHY_W",
+          "title" => "Healthy Result",
+          "author_name" => [ "Author" ],
+          "first_publish_year" => 2024
+        }
+      ])
+      stub_google_books_search([], expected_status: 429)
+
+      results = MetadataService.search("harry potter")
+
+      assert_equal 1, results.size
+      assert_equal "openlibrary", results.first.source
+      assert_equal "rate_limited", MetadataProviderStatus.find_by(provider: "google_books").status
+    end
+  end
+
+  test "search skips provider while rate limited" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_api_token, "")
+    MetadataProviderStatus.create!(provider: "google_books", status: "rate_limited", rate_limited_until: 10.minutes.from_now)
+
+    VCR.turned_off do
+      stub_openlibrary_search([
+        {
+          "key" => "/works/OL_SKIP_W",
+          "title" => "Skip Result",
+          "author_name" => [ "Author" ],
+          "first_publish_year" => 2024
+        }
+      ])
+      google_request = stub_request(:get, "#{GoogleBooksClient::BASE_URL}/books/v1/volumes")
+
+      results = MetadataService.search("harry potter")
+
+      assert_equal 1, results.size
+      assert_equal "openlibrary", results.first.source
+      assert_not_requested google_request
     end
   end
 
@@ -370,21 +470,25 @@ class MetadataServiceTest < ActiveSupport::TestCase
       )
   end
 
-  def google_books_item(id, title, author)
+  def google_books_item(id, title, author, isbn_13: nil, published_date: "1997-06-26")
+    identifiers = []
+    identifiers << { "type" => "ISBN_13", "identifier" => isbn_13 } if isbn_13.present?
+
     {
       "id" => id,
       "volumeInfo" => {
         "title" => title,
         "authors" => [ author ],
         "description" => "Description",
-        "publishedDate" => "1997-06-26",
+        "publishedDate" => published_date,
+        "industryIdentifiers" => identifiers,
         "imageLinks" => { "thumbnail" => "https://books.google.com/cover.jpg" }
       },
       "saleInfo" => { "isEbook" => true }
     }
   end
 
-  def stub_google_books_search(items, expected_max_results: nil)
+  def stub_google_books_search(items, expected_max_results: nil, expected_status: 200)
     stub = stub_request(:get, "#{GoogleBooksClient::BASE_URL}/books/v1/volumes")
       .with(query: hash_including("q" => "harry potter"))
 
@@ -393,7 +497,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
     end
 
     stub.to_return(
-      status: 200,
+      status: expected_status,
       headers: { "Content-Type" => "application/json" },
       body: { "items" => items }.to_json
     )

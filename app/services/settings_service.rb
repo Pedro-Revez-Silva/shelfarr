@@ -93,9 +93,11 @@ class SettingsService
     retry_max_delay_days: { type: "integer", default: 7, category: "queue", description: "Maximum delay in days between retries" },
 
     # Open Library
+    open_library_enabled: { type: "boolean", default: true, category: "open_library", description: "Enable Open Library as a metadata provider" },
     open_library_search_limit: { type: "integer", default: 20, category: "open_library", description: "Maximum number of search results to return" },
 
     # Google Books
+    google_books_enabled: { type: "boolean", default: true, category: "google_books", description: "Enable Google Books as a metadata provider" },
     google_books_api_key: { type: "string", default: "", category: "google_books", description: "Optional Google Books API key. Leave blank to use anonymous public access; add a key for dedicated quota and more reliable requests." },
     google_books_search_limit: { type: "integer", default: 20, category: "google_books", description: "Maximum number of Google Books search results to return" },
 
@@ -156,8 +158,10 @@ class SettingsService
     gutenberg_search_limit: { type: "integer", default: 10, category: "gutenberg", description: "Maximum number of Project Gutenberg ebook results to return" },
 
     # Hardcover Integration
+    hardcover_enabled: { type: "boolean", default: true, category: "hardcover", description: "Enable Hardcover as a metadata provider when an API token is configured" },
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
-    metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Primary metadata source: auto (Hardcover, OpenLibrary, Google Books), hardcover, openlibrary, or google_books" },
+    metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Legacy metadata source selector. Auto uses all enabled providers; selecting a provider restricts metadata search to that provider." },
+    metadata_provider_priority: { type: "string", default: "hardcover,openlibrary,google_books", category: "hardcover", description: "Comma-separated metadata provider priority used when merging duplicate search results." },
     hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
 
     # Webhook Notifications
@@ -400,6 +404,22 @@ class SettingsService
       configured?(:hardcover_api_token)
     end
 
+    def metadata_provider_priority
+      providers = normalize_metadata_providers(get(:metadata_provider_priority))
+      providers = default_metadata_provider_priority if providers.empty?
+
+      providers + (default_metadata_provider_priority - providers)
+    end
+
+    def enabled_metadata_providers
+      legacy_source = get(:metadata_source, default: "auto").to_s.strip
+      if metadata_provider_keys.include?(legacy_source) && legacy_source != "auto"
+        return provider_enabled?(legacy_source) ? [ legacy_source ] : []
+      end
+
+      metadata_provider_priority.select { |provider| provider_enabled?(provider) }
+    end
+
     def api_token
       setting = Setting.find_by(key: "api_token")
       return nil unless setting
@@ -463,6 +483,34 @@ class SettingsService
     end
 
     private
+
+    def provider_enabled?(provider)
+      case provider.to_s
+      when "hardcover"
+        get(:hardcover_enabled, default: true) && hardcover_configured?
+      when "google_books"
+        get(:google_books_enabled, default: true)
+      when "openlibrary"
+        get(:open_library_enabled, default: true)
+      else
+        false
+      end
+    end
+
+    def normalize_metadata_providers(value)
+      Array(value).flat_map { |entry| entry.to_s.split(/[,\s]+/) }.filter_map do |provider|
+        normalized = provider.strip.downcase
+        normalized if metadata_provider_keys.include?(normalized)
+      end.uniq
+    end
+
+    def default_metadata_provider_priority
+      %w[hardcover openlibrary google_books]
+    end
+
+    def metadata_provider_keys
+      %w[hardcover openlibrary google_books]
+    end
 
     def raw_setting_value(key)
       setting = Setting.find_by(key: key.to_s)
