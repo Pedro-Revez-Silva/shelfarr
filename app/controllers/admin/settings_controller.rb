@@ -527,7 +527,7 @@ module Admin
     end
 
     def library_platform_setting_key?(key)
-      key.start_with?("audiobookshelf") || key.start_with?("bookorbit") || key == "library_platform"
+      key.start_with?("audiobookshelf") || key.start_with?("bookorbit") || key.start_with?("grimmory") || key == "library_platform"
     end
 
     def preserve_blank_secret?(key, value)

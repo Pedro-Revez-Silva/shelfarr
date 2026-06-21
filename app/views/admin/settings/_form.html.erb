@@ -101,7 +101,7 @@
                         <p class="mt-1 text-xs text-gray-500">For multiple values, use comma-separated format (e.g., en, fr, de)</p>
                       <% else %>
                         <% if key.to_s == "library_platform" %>
-                          <%= form.select "settings[#{key}]", options_for_select([["Audiobookshelf", "audiobookshelf"], ["BookOrbit", "bookorbit"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.select "settings[#{key}]", options_for_select([["Audiobookshelf", "audiobookshelf"], ["BookOrbit", "bookorbit"], ["Grimmory", "grimmory"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% elsif key.to_s.end_with?("_library_id") && @audiobookshelf_libraries.any? %>
                           <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
                           <%= form.select "settings[#{key}]", options_for_select([["Select a library...", ""]] + library_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>

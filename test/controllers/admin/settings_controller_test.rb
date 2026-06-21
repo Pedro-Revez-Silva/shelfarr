@@ -200,6 +200,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "label[for='settings_bookorbit_url']", text: "BookOrbit URL"
     assert_select "label[for='settings_bookorbit_username']", text: "BookOrbit Username"
     assert_select "label[for='settings_bookorbit_password']", text: "BookOrbit Password"
+    assert_select "label[for='settings_grimmory_url']", text: "Grimmory URL"
+    assert_select "label[for='settings_grimmory_username']", text: "Grimmory Username"
+    assert_select "label[for='settings_grimmory_password']", text: "Grimmory Password"
     assert_select "label[for='settings_audiobookshelf_audiobook_library_id']", text: "Audiobook Library"
     assert_select "label[for='settings_audiobookshelf_ebook_library_id']", text: "Ebook Library"
     assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval"
@@ -276,6 +279,60 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal true, SettingsService.auto_approve_requests?
+  end
+
+  test "bulk_update preserves existing secret settings when left blank" do
+    SettingsService.set(:grimmory_password, "existing-secret")
+    SettingsService.set(:discord_webhook_url, "https://discord.com/api/webhooks/existing")
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        grimmory_password: "",
+        discord_webhook_url: ""
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "existing-secret", SettingsService.get(:grimmory_password)
+    assert_equal "https://discord.com/api/webhooks/existing", SettingsService.get(:discord_webhook_url)
+  end
+
+  test "bulk_update skips side effects when preserving blank secret settings" do
+    SettingsService.set(:library_platform, "grimmory")
+    SettingsService.set(:grimmory_url, "http://localhost:5173")
+    SettingsService.set(:grimmory_username, "admin")
+    SettingsService.set(:grimmory_password, "existing-secret")
+
+    reset_called = false
+    sync_called = false
+
+    LibraryPlatformClient.stub(:reset_connections!, -> { reset_called = true }) do
+      AudiobookshelfLibrarySyncJob.stub(:perform_later, -> { sync_called = true }) do
+        patch bulk_update_admin_settings_url, params: {
+          settings: {
+            grimmory_password: ""
+          }
+        }
+      end
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_equal "existing-secret", SettingsService.get(:grimmory_password)
+    assert_not reset_called
+    assert_not sync_called
+  end
+
+  test "index does not render saved secret setting values" do
+    SettingsService.set(:grimmory_password, "existing-secret")
+    SettingsService.set(:discord_webhook_url, "https://discord.com/api/webhooks/existing")
+
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "input[type='password'][name='settings[grimmory_password]'][value='']"
+    assert_select "input[type='password'][name='settings[discord_webhook_url]'][value='']"
+    assert_no_match "existing-secret", response.body
+    assert_no_match "https://discord.com/api/webhooks/existing", response.body
   end
 
   test "update stores a single setting" do
