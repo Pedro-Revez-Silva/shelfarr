@@ -40,6 +40,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
     # Set output path to temp destination (Shelfarr always uses its own settings)
     SettingsService.set(:audiobook_output_path, @temp_dest_base)
+    SettingsService.set(:move_completed_downloads, false)
 
     # Update download path to temp source
     @download.update!(download_path: @temp_source)
@@ -111,6 +112,90 @@ class PostProcessingJobTest < ActiveJob::TestCase
       expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
       assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "Destination file should exist"
     end
+  end
+
+  test "moves directory imports when enabled" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:move_completed_downloads, true)
+
+    original_file = File.join(@temp_source, "audiobook.mp3")
+    assert File.exist?(original_file), "Source file should exist before processing"
+
+    FileCopyService.stub(:cp_r, ->(*) { flunk "Move imports should not copy directory entries" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "Destination file should exist"
+    assert_not File.exist?(original_file), "Source file should be moved out of the download folder"
+    assert_not File.exist?(@temp_source), "Empty source download folder should be removed"
+  end
+
+  test "moves and renames single file imports when enabled" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.write(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_filename_template, "{author} - {title}")
+    SettingsService.set(:move_completed_downloads, true)
+
+    FileCopyService.stub(:cp, ->(*) { flunk "Move imports should not copy files" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.m4b"))
+    assert_not File.exist?(source_file), "Source file should no longer exist after move import"
+  end
+
+  test "keeps source file when move import fails" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:move_completed_downloads, true)
+
+    failing_file = File.join(@temp_source, "fail.mp3")
+    File.write(failing_file, "copy failure")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+
+    FileUtils.stub(:mv, ->(*) { raise Errno::EACCES, "permission denied" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.attention_needed?
+    assert File.exist?(failing_file), "Failing file should remain in source after failure"
+  end
+
+  test "moves ebook directory imports and removes nested source entries when enabled" do
+    FileUtils.rm_rf(@temp_source)
+    nested_source = File.join(@temp_source, "Calibre Export")
+    FileUtils.mkdir_p(nested_source)
+    write_valid_ebook_file(File.join(nested_source, "Jurassic Park by Michael Crichton.epub"))
+    File.binwrite(File.join(nested_source, "cover.jpg"), "\xFF\xD8\xFFvalid cover content".b)
+
+    @book.update!(
+      title: "Jurassic Park",
+      author: "Michael Crichton",
+      book_type: :ebook,
+      year: 1990
+    )
+
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_path_template, "{author}/{title}")
+    SettingsService.set(:ebook_filename_template, "{author} - {title} ({year})")
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:move_completed_downloads, true)
+
+    FileCopyService.stub(:cp, ->(*) { flunk "Move imports should not copy ebook files" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    expected_dest = File.join(@temp_dest_base, "Michael Crichton", "Jurassic Park")
+    assert @request.reload.completed?
+    assert File.exist?(File.join(expected_dest, "Michael Crichton - Jurassic Park (1990).epub"))
+    assert File.exist?(File.join(expected_dest, "cover.jpg"))
+    assert_not File.exist?(nested_source), "Nested ebook source folder should be removed after a move import"
+    assert_not File.exist?(@temp_source), "Empty ebook source folder should be removed after a move import"
   end
 
   test "updates book file_path after processing" do
