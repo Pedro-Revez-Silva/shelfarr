@@ -6,6 +6,29 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   setup do
     @user = users(:one)
     sign_in_as(@user)
+    @original_metadata_source = SettingsService.get(:metadata_source)
+    @original_metadata_provider_priority = SettingsService.get(:metadata_provider_priority)
+    @original_hardcover_api_token = SettingsService.get(:hardcover_api_token)
+    @original_hardcover_enabled = SettingsService.get(:hardcover_enabled)
+    @original_google_books_enabled = SettingsService.get(:google_books_enabled)
+    @original_open_library_enabled = SettingsService.get(:open_library_enabled)
+    MetadataProviderStatus.delete_all
+    HardcoverClient.reset_connection!
+    GoogleBooksClient.reset_connection!
+    OpenLibraryClient.reset_connection!
+  end
+
+  teardown do
+    SettingsService.set(:metadata_source, @original_metadata_source || "auto")
+    SettingsService.set(:metadata_provider_priority, @original_metadata_provider_priority || "hardcover,openlibrary,google_books")
+    SettingsService.set(:hardcover_api_token, @original_hardcover_api_token.to_s)
+    SettingsService.set(:hardcover_enabled, @original_hardcover_enabled.nil? ? true : @original_hardcover_enabled)
+    SettingsService.set(:google_books_enabled, @original_google_books_enabled.nil? ? true : @original_google_books_enabled)
+    SettingsService.set(:open_library_enabled, @original_open_library_enabled.nil? ? true : @original_open_library_enabled)
+    MetadataProviderStatus.delete_all
+    HardcoverClient.reset_connection!
+    GoogleBooksClient.reset_connection!
+    OpenLibraryClient.reset_connection!
   end
 
   test "index requires authentication" do
@@ -19,12 +42,15 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "input[type='text']"
     assert_select "[data-controller='search'][data-search-debounce-value='700']"
+    assert_select "[data-search-stream-url-value='#{search_results_stream_path}']"
   end
 
   test "results returns search results" do
-    with_cassette("open_library/search_harry_potter") do
-      get search_results_path, params: { q: "harry potter" }
-      assert_response :success
+    GoogleBooksClient.stub(:search, []) do
+      with_cassette("open_library/search_harry_potter") do
+        get search_results_path, params: { q: "harry potter" }
+        assert_response :success
+      end
     end
   end
 
@@ -34,11 +60,31 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "results handles turbo stream format" do
-    with_cassette("open_library/search_fiction") do
-      get search_results_path, params: { q: "fiction" }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
-      assert_response :success
-      assert_match "turbo-stream", response.body
+    GoogleBooksClient.stub(:search, []) do
+      with_cassette("open_library/search_fiction") do
+        get search_results_path, params: { q: "fiction" }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+        assert_response :success
+        assert_match "turbo-stream", response.body
+      end
     end
+  end
+
+  test "results renders connection error message" do
+    MetadataService.stub(:search, ->(_) { raise GoogleBooksClient::ConnectionError, "network down" }) do
+      get search_results_path, params: { q: "fiction" }
+    end
+
+    assert_response :success
+    assert_match "Unable to connect to metadata service", response.body
+  end
+
+  test "results renders generic metadata error message" do
+    MetadataService.stub(:search, ->(_) { raise GoogleBooksClient::Error, "api down" }) do
+      get search_results_path, params: { q: "fiction" }
+    end
+
+    assert_response :success
+    assert_match "Search failed. Please try again.", response.body
   end
 
   test "results shows related titles when matching audiobookshelf items exist" do
@@ -56,12 +102,11 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       synced_at: Time.current
     )
 
-    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
-    metadata_result = result.new(
-      work_id: "work-hobbit",
+    metadata_result = metadata_result(
+      source_id: "OL_HOBBITW",
       title: "The Hobbit",
       author: "J.R.R. Tolkien",
-      first_publish_year: 1937
+      year: 1937
     )
 
     MetadataService.stub(:search, [ metadata_result ]) do
@@ -76,6 +121,136 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_match "Andy Serkis", response.body
   end
 
+  test "results aggregates mocked hardcover google books and open library responses" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:metadata_provider_priority, "hardcover,openlibrary,google_books")
+    SettingsService.set(:hardcover_enabled, true)
+    SettingsService.set(:hardcover_api_token, "test-token")
+    SettingsService.set(:open_library_enabled, true)
+    SettingsService.set(:google_books_enabled, true)
+    HardcoverClient.reset_connection!
+    GoogleBooksClient.reset_connection!
+    OpenLibraryClient.reset_connection!
+
+    query = "three provider book"
+
+    VCR.turned_off do
+      stub_hardcover_search([
+        {
+          "id" => 101,
+          "title" => "Three Provider Book",
+          "author_names" => [ "Ada Writer" ],
+          "description" => "Hardcover description",
+          "release_year" => 2024,
+          "cached_image" => "https://images.example/hardcover.jpg",
+          "has_audiobook" => true,
+          "has_ebook" => false
+        }
+      ])
+      stub_openlibrary_search(query, [
+        {
+          "key" => "/works/OL_THREE_W",
+          "title" => "Three Provider Book",
+          "author_name" => [ "Ada Writer" ],
+          "first_publish_year" => 2024,
+          "cover_i" => 12345,
+          "edition_count" => 7
+        }
+      ])
+      stub_google_books_search(query, [
+        google_books_item("gb-three", "Three Provider Book", "Ada Writer", published_date: "2024-01-05")
+      ])
+
+      get search_results_path, params: { q: query }
+    end
+
+    assert_response :success
+    assert_select "p", text: /1 result for/
+    assert_select "h3", text: "Three Provider Book", count: 1
+    assert_select "a", text: "Hardcover", count: 1
+    assert_select "a", text: "Open Library", count: 1
+    assert_select "a", text: "Google Books", count: 1
+    assert_match "Powered by Google", response.body
+  end
+
+  test "stream_results accepts streaming search requests" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:metadata_provider_priority, "hardcover,openlibrary,google_books")
+    SettingsService.set(:hardcover_enabled, true)
+    SettingsService.set(:hardcover_api_token, "test-token")
+    SettingsService.set(:open_library_enabled, true)
+    SettingsService.set(:google_books_enabled, true)
+    HardcoverClient.reset_connection!
+    GoogleBooksClient.reset_connection!
+    OpenLibraryClient.reset_connection!
+
+    query = "streamed provider book"
+
+    VCR.turned_off do
+      stub_hardcover_search([
+        {
+          "id" => 202,
+          "title" => "Streamed Provider Book",
+          "author_names" => [ "Ada Writer" ],
+          "description" => "Hardcover description",
+          "release_year" => 2025,
+          "cached_image" => "https://images.example/streamed.jpg",
+          "has_audiobook" => true,
+          "has_ebook" => false
+        }
+      ])
+      stub_openlibrary_search(query, [
+        {
+          "key" => "/works/OL_STREAMED_W",
+          "title" => "Streamed Provider Book",
+          "author_name" => [ "Ada Writer" ],
+          "first_publish_year" => 2025,
+          "cover_i" => 67890,
+          "edition_count" => 3
+        }
+      ])
+      stub_google_books_search(query, [
+        google_books_item("gb-streamed", "Streamed Provider Book", "Ada Writer", published_date: "2025-02-03")
+      ])
+
+      get search_results_stream_path, params: { q: query }
+    end
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html", response.media_type
+  end
+
+  test "stream_results handles blank query" do
+    get search_results_stream_path, params: { q: "" }
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html", response.media_type
+  end
+
+  test "stream_results handles no enabled providers" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_enabled, false)
+    SettingsService.set(:open_library_enabled, false)
+    SettingsService.set(:google_books_enabled, false)
+
+    get search_results_stream_path, params: { q: "fiction" }
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html", response.media_type
+  end
+
+  test "stream_results handles provider thread failures" do
+    SettingsService.set(:metadata_source, "openlibrary")
+    SettingsService.set(:open_library_enabled, true)
+
+    MetadataService.stub(:search_provider, ->(*) { raise StandardError, "provider boom" }) do
+      get search_results_stream_path, params: { q: "fiction" }
+    end
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html", response.media_type
+  end
+
   test "results does not show related titles when no similar audiobookshelf item exists" do
     LibraryItem.destroy_all
     LibraryItem.create!(
@@ -86,12 +261,11 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       synced_at: Time.current
     )
 
-    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
-    metadata_result = result.new(
-      work_id: "work-1984",
+    metadata_result = metadata_result(
+      source_id: "OL_1984W",
       title: "1984",
       author: "George Orwell",
-      first_publish_year: 1949
+      year: 1949
     )
 
     MetadataService.stub(:search, [ metadata_result ]) do
@@ -113,12 +287,11 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       synced_at: Time.current
     )
 
-    result = Struct.new(:work_id, :title, :author, :cover_url, :first_publish_year, keyword_init: true)
-    metadata_result = result.new(
-      work_id: "work-hobbit",
+    metadata_result = metadata_result(
+      source_id: "OL_HOBBITW",
       title: "The Hobbit",
       author: "J.R.R. Tolkien",
-      first_publish_year: 1937
+      year: 1937
     )
 
     MetadataService.stub(:search, [ metadata_result ]) do
@@ -127,5 +300,76 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_no_match "Related titles in your library", response.body
+  end
+
+  private
+
+  def metadata_result(source_id:, title:, author:, year:)
+    MetadataService::SearchResult.new(
+      source: "openlibrary",
+      source_id: source_id,
+      title: title,
+      author: author,
+      description: nil,
+      year: year,
+      cover_url: nil,
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil
+    )
+  end
+
+  def stub_hardcover_search(results)
+    typesense_response = {
+      "facet_counts" => [],
+      "found" => results.size,
+      "hits" => results.map { |result| { "document" => result } },
+      "request_params" => {},
+      "search_cutoff" => false,
+      "search_time_ms" => 5
+    }
+
+    stub_request(:post, HardcoverClient::BASE_URL)
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "data" => { "search" => { "results" => typesense_response } } }.to_json
+      )
+  end
+
+  def stub_openlibrary_search(query, docs)
+    stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
+      .with(query: hash_including("q" => query))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "docs" => docs }.to_json
+      )
+  end
+
+  def google_books_item(id, title, author, published_date:)
+    {
+      "id" => id,
+      "volumeInfo" => {
+        "title" => title,
+        "authors" => [ author ],
+        "description" => "Google Books description",
+        "publishedDate" => published_date,
+        "imageLinks" => { "thumbnail" => "https://books.google.example/cover.jpg" },
+        "canonicalVolumeLink" => "https://books.google.com/books?id=#{id}"
+      },
+      "saleInfo" => { "isEbook" => true }
+    }
+  end
+
+  def stub_google_books_search(query, items)
+    stub_request(:get, "#{GoogleBooksClient::BASE_URL}/books/v1/volumes")
+      .with(query: hash_including("q" => query))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "items" => items }.to_json
+      )
   end
 end

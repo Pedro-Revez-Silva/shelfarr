@@ -530,6 +530,13 @@ class UploadProcessingJobTest < ActiveJob::TestCase
   private
 
   def stub_open_library_search(query)
+    stub_request(:get, %r{https://www\.googleapis\.com/books/v1/volumes})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { items: [] }.to_json
+      )
+
     # Stub Open Library search to return empty results
     # This allows tests to focus on file operations and book creation
     stub_request(:get, %r{https://openlibrary\.org/search\.json})

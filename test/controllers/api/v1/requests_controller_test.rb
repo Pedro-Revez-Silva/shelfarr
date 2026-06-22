@@ -29,6 +29,43 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "api", body.dig("requests", 0, "request", "external_source")
   end
 
+  test "creates request with all candidate source work ids" do
+    assert_difference [ "Book.count", "Request.count" ], 1 do
+      post api_v1_requests_path,
+        headers: { "Authorization" => "Bearer apitoken" },
+        params: {
+          username: @user.username,
+          work_id: "openlibrary:OL_API_MULTI_SOURCE_W",
+          source_work_ids: [ "openlibrary:OL_API_MULTI_SOURCE_W", "google_books:gb-api-source" ],
+          book_type: "ebook",
+          title: "API Multi Source Book"
+        }
+    end
+
+    assert_response :created
+    book = Request.last.book
+    assert_equal "OL_API_MULTI_SOURCE_W", book.open_library_work_id
+    assert_equal "gb-api-source", book.google_books_id
+  end
+
+  test "blocks API request when alternate candidate source has active request" do
+    book = Book.create!(title: "Existing Google API Book", book_type: :ebook, google_books_id: "gb-api-existing")
+    Request.create!(book: book, user: @user, status: :pending)
+
+    post api_v1_requests_path,
+      headers: { "Authorization" => "Bearer apitoken" },
+      params: {
+        username: @user.username,
+        work_id: "openlibrary:OL_API_NEW_SOURCE_W",
+        source_work_ids: [ "google_books:gb-api-existing" ],
+        book_type: "ebook",
+        title: "Existing Google API Book"
+      }
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["errors"].join, "already has an active request"
+  end
+
   test "creates a request for the scoped token user when no user is supplied" do
     _token, raw = APIToken.issue!(
       name: "Requester",

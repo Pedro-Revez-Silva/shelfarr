@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_07_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_06_15_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -69,6 +69,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_07_120000) do
     t.datetime "created_at", null: false
     t.text "description"
     t.string "file_path"
+    t.string "google_books_id"
     t.string "hardcover_id"
     t.string "isbn"
     t.string "language", default: "en"
@@ -83,6 +84,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_07_120000) do
     t.datetime "updated_at", null: false
     t.integer "year"
     t.index ["book_type"], name: "index_books_on_book_type"
+    t.index ["google_books_id"], name: "index_books_on_google_books_id"
     t.index ["hardcover_id"], name: "index_books_on_hardcover_id"
     t.index ["isbn"], name: "index_books_on_isbn"
     t.index ["open_library_edition_id"], name: "index_books_on_open_library_edition_id"
@@ -169,6 +171,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_07_120000) do
     t.index ["library_id"], name: "index_library_items_on_library_id"
     t.index ["missing"], name: "index_library_items_on_missing"
     t.index ["synced_at"], name: "index_library_items_on_synced_at"
+  end
+
+  create_table "metadata_provider_statuses", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.integer "failure_count", default: 0, null: false
+    t.string "last_error"
+    t.datetime "last_failure_at"
+    t.datetime "last_success_at"
+    t.string "provider", null: false
+    t.datetime "rate_limited_until"
+    t.string "status", default: "unknown", null: false
+    t.datetime "updated_at", null: false
+    t.index ["provider"], name: "index_metadata_provider_statuses_on_provider", unique: true
   end
 
   create_table "notifications", force: :cascade do |t|

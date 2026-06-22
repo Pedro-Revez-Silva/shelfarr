@@ -17,6 +17,7 @@ Rails.application.routes.draw do
   # Search
   get "search", to: "search#index"
   get "search/results", to: "search#results"
+  get "search/results/stream", to: "search#stream_results"
 
   # Library
   resources :library, only: [ :index, :show, :destroy ] do
@@ -116,6 +117,8 @@ Rails.application.routes.draw do
         post :test_gutenberg
         post :test_librivox
         post :test_hardcover
+        post :test_google_books
+        post :test_open_library
         post :test_oidc
         post :test_webhook
         post :test_discord

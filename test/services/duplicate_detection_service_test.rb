@@ -80,6 +80,47 @@ class DuplicateDetectionServiceTest < ActiveSupport::TestCase
     assert_equal request, result.existing_request
   end
 
+  test "reuses preloaded lookup for same and other book type checks" do
+    book = Book.create!(
+      title: "Existing Audiobook",
+      book_type: :audiobook,
+      google_books_id: "gb-preload"
+    )
+    lookup = Book.preload_by_work_ids([ "google_books:gb-preload" ])
+
+    Book.stub(:preload_by_work_ids, ->(*) { raise "should not query again" }) do
+      result = DuplicateDetectionService.check(
+        work_id: "openlibrary:OL_PRELOAD_W",
+        source_work_ids: [ "google_books:gb-preload" ],
+        book_type: "ebook",
+        existing_books_lookup: lookup
+      )
+
+      assert result.warn?
+      assert_equal book, result.existing_book
+    end
+  end
+
+  test "blocks request when any candidate source matches active request" do
+    book = Book.create!(
+      title: "Pending Google Book",
+      book_type: :ebook,
+      google_books_id: "gb-pending"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending)
+
+    result = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_DIFFERENT_W",
+      source_work_ids: [ "google_books:gb-pending" ],
+      book_type: "ebook"
+    )
+
+    assert result.block?
+    assert_includes result.message, "active request"
+    assert_equal book, result.existing_book
+    assert_equal request, result.existing_request
+  end
+
   test "warns when same work exists as different type" do
     Book.create!(
       title: "Has Audiobook",

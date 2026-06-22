@@ -43,10 +43,34 @@ class Integrations::CommandProcessorTest < ActiveSupport::TestCase
       )
 
       assert_includes result.text, "Command Search Book"
+      assert_includes result.text, "Open Library"
       assert_includes result.text, "Choose a format below."
       assert_not_includes result.text, search_result.work_id
       assert_equal [ search_result ], result.search_results
     end
+  end
+
+  test "processes cached telegram request selection with source work ids" do
+    book = Book.create!(
+      title: "Existing Google Book",
+      book_type: :ebook,
+      google_books_id: "gb-existing"
+    )
+    Request.create!(book: book, user: @user, status: :pending)
+
+    result = Integrations::CommandProcessor.call(
+      command: "/request",
+      arguments: "ebook",
+      user: @user,
+      origin: { created_via: "telegram", external_source: "telegram" },
+      request_selection: {
+        work_id: "openlibrary:OL_TELEGRAM_SELECTION_W",
+        source_work_ids: [ "openlibrary:OL_TELEGRAM_SELECTION_W", "google_books:gb-existing" ],
+        metadata_attrs: { title: "Existing Google Book", author: "Author" }
+      }
+    )
+
+    assert_includes result.text, "already has an active request"
   end
 
   test "processes request command through shared request creation" do

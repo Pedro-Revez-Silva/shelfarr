@@ -25,8 +25,9 @@ class DuplicateDetectionService
   class << self
     # Check if a book can be requested
     # Returns a Result with status, message, and any existing records
-    def check(work_id:, edition_id: nil, book_type:)
+    def check(work_id:, edition_id: nil, book_type:, source_work_ids: nil, existing_books_lookup: nil)
       book_type = book_type.to_s
+      work_ids = [ work_id, *Array(source_work_ids) ].compact_blank.uniq
 
       # Check 1: Same edition already acquired (most specific)
       if edition_id.present?
@@ -42,7 +43,7 @@ class DuplicateDetectionService
       end
 
       # Check 2: Same work + type already acquired
-      existing_book = Book.find_by_work_id(work_id, book_type: book_type)
+      existing_book = find_existing_book(work_ids, book_type: book_type, existing_books_lookup: existing_books_lookup)
       if existing_book&.acquired?
         return Result.new(
           status: BLOCK,
@@ -67,7 +68,7 @@ class DuplicateDetectionService
 
       # Check 4: Same work exists as different type (warn only)
       other_type = book_type == "audiobook" ? "ebook" : "audiobook"
-      other_book = Book.find_by_work_id(work_id, book_type: other_type)
+      other_book = find_existing_book(work_ids, book_type: other_type, existing_books_lookup: existing_books_lookup)
       if other_book
         return Result.new(
           status: WARN,
@@ -100,9 +101,23 @@ class DuplicateDetectionService
     end
 
     # Quick check - just returns true/false for whether request is allowed
-    def can_request?(work_id:, edition_id: nil, book_type:)
-      result = check(work_id: work_id, edition_id: edition_id, book_type: book_type)
+    def can_request?(work_id:, edition_id: nil, book_type:, source_work_ids: nil, existing_books_lookup: nil)
+      result = check(
+        work_id: work_id,
+        edition_id: edition_id,
+        book_type: book_type,
+        source_work_ids: source_work_ids,
+        existing_books_lookup: existing_books_lookup
+      )
       !result.block?
+    end
+
+    def find_existing_book(work_ids, book_type:, existing_books_lookup: nil)
+      if existing_books_lookup.present?
+        Book.find_in_lookup(existing_books_lookup, work_ids, book_type: book_type)
+      else
+        Book.find_by_any_work_id(work_ids, book_type: book_type)
+      end
     end
 
   end

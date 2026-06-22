@@ -7,10 +7,10 @@ class BookMetadataBackfillService
     def apply!(book, work_id:, fallback_attrs: {})
       details = fetch_details(work_id)
       attrs = attributes_for(book, work_id, details, fallback_attrs)
-      return false if attrs.empty?
+      book.assign_attributes(attrs) unless attrs.empty?
+      return false unless book.changed?
 
-      book.assign_attributes(attrs)
-      book.save! if book.changed?
+      book.save!
       book.saved_changes?
     end
 
@@ -53,7 +53,7 @@ class BookMetadataBackfillService
     end
 
     def metadata_lookup_errors
-      errors = [ HardcoverClient::Error, OpenLibraryClient::Error, MetadataService::Error, ArgumentError ]
+      errors = [ HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, MetadataService::Error, ArgumentError ]
       errors << VCR::Errors::UnhandledHTTPRequestError if defined?(VCR::Errors::UnhandledHTTPRequestError)
       errors << WebMock::NetConnectNotAllowedError if defined?(WebMock::NetConnectNotAllowedError)
       errors

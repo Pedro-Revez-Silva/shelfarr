@@ -36,7 +36,7 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 
 ## Features
 
-- **Book Discovery** — Search millions of titles via Open Library and Hardcover
+- **Book Discovery** — Search millions of titles via Hardcover, Google Books and Open Library
 - **Smart Acquisition** — Search Prowlarr, Jackett or Newznab/NZBHydra2 indexers; download via qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet
 - **Direct Downloads** — Ebooks from Anna's Archive and Z-Library, public-domain audiobooks from LibriVox — no torrent client needed
 - **Auto-Selection & Format Preferences** — Pick the best release automatically, scored by your preferred formats, bitrate and language
@@ -139,7 +139,7 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 
 | Service | Purpose |
 |---------|---------|
-| **Open Library** / **Hardcover** | Book metadata and search |
+| **Open Library** / **Google Books** / **Hardcover** | Book metadata and search |
 | **Prowlarr** / **Jackett** / **NZBHydra2** | Indexer management |
 | **qBittorrent**, **Decypharr**, **Deluge**, **Transmission** | Torrent downloads |
 | **SABnzbd**, **NZBGet** | Usenet downloads |

@@ -1,11 +1,10 @@
 # frozen_string_literal: true
 
 # Unified service for fetching book metadata from configured sources
-# Orchestrates Hardcover (primary) and OpenLibrary (fallback) based on settings
+# Orchestrates Hardcover, Google Books, and OpenLibrary based on settings
 class MetadataService
   class Error < StandardError; end
 
-  # Unified result structure compatible with both sources
   SearchResult = Data.define(
     :source, :source_id, :title, :author, :description, :year,
     :cover_url, :has_audiobook, :has_ebook, :series_name, :series_position
@@ -22,24 +21,92 @@ class MetadataService
     def cover_id
       nil
     end
+
+    def source_name
+      MetadataSources.display_name(source)
+    end
+
+    def source_url
+      case source.to_s
+      when "hardcover"
+        "https://hardcover.app/books/#{source_id}" if source_id.present?
+      when "google_books"
+        "https://books.google.com/books?id=#{source_id}" if source_id.present?
+      when "openlibrary"
+        "https://openlibrary.org/works/#{source_id}" if source_id.present?
+      end
+    end
+
+    def source_attribution
+      "Metadata from #{source_name}"
+    end
+
+    def google_books?
+      source.to_s == "google_books"
+    end
   end
 
   class << self
-    # Search for books across configured metadata sources
-    # Returns array of SearchResult
+    # Search for books across enabled metadata sources and aggregate duplicates
+    # into Shelfarr candidates.
     def search(query, limit: nil)
-      source = metadata_source
+      providers = enabled_metadata_providers
+      Rails.logger.info "[MetadataService] Searching '#{query}' using providers: #{providers.join(', ')}"
 
-      Rails.logger.info "[MetadataService] Searching '#{query}' using source: #{source}"
+      provider_results = search_providers_concurrently(providers, query, limit: limit)
+      aggregate_provider_results(provider_results, limit: limit)
+    end
 
-      case source
-      when "hardcover"
-        search_hardcover(query, limit)
-      when "openlibrary"
-        search_openlibrary(query, limit)
-      else # "auto"
-        search_with_fallback(query, limit)
+    def each_provider_search(query, limit: nil)
+      providers = enabled_metadata_providers
+      return enum_for(__method__, query, limit: limit) unless block_given?
+
+      queue = Queue.new
+      threads = providers.map do |provider|
+        Thread.new do
+          Rails.application.executor.wrap do
+            ActiveRecord::Base.connection_pool.with_connection do
+              queue << [ provider, search_provider(provider, query, limit: limit) ]
+            end
+          end
+        rescue StandardError => e
+          Rails.logger.warn "[MetadataService] #{provider} search failed: #{e.message}"
+          queue << [ provider, [] ]
+        end
       end
+
+      providers.size.times do
+        yield queue.pop
+      end
+    ensure
+      threads&.each(&:join)
+    end
+
+    def search_provider(provider, query, limit: nil)
+      status = MetadataProviderStatus.for_provider(provider)
+      unless status.available?
+        Rails.logger.info "[MetadataService] Skipping #{provider}: #{status.status}"
+        return []
+      end
+
+      results = send("search_#{provider}", query, provider_limit(provider, limit))
+      status.record_success!
+      results
+    rescue *provider_errors(provider) => e
+      status&.record_failure!(e)
+      Rails.logger.warn "[MetadataService] #{provider} search failed: #{e.message}"
+      []
+    end
+
+    def aggregate_provider_results(provider_results, limit: nil)
+      candidates = MetadataSearch::Aggregator.call(provider_results, priority: provider_priority)
+      min_confidence = SettingsService.get(:min_match_confidence).to_i
+      candidates = candidates.select { |candidate| candidate.confidence >= min_confidence }
+      sort_candidates(candidates).first(limit || default_search_limit)
+    end
+
+    def merge_provider_results(results_by_provider)
+      ordered_provider_results(results_by_provider)
     end
 
     # Get book details by unified work_id (format: "source:id")
@@ -51,6 +118,8 @@ class MetadataService
       case source
       when "hardcover"
         fetch_hardcover_details(id)
+      when "google_books"
+        fetch_google_books_details(id)
       when "openlibrary", "OL"
         fetch_openlibrary_details(id)
       else
@@ -66,12 +135,12 @@ class MetadataService
         results[:hardcover] = HardcoverClient.test_connection rescue false
       end
 
-      # OpenLibrary doesn't require configuration
-      results[:openlibrary] = begin
-        OpenLibraryClient.search("test", limit: 1)
-        true
-      rescue
-        false
+      if GoogleBooksClient.configured?
+        results[:google_books] = GoogleBooksClient.test_connection rescue false
+      end
+
+      if OpenLibraryClient.configured?
+        results[:openlibrary] = OpenLibraryClient.test_connection rescue false
       end
 
       results
@@ -82,49 +151,122 @@ class MetadataService
       SettingsService.get(:metadata_source, default: "auto")
     end
 
+    def enabled_metadata_providers
+      SettingsService.enabled_metadata_providers
+    end
+
+    def provider_priority
+      SettingsService.metadata_provider_priority
+    end
+
     # Check if any metadata source is available
     def available?
-      metadata_source == "openlibrary" ||
-        (metadata_source == "hardcover" && HardcoverClient.configured?) ||
-        (metadata_source == "auto") # OpenLibrary always available as fallback
+      enabled_metadata_providers.any?
     end
 
     private
+
+    def provider_errors(provider)
+      errors = case provider.to_s
+      when "hardcover"
+        [ HardcoverClient::Error ]
+      when "google_books"
+        [ GoogleBooksClient::Error ]
+      when "openlibrary"
+        [ OpenLibraryClient::Error ]
+      else
+        [ StandardError ]
+      end
+      errors << VCR::Errors::UnhandledHTTPRequestError if defined?(VCR::Errors::UnhandledHTTPRequestError)
+      errors << WebMock::NetConnectNotAllowedError if defined?(WebMock::NetConnectNotAllowedError)
+      errors
+    end
 
     def search_hardcover(query, limit)
       return [] unless HardcoverClient.configured?
 
       results = HardcoverClient.search(query, limit: limit)
-      results.map { |r| normalize_hardcover_result(r) }
-    rescue HardcoverClient::Error => e
-      Rails.logger.error "[MetadataService] Hardcover search failed: #{e.message}"
-      []
+      results.map { |result| MetadataSearch::ResultNormalizer.call("hardcover", result) }
     end
 
     def search_openlibrary(query, limit)
+      return [] unless OpenLibraryClient.configured?
+
       results = OpenLibraryClient.search(query, limit: limit)
-      results.map { |r| normalize_openlibrary_result(r) }
-    rescue OpenLibraryClient::Error => e
-      Rails.logger.error "[MetadataService] OpenLibrary search failed: #{e.message}"
-      []
+      results.map { |result| MetadataSearch::ResultNormalizer.call("openlibrary", result) }
     end
 
-    def search_with_fallback(query, limit)
-      # Try Hardcover first if configured
-      if HardcoverClient.configured?
-        results = search_hardcover(query, limit)
-        if results.any?
-          Rails.logger.info "[MetadataService] Found #{results.size} results from Hardcover"
-          return results
-        end
+    def search_google_books(query, limit)
+      return [] unless GoogleBooksClient.configured?
 
-        Rails.logger.info "[MetadataService] No Hardcover results, falling back to OpenLibrary"
+      results = GoogleBooksClient.search(query, limit: limit)
+      results.map { |result| MetadataSearch::ResultNormalizer.call("google_books", result) }
+    end
+
+    def search_providers_concurrently(providers, query, limit: nil)
+      results_by_provider = collect_provider_results(providers, query, limit: limit)
+      ordered_provider_results(results_by_provider)
+    end
+
+    def collect_provider_results(providers, query, limit: nil)
+      results_by_provider = {}
+      queue = Queue.new
+      threads = providers.map do |provider|
+        Thread.new do
+          Rails.application.executor.wrap do
+            ActiveRecord::Base.connection_pool.with_connection do
+              queue << [ provider, search_provider(provider, query, limit: limit) ]
+            end
+          end
+        rescue StandardError => e
+          Rails.logger.warn "[MetadataService] #{provider} search failed: #{e.message}"
+          queue << [ provider, [] ]
+        end
       end
 
-      # Fallback to OpenLibrary
-      results = search_openlibrary(query, limit)
-      Rails.logger.info "[MetadataService] Found #{results.size} results from OpenLibrary"
-      results
+      providers.size.times do
+        provider, results = queue.pop
+        results_by_provider[provider] = results
+      end
+      threads.each(&:join)
+      results_by_provider
+    end
+
+    def ordered_provider_results(results_by_provider)
+      priority = provider_priority
+      priority.flat_map { |provider| results_by_provider[provider] || [] } +
+        results_by_provider.except(*priority).values.flatten
+    end
+
+    def sort_candidates(candidates)
+      priority = provider_priority
+      candidates.sort_by do |candidate|
+        [
+          priority.index(candidate.source.to_s) || priority.size,
+          -candidate.confidence,
+          candidate.title.to_s.downcase,
+          candidate.canonical_key.to_s
+        ]
+      end
+    end
+
+    def provider_limit(provider, requested_limit)
+      return requested_limit if requested_limit.present?
+
+      case provider.to_s
+      when "hardcover"
+        SettingsService.get(:hardcover_search_limit, default: 10)
+      when "google_books"
+        SettingsService.get(:google_books_search_limit, default: 20)
+      when "openlibrary"
+        SettingsService.get(:open_library_search_limit, default: 20)
+      else
+        default_search_limit
+      end
+    end
+
+    def default_search_limit
+      20
     end
 
     def fetch_hardcover_details(id)
@@ -137,36 +279,9 @@ class MetadataService
       normalize_openlibrary_work(work)
     end
 
-    def normalize_hardcover_result(result)
-      SearchResult.new(
-        source: "hardcover",
-        source_id: result.id.to_s,
-        title: result.title,
-        author: result.author,
-        description: truncate_description(result.description),
-        year: result.release_year,
-        cover_url: result.cover_url,
-        has_audiobook: result.has_audiobook,
-        has_ebook: result.has_ebook,
-        series_name: result.series_name,
-        series_position: result.series_position
-      )
-    end
-
-    def normalize_openlibrary_result(result)
-      SearchResult.new(
-        source: "openlibrary",
-        source_id: result.work_id,
-        title: result.title,
-        author: result.author,
-        description: nil, # OpenLibrary search doesn't return description
-        year: result.first_publish_year,
-        cover_url: result.cover_url(size: :l),
-        has_audiobook: nil, # Unknown from OpenLibrary
-        has_ebook: nil,
-        series_name: nil,
-        series_position: nil
-      )
+    def fetch_google_books_details(id)
+      details = GoogleBooksClient.book(id)
+      normalize_google_books_details(details)
     end
 
     def normalize_hardcover_details(details)
@@ -196,6 +311,22 @@ class MetadataService
         cover_url: work.cover_url(size: :l),
         has_audiobook: nil,
         has_ebook: nil,
+        series_name: nil,
+        series_position: nil
+      )
+    end
+
+    def normalize_google_books_details(details)
+      SearchResult.new(
+        source: "google_books",
+        source_id: details.id,
+        title: details.title,
+        author: details.author,
+        description: details.description,
+        year: details.release_year,
+        cover_url: details.cover_url,
+        has_audiobook: nil,
+        has_ebook: details.has_ebook,
         series_name: nil,
         series_position: nil
       )

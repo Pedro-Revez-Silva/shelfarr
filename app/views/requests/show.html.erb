@@ -48,6 +48,15 @@
             <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= request_status_color(@request.status) %>">
               <%= @request.status.humanize %>
             </span>
+            <% if @request.book.metadata_source_name.present? %>
+              <% if @request.book.metadata_source_url.present? %>
+                <%= link_to @request.book.metadata_source_name, @request.book.metadata_source_url, target: "_blank", rel: "noopener", title: @request.book.metadata_source_attribution, class: "inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white" %>
+              <% else %>
+                <span title="<%= @request.book.metadata_source_attribution %>" class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-800 text-gray-300">
+                  <%= @request.book.metadata_source_name %>
+                </span>
+              <% end %>
+            <% end %>
           </div>
 
           <% if @request.book.year.present? %>

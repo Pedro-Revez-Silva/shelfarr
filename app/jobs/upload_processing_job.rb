@@ -3,7 +3,7 @@
 # Processes uploaded files:
 # 1. Extracts metadata from file (ID3 tags, EPUB OPF, etc.)
 # 2. Falls back to filename parsing if extraction fails
-# 3. Searches metadata sources (Hardcover/OpenLibrary) for enrichment
+# 3. Searches metadata sources (Hardcover/Google Books/OpenLibrary) for enrichment
 # 4. Creates book with proper metadata
 # 5. Renames file and moves to library location
 class UploadProcessingJob < ApplicationJob
@@ -133,7 +133,7 @@ class UploadProcessingJob < ApplicationJob
     # Only return if score is reasonable
     score = score_result(best_match, title, author)
     score >= 30 ? best_match : nil
-  rescue HardcoverClient::Error, OpenLibraryClient::Error, MetadataService::Error => e
+  rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, MetadataService::Error => e
     Rails.logger.warn "[UploadProcessingJob] Metadata search failed: #{e.message}"
     nil
   end

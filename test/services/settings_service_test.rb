@@ -6,7 +6,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
   cover "SettingsService*"
 
   setup do
-    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url]).delete_all
+    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key preferred_download_type preferred_download_types zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -134,5 +134,42 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
     SettingsService.set(:gutenberg_enabled, false)
     assert_not SettingsService.gutenberg_configured?
+  end
+
+  test "metadata provider priority normalizes configured order and appends missing providers" do
+    SettingsService.set(:metadata_provider_priority, "google_books, unknown openlibrary google_books")
+
+    assert_equal %w[google_books openlibrary hardcover], SettingsService.metadata_provider_priority
+  end
+
+  test "enabled metadata providers use all enabled auto providers in priority order" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:metadata_provider_priority, "google_books,openlibrary")
+    SettingsService.set(:hardcover_api_token, "token")
+
+    assert_equal %w[google_books openlibrary hardcover], SettingsService.enabled_metadata_providers
+  end
+
+  test "enabled metadata providers exclude disabled providers and unconfigured hardcover" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:google_books_enabled, false)
+    SettingsService.set(:hardcover_api_token, "")
+
+    assert_equal %w[openlibrary], SettingsService.enabled_metadata_providers
+  end
+
+  test "legacy metadata source restricts search to selected provider" do
+    SettingsService.set(:metadata_source, "google_books")
+    SettingsService.set(:open_library_enabled, true)
+    SettingsService.set(:hardcover_api_token, "token")
+
+    assert_equal %w[google_books], SettingsService.enabled_metadata_providers
+  end
+
+  test "legacy metadata source respects provider enabled flag" do
+    SettingsService.set(:metadata_source, "openlibrary")
+    SettingsService.set(:open_library_enabled, false)
+
+    assert_equal [], SettingsService.enabled_metadata_providers
   end
 end

@@ -1,9 +1,16 @@
 <%
   audiobookshelf_matches ||= []
+  existing_books_lookup ||= {}
+  result_sources = if result.respond_to?(:sources)
+    Array(result.sources)
+  else
+    [ { source_name: result.source_name, source_url: result.source_url, work_id: result.work_id } ]
+  end
+  source_work_ids = result_sources.filter_map { |source| source[:work_id] }
+  source_work_ids = [ result.work_id ] if source_work_ids.blank?
 
-  # Check if this book already exists in our system
-  existing_audiobook = Book.find_by_work_id(result.work_id, book_type: :audiobook)
-  existing_ebook = Book.find_by_work_id(result.work_id, book_type: :ebook)
+  existing_audiobook = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: :audiobook)
+  existing_ebook = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: :ebook)
 
   audiobook_status = if existing_audiobook&.acquired?
     :acquired
@@ -101,6 +108,7 @@
             author: result.author,
             cover_url: result.cover_url,
             first_publish_year: result.first_publish_year,
+            source_work_ids: source_work_ids,
             book_type: 'audiobook'
           ), class: "flex items-center justify-center gap-2 w-full px-3 py-2 rounded-md text-sm font-medium bg-purple-600 hover:bg-purple-500 text-white transition-colors" do %>
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -117,6 +125,7 @@
             author: result.author,
             cover_url: result.cover_url,
             first_publish_year: result.first_publish_year,
+            source_work_ids: source_work_ids,
             book_type: 'ebook'
           ), class: "flex items-center justify-center gap-2 w-full px-3 py-2 rounded-md text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors" do %>
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -141,6 +150,17 @@
 
   <%# Title & Author (always visible) %>
   <div class="p-3 bg-gray-900">
+    <div class="mb-2 flex flex-wrap gap-1">
+      <% result_sources.each do |source| %>
+        <% if source[:source_url].present? %>
+          <%= link_to source[:source_name], source[:source_url], target: "_blank", rel: "noopener", title: "Metadata from #{source[:source_name]}", class: "inline-flex max-w-full items-center rounded-full border border-gray-700 bg-gray-950 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400 transition hover:border-gray-500 hover:text-gray-200" %>
+        <% else %>
+          <span title="Metadata from <%= source[:source_name] %>" class="inline-flex max-w-full items-center rounded-full border border-gray-700 bg-gray-950 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">
+            <%= source[:source_name] %>
+          </span>
+        <% end %>
+      <% end %>
+    </div>
     <h3 class="font-semibold text-white text-sm leading-tight line-clamp-2"><%= result.title %></h3>
     <% if result.author.present? %>
       <p class="text-xs text-gray-400 mt-1 truncate"><%= result.author %></p>

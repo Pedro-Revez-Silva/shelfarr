@@ -13,11 +13,12 @@ module Integrations
       end
     end
 
-    def initialize(command:, arguments:, user:, origin: {})
+    def initialize(command:, arguments:, user:, origin: {}, request_selection: nil)
       @command = command.to_s.downcase
       @arguments = arguments.to_s.strip
       @user = user
       @origin = origin
+      @request_selection = request_selection&.to_h&.symbolize_keys
     end
 
     def call
@@ -39,7 +40,7 @@ module Integrations
 
     private
 
-    attr_reader :command, :arguments, :user, :origin
+    attr_reader :command, :arguments, :user, :origin, :request_selection
 
     def help_text
       [
@@ -59,20 +60,30 @@ module Integrations
 
       lines = [ "Search results for #{query}:" ]
       results.each_with_index do |search_result, index|
-        lines << "#{index + 1}. #{search_result.title}#{author_suffix(search_result)}"
+        lines << "#{index + 1}. #{search_result.title}#{author_suffix(search_result)}#{source_suffix(search_result)}"
       end
       lines << "Choose a format below."
 
       result(lines.join("\n"), search_results: results)
-    rescue HardcoverClient::ConnectionError, OpenLibraryClient::ConnectionError
+    rescue HardcoverClient::ConnectionError, GoogleBooksClient::ConnectionError, OpenLibraryClient::ConnectionError
       result("Shelfarr could not reach the metadata service.")
-    rescue HardcoverClient::Error, OpenLibraryClient::Error, MetadataService::Error
+    rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, MetadataService::Error
       result("Search failed. Try again later.")
     end
 
     def create_request(raw_arguments)
-      work_id, requested_type, language = raw_arguments.to_s.split(/\s+/, 3)
-      book_types = book_types_for(requested_type)
+      if request_selection.present?
+        work_id = request_selection[:work_id]
+        source_work_ids = request_selection[:source_work_ids]
+        metadata_attrs = request_selection[:metadata_attrs] || {}
+        requested_type, language = raw_arguments.to_s.split(/\s+/, 2)
+        book_types = book_types_for(requested_type)
+      else
+        work_id, requested_type, language = raw_arguments.to_s.split(/\s+/, 3)
+        source_work_ids = nil
+        metadata_attrs = {}
+        book_types = book_types_for(requested_type)
+      end
 
       if work_id.blank? || book_types.empty?
         return result("Usage: /request <work_id> <ebook|audiobook|both> [language]")
@@ -81,7 +92,9 @@ module Integrations
       creation = RequestCreationService.call(
         user: user,
         work_id: work_id,
+        source_work_ids: source_work_ids,
         book_types: book_types,
+        metadata_attrs: metadata_attrs,
         language: language,
         origin: origin
       )
@@ -132,6 +145,16 @@ module Integrations
 
     def author_suffix(search_result)
       search_result.author.present? ? " by #{search_result.author}" : ""
+    end
+
+    def source_suffix(search_result)
+      source_names = if search_result.respond_to?(:sources)
+        search_result.sources.map { |source| source[:source_name] }
+      else
+        [ search_result.source_name ]
+      end.compact_blank
+
+      source_names.any? ? " (#{source_names.join(', ')})" : ""
     end
 
     def result(text, search_results: [])
