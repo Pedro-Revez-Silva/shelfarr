@@ -51,10 +51,27 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_ebook_library_id, "")
     SettingsService.set(:audiobookshelf_library_sync_interval, 0)
 
-    assert_no_enqueued_jobs do
-      assert_nothing_raised do
-        AudiobookshelfLibrarySyncJob.perform_now
+    clear_enqueued_jobs
+
+    with_sync_interval_stub(0) do
+      assert_no_enqueued_jobs(only: AudiobookshelfLibrarySyncJob) do
+        assert_nothing_raised do
+          AudiobookshelfLibrarySyncJob.perform_now
+        end
       end
     end
+  end
+
+  private
+
+  def with_sync_interval_stub(interval)
+    singleton = class << SettingsService; self; end
+    original_get = singleton.instance_method(:get)
+    singleton.define_method(:get) do |key, default: nil|
+      key.to_sym == :audiobookshelf_library_sync_interval ? interval : original_get.bind_call(self, key, default: default)
+    end
+    yield
+  ensure
+    singleton.define_method(:get, original_get)
   end
 end
