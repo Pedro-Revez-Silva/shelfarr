@@ -20,6 +20,25 @@ class BookTest < ActiveSupport::TestCase
     assert_equal "audiobook", initialized.book_type
   end
 
+  test "preload_by_work_ids returns books keyed by work id and book type" do
+    audiobook = Book.create!(
+      title: "Audio",
+      book_type: :audiobook,
+      google_books_id: "gb-audio"
+    )
+    ebook = Book.create!(
+      title: "Ebook",
+      book_type: :ebook,
+      open_library_work_id: "OL123W"
+    )
+
+    lookup = Book.preload_by_work_ids([ "google_books:gb-audio", "openlibrary:OL123W" ])
+
+    assert_equal audiobook, lookup.dig("google_books:gb-audio", "audiobook")
+    assert_equal ebook, lookup.dig("openlibrary:OL123W", "ebook")
+    assert_equal audiobook, Book.find_in_lookup(lookup, [ "google_books:gb-audio" ], book_type: :audiobook)
+  end
+
   test "metadata source helpers expose provider label and url" do
     google_book = Book.new(title: "Google Book", book_type: :ebook, google_books_id: "abc123")
     open_library_book = Book.new(title: "Open Book", book_type: :ebook, open_library_work_id: "OL123W")

@@ -4,6 +4,9 @@ require "test_helper"
 
 class Integrations::TelegramWebhooksControllerTest < ActionDispatch::IntegrationTest
   setup do
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+
     SettingsService.set(:telegram_enabled, true)
     SettingsService.set(:telegram_update_mode, "webhook")
     SettingsService.set(:telegram_bot_token, "telegram-token")
@@ -12,6 +15,10 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     SettingsService.set(:telegram_allowed_chat_ids, "-100123")
     SettingsService.set(:telegram_request_username, "userone")
     @user = users(:one)
+  end
+
+  teardown do
+    Rails.cache = @original_cache
   end
 
   test "ignores webhook delivery while Telegram is in polling mode" do
@@ -179,6 +186,46 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     assert_response :success
     assert_equal 1, TelegramUpdate.where(update_id: "999").count
     assert_empty response.body
+  end
+
+  test "creates requests from cached inline callback query with source work ids" do
+    book = Book.create!(
+      title: "Existing Google Book",
+      book_type: :ebook,
+      google_books_id: "gb-telegram-cache"
+    )
+    Request.create!(book: book, user: @user, status: :pending)
+
+    candidate = MetadataSearch::Candidate.new(
+      canonical_key: "openlibrary:OL_TELEGRAM_CACHE_W",
+      title: "Existing Google Book",
+      author: "Author",
+      year: 2024,
+      description: nil,
+      cover_url: nil,
+      series_name: nil,
+      series_position: nil,
+      has_ebook: nil,
+      has_audiobook: nil,
+      sources: [
+        { source: "openlibrary", source_id: "OL_TELEGRAM_CACHE_W", source_name: "Open Library", source_url: nil, work_id: "openlibrary:OL_TELEGRAM_CACHE_W" },
+        { source: "google_books", source_id: "gb-telegram-cache", source_name: "Google Books", source_url: nil, work_id: "google_books:gb-telegram-cache" }
+      ],
+      editions: [],
+      confidence: 90
+    )
+    token = Integrations::Telegram::SearchResultCache.store(candidate)
+
+    assert_no_difference "Request.count" do
+      post integrations_telegram_webhook_path,
+        headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
+        params: telegram_callback("req|#{token}|ebook"),
+        as: :json
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_includes body["text"], "already has an active request"
   end
 
   test "creates requests from inline callback query" do

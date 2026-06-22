@@ -7,18 +7,12 @@ module MetadataSearch
     :series_name, :series_position, :has_ebook, :has_audiobook,
     :source_url, :raw_payload
   ) do
-    SOURCE_NAMES = {
-      "hardcover" => "Hardcover",
-      "google_books" => "Google Books",
-      "openlibrary" => "Open Library"
-    }.freeze
-
     def work_id
       "#{source}:#{source_id}"
     end
 
     def source_name
-      SOURCE_NAMES.fetch(source.to_s, source.to_s.titleize)
+      MetadataSources.display_name(source)
     end
 
     def source_attribution

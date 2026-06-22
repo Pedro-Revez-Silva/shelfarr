@@ -62,6 +62,26 @@ module MetadataSearch
       assert_equal 1, candidate.editions.size
     end
 
+    test "merges transitive title author and year matches across provider chain" do
+      results = Aggregator.call([
+        provider_result(source: "openlibrary", source_id: "OL_A", title: "Dune", author: "Frank Herbert", year: 1965),
+        provider_result(source: "google_books", source_id: "GB_B", title: "Dune", author: "Frank Herbert", year: 1966),
+        provider_result(source: "hardcover", source_id: "HC_C", title: "Dune", author: "Frank Herbert", year: 1965)
+      ], priority: %w[openlibrary google_books hardcover])
+
+      assert_equal 1, results.size
+      assert_equal 3, results.first.sources.size
+    end
+
+    test "keeps same title separate when author metadata is missing" do
+      results = Aggregator.call([
+        provider_result(source: "openlibrary", source_id: "OL_A", title: "Shared Title", author: nil, year: 2020),
+        provider_result(source: "google_books", source_id: "GB_B", title: "Shared Title", author: nil, year: 2020)
+      ], priority: %w[openlibrary google_books])
+
+      assert_equal 2, results.size
+    end
+
     test "returns false availability only when a provider explicitly reports false" do
       candidate = Aggregator.call([
         provider_result(source: "openlibrary", source_id: "OL123W", has_ebook: nil),

@@ -111,6 +111,43 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
     assert_nil book.series_position
   end
 
+  test "persists pending work id assignments when metadata attrs are already complete" do
+    book = Book.create!(
+      title: "Complete Book",
+      author: "Known Author",
+      book_type: :ebook,
+      open_library_work_id: "OL123W",
+      description: "Known description",
+      cover_url: "https://example.com/cover.jpg",
+      year: 2020,
+      metadata_source: "openlibrary"
+    )
+    book.assign_work_id("google_books:gb-new")
+
+    details = MetadataService::SearchResult.new(
+      source: "openlibrary",
+      source_id: "OL123W",
+      title: "Fetched Title",
+      author: "Fetched Author",
+      description: "Fetched description",
+      year: 2021,
+      cover_url: "https://example.com/new-cover.jpg",
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil
+    )
+
+    result = MetadataService.stub(:book_details, details) do
+      BookMetadataBackfillService.apply!(book, work_id: "openlibrary:OL123W")
+    end
+
+    assert result
+    book.reload
+    assert_equal "gb-new", book.google_books_id
+    assert_equal "Complete Book", book.title
+  end
+
   test "returns false when there is nothing to fill" do
     book = Book.create!(
       title: "Complete Book",

@@ -114,6 +114,48 @@ class GoogleBooksClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "book raises NotFoundError when volumeInfo title is missing" do
+    VCR.turned_off do
+      stub_google_books_book("abc123", { "id" => "abc123" })
+
+      assert_raises GoogleBooksClient::NotFoundError do
+        GoogleBooksClient.book("abc123")
+      end
+    end
+  end
+
+  test "search raises AuthenticationError for invalid api key" do
+    VCR.turned_off do
+      stub_request(:get, "#{GoogleBooksClient::BASE_URL}/books/v1/volumes")
+        .with(query: hash_including("q" => "fiction"))
+        .to_return(
+          status: 403,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => { "message" => "API key not valid. Please pass a valid API key." } }.to_json
+        )
+
+      assert_raises GoogleBooksClient::AuthenticationError do
+        GoogleBooksClient.search("fiction")
+      end
+    end
+  end
+
+  test "search raises RateLimitError for quota exceeded 403" do
+    VCR.turned_off do
+      stub_request(:get, "#{GoogleBooksClient::BASE_URL}/books/v1/volumes")
+        .with(query: hash_including("q" => "fiction"))
+        .to_return(
+          status: 403,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => { "message" => "Daily Limit Exceeded" } }.to_json
+        )
+
+      assert_raises GoogleBooksClient::RateLimitError do
+        GoogleBooksClient.search("fiction")
+      end
+    end
+  end
+
   test "book raises NotFoundError for invalid id" do
     VCR.turned_off do
       stub_request(:get, "#{GoogleBooksClient::BASE_URL}/books/v1/volumes/missing")

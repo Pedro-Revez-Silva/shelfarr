@@ -50,6 +50,16 @@ class MetadataProviderStatusTest < ActiveSupport::TestCase
     assert_not status.available?
   end
 
+  test "record_failure classifies google books auth errors" do
+    status = MetadataProviderStatus.create!(provider: "google_books", status: "healthy")
+
+    status.record_failure!(GoogleBooksClient::AuthenticationError.new("invalid api key"))
+
+    assert_equal "auth_failed", status.status
+    assert_nil status.rate_limited_until
+    assert_not status.available?
+  end
+
   test "record_failure classifies connection and generic errors" do
     connection_status = MetadataProviderStatus.create!(provider: "openlibrary", status: "healthy")
     generic_status = MetadataProviderStatus.create!(provider: "other", status: "healthy")
@@ -61,6 +71,35 @@ class MetadataProviderStatusTest < ActiveSupport::TestCase
     assert connection_status.rate_limited_until.future?
     assert_equal "degraded", generic_status.status
     assert generic_status.rate_limited_until.future?
+  end
+
+  test "clear_after_credential_change resets auth failed state" do
+    status = MetadataProviderStatus.create!(
+      provider: "google_books",
+      status: "auth_failed",
+      last_error: "invalid api key",
+      failure_count: 2
+    )
+
+    status.clear_after_credential_change!
+
+    assert_equal "unknown", status.status
+    assert_nil status.last_error
+    assert_nil status.rate_limited_until
+    assert_equal 0, status.failure_count
+    assert status.available?
+  end
+
+  test "clear_after_credential_change_for_settings resets affected providers" do
+    google_status = MetadataProviderStatus.create!(provider: "google_books", status: "auth_failed")
+    hardcover_status = MetadataProviderStatus.create!(provider: "hardcover", status: "auth_failed")
+    openlibrary_status = MetadataProviderStatus.create!(provider: "openlibrary", status: "healthy")
+
+    MetadataProviderStatus.clear_after_credential_change_for_settings!([ "google_books_api_key" ])
+
+    assert_equal "unknown", google_status.reload.status
+    assert_equal "auth_failed", hardcover_status.reload.status
+    assert_equal "healthy", openlibrary_status.reload.status
   end
 
   test "expired rate limit is available again" do

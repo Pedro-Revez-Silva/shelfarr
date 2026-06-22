@@ -6,6 +6,7 @@ export default class extends Controller {
   static targets = ["input", "results", "spinner"]
   static values = {
     url: String,
+    streamUrl: String,
     debounce: { type: Number, default: 700 }
   }
 
@@ -50,7 +51,7 @@ export default class extends Controller {
   }
 
   async performSearch(query) {
-    const url = `${this.urlValue}?q=${encodeURIComponent(query)}`
+    const url = `${this.searchUrl}?q=${encodeURIComponent(query)}`
     const requestId = ++this.requestSequence
     const abortController = new AbortController()
 
@@ -66,8 +67,12 @@ export default class extends Controller {
       })
 
       if (response.ok && requestId === this.requestSequence && this.inputTarget.value.trim() === query) {
-        const html = await response.text()
-        Turbo.renderStreamMessage(html)
+        if (response.body) {
+          await this.renderStreamingResponse(response, requestId, query)
+        } else {
+          const html = await response.text()
+          this.renderStreamMessage(html, requestId, query)
+        }
       }
     } catch (error) {
       if (error.name === "AbortError") {
@@ -87,6 +92,44 @@ export default class extends Controller {
     if (this.currentAbortController) {
       this.currentAbortController.abort()
       this.currentAbortController = null
+    }
+  }
+
+  get searchUrl() {
+    return this.hasStreamUrlValue ? this.streamUrlValue : this.urlValue
+  }
+
+  async renderStreamingResponse(response, requestId, query) {
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    const closingTag = "</turbo-stream>"
+    let buffer = ""
+
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+
+      let closingIndex = buffer.indexOf(closingTag)
+      while (closingIndex !== -1) {
+        const endIndex = closingIndex + closingTag.length
+        const message = buffer.slice(0, endIndex)
+        buffer = buffer.slice(endIndex)
+        this.renderStreamMessage(message, requestId, query)
+        closingIndex = buffer.indexOf(closingTag)
+      }
+
+      if (done) {
+        if (buffer.trim().length > 0) {
+          this.renderStreamMessage(buffer, requestId, query)
+        }
+        break
+      }
+    }
+  }
+
+  renderStreamMessage(html, requestId, query) {
+    if (requestId === this.requestSequence && this.inputTarget.value.trim() === query) {
+      Turbo.renderStreamMessage(html)
     }
   }
 

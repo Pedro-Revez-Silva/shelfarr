@@ -1,5 +1,6 @@
 <%
   audiobookshelf_matches ||= []
+  existing_books_lookup ||= {}
   result_sources = if result.respond_to?(:sources)
     Array(result.sources)
   else
@@ -8,9 +9,8 @@
   source_work_ids = result_sources.filter_map { |source| source[:work_id] }
   source_work_ids = [ result.work_id ] if source_work_ids.blank?
 
-  # Check if this book already exists in our system
-  existing_audiobook = Book.find_by_any_work_id(source_work_ids, book_type: :audiobook)
-  existing_ebook = Book.find_by_any_work_id(source_work_ids, book_type: :ebook)
+  existing_audiobook = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: :audiobook)
+  existing_ebook = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: :ebook)
 
   audiobook_status = if existing_audiobook&.acquired?
     :acquired

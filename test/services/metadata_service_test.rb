@@ -13,6 +13,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
     @original_open_library_enabled = SettingsService.get(:open_library_enabled)
     @original_hardcover_enabled = SettingsService.get(:hardcover_enabled)
     @original_provider_priority = SettingsService.get(:metadata_provider_priority)
+    @original_min_match_confidence = SettingsService.get(:min_match_confidence)
     MetadataProviderStatus.delete_all
     HardcoverClient.reset_connection!
     GoogleBooksClient.reset_connection!
@@ -28,6 +29,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
     SettingsService.set(:open_library_enabled, @original_open_library_enabled.nil? ? true : @original_open_library_enabled)
     SettingsService.set(:hardcover_enabled, @original_hardcover_enabled.nil? ? true : @original_hardcover_enabled)
     SettingsService.set(:metadata_provider_priority, @original_provider_priority || "hardcover,openlibrary,google_books")
+    SettingsService.set(:min_match_confidence, @original_min_match_confidence || 50)
     MetadataProviderStatus.delete_all
     HardcoverClient.reset_connection!
     GoogleBooksClient.reset_connection!
@@ -425,7 +427,76 @@ class MetadataServiceTest < ActiveSupport::TestCase
     assert_not MetadataService.available?
   end
 
+  test "aggregate_provider_results orders candidates by provider priority" do
+    SettingsService.set(:metadata_provider_priority, "hardcover,openlibrary,google_books")
+
+    provider_results = [
+      metadata_provider_result(source: "google_books", source_id: "gb1", title: "Google Result"),
+      metadata_provider_result(source: "hardcover", source_id: "hc1", title: "Hardcover Result"),
+      metadata_provider_result(source: "openlibrary", source_id: "ol1", title: "Open Library Result")
+    ]
+
+    results = MetadataService.aggregate_provider_results(provider_results)
+
+    assert_equal %w[hardcover openlibrary google_books], results.map(&:source)
+  end
+
+  test "aggregate_provider_results filters candidates below min_match_confidence" do
+    SettingsService.set(:min_match_confidence, 80)
+
+    provider_results = [
+      metadata_provider_result(source: "openlibrary", source_id: "OL_LOW", title: "Low Confidence"),
+      metadata_provider_result(source: "openlibrary", source_id: "OL_HIGH_A", title: "High Confidence", year: 1965),
+      metadata_provider_result(source: "google_books", source_id: "GB_HIGH_B", title: "High Confidence", year: 1966)
+    ]
+
+    results = MetadataService.aggregate_provider_results(provider_results)
+
+    assert_equal 1, results.size
+    assert_equal "High Confidence", results.first.title
+    assert_equal 90, results.first.confidence
+  end
+
+  test "search_google_books returns empty array when provider disabled" do
+    SettingsService.set(:google_books_enabled, false)
+
+    GoogleBooksClient.stub(:search, ->(*) { raise "should not be called" }) do
+      assert_equal [], MetadataService.send(:search_google_books, "fiction", 10)
+    end
+  end
+
+  test "search_openlibrary returns empty array when provider disabled" do
+    SettingsService.set(:open_library_enabled, false)
+
+    OpenLibraryClient.stub(:search, ->(*) { raise "should not be called" }) do
+      assert_equal [], MetadataService.send(:search_openlibrary, "fiction", 10)
+    end
+  end
+
   private
+
+  def metadata_provider_result(source:, source_id:, title:, author: "Author", year: 1937)
+    MetadataSearch::ProviderResult.new(
+      source: source,
+      source_id: source_id,
+      title: title,
+      author: author,
+      year: year,
+      description: nil,
+      cover_url: nil,
+      isbn_10: nil,
+      isbn_13: nil,
+      publisher: nil,
+      page_count: nil,
+      language: nil,
+      series_name: nil,
+      series_position: nil,
+      has_ebook: nil,
+      has_audiobook: nil,
+      source_url: "https://example.test/#{source_id}",
+      raw_payload: nil
+    )
+  end
 
   def stub_hardcover_search(results, expected_per_page: nil)
     typesense_response = {

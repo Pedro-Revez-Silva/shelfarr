@@ -12,6 +12,45 @@ class MetadataProviderStatus < ApplicationRecord
         record.status = "unknown"
       end
     end
+
+    def clear_after_credential_change!(provider)
+      record = find_by(provider: provider.to_s)
+      return unless record
+
+      record.clear_after_credential_change!
+    end
+
+    def clear_after_credential_change_for_settings!(changed_keys)
+      providers = []
+      reset_all = false
+
+      Array(changed_keys).each do |key|
+        provider = provider_for_setting(key)
+        reset_all ||= provider == :all
+        providers << provider if provider.is_a?(String)
+      end
+
+      target_providers = reset_all ? MetadataSources::NAMES.keys : providers.uniq
+      target_providers.each { |provider| clear_after_credential_change!(provider) }
+    end
+
+    def provider_for_setting(key)
+      case key.to_s
+      when /\Ahardcover_/ then "hardcover"
+      when /\Agoogle_books_/ then "google_books"
+      when /\Aopen_library_/ then "openlibrary"
+      when "metadata_source", "metadata_provider_priority" then :all
+      end
+    end
+  end
+
+  def clear_after_credential_change!
+    update!(
+      status: "unknown",
+      rate_limited_until: nil,
+      last_error: nil,
+      failure_count: 0
+    )
   end
 
   def available?

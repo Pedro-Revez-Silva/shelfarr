@@ -9,6 +9,7 @@ class GoogleBooksClient
   class Error < StandardError; end
   class ConnectionError < Error; end
   class NotFoundError < Error; end
+  class AuthenticationError < Error; end
   class RateLimitError < Error; end
 
   SearchResult = Data.define(
@@ -53,7 +54,7 @@ class GoogleBooksClient
 
   class << self
     def configured?
-      true
+      SettingsService.get(:google_books_enabled, default: true)
     end
 
     def search(query, limit: nil)
@@ -83,6 +84,8 @@ class GoogleBooksClient
     end
 
     def test_connection
+      return false unless configured?
+
       search("test", limit: 1)
       true
     rescue Error => e
@@ -120,10 +123,36 @@ class GoogleBooksClient
         yield response.body
       when 404
         raise NotFoundError, "Volume not found"
-      when 403, 429
+      when 403
+        raise authentication_error_for(response)
+      when 429
         raise RateLimitError, "Rate limit exceeded"
       else
         raise Error, "API request failed with status #{response.status}"
+      end
+    end
+
+    def authentication_error_for(response)
+      if authentication_failure?(response)
+        AuthenticationError.new("Invalid or restricted Google Books API key")
+      else
+        RateLimitError.new("Rate limit exceeded")
+      end
+    end
+
+    def authentication_failure?(response)
+      message = response_error_message(response.body)
+      message.match?(/API key|invalid.*key|not valid|permission|forbidden/i)
+    end
+
+    def response_error_message(body)
+      return body.to_s unless body.is_a?(Hash)
+
+      error = body["error"]
+      if error.is_a?(Hash)
+        [ error["message"], error["reason"] ].compact.join(" ")
+      else
+        body.to_s
       end
     end
 
@@ -155,7 +184,7 @@ class GoogleBooksClient
 
     def parse_book_details(item)
       volume = item["volumeInfo"] || {}
-      raise NotFoundError, "Volume not found" if item["id"].blank? || volume.blank?
+      raise NotFoundError, "Volume not found" if item["id"].blank? || volume["title"].blank?
 
       BookDetails.new(
         id: item["id"].to_s,

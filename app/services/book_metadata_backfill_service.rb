@@ -7,10 +7,10 @@ class BookMetadataBackfillService
     def apply!(book, work_id:, fallback_attrs: {})
       details = fetch_details(work_id)
       attrs = attributes_for(book, work_id, details, fallback_attrs)
-      return false if attrs.empty?
+      book.assign_attributes(attrs) unless attrs.empty?
+      return false unless book.changed?
 
-      book.assign_attributes(attrs)
-      book.save! if book.changed?
+      book.save!
       book.saved_changes?
     end
 

@@ -166,6 +166,7 @@ module Admin
       end
 
       if HardcoverClient.test_connection
+        MetadataProviderStatus.for_provider("hardcover").record_success!
         health.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "Hardcover connection successful!")
       else
@@ -175,6 +176,38 @@ module Admin
     rescue HardcoverClient::Error => e
       health&.check_failed!(message: e.message)
       respond_with_flash(alert: "Hardcover error: #{e.message}")
+    end
+
+    def test_google_books
+      unless GoogleBooksClient.configured?
+        respond_with_flash(alert: "Google Books is not enabled.")
+        return
+      end
+
+      if GoogleBooksClient.test_connection
+        MetadataProviderStatus.for_provider("google_books").record_success!
+        respond_with_flash(notice: "Google Books connection successful!")
+      else
+        respond_with_flash(alert: "Google Books connection failed.")
+      end
+    rescue GoogleBooksClient::Error => e
+      respond_with_flash(alert: "Google Books error: #{e.message}")
+    end
+
+    def test_open_library
+      unless OpenLibraryClient.configured?
+        respond_with_flash(alert: "Open Library is not enabled.")
+        return
+      end
+
+      if OpenLibraryClient.test_connection
+        MetadataProviderStatus.for_provider("openlibrary").record_success!
+        respond_with_flash(notice: "Open Library connection successful!")
+      else
+        respond_with_flash(alert: "Open Library connection failed.")
+      end
+    rescue OpenLibraryClient::Error => e
+      respond_with_flash(alert: "Open Library error: #{e.message}")
     end
 
     def test_zlibrary
@@ -399,9 +432,18 @@ module Admin
       if changed_keys.any? { |k| k.start_with?("librivox") }
         LibrivoxClient.reset_connection!
       end
+      if changed_keys.any? { |k| metadata_provider_setting?(k) }
+        MetadataProviderStatus.clear_after_credential_change_for_settings!(changed_keys)
+      end
       if changed_keys.any? { |k| k.start_with?("hardcover") }
         HardcoverClient.reset_connection!
         run_service_health_check("hardcover")
+      end
+      if changed_keys.any? { |k| k.start_with?("google_books") }
+        GoogleBooksClient.reset_connection!
+      end
+      if changed_keys.any? { |k| k.start_with?("open_library") }
+        OpenLibraryClient.reset_connection!
       end
       if changed_keys.any? { |k| k.start_with?("telegram") }
         sync_telegram_transport
@@ -472,6 +514,10 @@ module Admin
 
     def indexer_setting_key?(key)
       key.start_with?("indexer_") || key.start_with?("prowlarr") || key.start_with?("jackett") || key.start_with?("newznab")
+    end
+
+    def metadata_provider_setting?(key)
+      MetadataProviderStatus.provider_for_setting(key).present?
     end
   end
 end

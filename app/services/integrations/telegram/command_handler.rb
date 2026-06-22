@@ -80,10 +80,19 @@ module Integrations
       end
 
       def handle_callback
-        action, work_id, requested_type = callback_query["data"].to_s.split("|", 3)
-        return reply("Unknown action.") unless action == "request"
+        action, identifier, requested_type = callback_query["data"].to_s.split("|", 3)
 
-        process("/request", [ work_id, requested_type ].compact.join(" "))
+        case action
+        when "req"
+          selection = SearchResultCache.fetch(identifier)
+          return reply("This search result expired. Run /search again.") unless selection
+
+          process_request_selection(selection, requested_type)
+        when "request"
+          process("/request", [ identifier, requested_type ].compact.join(" "))
+        else
+          reply("Unknown action.")
+        end
       end
 
       def parse_command
@@ -140,12 +149,32 @@ module Integrations
         {
           inline_keyboard: results.each_with_index.map do |result, index|
             label = index + 1
+            token = SearchResultCache.store(result)
             [
-              { text: "#{label}. Ebook", callback_data: "request|#{result.work_id}|ebook" },
-              { text: "#{label}. Audio", callback_data: "request|#{result.work_id}|audiobook" }
+              { text: "#{label}. Ebook", callback_data: SearchResultCache.callback_data(token, "ebook") },
+              { text: "#{label}. Audio", callback_data: SearchResultCache.callback_data(token, "audiobook") }
             ]
           end
         }
+      end
+
+      def process_request_selection(selection, requested_type)
+        return reply("Telegram request owner is not configured in Shelfarr.") unless request_user
+
+        result = Integrations::CommandProcessor.call(
+          command: "/request",
+          arguments: requested_type.to_s,
+          user: request_user,
+          origin: {
+            created_via: "telegram",
+            external_source: "telegram",
+            external_user_id: sender_id,
+            external_chat_id: chat_id
+          },
+          request_selection: selection
+        )
+
+        reply(result.text)
       end
 
       def process(command, arguments)

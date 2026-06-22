@@ -48,6 +48,10 @@ class OpenLibraryClient
   end
 
   class << self
+    def configured?
+      SettingsService.get(:open_library_enabled, default: true)
+    end
+
     # Search for books by query
     # Returns array of SearchResult
     def search(query, limit: nil)
@@ -139,6 +143,20 @@ class OpenLibraryClient
           )
         end
       end
+    end
+
+    def test_connection
+      return false unless configured?
+
+      search("test", limit: 1)
+      true
+    rescue Error => e
+      Rails.logger.error "[OpenLibraryClient] Connection test failed: #{e.message}"
+      false
+    end
+
+    def reset_connection!
+      @connection = nil
     end
 
     # Generate cover image URL

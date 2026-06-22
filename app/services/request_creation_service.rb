@@ -30,12 +30,14 @@ class RequestCreationService
     created_requests = []
     warnings = []
     errors = []
+    existing_books_lookup = Book.preload_by_work_ids(source_work_ids)
 
     book_types.each do |book_type|
       duplicate_check = DuplicateDetectionService.check(
         work_id: work_id,
         source_work_ids: source_work_ids,
-        book_type: book_type
+        book_type: book_type,
+        existing_books_lookup: existing_books_lookup
       )
 
       if duplicate_check.block?
@@ -45,7 +47,7 @@ class RequestCreationService
 
       warnings << duplicate_check.message if duplicate_check.warn?
 
-      book = find_or_create_book_for_source(book_type)
+      book = find_or_create_book_for_source(book_type, existing_books_lookup: existing_books_lookup)
       request = build_request(book)
 
       if request.save
@@ -74,8 +76,9 @@ class RequestCreationService
     end.uniq
   end
 
-  def find_or_create_book_for_source(book_type)
-    book = Book.find_or_initialize_by_work_id(work_id, book_type: book_type)
+  def find_or_create_book_for_source(book_type, existing_books_lookup:)
+    book = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: book_type)
+    book ||= Book.find_or_initialize_by_work_id(work_id, book_type: book_type)
     source_work_ids.each { |source_work_id| book.assign_work_id(source_work_id) }
     BookMetadataBackfillService.apply!(
       book,

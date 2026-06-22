@@ -105,6 +105,58 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal "gb-multi-source", book.google_books_id
   end
 
+  test "persists newly assigned source ids on reused book with complete metadata" do
+    book = Book.create!(
+      title: "Existing Google Book",
+      author: "Existing Author",
+      book_type: :ebook,
+      google_books_id: "gb-existing",
+      year: 2020,
+      description: "Known description",
+      cover_url: "https://example.com/cover.jpg",
+      metadata_source: "google_books"
+    )
+
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "openlibrary:OL_NEW_SOURCE_W",
+      source_work_ids: [ "google_books:gb-existing", "hardcover:123" ],
+      book_types: [ "ebook" ],
+      metadata_attrs: {
+        title: "Existing Google Book"
+      }
+    )
+
+    assert result.success?
+    book.reload
+    assert_equal "gb-existing", book.google_books_id
+    assert_equal "123", book.hardcover_id
+    assert_equal "OL_NEW_SOURCE_W", book.open_library_work_id
+  end
+
+  test "reuses existing book matched only via alternate source identifier" do
+    book = Book.create!(
+      title: "Existing Google Book",
+      book_type: :ebook,
+      google_books_id: "gb-existing"
+    )
+
+    assert_no_difference "Book.count" do
+      result = RequestCreationService.call(
+        user: @user,
+        work_id: "openlibrary:OL_NEW_SOURCE_W",
+        source_work_ids: [ "google_books:gb-existing" ],
+        book_types: [ "ebook" ],
+        metadata_attrs: {
+          title: "Existing Google Book"
+        }
+      )
+
+      assert result.success?
+      assert_equal book, result.created_requests.first.book
+    end
+  end
+
   test "blocks duplicate using alternate source identifier" do
     book = Book.create!(
       title: "Existing Google Book",

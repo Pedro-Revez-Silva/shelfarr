@@ -13,11 +13,12 @@ module Integrations
       end
     end
 
-    def initialize(command:, arguments:, user:, origin: {})
+    def initialize(command:, arguments:, user:, origin: {}, request_selection: nil)
       @command = command.to_s.downcase
       @arguments = arguments.to_s.strip
       @user = user
       @origin = origin
+      @request_selection = request_selection&.to_h&.symbolize_keys
     end
 
     def call
@@ -39,7 +40,7 @@ module Integrations
 
     private
 
-    attr_reader :command, :arguments, :user, :origin
+    attr_reader :command, :arguments, :user, :origin, :request_selection
 
     def help_text
       [
@@ -71,8 +72,18 @@ module Integrations
     end
 
     def create_request(raw_arguments)
-      work_id, requested_type, language = raw_arguments.to_s.split(/\s+/, 3)
-      book_types = book_types_for(requested_type)
+      if request_selection.present?
+        work_id = request_selection[:work_id]
+        source_work_ids = request_selection[:source_work_ids]
+        metadata_attrs = request_selection[:metadata_attrs] || {}
+        requested_type, language = raw_arguments.to_s.split(/\s+/, 2)
+        book_types = book_types_for(requested_type)
+      else
+        work_id, requested_type, language = raw_arguments.to_s.split(/\s+/, 3)
+        source_work_ids = nil
+        metadata_attrs = {}
+        book_types = book_types_for(requested_type)
+      end
 
       if work_id.blank? || book_types.empty?
         return result("Usage: /request <work_id> <ebook|audiobook|both> [language]")
@@ -81,7 +92,9 @@ module Integrations
       creation = RequestCreationService.call(
         user: user,
         work_id: work_id,
+        source_work_ids: source_work_ids,
         book_types: book_types,
+        metadata_attrs: metadata_attrs,
         language: language,
         origin: origin
       )

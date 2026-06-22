@@ -9,6 +9,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     AudiobookshelfClient.reset_connection!
     ProwlarrClient.reset_connection!
     FlaresolverrClient.reset_connection!
+    GoogleBooksClient.reset_connection!
+    OpenLibraryClient.reset_connection!
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
   end
 
@@ -16,6 +18,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     AudiobookshelfClient.reset_connection!
     ProwlarrClient.reset_connection!
     FlaresolverrClient.reset_connection!
+    GoogleBooksClient.reset_connection!
+    OpenLibraryClient.reset_connection!
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
   end
 
@@ -31,6 +35,20 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Settings"
   end
 
+  test "index shows telegram group authorization only in integrations tab" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "[data-settings-tabs-target='panel'][data-tab='integrations'] h2",
+      text: "Telegram Group Authorization",
+      count: 1
+    %w[search downloads system security].each do |tab|
+      assert_select "[data-settings-tabs-target='panel'][data-tab='#{tab}'] h2",
+        text: "Telegram Group Authorization",
+        count: 0
+    end
+  end
+
   test "index shows indexer provider dropdown" do
     get admin_settings_url
 
@@ -41,6 +59,14 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "option[value='newznab']", text: "NZBHydra2 / Newznab"
     assert_select "input[name='settings[newznab_url]']"
     assert_select "input[name='settings[newznab_api_key]']"
+  end
+
+  test "index shows google books and open library test buttons" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "a[href='#{test_google_books_admin_settings_path}']", text: "Test Google Books Connection"
+    assert_select "a[href='#{test_open_library_admin_settings_path}']", text: "Test Open Library Connection"
   end
 
   test "index warns when disabling authentication is enabled" do
@@ -1357,6 +1383,135 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_match /hard boom/, flash[:alert]
+  end
+
+  test "test_google_books fails when disabled" do
+    SettingsService.set(:google_books_enabled, false)
+
+    post test_google_books_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not enabled/i, flash[:alert]
+  end
+
+  test "test_google_books succeeds when connection works" do
+    SettingsService.set(:google_books_enabled, true)
+
+    GoogleBooksClient.stub(:test_connection, true) do
+      post test_google_books_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
+  end
+
+  test "test_google_books marks provider healthy after success" do
+    SettingsService.set(:google_books_enabled, true)
+    MetadataProviderStatus.create!(provider: "google_books", status: "auth_failed", last_error: "bad key")
+
+    GoogleBooksClient.stub(:test_connection, true) do
+      post test_google_books_admin_settings_url
+    end
+
+    assert_equal "healthy", MetadataProviderStatus.for_provider("google_books").status
+    assert_nil MetadataProviderStatus.for_provider("google_books").last_error
+  end
+
+  test "bulk update of google books api key clears auth failed provider status" do
+    MetadataProviderStatus.create!(provider: "google_books", status: "auth_failed", last_error: "bad key")
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        google_books_api_key: "new-key"
+      }
+    }
+
+    status = MetadataProviderStatus.for_provider("google_books")
+    assert_equal "unknown", status.status
+    assert_nil status.last_error
+  end
+
+  test "bulk update of metadata provider priority clears all provider status" do
+    MetadataProviderStatus.create!(provider: "hardcover", status: "auth_failed", last_error: "bad token")
+    MetadataProviderStatus.create!(provider: "google_books", status: "rate_limited", last_error: "quota", rate_limited_until: 5.minutes.from_now)
+    MetadataProviderStatus.create!(provider: "openlibrary", status: "down", last_error: "timeout")
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        metadata_provider_priority: "google_books,openlibrary,hardcover"
+      }
+    }
+
+    %w[hardcover google_books openlibrary].each do |provider|
+      status = MetadataProviderStatus.for_provider(provider)
+      assert_equal "unknown", status.status
+      assert_nil status.last_error
+      assert_nil status.rate_limited_until
+    end
+  end
+
+  test "test_google_books fails when connection fails" do
+    SettingsService.set(:google_books_enabled, true)
+
+    GoogleBooksClient.stub(:test_connection, false) do
+      post test_google_books_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
+  end
+
+  test "test_google_books reports client errors" do
+    SettingsService.set(:google_books_enabled, true)
+
+    GoogleBooksClient.stub(:test_connection, -> { raise GoogleBooksClient::Error, "google boom" }) do
+      post test_google_books_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /google boom/, flash[:alert]
+  end
+
+  test "test_open_library fails when disabled" do
+    SettingsService.set(:open_library_enabled, false)
+
+    post test_open_library_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not enabled/i, flash[:alert]
+  end
+
+  test "test_open_library succeeds when connection works" do
+    SettingsService.set(:open_library_enabled, true)
+
+    OpenLibraryClient.stub(:test_connection, true) do
+      post test_open_library_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
+  end
+
+  test "test_open_library fails when connection fails" do
+    SettingsService.set(:open_library_enabled, true)
+
+    OpenLibraryClient.stub(:test_connection, false) do
+      post test_open_library_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
+  end
+
+  test "test_open_library reports client errors" do
+    SettingsService.set(:open_library_enabled, true)
+
+    OpenLibraryClient.stub(:test_connection, -> { raise OpenLibraryClient::Error, "open boom" }) do
+      post test_open_library_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /open boom/, flash[:alert]
   end
 
   test "test_flaresolverr returns turbo stream when requested" do

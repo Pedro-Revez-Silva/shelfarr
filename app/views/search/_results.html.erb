@@ -2,6 +2,17 @@
   <div class="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-red-400">
     <%= @error %>
   </div>
+<% elsif @results.blank? && @search_loading %>
+  <div class="text-center py-16">
+    <svg class="mx-auto h-16 w-16 mb-4 animate-spin text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+    <p class="text-lg font-medium text-gray-400">Searching metadata providers</p>
+    <% if @search_pending_provider_names.present? %>
+      <p class="text-sm mt-1 text-gray-500">Waiting for <%= @search_pending_provider_names.to_sentence %></p>
+    <% end %>
+  </div>
 <% elsif @results.blank? %>
   <div class="text-center py-16">
     <svg class="mx-auto h-16 w-16 mb-4 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -12,15 +23,31 @@
   </div>
 <% else %>
   <div class="mb-6 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-    <p class="text-sm text-gray-500"><%= @results.size %> result<%= @results.size == 1 ? '' : 's' %> for "<span class="font-medium text-gray-300"><%= @query %></span>"</p>
-    <% if @results.any?(&:google_books?) %>
-      <p class="text-xs font-medium text-gray-500">Powered by Google</p>
-    <% end %>
+    <div>
+      <p class="text-sm text-gray-500"><%= @results.size %> result<%= @results.size == 1 ? '' : 's' %> for "<span class="font-medium text-gray-300"><%= @query %></span>"</p>
+      <% if @search_loading && @search_pending_provider_names.present? %>
+        <p class="mt-1 text-xs text-gray-600">Still checking <%= @search_pending_provider_names.to_sentence %></p>
+      <% end %>
+    </div>
+    <div class="flex items-center gap-3">
+      <% if @search_loading %>
+        <span class="inline-flex items-center gap-2 text-xs font-medium text-blue-400">
+          <svg class="h-3 w-3 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          Updating
+        </span>
+      <% end %>
+      <% if @results.any?(&:google_books?) %>
+        <p class="text-xs font-medium text-gray-500">Powered by Google</p>
+      <% end %>
+    </div>
   </div>
 
   <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
     <% @results.each_with_index do |result, index| %>
-      <%= render "result_card", result: result, audiobookshelf_matches: Array(@audiobookshelf_matches)[index] %>
+      <%= render "result_card", result: result, audiobookshelf_matches: Array(@audiobookshelf_matches)[index], existing_books_lookup: @existing_books_lookup %>
     <% end %>
   </div>
 <% end %>

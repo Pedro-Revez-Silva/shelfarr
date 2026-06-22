@@ -23,7 +23,7 @@ module MetadataSearch
 
     def clusters
       results.each_with_object([]) do |result, groups|
-        group = groups.find { |candidate_group| match?(candidate_group.first, result) }
+        group = groups.find { |candidate_group| candidate_group.any? { |member| match?(member, result) } }
         group ? group << result : groups << [ result ]
       end
     end
@@ -32,7 +32,11 @@ module MetadataSearch
       return true if shared_isbn?(left, right)
       return false if conflicting_isbn?(left, right)
       return false unless normalized_text(left.title) == normalized_text(right.title)
-      return false unless normalized_text(left.author) == normalized_text(right.author)
+
+      left_author = normalized_text(left.author)
+      right_author = normalized_text(right.author)
+      return false if left_author.blank? || right_author.blank?
+      return false unless left_author == right_author
 
       close_year?(left.year, right.year)
     end
