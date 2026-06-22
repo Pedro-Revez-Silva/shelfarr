@@ -140,9 +140,18 @@ class GoogleBooksClient
       end
     end
 
+    AUTH_FAILURE_MARKERS = [
+      "api key",
+      "invalid key",
+      "invalid api key",
+      "not valid",
+      "permission",
+      "forbidden"
+    ].freeze
+
     def authentication_failure?(response)
-      message = response_error_message(response.body)
-      message.match?(/API key|invalid.*key|not valid|permission|forbidden/i)
+      message = response_error_message(response.body).downcase
+      AUTH_FAILURE_MARKERS.any? { |marker| message.include?(marker) }
     end
 
     def response_error_message(body)
