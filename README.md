@@ -98,6 +98,33 @@ environment:
   - RAILS_RELATIVE_URL_ROOT=/shelfarr
 ```
 
+#### Settings as environment variables (config-as-code)
+
+Any setting from **Admin → Settings** can also be supplied from the environment,
+which is useful for declarative/GitOps deployments and for keeping secrets out of
+the app database. Set `SHELFARR_SETTING_<KEY>` (the uppercased setting key) and it
+overrides the stored value:
+
+```yaml
+environment:
+  # OIDC, sourced from the environment instead of the admin UI
+  - SHELFARR_SETTING_OIDC_ENABLED=true
+  - SHELFARR_SETTING_OIDC_ISSUER=https://auth.example.com/application/o/shelfarr/
+  - SHELFARR_SETTING_OIDC_CLIENT_ID=shelfarr
+  - SHELFARR_SETTING_OIDC_CLIENT_SECRET=...   # inject from a secret store
+  # Outbound webhook
+  - SHELFARR_SETTING_WEBHOOK_ENABLED=true
+  - SHELFARR_SETTING_WEBHOOK_URL=http://my-listener:9000/
+```
+
+Semantics: **the environment is the source of truth and the database is a cache.**
+A managed key shows up read-only in the settings page (with the controlling
+variable named) and is reconciled on every boot, so it survives a database wipe or
+restore with no manual re-entry. Booleans (`true`/`false`), integers and JSON-array
+values are parsed to the setting's type. Keys you don't set stay fully editable in
+the UI as before. See the [settings reference](https://shelfarr.org/configuration.html)
+for the full list of keys.
+
 ### Configuration
 
 After logging in, go to **Admin → Settings**:
