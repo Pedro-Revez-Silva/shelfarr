@@ -110,6 +110,55 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "nested file", File.read(File.join(copied_dir, "subdir", "nested.txt"))
   end
 
+  test "mv moves a file normally" do
+    dest_file = File.join(@dest_dir, "output.txt")
+    FileCopyService.mv(@src_file, dest_file)
+
+    assert File.exist?(dest_file)
+    assert_equal "test content", File.read(dest_file)
+    assert_not File.exist?(@src_file)
+  end
+
+  test "mv falls back to buffered copy on NFS copy_file_range EACCES" do
+    dest_file = File.join(@dest_dir, "output.txt")
+
+    FileUtils.stub(:mv, ->(_s, _d) { raise Errno::EACCES, "copy_file_range" }) do
+      FileCopyService.mv(@src_file, dest_file)
+    end
+
+    assert File.exist?(dest_file)
+    assert_equal "test content", File.read(dest_file)
+    assert_not File.exist?(@src_file)
+  end
+
+  test "mv re-raises EACCES when not from copy_file_range" do
+    dest_file = File.join(@dest_dir, "output.txt")
+
+    FileUtils.stub(:mv, ->(_s, _d) { raise Errno::EACCES, "some other permission error" }) do
+      assert_raises(Errno::EACCES) do
+        FileCopyService.mv(@src_file, dest_file)
+      end
+    end
+
+    assert File.exist?(@src_file)
+  end
+
+  test "mv tolerates source removal failure when destination copy exists" do
+    dest_file = File.join(@dest_dir, "output.txt")
+
+    FileUtils.stub(:mv, ->(_s, _d) { raise Errno::EACCES, "copy_file_range" }) do
+      FileUtils.stub(:rm_f, ->(_path) { raise Errno::EACCES, "permission denied" }) do
+        assert_nothing_raised do
+          FileCopyService.mv(@src_file, dest_file)
+        end
+      end
+    end
+
+    assert File.exist?(dest_file)
+    assert_equal "test content", File.read(dest_file)
+    assert File.exist?(@src_file), "Source should remain when removal fails after a verified copy"
+  end
+
   test "cp_r fallback copies hidden files" do
     src_dir = File.join(@tmp_dir, "src_dir")
     FileUtils.mkdir_p(src_dir)

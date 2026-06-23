@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# Copies completed downloads to library folder and triggers library scan.
-# Files are COPIED (not moved) to preserve seeding for torrent downloads.
+# Imports completed downloads to the library folder and triggers library scan.
+# Files are copied by default to preserve seeding for torrent downloads.
 # Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
   EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
@@ -28,10 +28,12 @@ class PostProcessingJob < ApplicationJob
         return retry_source_path_later(download, request, source_path, source_path_retry_count)
       end
 
-      copy_files(source_path, destination, book: book)
+      source_cleanup = import_files(source_path, destination, book: book)
       cleanup_usenet_download(download)
 
       book.update!(file_path: destination)
+      remove_import_source(source_cleanup)
+
       request.complete!
 
       # Pre-create zip for directories (audiobooks) so download is instant
@@ -118,7 +120,7 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def copy_files(source, destination, book: nil)
+  def import_files(source, destination, book: nil)
     unless source.present?
       Rails.logger.error "[PostProcessingJob] Source path is blank - download client may not have reported the path"
       raise "Source path is blank. Check download client configuration and ensure the download completed successfully."
@@ -132,43 +134,51 @@ class PostProcessingJob < ApplicationJob
       raise source_path_not_found_message(source)
     end
 
-    Rails.logger.info "[PostProcessingJob] Copying from #{source} to #{destination}"
+    directory_source = File.directory?(source)
+    @defer_source_removal = directory_source && move_completed_downloads?
+    action = move_completed_downloads? ? "Moving" : "Copying"
+    Rails.logger.info "[PostProcessingJob] #{action} from #{source} to #{destination}"
     validate_ebook_source!(source) if book&.ebook?
     FileUtils.mkdir_p(destination)
+    source_cleanup = nil
 
-    if File.directory?(source)
-      # Copy all files from source directory to destination
+    if directory_source
+      # Import all files from source directory to destination
       # Use Dir.entries instead of Dir.glob to avoid pattern matching issues
       # (e.g., [AUDIOBOOK] in path being treated as character class)
-      # Files are COPIED (not moved) to preserve seeding on private trackers
       files = Dir.entries(source).reject { |f| f.start_with?(".") }
-      Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to copy"
+      Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to import"
       files.each do |file|
         source_file = File.join(source, file)
 
         if book&.ebook?
-          copy_ebook_directory_entry(source_file, destination, book)
+          import_ebook_directory_entry(source_file, destination, book)
         else
-          FileCopyService.cp_r(source_file, destination)
+          import_directory_entry(source_file, destination)
         end
       end
+
+      source_cleanup = -> { remove_import_source_tree(source) } if move_completed_downloads?
     else
-      # Copy single file with renamed filename based on template
-      copy_renamed_file(source, destination, book)
+      # Import single file with renamed filename based on template
+      import_renamed_file(source, destination, book)
     end
 
-    Rails.logger.info "[PostProcessingJob] Copy completed successfully"
+    Rails.logger.info "[PostProcessingJob] #{action} completed successfully"
+    source_cleanup
+  ensure
+    remove_instance_variable(:@defer_source_removal) if instance_variable_defined?(:@defer_source_removal)
   end
 
-  def copy_ebook_directory_entry(source_file, destination, book)
+  def import_ebook_directory_entry(source_file, destination, book)
     if File.directory?(source_file)
       Dir.entries(source_file).reject { |f| f.start_with?(".") }.each do |file|
-        copy_ebook_directory_entry(File.join(source_file, file), destination, book)
+        import_ebook_directory_entry(File.join(source_file, file), destination, book)
       end
     elsif ebook_file?(source_file)
-      copy_renamed_file(source_file, destination, book)
+      import_renamed_file(source_file, destination, book)
     else
-      copy_sidecar_file(source_file, destination)
+      import_sidecar_file(source_file, destination)
     end
   end
 
@@ -253,16 +263,46 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def copy_sidecar_file(source_file, destination)
+  def import_sidecar_file(source_file, destination)
     destination_file = File.join(destination, File.basename(source_file))
     destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
-    FileCopyService.cp(source_file, destination_file)
+    import_file(source_file, destination_file)
   end
 
-  def copy_renamed_file(source, destination, book)
+  def import_renamed_file(source, destination, book)
     destination_file = renamed_destination_file(source, destination, book)
     Rails.logger.info "[PostProcessingJob] Renaming file to: #{File.basename(destination_file)}"
-    FileCopyService.cp(source, destination_file)
+    import_file(source, destination_file)
+  end
+
+  def import_file(source, destination)
+    if move_completed_downloads? && !@defer_source_removal
+      FileCopyService.mv(source, destination)
+    else
+      FileCopyService.cp(source, destination)
+    end
+  end
+
+  def import_directory_entry(source, destination)
+    FileCopyService.cp_r(source, destination)
+  end
+
+  def move_completed_downloads?
+    return @move_completed_downloads if defined?(@move_completed_downloads)
+
+    @move_completed_downloads = SettingsService.get(:move_completed_downloads, default: false)
+  end
+
+  def remove_import_source(source_cleanup)
+    source_cleanup&.call
+  rescue => e
+    Rails.logger.warn "[PostProcessingJob] Failed to remove import source (non-fatal): #{e.message}"
+  end
+
+  def remove_import_source_tree(path)
+    FileUtils.rm_rf(path)
+  rescue Errno::ENOENT
+    nil
   end
 
   def renamed_destination_file(source, destination, book)
@@ -321,7 +361,7 @@ class PostProcessingJob < ApplicationJob
     Rails.logger.warn "[PostProcessingJob] No remapped path exists on disk. Candidates tried:"
     candidates.each { |c| Rails.logger.warn "[PostProcessingJob]   #{c[:strategy]}: #{c[:path]}" }
 
-    # Return the first non-nil candidate so copy_files produces a clear "not found" error
+    # Return the first non-nil candidate so import_files produces a clear "not found" error
     best_guess = candidates.find { |c| c[:path].present? }
     best_guess ? best_guess[:path] : path
   end
