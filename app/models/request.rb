@@ -1,5 +1,8 @@
+require "digest"
+
 class Request < ApplicationRecord
   CREATED_VIA_VALUES = %w[web api telegram].freeze
+  MANUAL_MAGNET_GUID_PREFIX = "manual-magnet"
 
   belongs_to :book
   belongs_to :user
@@ -230,6 +233,7 @@ class Request < ApplicationRecord
 
       update!(
         status: :downloading,
+        next_retry_at: nil,
         attention_needed: false,
         issue_description: nil
       )
@@ -247,6 +251,27 @@ class Request < ApplicationRecord
     )
     DownloadJob.perform_later(download.id)
     download
+  end
+
+  def add_manual_magnet!(magnet_link)
+    magnet_link = magnet_link.to_s.strip
+    raise ArgumentError, "Enter a valid magnet link" unless magnet_link.start_with?("magnet:?")
+    raise ArgumentError, "Cannot add a magnet link to a completed request" if completed?
+
+    search_result = search_results.find_or_initialize_by(guid: manual_magnet_guid(magnet_link))
+    search_result.assign_attributes(
+      title: "Manual magnet for #{book.display_name}",
+      magnet_url: magnet_link,
+      source: SearchResult::SOURCE_MANUAL_MAGNET,
+      indexer: "Manual Magnet",
+      seeders: nil,
+      leechers: nil,
+      download_url: nil,
+      status: :pending
+    )
+    search_result.save!
+
+    select_result!(search_result)
   end
 
   def next_retry_in_words
@@ -291,6 +316,10 @@ class Request < ApplicationRecord
       level: level,
       details: details
     )
+  end
+
+  def manual_magnet_guid(magnet_link)
+    "#{MANUAL_MAGNET_GUID_PREFIX}:#{Digest::SHA256.hexdigest(magnet_link)}"
   end
 
   def set_default_language

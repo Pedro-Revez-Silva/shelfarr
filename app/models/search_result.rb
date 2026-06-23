@@ -22,6 +22,7 @@ class SearchResult < ApplicationRecord
   SOURCE_GUTENBERG = "gutenberg"
   SOURCE_LIBRIVOX = "librivox"
   SOURCE_CUSTOM = "custom"
+  SOURCE_MANUAL_MAGNET = "manual_magnet"
 
   validates :guid, presence: true, uniqueness: { scope: :request_id }
   validates :title, presence: true
@@ -263,6 +264,8 @@ class SearchResult < ApplicationRecord
       "LibriVox"
     when SOURCE_CUSTOM
       acquisition_provider&.name || indexer.presence || "Custom Provider"
+    when SOURCE_MANUAL_MAGNET
+      "Manual Magnet"
     else
       indexer.presence || "Prowlarr"
     end
