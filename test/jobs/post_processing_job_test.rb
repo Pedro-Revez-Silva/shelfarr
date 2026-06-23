@@ -121,14 +121,14 @@ class PostProcessingJobTest < ActiveJob::TestCase
     original_file = File.join(@temp_source, "audiobook.mp3")
     assert File.exist?(original_file), "Source file should exist before processing"
 
-    FileCopyService.stub(:cp_r, ->(*) { flunk "Move imports should not copy directory entries" }) do
+    FileCopyService.stub(:mv, ->(*) { flunk "Directory imports should copy entries, not move them individually" }) do
       PostProcessingJob.perform_now(@download.id)
     end
 
     expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
     assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "Destination file should exist"
-    assert_not File.exist?(original_file), "Source file should be moved out of the download folder"
-    assert_not File.exist?(@temp_source), "Empty source download folder should be removed"
+    assert_not File.exist?(original_file), "Source file should be removed after successful import"
+    assert_not File.exist?(@temp_source), "Source download folder should be removed after successful import"
   end
 
   test "moves and renames single file imports when enabled" do
@@ -141,7 +141,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobook_filename_template, "{author} - {title}")
     SettingsService.set(:move_completed_downloads, true)
 
-    FileCopyService.stub(:cp, ->(*) { flunk "Move imports should not copy files" }) do
+    FileCopyService.stub(:cp, ->(*) { flunk "Single-file move imports should not copy files" }) do
       PostProcessingJob.perform_now(@download.id)
     end
 
@@ -150,13 +150,33 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(source_file), "Source file should no longer exist after move import"
   end
 
-  test "keeps source file when move import fails" do
+  test "falls back to buffered move when NFS copy_file_range fails for single files" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.write(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+
     SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_filename_template, "{author} - {title}")
     SettingsService.set(:move_completed_downloads, true)
 
+    FileUtils.stub(:mv, ->(*) { raise Errno::EACCES, "copy_file_range" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.m4b"))
+    assert_not File.exist?(source_file), "Source file should be removed after buffered move fallback"
+  end
+
+  test "keeps source file when move import fails" do
     failing_file = File.join(@temp_source, "fail.mp3")
     File.write(failing_file, "copy failure")
-    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: failing_file)
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:move_completed_downloads, true)
 
     FileUtils.stub(:mv, ->(*) { raise Errno::EACCES, "permission denied" }) do
       PostProcessingJob.perform_now(@download.id)
@@ -186,7 +206,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:move_completed_downloads, true)
 
-    FileCopyService.stub(:cp, ->(*) { flunk "Move imports should not copy ebook files" }) do
+    FileCopyService.stub(:mv, ->(*) { flunk "Ebook directory imports should copy files, not move them individually" }) do
       PostProcessingJob.perform_now(@download.id)
     end
 
@@ -195,7 +215,42 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(expected_dest, "Michael Crichton - Jurassic Park (1990).epub"))
     assert File.exist?(File.join(expected_dest, "cover.jpg"))
     assert_not File.exist?(nested_source), "Nested ebook source folder should be removed after a move import"
-    assert_not File.exist?(@temp_source), "Empty ebook source folder should be removed after a move import"
+    assert_not File.exist?(@temp_source), "Ebook source folder should be removed after a move import"
+  end
+
+  test "keeps source directory intact when directory import fails with move enabled" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:move_completed_downloads, true)
+
+    File.write(File.join(@temp_source, "second.mp3"), "second file")
+    original_file = File.join(@temp_source, "audiobook.mp3")
+
+    FileCopyService.stub(:cp_r, ->(source, _destination) {
+      raise "import failed" if File.basename(source) == "second.mp3"
+    }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.attention_needed?
+    assert File.exist?(original_file), "First source file should remain when a later import fails"
+    assert File.exist?(File.join(@temp_source, "second.mp3")), "Failing source file should remain after partial import"
+    assert File.exist?(@temp_source), "Source download folder should remain after failed import"
+  end
+
+  test "completes request when import source removal fails non-fatally" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:move_completed_downloads, true)
+
+    FileUtils.stub(:rm_rf, ->(*) { raise Errno::EACCES, "permission denied" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    @request.reload
+    assert @request.completed?
+    assert_not @request.attention_needed?
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
   end
 
   test "updates book file_path after processing" do

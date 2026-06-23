@@ -32,13 +32,14 @@ class PostProcessingJob < ApplicationJob
       cleanup_usenet_download(download)
 
       book.update!(file_path: destination)
+      remove_import_source(source_cleanup)
+
       request.complete!
 
       # Pre-create zip for directories (audiobooks) so download is instant
       pre_create_download_zip(book, destination) if File.directory?(destination)
 
       trigger_library_scan(book) if AudiobookshelfClient.configured?
-      source_cleanup&.call
 
       NotificationService.request_completed(request)
 
@@ -133,13 +134,15 @@ class PostProcessingJob < ApplicationJob
       raise source_path_not_found_message(source)
     end
 
+    directory_source = File.directory?(source)
+    @defer_source_removal = directory_source && move_completed_downloads?
     action = move_completed_downloads? ? "Moving" : "Copying"
     Rails.logger.info "[PostProcessingJob] #{action} from #{source} to #{destination}"
     validate_ebook_source!(source) if book&.ebook?
     FileUtils.mkdir_p(destination)
     source_cleanup = nil
 
-    if File.directory?(source)
+    if directory_source
       # Import all files from source directory to destination
       # Use Dir.entries instead of Dir.glob to avoid pattern matching issues
       # (e.g., [AUDIOBOOK] in path being treated as character class)
@@ -155,7 +158,7 @@ class PostProcessingJob < ApplicationJob
         end
       end
 
-      source_cleanup = -> { remove_empty_directory(source) } if move_completed_downloads?
+      source_cleanup = -> { remove_import_source_tree(source) } if move_completed_downloads?
     else
       # Import single file with renamed filename based on template
       import_renamed_file(source, destination, book)
@@ -163,6 +166,8 @@ class PostProcessingJob < ApplicationJob
 
     Rails.logger.info "[PostProcessingJob] #{action} completed successfully"
     source_cleanup
+  ensure
+    remove_instance_variable(:@defer_source_removal) if instance_variable_defined?(:@defer_source_removal)
   end
 
   def import_ebook_directory_entry(source_file, destination, book)
@@ -170,7 +175,6 @@ class PostProcessingJob < ApplicationJob
       Dir.entries(source_file).reject { |f| f.start_with?(".") }.each do |file|
         import_ebook_directory_entry(File.join(source_file, file), destination, book)
       end
-      remove_empty_directory(source_file) if move_completed_downloads?
     elsif ebook_file?(source_file)
       import_renamed_file(source_file, destination, book)
     else
@@ -272,34 +276,15 @@ class PostProcessingJob < ApplicationJob
   end
 
   def import_file(source, destination)
-    if move_completed_downloads?
-      move_file_or_directory(source, destination)
+    if move_completed_downloads? && !@defer_source_removal
+      FileCopyService.mv(source, destination)
     else
       FileCopyService.cp(source, destination)
     end
   end
 
   def import_directory_entry(source, destination)
-    if move_completed_downloads?
-      move_file_or_directory(source, destination)
-    else
-      FileCopyService.cp_r(source, destination)
-    end
-  end
-
-  def move_file_or_directory(source, destination)
-    FileUtils.mv(source, destination)
-  rescue Errno::EACCES => e
-    raise unless e.message.include?("copy_file_range")
-
-    Rails.logger.info "[PostProcessingJob] move fallback using buffered copy for #{File.basename(source)}"
-    if File.directory?(source)
-      FileCopyService.cp_r(source, destination)
-      FileUtils.rm_rf(source)
-    else
-      FileCopyService.cp(source, destination)
-      FileUtils.rm_f(source)
-    end
+    FileCopyService.cp_r(source, destination)
   end
 
   def move_completed_downloads?
@@ -308,9 +293,15 @@ class PostProcessingJob < ApplicationJob
     @move_completed_downloads = SettingsService.get(:move_completed_downloads, default: false)
   end
 
-  def remove_empty_directory(path)
-    FileUtils.rmdir(path)
-  rescue Errno::ENOENT, Errno::ENOTEMPTY
+  def remove_import_source(source_cleanup)
+    source_cleanup&.call
+  rescue => e
+    Rails.logger.warn "[PostProcessingJob] Failed to remove import source (non-fatal): #{e.message}"
+  end
+
+  def remove_import_source_tree(path)
+    FileUtils.rm_rf(path)
+  rescue Errno::ENOENT
     nil
   end
 
