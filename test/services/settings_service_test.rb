@@ -176,4 +176,91 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
     assert_equal [], SettingsService.enabled_metadata_providers
   end
+
+  test "env override takes precedence over a stored string value" do
+    SettingsService.set(:oidc_issuer, "https://db.example.com")
+
+    with_env("SHELFARR_SETTING_OIDC_ISSUER" => "https://env.example.com") do
+      assert_equal "https://env.example.com", SettingsService.get(:oidc_issuer)
+      assert SettingsService.env_managed?(:oidc_issuer)
+    end
+
+    # Reverts to the database value once the variable is gone.
+    assert_equal "https://db.example.com", SettingsService.get(:oidc_issuer)
+    assert_not SettingsService.env_managed?(:oidc_issuer)
+  end
+
+  test "env override supplies a value when no row exists (survives a DB wipe)" do
+    Setting.where(key: "oidc_client_secret").delete_all
+
+    with_env("SHELFARR_SETTING_OIDC_CLIENT_SECRET" => "from-secret") do
+      assert_equal "from-secret", SettingsService.get(:oidc_client_secret)
+    end
+  end
+
+  test "env override casts booleans, integers, and json to the declared type" do
+    with_env(
+      "SHELFARR_SETTING_OIDC_ENABLED" => "true",
+      "SHELFARR_SETTING_QUEUE_BATCH_SIZE" => "12",
+      "SHELFARR_SETTING_ENABLED_LANGUAGES" => '["en","fr"]'
+    ) do
+      assert_equal true, SettingsService.get(:oidc_enabled)
+      assert_equal 12, SettingsService.get(:queue_batch_size)
+      assert_equal %w[en fr], SettingsService.get(:enabled_languages)
+    end
+  end
+
+  test "env override can disable a setting enabled in the database" do
+    SettingsService.set(:oidc_enabled, true)
+
+    with_env("SHELFARR_SETTING_OIDC_ENABLED" => "false") do
+      assert_equal false, SettingsService.get(:oidc_enabled)
+    end
+  end
+
+  test "oidc and webhook configured? honor env overrides without any DB rows" do
+    Setting.where(key: %w[oidc_enabled oidc_issuer oidc_client_id oidc_client_secret webhook_enabled webhook_url]).delete_all
+
+    with_env(
+      "SHELFARR_SETTING_OIDC_ENABLED" => "true",
+      "SHELFARR_SETTING_OIDC_ISSUER" => "https://auth.example.com",
+      "SHELFARR_SETTING_OIDC_CLIENT_ID" => "shelfarr",
+      "SHELFARR_SETTING_OIDC_CLIENT_SECRET" => "s3cret",
+      "SHELFARR_SETTING_WEBHOOK_ENABLED" => "true",
+      "SHELFARR_SETTING_WEBHOOK_URL" => "http://hook.example.com:9000/"
+    ) do
+      assert SettingsService.oidc_configured?
+      assert SettingsService.configured?(:webhook_url)
+    end
+  end
+
+  test "env_managed_keys lists only keys present in the environment" do
+    with_env("SHELFARR_SETTING_WEBHOOK_URL" => "http://hook.example.com/") do
+      assert_includes SettingsService.env_managed_keys, :webhook_url
+      assert_not_includes SettingsService.env_managed_keys, :oidc_issuer
+    end
+  end
+
+  test "env_override_name builds the SHELFARR_SETTING_ variable name" do
+    assert_equal "SHELFARR_SETTING_OIDC_CLIENT_SECRET", SettingsService.env_override_name(:oidc_client_secret)
+  end
+
+  private
+
+  def with_env(vars)
+    previous = {}
+    vars.each do |name, value|
+      previous[name] = ENV.key?(name) ? ENV[name] : :__absent__
+      ENV[name] = value
+    end
+    yield
+  ensure
+    previous.each do |name, value|
+      if value == :__absent__
+        ENV.delete(name)
+      else
+        ENV[name] = value
+      end
+    end
+  end
 end

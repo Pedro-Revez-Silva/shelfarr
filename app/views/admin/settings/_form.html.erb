@@ -79,7 +79,9 @@
                       <p class="text-sm text-gray-500"><%= data[:definition][:description] %></p>
                     </div>
                     <div class="md:w-2/3">
-                      <% if key.to_s == "preferred_download_types" %>
+                      <% if data[:env_managed] %>
+                        <%= render "admin/settings/env_managed_field", key: key, data: data %>
+                      <% elsif key.to_s == "preferred_download_types" %>
                         <%= render "admin/settings/download_type_preferences_field", form: form, key: key, ordered_types: SettingsService.preferred_download_types %>
                       <% else %>
                       <% case data[:definition][:type] %>

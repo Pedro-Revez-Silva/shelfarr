@@ -13,6 +13,11 @@ module Admin
       key = params[:id]
       value = params[:setting][:value]
 
+      if SettingsService.env_managed?(key)
+        return redirect_to admin_settings_path,
+          alert: "#{key.to_s.titleize} is managed by the environment and cannot be changed here."
+      end
+
       validate_path_template!(key, value)
       SettingsService.set(key, value)
       handle_settings_side_effects([ key.to_s ])
@@ -29,6 +34,11 @@ module Admin
       errors = []
 
       params[:settings]&.each do |key, value|
+        # Env-managed settings are read-only; the env override wins on read, so
+        # never persist a shadowed value (the field isn't rendered, but guard the
+        # raw params too).
+        next if SettingsService.env_managed?(key)
+
         error = validate_path_template(key, value)
         if error
           errors << "#{key.to_s.titleize}: #{error}"

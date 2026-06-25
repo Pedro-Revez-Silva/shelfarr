@@ -1,4 +1,17 @@
 class SettingsService
+  # Config-as-code surface. Any setting can be overridden from the environment
+  # with SHELFARR_SETTING_<KEY> (uppercased key). When the variable is present it
+  # takes precedence over the database value, cast to the setting's declared type
+  # (booleans/integers/json strings are parsed the same way a stored value is).
+  #
+  # Semantics: the environment is the source of truth and the database is a
+  # cache. An env-managed setting is read-only in the admin UI and survives a
+  # database wipe/restore with no manual re-entry — which makes secrets (OIDC
+  # client secret) and integration wiring (webhook URL/events) declarable from a
+  # mounted Secret/ConfigMap and reconcilable by tools like Flux. Keys left out
+  # of the environment stay fully UI-managed as before.
+  ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
+
   DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
@@ -229,6 +242,8 @@ class SettingsService
     # Primary getter with default fallback
     def get(key, default: nil)
       key = key.to_sym
+
+      return env_override_value(key) if env_managed?(key)
       return preferred_download_types if key == :preferred_download_types
 
       value = raw_setting_value(key)
@@ -236,6 +251,22 @@ class SettingsService
 
       definition = DEFINITIONS[key]
       definition ? definition[:default] : default
+    end
+
+    # Environment variable name that overrides a given setting key.
+    def env_override_name(key)
+      "#{ENV_OVERRIDE_PREFIX}#{key.to_s.upcase}"
+    end
+
+    # True when the setting is being supplied from the environment. Such keys are
+    # read-only in the admin UI (editing the DB row has no effect).
+    def env_managed?(key)
+      ENV.key?(env_override_name(key))
+    end
+
+    # All known settings currently sourced from the environment.
+    def env_managed_keys
+      DEFINITIONS.keys.select { |key| env_managed?(key) }
     end
 
     # Primary setter
@@ -276,7 +307,9 @@ class SettingsService
         keys.each_with_object({}) do |key, hash|
           hash[key] = {
             value: get(key),
-            definition: DEFINITIONS[key]
+            definition: DEFINITIONS[key],
+            env_managed: env_managed?(key),
+            env_var: env_override_name(key)
           }
         end
       end
@@ -518,6 +551,17 @@ class SettingsService
       return setting.typed_value if setting
 
       DEFINITIONS[key.to_sym]&.dig(:default)
+    end
+
+    # Value of an env override, cast to the key's declared type. Reuses the
+    # Setting model's type casting so booleans/integers/json parse identically to
+    # a stored value. Unknown keys fall back to the raw string.
+    def env_override_value(key)
+      raw = ENV[env_override_name(key)]
+      definition = DEFINITIONS[key.to_sym]
+      return raw unless definition
+
+      Setting.new(value_type: definition[:type], value: raw).typed_value
     end
 
     def normalize_download_types(values)

@@ -1,0 +1,23 @@
+<%# Read-only display for a setting sourced from the environment.
+    Editing the DB row would have no effect (the env override wins in
+    SettingsService.get), so we render the effective value instead of an input
+    and surface the controlling variable behind a hover tooltip on the lock
+    icon — keeping the row as compact as a normal field. No form field is
+    emitted, so a Save All never writes a shadowed value back to the database. %>
+<% secret = key.to_s.include?("password") || key.to_s.include?("api_key") || key.to_s.include?("token") || key.to_s.include?("secret") %>
+<% display = data[:value].is_a?(Array) ? data[:value].join(", ") : data[:value].to_s %>
+<% display = display.present? ? display : "(empty)" %>
+<% display = "********" if secret && data[:value].to_s.present? %>
+<% display = (display == "true" ? "true" : "false") if data[:definition][:type] == "boolean" %>
+<div class="relative">
+  <div class="w-full rounded-md border border-gray-700 bg-gray-950/60 px-3 py-2 pr-10 text-gray-400 font-mono text-sm break-all">
+    <%= display %>
+  </div>
+  <span class="absolute inset-y-0 right-0 flex items-center pr-3 text-amber-400/80 cursor-help"
+        title="Managed by environment variable <%= data[:env_var] %> — read-only">
+    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+    </svg>
+    <span class="sr-only">Managed by environment variable <%= data[:env_var] %>, read-only</span>
+  </span>
+</div>
