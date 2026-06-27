@@ -189,6 +189,12 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert SettingsService.bookorbit_library_platform?
   end
 
+  test "label_for uses brand and neutral library platform labels" do
+    assert_equal "BookOrbit URL", SettingsService.label_for(:bookorbit_url)
+    assert_equal "Audiobook Library", SettingsService.label_for(:audiobookshelf_audiobook_library_id)
+    assert_equal "Max Retries", SettingsService.label_for(:max_retries)
+  end
+
   test "audiobookshelf_configured? checks active platform credentials" do
     SettingsService.set(:library_platform, "audiobookshelf")
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")

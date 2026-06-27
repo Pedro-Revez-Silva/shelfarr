@@ -230,7 +230,23 @@ class SettingsService
     "oidc" => "OIDC/SSO Authentication"
   }.freeze
 
+  LABELS = {
+    library_platform: "Active Library Platform",
+    audiobookshelf_url: "Audiobookshelf URL",
+    audiobookshelf_api_key: "Audiobookshelf API Key",
+    bookorbit_url: "BookOrbit URL",
+    bookorbit_username: "BookOrbit Username",
+    bookorbit_password: "BookOrbit Password",
+    audiobookshelf_audiobook_library_id: "Audiobook Library",
+    audiobookshelf_ebook_library_id: "Ebook Library",
+    audiobookshelf_library_sync_interval: "Library Sync Interval"
+  }.freeze
+
   class << self
+    def label_for(key)
+      LABELS.fetch(key.to_sym, key.to_s.titleize)
+    end
+
     # Primary getter with default fallback
     def get(key, default: nil)
       key = key.to_sym

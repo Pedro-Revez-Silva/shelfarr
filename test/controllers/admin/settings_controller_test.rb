@@ -190,6 +190,23 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "index shows neutral and brand-correct library platform labels" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label[for='settings_library_platform']", text: "Active Library Platform"
+    assert_select "label[for='settings_audiobookshelf_url']", text: "Audiobookshelf URL"
+    assert_select "label[for='settings_audiobookshelf_api_key']", text: "Audiobookshelf API Key"
+    assert_select "label[for='settings_bookorbit_url']", text: "BookOrbit URL"
+    assert_select "label[for='settings_bookorbit_username']", text: "BookOrbit Username"
+    assert_select "label[for='settings_bookorbit_password']", text: "BookOrbit Password"
+    assert_select "label[for='settings_audiobookshelf_audiobook_library_id']", text: "Audiobook Library"
+    assert_select "label[for='settings_audiobookshelf_ebook_library_id']", text: "Ebook Library"
+    assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval"
+    assert_no_match /Bookorbit/, @response.body
+    assert_no_match /Audiobookshelf Audiobook Library/, @response.body
+  end
+
   test "index shows text input when audiobookshelf not configured" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobookshelf_api_key, "")
