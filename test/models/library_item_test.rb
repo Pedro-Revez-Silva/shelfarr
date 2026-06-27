@@ -17,7 +17,16 @@ class LibraryItemTest < ActiveSupport::TestCase
   test "audiobookshelf_url uses BookOrbit book route when BookOrbit is active" do
     SettingsService.set(:library_platform, "bookorbit")
     SettingsService.set(:bookorbit_url, "http://bookorbit.example")
-    item = LibraryItem.new(audiobookshelf_id: "42")
+    item = LibraryItem.new(library_platform: "bookorbit", audiobookshelf_id: "42")
+
+    assert_equal "http://bookorbit.example/book/42", item.audiobookshelf_url
+  end
+
+  test "audiobookshelf_url uses item platform rather than active platform" do
+    SettingsService.set(:library_platform, "audiobookshelf")
+    SettingsService.set(:audiobookshelf_url, "http://abs.example")
+    SettingsService.set(:bookorbit_url, "http://bookorbit.example")
+    item = LibraryItem.new(library_platform: "bookorbit", audiobookshelf_id: "42")
 
     assert_equal "http://bookorbit.example/book/42", item.audiobookshelf_url
   end

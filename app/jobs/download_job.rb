@@ -231,7 +231,7 @@ class DownloadJob < ApplicationJob
 
     book.update!(file_path: destination_dir)
     download.request.complete!
-    trigger_library_scan(book) if AudiobookshelfClient.configured?
+    trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
     track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
 
@@ -264,7 +264,7 @@ class DownloadJob < ApplicationJob
 
     book.update!(file_path: destination_dir)
     download.request.complete!
-    trigger_library_scan(book) if AudiobookshelfClient.configured?
+    trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
     track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
 
@@ -309,7 +309,7 @@ class DownloadJob < ApplicationJob
     download.request.complete!
 
     # Trigger library scan if configured
-    trigger_library_scan(book) if AudiobookshelfClient.configured?
+    trigger_library_scan(book) if LibraryPlatformClient.configured?
 
     # Send notification
     NotificationService.request_completed(download.request)
@@ -672,9 +672,9 @@ class DownloadJob < ApplicationJob
 
     return unless lib_id.present?
 
-    AudiobookshelfClient.scan_library(lib_id)
-    Rails.logger.info "[DownloadJob] Triggered Audiobookshelf library scan for #{book.book_type}"
-  rescue AudiobookshelfClient::Error => e
+    LibraryPlatformClient.scan_library(lib_id)
+    Rails.logger.info "[DownloadJob] Triggered #{LibraryPlatformClient.display_name} library scan for #{book.book_type}"
+  rescue LibraryPlatformClient::Error => e
     Rails.logger.warn "[DownloadJob] Failed to trigger scan: #{e.message}"
   end
 

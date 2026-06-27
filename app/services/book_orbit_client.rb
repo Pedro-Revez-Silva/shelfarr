@@ -78,7 +78,7 @@ class BookOrbitClient
     end
 
     def configured?
-      SettingsService.bookorbit_library_platform? && SettingsService.audiobookshelf_configured?
+      SettingsService.bookorbit_configured?
     end
 
     def test_connection

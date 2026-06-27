@@ -6,7 +6,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   setup do
     @admin = users(:two)
     sign_in_as(@admin)
-    AudiobookshelfClient.reset_connection!
+    LibraryPlatformClient.reset_connections!
     ProwlarrClient.reset_connection!
     FlaresolverrClient.reset_connection!
     GoogleBooksClient.reset_connection!
@@ -15,7 +15,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   teardown do
-    AudiobookshelfClient.reset_connection!
+    LibraryPlatformClient.reset_connections!
     ProwlarrClient.reset_connection!
     FlaresolverrClient.reset_connection!
     GoogleBooksClient.reset_connection!
@@ -50,6 +50,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index shows indexer provider dropdown" do
+    SettingsService.set(:prowlarr_api_key, "stored-prowlarr-secret")
+
     get admin_settings_url
 
     assert_response :success
@@ -59,6 +61,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "option[value='newznab']", text: "NZBHydra2 / Newznab"
     assert_select "input[name='settings[newznab_url]']"
     assert_select "input[name='settings[newznab_api_key]']"
+    assert_select "input[type='password'][name='settings[prowlarr_api_key]'][value='']"
+    assert_no_match /stored-prowlarr-secret/, @response.body
   end
 
   test "index shows google books and open library test buttons" do
@@ -267,6 +271,33 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 7, SettingsService.get(:max_retries)
   end
 
+  test "update preserves existing secret when blank secret value submitted" do
+    SettingsService.set(:prowlarr_api_key, "existing-secret")
+
+    patch admin_setting_url("prowlarr_api_key"), params: {
+      setting: { value: "" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "existing-secret", SettingsService.get(:prowlarr_api_key)
+  end
+
+  test "bulk_update preserves existing secrets when blank secret values submitted" do
+    SettingsService.set(:prowlarr_api_key, "existing-prowlarr-secret")
+    SettingsService.set(:discord_webhook_url, "https://discord.com/api/webhooks/123/token")
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        prowlarr_api_key: "",
+        discord_webhook_url: ""
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "existing-prowlarr-secret", SettingsService.get(:prowlarr_api_key)
+    assert_equal "https://discord.com/api/webhooks/123/token", SettingsService.get(:discord_webhook_url)
+  end
+
   test "update rejects invalid single path template" do
     patch admin_setting_url("audiobook_path_template"), params: {
       setting: { value: "{invalid_var}" }
@@ -288,13 +319,16 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index shows Discord notification settings" do
+    SettingsService.set(:discord_webhook_url, "https://discord.com/api/webhooks/123/token")
+
     get admin_settings_url
 
     assert_response :success
     assert_select "label", text: "Discord Enabled"
     assert_select "input[name='settings[discord_enabled]']"
-    assert_select "input[type='password'][name='settings[discord_webhook_url]']"
+    assert_select "input[type='password'][name='settings[discord_webhook_url]'][value='']"
     assert_select "input[name='settings[discord_events]']"
+    assert_no_match %r{https://discord\.com/api/webhooks/123/token}, @response.body
     assert_select "a", text: "Send Test Discord"
   end
 
@@ -934,7 +968,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
 
-    AudiobookshelfClient.stub(:test_connection, -> { raise AudiobookshelfClient::Error, "abs boom" }) do
+    LibraryPlatformClient.stub(:test_connection, -> { raise LibraryPlatformClient::Error, "abs boom" }) do
       post test_audiobookshelf_admin_settings_url
     end
 

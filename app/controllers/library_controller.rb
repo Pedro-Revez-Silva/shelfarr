@@ -48,10 +48,10 @@ class LibraryController < ApplicationController
       remove_associated_torrents(@book)
     end
 
-    # Delete book files from disk if requested
-    # Also removes from Audiobookshelf if configured
+    # Delete book files from disk if requested.
+    # Also asks the active library platform to remove its item if supported.
     if params[:delete_files] == "1" && @book.file_path.present?
-      delete_from_audiobookshelf(@book)
+      delete_from_library_platform(@book)
       delete_book_files(@book)
     end
 
@@ -125,16 +125,16 @@ class LibraryController < ApplicationController
     end
   end
 
-  def delete_from_audiobookshelf(book)
-    return unless AudiobookshelfClient.configured?
+  def delete_from_library_platform(book)
+    return unless LibraryPlatformClient.configured?
     return unless book.file_path.present?
 
-    if AudiobookshelfClient.delete_item_by_path(book.file_path)
-      Rails.logger.info "[LibraryController] Deleted book from Audiobookshelf: #{book.file_path}"
+    if LibraryPlatformClient.delete_item_by_path(book.file_path)
+      Rails.logger.info "[LibraryController] Deleted book from #{LibraryPlatformClient.display_name}: #{book.file_path}"
     else
-      Rails.logger.warn "[LibraryController] Book not found in Audiobookshelf: #{book.file_path}"
+      Rails.logger.warn "[LibraryController] Book not found in #{LibraryPlatformClient.display_name}: #{book.file_path}"
     end
-  rescue AudiobookshelfClient::Error => e
-    Rails.logger.error "[LibraryController] Failed to delete from Audiobookshelf: #{e.message}"
+  rescue LibraryPlatformClient::Error => e
+    Rails.logger.error "[LibraryController] Failed to delete from #{LibraryPlatformClient.display_name}: #{e.message}"
   end
 end

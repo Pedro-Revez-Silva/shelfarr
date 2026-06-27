@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_15_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_06_22_000000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -156,6 +156,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_15_120000) do
     t.string "isbn"
     t.string "language"
     t.string "library_id", null: false
+    t.string "library_platform", default: "audiobookshelf", null: false
     t.boolean "missing", default: false, null: false
     t.string "narrator"
     t.integer "published_year"
@@ -167,8 +168,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_15_120000) do
     t.string "title"
     t.datetime "updated_at", null: false
     t.index ["isbn"], name: "index_library_items_on_isbn"
-    t.index ["library_id", "audiobookshelf_id"], name: "index_library_items_on_library_id_and_audiobookshelf_id", unique: true
     t.index ["library_id"], name: "index_library_items_on_library_id"
+    t.index ["library_platform", "library_id", "audiobookshelf_id"], name: "idx_on_library_platform_library_id_audiobookshelf_i_c1fd6c7905", unique: true
+    t.index ["library_platform"], name: "index_library_items_on_library_platform"
     t.index ["missing"], name: "index_library_items_on_missing"
     t.index ["synced_at"], name: "index_library_items_on_synced_at"
   end

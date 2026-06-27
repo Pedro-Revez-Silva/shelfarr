@@ -5,6 +5,7 @@ require "test_helper"
 class AudiobookshelfLibraryMatcherServiceTest < ActiveSupport::TestCase
   setup do
     LibraryItem.destroy_all
+    SettingsService.set(:library_platform, "audiobookshelf")
 
     LibraryItem.create!(
       library_id: "lib-audio",
@@ -100,5 +101,17 @@ class AudiobookshelfLibraryMatcherServiceTest < ActiveSupport::TestCase
     )
 
     assert_equal [ "ab-1" ], matches.map { |match| match.item.audiobookshelf_id }
+  end
+
+  test "ignores cached items from inactive library platforms" do
+    SettingsService.set(:library_platform, "bookorbit")
+
+    matches = AudiobookshelfLibraryMatcherService.new.matches_for(
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      limit: 5
+    )
+
+    assert_empty matches
   end
 end

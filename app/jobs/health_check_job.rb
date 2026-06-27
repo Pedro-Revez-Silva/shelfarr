@@ -184,23 +184,23 @@ class HealthCheckJob < ApplicationJob
   def check_audiobookshelf
     health = SystemHealth.for_service("audiobookshelf")
 
-    unless AudiobookshelfClient.configured?
+    unless LibraryPlatformClient.configured?
       health.mark_not_configured!
       return
     end
 
-    if AudiobookshelfClient.test_connection
+    if LibraryPlatformClient.test_connection
       health.check_succeeded!(message: "Connection successful")
     else
-      health.check_failed!(message: "Failed to connect to #{AudiobookshelfClient.display_name}")
+      health.check_failed!(message: "Failed to connect to #{LibraryPlatformClient.display_name}")
     end
-  rescue AudiobookshelfClient::AuthenticationError => e
+  rescue LibraryPlatformClient::AuthenticationError => e
     health.check_failed!(message: "Authentication failed: #{e.message}")
-  rescue AudiobookshelfClient::ConnectionError => e
+  rescue LibraryPlatformClient::ConnectionError => e
     health.check_failed!(message: "Connection error: #{e.message}")
   rescue => e
     health.check_failed!(message: "Error: #{e.message}")
-    Rails.logger.error "[HealthCheckJob] #{AudiobookshelfClient.display_name} check failed: #{e.message}"
+    Rails.logger.error "[HealthCheckJob] #{LibraryPlatformClient.display_name} check failed: #{e.message}"
   end
 
   def check_hardcover

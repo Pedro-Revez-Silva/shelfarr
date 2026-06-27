@@ -2,6 +2,7 @@ class SettingsService
   DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
+  LIBRARY_PLATFORMS = %w[audiobookshelf bookorbit].freeze
   INDEXER_SEARCH_SCOPES = %w[broad strict unrestricted custom].freeze
   INDEXER_SEARCH_SCOPE_OPTIONS = {
     "broad" => {
@@ -366,16 +367,28 @@ class SettingsService
     end
 
     def audiobookshelf_configured?
+      library_platform_configured?
+    end
+
+    def library_platform_configured?
       if bookorbit_library_platform?
-        configured?(:bookorbit_url) && configured?(:bookorbit_username) && configured?(:bookorbit_password)
+        bookorbit_configured?
       else
-        configured?(:audiobookshelf_url) && configured?(:audiobookshelf_api_key)
+        audiobookshelf_credentials_configured?
       end
+    end
+
+    def audiobookshelf_credentials_configured?
+      configured?(:audiobookshelf_url) && configured?(:audiobookshelf_api_key)
+    end
+
+    def bookorbit_configured?
+      configured?(:bookorbit_url) && configured?(:bookorbit_username) && configured?(:bookorbit_password)
     end
 
     def active_library_platform
       platform = get(:library_platform).to_s.strip.downcase
-      %w[audiobookshelf bookorbit].include?(platform) ? platform : "audiobookshelf"
+      LIBRARY_PLATFORMS.include?(platform) ? platform : "audiobookshelf"
     end
 
     def bookorbit_library_platform?

@@ -131,7 +131,7 @@ class SearchController < ApplicationController
   end
 
   def audiobookshelf_matches_for(results)
-    if results.any? && LibraryItem.exists?
+    if results.any? && LibraryItem.available_for_matching.exists?
       AudiobookshelfLibraryMatcherService.matches_for_many(results, limit_per_result: 3)
     else
       Array.new(results.size) { [] }

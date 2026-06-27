@@ -4,7 +4,7 @@ require "test_helper"
 
 class BookOrbitClientTest < ActiveSupport::TestCase
   setup do
-    AudiobookshelfClient.reset_connection!
+    LibraryPlatformClient.reset_connections!
     SettingsService.set(:library_platform, "bookorbit")
     SettingsService.set(:bookorbit_url, "http://localhost:3000")
     SettingsService.set(:bookorbit_username, "admin")
@@ -12,14 +12,14 @@ class BookOrbitClientTest < ActiveSupport::TestCase
   end
 
   teardown do
-    AudiobookshelfClient.reset_connection!
+    LibraryPlatformClient.reset_connections!
     SettingsService.set(:library_platform, "audiobookshelf")
   end
 
   test "configured? returns true when BookOrbit is selected and credentials are present" do
     assert BookOrbitClient.configured?
-    assert AudiobookshelfClient.configured?
-    assert_equal "BookOrbit", AudiobookshelfClient.display_name
+    assert LibraryPlatformClient.configured?
+    assert_equal "BookOrbit", LibraryPlatformClient.display_name
   end
 
   test "libraries logs in and returns BookOrbit libraries" do
@@ -39,7 +39,7 @@ class BookOrbitClientTest < ActiveSupport::TestCase
           ].to_json
         )
 
-      libraries = AudiobookshelfClient.libraries
+      libraries = LibraryPlatformClient.libraries
 
       assert_equal 1, libraries.size
       assert_equal "42", libraries.first.id
@@ -93,7 +93,7 @@ class BookOrbitClientTest < ActiveSupport::TestCase
           }.to_json
         )
 
-      items = AudiobookshelfClient.library_items("42")
+      items = LibraryPlatformClient.library_items("42")
 
       assert_equal 2, items.size
       assert_equal "101", items.first["audiobookshelf_id"]
@@ -117,7 +117,7 @@ class BookOrbitClientTest < ActiveSupport::TestCase
         .with(headers: { "Authorization" => "Bearer bookorbit-token" })
         .to_return(status: 202, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
 
-      assert AudiobookshelfClient.scan_library("42")
+      assert LibraryPlatformClient.scan_library("42")
     end
   end
 
@@ -126,8 +126,8 @@ class BookOrbitClientTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:3000/api/v1/auth/login")
         .to_return(status: 401, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
 
-      assert_raises AudiobookshelfClient::AuthenticationError do
-        AudiobookshelfClient.libraries
+      assert_raises LibraryPlatformClient::AuthenticationError do
+        LibraryPlatformClient.libraries
       end
     end
   end

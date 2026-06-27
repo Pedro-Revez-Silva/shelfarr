@@ -97,8 +97,8 @@ class UploadProcessingJob < ApplicationJob
         completed_request = complete_target_request!(target_request, upload) if target_request
       end
 
-      # Step 8: Trigger Audiobookshelf scan if configured (outside transaction)
-      trigger_library_scan(book) if book && AudiobookshelfClient.configured?
+      # Step 8: Trigger library platform scan if configured (outside transaction)
+      trigger_library_scan(book) if book && LibraryPlatformClient.configured?
       NotificationService.request_completed(completed_request) if completed_request
 
       Rails.logger.info "[UploadProcessingJob] Completed processing upload #{upload.id}"
@@ -431,9 +431,9 @@ class UploadProcessingJob < ApplicationJob
 
     return unless library_id.present?
 
-    AudiobookshelfClient.scan_library(library_id)
-    Rails.logger.info "[UploadProcessingJob] Triggered Audiobookshelf library scan for #{book.book_type}"
-  rescue AudiobookshelfClient::Error => e
+    LibraryPlatformClient.scan_library(library_id)
+    Rails.logger.info "[UploadProcessingJob] Triggered #{LibraryPlatformClient.display_name} library scan for #{book.book_type}"
+  rescue LibraryPlatformClient::Error => e
     Rails.logger.warn "[UploadProcessingJob] Failed to trigger scan: #{e.message}"
   end
 end

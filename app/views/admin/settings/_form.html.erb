@@ -115,7 +115,7 @@
                         <% elsif key.to_s == "telegram_update_mode" %>
                           <%= form.select "settings[#{key}]", options_for_select([["Polling", "polling"], ["Webhook", "webhook"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% elsif key.to_s == "discord_webhook_url" %>
-                          <%= form.password_field "settings[#{key}]", value: data[:value], placeholder: data[:value].present? ? "********" : "https://discord.com/api/webhooks/...", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "https://discord.com/api/webhooks/...", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% elsif %w[anna_archive_url zlibrary_url].include?(key.to_s) %>
                           <% url_list_urls = data[:value].to_s.split(/[,\s]+/).map(&:strip).reject(&:blank?).uniq %>
                           <% url_list_name = key.to_s == "zlibrary_url" ? "Z-Library" : "Anna's Archive" %>
@@ -165,7 +165,7 @@
                             <p class="hidden text-xs text-red-400" data-url-list-error></p>
                           </div>
                         <% elsif key.to_s.include?("password") || key.to_s.include?("api_key") || key.to_s.include?("token") || key.to_s.include?("secret") %>
-                          <%= form.password_field "settings[#{key}]", value: data[:value], placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% else %>
                           <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% end %>
