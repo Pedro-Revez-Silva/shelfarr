@@ -2,6 +2,7 @@ class SettingsService
   DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
+  LIBRARY_PLATFORMS = %w[audiobookshelf bookorbit].freeze
   INDEXER_SEARCH_SCOPES = %w[broad strict unrestricted custom].freeze
   INDEXER_SEARCH_SCOPE_OPTIONS = {
     "broad" => {
@@ -65,12 +66,16 @@ class SettingsService
     move_completed_downloads: { type: "boolean", default: false, category: "download", description: "Move completed download files into the library instead of copying them. Disable to preserve torrent seeding." },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 
-    # Audiobookshelf Integration
+    # Library Platform Integration
+    library_platform: { type: "string", default: "audiobookshelf", category: "audiobookshelf", description: "Library platform to sync and scan: audiobookshelf or bookorbit" },
     audiobookshelf_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for Audiobookshelf (e.g., http://localhost:13378)" },
     audiobookshelf_api_key: { type: "string", default: "", category: "audiobookshelf", description: "API token from Audiobookshelf user settings" },
-    audiobookshelf_audiobook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for audiobooks" },
-    audiobookshelf_ebook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for ebooks" },
-    audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic Audiobookshelf library sync jobs" },
+    bookorbit_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for BookOrbit (e.g., http://localhost:3000)" },
+    bookorbit_username: { type: "string", default: "", category: "audiobookshelf", description: "BookOrbit username with library access and scan permissions" },
+    bookorbit_password: { type: "string", default: "", category: "audiobookshelf", description: "BookOrbit password used to obtain an API access token" },
+    audiobookshelf_audiobook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for audiobooks on the active library platform" },
+    audiobookshelf_ebook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for ebooks on the active library platform" },
+    audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
 
     # Output Paths
     audiobook_output_path: { type: "string", default: "/audiobooks", category: "paths", description: "Directory for completed audiobooks" },
@@ -203,7 +208,7 @@ class SettingsService
   CATEGORIES = {
     "indexer" => "Indexer",
     "download" => "Download Settings",
-    "audiobookshelf" => "Audiobookshelf",
+    "audiobookshelf" => "Library Platform",
     "anna_archive" => "Anna's Archive",
     "zlibrary" => "Z-Library",
     "gutenberg" => "Project Gutenberg",
@@ -225,7 +230,23 @@ class SettingsService
     "oidc" => "OIDC/SSO Authentication"
   }.freeze
 
+  LABELS = {
+    library_platform: "Active Library Platform",
+    audiobookshelf_url: "Audiobookshelf URL",
+    audiobookshelf_api_key: "Audiobookshelf API Key",
+    bookorbit_url: "BookOrbit URL",
+    bookorbit_username: "BookOrbit Username",
+    bookorbit_password: "BookOrbit Password",
+    audiobookshelf_audiobook_library_id: "Audiobook Library",
+    audiobookshelf_ebook_library_id: "Ebook Library",
+    audiobookshelf_library_sync_interval: "Library Sync Interval"
+  }.freeze
+
   class << self
+    def label_for(key)
+      LABELS.fetch(key.to_sym, key.to_s.titleize)
+    end
+
     # Primary getter with default fallback
     def get(key, default: nil)
       key = key.to_sym
@@ -362,7 +383,32 @@ class SettingsService
     end
 
     def audiobookshelf_configured?
+      library_platform_configured?
+    end
+
+    def library_platform_configured?
+      if bookorbit_library_platform?
+        bookorbit_configured?
+      else
+        audiobookshelf_credentials_configured?
+      end
+    end
+
+    def audiobookshelf_credentials_configured?
       configured?(:audiobookshelf_url) && configured?(:audiobookshelf_api_key)
+    end
+
+    def bookorbit_configured?
+      configured?(:bookorbit_url) && configured?(:bookorbit_username) && configured?(:bookorbit_password)
+    end
+
+    def active_library_platform
+      platform = get(:library_platform).to_s.strip.downcase
+      LIBRARY_PLATFORMS.include?(platform) ? platform : "audiobookshelf"
+    end
+
+    def bookorbit_library_platform?
+      active_library_platform == "bookorbit"
     end
 
     def anna_archive_configured?

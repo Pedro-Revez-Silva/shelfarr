@@ -516,13 +516,13 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     book = books(:audiobook_acquired)
     scanned = []
 
-    AudiobookshelfClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
+    LibraryPlatformClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
       UploadProcessingJob.new.send(:trigger_library_scan, book)
     end
 
     assert_equal [ "audio-lib" ], scanned
 
-    AudiobookshelfClient.stub(:scan_library, ->(*) { raise AudiobookshelfClient::Error, "scan failed" }) do
+    LibraryPlatformClient.stub(:scan_library, ->(*) { raise LibraryPlatformClient::Error, "scan failed" }) do
       assert_nothing_raised { UploadProcessingJob.new.send(:trigger_library_scan, book) }
     end
   end

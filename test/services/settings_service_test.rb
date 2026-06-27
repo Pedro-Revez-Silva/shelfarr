@@ -6,7 +6,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
   cover "SettingsService*"
 
   setup do
-    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key preferred_download_type preferred_download_types move_completed_downloads zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled]).delete_all
+    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key preferred_download_type preferred_download_types move_completed_downloads zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled library_platform audiobookshelf_url audiobookshelf_api_key bookorbit_url bookorbit_username bookorbit_password]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -175,5 +175,40 @@ class SettingsServiceTest < ActiveSupport::TestCase
     SettingsService.set(:open_library_enabled, false)
 
     assert_equal [], SettingsService.enabled_metadata_providers
+  end
+
+  test "active_library_platform defaults to audiobookshelf" do
+    assert_equal "audiobookshelf", SettingsService.active_library_platform
+    assert_not SettingsService.bookorbit_library_platform?
+  end
+
+  test "active_library_platform supports bookorbit" do
+    SettingsService.set(:library_platform, "bookorbit")
+
+    assert_equal "bookorbit", SettingsService.active_library_platform
+    assert SettingsService.bookorbit_library_platform?
+  end
+
+  test "label_for uses brand and neutral library platform labels" do
+    assert_equal "BookOrbit URL", SettingsService.label_for(:bookorbit_url)
+    assert_equal "Audiobook Library", SettingsService.label_for(:audiobookshelf_audiobook_library_id)
+    assert_equal "Max Retries", SettingsService.label_for(:max_retries)
+  end
+
+  test "audiobookshelf_configured? checks active platform credentials" do
+    SettingsService.set(:library_platform, "audiobookshelf")
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "abs-key")
+
+    assert SettingsService.audiobookshelf_configured?
+
+    SettingsService.set(:library_platform, "bookorbit")
+    assert_not SettingsService.audiobookshelf_configured?
+
+    SettingsService.set(:bookorbit_url, "http://localhost:3000")
+    SettingsService.set(:bookorbit_username, "admin")
+    SettingsService.set(:bookorbit_password, "secret")
+
+    assert SettingsService.audiobookshelf_configured?
   end
 end

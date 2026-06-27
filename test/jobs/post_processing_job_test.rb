@@ -4,7 +4,7 @@ require "test_helper"
 
 class PostProcessingJobTest < ActiveJob::TestCase
   setup do
-    AudiobookshelfClient.reset_connection!
+    LibraryPlatformClient.reset_connections!
 
     # Create an audiobook for testing (not ebook)
     @book = Book.create!(
@@ -50,7 +50,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
   end
 
   teardown do
-    AudiobookshelfClient.reset_connection!
+    LibraryPlatformClient.reset_connections!
     FileUtils.rm_rf(@temp_source) if @temp_source && File.exist?(@temp_source)
     FileUtils.rm_rf(@temp_dest_base) if @temp_dest_base && File.exist?(@temp_dest_base)
   end

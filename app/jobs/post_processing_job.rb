@@ -39,7 +39,7 @@ class PostProcessingJob < ApplicationJob
       # Pre-create zip for directories (audiobooks) so download is instant
       pre_create_download_zip(book, destination) if File.directory?(destination)
 
-      trigger_library_scan(book) if AudiobookshelfClient.configured?
+      trigger_library_scan(book) if LibraryPlatformClient.configured?
 
       NotificationService.request_completed(request)
 
@@ -103,8 +103,8 @@ class PostProcessingJob < ApplicationJob
 
   def get_base_path(book)
     # Always use Shelfarr's configured output paths.
-    # Audiobookshelf library paths are from ABS's container perspective,
-    # not ours, so we can't use them for file operations.
+    # External library paths are from that service's container perspective,
+    # not ours, so they cannot drive file operations.
     if book.ebook?
       SettingsService.get(:ebook_output_path, default: "/ebooks")
     else
@@ -496,10 +496,10 @@ class PostProcessingJob < ApplicationJob
     lib_id = library_id_for(book)
     return unless lib_id.present?
 
-    AudiobookshelfClient.scan_library(lib_id)
-    Rails.logger.info "[PostProcessingJob] Triggered Audiobookshelf library scan for #{book.book_type}"
-  rescue AudiobookshelfClient::Error => e
+    LibraryPlatformClient.scan_library(lib_id)
+    Rails.logger.info "[PostProcessingJob] Triggered #{LibraryPlatformClient.display_name} library scan for #{book.book_type}"
+  rescue LibraryPlatformClient::Error => e
     Rails.logger.warn "[PostProcessingJob] Failed to trigger scan: #{e.message}"
-    # Non-fatal - Audiobookshelf will pick up files on next auto-scan
+    # Non-fatal - the library platform will pick up files on next auto-scan.
   end
 end

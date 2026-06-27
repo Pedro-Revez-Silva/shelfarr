@@ -13,9 +13,11 @@ module Admin
       key = params[:id]
       value = params[:setting][:value]
 
-      validate_path_template!(key, value)
-      SettingsService.set(key, value)
-      handle_settings_side_effects([ key.to_s ])
+      unless preserve_blank_secret?(key, value)
+        validate_path_template!(key, value)
+        SettingsService.set(key, value)
+        handle_settings_side_effects([ key.to_s ])
+      end
 
       respond_to do |format|
         format.html { redirect_to admin_settings_path, notice: "Setting updated." }
@@ -27,17 +29,20 @@ module Admin
 
     def bulk_update
       errors = []
+      changed_keys = []
 
       params[:settings]&.each do |key, value|
+        next if preserve_blank_secret?(key, value)
+
         error = validate_path_template(key, value)
         if error
           errors << "#{key.to_s.titleize}: #{error}"
         else
           SettingsService.set(key, value)
+          changed_keys << key.to_s
         end
       end
 
-      changed_keys = params[:settings]&.keys&.map(&:to_s) || []
       handle_settings_side_effects(changed_keys)
 
       @settings_by_category = SettingsService.all_by_category
@@ -112,32 +117,32 @@ module Admin
     def test_audiobookshelf
       health = SystemHealth.for_service("audiobookshelf")
 
-      unless AudiobookshelfClient.configured?
+      unless LibraryPlatformClient.configured?
         health.mark_not_configured!
-        respond_with_flash(alert: "Audiobookshelf is not configured. Enter URL and API key first.")
+        respond_with_flash(alert: "#{LibraryPlatformClient.display_name} is not configured. Enter connection details first.")
         return
       end
 
-      if AudiobookshelfClient.test_connection
+      if LibraryPlatformClient.test_connection
         health.check_succeeded!(message: "Connection successful")
-        respond_with_flash(notice: "Audiobookshelf connection successful!")
+        respond_with_flash(notice: "#{LibraryPlatformClient.display_name} connection successful!")
       else
-        health.check_failed!(message: "Failed to connect to Audiobookshelf")
-        respond_with_flash(alert: "Audiobookshelf connection failed.")
+        health.check_failed!(message: "Failed to connect to #{LibraryPlatformClient.display_name}")
+        respond_with_flash(alert: "#{LibraryPlatformClient.display_name} connection failed.")
       end
-    rescue AudiobookshelfClient::Error => e
+    rescue LibraryPlatformClient::Error => e
       health&.check_failed!(message: e.message)
-      respond_with_flash(alert: "Audiobookshelf error: #{e.message}")
+      respond_with_flash(alert: "#{LibraryPlatformClient.display_name} error: #{e.message}")
     end
 
     def sync_audiobookshelf_library
-      unless AudiobookshelfClient.configured?
-        redirect_to admin_settings_path, alert: "Audiobookshelf is not configured. Enter URL and API key first."
+      unless LibraryPlatformClient.configured?
+        redirect_to admin_settings_path, alert: "#{LibraryPlatformClient.display_name} is not configured. Enter connection details first."
         return
       end
 
       AudiobookshelfLibrarySyncJob.perform_later
-      redirect_to admin_settings_path, notice: "Audiobookshelf library sync started."
+      redirect_to admin_settings_path, notice: "#{LibraryPlatformClient.display_name} library sync started."
     end
 
     # FlareSolverr is not tracked in SystemHealth::SERVICES, so no SystemHealth sync here
@@ -408,9 +413,9 @@ module Admin
     def handle_settings_side_effects(changed_keys)
       return if changed_keys.blank?
 
-      if changed_keys.any? { |k| k.start_with?("audiobookshelf") }
-        AudiobookshelfClient.reset_connection!
-        AudiobookshelfLibrarySyncJob.perform_later if AudiobookshelfClient.configured?
+      if changed_keys.any? { |k| library_platform_setting_key?(k) }
+        LibraryPlatformClient.reset_connections!
+        AudiobookshelfLibrarySyncJob.perform_later if LibraryPlatformClient.configured?
         run_service_health_check("audiobookshelf")
       end
       if changed_keys.any? { |k| indexer_setting_key?(k) }
@@ -476,11 +481,11 @@ module Admin
     end
 
     def fetch_audiobookshelf_libraries
-      return [] unless AudiobookshelfClient.configured?
+      return [] unless LibraryPlatformClient.configured?
 
-      AudiobookshelfClient.libraries
-    rescue AudiobookshelfClient::Error => e
-      Rails.logger.warn "[SettingsController] Failed to fetch Audiobookshelf libraries: #{e.message}"
+      LibraryPlatformClient.libraries
+    rescue LibraryPlatformClient::Error => e
+      Rails.logger.warn "[SettingsController] Failed to fetch #{LibraryPlatformClient.display_name} libraries: #{e.message}"
       []
     end
 
@@ -501,10 +506,11 @@ module Admin
     end
 
     def load_audiobookshelf_cache_summary
-      @audiobookshelf_library_items = LibraryItem.by_synced_at_desc.limit(50)
-      @audiobookshelf_library_items_count = LibraryItem.count
+      active_library_items = LibraryItem.for_active_platform
+      @audiobookshelf_library_items = active_library_items.by_synced_at_desc.limit(50)
+      @audiobookshelf_library_items_count = active_library_items.count
       @audiobookshelf_available_library_items_count = LibraryItem.available_for_matching.count
-      @audiobookshelf_missing_library_items_count = LibraryItem.where(missing: true).count
+      @audiobookshelf_missing_library_items_count = active_library_items.where(missing: true).count
       @audiobookshelf_library_items_last_synced_at = @audiobookshelf_library_items.maximum(:synced_at)
     end
 
@@ -518,6 +524,19 @@ module Admin
 
     def metadata_provider_setting?(key)
       MetadataProviderStatus.provider_for_setting(key).present?
+    end
+
+    def library_platform_setting_key?(key)
+      key.start_with?("audiobookshelf") || key.start_with?("bookorbit") || key == "library_platform"
+    end
+
+    def preserve_blank_secret?(key, value)
+      secret_setting_key?(key) && value.blank? && SettingsService.get(key).present?
+    end
+
+    def secret_setting_key?(key)
+      key = key.to_s
+      key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret")
     end
   end
 end

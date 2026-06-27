@@ -5,6 +5,7 @@ require "test_helper"
 class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
   setup do
     LibraryItem.destroy_all
+    SettingsService.set(:library_platform, "audiobookshelf")
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
@@ -168,5 +169,51 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       assert item.missing?
       assert_equal 0, LibraryItem.available_for_matching.count
     end
+  end
+
+  test "sync scopes cached items to the active library platform" do
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "42",
+      audiobookshelf_id: "101",
+      title: "Audiobookshelf Copy",
+      author: "Original Author",
+      synced_at: 1.day.ago
+    )
+
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:bookorbit_url, "http://localhost:3000")
+    SettingsService.set(:bookorbit_username, "admin")
+    SettingsService.set(:bookorbit_password, "secret")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "42")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    LibraryPlatformClient.reset_connections!
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { accessToken: "bookorbit-token" }.to_json)
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            items: [
+              { id: 101, status: "present", title: "BookOrbit Copy", authors: [ "New Author" ] }
+            ],
+            total: 1
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 2, LibraryItem.count
+      assert_equal "Audiobookshelf Copy", LibraryItem.find_by!(library_platform: "audiobookshelf", library_id: "42", audiobookshelf_id: "101").title
+      assert_equal "BookOrbit Copy", LibraryItem.find_by!(library_platform: "bookorbit", library_id: "42", audiobookshelf_id: "101").title
+      assert_equal [ "BookOrbit Copy" ], LibraryItem.available_for_matching.pluck(:title)
+    end
+  ensure
+    LibraryPlatformClient.reset_connections!
   end
 end

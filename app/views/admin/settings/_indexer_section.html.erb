@@ -75,7 +75,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:prowlarr_api_key, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.password_field "settings[prowlarr_api_key]", value: settings.dig(:prowlarr_api_key, :value), placeholder: settings.dig(:prowlarr_api_key, :value).present? ? "********" : "", id: "settings_prowlarr_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.password_field "settings[prowlarr_api_key]", value: "", placeholder: settings.dig(:prowlarr_api_key, :value).present? ? "********" : "", id: "settings_prowlarr_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
         </div>
       </div>
 
@@ -107,7 +107,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:jackett_api_key, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.password_field "settings[jackett_api_key]", value: settings.dig(:jackett_api_key, :value), placeholder: settings.dig(:jackett_api_key, :value).present? ? "********" : "", id: "settings_jackett_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.password_field "settings[jackett_api_key]", value: "", placeholder: settings.dig(:jackett_api_key, :value).present? ? "********" : "", id: "settings_jackett_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
         </div>
       </div>
 
@@ -139,7 +139,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:newznab_api_key, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.password_field "settings[newznab_api_key]", value: settings.dig(:newznab_api_key, :value), placeholder: settings.dig(:newznab_api_key, :value).present? ? "********" : "", id: "settings_newznab_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.password_field "settings[newznab_api_key]", value: "", placeholder: settings.dig(:newznab_api_key, :value).present? ? "********" : "", id: "settings_newznab_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
         </div>
       </div>
     </div>

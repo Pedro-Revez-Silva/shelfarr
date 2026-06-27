@@ -109,11 +109,11 @@ class HealthCheckJob < ApplicationJob
 
     clients.each do |client|
       # Check client-specific download_path if set
-      if client.download_path.present? 
+      if client.download_path.present?
         if !Dir.exist?(client.download_path)
           issues << "#{client.name}: configured download path '#{client.download_path}' does not exist"
         end
-      else 
+      else
         # No client-specific download_path set, try the default pattern that qbittorrent will set
         # Check category subfolder only for qBittorrent-compatible clients
         if client.qbittorrent_compatible? && client.category.present?
@@ -184,23 +184,23 @@ class HealthCheckJob < ApplicationJob
   def check_audiobookshelf
     health = SystemHealth.for_service("audiobookshelf")
 
-    unless AudiobookshelfClient.configured?
+    unless LibraryPlatformClient.configured?
       health.mark_not_configured!
       return
     end
 
-    if AudiobookshelfClient.test_connection
+    if LibraryPlatformClient.test_connection
       health.check_succeeded!(message: "Connection successful")
     else
-      health.check_failed!(message: "Failed to connect to Audiobookshelf")
+      health.check_failed!(message: "Failed to connect to #{LibraryPlatformClient.display_name}")
     end
-  rescue AudiobookshelfClient::AuthenticationError => e
+  rescue LibraryPlatformClient::AuthenticationError => e
     health.check_failed!(message: "Authentication failed: #{e.message}")
-  rescue AudiobookshelfClient::ConnectionError => e
+  rescue LibraryPlatformClient::ConnectionError => e
     health.check_failed!(message: "Connection error: #{e.message}")
   rescue => e
     health.check_failed!(message: "Error: #{e.message}")
-    Rails.logger.error "[HealthCheckJob] Audiobookshelf check failed: #{e.message}"
+    Rails.logger.error "[HealthCheckJob] #{LibraryPlatformClient.display_name} check failed: #{e.message}"
   end
 
   def check_hardcover

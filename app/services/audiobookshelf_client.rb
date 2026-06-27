@@ -10,7 +10,7 @@ class AudiobookshelfClient
 
   Library = Data.define(:id, :name, :folders, :media_type) do
     def folder_paths
-      folders.map { |f| f["fullPath"] }
+      folders.map { |f| f["fullPath"] || f["path"] }.compact
     end
 
     def audiobook_library?
@@ -118,7 +118,7 @@ class AudiobookshelfClient
     end
 
     def configured?
-      SettingsService.audiobookshelf_configured?
+      SettingsService.audiobookshelf_credentials_configured?
     end
 
     def test_connection
@@ -132,10 +132,14 @@ class AudiobookshelfClient
       @connection = nil
     end
 
+    def display_name
+      "Audiobookshelf"
+    end
+
     private
 
     def ensure_configured!
-      raise NotConfiguredError, "Audiobookshelf is not configured" unless configured?
+      raise NotConfiguredError, "#{display_name} is not configured" unless configured?
     end
 
     def request

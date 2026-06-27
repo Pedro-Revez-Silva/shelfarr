@@ -4,7 +4,7 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   queue_as :default
 
   def perform
-    return unless AudiobookshelfClient.configured?
+    return unless LibraryPlatformClient.configured?
 
     AudiobookshelfLibrarySyncService.new.sync!
   ensure
@@ -14,7 +14,7 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   private
 
   def schedule_next_run
-    return unless AudiobookshelfClient.configured?
+    return unless LibraryPlatformClient.configured?
 
     interval = SettingsService.get(:audiobookshelf_library_sync_interval, default: 3600).to_i
     return if interval <= 0
