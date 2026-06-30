@@ -106,6 +106,22 @@
         </div>
       <% end %>
 
+      <% if Current.user.admin? %>
+        <details class="bg-gray-800/60 border border-gray-700 rounded-lg p-4 mb-6">
+          <summary class="text-sm font-medium text-white cursor-pointer select-none">Add a magnet link manually</summary>
+          <p class="text-sm text-gray-400 mt-2 mb-3">
+            Paste a magnet link from a source your indexers can't reach. Shelfarr sends it to your torrent client and runs its normal import and delivery.
+          </p>
+          <%= form_with url: add_magnet_admin_request_search_results_path(@request), method: :post, class: "flex flex-col sm:flex-row gap-2" do |f| %>
+            <%= f.text_field :magnet_url,
+                  placeholder: "magnet:?xt=urn:btih:...",
+                  autocomplete: "off",
+                  class: "flex-grow px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            <%= f.submit "Add Magnet", class: "px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-sm font-medium rounded transition cursor-pointer" %>
+          <% end %>
+        </details>
+      <% end %>
+
       <% if Current.user.admin? && @request.search_results.any? %>
         <div class="mb-6" data-controller="search-results" data-search-results-expanded-value="true">
           <div class="flex items-center justify-between mb-3">

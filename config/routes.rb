@@ -143,6 +143,7 @@ Rails.application.routes.draw do
         end
         collection do
           post :refresh
+          post :add_magnet
         end
       end
     end

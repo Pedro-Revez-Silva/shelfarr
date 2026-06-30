@@ -136,6 +136,42 @@ module Admin
       end
     end
 
+    # === Add magnet ===
+
+    test "add_magnet requires admin" do
+      sign_out
+      sign_in_as(@user)
+
+      post add_magnet_admin_request_search_results_path(@request_record), params: { magnet_url: "magnet:?xt=urn:btih:abc123" }
+      assert_redirected_to root_path
+    end
+
+    test "add_magnet creates a search result and starts a download" do
+      magnet = "magnet:?xt=urn:btih:DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF&dn=Manual+Book"
+
+      assert_difference -> { Download.count }, 1 do
+        assert_enqueued_with(job: DownloadJob) do
+          post add_magnet_admin_request_search_results_path(@request_record), params: { magnet_url: magnet }
+        end
+      end
+
+      result = @request_record.search_results.find_by(guid: "manual:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+      assert_not_nil result
+      assert_equal "Manual Book", result.title
+      assert_equal magnet, result.magnet_url
+      assert result.selected?
+      assert @request_record.reload.downloading?
+      assert_match /Magnet link added/, flash[:notice]
+    end
+
+    test "add_magnet rejects an invalid magnet link" do
+      assert_no_difference -> { Download.count } do
+        post add_magnet_admin_request_search_results_path(@request_record), params: { magnet_url: "https://example.com/not-a-magnet" }
+      end
+
+      assert_match /doesn't look like a magnet link/, flash[:alert]
+    end
+
     # === Refresh ===
 
     test "refresh clears results and requeues search" do

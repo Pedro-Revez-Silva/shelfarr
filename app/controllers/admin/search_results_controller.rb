@@ -35,6 +35,17 @@ module Admin
                   notice: "Search refreshed. Results will appear shortly."
     end
 
+    def add_magnet
+      result = ManualMagnetService.call(request: @request, magnet_url: params[:magnet_url])
+
+      if result.success?
+        redirect_back fallback_location: request_path(@request),
+                      notice: "Magnet link added. \"#{result.search_result.title}\" is now downloading."
+      else
+        redirect_back fallback_location: request_path(@request), alert: result.error
+      end
+    end
+
     private
 
     def set_request
