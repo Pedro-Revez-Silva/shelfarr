@@ -106,7 +106,7 @@
         </div>
       <% end %>
 
-      <% if Current.user.admin? %>
+      <% if Current.user.admin? && !@request.completed? %>
         <details class="bg-gray-800/60 border border-gray-700 rounded-lg p-4 mb-6">
           <summary class="text-sm font-medium text-white cursor-pointer select-none">Add a magnet link manually</summary>
           <p class="text-sm text-gray-400 mt-2 mb-3">

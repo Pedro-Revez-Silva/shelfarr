@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "uri"
-
 # Creates a search result from an admin-supplied magnet link and sends it
 # through the normal selection/download pipeline (torrent client dispatch,
 # monitoring and post-processing). Useful for sources that can't be wired up
@@ -13,9 +11,6 @@ class ManualMagnetService
     end
   end
 
-  # magnet:?xt=urn:btih:<40-hex or 32-base32 hash>
-  INFO_HASH_REGEX = /xt=urn:btih:([a-z0-9]+)/i
-
   class << self
     def call(...)
       new(...).call
@@ -24,17 +19,22 @@ class ManualMagnetService
 
   def initialize(request:, magnet_url:)
     @request = request
-    @magnet_url = magnet_url.to_s.strip
+    @magnet = MagnetLink.parse(magnet_url)
   end
 
   def call
-    return failure("Please provide a magnet link.") if @magnet_url.blank?
-    unless @magnet_url.downcase.start_with?("magnet:?")
+    return failure("Please provide a magnet link.") if @magnet.url.blank?
+    unless @magnet.magnet?
       return failure("That doesn't look like a magnet link. Magnet links start with \"magnet:?\".")
     end
+    if @request.completed?
+      return failure("This request is already completed. Cancel it before downloading a different release.")
+    end
 
-    info_hash = extract_info_hash
-    return failure("Magnet link is missing a torrent hash (xt=urn:btih:...).") if info_hash.blank?
+    info_hash = @magnet.info_hash
+    if info_hash.blank?
+      return failure("Magnet link has no valid torrent hash (expected xt=urn:btih: with a 40-char hex or 32-char base32 hash).")
+    end
 
     search_result = build_search_result(info_hash)
     download = @request.select_result!(search_result)
@@ -47,35 +47,19 @@ class ManualMagnetService
   private
 
   def build_search_result(info_hash)
-    guid = "manual:#{info_hash.downcase}"
+    guid = "manual:#{info_hash}"
     search_result = @request.search_results.find_or_initialize_by(guid: guid)
     search_result.assign_attributes(
-      title: magnet_title,
+      title: @magnet.display_name || @request.book.title,
       indexer: "Manual",
-      source: SearchResult::SOURCE_PROWLARR,
-      magnet_url: @magnet_url,
+      source: SearchResult::SOURCE_MANUAL,
+      magnet_url: @magnet.url,
       download_url: nil,
       status: :pending
     )
     search_result.save!
     search_result.calculate_score!
     search_result
-  end
-
-  def magnet_title
-    magnet_params["dn"].presence || @request.book.title
-  end
-
-  def extract_info_hash
-    match = @magnet_url.match(INFO_HASH_REGEX)
-    match && match[1]
-  end
-
-  def magnet_params
-    query = @magnet_url.split("?", 2)[1].to_s
-    URI.decode_www_form(query).to_h
-  rescue ArgumentError
-    {}
   end
 
   def failure(message)

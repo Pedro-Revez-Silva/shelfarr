@@ -22,6 +22,7 @@ class SearchResult < ApplicationRecord
   SOURCE_GUTENBERG = "gutenberg"
   SOURCE_LIBRIVOX = "librivox"
   SOURCE_CUSTOM = "custom"
+  SOURCE_MANUAL = "manual"
 
   validates :guid, presence: true, uniqueness: { scope: :request_id }
   validates :title, presence: true
@@ -247,6 +248,13 @@ class SearchResult < ApplicationRecord
     source == SOURCE_CUSTOM
   end
 
+  # Manually added by an admin (e.g. a pasted magnet link). Deliberately NOT an
+  # indexer source, so it routes to the default torrent client rather than
+  # matching indexer-keyed DownloadRoutingRules.
+  def from_manual?
+    source == SOURCE_MANUAL
+  end
+
   def source_display_name
     case source
     when SOURCE_JACKETT
@@ -263,6 +271,8 @@ class SearchResult < ApplicationRecord
       "LibriVox"
     when SOURCE_CUSTOM
       acquisition_provider&.name || indexer.presence || "Custom Provider"
+    when SOURCE_MANUAL
+      "Manual"
     else
       indexer.presence || "Prowlarr"
     end
