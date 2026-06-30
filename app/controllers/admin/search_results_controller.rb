@@ -26,8 +26,9 @@ module Admin
     end
 
     def refresh
-      # Clear existing results and re-queue for search
-      @request.search_results.destroy_all
+      # Clear existing search-sourced results and re-queue; keep manually-added
+      # results (e.g. admin-pasted magnets) so a refresh doesn't discard them.
+      @request.search_results.from_search.destroy_all
       @request.update!(status: :pending)
       SearchJob.perform_later(@request.id)
 

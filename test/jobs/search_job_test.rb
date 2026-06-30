@@ -64,6 +64,26 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "preserves manually-added results while refreshing search-sourced ones" do
+    manual = @request.search_results.create!(
+      guid: "manual:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      title: "Manual Magnet",
+      indexer: "Manual",
+      source: SearchResult::SOURCE_MANUAL,
+      magnet_url: "magnet:?xt=urn:btih:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      status: :selected
+    )
+
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      SearchJob.perform_now(@request.id)
+
+      assert SearchResult.exists?(manual.id), "manual result should survive a re-search"
+      assert @request.search_results.from_search.any?, "search-sourced results should be (re)created"
+    end
+  end
+
   test "schedules retry when no results found" do
     VCR.turned_off do
       stub_prowlarr_search_empty

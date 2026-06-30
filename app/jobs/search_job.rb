@@ -244,7 +244,9 @@ class SearchJob < ApplicationJob
   end
 
   def save_results(request, tagged_results)
-    request.search_results.destroy_all
+    # Preserve manually-added results (e.g. admin-pasted magnets); only the
+    # ephemeral search-sourced results are refreshed.
+    request.search_results.from_search.destroy_all
 
     tagged_results.each do |tagged|
       result = tagged[:result]

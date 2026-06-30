@@ -188,5 +188,21 @@ module Admin
       assert_redirected_to request_path(@request_record)
       assert_match /refreshed/, flash[:notice]
     end
+
+    test "refresh preserves manually-added results" do
+      manual = @request_record.search_results.create!(
+        guid: "manual:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        title: "Manual Magnet",
+        indexer: "Manual",
+        source: SearchResult::SOURCE_MANUAL,
+        magnet_url: "magnet:?xt=urn:btih:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        status: :selected
+      )
+
+      post refresh_admin_request_search_results_path(@request_record)
+
+      assert SearchResult.exists?(manual.id), "manual result should survive a refresh"
+      assert_not SearchResult.exists?(@pending_result.id), "search-sourced result should be cleared"
+    end
   end
 end

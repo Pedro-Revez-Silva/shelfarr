@@ -29,6 +29,11 @@ class SearchResult < ApplicationRecord
 
   scope :selectable, -> { pending }
 
+  # Manually added results (e.g. admin-pasted magnets) are durable; everything
+  # else is ephemeral and re-fetched on each search.
+  scope :manual, -> { where(source: SOURCE_MANUAL) }
+  scope :from_search, -> { where.not(source: SOURCE_MANUAL) }
+
   scope :preferred_first, -> {
     ordered_types = SettingsService.preferred_download_types
     type_order_sql = ordered_types.each_with_index.map { |type, index| "WHEN '#{type}' THEN #{index}" }.join(" ")
