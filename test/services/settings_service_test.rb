@@ -6,7 +6,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
   cover "SettingsService*"
 
   setup do
-    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key preferred_download_type preferred_download_types move_completed_downloads zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled library_platform audiobookshelf_url audiobookshelf_api_key bookorbit_url bookorbit_username bookorbit_password]).delete_all
+    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key preferred_download_type preferred_download_types move_completed_downloads zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled library_platform audiobookshelf_url audiobookshelf_api_key bookorbit_url bookorbit_username bookorbit_password grimmory_url grimmory_username grimmory_password]).delete_all
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -191,8 +191,16 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
   test "label_for uses brand and neutral library platform labels" do
     assert_equal "BookOrbit URL", SettingsService.label_for(:bookorbit_url)
+    assert_equal "Grimmory URL", SettingsService.label_for(:grimmory_url)
     assert_equal "Audiobook Library", SettingsService.label_for(:audiobookshelf_audiobook_library_id)
     assert_equal "Max Retries", SettingsService.label_for(:max_retries)
+  end
+
+  test "active_library_platform supports grimmory" do
+    SettingsService.set(:library_platform, "grimmory")
+
+    assert_equal "grimmory", SettingsService.active_library_platform
+    assert SettingsService.grimmory_library_platform?
   end
 
   test "audiobookshelf_configured? checks active platform credentials" do
@@ -208,6 +216,15 @@ class SettingsServiceTest < ActiveSupport::TestCase
     SettingsService.set(:bookorbit_url, "http://localhost:3000")
     SettingsService.set(:bookorbit_username, "admin")
     SettingsService.set(:bookorbit_password, "secret")
+
+    assert SettingsService.audiobookshelf_configured?
+
+    SettingsService.set(:library_platform, "grimmory")
+    assert_not SettingsService.audiobookshelf_configured?
+
+    SettingsService.set(:grimmory_url, "http://localhost:5173")
+    SettingsService.set(:grimmory_username, "admin")
+    SettingsService.set(:grimmory_password, "secret")
 
     assert SettingsService.audiobookshelf_configured?
   end
