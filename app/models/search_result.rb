@@ -62,7 +62,7 @@ class SearchResult < ApplicationRecord
     order(Arel.sql("CASE #{download_type_sql} #{type_order_sql} ELSE #{ordered_types.length} END"))
   }
 
-  scope :best_first, -> { preferred_first.order(confidence_score: :desc, seeders: :desc, size_bytes: :asc) }
+  scope :best_first, -> { preferred_first.order(confidence_score: :desc, seeders: :desc, size_bytes: :asc, id: :asc) }
 
   scope :high_confidence, ->(threshold = nil) {
     min_score = threshold || SettingsService.get(:min_match_confidence)
