@@ -342,4 +342,33 @@ class SettingsServiceTest < ActiveSupport::TestCase
       assert_not SettingsService.env_managed?(:api_token)
     end
   end
+
+  test "env override with empty string yields blank value instead of default" do
+    with_env("SHELFARR_SETTING_OIDC_PROVIDER_NAME" => "") do
+      assert SettingsService.env_managed?(:oidc_provider_name)
+      assert_equal "", SettingsService.get(:oidc_provider_name)
+      assert_not SettingsService.configured?(:oidc_provider_name)
+    end
+  end
+
+  test "unrecognized_env_override_names flags unknown and non-overridable keys" do
+    with_env(
+      "SHELFARR_SETTING_OIDC_ENABLED" => "true",
+      "SHELFARR_SETTING_NO_SUCH_SETTING" => "value",
+      "SHELFARR_SETTING_AUDIOBOOK_PATH_TEMPLATE" => "{title}"
+    ) do
+      names = SettingsService.unrecognized_env_override_names
+
+      assert_includes names, "SHELFARR_SETTING_NO_SUCH_SETTING"
+      assert_includes names, "SHELFARR_SETTING_AUDIOBOOK_PATH_TEMPLATE"
+      assert_not_includes names, "SHELFARR_SETTING_OIDC_ENABLED"
+    end
+  end
+
+  test "unrecognized_env_override_names flags variables that are not fully uppercased" do
+    with_env("SHELFARR_SETTING_oidc_enabled" => "true") do
+      assert_includes SettingsService.unrecognized_env_override_names, "SHELFARR_SETTING_oidc_enabled"
+      assert_not SettingsService.env_managed?(:oidc_enabled)
+    end
+  end
 end

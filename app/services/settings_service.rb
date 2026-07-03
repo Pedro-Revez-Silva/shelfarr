@@ -267,6 +267,18 @@ class SettingsService
       DEFINITIONS.keys.select { |key| env_managed?(key) }
     end
 
+    # SHELFARR_SETTING_* variables that do not control any setting, either
+    # because the key is unknown, the setting is not env-overridable, or the
+    # variable name is not the exact uppercased form env_managed? looks up.
+    def unrecognized_env_override_names
+      ENV.keys.select do |env_name|
+        next false unless env_name.start_with?(ENV_OVERRIDE_PREFIX)
+
+        key = env_name.delete_prefix(ENV_OVERRIDE_PREFIX).downcase.to_sym
+        DEFINITIONS[key]&.fetch(:env_overridable, false) != true || env_name != env_override_name(key)
+      end
+    end
+
     def secret_setting_key?(key)
       key = key.to_s
       key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret")
