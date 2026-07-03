@@ -1,0 +1,28 @@
+<%
+  display_value = if SettingsService.secret_setting_key?(key) && data[:value].present?
+    "********"
+  elsif data[:value].is_a?(Array)
+    data[:value].join(", ")
+  else
+    data[:value].to_s
+  end
+
+  display_value = "Not set" if display_value.blank?
+%>
+
+<div class="rounded-md border border-yellow-800/60 bg-yellow-950/20 px-3 py-2 text-gray-200">
+  <div class="flex items-start justify-between gap-3">
+    <span id="settings_<%= key %>_env_value" class="min-w-0 break-all"><%= display_value %></span>
+    <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-yellow-700/60 bg-yellow-900/30 text-yellow-300"
+          title="Managed by <%= data[:env_var] %>"
+          aria-label="Managed by <%= data[:env_var] %>">
+      <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2Zm10-10V7a4 4 0 0 0-8 0v4h8Z" />
+      </svg>
+      <span class="sr-only">Managed by environment variable <%= data[:env_var] %></span>
+    </span>
+  </div>
+  <p class="mt-1 text-xs text-yellow-300">
+    Managed by <code class="rounded bg-yellow-950/70 px-1 py-0.5 text-yellow-200"><%= data[:env_var] %></code>
+  </p>
+</div>

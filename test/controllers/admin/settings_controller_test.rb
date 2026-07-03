@@ -4,6 +4,7 @@ require "test_helper"
 
 class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   setup do
+    clear_settings_env!
     @admin = users(:two)
     sign_in_as(@admin)
     LibraryPlatformClient.reset_connections!
@@ -15,6 +16,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   teardown do
+    restore_settings_env!
     LibraryPlatformClient.reset_connections!
     ProwlarrClient.reset_connection!
     FlaresolverrClient.reset_connection!
@@ -335,6 +337,22 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_no_match "https://discord.com/api/webhooks/existing", response.body
   end
 
+  test "index renders env managed settings as read-only and masks secret values" do
+    SettingsService.set(:oidc_client_secret, "stored-secret")
+
+    with_env("SHELFARR_SETTING_OIDC_CLIENT_SECRET" => "env-secret") do
+      get admin_settings_url
+
+      assert_response :success
+      assert_select "input[name='settings[oidc_client_secret]']", count: 0
+      assert_select "[title='Managed by SHELFARR_SETTING_OIDC_CLIENT_SECRET']"
+      assert_select "code", text: "SHELFARR_SETTING_OIDC_CLIENT_SECRET"
+      assert_match "********", response.body
+      assert_no_match "env-secret", response.body
+      assert_no_match "stored-secret", response.body
+    end
+  end
+
   test "update stores a single setting" do
     patch admin_setting_url("max_retries"), params: {
       setting: { value: "7" }
@@ -356,6 +374,21 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "existing-secret", SettingsService.get(:prowlarr_api_key)
   end
 
+  test "update refuses to persist env managed setting" do
+    SettingsService.set(:oidc_client_secret, "stored-secret")
+
+    with_env("SHELFARR_SETTING_OIDC_CLIENT_SECRET" => "env-secret") do
+      patch admin_setting_url("oidc_client_secret"), params: {
+        setting: { value: "attempted-secret" }
+      }
+
+      assert_redirected_to admin_settings_path
+      assert_match /managed by the environment/, flash[:alert]
+      assert_equal "stored-secret", Setting.find_by(key: "oidc_client_secret").typed_value
+      assert_equal "env-secret", SettingsService.get(:oidc_client_secret)
+    end
+  end
+
   test "bulk_update preserves existing secrets when blank secret values submitted" do
     SettingsService.set(:prowlarr_api_key, "existing-prowlarr-secret")
     SettingsService.set(:discord_webhook_url, "https://discord.com/api/webhooks/123/token")
@@ -370,6 +403,25 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to admin_settings_path
     assert_equal "existing-prowlarr-secret", SettingsService.get(:prowlarr_api_key)
     assert_equal "https://discord.com/api/webhooks/123/token", SettingsService.get(:discord_webhook_url)
+  end
+
+  test "bulk_update skips env managed keys but persists other settings" do
+    SettingsService.set(:oidc_client_secret, "stored-secret")
+    SettingsService.set(:max_retries, 10)
+
+    with_env("SHELFARR_SETTING_OIDC_CLIENT_SECRET" => "env-secret") do
+      patch bulk_update_admin_settings_url, params: {
+        settings: {
+          oidc_client_secret: "attempted-secret",
+          max_retries: "22"
+        }
+      }
+
+      assert_redirected_to admin_settings_path
+      assert_equal "stored-secret", Setting.find_by(key: "oidc_client_secret").typed_value
+      assert_equal "env-secret", SettingsService.get(:oidc_client_secret)
+      assert_equal 22, SettingsService.get(:max_retries)
+    end
   end
 
   test "update rejects invalid single path template" do

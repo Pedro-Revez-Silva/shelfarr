@@ -98,6 +98,27 @@ environment:
   - RAILS_RELATIVE_URL_ROOT=/shelfarr
 ```
 
+#### Settings Environment Overrides
+
+OIDC and webhook settings can be managed by environment variables. Use `SHELFARR_SETTING_` plus the uppercased setting key, for example `SHELFARR_SETTING_OIDC_CLIENT_SECRET` or `SHELFARR_SETTING_WEBHOOK_URL`.
+
+Supported setting keys:
+
+`oidc_enabled`, `oidc_auto_redirect`, `oidc_provider_name`, `oidc_issuer`, `oidc_client_id`, `oidc_client_secret`, `oidc_scopes`, `oidc_link_existing_users`, `oidc_auto_create_users`, `oidc_default_role`, `webhook_enabled`, `webhook_url`, `webhook_token`, `webhook_events`, `webhook_topic`.
+
+Example with the client secret supplied by your deployment secret store:
+```yaml
+services:
+  shelfarr:
+    environment:
+      SHELFARR_SETTING_OIDC_ENABLED: "true"
+      SHELFARR_SETTING_OIDC_ISSUER: "https://auth.example.com"
+      SHELFARR_SETTING_OIDC_CLIENT_ID: "shelfarr"
+      SHELFARR_SETTING_OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET}"
+```
+
+The env value takes precedence while set and is cast using the setting type. Nothing is written back to the database; removing the variable falls back to the stored value, or the default if none exists. Env-managed keys are read-only in Admin -> Settings. Other settings are not overridable, and unsupported `SHELFARR_SETTING_*` variables are ignored with a boot-time warning.
+
 ### Configuration
 
 After logging in, go to **Admin → Settings**:
