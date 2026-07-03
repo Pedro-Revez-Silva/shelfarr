@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 class API::V1::RequestsController < API::V1::ApplicationController
-  before_action -> { require_scope!("requests:read") }, only: [ :index, :show ]
+  before_action -> { require_scope!("requests:read") }, only: [ :index, :show, :search_results ]
   before_action -> { require_scope!("requests:write") }, only: [ :create, :destroy ]
-  before_action -> { require_scope!("requests:admin") }, only: :retry
-  before_action :set_request, only: [ :show, :destroy, :retry ]
+  before_action -> { require_scope!("requests:admin") }, only: [ :retry, :blocklist_and_next ]
+  before_action :set_request, only: [ :show, :destroy, :retry, :search_results, :blocklist_and_next ]
 
   def index
     requests = request_scope.includes(:book, :user).order(created_at: :desc)
@@ -68,6 +68,28 @@ class API::V1::RequestsController < API::V1::ApplicationController
 
     @request.retry_now!
     render json: request_payload(@request.reload)
+  end
+
+  def search_results
+    render json: {
+      search_results: @request.search_results.best_first.map { |result| search_result_payload(result) }
+    }
+  end
+
+  def blocklist_and_next
+    if params[:search_result_id].present?
+      grab_search_result
+      return
+    end
+
+    case @request.blocklist_and_select_next!(reason: "Blocklisted via API")
+    when :no_selected_result
+      render json: { errors: [ "No selected result to blocklist" ] }, status: :unprocessable_entity
+    when :exhausted
+      render json: request_payload(@request.reload)
+    else
+      render json: request_payload_with_selected_result(@request.reload)
+    end
   end
 
   private
@@ -153,5 +175,38 @@ class API::V1::RequestsController < API::V1::ApplicationController
         username: request.user.username
       }
     }
+  end
+
+  def request_payload_with_selected_result(request)
+    request_payload(request).merge(
+      selected_result: request.search_results.selected.first.then { |result| result && search_result_payload(result) }
+    )
+  end
+
+  def search_result_payload(result)
+    {
+      id: result.id,
+      title: result.title,
+      source: result.source,
+      indexer: result.indexer,
+      seeders: result.seeders,
+      leechers: result.leechers,
+      size_bytes: result.size_bytes,
+      confidence_score: result.confidence_score,
+      detected_language: result.detected_language,
+      status: result.status,
+      downloadable: result.downloadable?,
+      blocklisted: result.blocklisted?,
+      blocklisted_at: result.blocklisted_at&.iso8601,
+      blocklist_reason: result.blocklist_reason
+    }
+  end
+
+  def grab_search_result
+    result = @request.search_results.find(params[:search_result_id])
+    @request.select_result!(result)
+    render json: request_payload_with_selected_result(@request.reload)
+  rescue ArgumentError => e
+    render json: { errors: [ e.message ] }, status: :unprocessable_entity
   end
 end

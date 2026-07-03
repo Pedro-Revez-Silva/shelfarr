@@ -117,7 +117,22 @@ class DownloadJobTest < ActiveJob::TestCase
       @download.reload
 
       assert @download.downloading?
+      assert_equal @selected_result, @download.search_result
     end
+  end
+
+  test "legacy download without association blocklists resolved selected result on release failure" do
+    SettingsService.set(:auto_select_enabled, false)
+    @download.update!(search_result: nil)
+    job = DownloadJob.new
+
+    job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::Error, "client rejected release" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert_equal @selected_result, @download.search_result
+    assert @selected_result.reload.blocklisted?
   end
 
   test "marks for attention when no download client configured" do
@@ -130,6 +145,7 @@ class DownloadJobTest < ActiveJob::TestCase
     assert @download.failed?
     assert @request.attention_needed?
     assert_includes @request.issue_description, "No torrent download client configured"
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "marks for attention on download client authentication error" do
@@ -141,6 +157,7 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "authentication failed"
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "marks for attention on download client connection error" do
@@ -152,6 +169,7 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "Failed to connect"
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "marks for attention on generic download client error" do
@@ -163,6 +181,31 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "Download client error"
+    assert @selected_result.reload.blocklisted?
+  end
+
+  test "generic download client error blocklists release and selects next candidate when auto-select is enabled" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+    job = DownloadJob.new
+
+    assert_enqueued_with(job: DownloadJob) do
+      job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::Error, "client rejected release" }) do
+        job.perform(@download.id)
+      end
+    end
+
+    assert @download.reload.failed?
+    assert @selected_result.reload.blocklisted?
+    assert fallback.reload.selected?
+    assert @request.reload.downloading?
+    assert_not @request.attention_needed?
   end
 
   test "marks for attention on anna archive error" do
@@ -177,6 +220,19 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_includes @request.reload.issue_description, "Anna's Archive error"
   end
 
+  test "does not blocklist on Anna's Archive transient connection error" do
+    @selected_result.update!(source: SearchResult::SOURCE_ANNA_ARCHIVE, guid: "md5")
+    job = DownloadJob.new
+
+    job.stub(:handle_anna_archive_download, ->(*) { raise AnnaArchiveClient::ConnectionError, "offline" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
   test "marks for attention on z-library error" do
     @selected_result.update!(source: SearchResult::SOURCE_ZLIBRARY, guid: "missing")
     job = DownloadJob.new
@@ -187,6 +243,32 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "Z-Library error"
+  end
+
+  test "does not blocklist on Z-Library rate limit error" do
+    @selected_result.update!(source: SearchResult::SOURCE_ZLIBRARY, guid: "missing")
+    job = DownloadJob.new
+
+    job.stub(:handle_zlibrary_download, ->(*) { raise ZLibraryClient::RateLimitError, "slow down" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
+  test "does not blocklist on custom provider system response error" do
+    @selected_result.update!(source: SearchResult::SOURCE_CUSTOM)
+    job = DownloadJob.new
+
+    job.stub(:handle_custom_provider_download, ->(*) { raise CustomAcquisitionProviderClient::ResponseError, "Provider returned HTTP 500" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "skips non-queued downloads" do

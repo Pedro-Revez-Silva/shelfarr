@@ -28,6 +28,8 @@ class SearchResult < ApplicationRecord
   validates :title, presence: true
 
   scope :selectable, -> { pending }
+  scope :blocklisted, -> { where.not(blocklisted_at: nil) }
+  scope :not_blocklisted, -> { where(blocklisted_at: nil) }
 
   scope :preferred_first, -> {
     ordered_types = SettingsService.preferred_download_types
@@ -88,6 +90,24 @@ class SearchResult < ApplicationRecord
     return true if direct_download?
 
     download_url.present? || magnet_url.present?
+  end
+
+  def blocklisted?
+    blocklisted_at.present?
+  end
+
+  def blocklist!(reason)
+    attributes = {
+      blocklisted_at: Time.current,
+      blocklist_reason: reason.to_s.truncate(255)
+    }
+    attributes[:status] = :rejected if selected?
+
+    update!(attributes)
+  end
+
+  def clear_blocklist!
+    update!(blocklisted_at: nil, blocklist_reason: nil)
   end
 
   def download_link

@@ -65,6 +65,7 @@ class AutoSelectService
   def find_matching_results
     @request.search_results
       .pending
+      .not_blocklisted
       .auto_selectable(@confidence_threshold)
       .matches_language(@requested_language)
       .best_first

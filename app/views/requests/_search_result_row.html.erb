@@ -41,6 +41,9 @@
       <% if Current.user.admin? && !result.auto_select_allowed_by_preferences? %>
         <span class="text-red-400 font-medium">Manual review</span>
       <% end %>
+      <% if result.blocklisted? %>
+        <span class="text-red-400 font-medium" title="<%= result.blocklist_reason %>">Blocklisted</span>
+      <% end %>
     </div>
   </div>
   <div class="flex-shrink-0 flex items-center gap-2">
@@ -52,7 +55,7 @@
       <% if result.selected? %>
         <span class="px-2 py-1 text-xs bg-green-600/20 text-green-400 rounded font-medium">Selected</span>
       <% elsif result.downloadable? %>
-        <%= button_to result.rejected? ? "Select Instead" : "Select", select_admin_request_search_result_path(request, result),
+        <%= button_to result.blocklisted? ? "Retry Anyway" : (result.rejected? ? "Select Instead" : "Select"), select_admin_request_search_result_path(request, result),
             method: :post,
             class: "px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition" %>
       <% elsif result.rejected? %>

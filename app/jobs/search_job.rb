@@ -244,6 +244,12 @@ class SearchJob < ApplicationJob
   end
 
   def save_results(request, tagged_results)
+    blocklisted_by_guid = request.search_results
+      .where.not(source: SearchResult::SOURCE_MANUAL_MAGNET)
+      .blocklisted
+      .pluck(:guid, :blocklisted_at, :blocklist_reason)
+      .to_h { |guid, blocklisted_at, blocklist_reason| [ guid, { blocklisted_at: blocklisted_at, blocklist_reason: blocklist_reason } ] }
+
     request.search_results.where.not(source: SearchResult::SOURCE_MANUAL_MAGNET).destroy_all
 
     tagged_results.each do |tagged|
@@ -265,7 +271,12 @@ class SearchJob < ApplicationJob
         save_indexer_result(request, result, source)
       end
 
-      search_result.calculate_score! if search_result
+      if search_result
+        if (blocklist_attrs = blocklisted_by_guid[search_result.guid])
+          search_result.update!(blocklist_attrs.merge(status: :rejected))
+        end
+        search_result.calculate_score!
+      end
     end
   end
 

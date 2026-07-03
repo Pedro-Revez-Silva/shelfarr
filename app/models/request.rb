@@ -99,52 +99,61 @@ class Request < ApplicationRecord
     update!(status: :pending, next_retry_at: nil)
   end
 
-  # Retry now - reset for immediate processing
-  # If there's a selected result with a failed download, retry the download
-  # Otherwise, restart the search process
+  # Retry now - reset for immediate processing.
+  # If a selected release already failed, keep it blocklisted and try the next
+  # eligible candidate before falling back to a fresh search.
   def retry_now!
     selected_result = search_results.selected.first
-    failed_download = downloads.where(status: :failed).order(created_at: :desc).first
+    failed_download = selected_result && downloads.where(status: :failed, search_result: selected_result).order(created_at: :desc).first
 
     if selected_result && failed_download
-      # Retry the download - create a new download and queue the job
-      download = nil
-      ActiveRecord::Base.transaction do
-        download = downloads.create!(
-          name: selected_result.title,
-          size_bytes: selected_result.size_bytes,
-          search_result: selected_result,
-          status: :queued
-        )
+      reason = "Failed download (manual retry)"
+      blocklist_result!(selected_result, reason: reason, download: failed_download)
 
-        update!(
-          status: :downloading,
-          next_retry_at: nil,
-          attention_needed: false,
-          issue_description: nil
-        )
+      if auto_select_enabled? && attempt_next_candidate!(failure_reason: reason, mark_exhausted: false) == :selected_next
+        return
+      end
+    end
+
+    update!(
+      status: :pending,
+      next_retry_at: nil,
+      attention_needed: false,
+      issue_description: nil
+    )
+  end
+
+  def handle_download_failure!(download, reason:)
+    download.update!(status: :failed) unless download.failed?
+
+    blocklisted = blocklist_result!(download.search_result, reason: reason, download: download)
+
+    unless auto_select_enabled?
+      manual_message = if blocklisted
+        "Download failed: #{reason}. The failed release was blocklisted. Select another release manually."
+      else
+        "Download failed: #{reason}. Select another release manually."
+      end
+      mark_for_attention!(manual_message)
+      return :manual_review
+    end
+
+    attempt_next_candidate!(failure_reason: reason)
+  end
+
+  def blocklist_and_select_next!(reason:, search_result: nil)
+    target = search_result || search_results.selected.first
+    return :no_selected_result unless target
+
+    ActiveRecord::Base.transaction do
+      downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
+        cancel_download(download)
       end
 
-      track_diagnostic(
-        "download_queued",
-        download: download,
-        message: "Download queued for retry from selected result",
-        details: {
-          search_result_id: selected_result.id,
-          title: selected_result.title,
-          trigger: "retry"
-        }
-      )
-      DownloadJob.perform_later(download.id)
-    else
-      # No selected result or failed download - restart search
-      update!(
-        status: :pending,
-        next_retry_at: nil,
-        attention_needed: false,
-        issue_description: nil
-      )
+      blocklist_result!(target, reason: reason)
     end
+
+    attempt_next_candidate!(failure_reason: reason)
   end
 
   # Cancel/fail request permanently
@@ -221,6 +230,20 @@ class Request < ApplicationRecord
     ActiveRecord::Base.transaction do
       downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
         cancel_download(download)
+      end
+
+      if search_result.blocklisted?
+        search_result.clear_blocklist!
+        track_diagnostic(
+          "blocklist_overridden",
+          message: "Blocklist overridden for selected release",
+          level: :warn,
+          user_visible: true,
+          details: {
+            search_result_id: search_result.id,
+            title: search_result.title
+          }
+        )
       end
 
       search_results.where.not(id: search_result.id).update_all(status: :rejected)
@@ -312,7 +335,67 @@ class Request < ApplicationRecord
     broadcast_show_refresh_later if (previous_changes.keys & SHOW_PAGE_BROADCAST_ATTRIBUTES).any?
   end
 
-  def track_diagnostic(event_type, message: nil, level: :info, download: nil, details: {})
+  def attempt_next_candidate!(failure_reason:, mark_exhausted: true)
+    search_results.rejected.not_blocklisted.update_all(
+      status: SearchResult.statuses[:pending],
+      updated_at: Time.current
+    )
+
+    selection = AutoSelectService.call(self)
+    if selection.success?
+      track_diagnostic(
+        "fallback_selected",
+        message: "Selected the next eligible release after a failed download",
+        user_visible: true,
+        details: {
+          search_result_id: selection.search_result&.id,
+          title: selection.search_result&.title,
+          failure_reason: failure_reason
+        }
+      )
+      return :selected_next
+    end
+
+    mark_candidate_exhausted!(failure_reason, selection.reason) if mark_exhausted
+    :exhausted
+  end
+
+  def mark_candidate_exhausted!(failure_reason, selection_reason)
+    blocklisted_count = search_results.blocklisted.count
+    remaining_reason = selection_reason.to_s.humanize.downcase
+    mark_for_attention!(
+      "Download failed: #{failure_reason}. No suitable alternative release found - " \
+        "#{blocklisted_count} release(s) blocklisted, remaining results #{remaining_reason}. " \
+        "Select a release manually or refresh the search.",
+      status: :not_found
+    )
+  end
+
+  def blocklist_result!(search_result, reason:, download: nil)
+    return false unless search_result
+    return false if search_result.blocklisted?
+
+    search_result.blocklist!(reason)
+    track_diagnostic(
+      "release_blocklisted",
+      download: download,
+      message: "Blocklisted release after failed download",
+      level: :warn,
+      user_visible: true,
+      details: {
+        search_result_id: search_result.id,
+        title: search_result.title,
+        reason: reason
+      }
+    )
+    true
+  end
+
+  def auto_select_enabled?
+    SettingsService.get(:auto_select_enabled, default: false)
+  end
+
+  def track_diagnostic(event_type, message: nil, level: :info, download: nil, details: {}, user_visible: false)
     RequestEvent.record!(
       request: self,
       download: download,
@@ -320,7 +403,8 @@ class Request < ApplicationRecord
       source: "request",
       message: message,
       level: level,
-      details: details
+      details: details,
+      user_visible: user_visible
     )
   end
 

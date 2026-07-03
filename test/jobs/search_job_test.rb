@@ -85,6 +85,33 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "save_results carries blocklist forward by guid" do
+    blocklisted = search_results(:blocklisted_result)
+    blocklisted.update!(blocklisted_at: 2.days.ago, blocklist_reason: "Bad release")
+    tagged_result = {
+      source: SearchResult::SOURCE_PROWLARR,
+      result: OpenStruct.new(
+        guid: blocklisted.guid,
+        title: "The Pending Ebook Another Author EPUB",
+        indexer: "TestIndexer",
+        size_bytes: 123_456,
+        seeders: 10,
+        leechers: 1,
+        download_url: nil,
+        magnet_url: "magnet:?xt=urn:btih:carried",
+        info_url: nil,
+        published_at: nil
+      )
+    }
+
+    SearchJob.new.send(:save_results, @request, [ tagged_result ])
+
+    carried = @request.search_results.find_by!(guid: blocklisted.guid)
+    assert carried.blocklisted?
+    assert_equal "Bad release", carried.blocklist_reason
+    assert carried.rejected?
+  end
+
   test "schedules retry when no results found" do
     VCR.turned_off do
       stub_prowlarr_search_empty

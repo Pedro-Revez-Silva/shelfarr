@@ -134,6 +134,36 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "missing download after threshold blocklists release and selects next candidate" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    selected = search_results(:selected_result)
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+    @download.update!(
+      search_result: selected,
+      not_found_count: DownloadMonitorJob::NOT_FOUND_THRESHOLD - 1
+    )
+
+    VCR.turned_off do
+      stub_qbittorrent_auth
+      stub_qbittorrent_torrent_not_found
+
+      assert_enqueued_with(job: DownloadJob) do
+        DownloadMonitorJob.perform_now
+      end
+    end
+
+    assert @download.reload.failed?
+    assert selected.reload.blocklisted?
+    assert fallback.reload.selected?
+    assert @request.reload.downloading?
+  end
+
   test "resets not_found_count when download is found again" do
     @download.update!(not_found_count: 2)
 
@@ -162,6 +192,33 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       assert @request.attention_needed?
       assert_includes @request.issue_description, "failed in client"
     end
+  end
+
+  test "client-reported failure blocklists release and selects next candidate" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    selected = search_results(:selected_result)
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+    @download.update!(search_result: selected)
+
+    VCR.turned_off do
+      stub_qbittorrent_auth
+      stub_qbittorrent_torrent_info(progress: 0, state: "error")
+
+      assert_enqueued_with(job: DownloadJob) do
+        DownloadMonitorJob.perform_now
+      end
+    end
+
+    assert @download.reload.failed?
+    assert selected.reload.blocklisted?
+    assert fallback.reload.selected?
+    assert @request.reload.downloading?
   end
 
   test "marks transmission download as failed when client reports local error" do
@@ -355,10 +412,12 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
   end
 
   test "flags queued downloads that never reached a client" do
+    selected = search_results(:selected_result)
     @download.update_columns(
       status: Download.statuses[:queued],
       external_id: nil,
       download_client_id: nil,
+      search_result_id: selected.id,
       created_at: 10.minutes.ago,
       updated_at: 10.minutes.ago
     )
@@ -375,6 +434,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     assert @download.failed?
     assert @request.attention_needed?
     assert_includes @request.issue_description, "never sent to the download client"
+    assert_not selected.reload.blocklisted?
   end
 
   test "skips downloads with disabled client" do

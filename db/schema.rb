@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_22_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_03_000000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -250,6 +250,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_22_000000) do
 
   create_table "search_results", force: :cascade do |t|
     t.integer "acquisition_provider_id"
+    t.string "blocklist_reason"
+    t.datetime "blocklisted_at"
     t.integer "confidence_score"
     t.datetime "created_at", null: false
     t.string "detected_language"
@@ -272,6 +274,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_22_000000) do
     t.datetime "updated_at", null: false
     t.index ["acquisition_provider_id", "provider_result_id"], name: "index_search_results_on_provider_result"
     t.index ["acquisition_provider_id"], name: "index_search_results_on_acquisition_provider_id"
+    t.index ["request_id", "blocklisted_at"], name: "index_search_results_on_request_id_and_blocklisted_at"
     t.index ["request_id", "guid"], name: "index_search_results_on_request_id_and_guid", unique: true
     t.index ["request_id"], name: "index_search_results_on_request_id"
     t.index ["status"], name: "index_search_results_on_status"

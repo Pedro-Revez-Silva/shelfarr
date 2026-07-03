@@ -209,7 +209,13 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_equal [ request ], attention_requests
   end
 
-  test "retry_now! retries download when there is a selected result and failed download" do
+  test "retry_now! blocklists failed selected result and grabs next candidate" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
     book = Book.create!(title: "Test Book", book_type: :ebook, open_library_work_id: "OL_RETRY_DL")
     request = Request.create!(
       book: book,
@@ -226,14 +232,22 @@ class RequestRetryTest < ActiveSupport::TestCase
       status: :selected,
       download_url: "http://example.com/test.nzb"
     )
+    fallback_result = request.search_results.create!(
+      guid: "test-guid-retry-next",
+      title: "Test Result Next",
+      status: :rejected,
+      confidence_score: 95,
+      detected_language: "en",
+      download_url: "http://example.com/test-next.nzb"
+    )
 
     # Create a failed download
-    failed_download = request.downloads.create!(
+    request.downloads.create!(
       name: "Test Download",
+      search_result: search_result,
       status: :failed
     )
 
-    # Retry should create a new download and queue the job
     assert_difference -> { request.downloads.count }, 1 do
       assert_enqueued_with(job: DownloadJob) do
         request.retry_now!
@@ -245,10 +259,69 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_not request.attention_needed?
     assert_nil request.issue_description
 
-    # New download should be queued
+    assert search_result.reload.blocklisted?
+    assert search_result.rejected?
+    assert fallback_result.reload.selected?
+
     new_download = request.downloads.order(created_at: :desc).first
     assert new_download.queued?
-    assert_equal search_result.title, new_download.name
+    assert_equal fallback_result.title, new_download.name
+  end
+
+  test "retry_now! blocklists failed selected result and restarts search when auto-select is disabled" do
+    SettingsService.set(:auto_select_enabled, false)
+    book = Book.create!(title: "Test Book Retry Off", book_type: :ebook, open_library_work_id: "OL_RETRY_OFF")
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :downloading,
+      attention_needed: true,
+      issue_description: "Download failed"
+    )
+    search_result = request.search_results.create!(
+      guid: "test-guid-retry-off",
+      title: "Test Result",
+      status: :selected,
+      download_url: "http://example.com/test.nzb"
+    )
+    request.downloads.create!(name: "Test Download", search_result: search_result, status: :failed)
+
+    request.retry_now!
+
+    assert request.reload.pending?
+    assert search_result.reload.blocklisted?
+    assert_not request.attention_needed?
+  end
+
+  test "retry_now! does not blocklist selected result because of an older unrelated failed download" do
+    SettingsService.set(:auto_select_enabled, true)
+    book = Book.create!(title: "Test Book Retry Stale", book_type: :ebook, open_library_work_id: "OL_RETRY_STALE")
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :downloading,
+      attention_needed: true,
+      issue_description: "Old failure"
+    )
+    old_result = request.search_results.create!(
+      guid: "test-guid-old-failed",
+      title: "Old failed result",
+      status: :rejected,
+      download_url: "http://example.com/old.nzb"
+    )
+    selected_result = request.search_results.create!(
+      guid: "test-guid-new-selected",
+      title: "New selected result",
+      status: :selected,
+      download_url: "http://example.com/new.nzb"
+    )
+    request.downloads.create!(name: old_result.title, search_result: old_result, status: :failed)
+
+    request.retry_now!
+
+    assert request.reload.pending?
+    assert_not selected_result.reload.blocklisted?
+    assert_not old_result.reload.blocklisted?
   end
 
   test "retry_now! restarts search when there is a selected result but no failed download" do

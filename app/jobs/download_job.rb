@@ -45,6 +45,7 @@ class DownloadJob < ApplicationJob
       download.request.mark_for_attention!("No search result selected for download")
       return
     end
+    download.update!(search_result: search_result) unless download.search_result_id
 
     begin
       # Handle Anna's Archive downloads differently
@@ -80,36 +81,81 @@ class DownloadJob < ApplicationJob
       Rails.logger.error "[DownloadJob] Download client error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Download client error: #{e.message}")
+      download.request.handle_download_failure!(download, reason: "Download client error: #{e.message}")
     rescue AnnaArchiveClient::Error => e
       Rails.logger.error "[DownloadJob] Anna's Archive error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Anna's Archive error: #{e.message}")
+      handle_download_source_failure(download, e, "Anna's Archive error: #{e.message}")
     rescue ZLibraryClient::Error => e
       Rails.logger.error "[DownloadJob] Z-Library error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Z-Library error: #{e.message}")
+      handle_download_source_failure(download, e, "Z-Library error: #{e.message}")
     rescue LibrivoxClient::Error => e
       Rails.logger.error "[DownloadJob] LibriVox error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
-      download.request.mark_for_attention!("LibriVox error: #{e.message}")
+      handle_download_source_failure(download, e, "LibriVox error: #{e.message}")
     rescue GutenbergClient::Error => e
       Rails.logger.error "[DownloadJob] Project Gutenberg error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Project Gutenberg error: #{e.message}")
+      handle_download_source_failure(download, e, "Project Gutenberg error: #{e.message}")
     rescue CustomAcquisitionProviderClient::Error => e
       Rails.logger.error "[DownloadJob] Custom provider error for download ##{download.id}: #{e.message}"
       track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Custom provider error: #{e.message}")
+      handle_download_source_failure(download, e, "Custom provider error: #{e.message}")
     end
   end
 
   private
+
+  def handle_download_source_failure(download, error, message)
+    if transient_download_source_error?(error)
+      download.request.mark_for_attention!(message)
+    else
+      download.request.handle_download_failure!(download, reason: message)
+    end
+  end
+
+  def transient_download_source_error?(error)
+    case error
+    when AnnaArchiveClient::ConnectionError,
+         AnnaArchiveClient::AuthenticationError,
+         AnnaArchiveClient::NotConfiguredError,
+         AnnaArchiveClient::ConfigurationError,
+         AnnaArchiveClient::BotProtectionError,
+         AnnaArchiveClient::RetryableError,
+         ZLibraryClient::ConnectionError,
+         ZLibraryClient::AuthenticationError,
+         ZLibraryClient::NotConfiguredError,
+         ZLibraryClient::RateLimitError,
+         ZLibraryClient::ConfigurationError,
+         LibrivoxClient::ConnectionError,
+         LibrivoxClient::NotConfiguredError,
+         LibrivoxClient::ConfigurationError,
+         GutenbergClient::ConnectionError,
+         GutenbergClient::NotConfiguredError,
+         GutenbergClient::ConfigurationError,
+         CustomAcquisitionProviderClient::ConnectionError
+      true
+    when CustomAcquisitionProviderClient::ResponseError
+      transient_custom_provider_response_error?(error)
+    else
+      false
+    end
+  end
+
+  def transient_custom_provider_response_error?(error)
+    message = error.message.to_s
+    message.include?("returned HTTP") ||
+      message.include?("returned invalid JSON") ||
+      message.include?("returned an invalid acquire response") ||
+      message.include?("response exceeds") ||
+      message.include?("missing its provider")
+  end
 
   def handle_anna_archive_download(download, search_result)
     # Fetch actual download URL from Anna's Archive API
@@ -155,7 +201,7 @@ class DownloadJob < ApplicationJob
     Rails.logger.error e.backtrace.first(5).join("\n")
     track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
     download.update!(status: :failed)
-    download.request.mark_for_attention!("LibriVox download failed: #{e.message}")
+    download.request.handle_download_failure!(download, reason: "LibriVox download failed: #{e.message}")
   end
 
   def handle_custom_provider_download(download, search_result)
@@ -188,7 +234,7 @@ class DownloadJob < ApplicationJob
     Rails.logger.error e.backtrace.first(5).join("\n")
     track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
     download.update!(status: :failed)
-    download.request.mark_for_attention!("Custom provider download failed: #{e.message}")
+    download.request.handle_download_failure!(download, reason: "Custom provider download failed: #{e.message}")
   end
 
   def handle_direct_audiobook_download(download, search_result, download_url, source_name:)
@@ -325,7 +371,7 @@ class DownloadJob < ApplicationJob
     Rails.logger.error e.backtrace.first(5).join("\n")
     track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
     download.update!(status: :failed)
-    download.request.mark_for_attention!("Direct download failed: #{e.message}")
+    download.request.handle_download_failure!(download, reason: "Direct download failed: #{e.message}")
   end
 
   def infer_filename_from_url(url, search_result)
@@ -724,7 +770,7 @@ class DownloadJob < ApplicationJob
         details: { client_name: client_record.name }
       )
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Failed to add to #{client_record.name}")
+      download.request.handle_download_failure!(download, reason: "Failed to add to #{client_record.name}")
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
     end
   end
@@ -769,7 +815,7 @@ class DownloadJob < ApplicationJob
         details: { client_name: client_record.name, download_type: "usenet" }
       )
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Failed to add to #{client_record.name}")
+      download.request.handle_download_failure!(download, reason: "Failed to add to #{client_record.name}")
     end
   end
 
@@ -778,7 +824,7 @@ class DownloadJob < ApplicationJob
       Rails.logger.error "[DownloadJob] Search result has no download link for download ##{download.id}"
       track_request_event(download.request, "dispatch_failed", download: download, message: "Selected result has no download link", level: :error)
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Selected result has no download link")
+      download.request.handle_download_failure!(download, reason: "Selected result has no download link")
       return
     end
 
@@ -840,7 +886,7 @@ class DownloadJob < ApplicationJob
         }
       )
       download.update!(status: :failed)
-      download.request.mark_for_attention!("Failed to add to #{client_record.name}")
+      download.request.handle_download_failure!(download, reason: "Failed to add to #{client_record.name}")
       Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
     end
   end
