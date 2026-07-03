@@ -16,7 +16,7 @@ class SearchJob < ApplicationJob
     # Check if any search sources are configured
     indexer_available = IndexerClient.configured?
     anna_available = AnnaArchiveClient.configured? && request.book.ebook?
-    zlibrary_available = !anna_available && ZLibraryClient.configured? && request.book.ebook?
+    zlibrary_available = ZLibraryClient.configured? && request.book.ebook?
     gutenberg_available = GutenbergClient.configured? && request.book.ebook?
     librivox_available = LibrivoxClient.configured? && request.book.audiobook?
     custom_providers = AcquisitionProvider.enabled.for_book_type(request.book.book_type).by_priority.to_a

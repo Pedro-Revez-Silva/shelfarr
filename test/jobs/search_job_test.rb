@@ -995,7 +995,7 @@ class SearchJobTest < ActiveJob::TestCase
     assert @request.attention_needed?
   end
 
-  test "skips z-library when anna archive is configured" do
+  test "includes z-library results when anna archive returns no results" do
     SettingsService.set(:prowlarr_api_key, "")
     SettingsService.set(:anna_archive_enabled, true)
     SettingsService.set(:anna_archive_api_key, "aa-key")
@@ -1004,15 +1004,27 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_email, "reader@example.com")
     SettingsService.set(:zlibrary_password, "secret")
 
+    result = ZLibraryClient::Result.new(
+      id: "999",
+      hash: "deadbeef",
+      title: "Z-Library Result",
+      author: @request.book.author,
+      year: 2024,
+      file_type: "epub",
+      file_size: 5_452_595,
+      language: "en"
+    )
+
     AnnaArchiveClient.stub :search, [] do
-      ZLibraryClient.stub :search, ->(*) { flunk "Z-Library should not be searched when Anna's Archive is available" } do
+      ZLibraryClient.stub :search, [ result ] do
         SearchJob.perform_now(@request.id)
       end
     end
 
     @request.reload
-    assert @request.not_found?
-    assert @request.search_results.none? { |result| result.source == SearchResult::SOURCE_ZLIBRARY }
+    saved_result = @request.search_results.first
+    assert_equal SearchResult::SOURCE_ZLIBRARY, saved_result.source
+    assert_equal "999:deadbeef", saved_result.guid
   end
 
   test "marks z-library as a valid configured source" do

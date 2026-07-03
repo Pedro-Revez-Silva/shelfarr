@@ -152,7 +152,7 @@ class SettingsService
     flaresolverr_url: { type: "string", default: "", category: "anna_archive", description: "FlareSolverr URL for bypassing DDoS protection (e.g., http://flaresolverr:8191)" },
 
     # Z-Library
-    zlibrary_enabled: { type: "boolean", default: false, category: "zlibrary", description: "Enable the unofficial Z-Library fallback for ebook search and direct download. This integration may break if the service changes." },
+    zlibrary_enabled: { type: "boolean", default: false, category: "zlibrary", description: "Enable Z-Library as an additional ebook search and direct download source. This unofficial integration may break if the service changes." },
     zlibrary_url: { type: "string", default: DEFAULT_ZLIBRARY_URLS, category: "zlibrary", description: "Z-Library base URLs to try. Shelfarr uses the first URL that accepts your login." },
     zlibrary_email: { type: "string", default: "", category: "zlibrary", description: "Z-Library account email used for login" },
     zlibrary_password: { type: "string", default: "", category: "zlibrary", description: "Z-Library account password used for login" },
