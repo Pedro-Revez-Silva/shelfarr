@@ -463,6 +463,18 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert flash[:alert].present?
   end
 
+  test "bulk_update accepts blank path templates" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        ebook_path_template: ""
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "", SettingsService.get(:ebook_path_template)
+    assert flash[:alert].blank?
+  end
+
   test "bulk_update validates filename templates" do
     patch bulk_update_admin_settings_url, params: {
       settings: {

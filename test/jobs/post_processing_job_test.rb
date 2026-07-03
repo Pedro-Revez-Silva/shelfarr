@@ -95,6 +95,40 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "copies audiobook files directly to output folder when path template is blank" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_path_template, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert_equal @temp_dest_base, @book.reload.file_path
+    assert File.exist?(File.join(@temp_dest_base, "audiobook.mp3"))
+    assert_not File.exist?(File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3"))
+  end
+
+  test "copies ebook files directly to output folder when path template is blank" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Dune.epub"))
+
+    @book.update!(
+      title: "Dune",
+      author: "Frank Herbert",
+      book_type: :ebook
+    )
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_path_template, "")
+    SettingsService.set(:ebook_filename_template, "{author} - {title}")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert_equal @temp_dest_base, @book.reload.file_path
+    assert File.exist?(File.join(@temp_dest_base, "Frank Herbert - Dune.epub"))
+    assert_not File.exist?(File.join(@temp_dest_base, "Frank Herbert", "Dune", "Frank Herbert - Dune.epub"))
+  end
+
   test "preserves original files for seeding" do
     VCR.turned_off do
       stub_audiobookshelf_library(@temp_dest_base)

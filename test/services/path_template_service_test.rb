@@ -138,6 +138,22 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "/audiobooks/Stephen King/The Shining", result
   end
 
+  test "build_destination uses base path when audiobook path template is blank" do
+    SettingsService.set(:audiobook_path_template, "")
+
+    result = PathTemplateService.build_destination(@book, base_path: "/audiobooks")
+    assert_equal "/audiobooks", result
+  end
+
+  test "build_destination uses base path when ebook path template is blank" do
+    ebook = books(:ebook_pending)
+    ebook.update!(author: "Frank Herbert", title: "Dune")
+    SettingsService.set(:ebook_path_template, "")
+
+    result = PathTemplateService.build_destination(ebook, base_path: "/ebooks")
+    assert_equal "/ebooks", result
+  end
+
   # Security / Validation tests
 
   test "removes path traversal from template" do
@@ -162,14 +178,14 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "Stephen King/The Shining", result
   end
 
-  test "handles empty template with default" do
+  test "handles empty path template as flat output" do
     result = PathTemplateService.build_path(@book, "")
-    assert_equal "Stephen King/The Shining", result
+    assert_equal "", result
   end
 
-  test "handles nil template with default" do
+  test "handles nil path template as flat output" do
     result = PathTemplateService.build_path(@book, nil)
-    assert_equal "Stephen King/The Shining", result
+    assert_equal "", result
   end
 
   test "collapses multiple slashes" do
@@ -177,8 +193,14 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "Stephen King/The Shining", result
   end
 
-  test "validate_template returns error for empty template" do
+  test "validate_template accepts empty path template" do
     valid, error = PathTemplateService.validate_template("")
+    assert valid
+    assert_nil error
+  end
+
+  test "validate_template returns error for empty filename template" do
+    valid, error = PathTemplateService.validate_template("", mode: :filename)
     assert_not valid
     assert_equal "Template cannot be empty", error
   end

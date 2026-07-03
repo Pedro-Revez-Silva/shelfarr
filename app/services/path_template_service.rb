@@ -21,7 +21,9 @@ class PathTemplateService
 
     # Validate a template string, returns [valid, error_message]
     def validate_template(template, mode: :path)
+      return [ true, nil ] if mode == :path && template.blank?
       return [ false, "Template cannot be empty" ] if template.blank?
+
       parsed_expressions = extract_template_expressions(template)
       parsed_tokens = parsed_expressions.map { |expr| parse_expression(expr) }
       invalid_expressions = parsed_expressions.zip(parsed_tokens).filter_map do |expr, token|
@@ -77,7 +79,7 @@ class PathTemplateService
       template = template_for(book)
       relative_path = build_path(book, template)
 
-      File.join(base, relative_path)
+      relative_path.present? ? File.join(base, relative_path) : base
     end
 
     # Build a filename from a template and book metadata
@@ -128,8 +130,6 @@ class PathTemplateService
 
     # Sanitize template to prevent path traversal
     def sanitize_template(template)
-      return DEFAULT_TEMPLATE if template.blank?
-
       template.to_s
     end
 
@@ -157,6 +157,8 @@ class PathTemplateService
     end
 
     def render_path_template(book, template)
+      return "" if template.blank?
+
       result = render_template(book, template, variant: :path)
       sanitize_path(cleanup_path_result(result))
     end
