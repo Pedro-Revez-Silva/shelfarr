@@ -79,7 +79,9 @@
                       <p class="text-sm text-gray-500"><%= data[:definition][:description] %></p>
                     </div>
                     <div class="md:w-2/3">
-                      <% if key.to_s == "preferred_download_types" %>
+                      <% if data[:env_managed] %>
+                        <%= render "admin/settings/env_managed_field", key: key, data: data %>
+                      <% elsif key.to_s == "preferred_download_types" %>
                         <%= render "admin/settings/download_type_preferences_field", form: form, key: key, ordered_types: SettingsService.preferred_download_types %>
                       <% else %>
                       <% case data[:definition][:type] %>
@@ -164,7 +166,7 @@
                             </div>
                             <p class="hidden text-xs text-red-400" data-url-list-error></p>
                           </div>
-                        <% elsif key.to_s.include?("password") || key.to_s.include?("api_key") || key.to_s.include?("token") || key.to_s.include?("secret") %>
+                        <% elsif SettingsService.secret_setting_key?(key) %>
                           <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% else %>
                           <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>

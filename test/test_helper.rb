@@ -51,6 +51,33 @@ module ActiveSupport
         )
     end
 
+    def with_env(overrides)
+      original = overrides.each_key.to_h { |key| [ key, ENV.key?(key) ? ENV[key] : :__unset__ ] }
+
+      overrides.each do |key, value|
+        value.nil? ? ENV.delete(key) : ENV[key] = value
+      end
+
+      yield
+    ensure
+      original&.each do |key, value|
+        value == :__unset__ ? ENV.delete(key) : ENV[key] = value
+      end
+    end
+
+    def clear_settings_env!
+      @settings_env_backup = ENV.to_h.select { |key, _| key.start_with?(SettingsService::ENV_OVERRIDE_PREFIX) }
+      @settings_env_backup.each_key { |key| ENV.delete(key) }
+    end
+
+    def restore_settings_env!
+      return unless defined?(@settings_env_backup) && @settings_env_backup
+
+      ENV.delete_if { |key, _| key.start_with?(SettingsService::ENV_OVERRIDE_PREFIX) }
+      @settings_env_backup.each { |key, value| ENV[key] = value }
+      @settings_env_backup = nil
+    end
+
     # Add more helper methods to be used by all tests here...
   end
 end

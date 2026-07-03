@@ -1,5 +1,6 @@
 class SettingsService
   DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
+  ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
   LIBRARY_PLATFORMS = %w[audiobookshelf bookorbit grimmory].freeze
@@ -174,11 +175,11 @@ class SettingsService
     hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
 
     # Webhook Notifications
-    webhook_enabled: { type: "boolean", default: false, category: "webhook", description: "Send outbound webhook notifications for request lifecycle events" },
-    webhook_url: { type: "string", default: "", category: "webhook", description: "Webhook endpoint URL. Shelfarr sends a JSON payload for each enabled event." },
-    webhook_token: { type: "string", default: "", category: "webhook", description: "Optional Bearer token for webhook authentication" },
-    webhook_events: { type: "string", default: "request_created,request_completed,request_failed,request_attention", category: "webhook", description: "Comma-separated webhook events to send" },
-    webhook_topic: { type: "string", default: "", category: "webhook", description: "Optional topic field included in webhook JSON payload (required by ntfy when posting to the server base URL)" },
+    webhook_enabled: { type: "boolean", default: false, category: "webhook", description: "Send outbound webhook notifications for request lifecycle events", env_overridable: true },
+    webhook_url: { type: "string", default: "", category: "webhook", description: "Webhook endpoint URL. Shelfarr sends a JSON payload for each enabled event.", env_overridable: true },
+    webhook_token: { type: "string", default: "", category: "webhook", description: "Optional Bearer token for webhook authentication", env_overridable: true },
+    webhook_events: { type: "string", default: "request_created,request_completed,request_failed,request_attention", category: "webhook", description: "Comma-separated webhook events to send", env_overridable: true },
+    webhook_topic: { type: "string", default: "", category: "webhook", description: "Optional topic field included in webhook JSON payload (required by ntfy when posting to the server base URL)", env_overridable: true },
 
     # Discord Notifications
     discord_enabled: { type: "boolean", default: false, category: "discord", description: "Send native Discord webhook notifications for request lifecycle events" },
@@ -196,16 +197,16 @@ class SettingsService
     telegram_notification_events: { type: "string", default: "request_completed,request_failed,request_attention", category: "telegram", description: "Comma-separated request lifecycle events sent back to the authorized Telegram group that created the request" },
 
     # OIDC/SSO Authentication
-    oidc_enabled: { type: "boolean", default: false, category: "oidc", description: "Enable OpenID Connect (OIDC) single sign-on authentication" },
-    oidc_auto_redirect: { type: "boolean", default: false, category: "oidc", description: "Automatically start OIDC sign-in for unauthenticated users. Use /session/new?local=1 to access the local login form." },
-    oidc_provider_name: { type: "string", default: "SSO", category: "oidc", description: "Display name for the OIDC provider (shown on login button)" },
-    oidc_issuer: { type: "string", default: "", category: "oidc", description: "OIDC issuer URL (e.g., https://auth.example.com/realms/master)" },
-    oidc_client_id: { type: "string", default: "", category: "oidc", description: "OIDC client ID from your identity provider" },
-    oidc_client_secret: { type: "string", default: "", category: "oidc", description: "OIDC client secret from your identity provider" },
-    oidc_scopes: { type: "string", default: "openid profile email", category: "oidc", description: "OIDC scopes to request (space-separated)" },
-    oidc_link_existing_users: { type: "boolean", default: false, category: "oidc", description: "When enabled, OIDC sign-in will link an unlinked local user whose username matches the OIDC preferred username or email prefix." },
-    oidc_auto_create_users: { type: "boolean", default: false, category: "oidc", description: "Automatically create new users on first OIDC login" },
-    oidc_default_role: { type: "string", default: "user", category: "oidc", description: "Default role for auto-created OIDC users (user or admin)" }
+    oidc_enabled: { type: "boolean", default: false, category: "oidc", description: "Enable OpenID Connect (OIDC) single sign-on authentication", env_overridable: true },
+    oidc_auto_redirect: { type: "boolean", default: false, category: "oidc", description: "Automatically start OIDC sign-in for unauthenticated users. Use /session/new?local=1 to access the local login form.", env_overridable: true },
+    oidc_provider_name: { type: "string", default: "SSO", category: "oidc", description: "Display name for the OIDC provider (shown on login button)", env_overridable: true },
+    oidc_issuer: { type: "string", default: "", category: "oidc", description: "OIDC issuer URL (e.g., https://auth.example.com/realms/master)", env_overridable: true },
+    oidc_client_id: { type: "string", default: "", category: "oidc", description: "OIDC client ID from your identity provider", env_overridable: true },
+    oidc_client_secret: { type: "string", default: "", category: "oidc", description: "OIDC client secret from your identity provider", env_overridable: true },
+    oidc_scopes: { type: "string", default: "openid profile email", category: "oidc", description: "OIDC scopes to request (space-separated)", env_overridable: true },
+    oidc_link_existing_users: { type: "boolean", default: false, category: "oidc", description: "When enabled, OIDC sign-in will link an unlinked local user whose username matches the OIDC preferred username or email prefix.", env_overridable: true },
+    oidc_auto_create_users: { type: "boolean", default: false, category: "oidc", description: "Automatically create new users on first OIDC login", env_overridable: true },
+    oidc_default_role: { type: "string", default: "user", category: "oidc", description: "Default role for auto-created OIDC users (user or admin)", env_overridable: true }
   }.freeze
 
   CATEGORIES = {
@@ -253,9 +254,28 @@ class SettingsService
       LABELS.fetch(key.to_sym, key.to_s.titleize)
     end
 
+    def env_override_name(key)
+      "#{ENV_OVERRIDE_PREFIX}#{key.to_s.upcase}"
+    end
+
+    def env_managed?(key)
+      key = key.to_sym
+      DEFINITIONS[key]&.fetch(:env_overridable, false) == true && ENV.key?(env_override_name(key))
+    end
+
+    def env_managed_keys
+      DEFINITIONS.keys.select { |key| env_managed?(key) }
+    end
+
+    def secret_setting_key?(key)
+      key = key.to_s
+      key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret")
+    end
+
     # Primary getter with default fallback
     def get(key, default: nil)
       key = key.to_sym
+      return env_override_value(key) if env_managed?(key)
       return preferred_download_types if key == :preferred_download_types
 
       value = raw_setting_value(key)
@@ -303,7 +323,9 @@ class SettingsService
         keys.each_with_object({}) do |key, hash|
           hash[key] = {
             value: get(key),
-            definition: DEFINITIONS[key]
+            definition: DEFINITIONS[key],
+            env_managed: env_managed?(key),
+            env_var: env_override_name(key)
           }
         end
       end
@@ -547,6 +569,11 @@ class SettingsService
     end
 
     private
+
+    def env_override_value(key)
+      raw = ENV.fetch(env_override_name(key))
+      Setting.new(value_type: DEFINITIONS.fetch(key)[:type], value: raw).typed_value
+    end
 
     def provider_enabled?(provider)
       case provider.to_s

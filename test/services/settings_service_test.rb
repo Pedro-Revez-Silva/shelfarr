@@ -6,7 +6,23 @@ class SettingsServiceTest < ActiveSupport::TestCase
   cover "SettingsService*"
 
   setup do
-    Setting.where(key: %w[indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key preferred_download_type preferred_download_types move_completed_downloads zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled library_platform audiobookshelf_url audiobookshelf_api_key bookorbit_url bookorbit_username bookorbit_password grimmory_url grimmory_username grimmory_password]).delete_all
+    clear_settings_env!
+    Setting.where(key: %w[
+      indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories
+      prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key
+      preferred_download_type preferred_download_types move_completed_downloads audiobook_path_template api_token
+      zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url
+      metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled
+      library_platform audiobookshelf_url audiobookshelf_api_key bookorbit_url bookorbit_username bookorbit_password
+      grimmory_url grimmory_username grimmory_password
+      oidc_enabled oidc_auto_redirect oidc_provider_name oidc_issuer oidc_client_id oidc_client_secret oidc_scopes
+      oidc_link_existing_users oidc_auto_create_users oidc_default_role
+      webhook_enabled webhook_url webhook_token webhook_events webhook_topic
+    ]).delete_all
+  end
+
+  teardown do
+    restore_settings_env!
   end
 
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
@@ -227,5 +243,103 @@ class SettingsServiceTest < ActiveSupport::TestCase
     SettingsService.set(:grimmory_password, "secret")
 
     assert SettingsService.audiobookshelf_configured?
+  end
+
+  test "env override name uses setting prefix and uppercased key" do
+    assert_equal "SHELFARR_SETTING_OIDC_CLIENT_SECRET", SettingsService.env_override_name(:oidc_client_secret)
+  end
+
+  test "env value takes precedence over stored value and reverts when removed" do
+    SettingsService.set(:oidc_client_id, "stored-client")
+
+    with_env("SHELFARR_SETTING_OIDC_CLIENT_ID" => "env-client") do
+      assert_equal "env-client", SettingsService.get(:oidc_client_id)
+      assert SettingsService.env_managed?(:oidc_client_id)
+    end
+
+    assert_equal "stored-client", SettingsService.get(:oidc_client_id)
+    assert_not SettingsService.env_managed?(:oidc_client_id)
+  end
+
+  test "env supplies a value when no database row exists" do
+    Setting.where(key: "oidc_client_secret").delete_all
+
+    with_env("SHELFARR_SETTING_OIDC_CLIENT_SECRET" => "env-secret") do
+      assert_equal "env-secret", SettingsService.get(:oidc_client_secret)
+      assert_equal [ :oidc_client_secret ], SettingsService.env_managed_keys
+    end
+  end
+
+  test "env boolean values use setting type casting" do
+    with_env(
+      "SHELFARR_SETTING_OIDC_ENABLED" => "true",
+      "SHELFARR_SETTING_OIDC_AUTO_CREATE_USERS" => "false"
+    ) do
+      assert_equal true, SettingsService.get(:oidc_enabled)
+      assert_equal false, SettingsService.get(:oidc_auto_create_users)
+    end
+  end
+
+  test "env string values use setting type casting" do
+    with_env("SHELFARR_SETTING_WEBHOOK_EVENTS" => "request_created,request_completed") do
+      assert_equal "request_created,request_completed", SettingsService.get(:webhook_events)
+    end
+  end
+
+  test "env can force a stored enabled setting off" do
+    SettingsService.set(:oidc_enabled, true)
+
+    with_env("SHELFARR_SETTING_OIDC_ENABLED" => "false") do
+      assert_equal false, SettingsService.get(:oidc_enabled)
+    end
+  end
+
+  test "oidc_configured? honors env with no database rows" do
+    Setting.where(key: %w[oidc_enabled oidc_issuer oidc_client_id oidc_client_secret]).delete_all
+
+    with_env(
+      "SHELFARR_SETTING_OIDC_ENABLED" => "true",
+      "SHELFARR_SETTING_OIDC_ISSUER" => "https://auth.example.com",
+      "SHELFARR_SETTING_OIDC_CLIENT_ID" => "client-id",
+      "SHELFARR_SETTING_OIDC_CLIENT_SECRET" => "client-secret"
+    ) do
+      assert SettingsService.oidc_configured?
+    end
+  end
+
+  test "configured? honors env with no database rows" do
+    Setting.where(key: "webhook_url").delete_all
+
+    with_env("SHELFARR_SETTING_WEBHOOK_URL" => "https://hooks.example.com/shelfarr") do
+      assert SettingsService.configured?(:webhook_url)
+    end
+  end
+
+  test "all_by_category includes env management metadata" do
+    with_env("SHELFARR_SETTING_WEBHOOK_URL" => "https://hooks.example.com/shelfarr") do
+      webhook_url = SettingsService.all_by_category.dig("webhook", :webhook_url)
+
+      assert_equal true, webhook_url[:env_managed]
+      assert_equal "SHELFARR_SETTING_WEBHOOK_URL", webhook_url[:env_var]
+    end
+  end
+
+  test "non-allowlisted path template env key is inert" do
+    SettingsService.set(:audiobook_path_template, "{author}/{title}")
+
+    with_env("SHELFARR_SETTING_AUDIOBOOK_PATH_TEMPLATE" => "{title}") do
+      assert_equal "{author}/{title}", SettingsService.get(:audiobook_path_template)
+      assert_not SettingsService.env_managed?(:audiobook_path_template)
+    end
+  end
+
+  test "non-allowlisted api token env key is inert" do
+    SettingsService.set(:api_token, "stored-api-token")
+
+    with_env("SHELFARR_SETTING_API_TOKEN" => "env-api-token") do
+      assert_equal "stored-api-token", SettingsService.get(:api_token)
+      assert_equal "stored-api-token", SettingsService.api_token
+      assert_not SettingsService.env_managed?(:api_token)
+    end
   end
 end

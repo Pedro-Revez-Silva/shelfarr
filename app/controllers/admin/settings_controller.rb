@@ -11,6 +11,12 @@ module Admin
 
     def update
       key = params[:id]
+
+      if SettingsService.env_managed?(key)
+        redirect_to admin_settings_path, alert: "#{SettingsService.label_for(key)} is managed by the environment and cannot be changed here."
+        return
+      end
+
       value = params[:setting][:value]
 
       unless preserve_blank_secret?(key, value)
@@ -32,6 +38,7 @@ module Admin
       changed_keys = []
 
       params[:settings]&.each do |key, value|
+        next if SettingsService.env_managed?(key)
         next if preserve_blank_secret?(key, value)
 
         error = validate_path_template(key, value)
@@ -535,8 +542,7 @@ module Admin
     end
 
     def secret_setting_key?(key)
-      key = key.to_s
-      key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret")
+      SettingsService.secret_setting_key?(key)
     end
   end
 end
