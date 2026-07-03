@@ -9,14 +9,19 @@ class PathTemplateService
     authorSort titleSort seriesSort seriesNum
   ].freeze
   FORMATTABLE_VARIABLES = %w[seriesNum].freeze
-  DEFAULT_TEMPLATE = "{author}/{title}".freeze
   DEFAULT_FILENAME_TEMPLATE = "{author} - {title}".freeze
   TOKEN_PATTERN = /\{([^{}]+)\}/
 
   class << self
     # Build a relative path from a template and book metadata
     def build_path(book, template)
-      render_path_template(book, sanitize_template(template))
+      render_path_template(book, template)
+    end
+
+    # True when the book's path template is blank, meaning files are written
+    # directly into the output root rather than a per-book folder
+    def flat_output?(book)
+      template_for(book).blank?
     end
 
     # Validate a template string, returns [valid, error_message]
@@ -126,11 +131,6 @@ class PathTemplateService
         .strip
         .gsub(/\s+/, " ")           # Collapse whitespace
         .truncate(100, omission: "") # Limit length
-    end
-
-    # Sanitize template to prevent path traversal
-    def sanitize_template(template)
-      template.to_s
     end
 
     # Sanitize filename template (no path segments allowed)

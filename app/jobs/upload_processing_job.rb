@@ -325,6 +325,8 @@ class UploadProcessingJob < ApplicationJob
     if book.audiobook? && File.extname(upload.original_filename).casecmp?(".zip")
       extract_zip_upload_to_directory(source_path, destination_dir)
       FileUtils.rm_f(source_path)
+      # Archives extract to many files, so flat output has no single file to
+      # track; the root is recorded and guarded against delete/zip by consumers
       return destination_dir
     end
 
@@ -347,7 +349,8 @@ class UploadProcessingJob < ApplicationJob
       FileUtils.rm(source_path)
     end
 
-    destination_dir
+    # Flat output shares destination_dir across books; track the file itself
+    PathTemplateService.flat_output?(book) ? destination_file : destination_dir
   end
 
   def extract_zip_upload_to_directory(

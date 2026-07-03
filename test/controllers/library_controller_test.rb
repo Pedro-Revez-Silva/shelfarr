@@ -199,4 +199,27 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
       assert File.exist?(file_path)
     end
   end
+
+  test "destroy does not delete the output root when a flat-imported book points at it" do
+    sign_out
+    sign_in_as(@admin)
+    Dir.mktmpdir("shelfarr-library-test") do |dir|
+      other_book_file = File.join(dir, "other-book.epub")
+      File.write(other_book_file, "book")
+      SettingsService.set(:ebook_output_path, dir)
+      book = Book.create!(
+        title: "Flat Ebook",
+        author: "Test Author",
+        book_type: :ebook,
+        file_path: dir
+      )
+
+      delete library_path(book), params: { delete_files: "1" }
+
+      assert_redirected_to library_index_path
+      assert File.directory?(dir)
+      assert File.exist?(other_book_file)
+      assert_not Book.exists?(book.id)
+    end
+  end
 end

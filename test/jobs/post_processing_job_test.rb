@@ -124,8 +124,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
     PostProcessingJob.perform_now(@download.id)
 
-    assert_equal @temp_dest_base, @book.reload.file_path
-    assert File.exist?(File.join(@temp_dest_base, "Frank Herbert - Dune.epub"))
+    imported_file = File.join(@temp_dest_base, "Frank Herbert - Dune.epub")
+    assert_equal imported_file, @book.reload.file_path
+    assert File.exist?(imported_file)
     assert_not File.exist?(File.join(@temp_dest_base, "Frank Herbert", "Dune", "Frank Herbert - Dune.epub"))
   end
 

@@ -31,13 +31,17 @@ class PostProcessingJob < ApplicationJob
       source_cleanup = import_files(source_path, destination, book: book)
       cleanup_usenet_download(download)
 
-      book.update!(file_path: destination)
+      book_path = imported_book_path(book, destination)
+      book.update!(file_path: book_path)
       remove_import_source(source_cleanup)
 
       request.complete!
 
-      # Pre-create zip for directories (audiobooks) so download is instant
-      pre_create_download_zip(book, destination) if File.directory?(destination)
+      # Pre-create zip for directories (audiobooks) so download is instant.
+      # Flat imports share the output root, which must never be zipped whole.
+      if File.directory?(book_path) && !PathTemplateService.flat_output?(book)
+        pre_create_download_zip(book, book_path)
+      end
 
       trigger_library_scan(book) if LibraryPlatformClient.configured?
 
@@ -101,6 +105,16 @@ class PostProcessingJob < ApplicationJob
     PathTemplateService.build_destination(book, base_path: base_path)
   end
 
+  # Flat imports write into the shared output root, so the root must not be
+  # recorded as the book's own path when the import produced a single file.
+  # Pointing file_path at that file keeps downloads and deletions per-book.
+  def imported_book_path(book, destination)
+    return destination unless PathTemplateService.flat_output?(book)
+    return destination unless @imported_renamed_files&.one?
+
+    @imported_renamed_files.first
+  end
+
   def get_base_path(book)
     # Always use Shelfarr's configured output paths.
     # External library paths are from that service's container perspective,
@@ -135,6 +149,7 @@ class PostProcessingJob < ApplicationJob
     end
 
     directory_source = File.directory?(source)
+    @imported_renamed_files = []
     @defer_source_removal = directory_source && move_completed_downloads?
     action = move_completed_downloads? ? "Moving" : "Copying"
     Rails.logger.info "[PostProcessingJob] #{action} from #{source} to #{destination}"
@@ -273,6 +288,7 @@ class PostProcessingJob < ApplicationJob
     destination_file = renamed_destination_file(source, destination, book)
     Rails.logger.info "[PostProcessingJob] Renaming file to: #{File.basename(destination_file)}"
     import_file(source, destination_file)
+    @imported_renamed_files << destination_file
   end
 
   def import_file(source, destination)

@@ -229,6 +229,8 @@ class DownloadJob < ApplicationJob
       download_type: "direct"
     )
 
+    # Archives extract to many files, so flat output has no single file to
+    # track; the root is recorded and guarded against delete/zip by consumers
     book.update!(file_path: destination_dir)
     download.request.complete!
     trigger_library_scan(book) if LibraryPlatformClient.configured?
@@ -262,7 +264,8 @@ class DownloadJob < ApplicationJob
       download_type: "direct"
     )
 
-    book.update!(file_path: destination_dir)
+    # Flat output shares destination_dir across books; track the file itself
+    book.update!(file_path: PathTemplateService.flat_output?(book) ? destination_path : destination_dir)
     download.request.complete!
     trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
@@ -303,7 +306,8 @@ class DownloadJob < ApplicationJob
     )
 
     # Update book with file path
-    book.update!(file_path: destination_dir)
+    # Flat output shares destination_dir across books; track the file itself
+    book.update!(file_path: PathTemplateService.flat_output?(book) ? destination_path : destination_dir)
 
     # Complete the request
     download.request.complete!

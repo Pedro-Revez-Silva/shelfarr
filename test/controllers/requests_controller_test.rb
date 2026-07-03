@@ -875,6 +875,28 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(temp_dir)
   end
 
+  test "download refuses to zip the output root for flat-imported books" do
+    temp_dir = Dir.mktmpdir
+    File.write(File.join(temp_dir, "book-a.m4b"), "audio a")
+    File.write(File.join(temp_dir, "book-b.m4b"), "audio b")
+
+    SettingsService.set(:audiobook_output_path, temp_dir)
+
+    book = Book.create!(
+      title: "Flat Book",
+      author: "Test Author",
+      book_type: :audiobook,
+      file_path: temp_dir
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+    assert_redirected_to request_path(request)
+    assert flash[:alert].present?
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
   test "user can download another user's request when book is acquired" do
     temp_dir = Dir.mktmpdir
     temp_file = File.join(temp_dir, "test.m4b")

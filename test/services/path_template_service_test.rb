@@ -154,6 +154,14 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "/ebooks", result
   end
 
+  test "flat_output? reflects whether the book's path template is blank" do
+    SettingsService.set(:audiobook_path_template, "")
+    assert PathTemplateService.flat_output?(@book)
+
+    SettingsService.set(:audiobook_path_template, "{author}/{title}")
+    assert_not PathTemplateService.flat_output?(@book)
+  end
+
   # Security / Validation tests
 
   test "removes path traversal from template" do

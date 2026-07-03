@@ -97,6 +97,13 @@ class LibraryController < ApplicationController
       return
     end
 
+    # Books imported with a blank path template share the output root as their
+    # file_path; deleting it would wipe every other book in the library
+    if output_root_path?(path)
+      Rails.logger.warn "[LibraryController] Refusing to delete the output root itself: #{path}"
+      return
+    end
+
     if File.exist?(path)
       if File.directory?(path)
         FileUtils.rm_rf(path)
@@ -123,6 +130,15 @@ class LibraryController < ApplicationController
       expanded_allowed = File.expand_path(allowed)
       expanded_path.start_with?(expanded_allowed + "/") || expanded_path == expanded_allowed
     end
+  end
+
+  def output_root_path?(path)
+    expanded_path = File.expand_path(path)
+
+    [
+      SettingsService.get(:audiobook_output_path),
+      SettingsService.get(:ebook_output_path)
+    ].compact.reject(&:blank?).any? { |root| File.expand_path(root) == expanded_path }
   end
 
   def delete_from_library_platform(book)

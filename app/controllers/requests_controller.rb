@@ -158,6 +158,13 @@ class RequestsController < ApplicationController
     end
 
     if File.directory?(path)
+      # Books imported with a blank path template share the output root as
+      # their file_path; zipping it would bundle the entire library
+      if output_root_path?(path)
+        redirect_to @request, alert: "This book was imported directly into the library folder and cannot be downloaded as a bundle"
+        return
+      end
+
       send_zipped_directory(path, book)
     else
       send_single_file(path, book)
@@ -244,6 +251,15 @@ class RequestsController < ApplicationController
       expanded_allowed = File.expand_path(allowed)
       expanded_path.start_with?(expanded_allowed + "/") || expanded_path == expanded_allowed
     end
+  end
+
+  def output_root_path?(path)
+    expanded_path = File.expand_path(path)
+
+    [
+      SettingsService.get(:audiobook_output_path),
+      SettingsService.get(:ebook_output_path)
+    ].compact.reject(&:blank?).any? { |root| File.expand_path(root) == expanded_path }
   end
 
   def set_request
