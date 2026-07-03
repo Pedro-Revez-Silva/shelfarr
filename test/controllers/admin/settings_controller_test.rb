@@ -13,10 +13,10 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     GoogleBooksClient.reset_connection!
     OpenLibraryClient.reset_connection!
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
-    restore_settings_env!
   end
 
   teardown do
+    restore_settings_env!
     LibraryPlatformClient.reset_connections!
     ProwlarrClient.reset_connection!
     FlaresolverrClient.reset_connection!
