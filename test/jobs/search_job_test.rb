@@ -64,6 +64,27 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "preserves manual magnet results when saving new results" do
+    VCR.turned_off do
+      stub_prowlarr_search_with_results
+
+      manual_result = @request.search_results.create!(
+        guid: "manual-magnet:#{'b' * 40}",
+        title: "Manual magnet result",
+        magnet_url: "magnet:?xt=urn:btih:#{'b' * 40}",
+        source: SearchResult::SOURCE_MANUAL_MAGNET,
+        indexer: "Manual Magnet",
+        status: :selected
+      )
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert_includes @request.search_results, manual_result
+      assert manual_result.reload.selected?
+    end
+  end
+
   test "schedules retry when no results found" do
     VCR.turned_off do
       stub_prowlarr_search_empty

@@ -244,7 +244,7 @@ class SearchJob < ApplicationJob
   end
 
   def save_results(request, tagged_results)
-    request.search_results.destroy_all
+    request.search_results.where.not(source: SearchResult::SOURCE_MANUAL_MAGNET).destroy_all
 
     tagged_results.each do |tagged|
       result = tagged[:result]

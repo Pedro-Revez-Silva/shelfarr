@@ -152,5 +152,21 @@ module Admin
       assert_redirected_to request_path(@request_record)
       assert_match /refreshed/, flash[:notice]
     end
+
+    test "refresh preserves manual magnet results" do
+      manual_result = @request_record.search_results.create!(
+        guid: "manual-magnet:#{'a' * 40}",
+        title: "Manual magnet result",
+        magnet_url: "magnet:?xt=urn:btih:#{'a' * 40}",
+        source: SearchResult::SOURCE_MANUAL_MAGNET,
+        indexer: "Manual Magnet",
+        status: :selected
+      )
+
+      post refresh_admin_request_search_results_path(@request_record)
+
+      @request_record.reload
+      assert_equal [ manual_result ], @request_record.search_results.to_a
+    end
   end
 end

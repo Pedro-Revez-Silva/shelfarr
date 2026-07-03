@@ -261,7 +261,10 @@ class Request < ApplicationRecord
     raise ArgumentError, "Cannot add a magnet link to a completed request" if completed?
     raise ArgumentError, "Cannot add a magnet link while post-processing is active" if processing?
 
-    search_result = search_results.find_or_initialize_by(guid: manual_magnet_guid(magnet_link))
+    info_hash = MagnetLink.info_hash(magnet_link)
+    raise ArgumentError, "Enter a magnet link with a valid info hash" if info_hash.blank?
+
+    search_result = search_results.find_or_initialize_by(guid: manual_magnet_guid(info_hash))
     search_result.assign_attributes(
       title: "Manual magnet for #{book.display_name}",
       magnet_url: magnet_link,
@@ -321,8 +324,8 @@ class Request < ApplicationRecord
     )
   end
 
-  def manual_magnet_guid(magnet_link)
-    "#{MANUAL_MAGNET_GUID_PREFIX}:#{Digest::SHA256.hexdigest(magnet_link)}"
+  def manual_magnet_guid(info_hash)
+    "#{MANUAL_MAGNET_GUID_PREFIX}:#{info_hash}"
   end
 
   def set_default_language

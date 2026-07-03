@@ -37,6 +37,38 @@ class RequestManualMagnetTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_manual_magnet rejects magnet links without a valid info hash" do
+    assert_raises(ArgumentError, match: /info hash/) do
+      @request.add_manual_magnet!("magnet:?xt=urn:btih:tooshort")
+    end
+
+    assert_raises(ArgumentError, match: /info hash/) do
+      @request.add_manual_magnet!("magnet:?dn=No+Hash+Here")
+    end
+  end
+
+  test "add_manual_magnet dedups magnets with the same info hash" do
+    hash = "f" * 40
+    @request.add_manual_magnet!("magnet:?xt=urn:btih:#{hash}&dn=First&tr=http://tracker-a.example")
+
+    updated_magnet = "magnet:?xt=urn:btih:#{hash}&dn=Second&tr=http://tracker-b.example"
+    assert_no_difference "SearchResult.count" do
+      @request.add_manual_magnet!(updated_magnet)
+    end
+
+    result = @request.search_results.find_by!(source: SearchResult::SOURCE_MANUAL_MAGNET)
+    assert_equal "manual-magnet:#{hash}", result.guid
+    assert_equal updated_magnet, result.magnet_url
+  end
+
+  test "add_manual_magnet dedups hex and base32 encodings of the same info hash" do
+    @request.add_manual_magnet!("magnet:?xt=urn:btih:#{'aa' * 20}")
+
+    assert_no_difference "SearchResult.count" do
+      @request.add_manual_magnet!("magnet:?xt=urn:btih:#{'VK' * 16}")
+    end
+  end
+
   test "add_manual_magnet rejects completed requests" do
     @request.complete!
 
