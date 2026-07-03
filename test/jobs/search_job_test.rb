@@ -1027,6 +1027,68 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "999:deadbeef", saved_result.guid
   end
 
+  test "includes results from both anna archive and z-library" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, true)
+    SettingsService.set(:anna_archive_api_key, "aa-key")
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    anna_result = AnnaArchiveClient::Result.new(
+      md5: "abc123def456",
+      title: @request.book.title,
+      author: @request.book.author,
+      year: 2019,
+      file_type: "epub",
+      file_size: "5 MB",
+      language: "en"
+    )
+    zlibrary_result = ZLibraryClient::Result.new(
+      id: "999",
+      hash: "deadbeef",
+      title: "Z-Library Result",
+      author: @request.book.author,
+      year: 2024,
+      file_type: "epub",
+      file_size: 5_452_595,
+      language: "en"
+    )
+
+    AnnaArchiveClient.stub :search, [ anna_result ] do
+      ZLibraryClient.stub :search, [ zlibrary_result ] do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    @request.reload
+    sources = @request.search_results.pluck(:source)
+    assert_includes sources, SearchResult::SOURCE_ANNA_ARCHIVE
+    assert_includes sources, SearchResult::SOURCE_ZLIBRARY
+  end
+
+  test "marks request not found when anna archive and z-library return no results" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, true)
+    SettingsService.set(:anna_archive_api_key, "aa-key")
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    AnnaArchiveClient.stub :search, [] do
+      ZLibraryClient.stub :search, [] do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    @request.reload
+    assert @request.not_found?
+    direct_sources = [ SearchResult::SOURCE_ANNA_ARCHIVE, SearchResult::SOURCE_ZLIBRARY ]
+    assert @request.search_results.none? { |result| direct_sources.include?(result.source) }
+  end
+
   test "marks z-library as a valid configured source" do
     SettingsService.set(:prowlarr_api_key, "")
     SettingsService.set(:zlibrary_enabled, true)
