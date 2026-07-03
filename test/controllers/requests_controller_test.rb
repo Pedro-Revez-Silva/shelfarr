@@ -611,6 +611,132 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "show displays manual magnet form for open request" do
+    sign_out
+    sign_in_as(@admin)
+
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_select "form[action='#{manual_magnet_request_path(@pending_request)}']"
+    assert_select "input[name='magnet_url']"
+  end
+
+  test "show hides manual magnet form from regular users" do
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_select "form[action='#{manual_magnet_request_path(@pending_request)}']", count: 0
+  end
+
+  test "show hides manual magnet form for completed request" do
+    @pending_request.complete!
+    sign_out
+    sign_in_as(@admin)
+
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_select "form[action='#{manual_magnet_request_path(@pending_request)}']", count: 0
+  end
+
+  test "show hides manual magnet form for processing request" do
+    @pending_request.update!(status: :processing)
+    sign_out
+    sign_in_as(@admin)
+
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_select "form[action='#{manual_magnet_request_path(@pending_request)}']", count: 0
+  end
+
+  test "manual magnet creates selected result and queues download" do
+    sign_out
+    sign_in_as(@admin)
+    magnet = " magnet:?xt=urn:btih:#{'a' * 40}&dn=Manual+Book "
+
+    assert_enqueued_with(job: DownloadJob) do
+      assert_difference [ "SearchResult.count", "Download.count" ], 1 do
+        post manual_magnet_request_path(@pending_request), params: { magnet_url: magnet }
+      end
+    end
+
+    @pending_request.reload
+    result = @pending_request.search_results.find_by(source: SearchResult::SOURCE_MANUAL_MAGNET)
+    download = @pending_request.downloads.order(:created_at).last
+
+    assert @pending_request.downloading?
+    assert result.selected?
+    assert_equal "magnet:?xt=urn:btih:#{'a' * 40}&dn=Manual+Book", result.magnet_url
+    assert_equal result, download.search_result
+    assert_equal "Magnet link queued for download.", flash[:notice]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual magnet rejects invalid link" do
+    sign_out
+    sign_in_as(@admin)
+
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      post manual_magnet_request_path(@pending_request), params: { magnet_url: "https://example.com/file.torrent" }
+    end
+
+    assert_equal "Enter a valid magnet link", flash[:alert]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual magnet rejects processing request" do
+    @pending_request.update!(status: :processing)
+    sign_out
+    sign_in_as(@admin)
+
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      post manual_magnet_request_path(@pending_request), params: { magnet_url: "magnet:?xt=urn:btih:#{'d' * 40}" }
+    end
+
+    assert_equal "Cannot add a magnet link while post-processing is active", flash[:alert]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual magnet redirects when duplicate result save races" do
+    sign_out
+    sign_in_as(@admin)
+
+    request = @pending_request
+    request.define_singleton_method(:add_manual_magnet!) do |_magnet_url|
+      raise ActiveRecord::RecordNotUnique, "duplicate"
+    end
+    finder = Object.new
+    finder.define_singleton_method(:find) { |_id| request }
+
+    Request.stub(:includes, finder) do
+      post manual_magnet_request_path(@pending_request), params: { magnet_url: "magnet:?xt=urn:btih:#{'f' * 40}" }
+    end
+
+    assert_equal "Magnet link could not be queued. Please try again.", flash[:alert]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual magnet cannot be added by regular users" do
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      post manual_magnet_request_path(@pending_request), params: { magnet_url: "magnet:?xt=urn:btih:#{'b' * 40}" }
+    end
+
+    assert_equal "You don't have permission to add magnet links", flash[:alert]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual magnet cannot be added to another user's request" do
+    other_request = Request.create!(book: books(:ebook_pending), user: @admin, status: :pending)
+
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      post manual_magnet_request_path(other_request), params: { magnet_url: "magnet:?xt=urn:btih:#{'c' * 40}" }
+    end
+
+    assert_response :not_found
+  end
+
   test "destroy rejects non-cancellable status" do
     # Only completed requests cannot be cancelled
     @pending_request.update!(status: :completed)

@@ -3,7 +3,7 @@
 module Admin
   class SearchResultsController < BaseController
     before_action :set_request
-    before_action :set_search_result, only: [:select]
+    before_action :set_search_result, only: [ :select ]
 
     def index
       @search_results = @request.search_results.best_first
@@ -26,8 +26,8 @@ module Admin
     end
 
     def refresh
-      # Clear existing results and re-queue for search
-      @request.search_results.destroy_all
+      # Clear existing results and re-queue for search, keeping manually added magnets
+      @request.search_results.where.not(source: SearchResult::SOURCE_MANUAL_MAGNET).destroy_all
       @request.update!(status: :pending)
       SearchJob.perform_later(@request.id)
 
