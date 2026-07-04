@@ -3,6 +3,7 @@
 require "net/http"
 require "uri"
 require "tempfile"
+require "timeout"
 
 class DownloadJob < ApplicationJob
   queue_as :default
@@ -131,7 +132,7 @@ class DownloadJob < ApplicationJob
 
   def transient_direct_download_error?(error)
     case error
-    when SocketError, IOError, EOFError, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError
+    when SocketError, IOError, EOFError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError
       true
     else
       error.message.to_s.include?("Direct download request failed:")
@@ -596,7 +597,7 @@ class DownloadJob < ApplicationJob
 
     file_size = File.size(destination)
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
-  rescue SocketError, IOError, EOFError, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError => e
+  rescue SocketError, IOError, EOFError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError => e
     raise "Direct download request failed: #{e.message}"
   end
 

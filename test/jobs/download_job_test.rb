@@ -283,7 +283,8 @@ class DownloadJobTest < ActiveJob::TestCase
     )
 
     VCR.turned_off do
-      stub_request(:get, "https://example.com/book.epub").to_timeout
+      stub_request(:get, "https://example.com/book.epub")
+        .to_raise(Timeout::Error.new("execution expired"))
 
       DownloadJob.perform_now(@download.id)
     end
