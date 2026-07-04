@@ -275,7 +275,12 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "does not blocklist on transient direct download network error" do
-    @selected_result.update!(source: SearchResult::SOURCE_GUTENBERG, download_url: "https://example.com/book.epub")
+    @selected_result.update!(
+      source: SearchResult::SOURCE_GUTENBERG,
+      download_url: "https://example.com/book.epub",
+      blocklisted_at: nil,
+      blocklist_reason: nil
+    )
     job = DownloadJob.new
 
     job.stub(:download_file_via_http, ->(*) { raise Net::OpenTimeout, "execution expired" }) do
