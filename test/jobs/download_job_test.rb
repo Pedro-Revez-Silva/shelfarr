@@ -4,6 +4,7 @@ require "test_helper"
 require "base64"
 require "bencode"
 require "digest/sha1"
+require "securerandom"
 require "tempfile"
 
 class DownloadJobTest < ActiveJob::TestCase
@@ -275,23 +276,37 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "does not blocklist on transient direct download network error" do
-    @selected_result.update!(
+    book = Book.create!(
+      title: "Transient Direct Ebook",
+      author: "Network Author",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :downloading)
+    download_url = "https://example.com/#{SecureRandom.hex(8)}.epub"
+    result = request.search_results.create!(
+      guid: "gutenberg-timeout-#{SecureRandom.hex(8)}",
+      title: "Transient Direct Ebook - Network Author [EPUB]",
+      indexer: "Project Gutenberg",
       source: SearchResult::SOURCE_GUTENBERG,
-      download_url: "https://example.com/book.epub",
-      blocklisted_at: nil,
-      blocklist_reason: nil
+      download_url: download_url,
+      status: :selected
+    )
+    download = request.downloads.create!(
+      name: result.title,
+      search_result: result,
+      status: :queued
     )
 
     VCR.turned_off do
-      stub_request(:get, "https://example.com/book.epub")
+      stub_request(:get, download_url)
         .to_raise(Timeout::Error.new("execution expired"))
 
-      DownloadJob.perform_now(@download.id)
+      DownloadJob.perform_now(download.id)
     end
 
-    assert @download.reload.failed?
-    assert @request.reload.attention_needed?
-    assert_not @selected_result.reload.blocklisted?
+    assert download.reload.failed?
+    assert request.reload.attention_needed?
+    assert_not result.reload.blocklisted?
   end
 
   test "does not blocklist on LibriVox direct audiobook transient download error" do
