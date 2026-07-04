@@ -306,7 +306,11 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert download.reload.failed?
     assert request.reload.attention_needed?
-    assert_not result.reload.blocklisted?
+    result.reload
+    request.reload
+    assert_not result.blocklisted?,
+      "expected transient direct timeout not to blocklist; " \
+      "blocklist_reason=#{result.blocklist_reason.inspect}; issue=#{request.issue_description.inspect}"
   end
 
   test "does not blocklist on LibriVox direct audiobook transient download error" do
