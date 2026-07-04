@@ -276,41 +276,44 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "does not blocklist on transient direct download network error" do
-    book = Book.create!(
-      title: "Transient Direct Ebook",
-      author: "Network Author",
-      book_type: :ebook
-    )
-    request = Request.create!(book: book, user: users(:one), status: :downloading)
-    download_url = "https://example.com/#{SecureRandom.hex(8)}.epub"
-    result = request.search_results.create!(
-      guid: "gutenberg-timeout-#{SecureRandom.hex(8)}",
-      title: "Transient Direct Ebook - Network Author [EPUB]",
-      indexer: "Project Gutenberg",
-      source: SearchResult::SOURCE_GUTENBERG,
-      download_url: download_url,
-      status: :selected
-    )
-    download = request.downloads.create!(
-      name: result.title,
-      search_result: result,
-      status: :queued
-    )
+    Dir.mktmpdir do |dir|
+      SettingsService.set(:ebook_output_path, dir)
+      book = Book.create!(
+        title: "Transient Direct Ebook",
+        author: "Network Author",
+        book_type: :ebook
+      )
+      request = Request.create!(book: book, user: users(:one), status: :downloading)
+      download_url = "https://example.com/#{SecureRandom.hex(8)}.epub"
+      result = request.search_results.create!(
+        guid: "gutenberg-timeout-#{SecureRandom.hex(8)}",
+        title: "Transient Direct Ebook - Network Author [EPUB]",
+        indexer: "Project Gutenberg",
+        source: SearchResult::SOURCE_GUTENBERG,
+        download_url: download_url,
+        status: :selected
+      )
+      download = request.downloads.create!(
+        name: result.title,
+        search_result: result,
+        status: :queued
+      )
 
-    VCR.turned_off do
-      stub_request(:get, download_url)
-        .to_raise(Timeout::Error.new("execution expired"))
+      VCR.turned_off do
+        stub_request(:get, download_url)
+          .to_raise(Timeout::Error.new("execution expired"))
 
-      DownloadJob.perform_now(download.id)
+        DownloadJob.perform_now(download.id)
+      end
+
+      assert download.reload.failed?
+      assert request.reload.attention_needed?
+      result.reload
+      request.reload
+      assert_not result.blocklisted?,
+        "expected transient direct timeout not to blocklist; " \
+        "blocklist_reason=#{result.blocklist_reason.inspect}; issue=#{request.issue_description.inspect}"
     end
-
-    assert download.reload.failed?
-    assert request.reload.attention_needed?
-    result.reload
-    request.reload
-    assert_not result.blocklisted?,
-      "expected transient direct timeout not to blocklist; " \
-      "blocklist_reason=#{result.blocklist_reason.inspect}; issue=#{request.issue_description.inspect}"
   end
 
   test "does not blocklist on LibriVox direct audiobook transient download error" do
