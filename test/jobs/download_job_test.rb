@@ -258,6 +258,35 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not @selected_result.reload.blocklisted?
   end
 
+  test "does not blocklist on LibriVox transient connection error" do
+    @selected_result.update!(
+      source: SearchResult::SOURCE_LIBRIVOX,
+      download_url: "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3"
+    )
+    job = DownloadJob.new
+
+    job.stub(:handle_librivox_download, ->(*) { raise LibrivoxClient::ConnectionError, "offline" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
+  test "does not blocklist on transient direct download network error" do
+    @selected_result.update!(source: SearchResult::SOURCE_GUTENBERG, download_url: "https://example.com/book.epub")
+    job = DownloadJob.new
+
+    job.stub(:download_file_via_http, ->(*) { raise Net::OpenTimeout, "execution expired" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
   test "does not blocklist on custom provider system response error" do
     @selected_result.update!(source: SearchResult::SOURCE_CUSTOM)
     job = DownloadJob.new

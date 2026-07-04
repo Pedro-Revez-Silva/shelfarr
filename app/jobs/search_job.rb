@@ -250,7 +250,7 @@ class SearchJob < ApplicationJob
       .pluck(:guid, :blocklisted_at, :blocklist_reason)
       .to_h { |guid, blocklisted_at, blocklist_reason| [ guid, { blocklisted_at: blocklisted_at, blocklist_reason: blocklist_reason } ] }
 
-    request.search_results.where.not(source: SearchResult::SOURCE_MANUAL_MAGNET).destroy_all
+    request.search_results.where.not(source: SearchResult::SOURCE_MANUAL_MAGNET).not_blocklisted.destroy_all
 
     tagged_results.each do |tagged|
       result = tagged[:result]
@@ -281,8 +281,8 @@ class SearchJob < ApplicationJob
   end
 
   def save_indexer_result(request, result, source)
-    request.search_results.create!(
-      guid: result.guid,
+    search_result = request.search_results.find_or_initialize_by(guid: result.guid)
+    search_result.assign_attributes(
       title: result.title,
       indexer: result.indexer,
       size_bytes: result.size_bytes,
@@ -294,6 +294,9 @@ class SearchJob < ApplicationJob
       published_at: result.published_at,
       source: source
     )
+    search_result.status = :pending unless search_result.blocklisted? || search_result.selected?
+    search_result.save!
+    search_result
   end
 
   def save_anna_archive_result(request, result)

@@ -120,6 +120,24 @@ class DownloadJob < ApplicationJob
     end
   end
 
+  def handle_direct_download_failure(download, error)
+    message = "Direct download failed: #{error.message}"
+    if transient_direct_download_error?(error)
+      download.request.mark_for_attention!(message)
+    else
+      download.request.handle_download_failure!(download, reason: message)
+    end
+  end
+
+  def transient_direct_download_error?(error)
+    case error
+    when SocketError, IOError, EOFError, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError
+      true
+    else
+      error.message.to_s.include?("Direct download request failed:")
+    end
+  end
+
   def transient_download_source_error?(error)
     case error
     when AnnaArchiveClient::ConnectionError,
@@ -196,6 +214,8 @@ class DownloadJob < ApplicationJob
     raise LibrivoxClient::Error, "Selected LibriVox result is missing a download URL" if search_result.download_url.blank?
 
     handle_direct_audiobook_archive_download(download, search_result, search_result.download_url, source_name: "LibriVox")
+  rescue LibrivoxClient::Error
+    raise
   rescue => e
     Rails.logger.error "[DownloadJob] LibriVox download failed: #{e.message}"
     Rails.logger.error e.backtrace.first(5).join("\n")
@@ -371,7 +391,7 @@ class DownloadJob < ApplicationJob
     Rails.logger.error e.backtrace.first(5).join("\n")
     track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
     download.update!(status: :failed)
-    download.request.handle_download_failure!(download, reason: "Direct download failed: #{e.message}")
+    handle_direct_download_failure(download, e)
   end
 
   def infer_filename_from_url(url, search_result)

@@ -380,6 +380,22 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_includes JSON.parse(response.body)["errors"].join, "No selected result"
   end
 
+  test "blocklist_and_next with unknown search_result_id returns 404" do
+    _token, raw = APIToken.issue!(
+      name: "Admin",
+      user: users(:two),
+      scopes: %w[requests:admin]
+    )
+    request = requests(:pending_request)
+
+    post blocklist_and_next_api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer #{raw}" },
+      params: { search_result_id: 0 }
+
+    assert_response :not_found
+    assert_includes JSON.parse(response.body)["errors"].join, "Search result not found"
+  end
+
   test "blocklist_and_next with search_result_id returns 422 for undownloadable result" do
     _token, raw = APIToken.issue!(
       name: "Admin",

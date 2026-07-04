@@ -206,6 +206,8 @@ class API::V1::RequestsController < API::V1::ApplicationController
     result = @request.search_results.find(params[:search_result_id])
     @request.select_result!(result)
     render json: request_payload_with_selected_result(@request.reload)
+  rescue ActiveRecord::RecordNotFound
+    render json: { errors: [ "Search result not found" ] }, status: :not_found
   rescue ArgumentError => e
     render json: { errors: [ e.message ] }, status: :unprocessable_entity
   end
