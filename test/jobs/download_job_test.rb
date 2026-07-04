@@ -281,10 +281,11 @@ class DownloadJobTest < ActiveJob::TestCase
       blocklisted_at: nil,
       blocklist_reason: nil
     )
-    job = DownloadJob.new
 
-    job.stub(:download_file_via_http, ->(*) { raise Net::OpenTimeout, "execution expired" }) do
-      job.perform(@download.id)
+    VCR.turned_off do
+      stub_request(:get, "https://example.com/book.epub").to_timeout
+
+      DownloadJob.perform_now(@download.id)
     end
 
     assert @download.reload.failed?
