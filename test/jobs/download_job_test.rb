@@ -287,6 +287,53 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not @selected_result.reload.blocklisted?
   end
 
+  test "does not blocklist on LibriVox direct audiobook transient download error" do
+    Dir.mktmpdir do |dir|
+      setup_librivox_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:get, "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3")
+          .to_timeout
+
+        DownloadJob.perform_now(@librivox_download.id)
+      end
+
+      @librivox_download.reload
+      @librivox_request.reload
+      assert @librivox_download.failed?
+      assert @librivox_request.attention_needed?
+      assert_includes @librivox_request.issue_description, "LibriVox download failed"
+      assert_not @librivox_download.search_result.reload.blocklisted?
+    end
+  end
+
+  test "does not blocklist on custom provider direct audiobook transient download error" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_audiobook_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "https://files.test/custom-audiobook.m4b" }.to_json
+          )
+
+        stub_request(:get, "https://files.test/custom-audiobook.m4b")
+          .to_timeout
+
+        DownloadJob.perform_now(@custom_provider_audiobook_download.id)
+      end
+
+      @custom_provider_audiobook_download.reload
+      @custom_provider_audiobook_request.reload
+      assert @custom_provider_audiobook_download.failed?
+      assert @custom_provider_audiobook_request.attention_needed?
+      assert_includes @custom_provider_audiobook_request.issue_description, "Custom provider download failed"
+      assert_not @custom_provider_audiobook_download.search_result.reload.blocklisted?
+    end
+  end
+
   test "does not blocklist on custom provider system response error" do
     @selected_result.update!(source: SearchResult::SOURCE_CUSTOM)
     job = DownloadJob.new

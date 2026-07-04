@@ -120,8 +120,8 @@ class DownloadJob < ApplicationJob
     end
   end
 
-  def handle_direct_download_failure(download, error)
-    message = "Direct download failed: #{error.message}"
+  def handle_direct_download_failure(download, error, message: nil)
+    message ||= "Direct download failed: #{error.message}"
     if transient_direct_download_error?(error)
       download.request.mark_for_attention!(message)
     else
@@ -221,7 +221,7 @@ class DownloadJob < ApplicationJob
     Rails.logger.error e.backtrace.first(5).join("\n")
     track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
     download.update!(status: :failed)
-    download.request.handle_download_failure!(download, reason: "LibriVox download failed: #{e.message}")
+    handle_direct_download_failure(download, e, message: "LibriVox download failed: #{e.message}")
   end
 
   def handle_custom_provider_download(download, search_result)
@@ -254,7 +254,7 @@ class DownloadJob < ApplicationJob
     Rails.logger.error e.backtrace.first(5).join("\n")
     track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
     download.update!(status: :failed)
-    download.request.handle_download_failure!(download, reason: "Custom provider download failed: #{e.message}")
+    handle_direct_download_failure(download, e, message: "Custom provider download failed: #{e.message}")
   end
 
   def handle_direct_audiobook_download(download, search_result, download_url, source_name:)
