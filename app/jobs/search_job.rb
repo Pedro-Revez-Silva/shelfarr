@@ -244,7 +244,23 @@ class SearchJob < ApplicationJob
   end
 
   def save_results(request, tagged_results)
-    request.search_results.where.not(source: SearchResult::SOURCE_MANUAL_MAGNET).destroy_all
+    blocklisted_by_guid = request.search_results
+      .where.not(source: SearchResult::SOURCE_MANUAL_MAGNET)
+      .blocklisted
+      .pluck(:guid, :blocklisted_at, :blocklist_reason)
+      .to_h { |guid, blocklisted_at, blocklist_reason| [ guid, { blocklisted_at: blocklisted_at, blocklist_reason: blocklist_reason } ] }
+
+    active_download_result_ids = request.downloads
+      .where(status: [ :queued, :downloading, :paused ])
+      .where.not(search_result_id: nil)
+      .distinct
+      .pluck(:search_result_id)
+
+    request.search_results
+      .where.not(source: SearchResult::SOURCE_MANUAL_MAGNET)
+      .where.not(id: active_download_result_ids)
+      .not_blocklisted
+      .destroy_all
 
     tagged_results.each do |tagged|
       result = tagged[:result]
@@ -265,13 +281,18 @@ class SearchJob < ApplicationJob
         save_indexer_result(request, result, source)
       end
 
-      search_result.calculate_score! if search_result
+      if search_result
+        if (blocklist_attrs = blocklisted_by_guid[search_result.guid])
+          search_result.update!(blocklist_attrs.merge(status: :rejected))
+        end
+        search_result.calculate_score!
+      end
     end
   end
 
   def save_indexer_result(request, result, source)
-    request.search_results.create!(
-      guid: result.guid,
+    search_result = request.search_results.find_or_initialize_by(guid: result.guid)
+    search_result.assign_attributes(
       title: result.title,
       indexer: result.indexer,
       size_bytes: result.size_bytes,
@@ -283,6 +304,9 @@ class SearchJob < ApplicationJob
       published_at: result.published_at,
       source: source
     )
+    search_result.status = :pending unless search_result.blocklisted? || search_result.selected?
+    search_result.save!
+    search_result
   end
 
   def save_anna_archive_result(request, result)

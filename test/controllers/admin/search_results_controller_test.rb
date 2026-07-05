@@ -79,6 +79,18 @@ module Admin
       end
     end
 
+    test "index labels blocklisted results and offers retry anyway" do
+      blocklisted = search_results(:blocklisted_result)
+
+      get admin_request_search_results_path(@request_record)
+      assert_response :success
+
+      assert_select "span[title='#{blocklisted.blocklist_reason}']", text: "Blocklisted"
+      assert_select "form[action='#{select_admin_request_search_result_path(@request_record, blocklisted)}']" do
+        assert_select "button", text: "Retry Anyway"
+      end
+    end
+
     # === Select ===
 
     test "select creates download and updates statuses" do
@@ -106,6 +118,18 @@ module Admin
 
       assert @pending_result.reload.selected?
       assert @selected_result.reload.rejected?
+    end
+
+    test "selecting a blocklisted result clears blocklist and starts download" do
+      blocklisted = search_results(:blocklisted_result)
+
+      assert_difference -> { Download.count }, 1 do
+        post select_admin_request_search_result_path(@request_record, blocklisted)
+      end
+
+      assert blocklisted.reload.selected?
+      assert_not blocklisted.blocklisted?
+      assert_nil blocklisted.blocklist_reason
     end
 
     test "select marks other results as rejected" do

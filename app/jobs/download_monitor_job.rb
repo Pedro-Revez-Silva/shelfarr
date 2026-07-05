@@ -109,7 +109,7 @@ class DownloadMonitorJob < ApplicationJob
 
     track_request_event(download.request, "failed", download: download, message: "Download failed in client", level: :error)
     download.update!(status: :failed)
-    download.request.mark_for_attention!("Download failed in client")
+    download.request.handle_download_failure!(download, reason: "Download failed in client")
   end
 
   def handle_missing(download)
@@ -128,7 +128,7 @@ class DownloadMonitorJob < ApplicationJob
         details: { client_name: client_name }
       )
       download.update!(status: :failed, not_found_count: new_count)
-      download.request.mark_for_attention!("Download not found in client '#{client_name}' (hash: #{download.external_id})")
+      download.request.handle_download_failure!(download, reason: "Download not found in client '#{client_name}' (hash: #{download.external_id})")
     else
       Rails.logger.warn "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}' (attempt #{new_count}/#{NOT_FOUND_THRESHOLD})"
 

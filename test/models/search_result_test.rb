@@ -52,6 +52,15 @@ class SearchResultTest < ActiveSupport::TestCase
     assert_not_includes selectable, @selected_result
   end
 
+  test "blocklisted scopes split eligible and blocklisted results" do
+    blocklisted = search_results(:blocklisted_result)
+
+    assert_includes SearchResult.blocklisted, blocklisted
+    assert_not_includes SearchResult.blocklisted, @pending_result
+    assert_includes SearchResult.not_blocklisted, @pending_result
+    assert_not_includes SearchResult.not_blocklisted, blocklisted
+  end
+
   test "best_first orders by seeders desc then size asc" do
     request = requests(:pending_request)
     request.search_results.destroy_all
@@ -210,6 +219,29 @@ class SearchResultTest < ActiveSupport::TestCase
 
   test "downloadable? returns true when magnet_url present" do
     assert @pending_result.downloadable?
+  end
+
+  test "blocklist! records timestamp and reason and rejects selected result" do
+    long_reason = "x" * 300
+
+    freeze_time do
+      @selected_result.blocklist!(long_reason)
+
+      assert @selected_result.reload.blocklisted?
+      assert_equal Time.current, @selected_result.blocklisted_at
+      assert_equal 255, @selected_result.blocklist_reason.length
+      assert @selected_result.rejected?
+    end
+  end
+
+  test "clear_blocklist! removes blocklist fields" do
+    result = search_results(:blocklisted_result)
+
+    result.clear_blocklist!
+
+    assert_not result.reload.blocklisted?
+    assert_nil result.blocklisted_at
+    assert_nil result.blocklist_reason
   end
 
   test "downloadable? returns true when download_url present" do

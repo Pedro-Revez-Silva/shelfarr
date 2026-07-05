@@ -3,9 +3,12 @@
 require "test_helper"
 
 class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
+  include ActiveJob::TestHelper
+
   setup do
     SettingsService.set(:api_token, "apitoken")
     @user = users(:one)
+    clear_enqueued_jobs
   end
 
   test "creates a request for an existing Shelfarr user" do
@@ -246,5 +249,179 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unprocessable_entity
     assert_includes JSON.parse(response.body)["errors"].join, "cannot be retried"
+  end
+
+  test "lists search results with blocklist fields for scoped reader" do
+    _token, raw = APIToken.issue!(
+      name: "Reader",
+      user: @user,
+      scopes: %w[requests:read]
+    )
+    blocklisted = search_results(:blocklisted_result)
+
+    get search_results_api_v1_request_path(requests(:pending_request)),
+      headers: { "Authorization" => "Bearer #{raw}" }
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    payload = body["search_results"].find { |result| result["id"] == blocklisted.id }
+    assert payload
+    assert_equal true, payload["blocklisted"]
+    assert_equal "Previous download failed", payload["blocklist_reason"]
+    assert payload.key?("downloadable")
+  end
+
+  test "search results endpoint requires read scope" do
+    _token, raw = APIToken.issue!(
+      name: "Writer",
+      user: @user,
+      scopes: %w[requests:write]
+    )
+
+    get search_results_api_v1_request_path(requests(:pending_request)),
+      headers: { "Authorization" => "Bearer #{raw}" }
+
+    assert_response :forbidden
+  end
+
+  test "blocklist_and_next blocklists selected release and returns new selected result" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    _token, raw = APIToken.issue!(
+      name: "Admin",
+      user: users(:two),
+      scopes: %w[requests:admin]
+    )
+    request = requests(:pending_request)
+    selected = search_results(:selected_result)
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+
+    assert_enqueued_with(job: DownloadJob) do
+      post blocklist_and_next_api_v1_request_path(request),
+        headers: { "Authorization" => "Bearer #{raw}" }
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal fallback.id, body.dig("selected_result", "id")
+    assert selected.reload.blocklisted?
+    assert fallback.reload.selected?
+  end
+
+  test "blocklist_and_next returns exhausted request payload" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    _token, raw = APIToken.issue!(
+      name: "Admin",
+      user: users(:two),
+      scopes: %w[requests:admin]
+    )
+    book = Book.create!(title: "API Exhausted", book_type: :ebook, open_library_work_id: "OL_API_EXHAUSTED")
+    request = Request.create!(book: book, user: @user, status: :downloading, language: "en")
+    request.search_results.create!(
+      guid: "api-selected-only",
+      title: "API Exhausted EPUB",
+      status: :selected,
+      confidence_score: 95,
+      detected_language: "en",
+      download_url: "http://example.com/api-exhausted.nzb"
+    )
+
+    post blocklist_and_next_api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer #{raw}" }
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "not_found", body["status"]
+    assert_equal true, body["attention_needed"]
+    assert_includes body["issue_description"], "No suitable alternative"
+  end
+
+  test "blocklist_and_next can grab a specific search result and clear its blocklist" do
+    _token, raw = APIToken.issue!(
+      name: "Admin",
+      user: users(:two),
+      scopes: %w[requests:admin]
+    )
+    request = requests(:pending_request)
+    result = search_results(:blocklisted_result)
+
+    assert_enqueued_with(job: DownloadJob) do
+      post blocklist_and_next_api_v1_request_path(request),
+        headers: { "Authorization" => "Bearer #{raw}" },
+        params: { search_result_id: result.id }
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal result.id, body.dig("selected_result", "id")
+    assert_not result.reload.blocklisted?
+    assert result.selected?
+  end
+
+  test "blocklist_and_next returns 422 for no selected result" do
+    _token, raw = APIToken.issue!(
+      name: "Admin",
+      user: users(:two),
+      scopes: %w[requests:admin]
+    )
+    book = Book.create!(title: "API No Selection", book_type: :ebook, open_library_work_id: "OL_API_NO_SELECTION")
+    request = Request.create!(book: book, user: @user, status: :searching)
+
+    post blocklist_and_next_api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer #{raw}" }
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["errors"].join, "No selected result"
+  end
+
+  test "blocklist_and_next with unknown search_result_id returns 404" do
+    _token, raw = APIToken.issue!(
+      name: "Admin",
+      user: users(:two),
+      scopes: %w[requests:admin]
+    )
+    request = requests(:pending_request)
+
+    post blocklist_and_next_api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer #{raw}" },
+      params: { search_result_id: 0 }
+
+    assert_response :not_found
+    assert_includes JSON.parse(response.body)["errors"].join, "Search result not found"
+  end
+
+  test "blocklist_and_next with search_result_id returns 422 for undownloadable result" do
+    _token, raw = APIToken.issue!(
+      name: "Admin",
+      user: users(:two),
+      scopes: %w[requests:admin]
+    )
+    request = requests(:pending_request)
+
+    post blocklist_and_next_api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer #{raw}" },
+      params: { search_result_id: search_results(:no_link_result).id }
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["errors"].join, "not downloadable"
+  end
+
+  test "blocklist_and_next requires admin scope" do
+    _token, raw = APIToken.issue!(
+      name: "Reader",
+      user: @user,
+      scopes: %w[requests:read]
+    )
+
+    post blocklist_and_next_api_v1_request_path(requests(:pending_request)),
+      headers: { "Authorization" => "Bearer #{raw}" }
+
+    assert_response :forbidden
   end
 end

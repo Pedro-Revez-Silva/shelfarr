@@ -70,6 +70,8 @@ Rails.application.routes.draw do
       get "search", to: "search#index"
       resources :requests, only: [ :index, :create, :show, :destroy ] do
         member do
+          get :search_results
+          post :blocklist_and_next
           post :retry
         end
       end

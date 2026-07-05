@@ -5,6 +5,7 @@ require "test_helper"
 class SearchJobTest < ActiveJob::TestCase
   setup do
     @request = requests(:pending_request)
+    @request.search_results.blocklisted.destroy_all
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "test-key")
     SettingsService.set(:zlibrary_enabled, false)
@@ -83,6 +84,75 @@ class SearchJobTest < ActiveJob::TestCase
       assert_includes @request.search_results, manual_result
       assert manual_result.reload.selected?
     end
+  end
+
+  test "save_results preserves blocklist for guid absent from refreshed search" do
+    blocklisted = @request.search_results.create!(
+      guid: "persist-blocklist-guid",
+      title: "Failed Release",
+      indexer: "FailedIndexer",
+      magnet_url: "magnet:?xt=urn:btih:persist",
+      status: :rejected,
+      blocklisted_at: 2.days.ago,
+      blocklist_reason: "Bad release"
+    )
+
+    SearchJob.new.send(:save_results, @request, [])
+
+    carried = @request.search_results.find_by!(guid: blocklisted.guid)
+    assert carried.blocklisted?
+    assert_equal "Bad release", carried.blocklist_reason
+    assert carried.rejected?
+  end
+
+  test "save_results preserves selected result absent from refreshed search" do
+    selected = @request.search_results.create!(
+      guid: "persist-selected-guid",
+      title: "Downloading Release",
+      indexer: "TestIndexer",
+      magnet_url: "magnet:?xt=urn:btih:selected",
+      status: :selected
+    )
+    download = @request.downloads.create!(name: selected.title, search_result: selected, status: :downloading)
+
+    SearchJob.new.send(:save_results, @request, [])
+
+    assert selected.reload.selected?
+    assert_equal selected.id, download.reload.search_result_id
+  end
+
+  test "save_results carries blocklist forward by guid" do
+    blocklisted = @request.search_results.create!(
+      guid: "carry-blocklist-guid",
+      title: "Failed Release",
+      indexer: "FailedIndexer",
+      magnet_url: "magnet:?xt=urn:btih:carry",
+      status: :rejected,
+      blocklisted_at: 2.days.ago,
+      blocklist_reason: "Bad release"
+    )
+    tagged_result = {
+      source: SearchResult::SOURCE_PROWLARR,
+      result: OpenStruct.new(
+        guid: "carry-blocklist-guid",
+        title: "The Pending Ebook Another Author EPUB",
+        indexer: "TestIndexer",
+        size_bytes: 123_456,
+        seeders: 10,
+        leechers: 1,
+        download_url: nil,
+        magnet_url: "magnet:?xt=urn:btih:carried",
+        info_url: nil,
+        published_at: nil
+      )
+    }
+
+    SearchJob.new.send(:save_results, @request, [ tagged_result ])
+
+    carried = @request.search_results.find_by!(guid: "carry-blocklist-guid")
+    assert carried.blocklisted?
+    assert_equal "Bad release", carried.blocklist_reason
+    assert carried.rejected?
   end
 
   test "schedules retry when no results found" do

@@ -27,3 +27,15 @@ no_link_result:
   size_bytes: 104857600
   seeders: 5
   status: 0
+
+blocklisted_result:
+  request: pending_request
+  guid: "test-guid-4"
+  title: "The Pending Ebook - Failed Release"
+  indexer: "FailedIndexer"
+  size_bytes: 734003200
+  seeders: 30
+  magnet_url: "magnet:?xt=urn:btih:failedrelease123"
+  status: 2
+  blocklisted_at: <%= 1.hour.ago %>
+  blocklist_reason: "Previous download failed"

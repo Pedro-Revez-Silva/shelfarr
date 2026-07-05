@@ -4,6 +4,7 @@ require "test_helper"
 require "base64"
 require "bencode"
 require "digest/sha1"
+require "securerandom"
 require "tempfile"
 
 class DownloadJobTest < ActiveJob::TestCase
@@ -117,7 +118,22 @@ class DownloadJobTest < ActiveJob::TestCase
       @download.reload
 
       assert @download.downloading?
+      assert_equal @selected_result, @download.search_result
     end
+  end
+
+  test "legacy download without association blocklists resolved selected result on release failure" do
+    SettingsService.set(:auto_select_enabled, false)
+    @download.update!(search_result: nil)
+    job = DownloadJob.new
+
+    job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::Error, "client rejected release" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert_equal @selected_result, @download.search_result
+    assert @selected_result.reload.blocklisted?
   end
 
   test "marks for attention when no download client configured" do
@@ -130,6 +146,7 @@ class DownloadJobTest < ActiveJob::TestCase
     assert @download.failed?
     assert @request.attention_needed?
     assert_includes @request.issue_description, "No torrent download client configured"
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "marks for attention on download client authentication error" do
@@ -141,6 +158,7 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "authentication failed"
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "marks for attention on download client connection error" do
@@ -152,6 +170,7 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "Failed to connect"
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "marks for attention on generic download client error" do
@@ -163,6 +182,31 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "Download client error"
+    assert @selected_result.reload.blocklisted?
+  end
+
+  test "generic download client error blocklists release and selects next candidate when auto-select is enabled" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+    job = DownloadJob.new
+
+    assert_enqueued_with(job: DownloadJob) do
+      job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::Error, "client rejected release" }) do
+        job.perform(@download.id)
+      end
+    end
+
+    assert @download.reload.failed?
+    assert @selected_result.reload.blocklisted?
+    assert fallback.reload.selected?
+    assert @request.reload.downloading?
+    assert_not @request.attention_needed?
   end
 
   test "marks for attention on anna archive error" do
@@ -177,6 +221,19 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_includes @request.reload.issue_description, "Anna's Archive error"
   end
 
+  test "does not blocklist on Anna's Archive transient connection error" do
+    @selected_result.update!(source: SearchResult::SOURCE_ANNA_ARCHIVE, guid: "md5")
+    job = DownloadJob.new
+
+    job.stub(:handle_anna_archive_download, ->(*) { raise AnnaArchiveClient::ConnectionError, "offline" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
   test "marks for attention on z-library error" do
     @selected_result.update!(source: SearchResult::SOURCE_ZLIBRARY, guid: "missing")
     job = DownloadJob.new
@@ -187,6 +244,136 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "Z-Library error"
+  end
+
+  test "does not blocklist on Z-Library rate limit error" do
+    @selected_result.update!(source: SearchResult::SOURCE_ZLIBRARY, guid: "missing")
+    job = DownloadJob.new
+
+    job.stub(:handle_zlibrary_download, ->(*) { raise ZLibraryClient::RateLimitError, "slow down" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
+  test "does not blocklist on LibriVox transient connection error" do
+    @selected_result.update!(
+      source: SearchResult::SOURCE_LIBRIVOX,
+      download_url: "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3"
+    )
+    job = DownloadJob.new
+
+    job.stub(:handle_librivox_download, ->(*) { raise LibrivoxClient::ConnectionError, "offline" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
+  test "does not blocklist on transient direct download network error" do
+    Dir.mktmpdir do |dir|
+      SettingsService.set(:ebook_output_path, dir)
+      book = Book.create!(
+        title: "Transient Direct Ebook",
+        author: "Network Author",
+        book_type: :ebook
+      )
+      request = Request.create!(book: book, user: users(:one), status: :downloading)
+      download_url = "https://example.com/#{SecureRandom.hex(8)}.epub"
+      result = request.search_results.create!(
+        guid: "gutenberg-timeout-#{SecureRandom.hex(8)}",
+        title: "Transient Direct Ebook - Network Author [EPUB]",
+        indexer: "Project Gutenberg",
+        source: SearchResult::SOURCE_GUTENBERG,
+        download_url: download_url,
+        status: :selected
+      )
+      download = request.downloads.create!(
+        name: result.title,
+        search_result: result,
+        status: :queued
+      )
+
+      VCR.turned_off do
+        stub_request(:get, download_url)
+          .to_raise(Timeout::Error.new("execution expired"))
+
+        DownloadJob.perform_now(download.id)
+      end
+
+      assert download.reload.failed?
+      assert request.reload.attention_needed?
+      result.reload
+      request.reload
+      assert_not result.blocklisted?,
+        "expected transient direct timeout not to blocklist; " \
+        "blocklist_reason=#{result.blocklist_reason.inspect}; issue=#{request.issue_description.inspect}"
+    end
+  end
+
+  test "does not blocklist on LibriVox direct audiobook transient download error" do
+    Dir.mktmpdir do |dir|
+      setup_librivox_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:get, "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3")
+          .to_timeout
+
+        DownloadJob.perform_now(@librivox_download.id)
+      end
+
+      @librivox_download.reload
+      @librivox_request.reload
+      assert @librivox_download.failed?
+      assert @librivox_request.attention_needed?
+      assert_includes @librivox_request.issue_description, "LibriVox download failed"
+      assert_not @librivox_download.search_result.reload.blocklisted?
+    end
+  end
+
+  test "does not blocklist on custom provider direct audiobook transient download error" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_audiobook_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "https://files.test/custom-audiobook.m4b" }.to_json
+          )
+
+        stub_request(:get, "https://files.test/custom-audiobook.m4b")
+          .to_timeout
+
+        DownloadJob.perform_now(@custom_provider_audiobook_download.id)
+      end
+
+      @custom_provider_audiobook_download.reload
+      @custom_provider_audiobook_request.reload
+      assert @custom_provider_audiobook_download.failed?
+      assert @custom_provider_audiobook_request.attention_needed?
+      assert_includes @custom_provider_audiobook_request.issue_description, "Custom provider download failed"
+      assert_not @custom_provider_audiobook_download.search_result.reload.blocklisted?
+    end
+  end
+
+  test "does not blocklist on custom provider system response error" do
+    @selected_result.update!(source: SearchResult::SOURCE_CUSTOM)
+    job = DownloadJob.new
+
+    job.stub(:handle_custom_provider_download, ->(*) { raise CustomAcquisitionProviderClient::ResponseError, "Provider returned HTTP 500" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "skips non-queued downloads" do

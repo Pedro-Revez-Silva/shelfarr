@@ -182,6 +182,30 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_equal high_seeder, selection.search_result
   end
 
+  test "skips blocklisted best candidate and selects next eligible result" do
+    blocklisted = create_search_result(seeders: 100, magnet_url: "magnet:?blocked")
+    blocklisted.blocklist!("Previous failure")
+    fallback = create_search_result(seeders: 10, magnet_url: "magnet:?fallback")
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal fallback, selection.search_result
+    assert blocklisted.reload.blocklisted?
+    assert fallback.reload.selected?
+  end
+
+  test "returns no matching results when all matching candidates are blocklisted" do
+    blocklisted = create_search_result(seeders: 100, magnet_url: "magnet:?blocked")
+    blocklisted.blocklist!("Previous failure")
+
+    selection = AutoSelectService.call(@request)
+
+    refute selection.success?
+    assert_equal :no_matching_results, selection.reason
+    assert_equal 0, @request.downloads.count
+  end
+
   test "rejects other results when selecting" do
     selected = create_search_result(seeders: 100, magnet_url: "magnet:?best")
     other1 = create_search_result(seeders: 50, magnet_url: "magnet:?other1")
