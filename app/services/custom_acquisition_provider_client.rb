@@ -8,6 +8,8 @@ class CustomAcquisitionProviderClient
   class Error < StandardError; end
   class ConnectionError < Error; end
   class ResponseError < Error; end
+  class NotConfiguredError < Error; end
+  class UnusableArtifactError < Error; end
 
   MAX_RESPONSE_BYTES = 10.megabytes
   HEALTH_CHECK_TIMEOUT_SECONDS = 10

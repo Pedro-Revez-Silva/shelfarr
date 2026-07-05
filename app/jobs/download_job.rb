@@ -6,6 +6,10 @@ require "tempfile"
 require "timeout"
 
 class DownloadJob < ApplicationJob
+  # Wraps network-level failures during a direct HTTP download so failure
+  # handling can classify them as transient without message matching.
+  class DirectDownloadError < StandardError; end
+
   queue_as :default
 
   MAX_DIRECT_DOWNLOAD_BYTES = 512.megabytes
@@ -132,10 +136,11 @@ class DownloadJob < ApplicationJob
 
   def transient_direct_download_error?(error)
     case error
-    when SocketError, IOError, EOFError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError
+    when DirectDownloadError,
+         SocketError, IOError, EOFError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError
       true
     else
-      error.message.to_s.include?("Direct download request failed:")
+      false
     end
   end
 
@@ -158,22 +163,13 @@ class DownloadJob < ApplicationJob
          GutenbergClient::ConnectionError,
          GutenbergClient::NotConfiguredError,
          GutenbergClient::ConfigurationError,
-         CustomAcquisitionProviderClient::ConnectionError
+         CustomAcquisitionProviderClient::ConnectionError,
+         CustomAcquisitionProviderClient::NotConfiguredError,
+         CustomAcquisitionProviderClient::ResponseError
       true
-    when CustomAcquisitionProviderClient::ResponseError
-      transient_custom_provider_response_error?(error)
     else
       false
     end
-  end
-
-  def transient_custom_provider_response_error?(error)
-    message = error.message.to_s
-    message.include?("returned HTTP") ||
-      message.include?("returned invalid JSON") ||
-      message.include?("returned an invalid acquire response") ||
-      message.include?("response exceeds") ||
-      message.include?("missing its provider")
   end
 
   def handle_anna_archive_download(download, search_result)
@@ -227,7 +223,7 @@ class DownloadJob < ApplicationJob
 
   def handle_custom_provider_download(download, search_result)
     provider = search_result.acquisition_provider
-    raise CustomAcquisitionProviderClient::ResponseError, "Selected custom provider result is missing its provider" unless provider&.enabled?
+    raise CustomAcquisitionProviderClient::NotConfiguredError, "Selected custom provider result is missing its provider" unless provider&.enabled?
 
     Rails.logger.info "[DownloadJob] Acquiring custom provider result from #{provider.name}"
     acquisition = provider.client.acquire(search_result)
@@ -246,7 +242,7 @@ class DownloadJob < ApplicationJob
       nzb_url = acquisition.nzb_url.presence || acquisition.direct_url
       send_to_usenet_client(download, search_result, validate_dispatch_url!(nzb_url, search_result))
     else
-      raise CustomAcquisitionProviderClient::ResponseError, "Unsupported custom provider artifact type: #{acquisition.download_type}"
+      raise CustomAcquisitionProviderClient::UnusableArtifactError, "Unsupported custom provider artifact type: #{acquisition.download_type}"
     end
   rescue CustomAcquisitionProviderClient::Error
     raise
@@ -598,7 +594,7 @@ class DownloadJob < ApplicationJob
     file_size = File.size(destination)
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
   rescue SocketError, IOError, EOFError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError => e
-    raise "Direct download request failed: #{e.message}"
+    raise DirectDownloadError, "Direct download request failed: #{e.message}"
   end
 
   def validate_direct_download_url!(url, search_result = nil)
@@ -622,7 +618,7 @@ class DownloadJob < ApplicationJob
     OutboundUrlGuard.validate!(url, allow_private: allow_private_download?(search_result))
     url
   rescue OutboundUrlGuard::BlockedUrlError => e
-    raise CustomAcquisitionProviderClient::ResponseError, "Refused download URL from custom provider: #{e.message}"
+    raise CustomAcquisitionProviderClient::UnusableArtifactError, "Refused download URL from custom provider: #{e.message}"
   end
 
   def normalize_direct_download_url(url)
