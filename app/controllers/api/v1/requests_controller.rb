@@ -72,7 +72,7 @@ class API::V1::RequestsController < API::V1::ApplicationController
 
   def search_results
     render json: {
-      search_results: @request.search_results.best_first.map { |result| search_result_payload(result) }
+      search_results: @request.search_results.includes(:acquisition_provider).best_first.map { |result| search_result_payload(result) }
     }
   end
 

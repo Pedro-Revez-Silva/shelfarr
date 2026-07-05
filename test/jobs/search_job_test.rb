@@ -105,6 +105,22 @@ class SearchJobTest < ActiveJob::TestCase
     assert carried.rejected?
   end
 
+  test "save_results preserves selected result absent from refreshed search" do
+    selected = @request.search_results.create!(
+      guid: "persist-selected-guid",
+      title: "Downloading Release",
+      indexer: "TestIndexer",
+      magnet_url: "magnet:?xt=urn:btih:selected",
+      status: :selected
+    )
+    download = @request.downloads.create!(name: selected.title, search_result: selected, status: :downloading)
+
+    SearchJob.new.send(:save_results, @request, [])
+
+    assert selected.reload.selected?
+    assert_equal selected.id, download.reload.search_result_id
+  end
+
   test "save_results carries blocklist forward by guid" do
     blocklisted = @request.search_results.create!(
       guid: "carry-blocklist-guid",

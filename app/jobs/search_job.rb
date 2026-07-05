@@ -250,7 +250,17 @@ class SearchJob < ApplicationJob
       .pluck(:guid, :blocklisted_at, :blocklist_reason)
       .to_h { |guid, blocklisted_at, blocklist_reason| [ guid, { blocklisted_at: blocklisted_at, blocklist_reason: blocklist_reason } ] }
 
-    request.search_results.where.not(source: SearchResult::SOURCE_MANUAL_MAGNET).not_blocklisted.destroy_all
+    active_download_result_ids = request.downloads
+      .where(status: [ :queued, :downloading, :paused ])
+      .where.not(search_result_id: nil)
+      .distinct
+      .pluck(:search_result_id)
+
+    request.search_results
+      .where.not(source: SearchResult::SOURCE_MANUAL_MAGNET)
+      .where.not(id: active_download_result_ids)
+      .not_blocklisted
+      .destroy_all
 
     tagged_results.each do |tagged|
       result = tagged[:result]
