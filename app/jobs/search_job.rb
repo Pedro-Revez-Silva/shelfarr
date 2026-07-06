@@ -3,6 +3,35 @@
 class SearchJob < ApplicationJob
   queue_as :default
 
+  SearchAttempt = Data.define(:name, :query, :score_penalty)
+
+  GENERIC_SEARCH_ATTEMPT_PENALTIES = {
+    exact_title: 0,
+    title_author: 5,
+    author_title: 8,
+    normalized_title: 10,
+    number_variant: 12
+  }.freeze
+
+  ROMAN_NUMERALS = {
+    "I" => "1",
+    "II" => "2",
+    "III" => "3",
+    "IV" => "4",
+    "V" => "5",
+    "VI" => "6",
+    "VII" => "7",
+    "VIII" => "8",
+    "IX" => "9",
+    "X" => "10",
+    "XI" => "11",
+    "XII" => "12",
+    "XIII" => "13",
+    "XIV" => "14",
+    "XV" => "15"
+  }.freeze
+  ARABIC_NUMERALS = ROMAN_NUMERALS.invert.freeze
+
   def perform(request_id)
     request = Request.find_by(id: request_id)
     return unless request
@@ -105,13 +134,13 @@ class SearchJob < ApplicationJob
 
   def search_indexer(request)
     if IndexerClient.provider == SearchResult::SOURCE_PROWLARR
-      results = search_prowlarr(request)
+      tagged_results = search_prowlarr(request)
     else
-      results = search_generic_indexer(request)
+      tagged_results = search_generic_indexer(request)
     end
 
-    results.map do |r|
-      { result: r, source: IndexerClient.provider }
+    tagged_results.map do |tagged|
+      tagged.merge(source: IndexerClient.provider)
     end
   end
 
@@ -122,12 +151,15 @@ class SearchJob < ApplicationJob
 
     Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} book query for title='#{book.title}' author='#{book.author}' extra='#{query}' (type: #{book.book_type})"
 
-    structured_results = IndexerClient.search(
-      query,
-      book_type: book.book_type,
-      categories: categories,
-      title: book.title,
-      author: book.author
+    structured_results = tag_indexer_results(
+      IndexerClient.search(
+        query,
+        book_type: book.book_type,
+        categories: categories,
+        title: book.title,
+        author: book.author
+      ),
+      attempt: SearchAttempt.new(name: :structured_book, query: query, score_penalty: 0)
     )
 
     fallback_query = generic_indexer_query(request)
@@ -135,13 +167,13 @@ class SearchJob < ApplicationJob
 
     if structured_results.empty?
       Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with generic query '#{fallback_query}'"
-      results = merge_indexer_results(results, IndexerClient.search(fallback_query, book_type: book.book_type, categories: categories))
+      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
     elsif book.ebook?
       Rails.logger.info "[SearchJob] #{IndexerClient.display_name} ebook search found #{structured_results.count} structured results for request ##{request.id}; supplementing with generic query '#{fallback_query}'"
-      results = merge_indexer_results(results, IndexerClient.search(fallback_query, book_type: book.book_type, categories: categories))
+      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
     elsif !strong_indexer_match?(results, request)
       Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search found no strong match for request ##{request.id}; supplementing with generic query '#{fallback_query}'"
-      results = merge_indexer_results(results, IndexerClient.search(fallback_query, book_type: book.book_type, categories: categories))
+      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
     end
 
     finalize_indexer_results(request, results)
@@ -153,7 +185,7 @@ class SearchJob < ApplicationJob
     categories = primary_indexer_categories(request)
     Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for: #{query} (type: #{book.book_type})"
 
-    results = IndexerClient.search(query, book_type: book.book_type, categories: categories)
+    results = search_generic_indexer_attempts(request, categories: categories)
     finalize_indexer_results(request, results)
   end
 
@@ -286,6 +318,7 @@ class SearchJob < ApplicationJob
           search_result.update!(blocklist_attrs.merge(status: :rejected))
         end
         search_result.calculate_score!
+        apply_search_attempt_penalty!(search_result, tagged)
       end
     end
   end
@@ -489,12 +522,13 @@ class SearchJob < ApplicationJob
   def merge_indexer_results(*result_groups)
     seen = {}
 
-    result_groups.flatten.each_with_object([]) do |result, merged|
+    result_groups.flatten.compact.each_with_object([]) do |tagged_result, merged|
+      result = indexer_result_from(tagged_result)
       key = result.guid.presence || [ result.indexer, result.title, result.download_link ].join("|")
       next if seen[key]
 
       seen[key] = true
-      merged << result
+      merged << normalize_tagged_indexer_result(tagged_result)
     end
   end
 
@@ -506,10 +540,10 @@ class SearchJob < ApplicationJob
   def supplement_with_broad_search(request, results)
     return results unless SettingsService.broad_indexer_search_scope?
 
-    query = generic_indexer_query(request)
-    Rails.logger.info "[SearchJob] Supplementing #{IndexerClient.display_name} search for request ##{request.id} without category restrictions using '#{query}'"
+    attempts = generic_indexer_attempts(request)
+    Rails.logger.info "[SearchJob] Supplementing #{IndexerClient.display_name} search for request ##{request.id} without category restrictions using '#{attempts.first.query}'"
 
-    broad_results = IndexerClient.search(query, categories: [])
+    broad_results = search_generic_indexer_attempts(request, categories: [], starting_results: results, attempts: attempts)
     merge_indexer_results(results, filter_broad_results(broad_results, request))
   rescue IndexerClients::Base::Error => e
     Rails.logger.warn "[SearchJob] #{IndexerClient.display_name} broad search failed for request ##{request.id}: #{e.message}"
@@ -524,6 +558,7 @@ class SearchJob < ApplicationJob
     threshold = SettingsService.get(:min_match_confidence)
 
     Array(results).any? do |result|
+      result = indexer_result_from(result)
       next false if SettingsService.unrestricted_indexer_search_scope? &&
         !compatible_result_categories?(result, request.book.book_type)
 
@@ -545,8 +580,9 @@ class SearchJob < ApplicationJob
     threshold = SettingsService.get(:min_match_confidence)
 
     Array(results).select do |result|
-      compatible_result_categories?(result, request.book.book_type) &&
-        ReleaseScorer.score(search_result_for_scoring(result), request).total >= threshold
+      indexer_result = indexer_result_from(result)
+      compatible_result_categories?(indexer_result, request.book.book_type) &&
+        ReleaseScorer.score(search_result_for_scoring(indexer_result), request).total >= threshold
     end
   end
 
@@ -563,5 +599,126 @@ class SearchJob < ApplicationJob
     else
       true
     end
+  end
+
+  def search_generic_indexer_attempts(request, categories:, starting_results: [], attempts: nil)
+    attempts ||= generic_indexer_attempts(request)
+
+    attempts.each_with_object([]) do |attempt, results|
+      Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} generic query '#{attempt.query}' for request ##{request.id} (attempt: #{attempt.name})"
+
+      attempt_results = tag_indexer_results(
+        IndexerClient.search(attempt.query, book_type: request.book.book_type, categories: categories),
+        attempt: attempt
+      )
+      results.replace(merge_indexer_results(results, attempt_results))
+
+      combined_results = merge_indexer_results(starting_results, results)
+      break results if strong_indexer_match?(combined_results, request)
+    end
+  end
+
+  def generic_indexer_attempts(request)
+    book = request.book
+    language_hint = indexer_language_hint(request)
+    attempts = [
+      build_search_attempt(:exact_title, [ book.title, language_hint ]),
+      build_search_attempt(:title_author, [ book.title, book.author, language_hint ]),
+      build_search_attempt(:author_title, [ book.author, book.title, language_hint ]),
+      build_search_attempt(:normalized_title, [ normalized_search_title(book.title), language_hint ])
+    ]
+
+    numeric_title_variants(book.title).each do |title_variant|
+      attempts << build_search_attempt(:number_variant, [ title_variant, language_hint ])
+      attempts << build_search_attempt(:number_variant, [ title_variant, book.author, language_hint ])
+    end
+
+    deduplicate_search_attempts(attempts)
+  end
+
+  def build_search_attempt(name, parts)
+    query = parts.compact_blank.join(" ").squish
+    SearchAttempt.new(
+      name: name,
+      query: query,
+      score_penalty: GENERIC_SEARCH_ATTEMPT_PENALTIES.fetch(name, 0)
+    )
+  end
+
+  def deduplicate_search_attempts(attempts)
+    seen = {}
+    attempts.select do |attempt|
+      normalized_query = attempt.query.downcase
+      next false if attempt.query.blank? || seen[normalized_query]
+
+      seen[normalized_query] = true
+    end
+  end
+
+  def normalized_search_title(title)
+    title.to_s
+      .gsub(/\([^)]*\)|\[[^\]]*\]/, " ")
+      .gsub(/\b(?:volume|vol\.?|book|part)\s+(\d+)\b/i, "\\1")
+      .gsub(/[[:punct:]]+/, " ")
+      .squish
+  end
+
+  def numeric_title_variants(title)
+    values = Set.new
+    text = title.to_s
+
+    ROMAN_NUMERALS.each do |roman, number|
+      values << text.gsub(/\b#{Regexp.escape(roman)}\b/i, number) if text.match?(/\b#{Regexp.escape(roman)}\b/i)
+    end
+
+    ARABIC_NUMERALS.each do |number, roman|
+      values << text.gsub(/\b#{Regexp.escape(number)}\b/, roman) if text.match?(/\b#{Regexp.escape(number)}\b/)
+    end
+
+    values.delete(text)
+    values.first(6)
+  end
+
+  def tag_indexer_results(results, attempt:)
+    Array(results).map do |result|
+      {
+        result: result,
+        score_penalty: attempt.score_penalty,
+        search_attempt: attempt.name.to_s,
+        search_query: attempt.query
+      }
+    end
+  end
+
+  def normalize_tagged_indexer_result(tagged_result)
+    return tagged_result if tagged_result.is_a?(Hash) && tagged_result.key?(:result)
+
+    {
+      result: tagged_result,
+      score_penalty: 0,
+      search_attempt: "unknown",
+      search_query: nil
+    }
+  end
+
+  def indexer_result_from(tagged_result)
+    tagged_result.is_a?(Hash) && tagged_result.key?(:result) ? tagged_result[:result] : tagged_result
+  end
+
+  def apply_search_attempt_penalty!(search_result, tagged)
+    penalty = tagged[:score_penalty].to_i
+    attempt = tagged[:search_attempt]
+    query = tagged[:search_query]
+    return if penalty <= 0 && attempt.blank? && query.blank?
+
+    breakdown = search_result.score_breakdown || {}
+    breakdown["search_attempt"] = attempt
+    breakdown["search_query"] = query
+    breakdown["search_penalty"] = penalty
+
+    search_result.update!(
+      confidence_score: [ search_result.confidence_score.to_i - penalty, 0 ].max,
+      score_breakdown: breakdown
+    )
   end
 end

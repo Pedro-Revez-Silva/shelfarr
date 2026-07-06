@@ -468,6 +468,128 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "tries numeric title variants when Prowlarr exact title searches are empty" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "The Perfect Run III",
+      author: "Maxime Durand",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    numeric_payload = prowlarr_result_payload.merge(
+      "guid" => "perfect-run-3",
+      "title" => "The Perfect Run 3 Maxime Durand Audiobook M4B",
+      "categories" => [ { "id" => 3030, "name" => "Audio/Audiobook" } ]
+    )
+
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      exact_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "The Perfect Run III" &&
+            category_query_param?(req)
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      title_author_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "The Perfect Run III Maxime Durand" &&
+            category_query_param?(req)
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      author_title_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Maxime Durand The Perfect Run III" &&
+            category_query_param?(req)
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      numeric_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "The Perfect Run 3" &&
+            category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ numeric_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested structured_stub
+      assert_requested exact_stub
+      assert_requested title_author_stub
+      assert_requested author_title_stub
+      assert_requested numeric_stub
+      assert_equal numeric_payload["title"], request.search_results.first.title
+      assert_equal "number_variant", request.search_results.first.score_breakdown["search_attempt"]
+      assert_equal 12, request.search_results.first.score_breakdown["search_penalty"]
+    end
+  end
+
+  test "tries author title Prowlarr query when title first queries are empty" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "Awkward Indexer Title",
+      author: "Specific Author",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    author_title_payload = prowlarr_result_payload.merge(
+      "guid" => "author-title-match",
+      "title" => "Specific Author Awkward Indexer Title Audiobook M4B",
+      "categories" => [ { "id" => 3030, "name" => "Audio/Audiobook" } ]
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            [ "Awkward Indexer Title", "Awkward Indexer Title Specific Author" ].include?(req.uri.query_values["query"]) &&
+            category_query_param?(req)
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      author_title_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Specific Author Awkward Indexer Title" &&
+            category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ author_title_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested author_title_stub
+      assert_equal author_title_payload["title"], request.search_results.first.title
+      assert_equal "author_title", request.search_results.first.score_breakdown["search_attempt"]
+      assert_equal 8, request.search_results.first.score_breakdown["search_penalty"]
+    end
+  end
+
   test "uses categoryless Prowlarr fallback when categorized results are weak" do
     broad_payload = prowlarr_result_payload.merge(
       "guid" => "broad-strong-match",
@@ -515,7 +637,7 @@ class SearchJobTest < ActiveJob::TestCase
       @request.reload
 
       assert_requested structured_stub
-      assert_requested categorized_stub
+      assert_requested categorized_stub, times: 3
       assert_requested broad_stub
       assert_includes @request.search_results.pluck(:title), broad_payload["title"]
       assert_not_includes @request.search_results.pluck(:title), movie_payload["title"]
@@ -833,7 +955,31 @@ class SearchJobTest < ActiveJob::TestCase
       stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] != "Frieren: Beyond Journey's End, Vol. 1" &&
+            category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
             req.uri.query_values["query"] == "Frieren: Beyond Journey's End, Vol. 1" &&
+            !category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] != "Frieren: Beyond Journey's End, Vol. 1" &&
             !category_query_param?(req)
         end
         .to_return(
@@ -887,17 +1033,15 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
-  test "uses title-only generic text search for Jackett" do
+  test "starts generic text search with title-only query for Jackett" do
     SettingsService.set(:indexer_provider, "jackett")
     SettingsService.set(:jackett_url, "http://localhost:9117")
     SettingsService.set(:jackett_api_key, "jackett-key")
 
-    body = <<~XML
-      <?xml version="1.0" encoding="UTF-8"?>
-      <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
-        <channel></channel>
-      </rss>
-    XML
+    body = jackett_result_xml(
+      title: "#{@request.book.title} #{@request.book.author} EPUB",
+      guid: "jackett-title-first"
+    )
 
     VCR.turned_off do
       stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
@@ -949,7 +1093,7 @@ class SearchJobTest < ActiveJob::TestCase
       SearchJob.perform_now(@request.id)
       @request.reload
 
-      assert_requested categorized_stub
+      assert_requested categorized_stub, times: 3
       assert_requested broad_stub
       assert_equal "#{@request.book.title} #{@request.book.author} EPUB", @request.search_results.first.title
     end

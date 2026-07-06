@@ -165,6 +165,25 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert result.breakdown[:author] == 80
   end
 
+  test "treats roman and arabic series numbers as equivalent in title matching" do
+    book = Book.create!(
+      title: "The Perfect Run III",
+      author: "Maxime Durand",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    search_result = request.search_results.create!(
+      guid: "perfect-run-3",
+      title: "The Perfect Run 3 - Maxime Durand - English Audiobook M4B",
+      seeders: 50
+    )
+
+    result = ReleaseScorer.score(search_result, request)
+
+    assert_equal 100, result.breakdown[:title]
+    assert result.total >= 80
+  end
+
   test "scores health based on seeders" do
     search_result = @request.search_results.create!(
       guid: "test-9",
