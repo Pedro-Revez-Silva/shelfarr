@@ -31,6 +31,9 @@ class SearchJob < ApplicationJob
     "XV" => "15"
   }.freeze
   ARABIC_NUMERALS = ROMAN_NUMERALS.invert.freeze
+  # Standalone "I" is almost always the pronoun ("I, Robot"), not a series number,
+  # so it is excluded when generating roman -> arabic query variants.
+  ROMAN_VARIANT_NUMERALS = ROMAN_NUMERALS.except("I").freeze
 
   def perform(request_id)
     request = Request.find_by(id: request_id)
@@ -541,6 +544,8 @@ class SearchJob < ApplicationJob
     return results unless SettingsService.broad_indexer_search_scope?
 
     attempts = generic_indexer_attempts(request)
+    return results if attempts.empty?
+
     Rails.logger.info "[SearchJob] Supplementing #{IndexerClient.display_name} search for request ##{request.id} without category restrictions using '#{attempts.first.query}'"
 
     broad_results = search_generic_indexer_attempts(request, categories: [], starting_results: results, attempts: attempts)
@@ -557,14 +562,24 @@ class SearchJob < ApplicationJob
   def strong_indexer_match?(results, request)
     threshold = SettingsService.get(:min_match_confidence)
 
-    Array(results).any? do |result|
-      result = indexer_result_from(result)
+    Array(results).any? do |tagged_result|
+      result = indexer_result_from(tagged_result)
       next false if SettingsService.unrestricted_indexer_search_scope? &&
         !compatible_result_categories?(result, request.book.book_type)
 
-      score_result = ReleaseScorer.score(search_result_for_scoring(result), request)
-      score_result.total >= threshold
+      penalized_indexer_score(tagged_result, request) >= threshold
     end
+  end
+
+  # Scores a result the same way save_results will persist it: the raw
+  # ReleaseScorer total minus the search attempt penalty. Keeping threshold
+  # checks on the penalized score prevents broadened attempts from stopping
+  # the search with a result that ends up stored below the confidence threshold.
+  def penalized_indexer_score(tagged_result, request)
+    result = indexer_result_from(tagged_result)
+    score = ReleaseScorer.score(search_result_for_scoring(result), request).total
+    penalty = tagged_result.is_a?(Hash) ? tagged_result[:score_penalty].to_i : 0
+    [ score - penalty, 0 ].max
   end
 
   def search_result_for_scoring(result)
@@ -579,10 +594,10 @@ class SearchJob < ApplicationJob
   def filter_broad_results(results, request)
     threshold = SettingsService.get(:min_match_confidence)
 
-    Array(results).select do |result|
-      indexer_result = indexer_result_from(result)
+    Array(results).select do |tagged_result|
+      indexer_result = indexer_result_from(tagged_result)
       compatible_result_categories?(indexer_result, request.book.book_type) &&
-        ReleaseScorer.score(search_result_for_scoring(indexer_result), request).total >= threshold
+        penalized_indexer_score(tagged_result, request) >= threshold
     end
   end
 
@@ -603,19 +618,34 @@ class SearchJob < ApplicationJob
 
   def search_generic_indexer_attempts(request, categories:, starting_results: [], attempts: nil)
     attempts ||= generic_indexer_attempts(request)
+    results = []
+    last_error = nil
 
-    attempts.each_with_object([]) do |attempt, results|
+    attempts.each do |attempt|
       Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} generic query '#{attempt.query}' for request ##{request.id} (attempt: #{attempt.name})"
 
-      attempt_results = tag_indexer_results(
-        IndexerClient.search(attempt.query, book_type: request.book.book_type, categories: categories),
-        attempt: attempt
-      )
-      results.replace(merge_indexer_results(results, attempt_results))
+      begin
+        attempt_results = tag_indexer_results(
+          IndexerClient.search(attempt.query, book_type: request.book.book_type, categories: categories),
+          attempt: attempt
+        )
+        results = merge_indexer_results(results, attempt_results)
+      rescue IndexerClients::Base::AuthenticationError
+        # Every remaining attempt would fail the same way; let the caller surface it.
+        raise
+      rescue IndexerClients::Base::Error => e
+        Rails.logger.warn "[SearchJob] #{IndexerClient.display_name} generic query '#{attempt.query}' failed for request ##{request.id}: #{e.message}"
+        last_error = e
+      end
 
-      combined_results = merge_indexer_results(starting_results, results)
-      break results if strong_indexer_match?(combined_results, request)
+      break if strong_indexer_match?(merge_indexer_results(starting_results, results), request)
     end
+
+    # If nothing was found anywhere and at least one attempt errored, propagate
+    # so the caller treats this as an indexer failure rather than an empty search.
+    raise last_error if last_error && results.empty? && Array(starting_results).empty?
+
+    results
   end
 
   def generic_indexer_attempts(request)
@@ -659,6 +689,7 @@ class SearchJob < ApplicationJob
     title.to_s
       .gsub(/\([^)]*\)|\[[^\]]*\]/, " ")
       .gsub(/\b(?:volume|vol\.?|book|part)\s+(\d+)\b/i, "\\1")
+      .gsub(/['’]/, "")
       .gsub(/[[:punct:]]+/, " ")
       .squish
   end
@@ -667,7 +698,7 @@ class SearchJob < ApplicationJob
     values = Set.new
     text = title.to_s
 
-    ROMAN_NUMERALS.each do |roman, number|
+    ROMAN_VARIANT_NUMERALS.each do |roman, number|
       values << text.gsub(/\b#{Regexp.escape(roman)}\b/i, number) if text.match?(/\b#{Regexp.escape(roman)}\b/i)
     end
 

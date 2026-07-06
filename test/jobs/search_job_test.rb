@@ -527,6 +527,16 @@ class SearchJobTest < ActiveJob::TestCase
           body: [ numeric_payload ].to_json
         )
 
+      # The numeric result lands below the confidence threshold once its
+      # attempt penalty is applied, so the search keeps broadening.
+      numeric_author_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "The Perfect Run 3 Maxime Durand" &&
+            category_query_param?(req)
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
       SearchJob.perform_now(request.id)
       request.reload
 
@@ -535,6 +545,7 @@ class SearchJobTest < ActiveJob::TestCase
       assert_requested title_author_stub
       assert_requested author_title_stub
       assert_requested numeric_stub
+      assert_requested numeric_author_stub
       assert_equal numeric_payload["title"], request.search_results.first.title
       assert_equal "number_variant", request.search_results.first.score_breakdown["search_attempt"]
       assert_equal 12, request.search_results.first.score_breakdown["search_penalty"]
@@ -587,6 +598,202 @@ class SearchJobTest < ActiveJob::TestCase
       assert_equal author_title_payload["title"], request.search_results.first.title
       assert_equal "author_title", request.search_results.first.score_breakdown["search_attempt"]
       assert_equal 8, request.search_results.first.score_breakdown["search_penalty"]
+    end
+  end
+
+  test "stops issuing generic queries once a strong match is found" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "Strong First Attempt",
+      author: "Solid Author",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    strong_payload = prowlarr_result_payload.merge(
+      "guid" => "strong-exact-title",
+      "title" => "Strong First Attempt Solid Author English Audiobook M4B",
+      "categories" => [ { "id" => 3030, "name" => "Audio/Audiobook" } ]
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      exact_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Strong First Attempt"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ strong_payload ].to_json
+        )
+
+      later_attempts_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] != "Strong First Attempt"
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested exact_stub
+      assert_not_requested later_attempts_stub
+      assert_equal strong_payload["title"], request.search_results.first.title
+    end
+  end
+
+  test "keeps broadening when a penalized match falls below the confidence threshold" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "The Perfect Run III",
+      author: "Maxime Durand",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    weak_payload = prowlarr_result_payload.merge(
+      "guid" => "perfect-run-3-weak",
+      "title" => "The Perfect Run 3",
+      "seeders" => 0,
+      "categories" => [ { "id" => 3030, "name" => "Audio/Audiobook" } ]
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] != "The Perfect Run 3" &&
+            req.uri.query_values["query"] != "The Perfect Run 3 Maxime Durand"
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      weak_variant_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "The Perfect Run 3"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ weak_payload ].to_json
+        )
+
+      variant_with_author_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "The Perfect Run 3 Maxime Durand"
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      threshold = SettingsService.get(:min_match_confidence)
+      saved = request.search_results.find_by!(guid: weak_payload["guid"])
+      raw_score = saved.confidence_score + saved.score_breakdown["search_penalty"]
+
+      # Sanity-check the scenario: strong before the penalty, weak after it.
+      assert_operator raw_score, :>=, threshold
+      assert_operator saved.confidence_score, :<, threshold
+
+      assert_requested weak_variant_stub
+      assert_requested variant_with_author_stub
+    end
+  end
+
+  test "keeps results from later attempts when an earlier generic query fails" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "Flaky Indexer Book",
+      author: "Retry Author",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    title_author_payload = prowlarr_result_payload.merge(
+      "guid" => "title-author-after-failure",
+      "title" => "Flaky Indexer Book Retry Author English Audiobook M4B",
+      "categories" => [ { "id" => 3030, "name" => "Audio/Audiobook" } ]
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      failing_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Flaky Indexer Book"
+        end
+        .to_return(status: 500, headers: { "Content-Type" => "application/json" }, body: "")
+
+      title_author_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Flaky Indexer Book Retry Author"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ title_author_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested failing_stub
+      assert_requested title_author_stub
+      assert_equal title_author_payload["title"], request.search_results.first.title
+      assert_equal "title_author", request.search_results.first.score_breakdown["search_attempt"]
+    end
+  end
+
+  test "marks for attention when generic queries fail authentication" do
+    SettingsService.set(:indexer_search_scope, "strict")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "search" }
+        .to_return(status: 401, headers: { "Content-Type" => "application/json" }, body: "")
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert @request.attention_needed?
+      assert_match(/authentication failed/i, @request.issue_description)
+    end
+  end
+
+  test "does not generate numeric variants for standalone I in titles" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "I Am Legend",
+      author: "Richard Matheson",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      SearchJob.perform_now(request.id)
+
+      assert_not_requested(:get, %r{localhost:9696/api/v1/search}) do |req|
+        req.uri.query_values["query"].to_s.include?("1 Am Legend")
+      end
     end
   end
 
