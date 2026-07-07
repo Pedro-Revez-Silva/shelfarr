@@ -145,14 +145,14 @@ module IndexerClients
         when 200
           yield response.body
         when 401, 403
-          raise AuthenticationError, "Invalid Prowlarr API key"
+          raise Base::AuthenticationError, "Invalid Prowlarr API key"
         when 404
-          raise Error, "Prowlarr endpoint not found"
+          raise Base::Error, "Prowlarr endpoint not found"
         else
-          raise Error, "Prowlarr API error: #{response.status}"
+          raise Base::Error, "Prowlarr API error: #{response.status}"
         end
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-        raise ConnectionError, "Failed to connect to Prowlarr: #{e.message}"
+        raise Base::ConnectionError, "Failed to connect to Prowlarr: #{e.message}"
       end
 
       def parse_result(item)

@@ -80,14 +80,14 @@ module IndexerClients
         when 200
           yield response.body
         when 401, 403
-          raise AuthenticationError, "Invalid #{display_name} API key"
+          raise Base::AuthenticationError, "Invalid #{display_name} API key"
         when 404
-          raise Error, "#{display_name} endpoint not found"
+          raise Base::Error, "#{display_name} endpoint not found"
         else
-          raise Error, "#{display_name} API error: #{response.status}"
+          raise Base::Error, "#{display_name} API error: #{response.status}"
         end
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-        raise ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
+        raise Base::ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
       end
 
       def parse_results(xml, limit:)
@@ -98,7 +98,7 @@ module IndexerClients
 
         doc.xpath("//rss/channel/item").first(limit).map { |item| parse_item(item) }
       rescue Nokogiri::XML::SyntaxError => e
-        raise Error, "Failed to parse #{display_name} response: #{e.message}"
+        raise Base::Error, "Failed to parse #{display_name} response: #{e.message}"
       end
 
       def parse_item(item)

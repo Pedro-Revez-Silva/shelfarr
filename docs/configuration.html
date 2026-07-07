@@ -520,11 +520,13 @@
 
         <h2 id="indexers">Indexers <a class="anchor" href="#indexers" aria-label="Link to Indexers">#</a></h2>
         <p class="section-desc">Shelfarr searches indexers through Prowlarr, Jackett or Newznab/NZBHydra2. Pick one provider with <code>indexer_provider</code>.</p>
+        <p class="section-desc">Searches broaden automatically: Shelfarr starts with a structured book search, then tries progressively looser name-based queries &mdash; exact title, title + author, subtitle-stripped title, author-first ordering, and roman/arabic series-number variants (<code>III</code> &harr; <code>3</code>) &mdash; until a strong match is found. Results found by broader queries carry a small confidence penalty and record the query that found them in their score breakdown. With the default <em>broad</em> scope a category-less pass runs as well: releases that look like video content (resolution tags, <code>S01E05</code> markers, video codecs) are rejected, and when nothing clears <code>min_match_confidence</code> the best few low-confidence candidates are kept for manual review instead of returning an empty search.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
               <tr><td class="key"><code>indexer_provider</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Active provider: <code>prowlarr</code>, <code>jackett</code>, <code>newznab</code> or <code>none</code>. Leave unset on upgrades to keep legacy Prowlarr config.</td></tr>
+              <tr><td class="key"><code>indexer_search_scope</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>broad</code></td><td class="desc">Category strategy: <code>broad</code> (book categories plus a filtered category-less pass), <code>strict</code> (book categories only), <code>unrestricted</code> (no category filters, quality filtering only) or <code>custom</code> (only the category IDs configured in the admin UI).</td></tr>
               <tr><td class="key"><code>prowlarr_url</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Base URL for Prowlarr (e.g. <code>http://localhost:9696</code>).</td></tr>
               <tr><td class="key"><code>prowlarr_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API key from Prowlarr &rarr; Settings &rarr; General.</td></tr>
               <tr><td class="key"><code>prowlarr_tags</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Comma-separated tag IDs or names to filter indexers (empty = all).</td></tr>
@@ -722,7 +724,7 @@
             <tbody>
               <tr><td class="key"><code>default_language</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>en</code></td><td class="desc">Default language for new requests.</td></tr>
               <tr><td class="key"><code>enabled_languages</code></td><td><span class="badge t-json">json</span></td><td class="default"><code>["en"]</code></td><td class="desc">Languages selectable when creating requests.</td></tr>
-              <tr><td class="key"><code>min_match_confidence</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>50</code></td><td class="desc">Minimum confidence score (0&ndash;100) to display a search result.</td></tr>
+              <tr><td class="key"><code>min_match_confidence</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>50</code></td><td class="desc">Minimum confidence score (0&ndash;100) for keeping results from category-less indexer searches. When nothing clears it, the best few low-confidence results are kept for manual review instead of returning an empty search.</td></tr>
             </tbody>
           </table>
         </div>

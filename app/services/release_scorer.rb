@@ -3,6 +3,23 @@
 # Scores search results based on how well they match a request.
 # Returns a confidence score (0-100) with a detailed breakdown.
 class ReleaseScorer
+  ROMAN_NUMBER_TOKENS = {
+    "II" => "2",
+    "III" => "3",
+    "IV" => "4",
+    "V" => "5",
+    "VI" => "6",
+    "VII" => "7",
+    "VIII" => "8",
+    "IX" => "9",
+    "X" => "10",
+    "XI" => "11",
+    "XII" => "12",
+    "XIII" => "13",
+    "XIV" => "14",
+    "XV" => "15"
+  }.freeze
+
   # Weight configuration for each scoring factor
   WEIGHTS = {
     title: 40,      # How well does the release title match the book title?
@@ -193,11 +210,18 @@ class ReleaseScorer
   def normalize_for_matching(text)
     return "" if text.blank?
 
-    text
+    normalized = text
       .downcase
       .gsub(/[^a-z0-9\s]/, "")  # Remove special characters
       .gsub(/\s+/, " ")         # Collapse whitespace
       .strip
+
+    normalize_number_tokens(normalized)
+  end
+
+  def normalize_number_tokens(text)
+    tokens = text.split
+    tokens.map { |token| ROMAN_NUMBER_TOKENS.fetch(token.upcase, token) }.join(" ")
   end
 
   # Trigram-based similarity score (0-100)

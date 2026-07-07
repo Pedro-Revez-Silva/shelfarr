@@ -8,7 +8,7 @@ class SettingsService
   INDEXER_SEARCH_SCOPE_OPTIONS = {
     "broad" => {
       label: "Broad (recommended)",
-      description: "Search Shelfarr's book categories, then supplement with an unrestricted search filtered by match quality."
+      description: "Search Shelfarr's book categories, then supplement with a category-less search that filters out non-book releases and keeps matches by quality."
     },
     "strict" => {
       label: "Strict",
@@ -16,7 +16,7 @@ class SettingsService
     },
     "unrestricted" => {
       label: "Unrestricted",
-      description: "Search without category filters and rely on match quality filtering."
+      description: "Search without category filters and rely on non-book detection and match quality filtering."
     },
     "custom" => {
       label: "Custom",
@@ -132,7 +132,7 @@ class SettingsService
     # Language Settings
     default_language: { type: "string", default: "en", category: "language", description: "Default language for new requests" },
     enabled_languages: { type: "json", default: '["en"]', category: "language", description: "Languages available for selection when creating requests" },
-    min_match_confidence: { type: "integer", default: 50, category: "language", description: "Minimum confidence score (0-100) to display a search result" },
+    min_match_confidence: { type: "integer", default: 50, category: "language", description: "Minimum confidence score (0-100) for keeping results from category-less indexer searches. When nothing clears it, the best few low-confidence results are kept for manual review instead of returning an empty search." },
 
     # Updates
     github_repo: { type: "string", default: "Pedro-Revez-Silva/shelfarr", category: "updates", description: "GitHub repository for update notifications" },

@@ -180,4 +180,33 @@ class ReleaseParserServiceTest < ActiveSupport::TestCase
   test "detects flemish as Dutch" do
     assert_includes ReleaseParserService.detect_languages("Book.Title.Flemish.Audiobook"), "nl"
   end
+
+  test "detects video releases from resolution markers" do
+    assert ReleaseParserService.video_release?("The Matrix 1999 1080p BluRay x264-GROUP")
+    assert ReleaseParserService.video_release?("Some.Documentary.2023.2160p.REMUX")
+  end
+
+  test "detects video releases from episode markers" do
+    assert ReleaseParserService.video_release?("Great Show S02E05 720p WEB-DL")
+  end
+
+  test "detects video releases from codec and source markers" do
+    assert ReleaseParserService.video_release?("Old Film DVDRip XviD")
+    assert ReleaseParserService.video_release?("Feature.HEVC.WEBRip")
+  end
+
+  test "does not flag plain book releases as video" do
+    assert_not ReleaseParserService.video_release?("The Name of the Wind - Patrick Rothfuss")
+    assert_not ReleaseParserService.video_release?("The Perfect Run 3 Maxime Durand")
+  end
+
+  test "book format markers veto video markers" do
+    assert_not ReleaseParserService.video_release?("Filmmaking Basics 1080p Explained EPUB")
+    assert_not ReleaseParserService.video_release?("History of Television HDTV Era Audiobook MP3")
+  end
+
+  test "video_release? is false for blank titles" do
+    assert_not ReleaseParserService.video_release?(nil)
+    assert_not ReleaseParserService.video_release?("")
+  end
 end
