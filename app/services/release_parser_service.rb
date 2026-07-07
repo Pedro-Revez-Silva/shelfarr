@@ -258,6 +258,19 @@ class ReleaseParserService
 
   BITRATE_PATTERN = /(?<!\d)(\d{2,3})\s?kbps\b/i
 
+  # Markers that only appear in video (movie/TV) release names. Used to reject
+  # non-book content from category-less indexer searches, where category tags
+  # are unavailable or unreliable.
+  VIDEO_RELEASE_PATTERNS = [
+    /\b(?:480|576|720|1080|2160)[pi]\b/i,
+    /\bs\d{1,2}e\d{1,3}\b/i,
+    /\b[xh]\.?26[45]\b/i,
+    /\bhevc\b/i,
+    /\bxvid\b/i,
+    /\bdivx\b/i,
+    /\b(?:blu-?ray|bd-?rip|br-?rip|web-?dl|web-?rip|hd-?tv|dvd-?rip|hd-?rip|cam-?rip|telesync|remux)\b/i
+  ].freeze
+
   class << self
     # Parse a release title and extract metadata
     # @param title [String] The release title to parse
@@ -336,6 +349,19 @@ class ReleaseParserService
         end
         .min_by(&:last)
         &.first
+    end
+
+    # Check whether a release name looks like video (movie/TV) content.
+    # Explicit book markers (formats or extensions) veto the video markers so
+    # this stays high-precision: it only rejects titles that carry video
+    # signals and no book signals at all.
+    # @param title [String] The release title
+    # @return [Boolean]
+    def video_release?(title)
+      return false if title.blank?
+      return false if detect_format(title).present? || detect_extensions(title).any?
+
+      VIDEO_RELEASE_PATTERNS.any? { |pattern| title.match?(pattern) }
     end
 
     def detect_audio_bitrate(title)

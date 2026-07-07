@@ -797,6 +797,142 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "tries subtitle-stripped query when full title searches are empty" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "Mistborn: The Final Empire",
+      author: "Brandon Sanderson",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    short_title_payload = prowlarr_result_payload.merge(
+      "guid" => "mistborn-short-title",
+      "title" => "Mistborn The Final Empire Brandon Sanderson English Audiobook M4B",
+      "categories" => [ { "id" => 3030, "name" => "Audio/Audiobook" } ]
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] != "Mistborn Brandon Sanderson"
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      short_title_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Mistborn Brandon Sanderson"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ short_title_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested short_title_stub
+      assert_equal short_title_payload["title"], request.search_results.first.title
+      assert_equal "short_title", request.search_results.first.score_breakdown["search_attempt"]
+      assert_equal 6, request.search_results.first.score_breakdown["search_penalty"]
+    end
+  end
+
+  test "keeps low-confidence broad results instead of returning an empty search" do
+    book = Book.create!(
+      title: "Signal Path",
+      author: "Casey Vernon",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    weak_payload = prowlarr_result_payload.merge(
+      "guid" => "signal-path-weak",
+      "title" => "Signal Path [German]",
+      "seeders" => 0
+    )
+    video_payload = prowlarr_result_payload.merge(
+      "guid" => "signal-path-video",
+      "title" => "Signal Path S01E03 1080p WEB-DL x264"
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "search" && category_query_param?(req) }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "search" && !category_query_param?(req) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ weak_payload, video_payload ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      threshold = SettingsService.get(:min_match_confidence)
+      titles = request.search_results.pluck(:title)
+
+      assert_includes titles, weak_payload["title"]
+      assert_not_includes titles, video_payload["title"]
+      assert_operator request.search_results.find_by!(guid: weak_payload["guid"]).confidence_score, :<, threshold
+    end
+  end
+
+  test "video releases never count as strong matches" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "Signal Path",
+      author: "Casey Vernon",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    video_payload = prowlarr_result_payload.merge(
+      "guid" => "signal-path-video-strong",
+      "title" => "Signal Path Casey Vernon S01E03 1080p WEB-DL x264"
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      exact_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == "Signal Path"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ video_payload ].to_json
+        )
+
+      later_attempts_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] != "Signal Path"
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      SearchJob.perform_now(request.id)
+
+      assert_requested exact_stub
+      assert_requested later_attempts_stub, at_least_times: 1
+    end
+  end
+
   test "uses categoryless Prowlarr fallback when categorized results are weak" do
     broad_payload = prowlarr_result_payload.merge(
       "guid" => "broad-strong-match",

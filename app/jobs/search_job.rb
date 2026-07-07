@@ -8,10 +8,16 @@ class SearchJob < ApplicationJob
   GENERIC_SEARCH_ATTEMPT_PENALTIES = {
     exact_title: 0,
     title_author: 5,
+    short_title: 6,
     author_title: 8,
     normalized_title: 10,
     number_variant: 12
   }.freeze
+
+  # How many below-threshold broad results to keep when a search would
+  # otherwise come back empty, so users see low-confidence candidates
+  # instead of no results at all.
+  LOW_CONFIDENCE_FALLBACK_LIMIT = 5
 
   ROMAN_NUMERALS = {
     "I" => "1",
@@ -536,7 +542,10 @@ class SearchJob < ApplicationJob
   end
 
   def finalize_indexer_results(request, results)
-    results = filter_broad_results(results, request) if SettingsService.unrestricted_indexer_search_scope?
+    if SettingsService.unrestricted_indexer_search_scope?
+      filtered = filter_broad_results(results, request)
+      results = filtered.any? ? filtered : low_confidence_fallback_results(results, request)
+    end
     supplement_with_broad_search(request, results)
   end
 
@@ -549,7 +558,10 @@ class SearchJob < ApplicationJob
     Rails.logger.info "[SearchJob] Supplementing #{IndexerClient.display_name} search for request ##{request.id} without category restrictions using '#{attempts.first.query}'"
 
     broad_results = search_generic_indexer_attempts(request, categories: [], starting_results: results, attempts: attempts)
-    merge_indexer_results(results, filter_broad_results(broad_results, request))
+    merged = merge_indexer_results(results, filter_broad_results(broad_results, request))
+    return merged if merged.any?
+
+    low_confidence_fallback_results(broad_results, request)
   rescue IndexerClients::Base::Error => e
     Rails.logger.warn "[SearchJob] #{IndexerClient.display_name} broad search failed for request ##{request.id}: #{e.message}"
     results
@@ -564,6 +576,7 @@ class SearchJob < ApplicationJob
 
     Array(results).any? do |tagged_result|
       result = indexer_result_from(tagged_result)
+      next false if ReleaseParserService.video_release?(result.title)
       next false if SettingsService.unrestricted_indexer_search_scope? &&
         !compatible_result_categories?(result, request.book.book_type)
 
@@ -595,10 +608,33 @@ class SearchJob < ApplicationJob
     threshold = SettingsService.get(:min_match_confidence)
 
     Array(results).select do |tagged_result|
-      indexer_result = indexer_result_from(tagged_result)
-      compatible_result_categories?(indexer_result, request.book.book_type) &&
+      broad_result_candidate?(tagged_result, request) &&
         penalized_indexer_score(tagged_result, request) >= threshold
     end
+  end
+
+  # Baseline sanity check for results found without category restrictions:
+  # category tags (when present) must be compatible with the book type, and
+  # the release name must not look like video content.
+  def broad_result_candidate?(tagged_result, request)
+    result = indexer_result_from(tagged_result)
+    compatible_result_categories?(result, request.book.book_type) &&
+      !ReleaseParserService.video_release?(result.title)
+  end
+
+  # When every result was filtered out, an empty list hides that the broad
+  # search did retrieve plausible candidates. Keep the best few below the
+  # confidence threshold — clearly penalized and ranked last — so users can
+  # judge them instead of resorting to manual searches.
+  def low_confidence_fallback_results(results, request)
+    candidates = Array(results).select { |tagged_result| broad_result_candidate?(tagged_result, request) }
+    return [] if candidates.empty?
+
+    kept = candidates
+      .sort_by { |tagged_result| -penalized_indexer_score(tagged_result, request) }
+      .first(LOW_CONFIDENCE_FALLBACK_LIMIT)
+    Rails.logger.info "[SearchJob] No results met the confidence threshold for request ##{request.id}; keeping #{kept.count} low-confidence candidates"
+    kept
   end
 
   def compatible_result_categories?(result, book_type)
@@ -653,10 +689,14 @@ class SearchJob < ApplicationJob
     language_hint = indexer_language_hint(request)
     attempts = [
       build_search_attempt(:exact_title, [ book.title, language_hint ]),
-      build_search_attempt(:title_author, [ book.title, book.author, language_hint ]),
-      build_search_attempt(:author_title, [ book.author, book.title, language_hint ]),
-      build_search_attempt(:normalized_title, [ normalized_search_title(book.title), language_hint ])
+      build_search_attempt(:title_author, [ book.title, book.author, language_hint ])
     ]
+
+    short_title = short_search_title(book.title)
+    attempts << build_search_attempt(:short_title, [ short_title, book.author, language_hint ]) if short_title.present?
+
+    attempts << build_search_attempt(:author_title, [ book.author, book.title, language_hint ])
+    attempts << build_search_attempt(:normalized_title, [ normalized_search_title(book.title), language_hint ])
 
     numeric_title_variants(book.title).each do |title_variant|
       attempts << build_search_attempt(:number_variant, [ title_variant, language_hint ])
@@ -683,6 +723,18 @@ class SearchJob < ApplicationJob
 
       seen[normalized_query] = true
     end
+  end
+
+  # Book metadata often carries subtitles that release names omit
+  # ("Mistborn: The Final Empire", "Project Hail Mary: A Novel").
+  # Returns the title up to the first subtitle separator, or nil when the
+  # title has no subtitle or the remainder is too short to search safely.
+  def short_search_title(title)
+    short = title.to_s.split(/\s*(?::|;|–|—|\s-\s)\s*/, 2).first.to_s.squish
+    return nil if short.blank? || short.casecmp?(title.to_s.squish)
+    return nil if short.length < 4
+
+    short
   end
 
   def normalized_search_title(title)
