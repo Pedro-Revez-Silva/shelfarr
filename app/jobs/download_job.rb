@@ -731,11 +731,7 @@ class DownloadJob < ApplicationJob
   end
 
   def trigger_library_scan(book)
-    lib_id = if book.audiobook?
-      SettingsService.get(:audiobookshelf_audiobook_library_id)
-    else
-      SettingsService.get(:audiobookshelf_ebook_library_id)
-    end
+    lib_id = SettingsService.library_id_for_book(book)
 
     return unless lib_id.present?
 

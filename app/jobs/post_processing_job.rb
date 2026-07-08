@@ -119,7 +119,9 @@ class PostProcessingJob < ApplicationJob
     # Always use Shelfarr's configured output paths.
     # External library paths are from that service's container perspective,
     # not ours, so they cannot drive file operations.
-    if book.ebook?
+    if book.comicbook?
+      SettingsService.get(:comicbook_output_path, default: "/comics")
+    elsif book.ebook?
       SettingsService.get(:ebook_output_path, default: "/ebooks")
     else
       SettingsService.get(:audiobook_output_path, default: "/audiobooks")
@@ -127,11 +129,7 @@ class PostProcessingJob < ApplicationJob
   end
 
   def library_id_for(book)
-    if book.audiobook?
-      SettingsService.get(:audiobookshelf_audiobook_library_id)
-    else
-      SettingsService.get(:audiobookshelf_ebook_library_id)
-    end
+    SettingsService.library_id_for_book(book)
   end
 
   def import_files(source, destination, book: nil)
@@ -153,7 +151,7 @@ class PostProcessingJob < ApplicationJob
     @defer_source_removal = directory_source && move_completed_downloads?
     action = move_completed_downloads? ? "Moving" : "Copying"
     Rails.logger.info "[PostProcessingJob] #{action} from #{source} to #{destination}"
-    validate_ebook_source!(source) if book&.ebook?
+    validate_ebook_source!(source) if readable_file_import?(book)
     FileUtils.mkdir_p(destination)
     source_cleanup = nil
 
@@ -166,7 +164,7 @@ class PostProcessingJob < ApplicationJob
       files.each do |file|
         source_file = File.join(source, file)
 
-        if book&.ebook?
+        if readable_file_import?(book)
           import_ebook_directory_entry(source_file, destination, book)
         else
           import_directory_entry(source_file, destination)
@@ -195,6 +193,10 @@ class PostProcessingJob < ApplicationJob
     else
       import_sidecar_file(source_file, destination)
     end
+  end
+
+  def readable_file_import?(book)
+    book&.ebook? || book&.comicbook?
   end
 
   def validate_ebook_source!(source)

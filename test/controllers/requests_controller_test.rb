@@ -320,6 +320,32 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to request_path(Request.last)
   end
 
+  test "create preserves errors when request creation partially succeeds" do
+    book = Book.create!(title: "Saga #1", book_type: :comicbook, content_kind: :comic, comic_vine_id: "4000-101")
+    created_request = Request.create!(book: book, user: @user, status: :pending)
+    result = RequestCreationService::Result.new(
+      created_requests: [ created_request ],
+      warnings: [],
+      errors: [ "Saga #2 Comicbook: This comic book already has an active request." ]
+    )
+
+    RequestCreationService.stub(:call, result) do
+      post requests_path, params: {
+        work_id: "comic_vine:4050-99",
+        title: "Saga",
+        book_type: "comicbook",
+        request_scope: "collection",
+        collection_source: "comic_vine",
+        collection_id: "4050-99",
+        collection_title: "Saga"
+      }
+    end
+
+    assert_redirected_to request_path(created_request)
+    assert_match "Request created for Saga #1", flash[:notice]
+    assert_match "Saga #2", flash[:alert]
+  end
+
   test "create stores series from metadata details" do
     details = MetadataService::SearchResult.new(
       source: "hardcover",

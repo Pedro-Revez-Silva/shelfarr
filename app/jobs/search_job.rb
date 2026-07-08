@@ -647,6 +647,8 @@ class SearchJob < ApplicationJob
       standard_category_ids.any? { |id| id.between?(3000, 3999) }
     when :ebook
       standard_category_ids.any? { |id| id.between?(7000, 7999) }
+    when :comicbook
+      standard_category_ids.any? { |id| id == 7030 || id.between?(7030, 7039) }
     else
       true
     end

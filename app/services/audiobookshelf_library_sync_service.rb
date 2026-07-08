@@ -51,7 +51,8 @@ class AudiobookshelfLibrarySyncService
     @configured_library_ids = begin
       configured_ids = [
         SettingsService.get(:audiobookshelf_audiobook_library_id),
-        SettingsService.get(:audiobookshelf_ebook_library_id)
+        SettingsService.get(:audiobookshelf_ebook_library_id),
+        SettingsService.get(:audiobookshelf_comicbook_library_id)
       ].filter_map(&:presence).uniq
 
       if configured_ids.any?

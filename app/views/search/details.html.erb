@@ -1,0 +1,168 @@
+<%
+  type_labels = {
+    "audiobook" => "Audiobook",
+    "ebook" => "Ebook",
+    "comicbook" => @content_kind == "manga" ? "Manga" : "Comic Book"
+  }
+  kind_label = case @content_kind
+  when "comic" then "Comic"
+  when "manga" then "Manga"
+  else "Book"
+  end
+  metadata_params = {
+    work_id: @work_id,
+    title: @title,
+    author: @author,
+    cover_url: @cover_url,
+    first_publish_year: @first_publish_year,
+    description: @description,
+    content_kind: @content_kind,
+    publisher: @publisher,
+    issue_number: @issue_number,
+    release_date: @release_date,
+    series: @series,
+    series_position: @series_position,
+    collection_source: @collection_source,
+    collection_id: @collection_id,
+    collection_title: @collection_title,
+    source_work_ids: @source_work_ids
+  }.compact
+%>
+
+<% details_content = capture do %>
+  <div class="grid gap-8 md:grid-cols-[260px_1fr]">
+    <div>
+      <% if @cover_url.present? %>
+        <img src="<%= @cover_url %>" alt="Cover of <%= @title %>" class="w-full rounded-lg shadow-lg ring-1 ring-gray-800">
+      <% else %>
+        <div class="flex aspect-[2/3] w-full items-center justify-center rounded-lg bg-gray-800 text-gray-500 ring-1 ring-gray-700">No cover</div>
+      <% end %>
+    </div>
+
+    <div class="min-w-0">
+      <div class="mb-3 flex flex-wrap gap-2">
+        <span class="rounded-full bg-gray-800 px-3 py-1 text-sm font-medium text-gray-300"><%= kind_label %></span>
+        <% if @first_publish_year.present? %>
+          <span class="rounded-full bg-gray-800 px-3 py-1 text-sm font-medium text-gray-300"><%= @first_publish_year %></span>
+        <% end %>
+        <% if @publisher.present? %>
+          <span class="rounded-full bg-gray-800 px-3 py-1 text-sm font-medium text-gray-300"><%= @publisher %></span>
+        <% end %>
+      </div>
+
+      <h1 class="text-3xl font-bold text-white"><%= @title %></h1>
+      <% if @author.present? %>
+        <p class="mt-2 text-lg text-gray-400"><%= @author %></p>
+      <% end %>
+
+      <% if @collection_title.present? %>
+        <div class="mt-6 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4">
+          <p class="text-sm font-medium text-emerald-300">Part of <%= @collection_title %></p>
+          <% if @series_position.present? %>
+            <p class="mt-1 text-xs text-emerald-100/80">Position <%= @series_position %></p>
+          <% end %>
+        </div>
+      <% end %>
+
+      <% if @description.present? %>
+        <div class="mt-6">
+          <h2 class="text-sm font-medium uppercase text-gray-500">Overview</h2>
+          <p class="mt-2 whitespace-pre-line text-gray-300"><%= truncate(@description, length: 1200) %></p>
+        </div>
+      <% end %>
+
+      <dl class="mt-6 grid gap-4 text-sm sm:grid-cols-2">
+        <% if @series.present? %>
+          <div>
+            <dt class="text-gray-500">Series</dt>
+            <dd class="font-medium text-white"><%= @series %></dd>
+          </div>
+        <% end %>
+        <% if @issue_number.present? %>
+          <div>
+            <dt class="text-gray-500">Issue</dt>
+            <dd class="font-medium text-white">#<%= @issue_number %></dd>
+          </div>
+        <% end %>
+        <% if @release_date.present? %>
+          <div>
+            <dt class="text-gray-500">Release date</dt>
+            <dd class="font-medium text-white"><%= @release_date %></dd>
+          </div>
+        <% end %>
+      </dl>
+
+      <div class="mt-8 flex flex-wrap gap-3">
+        <% @available_book_types.each do |book_type| %>
+          <%= link_to "Request #{type_labels.fetch(book_type, book_type.titleize)}", new_request_path(metadata_params.merge(book_type: book_type)), class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500", data: { turbo_frame: "_top" } %>
+        <% end %>
+        <% if @collection_id.present? && @collection_title.present? %>
+          <% @available_book_types.each do |book_type| %>
+            <%= link_to "Request #{type_labels.fetch(book_type, book_type.titleize)} Collection", new_request_path(metadata_params.merge(book_type: book_type, request_scope: "collection")), class: "rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white transition hover:bg-emerald-500", data: { turbo_frame: "_top" } %>
+          <% end %>
+        <% end %>
+      </div>
+    </div>
+  </div>
+
+  <% if @collection_items.any? %>
+    <div class="mt-10 border-t border-gray-800 pt-8">
+      <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 class="text-xl font-semibold text-white"><%= @content_kind.in?(%w[comic manga]) ? "Volume Issues" : "Series Books" %></h2>
+          <p class="mt-1 text-sm text-gray-500"><%= @collection_title %></p>
+        </div>
+        <% if @collection_items.size >= 12 %>
+          <p class="text-xs text-gray-500">Showing the first 12 items</p>
+        <% end %>
+      </div>
+
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <% @collection_items.each do |item| %>
+          <div class="grid grid-cols-[56px_1fr] gap-3 rounded-lg border border-gray-800 bg-gray-900 p-3">
+            <% if item.cover_url.present? %>
+              <img src="<%= item.cover_url %>" alt="Cover of <%= item.title %>" class="aspect-[2/3] w-14 rounded object-cover">
+            <% else %>
+              <div class="flex aspect-[2/3] w-14 items-center justify-center rounded bg-gray-800 text-[10px] text-gray-500">No cover</div>
+            <% end %>
+            <div class="min-w-0">
+              <p class="line-clamp-2 text-sm font-medium text-white"><%= item.title %></p>
+              <% if item.issue_number.present? %>
+                <p class="mt-1 text-xs text-gray-400">Issue #<%= item.issue_number %></p>
+              <% elsif item.series_position.present? %>
+                <p class="mt-1 text-xs text-gray-400">Position <%= item.series_position %></p>
+              <% end %>
+              <% if item.release_date.present? %>
+                <p class="mt-1 text-xs text-gray-500"><%= item.release_date %></p>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+<% end %>
+
+<% if @modal %>
+  <%= turbo_frame_tag "modal" do %>
+    <div class="fixed inset-0 z-50 overflow-y-auto bg-black/70 px-4 py-6 backdrop-blur-sm sm:px-6">
+      <div class="mx-auto max-w-5xl rounded-lg border border-gray-800 bg-gray-950 shadow-2xl">
+        <div class="flex items-center justify-end border-b border-gray-800 px-4 py-3">
+          <%= link_to search_modal_close_path, class: "rounded-md px-3 py-2 text-sm font-medium text-gray-300 transition hover:bg-gray-800 hover:text-white", data: { turbo_frame: "modal" } do %>
+            Close
+          <% end %>
+        </div>
+        <div class="p-5 sm:p-6">
+          <%= details_content %>
+        </div>
+      </div>
+    </div>
+  <% end %>
+<% else %>
+  <div class="mx-auto max-w-5xl">
+    <div class="mb-6">
+      <%= link_to "&larr; Back to Search".html_safe, search_path(q: params[:q], content_kind: @content_kind), class: "text-blue-400 hover:text-blue-300" %>
+    </div>
+    <%= details_content %>
+  </div>
+<% end %>

@@ -178,4 +178,89 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_not result.success?
     assert_includes result.errors.join, "already has an active request"
   end
+
+  test "collection request expands into per item requests" do
+    items = [
+      RequestCreationService::RequestInput.new(
+        work_id: "comic_vine:4000-101",
+        source_work_ids: [ "comic_vine:4000-101" ],
+        metadata_attrs: {
+          title: "Saga - #1",
+          author: "Writer One",
+          content_kind: "comic",
+          issue_number: "1",
+          series: "Saga",
+          series_position: "1",
+          request_scope: "collection",
+          collection_source: "comic_vine",
+          collection_id: "4050-99",
+          collection_title: "Saga"
+        }
+      ),
+      RequestCreationService::RequestInput.new(
+        work_id: "comic_vine:4000-102",
+        source_work_ids: [ "comic_vine:4000-102" ],
+        metadata_attrs: {
+          title: "Saga - #2",
+          author: "Writer One",
+          content_kind: "comic",
+          issue_number: "2",
+          series: "Saga",
+          series_position: "2",
+          request_scope: "collection",
+          collection_source: "comic_vine",
+          collection_id: "4050-99",
+          collection_title: "Saga"
+        }
+      )
+    ]
+
+    MetadataService.stub(:book_details, ->(*) { raise "unexpected metadata detail lookup" }) do
+      ComicVineClient.stub(:configured?, false) do
+        MetadataCollectionService.stub(:expand, items) do
+          assert_difference [ "Book.count", "Request.count" ], 2 do
+            result = RequestCreationService.call(
+              user: @user,
+              work_id: "comic_vine:4050-99",
+              book_types: [ "comicbook" ],
+              metadata_attrs: {
+                title: "Saga",
+                content_kind: "comic",
+                request_scope: "collection",
+                collection_source: "comic_vine",
+                collection_id: "4050-99",
+                collection_title: "Saga"
+              }
+            )
+
+            assert result.success?
+            assert_empty result.errors
+            assert_equal 2, result.created_requests.size
+          end
+        end
+      end
+    end
+
+    requests = Request.order(id: :desc).limit(2).to_a
+    assert requests.all? { |request| request.request_scope == "collection" }
+    assert_equal [ "4000-102", "4000-101" ], requests.map { |request| request.book.comic_vine_id }
+    assert_equal [ "Saga", "Saga" ], requests.map(&:collection_title)
+  end
+
+  test "collection request reports unsupported collection source" do
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "google_books:gb-collection",
+      book_types: [ "ebook" ],
+      metadata_attrs: {
+        title: "Collection",
+        request_scope: "collection",
+        collection_source: "google_books",
+        collection_id: "shelf-1"
+      }
+    )
+
+    assert_not result.success?
+    assert_includes result.errors.join, "Collection requests are not supported"
+  end
 end

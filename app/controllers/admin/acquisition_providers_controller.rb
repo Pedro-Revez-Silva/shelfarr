@@ -12,7 +12,7 @@ module Admin
     end
 
     def new
-      @provider = AcquisitionProvider.new(timeout_seconds: 30, supports_ebooks: true, supports_audiobooks: true)
+      @provider = AcquisitionProvider.new(timeout_seconds: 30, supports_ebooks: true, supports_audiobooks: true, supports_comicbooks: false)
     end
 
     def create
@@ -61,7 +61,7 @@ module Admin
 
     def provider_params
       params.require(:acquisition_provider).permit(
-        :name, :url, :api_key, :enabled, :allow_private_network, :supports_ebooks, :supports_audiobooks, :timeout_seconds
+        :name, :url, :api_key, :enabled, :allow_private_network, :supports_ebooks, :supports_audiobooks, :supports_comicbooks, :timeout_seconds
       )
     end
 

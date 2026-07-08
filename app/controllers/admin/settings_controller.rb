@@ -222,6 +222,22 @@ module Admin
       respond_with_flash(alert: "Open Library error: #{e.message}")
     end
 
+    def test_comic_vine
+      unless ComicVineClient.configured?
+        respond_with_flash(alert: "Comic Vine is not configured. Enable it and enter an API key first.")
+        return
+      end
+
+      if ComicVineClient.test_connection
+        MetadataProviderStatus.for_provider("comic_vine").record_success!
+        respond_with_flash(notice: "Comic Vine connection successful!")
+      else
+        respond_with_flash(alert: "Comic Vine connection failed.")
+      end
+    rescue ComicVineClient::Error => e
+      respond_with_flash(alert: "Comic Vine error: #{e.message}")
+    end
+
     def test_zlibrary
       unless ZLibraryClient.configured?
         respond_with_flash(alert: "Z-Library is not configured. Enable it and enter your account credentials first.")

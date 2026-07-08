@@ -67,12 +67,15 @@ class DuplicateDetectionService
       end
 
       # Check 4: Same work exists as different type (warn only)
-      other_type = book_type == "audiobook" ? "ebook" : "audiobook"
-      other_book = find_existing_book(work_ids, book_type: other_type, existing_books_lookup: existing_books_lookup)
-      if other_book
+      other_books = (Book.book_types.keys - [ book_type ]).filter_map do |other_type|
+        book = find_existing_book(work_ids, book_type: other_type, existing_books_lookup: existing_books_lookup)
+        [ other_type, book ] if book
+      end
+      if other_books.any?
+        other_type, other_book = other_books.first
         return Result.new(
           status: WARN,
-          message: "This book exists as #{other_type == 'audiobook' ? 'an audiobook' : 'an ebook'}. You can still request the #{book_type}.",
+          message: "This title exists as #{label_with_article(other_type)}. You can still request the #{label_for(book_type)}.",
           existing_book: other_book,
           existing_request: nil
         )
@@ -117,6 +120,22 @@ class DuplicateDetectionService
         Book.find_in_lookup(existing_books_lookup, work_ids, book_type: book_type)
       else
         Book.find_by_any_work_id(work_ids, book_type: book_type)
+      end
+    end
+
+    def label_with_article(book_type)
+      label = label_for(book_type)
+      article = label.match?(/\A[aeiou]/i) ? "an" : "a"
+      "#{article} #{label}"
+    end
+
+    def label_for(book_type)
+      case book_type.to_s
+      when "audiobook" then "audiobook"
+      when "ebook" then "ebook"
+      when "comicbook" then "comic book"
+      else
+        book_type.to_s.humanize.downcase
       end
     end
 

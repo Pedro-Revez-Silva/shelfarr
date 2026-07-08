@@ -1,5 +1,5 @@
 <div class="mx-auto max-w-2xl">
-  <h1 class="font-bold text-4xl mb-8 text-white">Request Book</h1>
+  <h1 class="font-bold text-4xl mb-8 text-white">Request <%= @content_kind.to_s == "manga" ? "Manga" : (@content_kind.to_s == "comic" ? "Comic" : "Book") %></h1>
 
   <div class="bg-gray-900 rounded-lg shadow p-6 border border-gray-800">
     <div class="flex gap-6 mb-6">
@@ -28,8 +28,17 @@
         <% if @first_publish_year.present? %>
           <p class="text-sm text-gray-500">First published <%= @first_publish_year %></p>
         <% end %>
+        <% if @collection_title.present? %>
+          <p class="text-sm text-emerald-300">Part of <%= @collection_title %></p>
+        <% end %>
       </div>
     </div>
+
+    <% if @request_scope == "collection" && @collection_title.present? %>
+      <div class="mb-6 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm font-medium text-emerald-200">
+        Collection request: <%= @collection_title %>
+      </div>
+    <% end %>
 
     <%= form_with url: requests_path, method: :post, class: "space-y-6" do |form| %>
       <%= hidden_field_tag :work_id, @work_id %>
@@ -37,81 +46,66 @@
       <%= hidden_field_tag :author, @author %>
       <%= hidden_field_tag :cover_url, @cover_url %>
       <%= hidden_field_tag :first_publish_year, @first_publish_year %>
+      <%= hidden_field_tag :description, @description %>
+      <%= hidden_field_tag :publisher, @publisher %>
+      <%= hidden_field_tag :content_kind, @content_kind %>
+      <%= hidden_field_tag :issue_number, @issue_number %>
+      <%= hidden_field_tag :release_date, @release_date %>
+      <%= hidden_field_tag :series, @series %>
+      <%= hidden_field_tag :series_position, @series_position %>
+      <%= hidden_field_tag :request_scope, @request_scope %>
+      <%= hidden_field_tag :collection_source, @collection_source %>
+      <%= hidden_field_tag :collection_id, @collection_id %>
+      <%= hidden_field_tag :collection_title, @collection_title %>
       <% @source_work_ids.each do |source_work_id| %>
         <%= hidden_field_tag "source_work_ids[]", source_work_id %>
       <% end %>
 
       <div>
         <label class="block text-sm font-medium text-gray-300 mb-3">Select format(s):</label>
-        <div class="grid grid-cols-2 gap-4">
+        <div class="grid gap-4 <%= @content_kind.in?(%w[comic manga]) ? 'grid-cols-1' : 'grid-cols-2' %>">
           <%
-            audiobook_check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @source_work_ids, book_type: 'audiobook')
-            ebook_check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @source_work_ids, book_type: 'ebook')
+            requestable_book_types = @content_kind.in?(%w[comic manga]) ? %w[comicbook] : %w[audiobook ebook]
+            format_labels = {
+              "audiobook" => [ "Audiobook", "Audio format for listening", "border-purple-500", "text-purple-400" ],
+              "ebook" => [ "Ebook", "Digital format for reading", "border-blue-500", "text-blue-400" ],
+              "comicbook" => [ @content_kind == "manga" ? "Manga" : "Comic Book", "Panel-based reading format", "border-emerald-500", "text-emerald-400" ]
+            }
           %>
 
-          <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= audiobook_check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:border-purple-500' %>" data-format="audiobook">
-            <input
-              type="checkbox"
-              name="book_types[]"
-              value="audiobook"
-              class="sr-only"
-              <%= 'disabled' if audiobook_check.block? %>
-              <%= 'checked' if params[:book_type] == 'audiobook' || params[:book_types]&.include?('audiobook') %>
-            >
-            <span class="flex flex-1">
-              <span class="flex flex-col">
-                <span class="flex items-center text-sm font-medium text-gray-200">
-                  <svg class="w-5 h-5 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                  </svg>
-                  Audiobook
+          <% requestable_book_types.each do |book_type| %>
+            <%
+              check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @source_work_ids, book_type: book_type)
+              label, description, border_class, text_class = format_labels.fetch(book_type)
+              selected = params[:book_type] == book_type || params[:book_types]&.include?(book_type) || requestable_book_types.one?
+            %>
+            <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:' + border_class %>" data-format="<%= book_type %>" data-border-class="<%= border_class %>">
+              <input
+                type="checkbox"
+                name="book_types[]"
+                value="<%= book_type %>"
+                class="sr-only"
+                <%= 'disabled' if check.block? %>
+                <%= 'checked' if selected && !check.block? %>
+              >
+              <span class="flex flex-1">
+                <span class="flex flex-col">
+                  <span class="text-sm font-medium text-gray-200 <%= text_class %>"><%= label %></span>
+                  <% if check.block? %>
+                    <span class="mt-1 text-xs text-red-400"><%= check.message %></span>
+                  <% elsif check.warn? %>
+                    <span class="mt-1 text-xs text-yellow-400"><%= check.message %></span>
+                  <% else %>
+                    <span class="mt-1 text-xs text-gray-500"><%= description %></span>
+                  <% end %>
                 </span>
-                <% if audiobook_check.block? %>
-                  <span class="mt-1 text-xs text-red-400"><%= audiobook_check.message %></span>
-                <% elsif audiobook_check.warn? %>
-                  <span class="mt-1 text-xs text-yellow-400"><%= audiobook_check.message %></span>
-                <% else %>
-                  <span class="mt-1 text-xs text-gray-500">Audio format for listening</span>
-                <% end %>
               </span>
-            </span>
-            <svg class="h-5 w-5 text-purple-400 hidden checkmark" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
-            </svg>
-          </label>
-
-          <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= ebook_check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:border-blue-500' %>" data-format="ebook">
-            <input
-              type="checkbox"
-              name="book_types[]"
-              value="ebook"
-              class="sr-only"
-              <%= 'disabled' if ebook_check.block? %>
-              <%= 'checked' if params[:book_type] == 'ebook' || params[:book_types]&.include?('ebook') %>
-            >
-            <span class="flex flex-1">
-              <span class="flex flex-col">
-                <span class="flex items-center text-sm font-medium text-gray-200">
-                  <svg class="w-5 h-5 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                  </svg>
-                  Ebook
-                </span>
-                <% if ebook_check.block? %>
-                  <span class="mt-1 text-xs text-red-400"><%= ebook_check.message %></span>
-                <% elsif ebook_check.warn? %>
-                  <span class="mt-1 text-xs text-yellow-400"><%= ebook_check.message %></span>
-                <% else %>
-                  <span class="mt-1 text-xs text-gray-500">Digital format for reading</span>
-                <% end %>
-              </span>
-            </span>
-            <svg class="h-5 w-5 text-blue-400 hidden checkmark" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
-            </svg>
-          </label>
+              <svg class="h-5 w-5 hidden checkmark <%= text_class %>" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
+              </svg>
+            </label>
+          <% end %>
         </div>
-        <p class="mt-2 text-xs text-gray-500">You can select both formats to request audiobook and ebook</p>
       </div>
 
       <div>
@@ -160,15 +154,14 @@
     document.querySelectorAll('input[name="book_types[]"]').forEach(cb => {
       const label = cb.closest('label');
       const checkmark = label.querySelector('.checkmark');
-      const format = label.dataset.format;
-      const borderColor = format === 'audiobook' ? 'border-purple-500' : 'border-blue-500';
+      const borderColor = label.dataset.borderClass || 'border-blue-500';
 
       if (cb.checked) {
         label.classList.add('border-2', borderColor);
         label.classList.remove('border-gray-700');
         checkmark?.classList.remove('hidden');
       } else {
-        label.classList.remove('border-2', 'border-purple-500', 'border-blue-500');
+        label.classList.remove('border-2', 'border-purple-500', 'border-blue-500', 'border-emerald-500');
         label.classList.add('border-gray-700');
         checkmark?.classList.add('hidden');
       }

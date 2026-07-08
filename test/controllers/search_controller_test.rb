@@ -302,6 +302,49 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_no_match "Related titles in your library", response.body
   end
 
+  test "details renders modal with collection preview and collection request action" do
+    preview_item = MetadataCollectionService::Item.new(
+      work_id: "comic_vine:4000-101",
+      source_work_ids: [ "comic_vine:4000-101" ],
+      metadata_attrs: {
+        title: "Saga - #1",
+        cover_url: nil,
+        issue_number: "1",
+        release_date: "2012-03-14"
+      }
+    )
+
+    ComicVineClient.stub(:configured?, false) do
+      MetadataCollectionService.stub(:expand, [ preview_item ]) do
+        get search_details_path, params: {
+          modal: "1",
+          work_id: "comic_vine:4050-99",
+          title: "Saga",
+          content_kind: "comic",
+          available_book_types: [ "comicbook" ],
+          collection_source: "comic_vine",
+          collection_id: "4050-99",
+          collection_title: "Saga"
+        }
+      end
+    end
+
+    assert_response :success
+    assert_select "turbo-frame#modal"
+    assert_select "a[href='#{search_modal_close_path}']", text: "Close"
+    assert_select "a", text: "Request Comic Book Collection"
+    assert_select "h2", text: "Volume Issues"
+    assert_match "Saga - #1", response.body
+  end
+
+  test "close_modal returns an empty modal frame" do
+    get search_modal_close_path
+
+    assert_response :success
+    assert_select "turbo-frame#modal"
+    assert_no_match "Close", response.body
+  end
+
   private
 
   def metadata_result(source_id:, title:, author:, year:)

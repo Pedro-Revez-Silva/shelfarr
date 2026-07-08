@@ -10,11 +10,11 @@ class API::V1::SearchController < API::V1::ApplicationController
       return
     end
 
-    results = MetadataService.search(query, limit: search_limit)
+    results = MetadataService.search(query, limit: search_limit, content_kind: normalized_content_kind)
     render json: { results: results.map { |result| search_result_payload(result) } }
-  rescue HardcoverClient::ConnectionError, GoogleBooksClient::ConnectionError, OpenLibraryClient::ConnectionError
+  rescue HardcoverClient::ConnectionError, GoogleBooksClient::ConnectionError, OpenLibraryClient::ConnectionError, ComicVineClient::ConnectionError
     render json: { errors: [ "Unable to connect to metadata service" ] }, status: :service_unavailable
-  rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, MetadataService::Error => e
+  rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, ComicVineClient::Error, MetadataService::Error => e
     render json: { errors: [ e.message.presence || "Search failed" ] }, status: :bad_gateway
   end
 
@@ -43,8 +43,20 @@ class API::V1::SearchController < API::V1::ApplicationController
       has_audiobook: result.has_audiobook,
       has_ebook: result.has_ebook,
       series_name: result.series_name,
-      series_position: result.series_position
+      series_position: result.series_position,
+      content_kind: result.respond_to?(:content_kind) ? result.content_kind : "book",
+      available_book_types: result.respond_to?(:available_book_types) ? result.available_book_types : %w[audiobook ebook],
+      collection_source: result.respond_to?(:collection_source) ? result.collection_source : nil,
+      collection_id: result.respond_to?(:collection_id) ? result.collection_id : nil,
+      collection_title: result.respond_to?(:collection_title) ? result.collection_title : nil,
+      issue_number: result.respond_to?(:issue_number) ? result.issue_number : nil,
+      release_date: result.respond_to?(:release_date) ? result.release_date : nil
     }
+  end
+
+  def normalized_content_kind
+    normalized = params[:content_kind].to_s.strip.downcase
+    %w[book comic manga all].include?(normalized) ? normalized : nil
   end
 
   def result_sources_payload(result)

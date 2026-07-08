@@ -49,24 +49,24 @@ class MetadataService
   class << self
     # Search for books across enabled metadata sources and aggregate duplicates
     # into Shelfarr candidates.
-    def search(query, limit: nil)
-      providers = enabled_metadata_providers
+    def search(query, limit: nil, content_kind: nil)
+      providers = enabled_metadata_providers(content_kind: content_kind)
       Rails.logger.info "[MetadataService] Searching '#{query}' using providers: #{providers.join(', ')}"
 
-      provider_results = search_providers_concurrently(providers, query, limit: limit)
+      provider_results = search_providers_concurrently(providers, query, limit: limit, content_kind: content_kind)
       aggregate_provider_results(provider_results, limit: limit)
     end
 
-    def each_provider_search(query, limit: nil)
-      providers = enabled_metadata_providers
-      return enum_for(__method__, query, limit: limit) unless block_given?
+    def each_provider_search(query, limit: nil, content_kind: nil)
+      providers = enabled_metadata_providers(content_kind: content_kind)
+      return enum_for(__method__, query, limit: limit, content_kind: content_kind) unless block_given?
 
       queue = Queue.new
       threads = providers.map do |provider|
         Thread.new do
           Rails.application.executor.wrap do
             ActiveRecord::Base.connection_pool.with_connection do
-              queue << [ provider, search_provider(provider, query, limit: limit) ]
+              queue << [ provider, search_provider(provider, query, limit: limit, content_kind: content_kind) ]
             end
           end
         rescue StandardError => e
@@ -82,14 +82,18 @@ class MetadataService
       threads&.each(&:join)
     end
 
-    def search_provider(provider, query, limit: nil)
+    def search_provider(provider, query, limit: nil, content_kind: nil)
       status = MetadataProviderStatus.for_provider(provider)
       unless status.available?
         Rails.logger.info "[MetadataService] Skipping #{provider}: #{status.status}"
         return []
       end
 
-      results = send("search_#{provider}", query, provider_limit(provider, limit))
+      results = if content_kind.present?
+        send("search_#{provider}", query, provider_limit(provider, limit), content_kind: content_kind)
+      else
+        send("search_#{provider}", query, provider_limit(provider, limit))
+      end
       status.record_success!
       results
     rescue *provider_errors(provider) => e
@@ -122,6 +126,8 @@ class MetadataService
         fetch_google_books_details(id)
       when "openlibrary", "OL"
         fetch_openlibrary_details(id)
+      when "comic_vine"
+        ComicVineClient.details(id)
       else
         raise ArgumentError, "Unknown metadata source: #{source}"
       end
@@ -143,6 +149,10 @@ class MetadataService
         results[:openlibrary] = OpenLibraryClient.test_connection rescue false
       end
 
+      if ComicVineClient.configured?
+        results[:comic_vine] = ComicVineClient.test_connection rescue false
+      end
+
       results
     end
 
@@ -151,8 +161,8 @@ class MetadataService
       SettingsService.get(:metadata_source, default: "auto")
     end
 
-    def enabled_metadata_providers
-      SettingsService.enabled_metadata_providers
+    def enabled_metadata_providers(content_kind: nil)
+      filter_providers_for_content(SettingsService.enabled_metadata_providers, content_kind)
     end
 
     def provider_priority
@@ -174,6 +184,8 @@ class MetadataService
         [ GoogleBooksClient::Error ]
       when "openlibrary"
         [ OpenLibraryClient::Error ]
+      when "comic_vine"
+        [ ComicVineClient::Error ]
       else
         [ StandardError ]
       end
@@ -182,40 +194,47 @@ class MetadataService
       errors
     end
 
-    def search_hardcover(query, limit)
+    def search_hardcover(query, limit, content_kind: nil)
       return [] unless HardcoverClient.configured?
 
       results = HardcoverClient.search(query, limit: limit)
       results.map { |result| MetadataSearch::ResultNormalizer.call("hardcover", result) }
     end
 
-    def search_openlibrary(query, limit)
+    def search_openlibrary(query, limit, content_kind: nil)
       return [] unless OpenLibraryClient.configured?
 
       results = OpenLibraryClient.search(query, limit: limit)
       results.map { |result| MetadataSearch::ResultNormalizer.call("openlibrary", result) }
     end
 
-    def search_google_books(query, limit)
+    def search_google_books(query, limit, content_kind: nil)
       return [] unless GoogleBooksClient.configured?
 
       results = GoogleBooksClient.search(query, limit: limit)
       results.map { |result| MetadataSearch::ResultNormalizer.call("google_books", result) }
     end
 
-    def search_providers_concurrently(providers, query, limit: nil)
-      results_by_provider = collect_provider_results(providers, query, limit: limit)
+    def search_comic_vine(query, limit, content_kind: nil)
+      return [] unless ComicVineClient.configured?
+
+      results = ComicVineClient.search(query, limit: limit, content_kind: content_kind)
+      results.map { |result| MetadataSearch::ResultNormalizer.call("comic_vine", result) }
+    end
+
+    def search_providers_concurrently(providers, query, limit: nil, content_kind: nil)
+      results_by_provider = collect_provider_results(providers, query, limit: limit, content_kind: content_kind)
       ordered_provider_results(results_by_provider)
     end
 
-    def collect_provider_results(providers, query, limit: nil)
+    def collect_provider_results(providers, query, limit: nil, content_kind: nil)
       results_by_provider = {}
       queue = Queue.new
       threads = providers.map do |provider|
         Thread.new do
           Rails.application.executor.wrap do
             ActiveRecord::Base.connection_pool.with_connection do
-              queue << [ provider, search_provider(provider, query, limit: limit) ]
+              queue << [ provider, search_provider(provider, query, limit: limit, content_kind: content_kind) ]
             end
           end
         rescue StandardError => e
@@ -260,8 +279,21 @@ class MetadataService
         SettingsService.get(:google_books_search_limit, default: 20)
       when "openlibrary"
         SettingsService.get(:open_library_search_limit, default: 20)
+      when "comic_vine"
+        SettingsService.get(:comic_vine_search_limit, default: 10)
       else
         default_search_limit
+      end
+    end
+
+    def filter_providers_for_content(providers, content_kind)
+      case content_kind.to_s
+      when "book"
+        providers - [ "comic_vine" ]
+      when "comic", "manga"
+        providers & [ "comic_vine" ]
+      else
+        providers
       end
     end
 

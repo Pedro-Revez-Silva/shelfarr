@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_03_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_08_001000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -19,6 +19,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_03_000000) do
     t.string "name", null: false
     t.integer "priority", default: 0, null: false
     t.boolean "supports_audiobooks", default: true, null: false
+    t.boolean "supports_comicbooks", default: false, null: false
     t.boolean "supports_ebooks", default: true, null: false
     t.integer "timeout_seconds", default: 30, null: false
     t.datetime "updated_at", null: false
@@ -65,6 +66,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_03_000000) do
   create_table "books", force: :cascade do |t|
     t.string "author"
     t.integer "book_type", default: 0, null: false
+    t.string "comic_vine_id"
+    t.integer "content_kind", default: 0, null: false
     t.string "cover_url"
     t.datetime "created_at", null: false
     t.text "description"
@@ -72,18 +75,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_03_000000) do
     t.string "google_books_id"
     t.string "hardcover_id"
     t.string "isbn"
+    t.string "issue_number"
     t.string "language", default: "en"
     t.string "metadata_source", default: "openlibrary"
     t.string "narrator"
     t.string "open_library_edition_id"
     t.string "open_library_work_id"
     t.string "publisher"
+    t.date "release_date"
     t.string "series"
     t.string "series_position"
     t.string "title", null: false
     t.datetime "updated_at", null: false
     t.integer "year"
     t.index ["book_type"], name: "index_books_on_book_type"
+    t.index ["comic_vine_id"], name: "index_books_on_comic_vine_id"
+    t.index ["content_kind"], name: "index_books_on_content_kind"
     t.index ["google_books_id"], name: "index_books_on_google_books_id"
     t.index ["hardcover_id"], name: "index_books_on_hardcover_id"
     t.index ["isbn"], name: "index_books_on_isbn"
@@ -224,6 +231,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_03_000000) do
   create_table "requests", force: :cascade do |t|
     t.boolean "attention_needed", default: false
     t.integer "book_id", null: false
+    t.string "collection_id"
+    t.string "collection_source"
+    t.string "collection_title"
     t.datetime "completed_at"
     t.datetime "created_at", null: false
     t.string "created_via", default: "web", null: false
@@ -234,15 +244,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_03_000000) do
     t.string "language"
     t.datetime "next_retry_at"
     t.text "notes"
+    t.string "request_scope", default: "single", null: false
     t.integer "retry_count", default: 0
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false
     t.integer "user_id", null: false
     t.index ["attention_needed"], name: "index_requests_on_attention_needed"
     t.index ["book_id"], name: "index_requests_on_book_id"
+    t.index ["collection_source", "collection_id"], name: "index_requests_on_collection_source_and_collection_id"
     t.index ["created_via"], name: "index_requests_on_created_via"
     t.index ["external_source", "external_user_id"], name: "index_requests_on_external_source_and_external_user_id"
     t.index ["next_retry_at"], name: "index_requests_on_next_retry_at"
+    t.index ["request_scope"], name: "index_requests_on_request_scope"
     t.index ["status"], name: "index_requests_on_status"
     t.index ["user_id", "status"], name: "index_requests_on_user_id_and_status"
     t.index ["user_id"], name: "index_requests_on_user_id"

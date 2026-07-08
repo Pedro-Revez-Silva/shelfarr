@@ -124,6 +124,29 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert body["requests"].all? { |request| request.dig("user", "username") == @user.username }
   end
 
+  test "show includes collection request metadata" do
+    book = Book.create!(title: "Saga #1", book_type: :comicbook, content_kind: :comic, comic_vine_id: "4000-101")
+    request = Request.create!(
+      book: book,
+      user: @user,
+      status: :pending,
+      request_scope: "collection",
+      collection_source: "comic_vine",
+      collection_id: "4050-99",
+      collection_title: "Saga"
+    )
+
+    get api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer apitoken" }
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "collection", body.dig("request", "request_scope")
+    assert_equal "comic_vine", body.dig("request", "collection_source")
+    assert_equal "4050-99", body.dig("request", "collection_id")
+    assert_equal "Saga", body.dig("request", "collection_title")
+  end
+
   test "requires request write scope to create" do
     _token, raw = APIToken.issue!(
       name: "Reader",

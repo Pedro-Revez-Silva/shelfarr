@@ -44,7 +44,7 @@ class AcquisitionProviderTest < ActiveSupport::TestCase
     )
 
     assert_not provider.valid?
-    assert_includes provider.errors[:base], "Provider must support ebooks, audiobooks, or both"
+    assert_includes provider.errors[:base], "Provider must support ebooks, audiobooks, or comic books"
   end
 
   test "filters by book type" do

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class RequestCreationService
+  RequestInput = Data.define(:work_id, :source_work_ids, :metadata_attrs)
+
   Result = Data.define(:created_requests, :warnings, :errors) do
     def success?
       created_requests.any?
@@ -27,38 +29,46 @@ class RequestCreationService
   def call
     return failure("Missing required information") if work_id.blank? || book_types.empty?
 
+    request_inputs = build_request_inputs
+    return failure("Collection did not contain any requestable items") if request_inputs.empty?
+
     created_requests = []
     warnings = []
     errors = []
-    existing_books_lookup = Book.preload_by_work_ids(source_work_ids)
+    existing_books_lookup = Book.preload_by_work_ids(request_inputs.flat_map(&:source_work_ids))
 
-    book_types.each do |book_type|
-      duplicate_check = DuplicateDetectionService.check(
-        work_id: work_id,
-        source_work_ids: source_work_ids,
-        book_type: book_type,
-        existing_books_lookup: existing_books_lookup
-      )
+    request_inputs.each do |input|
+      book_types.each do |book_type|
+        duplicate_check = DuplicateDetectionService.check(
+          work_id: input.work_id,
+          source_work_ids: input.source_work_ids,
+          book_type: book_type,
+          existing_books_lookup: existing_books_lookup
+        )
 
-      if duplicate_check.block?
-        errors << "#{book_type.titleize}: #{duplicate_check.message}"
-        next
-      end
+        if duplicate_check.block?
+          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{book_type.titleize}: #{duplicate_check.message}"
+          next
+        end
 
-      warnings << duplicate_check.message if duplicate_check.warn?
+        warnings << duplicate_check.message if duplicate_check.warn?
 
-      book = find_or_create_book_for_source(book_type, existing_books_lookup: existing_books_lookup)
-      request = build_request(book)
+        book = find_or_create_book_for_source(book_type, input: input, existing_books_lookup: existing_books_lookup)
+        request = build_request(book, input.metadata_attrs)
 
-      if request.save
-        after_create(request)
-        created_requests << request
-      else
-        errors << "#{book_type.titleize}: #{request.errors.full_messages.join(', ')}"
+        if request.save
+          after_create(request)
+          created_requests << request
+          input.source_work_ids.each { |source_work_id| existing_books_lookup[source_work_id.to_s][book.book_type] = book }
+        else
+          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{book_type.titleize}: #{request.errors.full_messages.join(', ')}"
+        end
       end
     end
 
     Result.new(created_requests: created_requests, warnings: warnings.compact, errors: errors)
+  rescue MetadataCollectionService::Error => e
+    failure(e.message)
   end
 
   private
@@ -76,21 +86,39 @@ class RequestCreationService
     end.uniq
   end
 
-  def find_or_create_book_for_source(book_type, existing_books_lookup:)
-    book = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: book_type)
-    book ||= Book.find_or_initialize_by_work_id(work_id, book_type: book_type)
-    source_work_ids.each { |source_work_id| book.assign_work_id(source_work_id) }
+  def build_request_inputs
+    if collection_request?
+      MetadataCollectionService.expand(
+        source: metadata_attrs[:collection_source],
+        collection_id: metadata_attrs[:collection_id],
+        collection_title: metadata_attrs[:collection_title],
+        content_kind: metadata_attrs[:content_kind]
+      )
+    else
+      [ RequestInput.new(work_id: work_id, source_work_ids: source_work_ids, metadata_attrs: metadata_attrs) ]
+    end
+  end
+
+  def collection_request?
+    metadata_attrs[:request_scope].to_s == "collection"
+  end
+
+  def find_or_create_book_for_source(book_type, input:, existing_books_lookup:)
+    book = Book.find_in_lookup(existing_books_lookup, input.source_work_ids, book_type: book_type)
+    book ||= Book.find_or_initialize_by_work_id(input.work_id, book_type: book_type)
+    input.source_work_ids.each { |source_work_id| book.assign_work_id(source_work_id) }
     BookMetadataBackfillService.apply!(
       book,
-      work_id: work_id,
-      fallback_attrs: fallback_attrs
+      work_id: input.work_id,
+      fallback_attrs: fallback_attrs(input.metadata_attrs),
+      lookup_details: !collection_request?
     )
 
     book
   end
 
-  def fallback_attrs
-    attrs = metadata_attrs.slice(
+  def fallback_attrs(attrs)
+    attrs = attrs.slice(
       :title,
       :author,
       :cover_url,
@@ -98,13 +126,17 @@ class RequestCreationService
       :first_publish_year,
       :description,
       :series,
-      :series_position
+      :series_position,
+      :publisher,
+      :content_kind,
+      :issue_number,
+      :release_date
     )
     attrs[:year] ||= attrs.delete(:first_publish_year)
     attrs
   end
 
-  def build_request(book)
+  def build_request(book, attrs)
     user.requests.build(book: book, status: :pending).tap do |request|
       request.notes = notes if notes.present?
       request.language = language if language.present?
@@ -112,6 +144,10 @@ class RequestCreationService
       request.external_source = origin[:external_source]
       request.external_user_id = origin[:external_user_id]
       request.external_chat_id = origin[:external_chat_id]
+      request.request_scope = attrs[:request_scope].presence || "single"
+      request.collection_source = attrs[:collection_source]
+      request.collection_id = attrs[:collection_id]
+      request.collection_title = attrs[:collection_title]
     end
   end
 

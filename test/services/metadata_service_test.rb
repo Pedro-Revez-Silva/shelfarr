@@ -319,6 +319,35 @@ class MetadataServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "book_details handles comic vine work_id" do
+    comic_result = ComicVineClient::Result.new(
+      id: "123",
+      resource_type: "issue",
+      resource_key: "4000-123",
+      title: "Saga - #1",
+      description: "Issue description",
+      cover_url: nil,
+      publisher: "Image",
+      creators: "Writer One",
+      series_name: "Saga",
+      issue_number: "1",
+      release_date: "2012-03-14",
+      content_kind: "comic",
+      collection_id: "4050-99",
+      collection_title: "Saga",
+      web_url: nil,
+      raw_payload: {}
+    )
+
+    ComicVineClient.stub(:details, comic_result) do
+      result = MetadataService.book_details("comic_vine:4000-123")
+
+      assert_equal "Saga - #1", result.title
+      assert_equal "Writer One", result.author
+      assert_equal "comic", result.content_kind
+    end
+  end
+
   test "book_details handles legacy work_id without prefix" do
     with_cassette("open_library/work_details") do
       result = MetadataService.book_details("OL45804W")

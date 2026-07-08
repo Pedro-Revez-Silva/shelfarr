@@ -67,12 +67,14 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_no_match /stored-prowlarr-secret/, @response.body
   end
 
-  test "index shows google books and open library test buttons" do
+  test "index shows metadata provider test buttons and options" do
     get admin_settings_url
 
     assert_response :success
     assert_select "a[href='#{test_google_books_admin_settings_path}']", text: "Test Google Books Connection"
     assert_select "a[href='#{test_open_library_admin_settings_path}']", text: "Test Open Library Connection"
+    assert_select "a[href='#{test_comic_vine_admin_settings_path}']", text: "Test Comic Vine Connection"
+    assert_select "select[name='settings[metadata_source]'] option[value='comic_vine']", text: "Comic Vine"
   end
 
   test "index warns when disabling authentication is enabled" do
@@ -189,6 +191,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
         assert_select "option[value='lib-audio']", text: "Audiobooks (book)"
         assert_select "option[value='lib-ebook']", text: "Ebooks (book)"
       end
+      assert_select "select[name='settings[audiobookshelf_comicbook_library_id]']"
     end
   end
 
@@ -207,6 +210,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "label[for='settings_grimmory_password']", text: "Grimmory Password"
     assert_select "label[for='settings_audiobookshelf_audiobook_library_id']", text: "Audiobook Library"
     assert_select "label[for='settings_audiobookshelf_ebook_library_id']", text: "Ebook Library"
+    assert_select "label[for='settings_audiobookshelf_comicbook_library_id']", text: "Comic Book Library"
     assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval"
     assert_no_match /Bookorbit/, @response.body
     assert_no_match /Audiobookshelf Audiobook Library/, @response.body
@@ -1684,6 +1688,53 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_match /open boom/, flash[:alert]
+  end
+
+  test "test_comic_vine fails when not configured" do
+    SettingsService.set(:comic_vine_enabled, true)
+    SettingsService.set(:comic_vine_api_key, "")
+
+    post test_comic_vine_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /not configured/i, flash[:alert]
+  end
+
+  test "test_comic_vine succeeds when connection works" do
+    SettingsService.set(:comic_vine_enabled, true)
+    SettingsService.set(:comic_vine_api_key, "comic-key")
+
+    ComicVineClient.stub(:test_connection, true) do
+      post test_comic_vine_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
+    assert_equal "healthy", MetadataProviderStatus.for_provider("comic_vine").status
+  end
+
+  test "test_comic_vine fails when connection fails" do
+    SettingsService.set(:comic_vine_enabled, true)
+    SettingsService.set(:comic_vine_api_key, "comic-key")
+
+    ComicVineClient.stub(:test_connection, false) do
+      post test_comic_vine_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
+  end
+
+  test "test_comic_vine reports client errors" do
+    SettingsService.set(:comic_vine_enabled, true)
+    SettingsService.set(:comic_vine_api_key, "comic-key")
+
+    ComicVineClient.stub(:test_connection, -> { raise ComicVineClient::Error, "comic boom" }) do
+      post test_comic_vine_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /comic boom/, flash[:alert]
   end
 
   test "test_flaresolverr returns turbo stream when requested" do

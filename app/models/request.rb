@@ -1,5 +1,6 @@
 class Request < ApplicationRecord
   CREATED_VIA_VALUES = %w[web api telegram].freeze
+  REQUEST_SCOPE_VALUES = %w[single collection].freeze
   MANUAL_MAGNET_GUID_PREFIX = "manual-magnet"
 
   belongs_to :book
@@ -33,6 +34,7 @@ class Request < ApplicationRecord
 
   validates :status, presence: true
   validates :created_via, presence: true, inclusion: { in: CREATED_VIA_VALUES }
+  validates :request_scope, presence: true, inclusion: { in: REQUEST_SCOPE_VALUES }
 
   scope :active, -> { where(status: [ :pending, :searching, :downloading, :processing ]) }
   scope :needs_attention, -> { where(attention_needed: true) }

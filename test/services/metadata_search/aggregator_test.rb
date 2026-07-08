@@ -48,6 +48,16 @@ module MetadataSearch
       assert_equal 2, results.size
     end
 
+    test "keeps books and comics separate even when title author and year match" do
+      results = Aggregator.call([
+        provider_result(source: "hardcover", source_id: "book", title: "Dune", author: "Frank Herbert", year: 1965, content_kind: "book"),
+        provider_result(source: "comic_vine", source_id: "comic", title: "Dune", author: "Frank Herbert", year: 1965, content_kind: "comic", available_book_types: [ "comicbook" ])
+      ], priority: %w[hardcover comic_vine])
+
+      assert_equal 2, results.size
+      assert_equal %w[book comic], results.map(&:content_kind)
+    end
+
     test "uses provider priority for primary source and first-present fields" do
       results = Aggregator.call([
         provider_result(source: "google_books", source_id: "gb123", description: "Google description", cover_url: "https://google.example/cover.jpg", has_ebook: true),
@@ -95,7 +105,8 @@ module MetadataSearch
     private
 
     def provider_result(source:, source_id:, title: "The Hobbit", author: "J.R.R. Tolkien", year: 1937,
-      description: nil, cover_url: nil, isbn_10: nil, isbn_13: nil, has_ebook: nil, has_audiobook: nil)
+      description: nil, cover_url: nil, isbn_10: nil, isbn_13: nil, has_ebook: nil, has_audiobook: nil,
+      content_kind: "book", available_book_types: nil)
       ProviderResult.new(
         source: source,
         source_id: source_id,
@@ -114,7 +125,9 @@ module MetadataSearch
         has_ebook: has_ebook,
         has_audiobook: has_audiobook,
         source_url: "https://example.test/#{source_id}",
-        raw_payload: nil
+        raw_payload: nil,
+        content_kind: content_kind,
+        available_book_types: available_book_types
       )
     end
   end

@@ -4,13 +4,15 @@ class Book < ApplicationRecord
   has_many :requests, dependent: :restrict_with_error
   has_many :uploads, dependent: :nullify
 
-  enum :book_type, { audiobook: 0, ebook: 1 }
+  enum :book_type, { audiobook: 0, ebook: 1, comicbook: 2 }
+  enum :content_kind, { book: 0, comic: 1, manga: 2 }, prefix: :content
 
   validates :title, presence: true
   validates :book_type, presence: true
 
   scope :audiobooks, -> { where(book_type: :audiobook) }
   scope :ebooks, -> { where(book_type: :ebook) }
+  scope :comicbooks, -> { where(book_type: :comicbook) }
   scope :acquired, -> { where.not(file_path: nil) }
   scope :pending, -> { where(file_path: nil) }
 
@@ -42,6 +44,22 @@ class Book < ApplicationRecord
       "https://books.google.com/books?id=#{source_id}"
     when "openlibrary"
       "https://openlibrary.org/works/#{source_id}"
+    when "comic_vine"
+      if source_id.to_s.start_with?("4000-")
+        "https://comicvine.gamespot.com/issue/#{source_id}/"
+      else
+        "https://comicvine.gamespot.com/volume/#{source_id}/"
+      end
+    end
+  end
+
+  def book_type_label
+    case book_type
+    when "audiobook" then "Audiobook"
+    when "ebook" then "Ebook"
+    when "comicbook" then content_manga? ? "Manga" : "Comic Book"
+    else
+      book_type.to_s.titleize
     end
   end
 
@@ -57,6 +75,8 @@ class Book < ApplicationRecord
       "hardcover:#{hardcover_id}"
     elsif google_books_id.present?
       "google_books:#{google_books_id}"
+    elsif comic_vine_id.present?
+      "comic_vine:#{comic_vine_id}"
     elsif open_library_work_id.present?
       "openlibrary:#{open_library_work_id}"
     end
@@ -82,6 +102,8 @@ class Book < ApplicationRecord
       find_by(hardcover_id: source_id, book_type: book_type)
     when "google_books"
       find_by(google_books_id: source_id, book_type: book_type)
+    when "comic_vine"
+      find_by(comic_vine_id: source_id, book_type: book_type)
     else
       find_by(open_library_work_id: source_id, book_type: book_type)
     end
@@ -108,6 +130,7 @@ class Book < ApplicationRecord
 
     hardcover_ids = []
     google_books_ids = []
+    comic_vine_ids = []
     openlibrary_ids = []
 
     ids.each do |work_id|
@@ -119,6 +142,8 @@ class Book < ApplicationRecord
         hardcover_ids << source_id
       when "google_books"
         google_books_ids << source_id
+      when "comic_vine"
+        comic_vine_ids << source_id
       else
         openlibrary_ids << source_id
       end
@@ -127,6 +152,7 @@ class Book < ApplicationRecord
     scope = none
     scope = scope.or(where(hardcover_id: hardcover_ids)) if hardcover_ids.any?
     scope = scope.or(where(google_books_id: google_books_ids)) if google_books_ids.any?
+    scope = scope.or(where(comic_vine_id: comic_vine_ids)) if comic_vine_ids.any?
     scope = scope.or(where(open_library_work_id: openlibrary_ids)) if openlibrary_ids.any?
 
     lookup = Hash.new { |hash, key| hash[key] = {} }
@@ -146,6 +172,7 @@ class Book < ApplicationRecord
     [
       ("hardcover:#{book.hardcover_id}" if book.hardcover_id.present?),
       ("google_books:#{book.google_books_id}" if book.google_books_id.present?),
+      ("comic_vine:#{book.comic_vine_id}" if book.comic_vine_id.present?),
       ("openlibrary:#{book.open_library_work_id}" if book.open_library_work_id.present?)
     ].compact
   end
@@ -158,6 +185,8 @@ class Book < ApplicationRecord
       find_or_initialize_by(hardcover_id: source_id, book_type: book_type)
     when "google_books"
       find_or_initialize_by(google_books_id: source_id, book_type: book_type)
+    when "comic_vine"
+      find_or_initialize_by(comic_vine_id: source_id, book_type: book_type)
     else
       find_or_initialize_by(open_library_work_id: source_id, book_type: book_type)
     end
@@ -172,6 +201,8 @@ class Book < ApplicationRecord
       self.hardcover_id ||= source_id
     when "google_books"
       self.google_books_id ||= source_id
+    when "comic_vine"
+      self.comic_vine_id ||= source_id
     else
       self.open_library_work_id ||= source_id
     end

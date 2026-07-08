@@ -29,6 +29,7 @@ module MetadataSearch
     end
 
     def match?(left, right)
+      return false if left.content_kind.to_s != right.content_kind.to_s
       return true if shared_isbn?(left, right)
       return false if conflicting_isbn?(left, right)
       return false unless normalized_text(left.title) == normalized_text(right.title)
@@ -82,7 +83,14 @@ module MetadataSearch
         has_audiobook: any_truthy?(group, :has_audiobook),
         sources: ordered.map { |result| source_entry(result) },
         editions: edition_entries(group, primary),
-        confidence: confidence_for(group)
+        confidence: confidence_for(group),
+        content_kind: first_present(ordered, :content_kind) || "book",
+        available_book_types: available_book_types_for(group),
+        collection_source: first_present(ordered, :collection_source),
+        collection_id: first_present(ordered, :collection_id),
+        collection_title: first_present(ordered, :collection_title),
+        issue_number: first_present(ordered, :issue_number),
+        release_date: first_present(ordered, :release_date)
       )
     end
 
@@ -103,6 +111,11 @@ module MetadataSearch
       return false if group.any? { |result| result.public_send(field) == false }
 
       nil
+    end
+
+    def available_book_types_for(group)
+      types = group.flat_map { |result| Array(result.available_book_types) }.compact_blank.uniq
+      types.presence || %w[audiobook ebook]
     end
 
     def source_entry(result)

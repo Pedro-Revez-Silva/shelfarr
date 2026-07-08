@@ -4,10 +4,14 @@ module MetadataSearch
   class Candidate
     attr_reader :canonical_key, :title, :author, :year, :description, :cover_url,
       :series_name, :series_position, :has_ebook, :has_audiobook,
-      :sources, :editions, :confidence
+      :sources, :editions, :confidence, :content_kind, :available_book_types,
+      :collection_source, :collection_id, :collection_title, :issue_number,
+      :release_date
 
     def initialize(canonical_key:, title:, author:, year:, description:, cover_url:,
-      series_name:, series_position:, has_ebook:, has_audiobook:, sources:, editions:, confidence:)
+      series_name:, series_position:, has_ebook:, has_audiobook:, sources:, editions:, confidence:,
+      content_kind: "book", available_book_types: nil, collection_source: nil, collection_id: nil,
+      collection_title: nil, issue_number: nil, release_date: nil)
       @canonical_key = canonical_key
       @title = title
       @author = author
@@ -21,6 +25,13 @@ module MetadataSearch
       @sources = Array(sources)
       @editions = Array(editions)
       @confidence = confidence
+      @content_kind = content_kind.presence || "book"
+      @available_book_types = Array(available_book_types.presence || default_book_types_for(@content_kind))
+      @collection_source = collection_source
+      @collection_id = collection_id
+      @collection_title = collection_title
+      @issue_number = issue_number
+      @release_date = release_date
     end
 
     def source
@@ -59,8 +70,22 @@ module MetadataSearch
       sources.any? { |source| source[:source] == "google_books" }
     end
 
+    def comic_or_manga?
+      %w[comic manga].include?(content_kind.to_s)
+    end
+
+    def collection?
+      collection_id.present? && collection_title.present?
+    end
+
     def primary_source
       sources.first
+    end
+
+    private
+
+    def default_book_types_for(kind)
+      %w[comic manga].include?(kind.to_s) ? [ "comicbook" ] : [ "audiobook", "ebook" ]
     end
   end
 end

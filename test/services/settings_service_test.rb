@@ -209,7 +209,21 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal "BookOrbit URL", SettingsService.label_for(:bookorbit_url)
     assert_equal "Grimmory URL", SettingsService.label_for(:grimmory_url)
     assert_equal "Audiobook Library", SettingsService.label_for(:audiobookshelf_audiobook_library_id)
+    assert_equal "Comic Book Library", SettingsService.label_for(:audiobookshelf_comicbook_library_id)
     assert_equal "Max Retries", SettingsService.label_for(:max_retries)
+  end
+
+  test "library_id_for_book resolves separate comic library with ebook fallback" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "audio-lib")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-lib")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+
+    assert_equal "audio-lib", SettingsService.library_id_for_book(Book.new(book_type: :audiobook))
+    assert_equal "ebook-lib", SettingsService.library_id_for_book(Book.new(book_type: :ebook))
+    assert_equal "ebook-lib", SettingsService.library_id_for_book(Book.new(book_type: :comicbook))
+
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "comic-lib")
+    assert_equal "comic-lib", SettingsService.library_id_for_book(Book.new(book_type: :comicbook))
   end
 
   test "active_library_platform supports grimmory" do

@@ -107,6 +107,8 @@ class UploadCreator
   attr_reader :user, :uploaded_file, :request
 
   def inferred_book_type(extension)
+    return "comicbook" if Upload::COMICBOOK_EXTENSIONS.include?(extension)
+
     Upload::AUDIOBOOK_EXTENSIONS.include?(extension) ? "audiobook" : "ebook"
   end
 
