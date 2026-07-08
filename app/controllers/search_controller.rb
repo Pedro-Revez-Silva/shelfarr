@@ -126,7 +126,7 @@ class SearchController < ApplicationController
     normalize_available_book_types!
     @collection_items = collection_preview_items
 
-    return redirect_to search_path, alert: "Missing title information" if @work_id.blank? || @title.blank?
+    redirect_to search_path, alert: "Missing title information" if @work_id.blank? || @title.blank?
   end
 
   def close_modal

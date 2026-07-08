@@ -247,6 +247,56 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal [ "Saga", "Saga" ], requests.map(&:collection_title)
   end
 
+  test "collection request caps expansion and warns when the collection is larger" do
+    limit = RequestCreationService::MAX_COLLECTION_ITEMS
+    items = (1..(limit + 1)).map do |number|
+      RequestCreationService::RequestInput.new(
+        work_id: "comic_vine:4000-#{number}",
+        source_work_ids: [ "comic_vine:4000-#{number}" ],
+        metadata_attrs: {
+          title: "Saga - ##{number}",
+          content_kind: "comic",
+          request_scope: "collection",
+          collection_source: "comic_vine",
+          collection_id: "4050-99",
+          collection_title: "Saga"
+        }
+      )
+    end
+
+    expand_args = nil
+    expand = lambda do |**kwargs|
+      expand_args = kwargs
+      items
+    end
+
+    ComicVineClient.stub(:configured?, false) do
+      MetadataCollectionService.stub(:expand, expand) do
+        assert_difference [ "Book.count", "Request.count" ], limit do
+          result = RequestCreationService.call(
+            user: @user,
+            work_id: "comic_vine:4050-99",
+            book_types: [ "comicbook" ],
+            metadata_attrs: {
+              title: "Saga",
+              content_kind: "comic",
+              request_scope: "collection",
+              collection_source: "comic_vine",
+              collection_id: "4050-99",
+              collection_title: "Saga"
+            }
+          )
+
+          assert result.success?
+          assert_equal limit, result.created_requests.size
+          assert_includes result.warnings.join, "only the first #{limit}"
+        end
+      end
+    end
+
+    assert_equal limit + 1, expand_args[:limit]
+  end
+
   test "collection request reports unsupported collection source" do
     result = RequestCreationService.call(
       user: @user,

@@ -138,6 +138,5 @@ class DuplicateDetectionService
         book_type.to_s.humanize.downcase
       end
     end
-
   end
 end

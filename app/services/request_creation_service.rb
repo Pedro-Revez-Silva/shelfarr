@@ -1,6 +1,10 @@
 # frozen_string_literal: true
 
 class RequestCreationService
+  # Cap collection expansion so one request cannot fan out into an unbounded
+  # number of books, requests, notifications, and search jobs.
+  MAX_COLLECTION_ITEMS = 100
+
   RequestInput = Data.define(:work_id, :source_work_ids, :metadata_attrs)
 
   Result = Data.define(:created_requests, :warnings, :errors) do
@@ -34,6 +38,7 @@ class RequestCreationService
 
     created_requests = []
     warnings = []
+    warnings << "Collection has more than #{MAX_COLLECTION_ITEMS} items; only the first #{MAX_COLLECTION_ITEMS} were requested" if @collection_truncated
     errors = []
     existing_books_lookup = Book.preload_by_work_ids(request_inputs.flat_map(&:source_work_ids))
 
@@ -88,12 +93,15 @@ class RequestCreationService
 
   def build_request_inputs
     if collection_request?
-      MetadataCollectionService.expand(
+      items = MetadataCollectionService.expand(
         source: metadata_attrs[:collection_source],
         collection_id: metadata_attrs[:collection_id],
         collection_title: metadata_attrs[:collection_title],
-        content_kind: metadata_attrs[:content_kind]
+        content_kind: metadata_attrs[:content_kind],
+        limit: MAX_COLLECTION_ITEMS + 1
       )
+      @collection_truncated = items.size > MAX_COLLECTION_ITEMS
+      items.first(MAX_COLLECTION_ITEMS)
     else
       [ RequestInput.new(work_id: work_id, source_work_ids: source_work_ids, metadata_attrs: metadata_attrs) ]
     end
