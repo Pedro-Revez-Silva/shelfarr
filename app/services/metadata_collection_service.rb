@@ -3,6 +3,8 @@
 class MetadataCollectionService
   class Error < StandardError; end
 
+  SUPPORTED_SOURCES = %w[comic_vine hardcover].freeze
+
   Item = Data.define(:work_id, :source_work_ids, :metadata_attrs) do
     def title
       metadata_attrs[:title]
@@ -35,6 +37,20 @@ class MetadataCollectionService
         limit: limit
       ).expand
     end
+
+    # Cheap validation (no API calls) so callers can reject a collection
+    # request synchronously before deferring the expansion to a background job.
+    def validate!(source:, collection_id:)
+      raise Error, "Missing collection source" if source.blank?
+      raise Error, "Missing collection identifier" if collection_id.blank?
+
+      unless SUPPORTED_SOURCES.include?(source.to_s)
+        raise Error, "Collection requests are not supported for #{MetadataSources.display_name(source)}"
+      end
+
+      raise Error, "Comic Vine is not configured" if source.to_s == "comic_vine" && !ComicVineClient.configured?
+      raise Error, "Hardcover is not configured" if source.to_s == "hardcover" && !HardcoverClient.configured?
+    end
   end
 
   def initialize(source:, collection_id:, collection_title: nil, content_kind: "book", limit: nil)
@@ -46,16 +62,13 @@ class MetadataCollectionService
   end
 
   def expand
-    raise Error, "Missing collection source" if source.blank?
-    raise Error, "Missing collection identifier" if collection_id.blank?
+    self.class.validate!(source: source, collection_id: collection_id)
 
     case source
     when "comic_vine"
       comic_vine_items
     when "hardcover"
       hardcover_items
-    else
-      raise Error, "Collection requests are not supported for #{MetadataSources.display_name(source)}"
     end
   rescue HardcoverClient::Error, ComicVineClient::Error => e
     raise Error, "Could not load collection metadata: #{e.message}"
@@ -66,8 +79,6 @@ class MetadataCollectionService
   attr_reader :source, :collection_id, :collection_title, :content_kind, :limit
 
   def comic_vine_items
-    raise Error, "Comic Vine is not configured" unless ComicVineClient.configured?
-
     ComicVineClient.volume_issues(collection_id, limit: limit, content_kind: comic_content_kind).map do |result|
       work_id = "comic_vine:#{result.resource_key}"
       Item.new(

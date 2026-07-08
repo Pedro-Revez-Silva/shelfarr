@@ -3,6 +3,8 @@
 require "test_helper"
 
 class RequestsControllerTest < ActionDispatch::IntegrationTest
+  include ActiveJob::TestHelper
+
   setup do
     @user = users(:one)
     @admin = users(:two)
@@ -344,6 +346,26 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to request_path(created_request)
     assert_match "Request created for Saga #1", flash[:notice]
     assert_match "Saga #2", flash[:alert]
+  end
+
+  test "create queues collection requests for background expansion" do
+    ComicVineClient.stub(:configured?, true) do
+      assert_enqueued_with(job: CollectionRequestExpansionJob) do
+        post requests_path, params: {
+          work_id: "comic_vine:4050-99",
+          title: "Saga",
+          content_kind: "comic",
+          book_type: "comicbook",
+          request_scope: "collection",
+          collection_source: "comic_vine",
+          collection_id: "4050-99",
+          collection_title: "Saga"
+        }
+      end
+    end
+
+    assert_redirected_to requests_path
+    assert_match "Collection request queued", flash[:notice]
   end
 
   test "create stores series from metadata details" do

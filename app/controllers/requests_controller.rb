@@ -81,7 +81,9 @@ class RequestsController < ApplicationController
       source_work_ids: params[:source_work_ids]
     )
 
-    if result.created_requests.empty?
+    if result.queued?
+      redirect_to requests_path, notice: "Collection request queued. Individual requests will appear here shortly."
+    elsif result.created_requests.empty?
       redirect_to search_path, alert: result.errors.join(". ")
     elsif result.created_requests.length == 1
       flash_message = "Request created for #{result.created_requests.first.book.display_name}"

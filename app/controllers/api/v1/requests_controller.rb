@@ -47,9 +47,16 @@ class API::V1::RequestsController < API::V1::ApplicationController
       }
     )
 
-    status = result.success? ? :created : :unprocessable_entity
+    status = if result.queued?
+      :accepted
+    elsif result.success?
+      :created
+    else
+      :unprocessable_entity
+    end
     render json: {
       requests: result.created_requests.map { |request| request_payload(request) },
+      queued: result.queued?,
       warnings: result.warnings,
       errors: result.errors
     }, status: status

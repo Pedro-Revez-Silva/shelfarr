@@ -230,7 +230,8 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
                 collection_source: "comic_vine",
                 collection_id: "4050-99",
                 collection_title: "Saga"
-              }
+              },
+              expand_collection: true
             )
 
             assert result.success?
@@ -247,32 +248,10 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal [ "Saga", "Saga" ], requests.map(&:collection_title)
   end
 
-  test "collection request caps expansion and warns when the collection is larger" do
-    limit = RequestCreationService::MAX_COLLECTION_ITEMS
-    items = (1..(limit + 1)).map do |number|
-      RequestCreationService::RequestInput.new(
-        work_id: "comic_vine:4000-#{number}",
-        source_work_ids: [ "comic_vine:4000-#{number}" ],
-        metadata_attrs: {
-          title: "Saga - ##{number}",
-          content_kind: "comic",
-          request_scope: "collection",
-          collection_source: "comic_vine",
-          collection_id: "4050-99",
-          collection_title: "Saga"
-        }
-      )
-    end
-
-    expand_args = nil
-    expand = lambda do |**kwargs|
-      expand_args = kwargs
-      items
-    end
-
-    ComicVineClient.stub(:configured?, false) do
-      MetadataCollectionService.stub(:expand, expand) do
-        assert_difference [ "Book.count", "Request.count" ], limit do
+  test "collection request enqueues background expansion instead of expanding inline" do
+    ComicVineClient.stub(:configured?, true) do
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        assert_enqueued_with(job: CollectionRequestExpansionJob) do
           result = RequestCreationService.call(
             user: @user,
             work_id: "comic_vine:4050-99",
@@ -287,14 +266,34 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
             }
           )
 
+          assert result.queued?
           assert result.success?
-          assert_equal limit, result.created_requests.size
-          assert_includes result.warnings.join, "only the first #{limit}"
+          assert_empty result.errors
+          assert_empty result.created_requests
         end
       end
     end
+  end
 
-    assert_equal limit + 1, expand_args[:limit]
+  test "collection request fails fast when the collection provider is not configured" do
+    ComicVineClient.stub(:configured?, false) do
+      assert_no_enqueued_jobs only: CollectionRequestExpansionJob do
+        result = RequestCreationService.call(
+          user: @user,
+          work_id: "comic_vine:4050-99",
+          book_types: [ "comicbook" ],
+          metadata_attrs: {
+            title: "Saga",
+            request_scope: "collection",
+            collection_source: "comic_vine",
+            collection_id: "4050-99"
+          }
+        )
+
+        assert_not result.success?
+        assert_includes result.errors.join, "Comic Vine is not configured"
+      end
+    end
   end
 
   test "collection request reports unsupported collection source" do

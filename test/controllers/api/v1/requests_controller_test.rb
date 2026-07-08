@@ -32,6 +32,34 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "api", body.dig("requests", 0, "request", "external_source")
   end
 
+  test "queues collection requests for background expansion" do
+    ComicVineClient.stub(:configured?, true) do
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        assert_enqueued_with(job: CollectionRequestExpansionJob) do
+          post api_v1_requests_path,
+            headers: { "Authorization" => "Bearer apitoken" },
+            params: {
+              username: @user.username,
+              work_id: "comic_vine:4050-99",
+              book_type: "comicbook",
+              title: "Saga",
+              content_kind: "comic",
+              request_scope: "collection",
+              collection_source: "comic_vine",
+              collection_id: "4050-99",
+              collection_title: "Saga"
+            }
+        end
+      end
+    end
+
+    assert_response :accepted
+    body = JSON.parse(response.body)
+    assert body["queued"]
+    assert_empty body["requests"]
+    assert_empty body["errors"]
+  end
+
   test "creates request with all candidate source work ids" do
     assert_difference [ "Book.count", "Request.count" ], 1 do
       post api_v1_requests_path,

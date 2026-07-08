@@ -99,7 +99,9 @@ module Integrations
         origin: origin
       )
 
-      if creation.success?
+      if creation.queued?
+        result("Collection request queued. Individual requests will be created shortly.")
+      elsif creation.success?
         created = creation.created_requests.map { |request| "#{request.book.display_name} (#{request.book.book_type})" }
         lines = [ "Request created:", *created ]
         lines << "Warnings: #{creation.warnings.join('; ')}" if creation.warnings.any?

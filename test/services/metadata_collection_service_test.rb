@@ -60,13 +60,33 @@ class MetadataCollectionServiceTest < ActiveSupport::TestCase
       series_position: "1"
     )
 
-    HardcoverClient.stub(:series_books, [ series_book ]) do
-      items = MetadataCollectionService.expand(source: "hardcover", collection_id: "987", collection_title: "Series Name")
+    HardcoverClient.stub(:configured?, true) do
+      HardcoverClient.stub(:series_books, [ series_book ]) do
+        items = MetadataCollectionService.expand(source: "hardcover", collection_id: "987", collection_title: "Series Name")
 
-      assert_equal 1, items.size
-      assert_equal "hardcover:111", items.first.work_id
-      assert_equal "book", items.first.metadata_attrs[:content_kind]
-      assert_equal "987", items.first.metadata_attrs[:collection_id]
+        assert_equal 1, items.size
+        assert_equal "hardcover:111", items.first.work_id
+        assert_equal "book", items.first.metadata_attrs[:content_kind]
+        assert_equal "987", items.first.metadata_attrs[:collection_id]
+      end
+    end
+  end
+
+  test "validate! rejects unsupported and unconfigured collection sources" do
+    assert_raises(MetadataCollectionService::Error) { MetadataCollectionService.validate!(source: "", collection_id: "1") }
+    assert_raises(MetadataCollectionService::Error) { MetadataCollectionService.validate!(source: "comic_vine", collection_id: "") }
+
+    error = assert_raises(MetadataCollectionService::Error) do
+      MetadataCollectionService.validate!(source: "google_books", collection_id: "shelf-1")
+    end
+    assert_includes error.message, "not supported"
+
+    ComicVineClient.stub(:configured?, false) do
+      assert_raises(MetadataCollectionService::Error) { MetadataCollectionService.validate!(source: "comic_vine", collection_id: "4050-99") }
+    end
+
+    ComicVineClient.stub(:configured?, true) do
+      assert_nothing_raised { MetadataCollectionService.validate!(source: "comic_vine", collection_id: "4050-99") }
     end
   end
 end

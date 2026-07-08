@@ -1,15 +1,19 @@
 # frozen_string_literal: true
 
 class RequestCreationService
-  # Cap collection expansion so one request cannot fan out into an unbounded
-  # number of books, requests, notifications, and search jobs.
-  MAX_COLLECTION_ITEMS = 100
-
   RequestInput = Data.define(:work_id, :source_work_ids, :metadata_attrs)
 
-  Result = Data.define(:created_requests, :warnings, :errors) do
+  Result = Data.define(:created_requests, :warnings, :errors, :queued) do
+    def initialize(created_requests:, warnings:, errors:, queued: false)
+      super
+    end
+
     def success?
-      created_requests.any?
+      queued || created_requests.any?
+    end
+
+    def queued?
+      queued
     end
   end
 
@@ -19,7 +23,7 @@ class RequestCreationService
     end
   end
 
-  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil)
+  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil, expand_collection: false)
     @user = user
     @work_id = work_id.to_s.strip
     @source_work_ids = [ @work_id, *Array(source_work_ids) ].compact_blank.map(&:to_s).uniq
@@ -28,17 +32,18 @@ class RequestCreationService
     @notes = notes
     @language = language
     @origin = origin.to_h.symbolize_keys
+    @expand_collection = expand_collection
   end
 
   def call
     return failure("Missing required information") if work_id.blank? || book_types.empty?
+    return enqueue_collection_expansion if collection_request? && !expand_collection?
 
     request_inputs = build_request_inputs
     return failure("Collection did not contain any requestable items") if request_inputs.empty?
 
     created_requests = []
     warnings = []
-    warnings << "Collection has more than #{MAX_COLLECTION_ITEMS} items; only the first #{MAX_COLLECTION_ITEMS} were requested" if @collection_truncated
     errors = []
     existing_books_lookup = Book.preload_by_work_ids(request_inputs.flat_map(&:source_work_ids))
 
@@ -73,6 +78,9 @@ class RequestCreationService
 
     Result.new(created_requests: created_requests, warnings: warnings.compact, errors: errors)
   rescue MetadataCollectionService::Error => e
+    # In the background-expansion context the job's retry policy owns the error.
+    raise if expand_collection?
+
     failure(e.message)
   end
 
@@ -93,15 +101,12 @@ class RequestCreationService
 
   def build_request_inputs
     if collection_request?
-      items = MetadataCollectionService.expand(
+      MetadataCollectionService.expand(
         source: metadata_attrs[:collection_source],
         collection_id: metadata_attrs[:collection_id],
         collection_title: metadata_attrs[:collection_title],
-        content_kind: metadata_attrs[:content_kind],
-        limit: MAX_COLLECTION_ITEMS + 1
+        content_kind: metadata_attrs[:content_kind]
       )
-      @collection_truncated = items.size > MAX_COLLECTION_ITEMS
-      items.first(MAX_COLLECTION_ITEMS)
     else
       [ RequestInput.new(work_id: work_id, source_work_ids: source_work_ids, metadata_attrs: metadata_attrs) ]
     end
@@ -109,6 +114,33 @@ class RequestCreationService
 
   def collection_request?
     metadata_attrs[:request_scope].to_s == "collection"
+  end
+
+  def expand_collection?
+    @expand_collection
+  end
+
+  # Expanding a collection can create hundreds of requests, so it must not run
+  # inside the web request. Validate what we can cheaply, then hand the
+  # expansion to a background job that paginates through the collection.
+  def enqueue_collection_expansion
+    MetadataCollectionService.validate!(
+      source: metadata_attrs[:collection_source],
+      collection_id: metadata_attrs[:collection_id]
+    )
+
+    CollectionRequestExpansionJob.perform_later(
+      user_id: user.id,
+      work_id: work_id,
+      book_types: book_types,
+      metadata_attrs: metadata_attrs,
+      notes: notes,
+      language: language,
+      origin: origin,
+      source_work_ids: source_work_ids
+    )
+
+    Result.new(created_requests: [], warnings: [], errors: [], queued: true)
   end
 
   def find_or_create_book_for_source(book_type, input:, existing_books_lookup:)
