@@ -8,7 +8,7 @@ class CollectionRequestExpansionJob < ApplicationJob
 
   retry_on MetadataCollectionService::Error, wait: :polynomially_longer, attempts: 3
 
-  def perform(user_id:, work_id:, book_types:, metadata_attrs:, notes: nil, language: nil, origin: {}, source_work_ids: nil)
+  def perform(user_id:, work_id:, book_types:, metadata_attrs:, notes: nil, language: nil, origin: {}, source_work_ids: nil, collection_item_ids: nil)
     user = User.find_by(id: user_id)
     if user.nil?
       Rails.logger.warn("[CollectionRequestExpansionJob] User #{user_id} no longer exists, skipping #{work_id}")
@@ -24,6 +24,7 @@ class CollectionRequestExpansionJob < ApplicationJob
       language: language,
       origin: origin,
       source_work_ids: source_work_ids,
+      collection_item_ids: collection_item_ids,
       expand_collection: true
     )
 

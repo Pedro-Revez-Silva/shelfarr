@@ -78,7 +78,8 @@ class RequestsController < ApplicationController
       metadata_attrs: request_metadata_attrs,
       notes: params[:notes],
       language: params[:language],
-      source_work_ids: params[:source_work_ids]
+      source_work_ids: params[:source_work_ids],
+      collection_item_ids: params[:collection_item_ids]
     )
 
     if result.queued?

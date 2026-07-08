@@ -124,7 +124,7 @@ class SearchController < ApplicationController
 
     enrich_details_from_source
     normalize_available_book_types!
-    @collection_items = collection_preview_items
+    @collection_entries = collection_entries
 
     redirect_to search_path, alert: "Missing title information" if @work_id.blank? || @title.blank?
   end
@@ -277,18 +277,53 @@ class SearchController < ApplicationController
     @collection_title = @collection_title.presence || details.collection_title
   end
 
-  def collection_preview_items
+  CollectionEntry = Data.define(:item, :status) do
+    def requestable?
+      status == :available
+    end
+  end
+
+  # Loads every item in the collection and marks the ones the user already
+  # has (acquired or actively requested) so the view can exclude them from
+  # the selection by default.
+  def collection_entries
     return [] if @collection_source.blank? || @collection_id.blank?
 
-    MetadataCollectionService.expand(
+    items = MetadataCollectionService.expand(
       source: @collection_source,
       collection_id: @collection_id,
       collection_title: @collection_title,
-      content_kind: @content_kind,
-      limit: 12
+      content_kind: @content_kind
     )
+    return [] if items.empty?
+
+    lookup = Book.preload_by_work_ids(items.flat_map(&:source_work_ids))
+    items.map do |item|
+      CollectionEntry.new(item: item, status: collection_item_status(item, lookup))
+    end
   rescue MetadataCollectionService::Error, HardcoverClient::Error, ComicVineClient::Error => e
-    Rails.logger.warn("[SearchController] Collection preview failed for #{@collection_source}:#{@collection_id}: #{e.message}")
+    Rails.logger.warn("[SearchController] Collection items failed for #{@collection_source}:#{@collection_id}: #{e.message}")
     []
+  end
+
+  def collection_item_status(item, lookup)
+    statuses = @available_book_types.map do |book_type|
+      book = Book.find_in_lookup(lookup, item.source_work_ids, book_type: book_type)
+      if book.nil?
+        :available
+      elsif book.acquired?
+        :acquired
+      elsif book.requests.any?(&:active?)
+        # Checked in Ruby so the lookup's preloaded requests are used instead
+        # of one query per collection item.
+        :requested
+      else
+        :available
+      end
+    end
+
+    return :available if statuses.any?(:available)
+
+    statuses.all?(:acquired) ? :acquired : :requested
   end
 end

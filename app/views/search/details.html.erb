@@ -96,49 +96,75 @@
         <% @available_book_types.each do |book_type| %>
           <%= link_to "Request #{type_labels.fetch(book_type, book_type.titleize)}", new_request_path(metadata_params.merge(book_type: book_type)), class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500", data: { turbo_frame: "_top" } %>
         <% end %>
-        <% if @collection_id.present? && @collection_title.present? %>
-          <% @available_book_types.each do |book_type| %>
-            <%= link_to "Request #{type_labels.fetch(book_type, book_type.titleize)} Collection", new_request_path(metadata_params.merge(book_type: book_type, request_scope: "collection")), class: "rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white transition hover:bg-emerald-500", data: { turbo_frame: "_top" } %>
-          <% end %>
-        <% end %>
       </div>
     </div>
   </div>
 
-  <% if @collection_items.any? %>
+  <% if @collection_entries.any? %>
     <div class="mt-10 border-t border-gray-800 pt-8">
-      <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 class="text-xl font-semibold text-white"><%= @content_kind.in?(%w[comic manga]) ? "Volume Issues" : "Series Books" %></h2>
-          <p class="mt-1 text-sm text-gray-500"><%= @collection_title %></p>
-        </div>
-        <% if @collection_items.size >= 12 %>
-          <p class="text-xs text-gray-500">Showing the first 12 items</p>
-        <% end %>
-      </div>
+      <%= form_with url: requests_path, method: :post, data: { turbo: false, controller: "bulk-select" } do %>
+        <%= hidden_field_tag :work_id, @work_id %>
+        <%= hidden_field_tag :title, @title %>
+        <%= hidden_field_tag :author, @author %>
+        <%= hidden_field_tag :cover_url, @cover_url %>
+        <%= hidden_field_tag :content_kind, @content_kind %>
+        <%= hidden_field_tag :series, @series %>
+        <%= hidden_field_tag :request_scope, "collection" %>
+        <%= hidden_field_tag :collection_source, @collection_source %>
+        <%= hidden_field_tag :collection_id, @collection_id %>
+        <%= hidden_field_tag :collection_title, @collection_title %>
 
-      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <% @collection_items.each do |item| %>
-          <div class="grid grid-cols-[56px_1fr] gap-3 rounded-lg border border-gray-800 bg-gray-900 p-3">
-            <% if item.cover_url.present? %>
-              <img src="<%= item.cover_url %>" alt="Cover of <%= item.title %>" class="aspect-[2/3] w-14 rounded object-cover">
-            <% else %>
-              <div class="flex aspect-[2/3] w-14 items-center justify-center rounded bg-gray-800 text-[10px] text-gray-500">No cover</div>
-            <% end %>
-            <div class="min-w-0">
-              <p class="line-clamp-2 text-sm font-medium text-white"><%= item.title %></p>
-              <% if item.issue_number.present? %>
-                <p class="mt-1 text-xs text-gray-400">Issue #<%= item.issue_number %></p>
-              <% elsif item.series_position.present? %>
-                <p class="mt-1 text-xs text-gray-400">Position <%= item.series_position %></p>
-              <% end %>
-              <% if item.release_date.present? %>
-                <p class="mt-1 text-xs text-gray-500"><%= item.release_date %></p>
-              <% end %>
-            </div>
+        <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-semibold text-white"><%= @content_kind.in?(%w[comic manga]) ? "Volume Issues" : "Series Books" %></h2>
+            <p class="mt-1 text-sm text-gray-500"><%= @collection_title %></p>
           </div>
-        <% end %>
-      </div>
+          <div class="flex items-center gap-4 text-sm text-gray-300">
+            <span><span data-bulk-select-target="count">0</span> selected</span>
+            <label class="flex cursor-pointer items-center gap-2">
+              <input type="checkbox" checked data-bulk-select-target="selectAll" data-action="change->bulk-select#toggleAll" class="rounded border-gray-600 bg-gray-800 text-emerald-600 focus:ring-emerald-500 focus:ring-offset-gray-900">
+              Select all
+            </label>
+          </div>
+        </div>
+
+        <div class="grid max-h-96 gap-3 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
+          <% @collection_entries.each do |entry| %>
+            <% item = entry.item %>
+            <label class="grid grid-cols-[56px_1fr_auto] items-start gap-3 rounded-lg border p-3 <%= entry.requestable? ? 'cursor-pointer border-gray-800 bg-gray-900 hover:border-emerald-500/60' : 'border-gray-800 bg-gray-900/60 opacity-70' %>">
+              <% if item.cover_url.present? %>
+                <img src="<%= item.cover_url %>" alt="Cover of <%= item.title %>" class="aspect-[2/3] w-14 rounded object-cover">
+              <% else %>
+                <div class="flex aspect-[2/3] w-14 items-center justify-center rounded bg-gray-800 text-[10px] text-gray-500">No cover</div>
+              <% end %>
+              <div class="min-w-0">
+                <p class="line-clamp-2 text-sm font-medium text-white"><%= item.title %></p>
+                <% if item.issue_number.present? %>
+                  <p class="mt-1 text-xs text-gray-400">Issue #<%= item.issue_number %></p>
+                <% elsif item.series_position.present? %>
+                  <p class="mt-1 text-xs text-gray-400">Position <%= item.series_position %></p>
+                <% end %>
+                <% if item.release_date.present? %>
+                  <p class="mt-1 text-xs text-gray-500"><%= item.release_date %></p>
+                <% end %>
+              </div>
+              <% if entry.requestable? %>
+                <%= check_box_tag "collection_item_ids[]", item.work_id, true, id: nil, data: { "bulk-select-target": "checkbox", action: "change->bulk-select#updateSelection" }, class: "mt-1 rounded border-gray-600 bg-gray-800 text-emerald-600 focus:ring-emerald-500 focus:ring-offset-gray-900" %>
+              <% else %>
+                <span class="mt-1 rounded-full px-2 py-0.5 text-[10px] font-medium <%= entry.status == :acquired ? 'bg-green-500/15 text-green-400' : 'bg-blue-500/15 text-blue-400' %>">
+                  <%= entry.status == :acquired ? "In library" : "Requested" %>
+                </span>
+              <% end %>
+            </label>
+          <% end %>
+        </div>
+
+        <div class="mt-5 flex flex-wrap gap-3" data-bulk-select-target="actions">
+          <% @available_book_types.each do |book_type| %>
+            <%= button_tag "Request Selected (#{type_labels.fetch(book_type, book_type.titleize)})", name: "book_type", value: book_type, class: "rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white transition hover:bg-emerald-500" %>
+          <% end %>
+        </div>
+      <% end %>
     </div>
   <% end %>
 <% end %>

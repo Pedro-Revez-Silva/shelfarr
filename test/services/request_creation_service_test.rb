@@ -263,7 +263,8 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
               collection_source: "comic_vine",
               collection_id: "4050-99",
               collection_title: "Saga"
-            }
+            },
+            collection_item_ids: [ "comic_vine:4000-101", "comic_vine:4000-102" ]
           )
 
           assert result.queued?
@@ -272,6 +273,75 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
           assert_empty result.created_requests
         end
       end
+    end
+
+    job_args = enqueued_jobs.last[:args].first
+    assert_equal [ "comic_vine:4000-101", "comic_vine:4000-102" ], job_args["collection_item_ids"]
+  end
+
+  test "collection request only creates requests for the selected items" do
+    items = [
+      RequestCreationService::RequestInput.new(
+        work_id: "comic_vine:4000-101",
+        source_work_ids: [ "comic_vine:4000-101" ],
+        metadata_attrs: { title: "Saga - #1", content_kind: "comic", request_scope: "collection", collection_source: "comic_vine", collection_id: "4050-99", collection_title: "Saga" }
+      ),
+      RequestCreationService::RequestInput.new(
+        work_id: "comic_vine:4000-102",
+        source_work_ids: [ "comic_vine:4000-102" ],
+        metadata_attrs: { title: "Saga - #2", content_kind: "comic", request_scope: "collection", collection_source: "comic_vine", collection_id: "4050-99", collection_title: "Saga" }
+      )
+    ]
+
+    ComicVineClient.stub(:configured?, false) do
+      MetadataCollectionService.stub(:expand, items) do
+        assert_difference [ "Book.count", "Request.count" ], 1 do
+          result = RequestCreationService.call(
+            user: @user,
+            work_id: "comic_vine:4050-99",
+            book_types: [ "comicbook" ],
+            metadata_attrs: {
+              title: "Saga",
+              content_kind: "comic",
+              request_scope: "collection",
+              collection_source: "comic_vine",
+              collection_id: "4050-99",
+              collection_title: "Saga"
+            },
+            collection_item_ids: [ "comic_vine:4000-102" ],
+            expand_collection: true
+          )
+
+          assert result.success?
+          assert_equal 1, result.created_requests.size
+        end
+      end
+    end
+
+    assert_equal "4000-102", Request.last.book.comic_vine_id
+  end
+
+  test "collection request fails when no selected items remain after expansion" do
+    items = [
+      RequestCreationService::RequestInput.new(
+        work_id: "comic_vine:4000-101",
+        source_work_ids: [ "comic_vine:4000-101" ],
+        metadata_attrs: { title: "Saga - #1", request_scope: "collection", collection_source: "comic_vine", collection_id: "4050-99" }
+      )
+    ]
+
+    MetadataCollectionService.stub(:expand, items) do
+      result = RequestCreationService.call(
+        user: @user,
+        work_id: "comic_vine:4050-99",
+        book_types: [ "comicbook" ],
+        metadata_attrs: { title: "Saga", request_scope: "collection", collection_source: "comic_vine", collection_id: "4050-99" },
+        collection_item_ids: [ "comic_vine:4000-999" ],
+        expand_collection: true
+      )
+
+      assert_not result.success?
+      assert_includes result.errors.join, "did not contain any requestable items"
     end
   end
 

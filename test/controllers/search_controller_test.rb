@@ -332,9 +332,54 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "turbo-frame#modal"
     assert_select "a[href='#{search_modal_close_path}']", text: "Close"
-    assert_select "a", text: "Request Comic Book Collection"
     assert_select "h2", text: "Volume Issues"
     assert_match "Saga - #1", response.body
+    assert_select "form[action='#{requests_path}']" do
+      assert_select "input[name='collection_item_ids[]'][value='comic_vine:4000-101'][checked]"
+      assert_select "input[name='request_scope'][value='collection']"
+      assert_select "button[name='book_type'][value='comicbook']", text: "Request Selected (Comic Book)"
+    end
+  end
+
+  test "details excludes items the user already has from the collection selection" do
+    Book.create!(
+      title: "Saga #1",
+      book_type: :comicbook,
+      content_kind: :comic,
+      comic_vine_id: "4000-101",
+      file_path: "/comics/saga-1.cbz"
+    )
+
+    owned_item = MetadataCollectionService::Item.new(
+      work_id: "comic_vine:4000-101",
+      source_work_ids: [ "comic_vine:4000-101" ],
+      metadata_attrs: { title: "Saga - #1", issue_number: "1" }
+    )
+    wanted_item = MetadataCollectionService::Item.new(
+      work_id: "comic_vine:4000-102",
+      source_work_ids: [ "comic_vine:4000-102" ],
+      metadata_attrs: { title: "Saga - #2", issue_number: "2" }
+    )
+
+    ComicVineClient.stub(:configured?, false) do
+      MetadataCollectionService.stub(:expand, [ owned_item, wanted_item ]) do
+        get search_details_path, params: {
+          modal: "1",
+          work_id: "comic_vine:4050-99",
+          title: "Saga",
+          content_kind: "comic",
+          available_book_types: [ "comicbook" ],
+          collection_source: "comic_vine",
+          collection_id: "4050-99",
+          collection_title: "Saga"
+        }
+      end
+    end
+
+    assert_response :success
+    assert_select "input[name='collection_item_ids[]'][value='comic_vine:4000-101']", count: 0
+    assert_select "input[name='collection_item_ids[]'][value='comic_vine:4000-102'][checked]"
+    assert_select "span", text: "In library"
   end
 
   test "close_modal returns an empty modal frame" do

@@ -36,12 +36,18 @@ class Request < ApplicationRecord
   validates :created_via, presence: true, inclusion: { in: CREATED_VIA_VALUES }
   validates :request_scope, presence: true, inclusion: { in: REQUEST_SCOPE_VALUES }
 
-  scope :active, -> { where(status: [ :pending, :searching, :downloading, :processing ]) }
+  ACTIVE_STATUSES = %w[pending searching downloading processing].freeze
+
+  scope :active, -> { where(status: ACTIVE_STATUSES) }
   scope :needs_attention, -> { where(attention_needed: true) }
   scope :retry_due, -> { not_found.where("next_retry_at <= ?", Time.current) }
   scope :for_user, ->(user) { where(user: user) }
   scope :processable, -> { pending.order(created_at: :asc) }
   scope :with_issues, -> { where(attention_needed: true).or(where(status: :failed)) }
+
+  def active?
+    status.in?(ACTIVE_STATUSES)
+  end
 
   def mark_for_attention!(description, **attributes)
     self.class.transaction do

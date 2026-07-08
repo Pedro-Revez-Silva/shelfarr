@@ -23,7 +23,7 @@ class RequestCreationService
     end
   end
 
-  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil, expand_collection: false)
+  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil, collection_item_ids: nil, expand_collection: false)
     @user = user
     @work_id = work_id.to_s.strip
     @source_work_ids = [ @work_id, *Array(source_work_ids) ].compact_blank.map(&:to_s).uniq
@@ -32,6 +32,7 @@ class RequestCreationService
     @notes = notes
     @language = language
     @origin = origin.to_h.symbolize_keys
+    @collection_item_ids = Array(collection_item_ids).compact_blank.map(&:to_s).uniq
     @expand_collection = expand_collection
   end
 
@@ -86,7 +87,7 @@ class RequestCreationService
 
   private
 
-  attr_reader :user, :work_id, :source_work_ids, :book_types, :metadata_attrs, :notes, :language, :origin
+  attr_reader :user, :work_id, :source_work_ids, :book_types, :metadata_attrs, :notes, :language, :origin, :collection_item_ids
 
   def failure(message)
     Result.new(created_requests: [], warnings: [], errors: [ message ])
@@ -101,12 +102,17 @@ class RequestCreationService
 
   def build_request_inputs
     if collection_request?
-      MetadataCollectionService.expand(
+      items = MetadataCollectionService.expand(
         source: metadata_attrs[:collection_source],
         collection_id: metadata_attrs[:collection_id],
         collection_title: metadata_attrs[:collection_title],
         content_kind: metadata_attrs[:content_kind]
       )
+      # An explicit selection restricts the request to the items the user
+      # ticked in the collection view; without one the whole collection is
+      # requested (API compatibility).
+      items = items.select { |item| collection_item_ids.include?(item.work_id) } if collection_item_ids.any?
+      items
     else
       [ RequestInput.new(work_id: work_id, source_work_ids: source_work_ids, metadata_attrs: metadata_attrs) ]
     end
@@ -137,7 +143,8 @@ class RequestCreationService
       notes: notes,
       language: language,
       origin: origin,
-      source_work_ids: source_work_ids
+      source_work_ids: source_work_ids,
+      collection_item_ids: collection_item_ids
     )
 
     Result.new(created_requests: [], warnings: [], errors: [], queued: true)
