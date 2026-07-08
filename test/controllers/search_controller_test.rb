@@ -331,6 +331,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "turbo-frame#modal"
+    assert_select "[data-controller='search-modal']"
     assert_select "a[href='#{search_modal_close_path}']", text: "Close"
     assert_select "h2", text: "Volume Issues"
     assert_match "Saga - #1", response.body
@@ -380,6 +381,44 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='collection_item_ids[]'][value='comic_vine:4000-101']", count: 0
     assert_select "input[name='collection_item_ids[]'][value='comic_vine:4000-102'][checked]"
     assert_select "span", text: "In library"
+  end
+
+  test "details enriches google books metadata and renders stable detail rows" do
+    details = GoogleBooksClient::BookDetails.new(
+      id: "gb-eclipse",
+      title: "Eclipse",
+      author: "Stephenie Meyer",
+      description: "Bella must choose between friendship and love.",
+      published_date: "2007-08-07",
+      cover_url: nil,
+      has_ebook: true,
+      language: "en",
+      page_count: 629,
+      categories: [ "Young Adult Fiction" ],
+      publisher: "Little, Brown"
+    )
+
+    GoogleBooksClient.stub(:configured?, true) do
+      GoogleBooksClient.stub(:book, details) do
+        get search_details_path, params: {
+          modal: "1",
+          work_id: "google_books:gb-eclipse",
+          title: "Eclipse"
+        }
+      end
+    end
+
+    assert_response :success
+    assert_select "turbo-frame#modal"
+    assert_select "h2", text: "Metadata"
+    assert_select "dt", text: "Publisher"
+    assert_select "dd", text: "Little, Brown"
+    assert_select "dt", text: "Pages"
+    assert_select "dd", text: "629"
+    assert_select "dt", text: "Genres"
+    assert_select "dd", text: "Young Adult Fiction"
+    assert_select "a[href='https://books.google.com/books?id=gb-eclipse']", text: "Google Books"
+    assert_match "Bella must choose between friendship and love.", response.body
   end
 
   test "close_modal returns an empty modal frame" do

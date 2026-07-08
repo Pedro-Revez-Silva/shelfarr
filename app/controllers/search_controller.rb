@@ -113,6 +113,9 @@ class SearchController < ApplicationController
     @content_kind = normalized_content_kind(params[:content_kind])
     @available_book_types = Array(params[:available_book_types]).compact_blank
     @publisher = params[:publisher]
+    @page_count = params[:page_count]
+    @language = params[:language]
+    @genres = params[:genres]
     @issue_number = params[:issue_number]
     @release_date = params[:release_date]
     @series = params[:series]
@@ -121,6 +124,9 @@ class SearchController < ApplicationController
     @collection_id = params[:collection_id]
     @collection_title = params[:collection_title]
     @modal = params[:modal] == "1"
+    @metadata_source_name, @metadata_source_url = metadata_source_for(@work_id)
+    @details_enrichment_attempted = false
+    @details_enrichment_loaded = false
 
     enrich_details_from_source
     normalize_available_book_types!
@@ -228,17 +234,22 @@ class SearchController < ApplicationController
     source, source_id = Book.parse_work_id(@work_id)
     case source
     when "hardcover"
-      enrich_hardcover_details(source_id)
+      @details_enrichment_loaded = enrich_hardcover_details(source_id)
     when "comic_vine"
-      enrich_comic_vine_details(source_id)
+      @details_enrichment_loaded = enrich_comic_vine_details(source_id)
+    when "google_books"
+      @details_enrichment_loaded = enrich_google_books_details(source_id)
+    when "openlibrary"
+      @details_enrichment_loaded = enrich_openlibrary_details(source_id)
     end
-  rescue HardcoverClient::Error, ComicVineClient::Error, MetadataService::Error => e
+  rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, ComicVineClient::Error, MetadataService::Error => e
     Rails.logger.warn("[SearchController] Details enrichment failed for #{@work_id}: #{e.message}")
   end
 
   def enrich_hardcover_details(source_id)
-    return unless HardcoverClient.configured?
+    return false unless HardcoverClient.configured?
 
+    @details_enrichment_attempted = true
     details = HardcoverClient.book(source_id)
     @title = @title.presence || details.title
     @author = @author.presence || details.author
@@ -247,19 +258,23 @@ class SearchController < ApplicationController
     @description = @description.presence || details.description
     @series = @series.presence || details.series_name
     @series_position = @series_position.presence || details.series_position
+    @page_count = @page_count.presence || details.pages
+    @genres = @genres.presence || Array(details.genres).compact_blank.join(", ")
 
-    return if details.series_id.blank? || details.series_name.blank?
+    return true if details.series_id.blank? || details.series_name.blank?
 
     @collection_source = @collection_source.presence || "hardcover"
     @collection_id = @collection_id.presence || details.series_id
     @collection_title = @collection_title.presence || details.series_name
+    true
   end
 
   def enrich_comic_vine_details(source_id)
-    return unless ComicVineClient.configured?
+    return false unless ComicVineClient.configured?
 
+    @details_enrichment_attempted = true
     details = ComicVineClient.details(source_id, content_kind: @content_kind)
-    return unless details
+    return false unless details
 
     @title = @title.presence || details.title
     @author = @author.presence || details.creators
@@ -275,6 +290,52 @@ class SearchController < ApplicationController
     @collection_source = @collection_source.presence || "comic_vine"
     @collection_id = @collection_id.presence || details.collection_id
     @collection_title = @collection_title.presence || details.collection_title
+    true
+  end
+
+  def enrich_google_books_details(source_id)
+    return false unless GoogleBooksClient.configured?
+
+    @details_enrichment_attempted = true
+    details = GoogleBooksClient.book(source_id)
+    @title = @title.presence || details.title
+    @author = @author.presence || details.author
+    @cover_url = @cover_url.presence || details.cover_url
+    @first_publish_year = @first_publish_year.presence || details.release_year
+    @description = @description.presence || details.description
+    @publisher = @publisher.presence || details.publisher
+    @page_count = @page_count.presence || details.page_count
+    @language = @language.presence || details.language
+    @genres = @genres.presence || Array(details.categories).compact_blank.join(", ")
+    true
+  end
+
+  def enrich_openlibrary_details(source_id)
+    return false unless OpenLibraryClient.configured?
+
+    @details_enrichment_attempted = true
+    details = OpenLibraryClient.work(source_id)
+    @title = @title.presence || details.title
+    @cover_url = @cover_url.presence || details.cover_url(size: :l)
+    @first_publish_year = @first_publish_year.presence || parse_year(details.first_publish_date)
+    @description = @description.presence || details.description
+    @genres = @genres.presence || Array(details.subjects).compact_blank.first(5).join(", ")
+    true
+  end
+
+  def metadata_source_for(work_id)
+    return [ nil, nil ] if work_id.blank?
+
+    book = Book.new
+    book.assign_work_id(work_id)
+    [ book.metadata_source_name, book.metadata_source_url ]
+  end
+
+  def parse_year(value)
+    return nil if value.blank?
+
+    match = value.to_s.match(/\b(1[89]\d{2}|20[0-2]\d)\b/)
+    match && match[1]
   end
 
   CollectionEntry = Data.define(:item, :status) do
