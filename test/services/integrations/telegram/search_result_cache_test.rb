@@ -31,7 +31,8 @@ module Integrations
             { source: "google_books", source_id: "gb123", source_name: "Google Books", source_url: nil, work_id: "google_books:gb123" }
           ],
           editions: [],
-          confidence: 90
+          confidence: 90,
+          content_kind: "manga"
         )
 
         token = SearchResultCache.store(candidate)
@@ -41,6 +42,7 @@ module Integrations
         assert_equal "openlibrary:OL123W", selection[:work_id]
         assert_equal %w[openlibrary:OL123W google_books:gb123], selection[:source_work_ids]
         assert_equal "Dune", selection[:metadata_attrs][:title]
+        assert_equal "graphic", selection[:metadata_attrs][:content_kind]
       end
 
       test "callback data stays within telegram limit" do

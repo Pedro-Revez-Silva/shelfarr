@@ -3,14 +3,14 @@
 module MetadataSearch
   class ResultNormalizer
     class << self
-      def call(source, result)
+      def call(source, result, requested_content_kind: nil)
         case source.to_s
         when "hardcover"
-          hardcover(result)
+          hardcover(result, requested_content_kind: requested_content_kind)
         when "google_books"
-          google_books(result)
+          google_books(result, requested_content_kind: requested_content_kind)
         when "openlibrary"
-          openlibrary(result)
+          openlibrary(result, requested_content_kind: requested_content_kind)
         when "comic_vine"
           comic_vine(result)
         else
@@ -20,7 +20,8 @@ module MetadataSearch
 
       private
 
-      def hardcover(result)
+      def hardcover(result, requested_content_kind:)
+        classification = classify("hardcover", requested_content_kind: requested_content_kind)
         ProviderResult.new(
           source: "hardcover",
           source_id: result.id.to_s,
@@ -40,8 +41,10 @@ module MetadataSearch
           has_audiobook: result.has_audiobook,
           source_url: "https://hardcover.app/books/#{result.id}",
           raw_payload: nil,
-          content_kind: "book",
-          available_book_types: %w[audiobook ebook],
+          content_kind: classification.content_kind,
+          resource_kind: "work",
+          classification_evidence: classification.evidence,
+          classification_confidence: classification.confidence,
           collection_source: nil,
           collection_id: nil,
           collection_title: nil,
@@ -50,7 +53,9 @@ module MetadataSearch
         )
       end
 
-      def google_books(result)
+      def google_books(result, requested_content_kind:)
+        categories = result.respond_to?(:categories) ? result.categories : []
+        classification = classify("google_books", categories: categories, requested_content_kind: requested_content_kind)
         ProviderResult.new(
           source: "google_books",
           source_id: result.id,
@@ -70,8 +75,11 @@ module MetadataSearch
           has_audiobook: nil,
           source_url: result.respond_to?(:source_url) ? result.source_url : "https://books.google.com/books?id=#{result.id}",
           raw_payload: nil,
-          content_kind: "book",
-          available_book_types: %w[audiobook ebook],
+          content_kind: classification.content_kind,
+          resource_kind: "work",
+          classification_evidence: classification.evidence,
+          classification_confidence: classification.confidence,
+          categories: categories,
           collection_source: nil,
           collection_id: nil,
           collection_title: nil,
@@ -80,7 +88,9 @@ module MetadataSearch
         )
       end
 
-      def openlibrary(result)
+      def openlibrary(result, requested_content_kind:)
+        subjects = result.respond_to?(:subjects) ? result.subjects : []
+        classification = classify("openlibrary", subjects: subjects, requested_content_kind: requested_content_kind)
         ProviderResult.new(
           source: "openlibrary",
           source_id: result.work_id,
@@ -100,8 +110,11 @@ module MetadataSearch
           has_audiobook: nil,
           source_url: "https://openlibrary.org/works/#{result.work_id}",
           raw_payload: nil,
-          content_kind: "book",
-          available_book_types: %w[audiobook ebook],
+          content_kind: classification.content_kind,
+          resource_kind: "work",
+          classification_evidence: classification.evidence,
+          classification_confidence: classification.confidence,
+          subjects: subjects,
           collection_source: nil,
           collection_id: nil,
           collection_title: nil,
@@ -111,6 +124,7 @@ module MetadataSearch
       end
 
       def comic_vine(result)
+        classification = classify("comic_vine")
         ProviderResult.new(
           source: "comic_vine",
           source_id: result.resource_key,
@@ -130,8 +144,10 @@ module MetadataSearch
           has_audiobook: false,
           source_url: result.web_url,
           raw_payload: result.raw_payload,
-          content_kind: result.content_kind,
-          available_book_types: [ "comicbook" ],
+          content_kind: classification.content_kind,
+          resource_kind: result.resource_type.to_s == "volume" ? "series" : "work",
+          classification_evidence: classification.evidence,
+          classification_confidence: classification.confidence,
           collection_source: "comic_vine",
           collection_id: result.collection_id,
           collection_title: result.collection_title,
@@ -144,6 +160,15 @@ module MetadataSearch
         return nil if desc.blank?
 
         desc.length > 500 ? "#{desc[0, 497]}..." : desc
+      end
+
+      def classify(source, categories: [], subjects: [], requested_content_kind: nil)
+        ContentClassifier.call(
+          source: source,
+          categories: categories,
+          subjects: subjects,
+          requested_content_kind: requested_content_kind
+        )
       end
     end
   end

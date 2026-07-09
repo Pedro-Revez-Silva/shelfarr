@@ -56,7 +56,8 @@ class BookMetadataBackfillService
     def content_kind_value_for(book, detail_value, fallback_value = nil)
       value = detail_value.presence || fallback_value.presence
       return nil if value.blank?
-      return nil unless Book.content_kinds.key?(value.to_s)
+
+      value = ContentKinds.normalize(value, default: "book")
       return nil if !book.new_record? && book.content_kind.present? && !book.content_book?
 
       value

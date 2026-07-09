@@ -3,14 +3,15 @@
 module MetadataSearch
   class Aggregator
     class << self
-      def call(results, priority: [])
-        new(results, priority: priority).call
+      def call(results, priority: [], requested_content_kind: nil)
+        new(results, priority: priority, requested_content_kind: requested_content_kind).call
       end
     end
 
-    def initialize(results, priority: [])
+    def initialize(results, priority: [], requested_content_kind: nil)
       @results = Array(results).compact
       @priority = Array(priority).map(&:to_s)
+      @requested_content_kind = ContentKinds.normalize(requested_content_kind, default: nil)
     end
 
     def call
@@ -19,17 +20,21 @@ module MetadataSearch
 
     private
 
-    attr_reader :results, :priority
+    attr_reader :results, :priority, :requested_content_kind
 
     def clusters
       results.each_with_object([]) do |result, groups|
-        group = groups.find { |candidate_group| candidate_group.any? { |member| match?(member, result) } }
+        group = groups.find do |candidate_group|
+          candidate_group.any? { |member| match?(member, result) } &&
+            candidate_group.none? { |member| classification_conflict?(member, result) }
+        end
         group ? group << result : groups << [ result ]
       end
     end
 
     def match?(left, right)
-      return false if left.content_kind.to_s != right.content_kind.to_s
+      return false if left.resource_kind.to_s != right.resource_kind.to_s
+      return false if classification_conflict?(left, right)
       return true if shared_isbn?(left, right)
       return false if conflicting_isbn?(left, right)
       return false unless normalized_text(left.title) == normalized_text(right.title)
@@ -66,9 +71,20 @@ module MetadataSearch
       (left_year.to_i - right_year.to_i).abs <= 1
     end
 
+    def classification_conflict?(left, right)
+      return false if left.content_kind == right.content_kind
+
+      strong_classification?(left) && strong_classification?(right)
+    end
+
+    def strong_classification?(result)
+      result.classification_confidence.to_i >= ContentClassifier::STRONG_CONFIDENCE
+    end
+
     def candidate_for(group)
       ordered = group.sort_by { |result| provider_rank(result.source) }
       primary = ordered.first
+      classification = classification_for(ordered)
 
       Candidate.new(
         canonical_key: canonical_key_for(group),
@@ -84,8 +100,12 @@ module MetadataSearch
         sources: ordered.map { |result| source_entry(result) },
         editions: edition_entries(group, primary),
         confidence: confidence_for(group),
-        content_kind: first_present(ordered, :content_kind) || "book",
-        available_book_types: available_book_types_for(group),
+        content_kind: classification[:content_kind],
+        resource_kind: first_present(ordered, :resource_kind) || "work",
+        classification_evidence: classification[:evidence],
+        classification_confidence: classification[:confidence],
+        categories: group.flat_map(&:categories).compact_blank.uniq,
+        subjects: group.flat_map(&:subjects).compact_blank.uniq,
         collection_source: first_present(ordered, :collection_source),
         collection_id: first_present(ordered, :collection_id),
         collection_title: first_present(ordered, :collection_title),
@@ -113,9 +133,23 @@ module MetadataSearch
       nil
     end
 
-    def available_book_types_for(group)
-      types = group.flat_map { |result| Array(result.available_book_types) }.compact_blank.uniq
-      types.presence || %w[audiobook ebook]
+    def classification_for(ordered)
+      strongest = ordered.max_by { |result| result.classification_confidence.to_i }
+      confidence = strongest.classification_confidence.to_i
+      requested_fallback = requested_content_kind && confidence < ContentClassifier::STRONG_CONFIDENCE
+      content_kind = if requested_fallback
+        requested_content_kind
+      else
+        strongest.content_kind
+      end
+      evidence = ordered.flat_map(&:classification_evidence).compact_blank.uniq
+      evidence << "requested_kind:#{requested_content_kind}" if requested_fallback
+
+      {
+        content_kind: ContentKinds.normalize(content_kind),
+        confidence: confidence,
+        evidence: evidence.uniq
+      }
     end
 
     def source_entry(result)
@@ -137,7 +171,8 @@ module MetadataSearch
           isbn_13: result.isbn_13,
           publisher: result.publisher,
           year: result.year,
-          page_count: result.page_count
+          page_count: result.page_count,
+          resource_kind: result.resource_kind
         }.compact
       end
     end

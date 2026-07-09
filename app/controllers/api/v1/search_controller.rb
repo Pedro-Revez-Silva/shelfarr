@@ -44,8 +44,8 @@ class API::V1::SearchController < API::V1::ApplicationController
       has_ebook: result.has_ebook,
       series_name: result.series_name,
       series_position: result.series_position,
-      content_kind: result.respond_to?(:content_kind) ? result.content_kind : "book",
-      available_book_types: result.respond_to?(:available_book_types) ? result.available_book_types : %w[audiobook ebook],
+      content_kind: result_content_kind(result),
+      available_book_types: RequestOptionPolicy.book_types_for(result_content_kind(result)),
       collection_source: result.respond_to?(:collection_source) ? result.collection_source : nil,
       collection_id: result.respond_to?(:collection_id) ? result.collection_id : nil,
       collection_title: result.respond_to?(:collection_title) ? result.collection_title : nil,
@@ -55,8 +55,11 @@ class API::V1::SearchController < API::V1::ApplicationController
   end
 
   def normalized_content_kind
-    normalized = params[:content_kind].to_s.strip.downcase
-    %w[book comic manga all].include?(normalized) ? normalized : nil
+    ContentKinds.normalize(params[:content_kind], default: nil)
+  end
+
+  def result_content_kind(result)
+    ContentKinds.normalize(result.respond_to?(:content_kind) ? result.content_kind : nil, default: "book")
   end
 
   def result_sources_payload(result)

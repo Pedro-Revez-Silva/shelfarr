@@ -51,7 +51,7 @@ class SettingsService
     indexer_search_scope: { type: "string", default: "broad", category: "indexer", description: "How broadly Shelfarr should search indexer categories." },
     indexer_custom_audiobook_categories: { type: "string", default: "", category: "indexer", description: "Audiobook category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
     indexer_custom_ebook_categories: { type: "string", default: "", category: "indexer", description: "Ebook category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
-    indexer_custom_comicbook_categories: { type: "string", default: "", category: "indexer", description: "Comic book and manga category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
+    indexer_custom_comicbook_categories: { type: "string", default: "", category: "indexer", description: "Comics & Manga category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
     prowlarr_url: { type: "string", default: "", category: "indexer", description: "Base URL for Prowlarr instance (e.g., http://localhost:9696)" },
     prowlarr_api_key: { type: "string", default: "", category: "indexer", description: "API key from Prowlarr Settings > General" },
     prowlarr_tags: { type: "string", default: "", category: "indexer", description: "Comma-separated tag IDs or names to filter Prowlarr indexers (leave empty for all indexers)" },
@@ -81,19 +81,19 @@ class SettingsService
     grimmory_password: { type: "string", default: "", category: "audiobookshelf", description: "Grimmory password used to obtain an API access token" },
     audiobookshelf_audiobook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for audiobooks on the active library platform" },
     audiobookshelf_ebook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for ebooks on the active library platform" },
-    audiobookshelf_comicbook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for comic books and manga on the active library platform" },
+    audiobookshelf_comicbook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for Comics & Manga on the active library platform" },
     audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
 
     # Output Paths
     audiobook_output_path: { type: "string", default: "/audiobooks", category: "paths", description: "Directory for completed audiobooks" },
     ebook_output_path: { type: "string", default: "/ebooks", category: "paths", description: "Directory for completed ebooks" },
-    comicbook_output_path: { type: "string", default: "/comics", category: "paths", description: "Directory for completed comic books and manga" },
+    comicbook_output_path: { type: "string", default: "/comics", category: "paths", description: "Directory for completed Comics & Manga" },
     audiobook_path_template: { type: "string", default: "{author}/{title}", category: "paths", description: "Folder structure for audiobooks. Leave blank to place files directly in the audiobook output directory. Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series/} or {series - }." },
     ebook_path_template: { type: "string", default: "{author}/{title}", category: "paths", description: "Folder structure for ebooks. Leave blank to place files directly in the ebook output directory. Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series/} or {series - }." },
-    comicbook_path_template: { type: "string", default: "{series/}{title}", category: "paths", description: "Folder structure for comic books and manga. Leave blank to place files directly in the comic output directory. Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series/} or {series - }." },
+    comicbook_path_template: { type: "string", default: "{series/}{title}", category: "paths", description: "Folder structure for Comics & Manga. Leave blank to place files directly in the comic output directory. Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series/} or {series - }." },
     audiobook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for audiobooks (extension added automatically). Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series - }." },
     ebook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for ebooks (extension added automatically). Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series - }." },
-    comicbook_filename_template: { type: "string", default: "{series - }{seriesNum:00 - }{title}", category: "paths", description: "Filename for comic books and manga (extension added automatically). Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series - }." },
+    comicbook_filename_template: { type: "string", default: "{series - }{seriesNum:00 - }{title}", category: "paths", description: "Filename for Comics & Manga (extension added automatically). Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series - }." },
     download_remote_path: { type: "string", default: "", category: "paths", description: "Download client path (host path, e.g., /mnt/media/Torrents/Completed)" },
     download_local_path: { type: "string", default: "/downloads", category: "paths", description: "Container path for downloads (e.g., /downloads)" },
 
@@ -118,8 +118,8 @@ class SettingsService
     google_books_search_limit: { type: "integer", default: 20, category: "google_books", description: "Maximum number of Google Books search results to return" },
 
     # Comic Vine
-    comic_vine_enabled: { type: "boolean", default: true, category: "comic_vine", description: "Enable Comic Vine as a comic book and manga metadata provider when an API key is configured" },
-    comic_vine_api_key: { type: "string", default: "", category: "comic_vine", description: "Comic Vine API key for comic book and manga metadata" },
+    comic_vine_enabled: { type: "boolean", default: true, category: "comic_vine", description: "Enable Comic Vine as a Comics & Manga metadata provider when an API key is configured" },
+    comic_vine_api_key: { type: "string", default: "", category: "comic_vine", description: "Comic Vine API key for Comics & Manga metadata" },
     comic_vine_search_limit: { type: "integer", default: 10, category: "comic_vine", description: "Maximum number of Comic Vine search results to return" },
 
     # Health Monitoring
@@ -258,7 +258,7 @@ class SettingsService
     grimmory_password: "Grimmory Password",
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
-    audiobookshelf_comicbook_library_id: "Comic Book Library",
+    audiobookshelf_comicbook_library_id: "Comics & Manga Library",
     audiobookshelf_library_sync_interval: "Library Sync Interval"
   }.freeze
 
@@ -638,7 +638,7 @@ class SettingsService
     end
 
     def default_metadata_provider_priority
-      %w[hardcover openlibrary google_books]
+      %w[hardcover openlibrary google_books comic_vine]
     end
 
     def metadata_provider_keys

@@ -305,6 +305,47 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "Test Book"
   end
 
+  test "new uses server-authoritative book formats" do
+    get new_request_path, params: {
+      work_id: "google_books:gb-ebook-only",
+      title: "Ebook Only",
+      author: "Format Author",
+      available_book_types: [ "ebook" ]
+    }
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='ebook']"
+    assert_select "input[name='book_types[]'][value='audiobook']"
+    assert_select "span", text: "Ebook"
+    assert_select "span", text: "Audiobook"
+  end
+
+  test "new normalizes legacy graphic content kinds" do
+    get new_request_path, params: {
+      work_id: "comic_vine:4000-legacy-comic",
+      title: "Legacy Comic",
+      content_kind: "comic",
+      available_book_types: [ "ebook" ]
+    }
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='comicbook'][checked]"
+    assert_select "input[name='book_types[]'][value='ebook']", count: 0
+  end
+
+  test "new treats Comic Vine identity as graphic when the supplied kind is wrong" do
+    get new_request_path, params: {
+      work_id: "comic_vine:4000-source-policy",
+      title: "Source Policy",
+      content_kind: "book"
+    }
+
+    assert_response :success
+    assert_select "input[name='content_kind'][value='graphic']"
+    assert_select "input[name='book_types[]'][value='comicbook'][checked]"
+    assert_select "input[name='book_types[]'][value='ebook']", count: 0
+  end
+
   test "create creates book and request" do
     assert_difference [ "Book.count", "Request.count" ], 1 do
       post requests_path, params: {
@@ -323,12 +364,12 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "create preserves errors when request creation partially succeeds" do
-    book = Book.create!(title: "Saga #1", book_type: :comicbook, content_kind: :comic, comic_vine_id: "4000-101")
+    book = Book.create!(title: "Saga #1", book_type: :comicbook, content_kind: :graphic, comic_vine_id: "4000-101")
     created_request = Request.create!(book: book, user: @user, status: :pending)
     result = RequestCreationService::Result.new(
       created_requests: [ created_request ],
       warnings: [],
-      errors: [ "Saga #2 Comicbook: This comic book already has an active request." ]
+      errors: [ "Saga #2 Comics & Manga: This Comics & Manga title already has an active request." ]
     )
 
     RequestCreationService.stub(:call, result) do

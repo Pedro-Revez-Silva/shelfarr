@@ -72,7 +72,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
   test "library_id_for routes comic books to comic library" do
     SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-lib")
     SettingsService.set(:audiobookshelf_comicbook_library_id, "comic-lib")
-    book = Book.create!(title: "Saga #1", author: "Brian K. Vaughan", book_type: :comicbook, content_kind: :comic)
+    book = Book.create!(title: "Saga #1", author: "Brian K. Vaughan", book_type: :comicbook, content_kind: :graphic)
 
     assert_equal "comic-lib", PostProcessingJob.new.send(:library_id_for, book)
   end

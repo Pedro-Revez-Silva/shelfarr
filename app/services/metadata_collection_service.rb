@@ -57,7 +57,7 @@ class MetadataCollectionService
     @source = source.to_s
     @collection_id = collection_id.to_s
     @collection_title = collection_title
-    @content_kind = content_kind.presence || "book"
+    @content_kind = ContentKinds.normalize(content_kind, default: "book")
     @limit = limit
   end
 
@@ -79,7 +79,7 @@ class MetadataCollectionService
   attr_reader :source, :collection_id, :collection_title, :content_kind, :limit
 
   def comic_vine_items
-    ComicVineClient.volume_issues(collection_id, limit: limit, content_kind: comic_content_kind).map do |result|
+    ComicVineClient.volume_issues(collection_id, limit: limit, content_kind: graphic_content_kind).map do |result|
       work_id = "comic_vine:#{result.resource_key}"
       Item.new(
         work_id: work_id,
@@ -91,7 +91,7 @@ class MetadataCollectionService
           first_publish_year: result.year,
           description: result.description,
           publisher: result.publisher,
-          content_kind: result.content_kind.presence || comic_content_kind,
+          content_kind: ContentKinds.normalize(result.content_kind, default: graphic_content_kind),
           issue_number: result.issue_number,
           release_date: result.release_date,
           series: result.series_name,
@@ -117,7 +117,7 @@ class MetadataCollectionService
           cover_url: result.cover_url,
           first_publish_year: result.release_year,
           description: result.description,
-          content_kind: "book",
+          content_kind: content_kind,
           series: result.series_name.presence || collection_title,
           series_position: result.series_position,
           request_scope: "collection",
@@ -129,7 +129,7 @@ class MetadataCollectionService
     end
   end
 
-  def comic_content_kind
-    %w[comic manga].include?(content_kind.to_s) ? content_kind.to_s : "comic"
+  def graphic_content_kind
+    "graphic"
   end
 end

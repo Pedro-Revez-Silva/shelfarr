@@ -45,7 +45,12 @@ class RequestsController < ApplicationController
     @cover_url = params[:cover_url]
     @first_publish_year = params[:first_publish_year]
     @source_work_ids = Array(params[:source_work_ids]).compact_blank
-    @content_kind = params[:content_kind].presence || "book"
+    @content_kind = ContentKinds.resolve(
+      params[:content_kind],
+      source_work_ids: [ @work_id, *@source_work_ids ],
+      collection_source: params[:collection_source],
+      default: ContentKinds::BOOK
+    )
     @description = params[:description]
     @publisher = params[:publisher]
     @issue_number = params[:issue_number]
@@ -56,6 +61,7 @@ class RequestsController < ApplicationController
     @collection_source = params[:collection_source]
     @collection_id = params[:collection_id]
     @collection_title = params[:collection_title]
+    @available_book_types = RequestOptionPolicy.book_types_for(@content_kind)
 
     if @work_id.blank? || @title.blank?
       redirect_to search_path, alert: "Missing book information"

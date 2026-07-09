@@ -16,7 +16,7 @@ class MetadataCollectionServiceTest < ActiveSupport::TestCase
       series_name: "Saga",
       issue_number: "1",
       release_date: "2012-03-14",
-      content_kind: "comic",
+      content_kind: "graphic",
       collection_id: "4050-99",
       collection_title: "Saga",
       web_url: "https://comicvine.gamespot.com/issue/4000-123/",
@@ -25,13 +25,14 @@ class MetadataCollectionServiceTest < ActiveSupport::TestCase
 
     ComicVineClient.stub(:configured?, true) do
       ComicVineClient.stub(:volume_issues, [ comic_issue ]) do
-        items = MetadataCollectionService.expand(source: "comic_vine", collection_id: "4050-99", collection_title: "Saga", content_kind: "comic")
+        items = MetadataCollectionService.expand(source: "comic_vine", collection_id: "4050-99", collection_title: "Saga", content_kind: "graphic")
 
         assert_equal 1, items.size
         assert_equal "comic_vine:4000-123", items.first.work_id
         assert_equal "collection", items.first.metadata_attrs[:request_scope]
         assert_equal "Saga", items.first.metadata_attrs[:collection_title]
         assert_equal "1", items.first.metadata_attrs[:series_position]
+        assert_equal "graphic", items.first.metadata_attrs[:content_kind]
       end
     end
   end
@@ -39,7 +40,7 @@ class MetadataCollectionServiceTest < ActiveSupport::TestCase
   test "raises clear error when comic vine collection expansion is not configured" do
     ComicVineClient.stub(:configured?, false) do
       error = assert_raises MetadataCollectionService::Error do
-        MetadataCollectionService.expand(source: "comic_vine", collection_id: "4050-99", collection_title: "Saga", content_kind: "comic")
+        MetadataCollectionService.expand(source: "comic_vine", collection_id: "4050-99", collection_title: "Saga", content_kind: "graphic")
       end
 
       assert_equal "Comic Vine is not configured", error.message
@@ -68,6 +69,34 @@ class MetadataCollectionServiceTest < ActiveSupport::TestCase
         assert_equal "hardcover:111", items.first.work_id
         assert_equal "book", items.first.metadata_attrs[:content_kind]
         assert_equal "987", items.first.metadata_attrs[:collection_id]
+      end
+    end
+  end
+
+  test "preserves graphic intent when expanding a Hardcover collection" do
+    series_book = HardcoverClient::SearchResult.new(
+      id: "112",
+      title: "Graphic Series One",
+      author: "Graphic Creator",
+      description: nil,
+      release_year: 2021,
+      cover_url: nil,
+      has_audiobook: false,
+      has_ebook: false,
+      series_name: "Graphic Series",
+      series_position: "1"
+    )
+
+    HardcoverClient.stub(:configured?, true) do
+      HardcoverClient.stub(:series_books, [ series_book ]) do
+        items = MetadataCollectionService.expand(
+          source: "hardcover",
+          collection_id: "988",
+          collection_title: "Graphic Series",
+          content_kind: "graphic"
+        )
+
+        assert_equal "graphic", items.first.metadata_attrs[:content_kind]
       end
     end
   end

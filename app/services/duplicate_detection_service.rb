@@ -47,7 +47,7 @@ class DuplicateDetectionService
       if existing_book&.acquired?
         return Result.new(
           status: BLOCK,
-          message: "This #{book_type} is already in your library.",
+          message: "This #{label_for(book_type)} is already in your library.",
           existing_book: existing_book,
           existing_request: nil
         )
@@ -59,7 +59,7 @@ class DuplicateDetectionService
         if active_request
           return Result.new(
             status: BLOCK,
-            message: "This #{book_type} already has an active request.",
+            message: "This #{label_for(book_type)} already has an active request.",
             existing_book: existing_book,
             existing_request: active_request
           )
@@ -87,7 +87,7 @@ class DuplicateDetectionService
         if failed_request
           return Result.new(
             status: WARN,
-            message: "A previous request for this #{book_type} #{failed_request.failed? ? 'failed' : 'was not found'}. You can try again.",
+            message: "A previous request for this #{label_for(book_type)} #{failed_request.failed? ? 'failed' : 'was not found'}. You can try again.",
             existing_book: existing_book,
             existing_request: failed_request
           )
@@ -130,13 +130,9 @@ class DuplicateDetectionService
     end
 
     def label_for(book_type)
-      case book_type.to_s
-      when "audiobook" then "audiobook"
-      when "ebook" then "ebook"
-      when "comicbook" then "comic book"
-      else
-        book_type.to_s.humanize.downcase
-      end
+      return "Comics & Manga title" if book_type.to_s == "comicbook"
+
+      RequestOptionPolicy.book_type_label(book_type).downcase
     end
   end
 end

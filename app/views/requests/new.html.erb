@@ -1,5 +1,7 @@
 <div class="mx-auto max-w-2xl">
-  <h1 class="font-bold text-4xl mb-8 text-white">Request <%= @content_kind.to_s == "manga" ? "Manga" : (@content_kind.to_s == "comic" ? "Comic" : "Book") %></h1>
+  <% content_kind = ContentKinds.normalize(@content_kind, default: "book") %>
+  <% requestable_book_types = RequestOptionPolicy.book_types_for(content_kind) %>
+  <h1 class="font-bold text-4xl mb-8 text-white">Request</h1>
 
   <div class="bg-gray-900 rounded-lg shadow p-6 border border-gray-800">
     <div class="flex gap-6 mb-6">
@@ -48,7 +50,7 @@
       <%= hidden_field_tag :first_publish_year, @first_publish_year %>
       <%= hidden_field_tag :description, @description %>
       <%= hidden_field_tag :publisher, @publisher %>
-      <%= hidden_field_tag :content_kind, @content_kind %>
+      <%= hidden_field_tag :content_kind, content_kind %>
       <%= hidden_field_tag :issue_number, @issue_number %>
       <%= hidden_field_tag :release_date, @release_date %>
       <%= hidden_field_tag :series, @series %>
@@ -63,13 +65,12 @@
 
       <div>
         <label class="block text-sm font-medium text-gray-300 mb-3">Select format(s):</label>
-        <div class="grid gap-4 <%= @content_kind.in?(%w[comic manga]) ? 'grid-cols-1' : 'grid-cols-2' %>">
+        <div class="grid gap-4 <%= requestable_book_types.one? ? 'grid-cols-1' : 'grid-cols-2' %>">
           <%
-            requestable_book_types = @content_kind.in?(%w[comic manga]) ? %w[comicbook] : %w[audiobook ebook]
             format_labels = {
               "audiobook" => [ "Audiobook", "Audio format for listening", "border-purple-500", "text-purple-400" ],
               "ebook" => [ "Ebook", "Digital format for reading", "border-blue-500", "text-blue-400" ],
-              "comicbook" => [ @content_kind == "manga" ? "Manga" : "Comic Book", "Panel-based reading format", "border-emerald-500", "text-emerald-400" ]
+              "comicbook" => [ "Comics & Manga", "Panel-based digital format", "border-emerald-500", "text-emerald-400" ]
             }
           %>
 

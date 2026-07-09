@@ -50,14 +50,16 @@ class MetadataService
     # Search for books across enabled metadata sources and aggregate duplicates
     # into Shelfarr candidates.
     def search(query, limit: nil, content_kind: nil)
+      content_kind = ContentKinds.normalize(content_kind, default: nil)
       providers = enabled_metadata_providers(content_kind: content_kind)
       Rails.logger.info "[MetadataService] Searching '#{query}' using providers: #{providers.join(', ')}"
 
       provider_results = search_providers_concurrently(providers, query, limit: limit, content_kind: content_kind)
-      aggregate_provider_results(provider_results, limit: limit)
+      aggregate_provider_results(provider_results, limit: limit, content_kind: content_kind)
     end
 
     def each_provider_search(query, limit: nil, content_kind: nil)
+      content_kind = ContentKinds.normalize(content_kind, default: nil)
       providers = enabled_metadata_providers(content_kind: content_kind)
       return enum_for(__method__, query, limit: limit, content_kind: content_kind) unless block_given?
 
@@ -83,6 +85,7 @@ class MetadataService
     end
 
     def search_provider(provider, query, limit: nil, content_kind: nil)
+      content_kind = ContentKinds.normalize(content_kind, default: nil)
       status = MetadataProviderStatus.for_provider(provider)
       unless status.available?
         Rails.logger.info "[MetadataService] Skipping #{provider}: #{status.status}"
@@ -102,11 +105,17 @@ class MetadataService
       []
     end
 
-    def aggregate_provider_results(provider_results, limit: nil)
-      candidates = MetadataSearch::Aggregator.call(provider_results, priority: provider_priority)
+    def aggregate_provider_results(provider_results, limit: nil, content_kind: nil)
+      requested_content_kind = ContentKinds.normalize(content_kind, default: nil)
+      candidates = MetadataSearch::Aggregator.call(
+        provider_results,
+        priority: provider_priority,
+        requested_content_kind: requested_content_kind
+      )
       min_confidence = SettingsService.get(:min_match_confidence).to_i
       candidates = candidates.select { |candidate| candidate.confidence >= min_confidence }
-      sort_candidates(candidates).first(limit || default_search_limit)
+      candidates = filter_candidates_for_content(candidates, requested_content_kind)
+      sort_candidates(candidates, requested_content_kind: requested_content_kind).first(limit || default_search_limit)
     end
 
     def merge_provider_results(results_by_provider)
@@ -162,7 +171,7 @@ class MetadataService
     end
 
     def enabled_metadata_providers(content_kind: nil)
-      filter_providers_for_content(SettingsService.enabled_metadata_providers, content_kind)
+      SettingsService.enabled_metadata_providers
     end
 
     def provider_priority
@@ -198,21 +207,27 @@ class MetadataService
       return [] unless HardcoverClient.configured?
 
       results = HardcoverClient.search(query, limit: limit)
-      results.map { |result| MetadataSearch::ResultNormalizer.call("hardcover", result) }
+      results.map do |result|
+        MetadataSearch::ResultNormalizer.call("hardcover", result, requested_content_kind: content_kind)
+      end
     end
 
     def search_openlibrary(query, limit, content_kind: nil)
       return [] unless OpenLibraryClient.configured?
 
       results = OpenLibraryClient.search(query, limit: limit)
-      results.map { |result| MetadataSearch::ResultNormalizer.call("openlibrary", result) }
+      results.map do |result|
+        MetadataSearch::ResultNormalizer.call("openlibrary", result, requested_content_kind: content_kind)
+      end
     end
 
     def search_google_books(query, limit, content_kind: nil)
       return [] unless GoogleBooksClient.configured?
 
       results = GoogleBooksClient.search(query, limit: limit)
-      results.map { |result| MetadataSearch::ResultNormalizer.call("google_books", result) }
+      results.map do |result|
+        MetadataSearch::ResultNormalizer.call("google_books", result, requested_content_kind: content_kind)
+      end
     end
 
     def search_comic_vine(query, limit, content_kind: nil)
@@ -257,10 +272,11 @@ class MetadataService
         results_by_provider.except(*priority).values.flatten
     end
 
-    def sort_candidates(candidates)
+    def sort_candidates(candidates, requested_content_kind: nil)
       priority = provider_priority
       candidates.sort_by do |candidate|
         [
+          candidate.content_kind == requested_content_kind ? 0 : 1,
           priority.index(candidate.source.to_s) || priority.size,
           -candidate.confidence,
           candidate.title.to_s.downcase,
@@ -286,14 +302,12 @@ class MetadataService
       end
     end
 
-    def filter_providers_for_content(providers, content_kind)
-      case content_kind.to_s
-      when "book"
-        providers - [ "comic_vine" ]
-      when "comic", "manga"
-        providers & [ "comic_vine" ]
-      else
-        providers
+    def filter_candidates_for_content(candidates, requested_content_kind)
+      return candidates unless requested_content_kind
+
+      candidates.select do |candidate|
+        candidate.content_kind == requested_content_kind ||
+          candidate.classification_confidence < MetadataSearch::ContentClassifier::STRONG_CONFIDENCE
       end
     end
 

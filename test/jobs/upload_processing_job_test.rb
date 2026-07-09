@@ -100,7 +100,7 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     end
   end
 
-  test "find_or_create_book_with_metadata defaults comicbook uploads to comic content kind" do
+  test "find_or_create_book_with_metadata defaults comicbook uploads to graphic content kind" do
     parsed = Struct.new(:title, :author).new("Saga #1", "Brian K. Vaughan")
 
     book = UploadProcessingJob.new.send(
@@ -112,7 +112,7 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     )
 
     assert book.comicbook?
-    assert book.content_comic?
+    assert book.content_graphic?
   end
 
   test "matches existing book instead of creating new" do
@@ -545,7 +545,7 @@ class UploadProcessingJobTest < ActiveJob::TestCase
   test "trigger_library_scan uses configured comic book library" do
     SettingsService.set(:audiobookshelf_ebook_library_id, "")
     SettingsService.set(:audiobookshelf_comicbook_library_id, "comic-lib")
-    book = Book.create!(title: "Saga #1", author: "Brian K. Vaughan", book_type: :comicbook, content_kind: :comic)
+    book = Book.create!(title: "Saga #1", author: "Brian K. Vaughan", book_type: :comicbook, content_kind: :graphic)
     scanned = []
 
     LibraryPlatformClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do

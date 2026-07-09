@@ -190,7 +190,8 @@ class UploadProcessingJob < ApplicationJob
     series = metadata&.series_name if metadata.respond_to?(:series_name)
     series_position = metadata&.series_position if metadata.respond_to?(:series_position)
     content_kind = metadata&.content_kind if metadata.respond_to?(:content_kind)
-    content_kind ||= "comic" if book_type.to_s == "comicbook"
+    default_content_kind = book_type.to_s == "comicbook" ? "graphic" : "book"
+    content_kind = ContentKinds.normalize(content_kind, default: default_content_kind)
     narrator = extracted&.narrator if extracted.respond_to?(:narrator)
 
     fallback_attrs = {

@@ -210,7 +210,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "label[for='settings_grimmory_password']", text: "Grimmory Password"
     assert_select "label[for='settings_audiobookshelf_audiobook_library_id']", text: "Audiobook Library"
     assert_select "label[for='settings_audiobookshelf_ebook_library_id']", text: "Ebook Library"
-    assert_select "label[for='settings_audiobookshelf_comicbook_library_id']", text: "Comic Book Library"
+    assert_select "label[for='settings_audiobookshelf_comicbook_library_id']", text: "Comics & Manga Library"
     assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval"
     assert_no_match /Bookorbit/, @response.body
     assert_no_match /Audiobookshelf Audiobook Library/, @response.body

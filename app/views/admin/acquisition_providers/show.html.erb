@@ -19,7 +19,7 @@
         <% media = [] %>
         <% media << "Ebooks" if @provider.supports_ebooks? %>
         <% media << "Audiobooks" if @provider.supports_audiobooks? %>
-        <% media << "Comic books" if @provider.supports_comicbooks? %>
+        <% media << "Comics & Manga" if @provider.supports_comicbooks? %>
         <%= media.join(", ") %>
       </dd>
     </div>

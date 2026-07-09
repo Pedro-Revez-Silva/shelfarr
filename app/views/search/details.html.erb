@@ -2,14 +2,14 @@
   type_labels = {
     "audiobook" => "Audiobook",
     "ebook" => "Ebook",
-    "comicbook" => @content_kind == "manga" ? "Manga" : "Comic Book"
+    "comicbook" => "Comics & Manga"
   }
   kind_label = case @content_kind
-  when "comic" then "Comic"
-  when "manga" then "Manga"
+  when "graphic" then "Comics & Manga"
   else "Book"
   end
-  content_is_comic = %w[comic manga].include?(@content_kind.to_s)
+  request_label = "Request"
+  content_is_graphic = @content_kind == "graphic"
   source_value = if @metadata_source_name.present? && @metadata_source_url.present?
     link_to @metadata_source_name, @metadata_source_url, target: "_blank", rel: "noopener", class: "text-blue-300 hover:text-blue-200"
   else
@@ -22,10 +22,11 @@
   else
     "No overview was included with this search result."
   end
-  detail_rows = if content_is_comic
+  detail_rows = if content_is_graphic
     [
       [ "Content type", kind_label ],
       [ "Creators", @author ],
+      [ "First published", @first_publish_year ],
       [ "Publisher", @publisher ],
       [ "Series", @series.presence || @collection_title ],
       [ "Issue", ("##{@issue_number}" if @issue_number.present?) ],
@@ -90,13 +91,15 @@
 
         <h1 id="search-details-title" class="text-3xl font-bold leading-tight text-white"><%= @title %></h1>
         <p class="mt-2 text-lg text-gray-400">
-          <%= @author.presence || (content_is_comic ? "Creators not available" : "Author not available") %>
+          <%= @author.presence || (content_is_graphic ? "Creators not available" : "Author not available") %>
         </p>
       </div>
 
       <div class="flex flex-wrap gap-3">
-        <% @available_book_types.each do |book_type| %>
-          <%= link_to "Request #{type_labels.fetch(book_type, book_type.titleize)}", new_request_path(metadata_params.merge(book_type: book_type)), class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500", data: { turbo_frame: "_top" } %>
+        <% if @available_book_types.any? %>
+          <%= link_to request_label, new_request_path(metadata_params), class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500", data: { turbo_frame: "_top" } %>
+        <% else %>
+          <span class="rounded-lg bg-gray-800 px-4 py-2 font-medium text-gray-400">No requestable formats</span>
         <% end %>
       </div>
 
@@ -154,7 +157,7 @@
 
         <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 class="text-xl font-semibold text-white"><%= @content_kind.in?(%w[comic manga]) ? "Volume Issues" : "Series Books" %></h2>
+            <h2 class="text-xl font-semibold text-white"><%= content_is_graphic ? "Issues & Volumes" : "Series Books" %></h2>
             <p class="mt-1 text-sm text-gray-500"><%= @collection_title %></p>
           </div>
           <div class="flex items-center gap-4 text-sm text-gray-300">
@@ -180,7 +183,7 @@
                 <% if item.issue_number.present? %>
                   <p class="mt-1 text-xs text-gray-400">Issue #<%= item.issue_number %></p>
                 <% elsif item.series_position.present? %>
-                  <p class="mt-1 text-xs text-gray-400">Position <%= item.series_position %></p>
+                  <p class="mt-1 text-xs text-gray-400"><%= content_is_graphic ? "Issue/volume" : "Position" %> <%= item.series_position %></p>
                 <% end %>
                 <% if item.release_date.present? %>
                   <p class="mt-1 text-xs text-gray-500"><%= item.release_date %></p>

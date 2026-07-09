@@ -1,5 +1,5 @@
 <div class="mx-auto max-w-6xl">
-  <h1 class="font-bold text-3xl mb-6 text-white">Search Books</h1>
+  <h1 class="font-bold text-3xl mb-6 text-white">Search Books, Comics &amp; Manga</h1>
 
   <div data-controller="search" data-search-url-value="<%= search_results_path %>" data-search-stream-url-value="<%= search_results_stream_path %>" data-search-debounce-value="700">
     <div class="mb-8 grid gap-3 md:grid-cols-[1fr_180px]">
@@ -13,7 +13,7 @@
           type="text"
           data-search-target="input"
           data-action="input->search#search"
-          placeholder="Search by title, author, series, or comic..."
+          placeholder="Search by title, author, series, issue, or volume..."
           value="<%= @query %>"
           class="w-full pl-12 pr-12 py-4 border border-gray-800 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-lg bg-gray-900 text-white placeholder-gray-500"
           autofocus
@@ -32,8 +32,7 @@
       >
         <option value="" <%= "selected" if @content_kind.blank? %>>All</option>
         <option value="book" <%= "selected" if @content_kind == "book" %>>Books</option>
-        <option value="comic" <%= "selected" if @content_kind == "comic" %>>Comics</option>
-        <option value="manga" <%= "selected" if @content_kind == "manga" %>>Manga</option>
+        <option value="graphic" <%= "selected" if @content_kind == "graphic" %>>Comics &amp; Manga</option>
       </select>
     </div>
 
@@ -46,7 +45,7 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
           <p class="text-lg font-medium text-gray-400">Search for your next read</p>
-          <p class="text-sm mt-1 text-gray-500">Enter a book title or author name</p>
+          <p class="text-sm mt-1 text-gray-500">Enter a title, creator, or author name</p>
         </div>
       <% end %>
     </div>

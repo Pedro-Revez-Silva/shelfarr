@@ -33,7 +33,7 @@ class ComicVineClientTest < ActiveSupport::TestCase
       assert_equal "Series One - #1 - Issue One", result.title
       assert_equal "4050-99", result.collection_id
       assert_equal "Series One", result.collection_title
-      assert_equal "comic", result.content_kind
+      assert_equal "graphic", result.content_kind
     end
   end
 
@@ -59,7 +59,7 @@ class ComicVineClientTest < ActiveSupport::TestCase
       assert_equal 2, issues.size
       assert_equal "4000-123", issues.first.resource_key
       assert_equal "2", issues.second.issue_number
-      assert_equal "manga", issues.second.content_kind
+      assert_equal "graphic", issues.second.content_kind
     end
   end
 

@@ -13,7 +13,11 @@ class OpenLibraryClient
   class RateLimitError < Error; end
 
   # Data structures for API responses
-  SearchResult = Data.define(:work_id, :title, :author, :first_publish_year, :cover_id, :edition_count) do
+  SearchResult = Data.define(:work_id, :title, :author, :first_publish_year, :cover_id, :edition_count, :subjects) do
+    def initialize(work_id:, title:, author:, first_publish_year:, cover_id:, edition_count:, subjects: [])
+      super
+    end
+
     def cover_url(size: :m)
       return nil unless cover_id
       OpenLibraryClient.cover_url(cover_id, size: size)
@@ -60,7 +64,7 @@ class OpenLibraryClient
       response = connection.get("/search.json", {
         q: query,
         limit: limit,
-        fields: "key,title,author_name,first_publish_year,cover_i,edition_count"
+        fields: "key,title,author_name,first_publish_year,cover_i,edition_count,subject"
       })
 
       handle_response(response) do |data|
@@ -71,7 +75,8 @@ class OpenLibraryClient
             author: Array(doc["author_name"]).first,
             first_publish_year: doc["first_publish_year"],
             cover_id: doc["cover_i"],
-            edition_count: doc["edition_count"]
+            edition_count: doc["edition_count"],
+            subjects: Array(doc["subject"])
           )
         end
       end

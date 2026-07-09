@@ -79,7 +79,8 @@ class SearchController < ApplicationController
       results_by_provider[provider] = results
 
       candidates = MetadataService.aggregate_provider_results(
-        MetadataService.merge_provider_results(results_by_provider)
+        MetadataService.merge_provider_results(results_by_provider),
+        content_kind: @content_kind
       )
       pending_providers = providers - completed_providers
 
@@ -111,7 +112,6 @@ class SearchController < ApplicationController
     @first_publish_year = params[:first_publish_year]
     @description = params[:description]
     @content_kind = normalized_content_kind(params[:content_kind])
-    @available_book_types = Array(params[:available_book_types]).compact_blank
     @publisher = params[:publisher]
     @page_count = params[:page_count]
     @language = params[:language]
@@ -129,7 +129,13 @@ class SearchController < ApplicationController
     @details_enrichment_loaded = false
 
     enrich_details_from_source
-    normalize_available_book_types!
+    @content_kind = ContentKinds.resolve(
+      @content_kind,
+      source_work_ids: [ @work_id, *@source_work_ids ],
+      collection_source: @collection_source,
+      default: ContentKinds::BOOK
+    )
+    @available_book_types = RequestOptionPolicy.book_types_for(@content_kind)
     @collection_entries = collection_entries
 
     redirect_to search_path, alert: "Missing title information" if @work_id.blank? || @title.blank?
@@ -219,13 +225,7 @@ class SearchController < ApplicationController
   end
 
   def normalized_content_kind(value)
-    normalized = value.to_s.strip.downcase
-    %w[book comic manga all].include?(normalized) ? normalized : nil
-  end
-
-  def normalize_available_book_types!
-    @available_book_types = [ "comicbook" ] if @available_book_types.blank? && %w[comic manga].include?(@content_kind.to_s)
-    @available_book_types = %w[audiobook ebook] if @available_book_types.blank?
+    ContentKinds.normalize(value, default: nil)
   end
 
   def enrich_details_from_source

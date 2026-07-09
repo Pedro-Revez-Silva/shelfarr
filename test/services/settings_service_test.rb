@@ -13,6 +13,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
       preferred_download_type preferred_download_types move_completed_downloads audiobook_path_template api_token
       zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url
       metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled
+      comic_vine_enabled comic_vine_api_key
       library_platform audiobookshelf_url audiobookshelf_api_key bookorbit_url bookorbit_username bookorbit_password
       grimmory_url grimmory_username grimmory_password
       oidc_enabled oidc_auto_redirect oidc_provider_name oidc_issuer oidc_client_id oidc_client_secret oidc_scopes
@@ -159,7 +160,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
   test "metadata provider priority normalizes configured order and appends missing providers" do
     SettingsService.set(:metadata_provider_priority, "google_books, unknown openlibrary google_books")
 
-    assert_equal %w[google_books openlibrary hardcover], SettingsService.metadata_provider_priority
+    assert_equal %w[google_books openlibrary hardcover comic_vine], SettingsService.metadata_provider_priority
   end
 
   test "enabled metadata providers use all enabled auto providers in priority order" do
@@ -168,6 +169,16 @@ class SettingsServiceTest < ActiveSupport::TestCase
     SettingsService.set(:hardcover_api_token, "token")
 
     assert_equal %w[google_books openlibrary hardcover], SettingsService.enabled_metadata_providers
+  end
+
+  test "enabled metadata providers append configured Comic Vine for legacy priorities" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:metadata_provider_priority, "hardcover,openlibrary,google_books")
+    SettingsService.set(:hardcover_api_token, "")
+    SettingsService.set(:comic_vine_enabled, true)
+    SettingsService.set(:comic_vine_api_key, "comic-key")
+
+    assert_equal %w[openlibrary google_books comic_vine], SettingsService.enabled_metadata_providers
   end
 
   test "enabled metadata providers exclude disabled providers and unconfigured hardcover" do
@@ -209,7 +220,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal "BookOrbit URL", SettingsService.label_for(:bookorbit_url)
     assert_equal "Grimmory URL", SettingsService.label_for(:grimmory_url)
     assert_equal "Audiobook Library", SettingsService.label_for(:audiobookshelf_audiobook_library_id)
-    assert_equal "Comic Book Library", SettingsService.label_for(:audiobookshelf_comicbook_library_id)
+    assert_equal "Comics & Manga Library", SettingsService.label_for(:audiobookshelf_comicbook_library_id)
     assert_equal "Max Retries", SettingsService.label_for(:max_retries)
   end
 

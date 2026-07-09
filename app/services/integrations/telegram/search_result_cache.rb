@@ -40,7 +40,8 @@ module Integrations
             metadata_attrs: {
               title: result.title,
               author: result.author,
-              year: result_year(result)
+              year: result_year(result),
+              content_kind: ContentKinds.normalize(result.respond_to?(:content_kind) ? result.content_kind : nil, default: "book")
             }.compact
           }
         end

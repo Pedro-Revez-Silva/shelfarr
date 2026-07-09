@@ -14,7 +14,7 @@ class CollectionRequestExpansionJobTest < ActiveJob::TestCase
         source_work_ids: [ "comic_vine:4000-201" ],
         metadata_attrs: {
           title: "Saga - #1",
-          content_kind: "comic",
+          content_kind: "graphic",
           issue_number: "1",
           request_scope: "collection",
           collection_source: "comic_vine",
@@ -27,7 +27,7 @@ class CollectionRequestExpansionJobTest < ActiveJob::TestCase
         source_work_ids: [ "comic_vine:4000-202" ],
         metadata_attrs: {
           title: "Saga - #2",
-          content_kind: "comic",
+          content_kind: "graphic",
           issue_number: "2",
           request_scope: "collection",
           collection_source: "comic_vine",
@@ -45,7 +45,7 @@ class CollectionRequestExpansionJobTest < ActiveJob::TestCase
           book_types: [ "comicbook" ],
           metadata_attrs: {
             title: "Saga",
-            content_kind: "comic",
+            content_kind: "graphic",
             request_scope: "collection",
             collection_source: "comic_vine",
             collection_id: "4050-99",
@@ -75,6 +75,44 @@ class CollectionRequestExpansionJobTest < ActiveJob::TestCase
     end
 
     assert_not expand_called
+  end
+
+  test "creates Comics & Manga requests for graphic Hardcover collections" do
+    item = RequestCreationService::RequestInput.new(
+      work_id: "hardcover:graphic-201",
+      source_work_ids: [ "hardcover:graphic-201" ],
+      metadata_attrs: {
+        title: "Graphic Series One",
+        content_kind: "graphic",
+        request_scope: "collection",
+        collection_source: "hardcover",
+        collection_id: "graphic-series",
+        collection_title: "Graphic Series"
+      }
+    )
+
+    MetadataCollectionService.stub(:expand, [ item ]) do
+      MetadataService.stub(:book_details, nil) do
+        assert_difference [ "Book.count", "Request.count" ], 1 do
+          CollectionRequestExpansionJob.perform_now(
+            user_id: @user.id,
+            work_id: "hardcover:graphic-series",
+            book_types: [ "comicbook" ],
+            metadata_attrs: {
+              title: "Graphic Series",
+              content_kind: "graphic",
+              request_scope: "collection",
+              collection_source: "hardcover",
+              collection_id: "graphic-series",
+              collection_title: "Graphic Series"
+            }
+          )
+        end
+      end
+    end
+
+    assert_equal "graphic", Request.last.book.content_kind
+    assert_equal "comicbook", Request.last.book.book_type
   end
 
   test "enqueues a retry when collection expansion fails" do

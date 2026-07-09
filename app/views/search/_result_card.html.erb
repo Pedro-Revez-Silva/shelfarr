@@ -4,30 +4,14 @@
   result_sources = result.respond_to?(:sources) ? Array(result.sources) : [ { source_name: result.source_name, source_url: result.source_url, work_id: result.work_id } ]
   source_work_ids = result_sources.filter_map { |source| source[:work_id] }
   source_work_ids = [ result.work_id ] if source_work_ids.blank?
-  content_kind = result.respond_to?(:content_kind) ? result.content_kind.to_s : "book"
-  available_book_types = if result.respond_to?(:available_book_types)
-    Array(result.available_book_types).compact_blank
-  else
-    %w[audiobook ebook]
-  end
-  available_book_types = %w[comicbook] if available_book_types.blank? && %w[comic manga].include?(content_kind)
-  available_book_types = %w[audiobook ebook] if available_book_types.blank?
+  content_kind = ContentKinds.normalize(result.respond_to?(:content_kind) ? result.content_kind : nil, default: "book")
+  available_book_types = RequestOptionPolicy.book_types_for(content_kind)
 
-  type_labels = {
-    "audiobook" => "Audiobook",
-    "ebook" => "Ebook",
-    "comicbook" => content_kind == "manga" ? "Manga" : "Comic Book"
-  }
-  type_classes = {
-    "audiobook" => "bg-purple-600 hover:bg-purple-500",
-    "ebook" => "bg-blue-600 hover:bg-blue-500",
-    "comicbook" => "bg-emerald-600 hover:bg-emerald-500"
-  }
   kind_label = case content_kind
-  when "comic" then "Comic"
-  when "manga" then "Manga"
+  when "graphic" then "Comics & Manga"
   else "Book"
   end
+  request_label = "Request"
 
   metadata_params = {
     work_id: result.work_id,
@@ -45,9 +29,26 @@
     collection_source: (result.collection_source if result.respond_to?(:collection_source)),
     collection_id: (result.collection_id if result.respond_to?(:collection_id)),
     collection_title: (result.collection_title if result.respond_to?(:collection_title)),
-    source_work_ids: source_work_ids,
-    available_book_types: available_book_types
+    source_work_ids: source_work_ids
   }.compact
+  format_statuses = available_book_types.to_h do |book_type|
+    existing_book = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: book_type)
+    status = if existing_book&.acquired?
+      :acquired
+    elsif existing_book&.requests&.active&.any?
+      :requested
+    else
+      :available
+    end
+
+    [ book_type, status ]
+  end
+  requestable_book_types = format_statuses.select { |_book_type, status| status == :available }.keys
+  blocked_status = if format_statuses.any? && format_statuses.values.all?(:acquired)
+    :acquired
+  elsif format_statuses.values.any?(:requested)
+    :requested
+  end
 %>
 
 <div class="group relative overflow-hidden rounded-xl bg-gray-900 shadow-lg ring-1 ring-gray-800 transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl">
@@ -72,24 +73,16 @@
     <% end %>
 
     <div class="absolute inset-x-0 bottom-0 flex flex-col gap-2 bg-gradient-to-t from-black via-black/80 to-transparent p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-      <% available_book_types.each do |book_type| %>
-        <%
-          existing_book = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: book_type)
-          status = if existing_book&.acquired?
-            :acquired
-          elsif existing_book&.requests&.active&.any?
-            :requested
-          else
-            :available
-          end
-        %>
-        <% if status == :available %>
-          <%= link_to type_labels.fetch(book_type, book_type.titleize), new_request_path(metadata_params.merge(book_type: book_type)), class: "w-full rounded-md px-3 py-2 text-center text-sm font-medium text-white transition-colors #{type_classes.fetch(book_type, 'bg-gray-700 hover:bg-gray-600')}" %>
-        <% else %>
-          <span class="w-full rounded-md bg-gray-800/90 px-3 py-2 text-center text-sm font-medium text-gray-300">
-            <%= type_labels.fetch(book_type, book_type.titleize) %> <%= status == :acquired ? "in library" : "requested" %>
-          </span>
-        <% end %>
+      <% if requestable_book_types.any? %>
+        <%= link_to request_label, new_request_path(metadata_params), class: "w-full rounded-md bg-blue-600 px-3 py-2 text-center text-sm font-medium text-white transition-colors hover:bg-blue-500" %>
+      <% elsif blocked_status.present? %>
+        <span class="w-full rounded-md bg-gray-800/90 px-3 py-2 text-center text-sm font-medium text-gray-300">
+          <%= blocked_status == :acquired ? "In library" : "Requested" %>
+        </span>
+      <% else %>
+        <span class="w-full rounded-md bg-gray-800/90 px-3 py-2 text-center text-sm font-medium text-gray-300">
+          No requestable formats
+        </span>
       <% end %>
     </div>
   </div>

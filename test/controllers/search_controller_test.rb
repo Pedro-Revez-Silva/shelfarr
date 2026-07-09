@@ -45,6 +45,26 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-search-stream-url-value='#{search_results_stream_path}']"
   end
 
+  test "index normalizes legacy graphic filters" do
+    get search_path, params: { content_kind: "manga" }
+
+    assert_response :success
+    assert_select "option[value='graphic'][selected]", text: "Comics & Manga"
+    assert_select "option[value='manga']", count: 0
+    assert_select "option[value='comic']", count: 0
+  end
+
+  test "results normalizes legacy graphic filters before searching" do
+    MetadataService.stub(:search, ->(_query, content_kind:) {
+      assert_equal "graphic", content_kind
+      []
+    }) do
+      get search_results_path, params: { q: "akira", content_kind: "comic" }
+    end
+
+    assert_response :success
+  end
+
   test "results returns search results" do
     GoogleBooksClient.stub(:search, []) do
       with_cassette("open_library/search_harry_potter") do
@@ -220,6 +240,29 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_equal "text/vnd.turbo-stream.html", response.media_type
   end
 
+  test "stream_results applies the normalized content filter to partial results" do
+    aggregated_content_kinds = []
+    stream_search = lambda do |_query, content_kind:, &block|
+      assert_equal "graphic", content_kind
+      block.call("openlibrary", [])
+    end
+    aggregate = lambda do |_results, content_kind:|
+      aggregated_content_kinds << content_kind
+      []
+    end
+
+    MetadataService.stub(:enabled_metadata_providers, [ "openlibrary" ]) do
+      MetadataService.stub(:each_provider_search, stream_search) do
+        MetadataService.stub(:aggregate_provider_results, aggregate) do
+          get search_results_stream_path, params: { q: "akira", content_kind: "manga" }
+        end
+      end
+    end
+
+    assert_response :success
+    assert_equal [ "graphic" ], aggregated_content_kinds
+  end
+
   test "stream_results handles blank query" do
     get search_results_stream_path, params: { q: "" }
 
@@ -302,6 +345,43 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_no_match "Related titles in your library", response.body
   end
 
+  test "results renders one request action without passing formats in the URL" do
+    candidate = MetadataSearch::Candidate.new(
+      canonical_key: "google_books:gb-ebook-only",
+      title: "Ebook Only",
+      author: "Format Author",
+      year: 2024,
+      description: nil,
+      cover_url: nil,
+      series_name: nil,
+      series_position: nil,
+      has_ebook: true,
+      has_audiobook: false,
+      confidence: 70,
+      editions: [],
+      sources: [
+        {
+          source: "google_books",
+          source_id: "gb-ebook-only",
+          source_name: "Google Books",
+          source_url: "https://books.google.com/books?id=gb-ebook-only",
+          work_id: "google_books:gb-ebook-only"
+        }
+      ],
+      available_book_types: [ "ebook" ]
+    )
+
+    MetadataService.stub(:search, [ candidate ]) do
+      get search_results_path, params: { q: "ebook only" }
+    end
+
+    assert_response :success
+    assert_select "a", text: "Request", count: 1
+    assert_select "a", text: "Audiobook", count: 0
+    assert_select "a", text: "Ebook", count: 0
+    assert_no_match "available_book_types", response.body
+  end
+
   test "details renders modal with collection preview and collection request action" do
     preview_item = MetadataCollectionService::Item.new(
       work_id: "comic_vine:4000-101",
@@ -320,8 +400,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
           modal: "1",
           work_id: "comic_vine:4050-99",
           title: "Saga",
-          content_kind: "comic",
-          available_book_types: [ "comicbook" ],
+          content_kind: "book",
           collection_source: "comic_vine",
           collection_id: "4050-99",
           collection_title: "Saga"
@@ -333,12 +412,15 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_select "turbo-frame#modal"
     assert_select "[data-controller='search-modal']"
     assert_select "a[href='#{search_modal_close_path}']", text: "Close"
-    assert_select "h2", text: "Volume Issues"
+    assert_select "span", text: "Comics & Manga"
+    assert_select "dt", text: "First published"
+    assert_select "h2", text: "Issues & Volumes"
     assert_match "Saga - #1", response.body
+    assert_no_match "available_book_types", response.body
     assert_select "form[action='#{requests_path}']" do
       assert_select "input[name='collection_item_ids[]'][value='comic_vine:4000-101'][checked]"
       assert_select "input[name='request_scope'][value='collection']"
-      assert_select "button[name='book_type'][value='comicbook']", text: "Request Selected (Comic Book)"
+      assert_select "button[name='book_type'][value='comicbook']", text: "Request Selected (Comics & Manga)"
     end
   end
 
@@ -346,7 +428,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     Book.create!(
       title: "Saga #1",
       book_type: :comicbook,
-      content_kind: :comic,
+      content_kind: :graphic,
       comic_vine_id: "4000-101",
       file_path: "/comics/saga-1.cbz"
     )
@@ -368,8 +450,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
           modal: "1",
           work_id: "comic_vine:4050-99",
           title: "Saga",
-          content_kind: "comic",
-          available_book_types: [ "comicbook" ],
+          content_kind: "graphic",
           collection_source: "comic_vine",
           collection_id: "4050-99",
           collection_title: "Saga"

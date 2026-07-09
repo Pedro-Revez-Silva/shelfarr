@@ -28,7 +28,7 @@ class RequestCreationService
     @work_id = work_id.to_s.strip
     @source_work_ids = [ @work_id, *Array(source_work_ids) ].compact_blank.map(&:to_s).uniq
     @book_types = normalize_book_types(book_types)
-    @metadata_attrs = metadata_attrs.to_h.symbolize_keys
+    @metadata_attrs = normalize_metadata_attrs(metadata_attrs)
     @notes = notes
     @language = language
     @origin = origin.to_h.symbolize_keys
@@ -38,6 +38,7 @@ class RequestCreationService
 
   def call
     return failure("Missing required information") if work_id.blank? || book_types.empty?
+    return failure(incompatible_book_types_error) unless RequestOptionPolicy.permitted_book_types?(book_types, metadata_attrs[:content_kind])
     return enqueue_collection_expansion if collection_request? && !expand_collection?
 
     request_inputs = build_request_inputs
@@ -49,6 +50,11 @@ class RequestCreationService
     existing_books_lookup = Book.preload_by_work_ids(request_inputs.flat_map(&:source_work_ids))
 
     request_inputs.each do |input|
+      unless RequestOptionPolicy.permitted_book_types?(book_types, input.metadata_attrs[:content_kind])
+        errors << "#{input.metadata_attrs[:title].presence || input.work_id}: #{incompatible_book_types_error(input.metadata_attrs[:content_kind])}"
+        next
+      end
+
       book_types.each do |book_type|
         duplicate_check = DuplicateDetectionService.check(
           work_id: input.work_id,
@@ -58,7 +64,7 @@ class RequestCreationService
         )
 
         if duplicate_check.block?
-          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{book_type.titleize}: #{duplicate_check.message}"
+          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate_check.message}"
           next
         end
 
@@ -72,7 +78,7 @@ class RequestCreationService
           created_requests << request
           input.source_work_ids.each { |source_work_id| existing_books_lookup[source_work_id.to_s][book.book_type] = book }
         else
-          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{book_type.titleize}: #{request.errors.full_messages.join(', ')}"
+          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{request.errors.full_messages.join(', ')}"
         end
       end
     end
@@ -100,6 +106,23 @@ class RequestCreationService
     end.uniq
   end
 
+  def normalize_metadata_attrs(attrs, fallback_content_kind: nil)
+    attrs.to_h.symbolize_keys.tap do |normalized_attrs|
+      normalized_attrs[:content_kind] = ContentKinds.resolve(
+        normalized_attrs[:content_kind].presence || fallback_content_kind,
+        source_work_ids: source_work_ids,
+        collection_source: normalized_attrs[:collection_source],
+        default: ContentKinds::BOOK
+      )
+    end
+  end
+
+  def incompatible_book_types_error(content_kind = metadata_attrs[:content_kind])
+    incompatible_types = RequestOptionPolicy.incompatible_book_types(book_types, content_kind)
+    labels = incompatible_types.map { |book_type| RequestOptionPolicy.book_type_label(book_type) }
+    "#{labels.to_sentence} cannot be requested for #{RequestOptionPolicy.content_kind_label(content_kind)} content"
+  end
+
   def build_request_inputs
     if collection_request?
       items = MetadataCollectionService.expand(
@@ -112,7 +135,13 @@ class RequestCreationService
       # ticked in the collection view; without one the whole collection is
       # requested (API compatibility).
       items = items.select { |item| collection_item_ids.include?(item.work_id) } if collection_item_ids.any?
-      items
+      items.map do |item|
+        RequestInput.new(
+          work_id: item.work_id,
+          source_work_ids: item.source_work_ids,
+          metadata_attrs: normalize_metadata_attrs(item.metadata_attrs, fallback_content_kind: metadata_attrs[:content_kind])
+        )
+      end
     else
       [ RequestInput.new(work_id: work_id, source_work_ids: source_work_ids, metadata_attrs: metadata_attrs) ]
     end

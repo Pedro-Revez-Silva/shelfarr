@@ -34,6 +34,58 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal 2024, request.book.year
   end
 
+  test "normalizes legacy graphic content kinds before persistence" do
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "comic_vine:4000-legacy-manga",
+      book_types: [ "comicbook" ],
+      metadata_attrs: { title: "Legacy Manga", content_kind: "manga" }
+    )
+
+    assert result.success?
+    assert_equal "graphic", result.created_requests.first.book.content_kind
+  end
+
+  test "rejects book formats for graphic content" do
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "comic_vine:4000-invalid-format",
+      book_types: [ "ebook" ],
+      metadata_attrs: { title: "Invalid Graphic Format", content_kind: "comic" }
+    )
+
+    assert_not result.success?
+    assert_equal [ "Ebook cannot be requested for Comics & Manga content" ], result.errors
+  end
+
+  test "treats Comic Vine identity as authoritative when content kind is missing or forged" do
+    [ nil, "book" ].each do |content_kind|
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        result = RequestCreationService.call(
+          user: @user,
+          work_id: "comic_vine:4000-source-policy-#{content_kind || 'missing'}",
+          book_types: [ "ebook" ],
+          metadata_attrs: { title: "Source Policy", content_kind: content_kind }.compact
+        )
+
+        assert_not result.success?
+        assert_equal [ "Ebook cannot be requested for Comics & Manga content" ], result.errors
+      end
+    end
+  end
+
+  test "rejects graphic formats for book content" do
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "openlibrary:OL_INVALID_FORMAT",
+      book_types: [ "comicbook" ],
+      metadata_attrs: { title: "Invalid Book Format", content_kind: "book" }
+    )
+
+    assert_not result.success?
+    assert_equal [ "Comics & Manga cannot be requested for book content" ], result.errors
+  end
+
   test "blocks duplicate active requests" do
     result = RequestCreationService.call(
       user: @user,
@@ -246,6 +298,7 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert requests.all? { |request| request.request_scope == "collection" }
     assert_equal [ "4000-102", "4000-101" ], requests.map { |request| request.book.comic_vine_id }
     assert_equal [ "Saga", "Saga" ], requests.map(&:collection_title)
+    assert requests.all? { |request| request.book.content_graphic? }
   end
 
   test "collection request enqueues background expansion instead of expanding inline" do
@@ -277,6 +330,7 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
 
     job_args = enqueued_jobs.last[:args].first
     assert_equal [ "comic_vine:4000-101", "comic_vine:4000-102" ], job_args["collection_item_ids"]
+    assert_equal "graphic", job_args.dig("metadata_attrs", "content_kind")
   end
 
   test "collection request only creates requests for the selected items" do

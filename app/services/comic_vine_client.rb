@@ -160,7 +160,7 @@ class ComicVineClient
         series_name: resource_type == "issue" ? volume["name"] : payload["name"],
         issue_number: resource_type == "issue" ? payload["issue_number"].presence : nil,
         release_date: release_date,
-        content_kind: content_kind_for(payload, requested_content_kind),
+        content_kind: ContentKinds::GRAPHIC,
         collection_id: resource_type == "issue" ? resource_key("volume", volume["id"]) : resource_key("volume", payload["id"]),
         collection_title: resource_type == "issue" ? volume["name"] : payload["name"],
         web_url: payload["site_detail_url"],
@@ -198,14 +198,6 @@ class ComicVineClient
 
     def creator_names(payload)
       Array(payload["person_credits"]).filter_map { |person| person["name"] }.first(4).join(", ").presence
-    end
-
-    def content_kind_for(payload, requested_content_kind)
-      requested = requested_content_kind.to_s
-      return requested if %w[comic manga].include?(requested)
-
-      searchable = [ payload["name"], payload["description"], payload["deck"], payload.dig("publisher", "name") ].join(" ")
-      searchable.match?(/\bmanga\b/i) ? "manga" : "comic"
     end
 
     def clean_html(value)

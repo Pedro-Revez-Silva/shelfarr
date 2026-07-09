@@ -5,7 +5,7 @@ class Book < ApplicationRecord
   has_many :uploads, dependent: :nullify
 
   enum :book_type, { audiobook: 0, ebook: 1, comicbook: 2 }
-  enum :content_kind, { book: 0, comic: 1, manga: 2 }, prefix: :content
+  enum :content_kind, { book: 0, graphic: 1 }, prefix: :content
 
   validates :title, presence: true
   validates :book_type, presence: true
@@ -57,7 +57,7 @@ class Book < ApplicationRecord
     case book_type
     when "audiobook" then "Audiobook"
     when "ebook" then "Ebook"
-    when "comicbook" then content_manga? ? "Manga" : "Comic Book"
+    when "comicbook" then "Comics & Manga"
     else
       book_type.to_s.titleize
     end

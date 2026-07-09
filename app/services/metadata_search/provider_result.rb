@@ -15,6 +15,11 @@ module MetadataSearch
       source_url: nil,
       raw_payload: nil,
       content_kind: "book",
+      resource_kind: "work",
+      classification_evidence: [ "default:book" ],
+      classification_confidence: MetadataSearch::ContentClassifier::DEFAULT_CONFIDENCE,
+      categories: [],
+      subjects: [],
       available_book_types: nil,
       collection_source: nil,
       collection_id: nil,
@@ -26,7 +31,9 @@ module MetadataSearch
     attr_reader :source, :source_id, :title, :author, :year, :description, :cover_url,
       :isbn_10, :isbn_13, :publisher, :page_count, :language,
       :series_name, :series_position, :has_ebook, :has_audiobook,
-      :source_url, :raw_payload, :content_kind, :available_book_types,
+      :source_url, :raw_payload, :content_kind, :resource_kind,
+      :classification_evidence, :classification_confidence, :categories, :subjects,
+      :available_book_types,
       :collection_source, :collection_id, :collection_title, :issue_number,
       :release_date
 
@@ -34,6 +41,12 @@ module MetadataSearch
       DEFAULTS.merge(attributes).each do |key, value|
         instance_variable_set("@#{key}", value)
       end
+      @content_kind = ContentKinds.normalize(@content_kind)
+      @resource_kind = @resource_kind.to_s.presence || "work"
+      @classification_evidence = Array(@classification_evidence).compact_blank.freeze
+      @classification_confidence = @classification_confidence.to_i.clamp(0, 100)
+      @categories = Array(@categories).compact_blank.freeze
+      @subjects = Array(@subjects).compact_blank.freeze
     end
 
     def work_id

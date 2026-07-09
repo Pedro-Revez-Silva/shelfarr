@@ -70,6 +70,6 @@ class AcquisitionProvider < ApplicationRecord
   def supports_at_least_one_media_type
     return if supports_ebooks? || supports_audiobooks? || supports_comicbooks?
 
-    errors.add(:base, "Provider must support ebooks, audiobooks, or comic books")
+    errors.add(:base, "Provider must support ebooks, audiobooks, or Comics & Manga")
   end
 end

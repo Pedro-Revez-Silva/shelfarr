@@ -46,7 +46,7 @@ module Integrations
       [
         "Shelfarr commands:",
         "/search <title or author>",
-        "/request <work_id> <ebook|audiobook|both> [language]",
+        "/request <work_id> <ebook|audiobook|comicbook|both> [language]",
         "/status",
         "/whoami"
       ].join("\n")
@@ -86,7 +86,7 @@ module Integrations
       end
 
       if work_id.blank? || book_types.empty?
-        return result("Usage: /request <work_id> <ebook|audiobook|both> [language]")
+        return result("Usage: /request <work_id> <ebook|audiobook|comicbook|both> [language]")
       end
 
       creation = RequestCreationService.call(
@@ -138,6 +138,8 @@ module Integrations
         [ "ebook" ]
       when "audiobook"
         [ "audiobook" ]
+      when "comicbook"
+        [ "comicbook" ]
       when "both"
         [ "ebook", "audiobook" ]
       else

@@ -48,14 +48,46 @@ module MetadataSearch
       assert_equal 2, results.size
     end
 
-    test "keeps books and comics separate even when title author and year match" do
+    test "keeps strongly classified books and graphics separate even when identity fields match" do
       results = Aggregator.call([
-        provider_result(source: "hardcover", source_id: "book", title: "Dune", author: "Frank Herbert", year: 1965, content_kind: "book"),
-        provider_result(source: "comic_vine", source_id: "comic", title: "Dune", author: "Frank Herbert", year: 1965, content_kind: "comic", available_book_types: [ "comicbook" ])
+        provider_result(source: "hardcover", source_id: "book", title: "Dune", author: "Frank Herbert", year: 1965,
+          content_kind: "book", classification_confidence: 90),
+        provider_result(source: "comic_vine", source_id: "comic", title: "Dune", author: "Frank Herbert", year: 1965,
+          content_kind: "graphic", classification_confidence: 100)
       ], priority: %w[hardcover comic_vine])
 
       assert_equal 2, results.size
-      assert_equal %w[book comic], results.map(&:content_kind)
+      assert_equal %w[book graphic], results.map(&:content_kind)
+    end
+
+    test "merges a low confidence default classification with strong graphic evidence" do
+      results = Aggregator.call([
+        provider_result(source: "openlibrary", source_id: "OL123W", content_kind: "book", classification_confidence: 10),
+        provider_result(source: "google_books", source_id: "gb123", content_kind: "graphic", classification_confidence: 90)
+      ], priority: %w[openlibrary google_books])
+
+      assert_equal 1, results.size
+      assert_equal "graphic", results.first.content_kind
+      assert_equal 90, results.first.classification_confidence
+      assert_equal [ "comicbook" ], results.first.available_book_types
+    end
+
+    test "records requested kind when it supplies the aggregate fallback" do
+      result = Aggregator.call([
+        provider_result(source: "openlibrary", source_id: "OL123W")
+      ], requested_content_kind: "comic").first
+
+      assert_equal "graphic", result.content_kind
+      assert_includes result.classification_evidence, "requested_kind:graphic"
+    end
+
+    test "keeps series and work resources separate" do
+      results = Aggregator.call([
+        provider_result(source: "comic_vine", source_id: "4050-1", resource_kind: "series"),
+        provider_result(source: "openlibrary", source_id: "OL123W", resource_kind: "work")
+      ])
+
+      assert_equal 2, results.size
     end
 
     test "uses provider priority for primary source and first-present fields" do
@@ -102,11 +134,32 @@ module MetadataSearch
       assert_nil candidate.has_audiobook
     end
 
+    test "delegates requestable formats to request option policy" do
+      received_kinds = []
+      policy = lambda do |content_kind|
+        received_kinds << content_kind
+        [ "policy-format" ]
+      end
+
+      RequestOptionPolicy.stub(:book_types_for, policy) do
+        candidate = Aggregator.call([
+          provider_result(source: "hardcover", source_id: "hc123", has_audiobook: false, has_ebook: true,
+            content_kind: "manga", available_book_types: [ "ebook" ]),
+          provider_result(source: "openlibrary", source_id: "OL123W", content_kind: "comic")
+        ], priority: %w[hardcover openlibrary]).first
+
+        assert_equal [ "policy-format" ], candidate.available_book_types
+        assert_equal [ "graphic" ], received_kinds
+        assert_equal true, candidate.has_ebook
+        assert_equal false, candidate.has_audiobook
+      end
+    end
+
     private
 
     def provider_result(source:, source_id:, title: "The Hobbit", author: "J.R.R. Tolkien", year: 1937,
       description: nil, cover_url: nil, isbn_10: nil, isbn_13: nil, has_ebook: nil, has_audiobook: nil,
-      content_kind: "book", available_book_types: nil)
+      content_kind: "book", available_book_types: nil, resource_kind: "work", classification_confidence: 10)
       ProviderResult.new(
         source: source,
         source_id: source_id,
@@ -127,7 +180,9 @@ module MetadataSearch
         source_url: "https://example.test/#{source_id}",
         raw_payload: nil,
         content_kind: content_kind,
-        available_book_types: available_book_types
+        available_book_types: available_book_types,
+        resource_kind: resource_kind,
+        classification_confidence: classification_confidence
       )
     end
   end

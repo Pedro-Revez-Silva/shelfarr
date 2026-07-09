@@ -29,7 +29,7 @@
             <%= [
               ("Ebooks" if provider.supports_ebooks?),
               ("Audiobooks" if provider.supports_audiobooks?),
-              ("Comic books" if provider.supports_comicbooks?)
+              ("Comics & Manga" if provider.supports_comicbooks?)
             ].compact.join(", ") %>
           </p>
 
@@ -66,7 +66,7 @@
                 <%= [
                   ("Ebooks" if provider.supports_ebooks?),
                   ("Audiobooks" if provider.supports_audiobooks?),
-                  ("Comic books" if provider.supports_comicbooks?)
+                  ("Comics & Manga" if provider.supports_comicbooks?)
                 ].compact.join(", ") %>
               </td>
               <td class="px-6 py-4 whitespace-nowrap">

@@ -111,8 +111,48 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     assert_includes body["text"], "1. Telegram Search Book With A Very Long Title by Telegram Author"
     assert_includes body["text"], "Choose a format below."
     assert_not_includes body["text"], search_result.work_id
-    assert_equal "1. Ebook", body.dig("reply_markup", "inline_keyboard", 0, 0, "text")
-    assert_equal "1. Audio", body.dig("reply_markup", "inline_keyboard", 0, 1, "text")
+    assert_equal "1. Audio", body.dig("reply_markup", "inline_keyboard", 0, 0, "text")
+    assert_equal "1. Ebook", body.dig("reply_markup", "inline_keyboard", 0, 1, "text")
+  end
+
+  test "offers only Comics & Manga for graphic search results" do
+    search_result = MetadataSearch::Candidate.new(
+      canonical_key: "comic_vine:4000-telegram-search",
+      title: "Telegram Graphic Search",
+      author: "Graphic Creator",
+      year: 2024,
+      description: nil,
+      cover_url: nil,
+      series_name: nil,
+      series_position: nil,
+      has_ebook: false,
+      has_audiobook: false,
+      sources: [
+        {
+          source: "comic_vine",
+          source_id: "4000-telegram-search",
+          source_name: "Comic Vine",
+          source_url: nil,
+          work_id: "comic_vine:4000-telegram-search"
+        }
+      ],
+      editions: [],
+      confidence: 100,
+      content_kind: "graphic"
+    )
+
+    MetadataService.stub(:search, [ search_result ]) do
+      post integrations_telegram_webhook_path,
+        headers: { "X-Telegram-Bot-Api-Secret-Token" => "telegram-secret" },
+        params: telegram_update("/search Telegram Graphic", update_id: 125),
+        as: :json
+    end
+
+    assert_response :success
+    keyboard = JSON.parse(response.body).dig("reply_markup", "inline_keyboard")
+    assert_equal 1, keyboard.first.size
+    assert_equal "1. Comics & Manga", keyboard.dig(0, 0, "text")
+    assert_match(/\|comicbook\z/, keyboard.dig(0, 0, "callback_data"))
   end
 
   test "rejects paused Telegram groups without issuing a new approval code" do
