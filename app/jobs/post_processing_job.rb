@@ -4,6 +4,8 @@
 # Files are copied by default to preserve seeding for torrent downloads.
 # Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
+  AUDIOBOOK_FILE_EXTENSIONS = %w[m4b m4a mp3 flac aax aa ogg opus aac wav].freeze
+  AUDIOBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt cue].freeze
   EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
   EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
   EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
@@ -22,13 +24,14 @@ class PostProcessingJob < ApplicationJob
     request.update!(status: :processing)
 
     begin
-      destination = build_destination_path(book, download)
+      base_path = get_base_path(book)
+      destination = build_destination_path(book, base_path: base_path)
       source_path = remap_download_path(download.download_path, download)
       if source_path_unavailable?(source_path)
         return retry_source_path_later(download, request, source_path, source_path_retry_count)
       end
 
-      source_cleanup = import_files(source_path, destination, book: book)
+      source_cleanup = import_files(source_path, destination, book: book, base_path: base_path)
       cleanup_usenet_download(download)
 
       book_path = imported_book_path(book, destination)
@@ -100,8 +103,8 @@ class PostProcessingJob < ApplicationJob
     Rails.logger.warn "[PostProcessingJob] Failed to remove usenet download (non-fatal): #{e.message}"
   end
 
-  def build_destination_path(book, download)
-    base_path = get_base_path(book)
+  def build_destination_path(book, base_path: nil)
+    base_path ||= get_base_path(book)
     PathTemplateService.build_destination(book, base_path: base_path)
   end
 
@@ -109,6 +112,7 @@ class PostProcessingJob < ApplicationJob
   # recorded as the book's own path when the import produced a single file.
   # Pointing file_path at that file keeps downloads and deletions per-book.
   def imported_book_path(book, destination)
+    return @imported_book_path_override if @imported_book_path_override.present?
     return destination unless PathTemplateService.flat_output?(book)
     return destination unless @imported_renamed_files&.one?
 
@@ -134,7 +138,7 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def import_files(source, destination, book: nil)
+  def import_files(source, destination, book: nil, base_path: nil)
     unless source.present?
       Rails.logger.error "[PostProcessingJob] Source path is blank - download client may not have reported the path"
       raise "Source path is blank. Check download client configuration and ensure the download completed successfully."
@@ -150,32 +154,19 @@ class PostProcessingJob < ApplicationJob
 
     directory_source = File.directory?(source)
     @imported_renamed_files = []
+    @imported_book_path_override = nil
     @defer_source_removal = directory_source && move_completed_downloads?
     action = move_completed_downloads? ? "Moving" : "Copying"
     Rails.logger.info "[PostProcessingJob] #{action} from #{source} to #{destination}"
     validate_ebook_source!(source) if book&.ebook?
-    FileUtils.mkdir_p(destination)
     source_cleanup = nil
 
     if directory_source
-      # Import all files from source directory to destination
-      # Use Dir.entries instead of Dir.glob to avoid pattern matching issues
-      # (e.g., [AUDIOBOOK] in path being treated as character class)
-      files = Dir.entries(source).reject { |f| f.start_with?(".") }
-      Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to import"
-      files.each do |file|
-        source_file = File.join(source, file)
-
-        if book&.ebook?
-          import_ebook_directory_entry(source_file, destination, book)
-        else
-          import_directory_entry(source_file, destination)
-        end
-      end
-
+      import_directory(source, destination, book: book, base_path: base_path)
       source_cleanup = -> { remove_import_source_tree(source) } if move_completed_downloads?
     else
       # Import single file with renamed filename based on template
+      FileUtils.mkdir_p(destination)
       import_renamed_file(source, destination, book)
     end
 
@@ -183,6 +174,117 @@ class PostProcessingJob < ApplicationJob
     source_cleanup
   ensure
     remove_instance_variable(:@defer_source_removal) if instance_variable_defined?(:@defer_source_removal)
+  end
+
+  def import_directory(source, destination, book:, base_path:)
+    audio_files = audiobook_bundle_audio_files(source)
+    if split_audiobook_bundle_import?(book, audio_files)
+      base_path ||= get_base_path(book)
+      import_split_audiobook_bundle(audio_files, book, base_path: base_path)
+      return
+    end
+
+    FileUtils.mkdir_p(destination)
+
+    # Import all files from source directory to destination.
+    # Use Dir.entries instead of Dir.glob to avoid pattern matching issues
+    # (e.g., [AUDIOBOOK] in path being treated as character class).
+    files = Dir.entries(source).reject { |f| f.start_with?(".") }
+    Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to import"
+    files.each do |file|
+      source_file = File.join(source, file)
+
+      if book&.ebook?
+        import_ebook_directory_entry(source_file, destination, book)
+      else
+        import_directory_entry(source_file, destination)
+      end
+    end
+  end
+
+  def split_audiobook_bundle_import?(book, audio_files)
+    return false unless book&.audiobook?
+    return false unless SettingsService.get(:split_audiobook_bundle_imports, default: false)
+
+    audio_files.many?
+  end
+
+  def import_split_audiobook_bundle(audio_files, book, base_path:)
+    Rails.logger.info "[PostProcessingJob] Splitting audiobook bundle into #{audio_files.size} per-file folders"
+
+    audio_files.each do |source_file|
+      destination = split_audiobook_destination(source_file, book, base_path: base_path)
+      FileUtils.mkdir_p(destination)
+      import_audiobook_bundle_file(source_file, destination)
+      import_audiobook_sidecars(source_file, destination)
+      @imported_book_path_override ||= destination
+    end
+  end
+
+  def import_audiobook_bundle_file(source_file, destination)
+    destination_file = File.join(destination, File.basename(source_file))
+    destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
+    import_file(source_file, destination_file)
+  end
+
+  def import_audiobook_sidecars(source_file, destination)
+    audiobook_sidecars_for(source_file).each do |sidecar|
+      import_sidecar_file(sidecar, destination)
+    end
+  end
+
+  def split_audiobook_destination(source_file, book, base_path:)
+    virtual_book = book.dup
+    virtual_book.title = audiobook_title_from_filename(source_file)
+
+    destination = PathTemplateService.build_destination(virtual_book, base_path: base_path)
+    if PathTemplateService.flat_output?(book)
+      File.join(base_path, sanitize_filename(virtual_book.title))
+    else
+      destination
+    end
+  end
+
+  def audiobook_title_from_filename(path)
+    title = File.basename(path, File.extname(path)).to_s.strip
+    title.presence || "Unknown"
+  end
+
+  def audiobook_bundle_audio_files(source)
+    audiobook_source_files(source).select { |path| audiobook_file?(path) }.sort_by do |path|
+      path.delete_prefix("#{source}/").downcase
+    end
+  end
+
+  def audiobook_source_files(path)
+    Dir.entries(path).reject { |entry| entry.start_with?(".") }.flat_map do |entry|
+      child_path = File.join(path, entry)
+      if File.directory?(child_path) && !File.symlink?(child_path)
+        audiobook_source_files(child_path)
+      elsif File.file?(child_path) && !File.symlink?(child_path)
+        child_path
+      else
+        []
+      end
+    end
+  end
+
+  def audiobook_sidecars_for(source_file)
+    source_dir = File.dirname(source_file)
+    audio_files_in_dir = Dir.entries(source_dir).reject { |entry| entry.start_with?(".") }.count do |entry|
+      path = File.join(source_dir, entry)
+      File.file?(path) && !File.symlink?(path) && audiobook_file?(path)
+    end
+    source_stem = File.basename(source_file, File.extname(source_file)).downcase
+
+    Dir.entries(source_dir).reject { |entry| entry.start_with?(".") }.filter_map do |entry|
+      path = File.join(source_dir, entry)
+      next unless File.file?(path) && !File.symlink?(path) && audiobook_sidecar_file?(path)
+      next path if audio_files_in_dir == 1
+
+      sidecar_stem = File.basename(path, File.extname(path)).downcase
+      path if sidecar_stem == source_stem
+    end
   end
 
   def import_ebook_directory_entry(source_file, destination, book)
@@ -332,6 +434,14 @@ class PostProcessingJob < ApplicationJob
 
   def ebook_file?(path)
     EBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete_prefix(".").downcase)
+  end
+
+  def audiobook_file?(path)
+    AUDIOBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete_prefix(".").downcase)
+  end
+
+  def audiobook_sidecar_file?(path)
+    AUDIOBOOK_SIDECAR_EXTENSIONS.include?(File.extname(path).delete_prefix(".").downcase)
   end
 
   def handle_duplicate_filename(path)
