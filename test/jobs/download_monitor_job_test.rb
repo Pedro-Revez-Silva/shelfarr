@@ -79,7 +79,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       stub_qbittorrent_auth
       stub_qbittorrent_torrent_info(progress: 100, state: "uploading")
 
-      assert_enqueued_with(job: PostProcessingJob, args: [@download.id]) do
+      assert_enqueued_with(job: PostProcessingJob, args: [ @download.id ]) do
         DownloadMonitorJob.perform_now
       end
 
@@ -94,7 +94,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       stub_qbittorrent_auth
       stub_qbittorrent_torrent_info(progress: 100, state: "stoppedUP")
 
-      assert_enqueued_with(job: PostProcessingJob, args: [@download.id]) do
+      assert_enqueued_with(job: PostProcessingJob, args: [ @download.id ]) do
         DownloadMonitorJob.perform_now
       end
 
@@ -372,7 +372,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
           }.to_json
         )
 
-      assert_enqueued_with(job: PostProcessingJob, args: [@download.id]) do
+      assert_enqueued_with(job: PostProcessingJob, args: [ @download.id ]) do
         DownloadMonitorJob.perform_now
       end
 
@@ -393,6 +393,82 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     assert_no_enqueued_jobs do
       DownloadMonitorJob.ensure_running!
     end
+  end
+
+  test "ensure_running! does not enqueue when a protected monitor job is pending" do
+    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 1.minute.ago.to_i)
+
+    DownloadMonitorJob.stub(:monitor_job_pending?, true) do
+      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+        DownloadMonitorJob.ensure_running!
+      end
+    end
+  end
+
+  test "solid queue recovers when a cache reservation exists without a pending job" do
+    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 1.hour.from_now.to_i)
+
+    DownloadMonitorJob.stub(:solid_queue_adapter?, true) do
+      DownloadMonitorJob.stub(:monitor_job_pending?, false) do
+        assert_enqueued_with(job: DownloadMonitorJob) do
+          DownloadMonitorJob.ensure_running!
+        end
+      end
+    end
+  end
+
+  test "does not schedule a successor when another protected monitor job is pending" do
+    job = DownloadMonitorJob.new
+    pending_job = lambda do |excluding_active_job_id: nil|
+      assert_equal job.job_id, excluding_active_job_id
+      true
+    end
+
+    DownloadMonitorJob.stub(:monitor_job_pending?, pending_job) do
+      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+        job.send(:schedule_next_run)
+      end
+    end
+  end
+
+  test "stale monitor instances claim a completed download only once" do
+    first = Download.find(@download.id)
+    stale = Download.find(@download.id)
+    first_info = Struct.new(:download_path).new("/downloads/complete/Test Audiobook")
+    stale_info = Struct.new(:download_path).new("/downloads/complete/Stale Path")
+    clear_enqueued_jobs
+
+    DownloadMonitorJob.new.send(:handle_completed, first, first_info)
+    DownloadMonitorJob.new.send(:handle_completed, stale, stale_info)
+
+    completed_events = @request.request_events.where(event_type: "completed", download_id: @download.id)
+    post_processing_jobs = enqueued_jobs.select { |job| job[:job] == PostProcessingJob }
+
+    assert_equal 1, completed_events.count
+    assert_equal 1, post_processing_jobs.count
+    assert_equal [ @download.id ], post_processing_jobs.first[:args]
+    assert @download.reload.completed?
+    assert_equal 100, @download.progress
+    assert_equal first_info.download_path, @download.download_path
+  end
+
+  test "ensure_running! does not duplicate a persisted solid queue monitor" do
+    with_solid_queue_monitor_jobs do |monitor_jobs|
+      DownloadMonitorJob.set(wait: 1.minute).perform_later
+      Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 1.minute.ago.to_i)
+
+      assert_equal 1, monitor_jobs.count
+      assert_no_difference -> { monitor_jobs.count } do
+        DownloadMonitorJob.ensure_running!
+      end
+    end
+  end
+
+  test "limits monitor execution to one protected job" do
+    assert_equal DownloadMonitorJob::CONCURRENCY_KEY, DownloadMonitorJob.concurrency_key
+    assert_equal 1, DownloadMonitorJob.concurrency_limit
+    assert_equal 30.minutes, DownloadMonitorJob.concurrency_duration
+    assert_equal :block, DownloadMonitorJob.concurrency_on_conflict
   end
 
   test "skips downloads without external_id" do
@@ -499,6 +575,23 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
   end
 
   private
+
+  def with_solid_queue_monitor_jobs
+    original_adapter = ActiveJob::Base.queue_adapter
+    original_config = SolidQueue::Record.connection_db_config
+    monitor_jobs = nil
+
+    SolidQueue::Record.establish_connection(:queue)
+    ActiveJob::Base.queue_adapter = :solid_queue
+    monitor_jobs = SolidQueue::Job.where(class_name: DownloadMonitorJob.name)
+    monitor_jobs.destroy_all
+
+    yield monitor_jobs.where(finished_at: nil).where.not(concurrency_key: nil)
+  ensure
+    monitor_jobs&.destroy_all
+    ActiveJob::Base.queue_adapter = original_adapter
+    SolidQueue::Record.establish_connection(original_config)
+  end
 
   def stub_qbittorrent_auth
     stub_request(:post, "http://localhost:8080/api/v2/auth/login")

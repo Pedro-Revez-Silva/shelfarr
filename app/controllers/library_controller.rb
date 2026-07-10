@@ -29,8 +29,14 @@ class LibraryController < ApplicationController
       return
     end
 
+    retry_job = PostProcessingJob.new(download.id, 0, download.post_processing_job_id)
+    unless retry_job.enqueue
+      error = retry_job.enqueue_error&.message || "unknown queue error"
+      redirect_to library_path(@book), alert: "Failed to queue post-processing retry: #{error}"
+      return
+    end
+
     request.update!(attention_needed: false, issue_description: nil)
-    PostProcessingJob.perform_later(download.id)
 
     redirect_to library_path(@book), notice: "Post-processing has been queued for retry."
   end

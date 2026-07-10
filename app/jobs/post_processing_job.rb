@@ -10,16 +10,20 @@ class PostProcessingJob < ApplicationJob
 
   queue_as :default
 
-  def perform(download_id, source_path_retry_count = 0)
+  def perform(download_id, source_path_retry_count = 0, expected_owner_job_id = nil)
     download = Download.find_by(id: download_id)
     return unless download&.completed?
 
     request = download.request
+    return if request.completed?
+    return unless request.downloading? || request.processing?
+    return unless download.claim_post_processing!(job_id, expected_owner_job_id: expected_owner_job_id)
+
     book = request.book
 
     Rails.logger.info "[PostProcessingJob] Starting post-processing for download #{download.id} (#{book.title})"
 
-    request.update!(status: :processing)
+    request.update!(status: :processing) unless request.processing?
 
     begin
       destination = build_destination_path(book, download)
@@ -65,7 +69,7 @@ class PostProcessingJob < ApplicationJob
     retry_limit = SettingsService.get(:post_processing_source_path_retries).to_i
     if retry_count < retry_limit
       next_retry_count = retry_count + 1
-      wait_interval = SettingsService.get(:download_check_interval).to_i.seconds
+      wait_interval = SettingsService.get(:download_check_interval).to_i.clamp(1, 86_400).seconds
 
       Rails.logger.warn(
         "[PostProcessingJob] Source path not visible yet: #{source_path}. " \
@@ -81,7 +85,8 @@ class PostProcessingJob < ApplicationJob
         details: { source_path: source_path, retry_count: next_retry_count, retry_limit: retry_limit }
       )
 
-      self.class.set(wait: wait_interval).perform_later(download.id, next_retry_count)
+      retry_job = self.class.new(download.id, next_retry_count, job_id)
+      raise "Failed to enqueue post-processing retry" unless retry_job.enqueue(wait: wait_interval)
       return
     end
 

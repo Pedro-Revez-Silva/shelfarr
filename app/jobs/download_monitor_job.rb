@@ -2,18 +2,23 @@
 
 # Recurring job that monitors active downloads and triggers post-processing on completion
 class DownloadMonitorJob < ApplicationJob
+  CONCURRENCY_KEY = "download_monitor"
   NOT_FOUND_THRESHOLD = 3
   SCHEDULE_CACHE_KEY = "download_monitor/next_run_at"
 
   queue_as :default
+  limits_concurrency key: CONCURRENCY_KEY, duration: 30.minutes
 
   class << self
     def ensure_running!
       return unless DownloadClient.enabled.exists?
+      return if monitor_job_pending?
 
       interval = poll_interval_seconds
-      next_run_at = Rails.cache.read(SCHEDULE_CACHE_KEY).to_i
-      return if next_run_at > Time.current.to_i
+      unless solid_queue_adapter?
+        next_run_at = Rails.cache.read(SCHEDULE_CACHE_KEY).to_i
+        return if next_run_at > Time.current.to_i
+      end
 
       reserve_schedule!(interval)
       Rails.logger.info "[DownloadMonitorJob] Scheduling monitor chain"
@@ -22,6 +27,19 @@ class DownloadMonitorJob < ApplicationJob
 
     def clear_schedule!
       Rails.cache.delete(SCHEDULE_CACHE_KEY)
+    end
+
+    def monitor_job_pending?(excluding_active_job_id: nil)
+      return false unless solid_queue_adapter?
+
+      scope = SolidQueue::Job
+        .where(class_name: name, finished_at: nil)
+        .where.not(concurrency_key: nil)
+        .where.missing(:failed_execution, :claimed_execution)
+      scope = scope.where.not(active_job_id: excluding_active_job_id) if excluding_active_job_id.present?
+      scope.exists?
+    rescue ActiveRecord::ActiveRecordError, NameError
+      false
     end
 
     private
@@ -39,7 +57,11 @@ class DownloadMonitorJob < ApplicationJob
     end
 
     def schedule_ttl(interval)
-      [interval * 3, 300].max.seconds
+      [ interval * 3, 300 ].max.seconds
+    end
+
+    def solid_queue_adapter?
+      ActiveJob::Base.queue_adapter.class.name == "ActiveJob::QueueAdapters::SolidQueueAdapter"
     end
   end
 
@@ -91,13 +113,18 @@ class DownloadMonitorJob < ApplicationJob
   end
 
   def handle_completed(download, info)
-    Rails.logger.info "[DownloadMonitorJob] Download #{download.id} completed"
+    claimed = Download
+      .where(id: download.id, status: Download.statuses[:downloading])
+      .update_all(
+        status: Download.statuses[:completed],
+        progress: 100,
+        download_path: info.download_path,
+        updated_at: Time.current
+      )
+    return unless claimed == 1
 
-    download.update!(
-      status: :completed,
-      progress: 100,
-      download_path: info.download_path
-    )
+    download.reload
+    Rails.logger.info "[DownloadMonitorJob] Download #{download.id} completed"
     track_request_event(download.request, "completed", download: download, message: "Download completed in client", details: { download_path: info.download_path })
 
     # Trigger post-processing
@@ -159,6 +186,8 @@ class DownloadMonitorJob < ApplicationJob
   end
 
   def schedule_next_run
+    return if self.class.monitor_job_pending?(excluding_active_job_id: job_id)
+
     interval = self.class.send(:poll_interval_seconds)
     Rails.cache.write(
       self.class::SCHEDULE_CACHE_KEY,
