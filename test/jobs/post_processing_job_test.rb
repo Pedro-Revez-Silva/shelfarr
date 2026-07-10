@@ -121,10 +121,13 @@ class PostProcessingJobTest < ActiveJob::TestCase
   test "splits multi-file audiobook directory imports into per-file path template folders when enabled" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
     File.write(File.join(@temp_source, "Book One.jpg"), "book one cover")
     File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    File.write(File.join(@temp_source, "cover.png"), "shared cover")
+    File.write(File.join(@temp_source, "README.md"), "release notes")
 
     PostProcessingJob.perform_now(@download.id)
 
@@ -132,18 +135,35 @@ class PostProcessingJobTest < ActiveJob::TestCase
     book_two_dest = File.join(@temp_dest_base, @book.author, "Book Two")
     request_dest = File.join(@temp_dest_base, @book.author, @book.title)
 
-    assert_equal book_one_dest, @book.reload.file_path
+    assert_equal book_two_dest, @book.reload.file_path
     assert File.exist?(File.join(book_one_dest, "Book One.m4b"))
     assert File.exist?(File.join(book_one_dest, "Book One.jpg"))
+    assert File.exist?(File.join(book_one_dest, "cover.png"))
     assert File.exist?(File.join(book_two_dest, "Book Two.m4b"))
+    assert File.exist?(File.join(book_two_dest, "cover.png"))
+    assert File.exist?(File.join(book_two_dest, "README.md"))
     assert_not File.exist?(File.join(book_two_dest, "Book One.jpg"))
     assert_not File.exist?(File.join(request_dest, "Book One.m4b"))
+  end
+
+  test "keeps chapter-based audiobook files together when bundle splitting is enabled" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    File.write(File.join(@temp_source, "02 - audiobook.mp3"), "second chapter")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert_equal expected_dest, @book.reload.file_path
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+    assert File.exist?(File.join(expected_dest, "02 - audiobook.mp3"))
   end
 
   test "splits audiobook bundles into subfolders even when audiobook path template is blank" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobook_path_template, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
     File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
@@ -153,7 +173,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     book_one_dest = File.join(@temp_dest_base, "Book One")
     book_two_dest = File.join(@temp_dest_base, "Book Two")
 
-    assert_equal book_one_dest, @book.reload.file_path
+    assert_equal book_two_dest, @book.reload.file_path
     assert File.exist?(File.join(book_one_dest, "Book One.m4b"))
     assert File.exist?(File.join(book_two_dest, "Book Two.m4b"))
     assert_not File.exist?(File.join(@temp_dest_base, "Book One.m4b"))
@@ -234,6 +254,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
     SettingsService.set(:move_completed_downloads, true)
+    @book.update!(title: "Book Two")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
     File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
@@ -244,6 +265,29 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(@temp_dest_base, @book.author, "Book One", "Book One.m4b"))
     assert File.exist?(File.join(@temp_dest_base, @book.author, "Book Two", "Book Two.m4b"))
     assert_not File.exist?(@temp_source), "Source download folder should be removed after successful split import"
+  end
+
+  test "keeps exact-stem companions with each split book during move import" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    SettingsService.set(:move_completed_downloads, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.aax"), "book one audio")
+    File.write(File.join(@temp_source, "Book One.pdf"), "book one companion")
+    File.write(File.join(@temp_source, "Book Two.aax"), "book two audio")
+    File.write(File.join(@temp_source, "Book Two.pdf"), "book two companion")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    book_one_dest = File.join(@temp_dest_base, @book.author, "Book One")
+    book_two_dest = File.join(@temp_dest_base, @book.author, "Book Two")
+    assert @request.reload.completed?
+    assert File.exist?(File.join(book_one_dest, "Book One.aax"))
+    assert File.exist?(File.join(book_one_dest, "Book One.pdf"))
+    assert File.exist?(File.join(book_two_dest, "Book Two.aax"))
+    assert File.exist?(File.join(book_two_dest, "Book Two.pdf"))
+    assert_not File.exist?(@temp_source)
   end
 
   test "moves and renames single file imports when enabled" do

@@ -25,7 +25,7 @@ class MetadataExtractorService
       result = case extension
       when "mp3"
         extract_mp3(file_path)
-      when "m4b", "m4a"
+      when "m4b", "m4a", "aa", "aax", "aaxc"
         extract_m4b(file_path)
       when "epub"
         extract_epub(file_path)

@@ -67,7 +67,7 @@ class SettingsService
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
     post_processing_source_path_retries: { type: "integer", default: 10, category: "download", description: "Number of post-processing retries while waiting for completed download files to appear" },
     move_completed_downloads: { type: "boolean", default: false, category: "download", description: "Move completed download files into the library instead of copying them. Disable to preserve torrent seeding." },
-    split_audiobook_bundle_imports: { type: "boolean", default: false, category: "download", description: "When an audiobook download directory contains multiple audio files, import each audio file into its own folder named through the audiobook path template. Leave disabled for chapter-split releases." },
+    split_audiobook_bundle_imports: { type: "boolean", default: false, category: "download", description: "Split releases containing multiple self-contained M4B/AAX books into per-book folders. MP3, FLAC, and other chapter-based releases stay together." },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 
     # Library Platform Integration

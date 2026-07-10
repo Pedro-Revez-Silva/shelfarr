@@ -120,7 +120,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "label", text: "Split Audiobook Bundle Imports"
     assert_select "input[name='settings[split_audiobook_bundle_imports]']"
-    assert_select "p", text: /Leave disabled for chapter-split releases/
+    assert_select "p", text: /MP3, FLAC, and other chapter-based releases stay together/
   end
 
   test "index shows OIDC auto redirect setting" do

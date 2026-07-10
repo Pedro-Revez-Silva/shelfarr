@@ -13,7 +13,7 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
 
   test "returns empty result for unsupported file type" do
     # Create a temp file with unsupported extension
-    file = Tempfile.new(["test", ".txt"])
+    file = Tempfile.new([ "test", ".txt" ])
     file.write("Hello world")
     file.close
 
@@ -127,13 +127,13 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
 
   test "parses MP4 metadata atoms" do
     file = StringIO.new(
-      mp4_atom([0xA9].pack("C") + "nam", "M4B Title") +
-        mp4_atom([0xA9].pack("C") + "ART", "M4B Author") +
-        mp4_atom([0xA9].pack("C") + "alb", "M4B Album") +
+      mp4_atom([ 0xA9 ].pack("C") + "nam", "M4B Title") +
+        mp4_atom([ 0xA9 ].pack("C") + "ART", "M4B Author") +
+        mp4_atom([ 0xA9 ].pack("C") + "alb", "M4B Album") +
         mp4_atom("aART", "Album Author") +
-        mp4_atom([0xA9].pack("C") + "day", "2020") +
+        mp4_atom([ 0xA9 ].pack("C") + "day", "2020") +
         mp4_atom("desc", "Description") +
-        mp4_atom([0xA9].pack("C") + "wrt", "Narrator")
+        mp4_atom([ 0xA9 ].pack("C") + "wrt", "Narrator")
     )
     file.set_encoding(Encoding::BINARY)
 
@@ -149,9 +149,9 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
   end
 
   test "extracts m4b metadata from parsed atoms" do
-    Tempfile.create(["book", ".m4b"]) do |file|
+    Tempfile.create([ "book", ".m4b" ]) do |file|
       file.binmode
-      file.write(mp4_atom([0xA9].pack("C") + "nam", "M4B Title") + mp4_atom([0xA9].pack("C") + "ART", "M4B Author"))
+      file.write(mp4_atom([ 0xA9 ].pack("C") + "nam", "M4B Title") + mp4_atom([ 0xA9 ].pack("C") + "ART", "M4B Author"))
       file.flush
 
       result = MetadataExtractorService.extract(file.path)
@@ -159,6 +159,20 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
       assert result.success
       assert_equal "M4B Title", result.title
       assert_equal "M4B Author", result.author
+    end
+  end
+
+  test "extracts AAX metadata through the MP4 parser" do
+    Tempfile.create([ "book", ".aax" ]) do |file|
+      file.binmode
+      file.write(mp4_atom([ 0xA9 ].pack("C") + "nam", "AAX Title") + mp4_atom([ 0xA9 ].pack("C") + "ART", "AAX Author"))
+      file.flush
+
+      result = MetadataExtractorService.extract(file.path)
+
+      assert result.success
+      assert_equal "AAX Title", result.title
+      assert_equal "AAX Author", result.author
     end
   end
 
@@ -178,8 +192,8 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
 
   def mp4_atom(type, value)
     value = value.b
-    data = [16 + value.bytesize].pack("N") + "data" + ("\0" * 8).b + value
-    ([8 + data.bytesize].pack("N") + type.b + data).b
+    data = [ 16 + value.bytesize ].pack("N") + "data" + ("\0" * 8).b + value
+    ([ 8 + data.bytesize ].pack("N") + type.b + data).b
   end
 
   def create_test_epub(title:, author:, date:)

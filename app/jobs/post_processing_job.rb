@@ -4,8 +4,6 @@
 # Files are copied by default to preserve seeding for torrent downloads.
 # Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
-  AUDIOBOOK_FILE_EXTENSIONS = %w[m4b m4a mp3 flac aax aa ogg opus aac wav].freeze
-  AUDIOBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt cue].freeze
   EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
   EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
   EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
@@ -46,7 +44,7 @@ class PostProcessingJob < ApplicationJob
 
       # Pre-create zip for directories (audiobooks) so download is instant.
       # Flat imports share the output root, which must never be zipped whole.
-      if File.directory?(book_path) && !PathTemplateService.flat_output?(book)
+      if File.directory?(book_path) && (!PathTemplateService.flat_output?(book) || @imported_book_path_override.present?)
         pre_create_download_zip(book, book_path)
       end
 
@@ -180,10 +178,9 @@ class PostProcessingJob < ApplicationJob
   end
 
   def import_directory(source, destination, book:, base_path:)
-    audio_files = audiobook_bundle_audio_files(source)
-    if split_audiobook_bundle_import?(book, audio_files)
-      base_path ||= get_base_path(book)
-      import_split_audiobook_bundle(audio_files, book, base_path: base_path)
+    bundle_plan = audiobook_bundle_import_plan(source, book, base_path: base_path)
+    if bundle_plan
+      import_split_audiobook_bundle(bundle_plan)
       return
     end
 
@@ -205,89 +202,36 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def split_audiobook_bundle_import?(book, audio_files)
-    return false unless book&.audiobook?
-    return false unless SettingsService.get(:split_audiobook_bundle_imports, default: false)
+  def audiobook_bundle_import_plan(source, book, base_path:)
+    return unless book&.audiobook?
+    return unless SettingsService.get(:split_audiobook_bundle_imports, default: false)
 
-    audio_files.many?
+    AudiobookBundleImportPlanner.call(
+      source: source,
+      book: book,
+      base_path: base_path || get_base_path(book)
+    )
   end
 
-  def import_split_audiobook_bundle(audio_files, book, base_path:)
-    Rails.logger.info "[PostProcessingJob] Splitting audiobook bundle into #{audio_files.size} per-file folders"
+  def import_split_audiobook_bundle(plan)
+    Rails.logger.info "[PostProcessingJob] Splitting audiobook bundle into #{plan.entries.size} per-book folders"
 
-    audio_files.each do |source_file|
-      destination = split_audiobook_destination(source_file, book, base_path: base_path)
-      FileUtils.mkdir_p(destination)
-      import_audiobook_bundle_file(source_file, destination)
-      import_audiobook_sidecars(source_file, destination)
-      @imported_book_path_override ||= destination
+    plan.entries.each do |entry|
+      FileUtils.mkdir_p(entry.destination)
+      import_audiobook_bundle_file(entry.source_path, entry.destination)
+      entry.sidecar_paths.each { |sidecar| import_sidecar_file(sidecar, entry.destination) }
     end
+
+    tracked_destination = plan.tracked_entry.destination
+    FileUtils.mkdir_p(tracked_destination)
+    plan.unassigned_paths.each { |path| import_sidecar_file(path, tracked_destination) }
+    @imported_book_path_override = tracked_destination
   end
 
   def import_audiobook_bundle_file(source_file, destination)
     destination_file = File.join(destination, File.basename(source_file))
     destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
     import_file(source_file, destination_file)
-  end
-
-  def import_audiobook_sidecars(source_file, destination)
-    audiobook_sidecars_for(source_file).each do |sidecar|
-      import_sidecar_file(sidecar, destination)
-    end
-  end
-
-  def split_audiobook_destination(source_file, book, base_path:)
-    virtual_book = book.dup
-    virtual_book.title = audiobook_title_from_filename(source_file)
-
-    destination = PathTemplateService.build_destination(virtual_book, base_path: base_path)
-    if PathTemplateService.flat_output?(book)
-      File.join(base_path, sanitize_filename(virtual_book.title))
-    else
-      destination
-    end
-  end
-
-  def audiobook_title_from_filename(path)
-    title = File.basename(path, File.extname(path)).to_s.strip
-    title.presence || "Unknown"
-  end
-
-  def audiobook_bundle_audio_files(source)
-    audiobook_source_files(source).select { |path| audiobook_file?(path) }.sort_by do |path|
-      path.delete_prefix("#{source}/").downcase
-    end
-  end
-
-  def audiobook_source_files(path)
-    Dir.entries(path).reject { |entry| entry.start_with?(".") }.flat_map do |entry|
-      child_path = File.join(path, entry)
-      if File.directory?(child_path) && !File.symlink?(child_path)
-        audiobook_source_files(child_path)
-      elsif File.file?(child_path) && !File.symlink?(child_path)
-        child_path
-      else
-        []
-      end
-    end
-  end
-
-  def audiobook_sidecars_for(source_file)
-    source_dir = File.dirname(source_file)
-    audio_files_in_dir = Dir.entries(source_dir).reject { |entry| entry.start_with?(".") }.count do |entry|
-      path = File.join(source_dir, entry)
-      File.file?(path) && !File.symlink?(path) && audiobook_file?(path)
-    end
-    source_stem = File.basename(source_file, File.extname(source_file)).downcase
-
-    Dir.entries(source_dir).reject { |entry| entry.start_with?(".") }.filter_map do |entry|
-      path = File.join(source_dir, entry)
-      next unless File.file?(path) && !File.symlink?(path) && audiobook_sidecar_file?(path)
-      next path if audio_files_in_dir == 1
-
-      sidecar_stem = File.basename(path, File.extname(path)).downcase
-      path if sidecar_stem == source_stem
-    end
   end
 
   def import_ebook_directory_entry(source_file, destination, book)
@@ -457,14 +401,6 @@ class PostProcessingJob < ApplicationJob
 
   def ebook_file?(path)
     EBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete_prefix(".").downcase)
-  end
-
-  def audiobook_file?(path)
-    AUDIOBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete_prefix(".").downcase)
-  end
-
-  def audiobook_sidecar_file?(path)
-    AUDIOBOOK_SIDECAR_EXTENSIONS.include?(File.extname(path).delete_prefix(".").downcase)
   end
 
   def handle_duplicate_filename(path)
