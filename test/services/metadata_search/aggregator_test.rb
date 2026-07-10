@@ -72,6 +72,40 @@ module MetadataSearch
       assert_equal [ "comicbook" ], results.first.available_book_types
     end
 
+    test "checks classification conflicts against every member of a transitive cluster" do
+      results = Aggregator.call([
+        provider_result(source: "hardcover", source_id: "strong-book", content_kind: "book", classification_confidence: 90),
+        provider_result(source: "openlibrary", source_id: "weak-graphic", content_kind: "graphic", classification_confidence: 10),
+        provider_result(source: "comic_vine", source_id: "strong-graphic", content_kind: "graphic", classification_confidence: 100)
+      ], priority: %w[hardcover openlibrary comic_vine])
+
+      assert_equal 2, results.size
+      book_candidate = results.find { |candidate| candidate.content_kind == "book" }
+      graphic_candidate = results.find(&:graphic?)
+      assert_equal %w[hardcover openlibrary], book_candidate.sources.map { |source| source[:source] }
+      assert_equal [ "comic_vine" ], graphic_candidate.sources.map { |source| source[:source] }
+    end
+
+    test "unions provider classification metadata without blanks or duplicates" do
+      candidate = Aggregator.call([
+        provider_result(
+          source: "openlibrary",
+          source_id: "OL123W",
+          categories: [ "Fiction", "" ],
+          subjects: [ "Comics" ]
+        ),
+        provider_result(
+          source: "google_books",
+          source_id: "gb123",
+          categories: [ "Fiction", "Graphic novels" ],
+          subjects: [ nil, "Manga" ]
+        )
+      ]).first
+
+      assert_equal [ "Fiction", "Graphic novels" ], candidate.categories
+      assert_equal [ "Comics", "Manga" ], candidate.subjects
+    end
+
     test "records requested kind when it supplies the aggregate fallback" do
       result = Aggregator.call([
         provider_result(source: "openlibrary", source_id: "OL123W")
@@ -159,7 +193,8 @@ module MetadataSearch
 
     def provider_result(source:, source_id:, title: "The Hobbit", author: "J.R.R. Tolkien", year: 1937,
       description: nil, cover_url: nil, isbn_10: nil, isbn_13: nil, has_ebook: nil, has_audiobook: nil,
-      content_kind: "book", available_book_types: nil, resource_kind: "work", classification_confidence: 10)
+      content_kind: "book", available_book_types: nil, resource_kind: "work", classification_confidence: 10,
+      categories: [], subjects: [])
       ProviderResult.new(
         source: source,
         source_id: source_id,
@@ -182,7 +217,9 @@ module MetadataSearch
         content_kind: content_kind,
         available_book_types: available_book_types,
         resource_kind: resource_kind,
-        classification_confidence: classification_confidence
+        classification_confidence: classification_confidence,
+        categories: categories,
+        subjects: subjects
       )
     end
   end

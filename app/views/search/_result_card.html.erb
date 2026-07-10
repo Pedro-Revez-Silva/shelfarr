@@ -4,7 +4,12 @@
   result_sources = result.respond_to?(:sources) ? Array(result.sources) : [ { source_name: result.source_name, source_url: result.source_url, work_id: result.work_id } ]
   source_work_ids = result_sources.filter_map { |source| source[:work_id] }
   source_work_ids = [ result.work_id ] if source_work_ids.blank?
-  content_kind = ContentKinds.normalize(result.respond_to?(:content_kind) ? result.content_kind : nil, default: "book")
+  content_kind = ContentKinds.resolve(
+    result.respond_to?(:content_kind) ? result.content_kind : nil,
+    source_work_ids: source_work_ids,
+    collection_source: (result.collection_source if result.respond_to?(:collection_source)),
+    default: ContentKinds::BOOK
+  )
   available_book_types = RequestOptionPolicy.book_types_for(content_kind)
 
   kind_label = case content_kind

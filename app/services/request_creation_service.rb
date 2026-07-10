@@ -106,11 +106,11 @@ class RequestCreationService
     end.uniq
   end
 
-  def normalize_metadata_attrs(attrs, fallback_content_kind: nil)
+  def normalize_metadata_attrs(attrs, fallback_content_kind: nil, source_ids: source_work_ids)
     attrs.to_h.symbolize_keys.tap do |normalized_attrs|
       normalized_attrs[:content_kind] = ContentKinds.resolve(
         normalized_attrs[:content_kind].presence || fallback_content_kind,
-        source_work_ids: source_work_ids,
+        source_work_ids: source_ids,
         collection_source: normalized_attrs[:collection_source],
         default: ContentKinds::BOOK
       )
@@ -139,7 +139,11 @@ class RequestCreationService
         RequestInput.new(
           work_id: item.work_id,
           source_work_ids: item.source_work_ids,
-          metadata_attrs: normalize_metadata_attrs(item.metadata_attrs, fallback_content_kind: metadata_attrs[:content_kind])
+          metadata_attrs: normalize_metadata_attrs(
+            item.metadata_attrs,
+            fallback_content_kind: metadata_attrs[:content_kind],
+            source_ids: [ item.work_id, *Array(item.source_work_ids) ]
+          )
         )
       end
     else

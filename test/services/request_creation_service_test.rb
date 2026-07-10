@@ -74,6 +74,41 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "evaluates each collection item using its own provider identity" do
+    item = RequestCreationService::RequestInput.new(
+      work_id: "comic_vine:4000-child-source-policy",
+      source_work_ids: [],
+      metadata_attrs: {
+        title: "Graphic Child",
+        content_kind: "book",
+        request_scope: "collection",
+        collection_source: "hardcover",
+        collection_id: "parent-series"
+      }
+    )
+
+    MetadataCollectionService.stub(:expand, [ item ]) do
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        result = RequestCreationService.call(
+          user: @user,
+          work_id: "hardcover:parent-series",
+          book_types: [ "ebook" ],
+          metadata_attrs: {
+            title: "Book Parent",
+            content_kind: "book",
+            request_scope: "collection",
+            collection_source: "hardcover",
+            collection_id: "parent-series"
+          },
+          expand_collection: true
+        )
+
+        assert_not result.success?
+        assert_equal [ "Graphic Child: Ebook cannot be requested for Comics & Manga content" ], result.errors
+      end
+    end
+  end
+
   test "rejects graphic formats for book content" do
     result = RequestCreationService.call(
       user: @user,
@@ -137,6 +172,22 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal "telegram", request.external_source
     assert_equal "42", request.external_user_id
     assert_equal "-100123", request.external_chat_id
+  end
+
+  test "reports request validation errors with the title and format" do
+    assert_no_difference "Request.count" do
+      result = RequestCreationService.call(
+        user: @user,
+        work_id: "openlibrary:OL_INVALID_ORIGIN",
+        book_types: [ "ebook" ],
+        metadata_attrs: { title: "Invalid Origin" },
+        origin: { created_via: "invalid_origin" }
+      )
+
+      assert_not result.success?
+      assert_includes result.errors.join, "Invalid Origin Ebook"
+      assert_includes result.errors.join, "Created via is not included in the list"
+    end
   end
 
   test "stores all candidate source identifiers on created book" do

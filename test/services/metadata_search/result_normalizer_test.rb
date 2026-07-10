@@ -65,6 +65,44 @@ module MetadataSearch
       assert_equal [ "requested_kind:graphic" ], normalized.classification_evidence
     end
 
+    test "supports provider result objects created before classification fields existed" do
+      legacy_google_result = Struct.new(
+        :id, :title, :author, :first_publish_year, :description, :cover_url, :has_ebook, :language,
+        keyword_init: true
+      ).new(
+        id: "legacy-google",
+        title: "Legacy Google Result",
+        author: "Author",
+        first_publish_year: 2020,
+        description: nil,
+        cover_url: nil,
+        has_ebook: true,
+        language: "en"
+      )
+      legacy_open_library_class = Struct.new(
+        :work_id, :title, :author, :first_publish_year,
+        keyword_init: true
+      ) do
+        def cover_url(size:)
+          nil
+        end
+      end
+      legacy_open_library_result = legacy_open_library_class.new(
+        work_id: "OLLEGACYW",
+        title: "Legacy Open Library Result",
+        author: "Author",
+        first_publish_year: 2021
+      )
+
+      google = ResultNormalizer.call("google_books", legacy_google_result)
+      open_library = ResultNormalizer.call("openlibrary", legacy_open_library_result)
+
+      assert_equal [], google.categories
+      assert_equal [], open_library.subjects
+      assert_equal "book", google.content_kind
+      assert_equal "book", open_library.content_kind
+    end
+
     test "maps Comic Vine volumes to series and issues to works" do
       volume = comic_vine_result(resource_type: "volume", resource_key: "4050-1")
       issue = comic_vine_result(resource_type: "issue", resource_key: "4000-2")
@@ -77,6 +115,15 @@ module MetadataSearch
       assert_equal "graphic", normalized_volume.content_kind
       assert_equal 100, normalized_volume.classification_confidence
       assert_equal [ "provider:comic_vine" ], normalized_volume.classification_evidence
+
+      candidate = Aggregator.call([ normalized_issue ]).first
+      assert_predicate candidate, :graphic?
+      assert_predicate candidate, :collection?
+      assert_equal "comic_vine", candidate.collection_source
+      assert_equal "4050-1", candidate.collection_id
+      assert_equal "Saga", candidate.collection_title
+      assert_equal "1", candidate.issue_number
+      assert_equal "2012-03-14", candidate.release_date
     end
 
     private

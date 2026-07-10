@@ -115,7 +115,7 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     assert_equal "1. Ebook", body.dig("reply_markup", "inline_keyboard", 0, 1, "text")
   end
 
-  test "offers only Comics & Manga for graphic search results" do
+  test "uses Comic Vine identity for formats when search metadata declares book" do
     search_result = MetadataSearch::Candidate.new(
       canonical_key: "comic_vine:4000-telegram-search",
       title: "Telegram Graphic Search",
@@ -138,7 +138,7 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
       ],
       editions: [],
       confidence: 100,
-      content_kind: "graphic"
+      content_kind: "book"
     )
 
     MetadataService.stub(:search, [ search_result ]) do
@@ -152,7 +152,12 @@ class Integrations::TelegramWebhooksControllerTest < ActionDispatch::Integration
     keyboard = JSON.parse(response.body).dig("reply_markup", "inline_keyboard")
     assert_equal 1, keyboard.first.size
     assert_equal "1. Comics & Manga", keyboard.dig(0, 0, "text")
-    assert_match(/\|comicbook\z/, keyboard.dig(0, 0, "callback_data"))
+    callback_data = keyboard.dig(0, 0, "callback_data")
+    assert_match(/\|comicbook\z/, callback_data)
+
+    token = callback_data.split("|").second
+    selection = Integrations::Telegram::SearchResultCache.fetch(token)
+    assert_equal "graphic", selection.dig(:metadata_attrs, :content_kind)
   end
 
   test "rejects paused Telegram groups without issuing a new approval code" do

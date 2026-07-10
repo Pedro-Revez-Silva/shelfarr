@@ -382,6 +382,43 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_no_match "available_book_types", response.body
   end
 
+  test "result cards use provider identity for graphic labels and canonical links" do
+    candidate = MetadataSearch::Candidate.new(
+      canonical_key: "comic_vine:4000-card-source-policy",
+      title: "Graphic Source Policy",
+      author: "Creator",
+      year: 2024,
+      description: nil,
+      cover_url: nil,
+      series_name: nil,
+      series_position: nil,
+      has_ebook: false,
+      has_audiobook: false,
+      sources: [
+        {
+          source: "comic_vine",
+          source_id: "4000-card-source-policy",
+          source_name: "Comic Vine",
+          source_url: nil,
+          work_id: "comic_vine:4000-card-source-policy"
+        }
+      ],
+      editions: [],
+      confidence: 100,
+      content_kind: "book"
+    )
+
+    MetadataService.stub(:search, [ candidate ]) do
+      get search_results_path, params: { q: "source policy" }
+    end
+
+    assert_response :success
+    assert_select "span", text: "Comics & Manga"
+    assert_select "a[data-turbo-frame='modal'][href*='content_kind=graphic']", minimum: 2
+    assert_select "a[href^='#{new_request_path}'][href*='content_kind=graphic']", text: "Request", count: 1
+    assert_no_match "available_book_types", response.body
+  end
+
   test "details renders modal with collection preview and collection request action" do
     preview_item = MetadataCollectionService::Item.new(
       work_id: "comic_vine:4000-101",

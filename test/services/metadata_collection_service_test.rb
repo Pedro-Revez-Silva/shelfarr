@@ -16,20 +16,34 @@ class MetadataCollectionServiceTest < ActiveSupport::TestCase
       series_name: "Saga",
       issue_number: "1",
       release_date: "2012-03-14",
-      content_kind: "graphic",
-      collection_id: "4050-99",
-      collection_title: "Saga",
+      content_kind: "book",
+      collection_id: nil,
+      collection_title: nil,
       web_url: "https://comicvine.gamespot.com/issue/4000-123/",
       raw_payload: {}
     )
 
+    volume_issues = lambda do |collection_id, limit:, content_kind:|
+      assert_equal "4050-99", collection_id
+      assert_equal 25, limit
+      assert_equal "graphic", content_kind
+      [ comic_issue ]
+    end
+
     ComicVineClient.stub(:configured?, true) do
-      ComicVineClient.stub(:volume_issues, [ comic_issue ]) do
-        items = MetadataCollectionService.expand(source: "comic_vine", collection_id: "4050-99", collection_title: "Saga", content_kind: "graphic")
+      ComicVineClient.stub(:volume_issues, volume_issues) do
+        items = MetadataCollectionService.expand(
+          source: "comic_vine",
+          collection_id: "4050-99",
+          collection_title: "Saga",
+          content_kind: "book",
+          limit: 25
+        )
 
         assert_equal 1, items.size
         assert_equal "comic_vine:4000-123", items.first.work_id
         assert_equal "collection", items.first.metadata_attrs[:request_scope]
+        assert_equal "4050-99", items.first.metadata_attrs[:collection_id]
         assert_equal "Saga", items.first.metadata_attrs[:collection_title]
         assert_equal "1", items.first.metadata_attrs[:series_position]
         assert_equal "graphic", items.first.metadata_attrs[:content_kind]

@@ -45,6 +45,32 @@ module Integrations
         assert_equal "graphic", selection[:metadata_attrs][:content_kind]
       end
 
+      test "uses Comic Vine source identity when the declared kind is wrong" do
+        candidate = MetadataSearch::Candidate.new(
+          canonical_key: "comic_vine:4000-source-policy",
+          title: "Source Policy",
+          author: "Creator",
+          year: 2024,
+          description: nil,
+          cover_url: nil,
+          series_name: nil,
+          series_position: nil,
+          has_ebook: false,
+          has_audiobook: false,
+          sources: [],
+          editions: [],
+          confidence: 100,
+          content_kind: "book"
+        )
+
+        token = SearchResultCache.store(candidate)
+        selection = SearchResultCache.fetch(token)
+
+        assert_equal "graphic", SearchResultCache.content_kind_for(candidate)
+        assert_equal [ "comic_vine:4000-source-policy" ], selection[:source_work_ids]
+        assert_equal "graphic", selection.dig(:metadata_attrs, :content_kind)
+      end
+
       test "callback data stays within telegram limit" do
         data = SearchResultCache.callback_data("a1b2c3d4e5f60718293a4b5c6d7e8f90", "audiobook")
 

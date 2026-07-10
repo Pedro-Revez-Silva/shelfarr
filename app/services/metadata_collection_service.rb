@@ -91,7 +91,12 @@ class MetadataCollectionService
           first_publish_year: result.year,
           description: result.description,
           publisher: result.publisher,
-          content_kind: ContentKinds.normalize(result.content_kind, default: graphic_content_kind),
+          content_kind: ContentKinds.resolve(
+            result.content_kind,
+            source_work_ids: [ work_id ],
+            collection_source: "comic_vine",
+            default: graphic_content_kind
+          ),
           issue_number: result.issue_number,
           release_date: result.release_date,
           series: result.series_name,

@@ -53,6 +53,26 @@ module MetadataSearch
       assert_equal 90, open_library.confidence
     end
 
+    test "prefers strong provider evidence over a conflicting requested kind" do
+      result = ContentClassifier.call(
+        source: "google_books",
+        categories: [ "Comics & Graphic Novels" ],
+        requested_content_kind: "book"
+      )
+
+      assert_equal "graphic", result.content_kind
+      assert_equal 90, result.confidence
+      assert_equal [ "category:Comics & Graphic Novels" ], result.evidence
+    end
+
+    test "defaults to book when neither provider nor request supplies evidence" do
+      result = ContentClassifier.call(source: "openlibrary", subjects: [ "Fiction" ])
+
+      assert_equal "book", result.content_kind
+      assert_equal 10, result.confidence
+      assert_equal [ "default:book" ], result.evidence
+    end
+
     test "uses requested legacy kind only as a low confidence fallback" do
       result = ContentClassifier.call(
         source: "google_books",

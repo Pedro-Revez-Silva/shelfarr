@@ -150,7 +150,7 @@ module Integrations
           inline_keyboard: results.each_with_index.map do |result, index|
             label = index + 1
             token = SearchResultCache.store(result)
-            content_kind = ContentKinds.normalize(result.respond_to?(:content_kind) ? result.content_kind : nil, default: "book")
+            content_kind = SearchResultCache.content_kind_for(result)
 
             RequestOptionPolicy.book_types_for(content_kind).map do |book_type|
               {
