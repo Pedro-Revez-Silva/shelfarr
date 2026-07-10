@@ -12,12 +12,13 @@ class Upload < ApplicationRecord
     failed: 3
   }
 
-  enum :book_type, { audiobook: 0, ebook: 1 }
+  enum :book_type, { audiobook: 0, ebook: 1, comicbook: 2 }
 
   # Supported file extensions
   AUDIOBOOK_EXTENSIONS = %w[m4a m4b mp3 zip rar].freeze
   EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
-  SUPPORTED_EXTENSIONS = (AUDIOBOOK_EXTENSIONS + EBOOK_EXTENSIONS).freeze
+  COMICBOOK_EXTENSIONS = %w[cbz cbr].freeze
+  SUPPORTED_EXTENSIONS = (AUDIOBOOK_EXTENSIONS + EBOOK_EXTENSIONS + COMICBOOK_EXTENSIONS).freeze
 
   validates :original_filename, presence: true
   validates :status, presence: true
@@ -39,11 +40,17 @@ class Upload < ApplicationRecord
     EBOOK_EXTENSIONS.include?(file_extension)
   end
 
+  def comicbook_file?
+    COMICBOOK_EXTENSIONS.include?(file_extension)
+  end
+
   def archive_file?
     %w[zip rar].include?(file_extension)
   end
 
   def infer_book_type
+    return :comicbook if comicbook_file?
+
     audiobook_file? ? :audiobook : :ebook
   end
 

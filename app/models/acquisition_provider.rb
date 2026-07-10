@@ -25,6 +25,8 @@ class AcquisitionProvider < ApplicationRecord
       where(supports_ebooks: true)
     when "audiobook"
       where(supports_audiobooks: true)
+    when "comicbook"
+      where(supports_comicbooks: true)
     else
       all
     end
@@ -66,8 +68,8 @@ class AcquisitionProvider < ApplicationRecord
   end
 
   def supports_at_least_one_media_type
-    return if supports_ebooks? || supports_audiobooks?
+    return if supports_ebooks? || supports_audiobooks? || supports_comicbooks?
 
-    errors.add(:base, "Provider must support ebooks, audiobooks, or both")
+    errors.add(:base, "Provider must support ebooks, audiobooks, or Comics & Manga")
   end
 end

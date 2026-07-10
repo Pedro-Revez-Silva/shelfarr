@@ -30,10 +30,16 @@ class API::V1::RequestsController < API::V1::ApplicationController
       user: user,
       work_id: create_params[:work_id],
       book_types: create_params[:book_types].presence || [ create_params[:book_type] ].compact,
-      metadata_attrs: create_params.slice(:title, :author, :cover_url, :year, :first_publish_year),
+      metadata_attrs: create_params.slice(
+        :title, :author, :cover_url, :year, :first_publish_year,
+        :description, :publisher, :content_kind, :issue_number, :release_date,
+        :series, :series_position, :request_scope, :collection_source,
+        :collection_id, :collection_title
+      ),
       notes: create_params[:notes],
       language: create_params[:language],
       source_work_ids: create_params[:source_work_ids],
+      collection_item_ids: create_params[:collection_item_ids],
       origin: {
         created_via: "api",
         external_source: create_params[:external_source].presence || "api",
@@ -42,9 +48,16 @@ class API::V1::RequestsController < API::V1::ApplicationController
       }
     )
 
-    status = result.success? ? :created : :unprocessable_entity
+    status = if result.queued?
+      :accepted
+    elsif result.success?
+      :created
+    else
+      :unprocessable_entity
+    end
     render json: {
       requests: result.created_requests.map { |request| request_payload(request) },
+      queued: result.queued?,
       warnings: result.warnings,
       errors: result.errors
     }, status: status
@@ -135,13 +148,25 @@ class API::V1::RequestsController < API::V1::ApplicationController
       :cover_url,
       :year,
       :first_publish_year,
+      :description,
+      :publisher,
+      :content_kind,
+      :issue_number,
+      :release_date,
+      :series,
+      :series_position,
+      :request_scope,
+      :collection_source,
+      :collection_id,
+      :collection_title,
       :notes,
       :language,
       :external_source,
       :external_user_id,
       :external_chat_id,
       source_work_ids: [],
-      book_types: []
+      book_types: [],
+      collection_item_ids: []
     )
   end
 
@@ -158,13 +183,20 @@ class API::V1::RequestsController < API::V1::ApplicationController
         status: request.status,
         attention_needed: request.attention_needed,
         created_via: request.created_via,
-        external_source: request.external_source
+        external_source: request.external_source,
+        request_scope: request.request_scope,
+        collection_source: request.collection_source,
+        collection_id: request.collection_id,
+        collection_title: request.collection_title
       },
       book: {
         id: request.book_id,
         title: request.book.title,
         author: request.book.author,
         book_type: request.book.book_type,
+        book_type_label: request.book.book_type_label,
+        content_kind: request.book.content_kind,
+        collection_title: request.collection_title,
         work_id: request.book.unified_work_id,
         metadata_source_name: request.book.metadata_source_name,
         metadata_source_url: request.book.metadata_source_url,

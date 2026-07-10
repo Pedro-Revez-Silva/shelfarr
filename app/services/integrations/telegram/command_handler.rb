@@ -150,12 +150,24 @@ module Integrations
           inline_keyboard: results.each_with_index.map do |result, index|
             label = index + 1
             token = SearchResultCache.store(result)
-            [
-              { text: "#{label}. Ebook", callback_data: SearchResultCache.callback_data(token, "ebook") },
-              { text: "#{label}. Audio", callback_data: SearchResultCache.callback_data(token, "audiobook") }
-            ]
+            content_kind = SearchResultCache.content_kind_for(result)
+
+            RequestOptionPolicy.book_types_for(content_kind).map do |book_type|
+              {
+                text: "#{label}. #{telegram_book_type_label(book_type)}",
+                callback_data: SearchResultCache.callback_data(token, book_type)
+              }
+            end
           end
         }
+      end
+
+      def telegram_book_type_label(book_type)
+        case book_type.to_s
+        when "audiobook" then "Audio"
+        when "comicbook" then "Comics & Manga"
+        else RequestOptionPolicy.book_type_label(book_type)
+        end
       end
 
       def process_request_selection(selection, requested_type)

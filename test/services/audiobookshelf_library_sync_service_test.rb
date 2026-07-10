@@ -10,6 +10,7 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
     SettingsService.set(:audiobookshelf_ebook_library_id, "lib-ebook")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
   end
 
   test "syncs items from configured libraries and removes stale entries" do
@@ -82,6 +83,7 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
   test "returns false when no configurable libraries are available" do
     SettingsService.set(:audiobookshelf_audiobook_library_id, "")
     SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
 
@@ -98,6 +100,38 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
 
       assert_not result.success?
       assert_equal "No Audiobookshelf library IDs configured or available.", result.errors.first
+    end
+  end
+
+  test "syncs configured comic book library items" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "lib-comics")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-comics/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [
+              {
+                "id" => "comic-1",
+                "title" => "Saga #1",
+                "author" => "Brian K. Vaughan"
+              }
+            ],
+            "total" => 1
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 1, result.items_synced
+      assert_equal 1, result.libraries_synced
+      assert_equal "Saga #1", LibraryItem.find_by!(library_id: "lib-comics", audiobookshelf_id: "comic-1").title
     end
   end
 

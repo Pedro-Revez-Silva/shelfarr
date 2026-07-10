@@ -4,7 +4,8 @@ module MetadataSources
   NAMES = {
     "hardcover" => "Hardcover",
     "google_books" => "Google Books",
-    "openlibrary" => "Open Library"
+    "openlibrary" => "Open Library",
+    "comic_vine" => "Comic Vine"
   }.freeze
 
   def self.display_name(source)

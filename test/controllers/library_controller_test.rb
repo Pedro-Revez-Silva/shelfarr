@@ -123,9 +123,14 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
       attention_needed: true,
       issue_description: "Post-processing failed"
     )
-    download = request.downloads.create!(name: "Finished", status: :completed)
+    download = request.downloads.create!(
+      name: "Finished",
+      status: :completed,
+      post_processing_job_id: "failed-job-id"
+    )
 
-    assert_enqueued_with(job: PostProcessingJob, args: [ download.id ]) do
+    retry_args = ->(args) { args == [ download.id, 0, "failed-job-id" ] }
+    assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
       post retry_post_processing_library_path(@acquired_audiobook)
     end
 
@@ -133,6 +138,32 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Post-processing has been queued for retry.", flash[:notice]
     assert_not request.reload.attention_needed?
     assert_nil request.issue_description
+    assert_equal "failed-job-id", download.reload.post_processing_job_id
+  end
+
+  test "retry post processing retains attention when enqueue fails" do
+    sign_out
+    sign_in_as(@admin)
+    request = Request.create!(
+      book: @acquired_audiobook,
+      user: @user,
+      status: :processing,
+      attention_needed: true,
+      issue_description: "Post-processing failed"
+    )
+    request.downloads.create!(name: "Finished", status: :completed)
+    failed_job = PostProcessingJob.new(0)
+
+    PostProcessingJob.stub(:new, failed_job) do
+      failed_job.stub(:enqueue, false) do
+        post retry_post_processing_library_path(@acquired_audiobook)
+      end
+    end
+
+    assert_redirected_to library_path(@acquired_audiobook)
+    assert_match(/Failed to queue post-processing retry/, flash[:alert])
+    assert request.reload.attention_needed?
+    assert_equal "Post-processing failed", request.issue_description
   end
 
   test "destroy requires admin" do

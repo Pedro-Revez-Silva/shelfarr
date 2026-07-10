@@ -4,10 +4,16 @@ module MetadataSearch
   class Candidate
     attr_reader :canonical_key, :title, :author, :year, :description, :cover_url,
       :series_name, :series_position, :has_ebook, :has_audiobook,
-      :sources, :editions, :confidence
+      :sources, :editions, :confidence, :content_kind, :available_book_types,
+      :resource_kind, :classification_evidence, :classification_confidence, :categories, :subjects,
+      :collection_source, :collection_id, :collection_title, :issue_number,
+      :release_date
 
     def initialize(canonical_key:, title:, author:, year:, description:, cover_url:,
-      series_name:, series_position:, has_ebook:, has_audiobook:, sources:, editions:, confidence:)
+      series_name:, series_position:, has_ebook:, has_audiobook:, sources:, editions:, confidence:,
+      content_kind: "book", available_book_types: nil, collection_source: nil, collection_id: nil,
+      collection_title: nil, issue_number: nil, release_date: nil, resource_kind: "work",
+      classification_evidence: [], classification_confidence: 0, categories: [], subjects: [])
       @canonical_key = canonical_key
       @title = title
       @author = author
@@ -21,6 +27,18 @@ module MetadataSearch
       @sources = Array(sources)
       @editions = Array(editions)
       @confidence = confidence
+      @content_kind = ContentKinds.normalize(content_kind)
+      @available_book_types = RequestOptionPolicy.book_types_for(@content_kind)
+      @resource_kind = resource_kind.to_s.presence || "work"
+      @classification_evidence = Array(classification_evidence).compact_blank.freeze
+      @classification_confidence = classification_confidence.to_i.clamp(0, 100)
+      @categories = Array(categories).compact_blank.freeze
+      @subjects = Array(subjects).compact_blank.freeze
+      @collection_source = collection_source
+      @collection_id = collection_id
+      @collection_title = collection_title
+      @issue_number = issue_number
+      @release_date = release_date
     end
 
     def source
@@ -57,6 +75,14 @@ module MetadataSearch
 
     def google_books?
       sources.any? { |source| source[:source] == "google_books" }
+    end
+
+    def graphic?
+      content_kind == ContentKinds::GRAPHIC
+    end
+
+    def collection?
+      collection_id.present? && collection_title.present?
     end
 
     def primary_source

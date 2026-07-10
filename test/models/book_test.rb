@@ -3,6 +3,13 @@
 require "test_helper"
 
 class BookTest < ActiveSupport::TestCase
+  test "uses consolidated content kind values" do
+    assert_equal({ "book" => 0, "graphic" => 1 }, Book.content_kinds)
+
+    graphic_book = Book.new(title: "Graphic Novel", book_type: :comicbook, content_kind: :graphic)
+    assert_equal "Comics & Manga", graphic_book.book_type_label
+  end
+
   test "work_id helpers support google books ids" do
     book = Book.create!(
       title: "Test Book",

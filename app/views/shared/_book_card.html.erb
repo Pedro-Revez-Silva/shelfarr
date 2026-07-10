@@ -33,8 +33,21 @@
 
   # Book type determination
   is_audiobook = book.respond_to?(:audiobook?) ? book.audiobook? : false
-  book_type_label = is_audiobook ? 'Audio' : 'Ebook'
-  book_type_color = is_audiobook ? 'bg-purple-500/90' : 'bg-blue-500/90'
+  is_comicbook = book.respond_to?(:comicbook?) ? book.comicbook? : false
+  book_type_label = if is_audiobook
+    "Audio"
+  elsif is_comicbook
+    "Comics & Manga"
+  else
+    "Ebook"
+  end
+  book_type_color = if is_audiobook
+    "bg-purple-500/90"
+  elsif is_comicbook
+    "bg-emerald-500/90"
+  else
+    "bg-blue-500/90"
+  end
 
   # Size-based classes
   size_classes = case size

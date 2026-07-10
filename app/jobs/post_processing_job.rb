@@ -12,16 +12,20 @@ class PostProcessingJob < ApplicationJob
 
   queue_as :default
 
-  def perform(download_id, source_path_retry_count = 0)
+  def perform(download_id, source_path_retry_count = 0, expected_owner_job_id = nil)
     download = Download.find_by(id: download_id)
     return unless download&.completed?
 
     request = download.request
+    return if request.completed?
+    return unless request.downloading? || request.processing?
+    return unless download.claim_post_processing!(job_id, expected_owner_job_id: expected_owner_job_id)
+
     book = request.book
 
     Rails.logger.info "[PostProcessingJob] Starting post-processing for download #{download.id} (#{book.title})"
 
-    request.update!(status: :processing)
+    request.update!(status: :processing) unless request.processing?
 
     begin
       base_path = get_base_path(book)
@@ -68,7 +72,7 @@ class PostProcessingJob < ApplicationJob
     retry_limit = SettingsService.get(:post_processing_source_path_retries).to_i
     if retry_count < retry_limit
       next_retry_count = retry_count + 1
-      wait_interval = SettingsService.get(:download_check_interval).to_i.seconds
+      wait_interval = SettingsService.get(:download_check_interval).to_i.clamp(1, 86_400).seconds
 
       Rails.logger.warn(
         "[PostProcessingJob] Source path not visible yet: #{source_path}. " \
@@ -84,7 +88,8 @@ class PostProcessingJob < ApplicationJob
         details: { source_path: source_path, retry_count: next_retry_count, retry_limit: retry_limit }
       )
 
-      self.class.set(wait: wait_interval).perform_later(download.id, next_retry_count)
+      retry_job = self.class.new(download.id, next_retry_count, job_id)
+      raise "Failed to enqueue post-processing retry" unless retry_job.enqueue(wait: wait_interval)
       return
     end
 
@@ -123,7 +128,9 @@ class PostProcessingJob < ApplicationJob
     # Always use Shelfarr's configured output paths.
     # External library paths are from that service's container perspective,
     # not ours, so they cannot drive file operations.
-    if book.ebook?
+    if book.comicbook?
+      SettingsService.get(:comicbook_output_path, default: "/comics")
+    elsif book.ebook?
       SettingsService.get(:ebook_output_path, default: "/ebooks")
     else
       SettingsService.get(:audiobook_output_path, default: "/audiobooks")
@@ -131,11 +138,7 @@ class PostProcessingJob < ApplicationJob
   end
 
   def library_id_for(book)
-    if book.audiobook?
-      SettingsService.get(:audiobookshelf_audiobook_library_id)
-    else
-      SettingsService.get(:audiobookshelf_ebook_library_id)
-    end
+    SettingsService.library_id_for_book(book)
   end
 
   def import_files(source, destination, book: nil, base_path: nil)
@@ -158,7 +161,7 @@ class PostProcessingJob < ApplicationJob
     @defer_source_removal = directory_source && move_completed_downloads?
     action = move_completed_downloads? ? "Moving" : "Copying"
     Rails.logger.info "[PostProcessingJob] #{action} from #{source} to #{destination}"
-    validate_ebook_source!(source) if book&.ebook?
+    validate_ebook_source!(source) if readable_file_import?(book)
     source_cleanup = nil
 
     if directory_source
@@ -194,7 +197,7 @@ class PostProcessingJob < ApplicationJob
     files.each do |file|
       source_file = File.join(source, file)
 
-      if book&.ebook?
+      if readable_file_import?(book)
         import_ebook_directory_entry(source_file, destination, book)
       else
         import_directory_entry(source_file, destination)
@@ -288,29 +291,49 @@ class PostProcessingJob < ApplicationJob
   end
 
   def import_ebook_directory_entry(source_file, destination, book)
-    if File.directory?(source_file)
+    if File.directory?(source_file) && !File.symlink?(source_file)
       Dir.entries(source_file).reject { |f| f.start_with?(".") }.each do |file|
         import_ebook_directory_entry(File.join(source_file, file), destination, book)
       end
-    elsif ebook_file?(source_file)
+    elsif allowed_ebook_import_file?(source_file) && ebook_file?(source_file)
       import_renamed_file(source_file, destination, book)
-    else
+    elsif allowed_ebook_import_file?(source_file)
       import_sidecar_file(source_file, destination)
+    else
+      Rails.logger.info "[PostProcessingJob] Skipping unsupported ebook import file: #{File.basename(source_file)}"
     end
   end
 
+  def readable_file_import?(book)
+    book&.ebook? || book&.comicbook?
+  end
+
   def validate_ebook_source!(source)
-    paths = if File.directory?(source)
-      ebook_directory_files(source)
-    else
-      [ source ]
+    unless File.directory?(source)
+      return if ebook_file?(source) && allowed_ebook_import_file?(source)
+
+      raise "Unsupported ebook import file type: #{File.basename(source)}"
     end
+
+    supported_ebook_found = false
+    paths = ebook_directory_files(source)
 
     paths.each do |path|
-      next if allowed_ebook_import_file?(path)
+      if File.symlink?(path)
+        raise "Unsupported ebook import file type: #{File.basename(path)}"
+      end
 
-      raise "Unsupported ebook import file type: #{File.basename(path)}"
+      extension = File.extname(path).delete_prefix(".").downcase
+      next unless EBOOK_ALLOWED_EXTENSIONS.include?(extension)
+
+      unless allowed_ebook_import_file?(path)
+        raise "Unsupported ebook import file type: #{File.basename(path)}"
+      end
+
+      supported_ebook_found ||= EBOOK_FILE_EXTENSIONS.include?(extension)
     end
+
+    raise "No supported ebook files found in download" unless supported_ebook_found
   end
 
   def ebook_directory_files(source)

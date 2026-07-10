@@ -45,6 +45,23 @@ class RequestsController < ApplicationController
     @cover_url = params[:cover_url]
     @first_publish_year = params[:first_publish_year]
     @source_work_ids = Array(params[:source_work_ids]).compact_blank
+    @content_kind = ContentKinds.resolve(
+      params[:content_kind],
+      source_work_ids: [ @work_id, *@source_work_ids ],
+      collection_source: params[:collection_source],
+      default: ContentKinds::BOOK
+    )
+    @description = params[:description]
+    @publisher = params[:publisher]
+    @issue_number = params[:issue_number]
+    @release_date = params[:release_date]
+    @series = params[:series]
+    @series_position = params[:series_position]
+    @request_scope = params[:request_scope].presence || "single"
+    @collection_source = params[:collection_source]
+    @collection_id = params[:collection_id]
+    @collection_title = params[:collection_title]
+    @available_book_types = RequestOptionPolicy.book_types_for(@content_kind)
 
     if @work_id.blank? || @title.blank?
       redirect_to search_path, alert: "Missing book information"
@@ -67,18 +84,23 @@ class RequestsController < ApplicationController
       metadata_attrs: request_metadata_attrs,
       notes: params[:notes],
       language: params[:language],
-      source_work_ids: params[:source_work_ids]
+      source_work_ids: params[:source_work_ids],
+      collection_item_ids: params[:collection_item_ids]
     )
 
-    if result.created_requests.empty?
+    if result.queued?
+      redirect_to requests_path, notice: "Collection request queued. Individual requests will appear here shortly."
+    elsif result.created_requests.empty?
       redirect_to search_path, alert: result.errors.join(". ")
     elsif result.created_requests.length == 1
       flash_message = "Request created for #{result.created_requests.first.book.display_name}"
       flash_message += " (#{result.warnings.join(', ')})" if result.warnings.any?
+      flash[:alert] = result.errors.join(". ") if result.errors.any?
       redirect_to result.created_requests.first, notice: flash_message
     else
       flash_message = "#{result.created_requests.length} requests created for #{result.created_requests.first.book.title}"
       flash_message += " (#{result.warnings.join(', ')})" if result.warnings.any?
+      flash[:alert] = result.errors.join(". ") if result.errors.any?
       redirect_to requests_path, notice: flash_message
     end
   end
@@ -243,7 +265,8 @@ class RequestsController < ApplicationController
     # Get allowed base directories from settings
     allowed_paths = [
       SettingsService.get(:audiobook_output_path),
-      SettingsService.get(:ebook_output_path)
+      SettingsService.get(:ebook_output_path),
+      SettingsService.get(:comicbook_output_path)
     ].compact.reject(&:blank?)
 
     # Check if path is within any allowed directory
@@ -258,7 +281,8 @@ class RequestsController < ApplicationController
 
     [
       SettingsService.get(:audiobook_output_path),
-      SettingsService.get(:ebook_output_path)
+      SettingsService.get(:ebook_output_path),
+      SettingsService.get(:comicbook_output_path)
     ].compact.reject(&:blank?).any? { |root| File.expand_path(root) == expanded_path }
   end
 
@@ -326,7 +350,18 @@ class RequestsController < ApplicationController
       title: params[:title],
       author: params[:author],
       cover_url: params[:cover_url],
-      first_publish_year: params[:first_publish_year]
+      first_publish_year: params[:first_publish_year],
+      description: params[:description],
+      publisher: params[:publisher],
+      content_kind: params[:content_kind],
+      issue_number: params[:issue_number],
+      release_date: params[:release_date],
+      series: params[:series],
+      series_position: params[:series_position],
+      request_scope: params[:request_scope],
+      collection_source: params[:collection_source],
+      collection_id: params[:collection_id],
+      collection_title: params[:collection_title]
     }
   end
 end

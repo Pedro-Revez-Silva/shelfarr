@@ -32,6 +32,7 @@ class GoogleBooksClientTest < ActiveSupport::TestCase
       assert_equal 1997, result.first_publish_year
       assert_equal "https://books.google.com/cover.jpg", result.cover_url
       assert result.has_ebook
+      assert_equal [ "Fantasy" ], result.categories
     end
   end
 

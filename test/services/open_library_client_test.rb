@@ -31,6 +31,33 @@ class OpenLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search requests and retains subjects" do
+    VCR.turned_off do
+      stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
+        .with(query: hash_including(
+          "q" => "saga",
+          "fields" => "key,title,author_name,first_publish_year,cover_i,edition_count,subject"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "docs" => [
+              {
+                "key" => "/works/OL123W",
+                "title" => "Saga",
+                "subject" => [ "Comic books, strips, etc.", "Space opera" ]
+              }
+            ]
+          }.to_json
+        )
+
+      result = OpenLibraryClient.search("saga", limit: 1).first
+
+      assert_equal [ "Comic books, strips, etc.", "Space opera" ], result.subjects
+    end
+  end
+
   test "work returns WorkDetails" do
     with_cassette("open_library/work_details") do
       work = OpenLibraryClient.work("OL45804W") # Harry Potter and the Philosopher's Stone

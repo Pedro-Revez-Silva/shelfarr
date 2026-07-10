@@ -46,7 +46,7 @@ module Integrations
       [
         "Shelfarr commands:",
         "/search <title or author>",
-        "/request <work_id> <ebook|audiobook|both> [language]",
+        "/request <work_id> <ebook|audiobook|comicbook|both> [language]",
         "/status",
         "/whoami"
       ].join("\n")
@@ -86,7 +86,7 @@ module Integrations
       end
 
       if work_id.blank? || book_types.empty?
-        return result("Usage: /request <work_id> <ebook|audiobook|both> [language]")
+        return result("Usage: /request <work_id> <ebook|audiobook|comicbook|both> [language]")
       end
 
       creation = RequestCreationService.call(
@@ -99,7 +99,9 @@ module Integrations
         origin: origin
       )
 
-      if creation.success?
+      if creation.queued?
+        result("Collection request queued. Individual requests will be created shortly.")
+      elsif creation.success?
         created = creation.created_requests.map { |request| "#{request.book.display_name} (#{request.book.book_type})" }
         lines = [ "Request created:", *created ]
         lines << "Warnings: #{creation.warnings.join('; ')}" if creation.warnings.any?
@@ -136,6 +138,8 @@ module Integrations
         [ "ebook" ]
       when "audiobook"
         [ "audiobook" ]
+      when "comicbook"
+        [ "comicbook" ]
       when "both"
         [ "ebook", "audiobook" ]
       else

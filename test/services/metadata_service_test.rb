@@ -319,6 +319,35 @@ class MetadataServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "book_details handles comic vine work_id" do
+    comic_result = ComicVineClient::Result.new(
+      id: "123",
+      resource_type: "issue",
+      resource_key: "4000-123",
+      title: "Saga - #1",
+      description: "Issue description",
+      cover_url: nil,
+      publisher: "Image",
+      creators: "Writer One",
+      series_name: "Saga",
+      issue_number: "1",
+      release_date: "2012-03-14",
+      content_kind: "graphic",
+      collection_id: "4050-99",
+      collection_title: "Saga",
+      web_url: nil,
+      raw_payload: {}
+    )
+
+    ComicVineClient.stub(:details, comic_result) do
+      result = MetadataService.book_details("comic_vine:4000-123")
+
+      assert_equal "Saga - #1", result.title
+      assert_equal "Writer One", result.author
+      assert_equal "graphic", result.content_kind
+    end
+  end
+
   test "book_details handles legacy work_id without prefix" do
     with_cassette("open_library/work_details") do
       result = MetadataService.book_details("OL45804W")
@@ -457,6 +486,61 @@ class MetadataServiceTest < ActiveSupport::TestCase
     assert_equal 90, results.first.confidence
   end
 
+  test "requested content kind does not prune enabled metadata providers" do
+    providers = %w[hardcover openlibrary google_books comic_vine]
+    searched = nil
+
+    SettingsService.stub(:enabled_metadata_providers, providers) do
+      assert_equal providers, MetadataService.enabled_metadata_providers(content_kind: "book")
+      assert_equal providers, MetadataService.enabled_metadata_providers(content_kind: "comic")
+      assert_equal providers, MetadataService.enabled_metadata_providers(content_kind: "manga")
+
+      concurrent_search = lambda do |actual_providers, query, limit:, content_kind:|
+        searched = { providers: actual_providers, query: query, limit: limit, content_kind: content_kind }
+        []
+      end
+      MetadataService.stub(:search_providers_concurrently, concurrent_search) do
+        assert_equal [], MetadataService.search("saga", limit: 12, content_kind: "manga")
+      end
+    end
+
+    assert_equal providers, searched[:providers]
+    assert_equal "saga", searched[:query]
+    assert_equal 12, searched[:limit]
+    assert_equal "graphic", searched[:content_kind]
+  end
+
+  test "requested content kind filters strong conflicts after aggregation" do
+    provider_results = [
+      metadata_provider_result(
+        source: "google_books",
+        source_id: "graphic",
+        title: "Graphic Result",
+        content_kind: "graphic",
+        classification_confidence: 90
+      ),
+      metadata_provider_result(
+        source: "hardcover",
+        source_id: "book",
+        title: "Book Result",
+        content_kind: "book",
+        classification_confidence: 90
+      ),
+      metadata_provider_result(
+        source: "openlibrary",
+        source_id: "unknown",
+        title: "Unknown Result",
+        content_kind: "book",
+        classification_confidence: 10
+      )
+    ]
+
+    results = MetadataService.aggregate_provider_results(provider_results, content_kind: "manga")
+
+    assert_equal [ "Graphic Result", "Unknown Result" ], results.map(&:title).sort
+    assert results.all? { |result| result.content_kind == "graphic" }
+  end
+
   test "search_google_books returns empty array when provider disabled" do
     SettingsService.set(:google_books_enabled, false)
 
@@ -475,7 +559,8 @@ class MetadataServiceTest < ActiveSupport::TestCase
 
   private
 
-  def metadata_provider_result(source:, source_id:, title:, author: "Author", year: 1937)
+  def metadata_provider_result(source:, source_id:, title:, author: "Author", year: 1937,
+    content_kind: "book", classification_confidence: 10)
     MetadataSearch::ProviderResult.new(
       source: source,
       source_id: source_id,
@@ -494,7 +579,9 @@ class MetadataServiceTest < ActiveSupport::TestCase
       has_ebook: nil,
       has_audiobook: nil,
       source_url: "https://example.test/#{source_id}",
-      raw_payload: nil
+      raw_payload: nil,
+      content_kind: content_kind,
+      classification_confidence: classification_confidence
     )
   end
 

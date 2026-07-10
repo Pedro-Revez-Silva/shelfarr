@@ -15,9 +15,9 @@ class GoogleBooksClient
   SearchResult = Data.define(
     :id, :title, :author, :description, :published_date,
     :cover_url, :has_ebook, :language, :isbn_10, :isbn_13,
-    :publisher, :page_count, :source_url
+    :publisher, :page_count, :source_url, :categories
   ) do
-    def initialize(id:, title:, author:, description:, published_date:, cover_url:, has_ebook:, language:, isbn_10: nil, isbn_13: nil, publisher: nil, page_count: nil, source_url: nil)
+    def initialize(id:, title:, author:, description:, published_date:, cover_url:, has_ebook:, language:, isbn_10: nil, isbn_13: nil, publisher: nil, page_count: nil, source_url: nil, categories: [])
       super
     end
 
@@ -187,7 +187,8 @@ class GoogleBooksClient
         isbn_13: industry_identifier(volume, "ISBN_13"),
         publisher: volume["publisher"],
         page_count: volume["pageCount"],
-        source_url: volume["canonicalVolumeLink"].presence || volume["infoLink"]
+        source_url: volume["canonicalVolumeLink"].presence || volume["infoLink"],
+        categories: Array(volume["categories"])
       )
     end
 

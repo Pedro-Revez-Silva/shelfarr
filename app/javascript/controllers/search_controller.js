@@ -3,7 +3,7 @@ import { Controller } from "@hotwired/stimulus"
 // Stimulus controller for debounced search
 // Connects to data-controller="search"
 export default class extends Controller {
-  static targets = ["input", "results", "spinner"]
+  static targets = ["input", "results", "spinner", "contentKind"]
   static values = {
     url: String,
     streamUrl: String,
@@ -51,7 +51,11 @@ export default class extends Controller {
   }
 
   async performSearch(query) {
-    const url = `${this.searchUrl}?q=${encodeURIComponent(query)}`
+    const params = new URLSearchParams({ q: query })
+    if (this.hasContentKindTarget && this.contentKindTarget.value) {
+      params.set("content_kind", this.contentKindTarget.value)
+    }
+    const url = `${this.searchUrl}?${params.toString()}`
     const requestId = ++this.requestSequence
     const abortController = new AbortController()
 

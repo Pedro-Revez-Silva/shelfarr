@@ -73,6 +73,29 @@ class Integrations::CommandProcessorTest < ActiveSupport::TestCase
     assert_includes result.text, "already has an active request"
   end
 
+  test "processes cached graphic selections as Comics & Manga requests" do
+    assert_difference [ "Book.count", "Request.count" ], 1 do
+      MetadataService.stub(:book_details, nil) do
+        result = Integrations::CommandProcessor.call(
+          command: "/request",
+          arguments: "comicbook",
+          user: @user,
+          origin: { created_via: "telegram", external_source: "telegram" },
+          request_selection: {
+            work_id: "comic_vine:4000-telegram-graphic",
+            source_work_ids: [ "comic_vine:4000-telegram-graphic" ],
+            metadata_attrs: { title: "Telegram Graphic", content_kind: "graphic" }
+          }
+        )
+
+        assert_includes result.text, "Request created"
+      end
+    end
+
+    assert_equal "comicbook", Request.last.book.book_type
+    assert_equal "graphic", Request.last.book.content_kind
+  end
+
   test "processes request command through shared request creation" do
     details = MetadataService::SearchResult.new(
       source: "openlibrary",

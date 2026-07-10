@@ -31,7 +31,8 @@ module Integrations
             { source: "google_books", source_id: "gb123", source_name: "Google Books", source_url: nil, work_id: "google_books:gb123" }
           ],
           editions: [],
-          confidence: 90
+          confidence: 90,
+          content_kind: "manga"
         )
 
         token = SearchResultCache.store(candidate)
@@ -41,6 +42,33 @@ module Integrations
         assert_equal "openlibrary:OL123W", selection[:work_id]
         assert_equal %w[openlibrary:OL123W google_books:gb123], selection[:source_work_ids]
         assert_equal "Dune", selection[:metadata_attrs][:title]
+        assert_equal "graphic", selection[:metadata_attrs][:content_kind]
+      end
+
+      test "uses Comic Vine source identity when the declared kind is wrong" do
+        candidate = MetadataSearch::Candidate.new(
+          canonical_key: "comic_vine:4000-source-policy",
+          title: "Source Policy",
+          author: "Creator",
+          year: 2024,
+          description: nil,
+          cover_url: nil,
+          series_name: nil,
+          series_position: nil,
+          has_ebook: false,
+          has_audiobook: false,
+          sources: [],
+          editions: [],
+          confidence: 100,
+          content_kind: "book"
+        )
+
+        token = SearchResultCache.store(candidate)
+        selection = SearchResultCache.fetch(token)
+
+        assert_equal "graphic", SearchResultCache.content_kind_for(candidate)
+        assert_equal [ "comic_vine:4000-source-policy" ], selection[:source_work_ids]
+        assert_equal "graphic", selection.dig(:metadata_attrs, :content_kind)
       end
 
       test "callback data stays within telegram limit" do

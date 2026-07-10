@@ -47,7 +47,7 @@ class DuplicateDetectionService
       if existing_book&.acquired?
         return Result.new(
           status: BLOCK,
-          message: "This #{book_type} is already in your library.",
+          message: "This #{label_for(book_type)} is already in your library.",
           existing_book: existing_book,
           existing_request: nil
         )
@@ -59,7 +59,7 @@ class DuplicateDetectionService
         if active_request
           return Result.new(
             status: BLOCK,
-            message: "This #{book_type} already has an active request.",
+            message: "This #{label_for(book_type)} already has an active request.",
             existing_book: existing_book,
             existing_request: active_request
           )
@@ -67,12 +67,15 @@ class DuplicateDetectionService
       end
 
       # Check 4: Same work exists as different type (warn only)
-      other_type = book_type == "audiobook" ? "ebook" : "audiobook"
-      other_book = find_existing_book(work_ids, book_type: other_type, existing_books_lookup: existing_books_lookup)
-      if other_book
+      other_books = (Book.book_types.keys - [ book_type ]).filter_map do |other_type|
+        book = find_existing_book(work_ids, book_type: other_type, existing_books_lookup: existing_books_lookup)
+        [ other_type, book ] if book
+      end
+      if other_books.any?
+        other_type, other_book = other_books.first
         return Result.new(
           status: WARN,
-          message: "This book exists as #{other_type == 'audiobook' ? 'an audiobook' : 'an ebook'}. You can still request the #{book_type}.",
+          message: "This title exists as #{label_with_article(other_type)}. You can still request the #{label_for(book_type)}.",
           existing_book: other_book,
           existing_request: nil
         )
@@ -84,7 +87,7 @@ class DuplicateDetectionService
         if failed_request
           return Result.new(
             status: WARN,
-            message: "A previous request for this #{book_type} #{failed_request.failed? ? 'failed' : 'was not found'}. You can try again.",
+            message: "A previous request for this #{label_for(book_type)} #{failed_request.failed? ? 'failed' : 'was not found'}. You can try again.",
             existing_book: existing_book,
             existing_request: failed_request
           )
@@ -120,5 +123,16 @@ class DuplicateDetectionService
       end
     end
 
+    def label_with_article(book_type)
+      label = label_for(book_type)
+      article = label.match?(/\A[aeiou]/i) ? "an" : "a"
+      "#{article} #{label}"
+    end
+
+    def label_for(book_type)
+      return "Comics & Manga title" if book_type.to_s == "comicbook"
+
+      RequestOptionPolicy.book_type_label(book_type).downcase
+    end
   end
 end

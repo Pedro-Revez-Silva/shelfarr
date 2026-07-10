@@ -189,6 +189,9 @@ class UploadProcessingJob < ApplicationJob
     description = metadata&.description || extracted&.description
     series = metadata&.series_name if metadata.respond_to?(:series_name)
     series_position = metadata&.series_position if metadata.respond_to?(:series_position)
+    content_kind = metadata&.content_kind if metadata.respond_to?(:content_kind)
+    default_content_kind = book_type.to_s == "comicbook" ? "graphic" : "book"
+    content_kind = ContentKinds.normalize(content_kind, default: default_content_kind)
     narrator = extracted&.narrator if extracted.respond_to?(:narrator)
 
     fallback_attrs = {
@@ -198,8 +201,9 @@ class UploadProcessingJob < ApplicationJob
       year: year,
       description: description,
       series: series,
-      series_position: series_position
-    }
+      series_position: series_position,
+      content_kind: content_kind
+    }.compact
 
     # Check for existing book with same work_id and type
     if work_id.present?
@@ -221,7 +225,7 @@ class UploadProcessingJob < ApplicationJob
     if work_id.present?
       source, _source_id = Book.parse_work_id(work_id)
       book = Book.find_or_initialize_by_work_id(work_id, book_type: book_type)
-      book.assign_attributes(
+      book.assign_attributes({
         title: title,
         author: author,
         cover_url: cover_url,
@@ -229,14 +233,15 @@ class UploadProcessingJob < ApplicationJob
         description: description,
         series: series,
         series_position: series_position,
+        content_kind: content_kind,
         narrator: narrator,
         metadata_source: source
-      )
+      }.compact)
       book.save!
       BookMetadataBackfillService.apply!(book, work_id: work_id, fallback_attrs: fallback_attrs)
       book
     else
-      Book.create!(
+      Book.create!({
         title: title,
         author: author,
         book_type: book_type,
@@ -245,8 +250,9 @@ class UploadProcessingJob < ApplicationJob
         description: description,
         series: series,
         series_position: series_position,
+        content_kind: content_kind,
         narrator: narrator
-      )
+      }.compact)
     end
   end
 
@@ -426,11 +432,7 @@ class UploadProcessingJob < ApplicationJob
   end
 
   def trigger_library_scan(book)
-    library_id = if book.audiobook?
-      SettingsService.get(:audiobookshelf_audiobook_library_id)
-    else
-      SettingsService.get(:audiobookshelf_ebook_library_id)
-    end
+    library_id = SettingsService.library_id_for_book(book)
 
     return unless library_id.present?
 

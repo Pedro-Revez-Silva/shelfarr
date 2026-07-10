@@ -69,6 +69,14 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "library_id_for routes comic books to comic library" do
+    SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-lib")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "comic-lib")
+    book = Book.create!(title: "Saga #1", author: "Brian K. Vaughan", book_type: :comicbook, content_kind: :graphic)
+
+    assert_equal "comic-lib", PostProcessingJob.new.send(:library_id_for, book)
+  end
+
   test "sets request status to processing then completed" do
     VCR.turned_off do
       stub_audiobookshelf_library(@temp_dest_base)
@@ -829,28 +837,108 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:post_processing_source_path_retries, 2)
 
-    assert_enqueued_with(job: PostProcessingJob, args: [ @download.id, 1 ]) do
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+    retry_job = assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
       PostProcessingJob.perform_now(@download.id)
     end
 
     @request.reload
     assert @request.processing?
     assert_nil @request.issue_description
+    assert_equal retry_job.arguments.third, @download.reload.post_processing_job_id
   end
 
   test "copies when source path appears on a later retry" do
     FileUtils.rm_rf(@temp_source)
     SettingsService.set(:audiobookshelf_url, "")
 
-    PostProcessingJob.perform_now(@download.id)
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+    retry_job = assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
+      PostProcessingJob.perform_now(@download.id)
+    end
 
     FileUtils.mkdir_p(@temp_source)
     File.write(File.join(@temp_source, "audiobook.mp3"), "test audio content")
-    PostProcessingJob.perform_now(@download.id, 1)
+    retry_job.perform_now
 
     expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
     assert @request.reload.completed?
     assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+  end
+
+  test "duplicate retry chains import an ebook only once" do
+    FileUtils.rm_rf(@temp_source)
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:post_processing_source_path_retries, 2)
+    SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-library")
+    completed_notifications = []
+    library_scans = []
+
+    LibraryPlatformClient.stub(:configured?, true) do
+      LibraryPlatformClient.stub(:scan_library, ->(library_id) { library_scans << library_id }) do
+        NotificationService.stub(:request_completed, ->(request) { completed_notifications << request.id }) do
+          3.times { PostProcessingJob.perform_now(@download.id) }
+
+          retry_jobs = enqueued_jobs.select { |job| job[:job] == PostProcessingJob }
+          waiting_events = @request.request_events.where(event_type: "post_processing_waiting", download_id: @download.id)
+
+          assert_equal 1, retry_jobs.count
+          assert_equal 1, waiting_events.count
+
+          retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+          retry_job = assert_enqueued_with(job: PostProcessingJob, args: retry_args)
+          assert_equal retry_job.arguments.third, @download.reload.post_processing_job_id
+
+          FileUtils.mkdir_p(@temp_source)
+          write_valid_ebook_file(File.join(@temp_source, "Original.epub"))
+          retry_job.perform_now
+
+          2.times { PostProcessingJob.perform_now(@download.id, 1) }
+        end
+      end
+    end
+
+    imported_files = Dir.glob(File.join(@temp_dest_base, "**", "*.epub"))
+
+    assert_equal [ "Test Author - Test Audiobook.epub" ], imported_files.map { |path| File.basename(path) }
+    assert_equal [ @request.id ], completed_notifications
+    assert_equal [ "ebook-library" ], library_scans
+    assert @request.reload.completed?
+  end
+
+  test "post-processing ownership is stable for one job and rejects another" do
+    owner = PostProcessingJob.new(@download.id)
+    duplicate = PostProcessingJob.new(@download.id)
+
+    assert @download.claim_post_processing!(owner.job_id)
+    assert @download.claim_post_processing!(owner.job_id)
+    assert_not @download.claim_post_processing!(duplicate.job_id)
+    assert_equal owner.job_id, @download.reload.post_processing_job_id
+
+    assert duplicate.job_id.present?
+    assert @download.claim_post_processing!(duplicate.job_id, expected_owner_job_id: owner.job_id)
+    assert_equal duplicate.job_id, @download.reload.post_processing_job_id
+  end
+
+  test "scheduled retry does not revive a cancelled request" do
+    FileUtils.rm_rf(@temp_source)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+    retry_job = assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    @request.cancel!
+    FileUtils.mkdir_p(@temp_source)
+    File.write(File.join(@temp_source, "audiobook.mp3"), "test audio content")
+    retry_job.perform_now
+
+    expected_file = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    assert @request.reload.failed?
+    assert_not File.exist?(expected_file)
   end
 
   test "marks request for attention when source path is blank" do
@@ -886,12 +974,31 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_match /source path not found/i, @request.issue_description
   end
 
-  test "marks ebook directory import for attention when it contains unsupported files" do
+  test "imports supported ebook files and skips unsupported files in the directory" do
     FileUtils.rm_rf(@temp_source)
     nested_source = File.join(@temp_source, "Nested")
     FileUtils.mkdir_p(nested_source)
     write_valid_ebook_file(File.join(@temp_source, "Valid Book.epub"))
-    File.write(File.join(nested_source, "payload.exe"), "bad executable content")
+    File.write(File.join(nested_source, "alternate.rtf"), "unsupported alternate format")
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    @request.reload
+    assert @request.completed?
+    assert_not @request.attention_needed?
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+    assert_not File.exist?(File.join(expected_dest, "alternate.rtf"))
+  end
+
+  test "marks ebook directory import for attention when it has no supported ebook files" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    File.write(File.join(@temp_source, "alternate.rtf"), "unsupported alternate format")
 
     @book.update!(book_type: :ebook)
     SettingsService.set(:ebook_output_path, @temp_dest_base)
@@ -902,9 +1009,8 @@ class PostProcessingJobTest < ActiveJob::TestCase
     expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
     @request.reload
     assert @request.attention_needed?
-    assert_match /unsupported ebook import file type/i, @request.issue_description
-    assert_not File.exist?(File.join(expected_dest, "payload.exe"))
-    assert_not File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+    assert_match /no supported ebook files found/i, @request.issue_description
+    assert_not File.exist?(File.join(expected_dest, "alternate.rtf"))
   end
 
   test "marks single file ebook import for attention when extension is unsupported" do
