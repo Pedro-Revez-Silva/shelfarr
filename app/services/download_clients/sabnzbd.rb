@@ -7,7 +7,9 @@ module DownloadClients
     # Add an NZB by URL
     def add_torrent(url, options = {})
       Rails.logger.info "[Sabnzbd] Adding URL to queue (#{url.to_s.length} chars)"
-      Rails.logger.debug "[Sabnzbd] Full URL being sent: #{UrlRedactor.redact(url)}"
+      unless options[:sensitive_url]
+        Rails.logger.debug "[Sabnzbd] Full URL being sent: #{UrlRedactor.redact(url)}"
+      end
 
       params = {
         mode: "addurl",
@@ -19,12 +21,17 @@ module DownloadClients
       params[:cat] = config.category if config.category.present?
 
       response = connection.get("api", params)
-      handle_response(response) do |data|
+      handle_response(response, sensitive_url: options[:sensitive_url]) do |data|
         Rails.logger.info "[Sabnzbd] API response: status=#{data['status']}, nzo_ids=#{data['nzo_ids']&.inspect}"
         # Return the response data so we can extract nzo_ids
         data["status"] == true ? data : false
       end
     rescue Faraday::Error => e
+      if options[:sensitive_url]
+        Rails.logger.error "[Sabnzbd] Connection error while submitting sensitive NZB URL"
+        raise Base::ConnectionError, "Failed to connect to SABnzbd while submitting NZB URL"
+      end
+
       Rails.logger.error "[Sabnzbd] Connection error: #{e.message}"
       raise Base::ConnectionError, "Failed to connect to SABnzbd: #{e.message}"
     end
@@ -107,12 +114,17 @@ module DownloadClients
       end
     end
 
-    def handle_response(response)
+    def handle_response(response, sensitive_url: false)
       case response.status
       when 200
         body = response.body
         # SABnzbd returns error in JSON body sometimes
         if body.is_a?(Hash) && body["error"]
+          if sensitive_url
+            Rails.logger.error "[Sabnzbd] API rejected sensitive NZB URL"
+            raise Base::Error, "SABnzbd rejected the NZB URL"
+          end
+
           Rails.logger.error "[Sabnzbd] API returned error: #{body['error']}"
           raise Base::Error, "SABnzbd error: #{body['error']}"
         end
@@ -121,10 +133,19 @@ module DownloadClients
         Rails.logger.error "[Sabnzbd] Authentication failed (status #{response.status})"
         raise Base::AuthenticationError, "SABnzbd authentication failed"
       else
-        Rails.logger.error "[Sabnzbd] API error (status #{response.status}): #{response.body.inspect.truncate(200)}"
+        if sensitive_url
+          Rails.logger.error "[Sabnzbd] API error while submitting sensitive NZB URL (status #{response.status})"
+        else
+          Rails.logger.error "[Sabnzbd] API error (status #{response.status}): #{response.body.inspect.truncate(200)}"
+        end
         raise Base::Error, "SABnzbd API error: #{response.status}"
       end
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+      if sensitive_url
+        Rails.logger.error "[Sabnzbd] Connection error while submitting sensitive NZB URL"
+        raise Base::ConnectionError, "Failed to connect to SABnzbd while submitting NZB URL"
+      end
+
       Rails.logger.error "[Sabnzbd] Connection error: #{e.message}"
       raise Base::ConnectionError, "Failed to connect to SABnzbd: #{e.message}"
     end

@@ -65,7 +65,7 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
-  test "preserves manual magnet results when saving new results" do
+  test "preserves manual download results when saving new results" do
     VCR.turned_off do
       stub_prowlarr_search_with_results
 
@@ -77,12 +77,23 @@ class SearchJobTest < ActiveJob::TestCase
         indexer: "Manual Magnet",
         status: :selected
       )
+      manual_nzb = @request.search_results.create!(
+        guid: "manual-nzb:#{'c' * 64}",
+        title: "Manual NZB result",
+        download_url: "https://downloads.example/book.nzb",
+        seeders: nil,
+        source: SearchResult::SOURCE_MANUAL_NZB,
+        indexer: "Manual NZB",
+        status: :selected
+      )
 
       SearchJob.perform_now(@request.id)
       @request.reload
 
       assert_includes @request.search_results, manual_result
       assert manual_result.reload.selected?
+      assert_includes @request.search_results, manual_nzb
+      assert manual_nzb.reload.selected?
     end
   end
 

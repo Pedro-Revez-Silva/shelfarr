@@ -538,6 +538,94 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not_includes log_output, "apikey=secret"
   end
 
+  test "dispatches a manual NZB URL unchanged to the highest-priority healthy usenet client without logging secrets" do
+    @client.destroy!
+    high_priority = DownloadClient.create!(
+      name: "High Priority SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://sab-high.test:8080",
+      api_key: "high-api-key",
+      priority: 0,
+      enabled: true
+    )
+    DownloadClient.create!(
+      name: "Low Priority SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://sab-low.test:8080",
+      api_key: "low-api-key",
+      priority: 10,
+      enabled: true
+    )
+    signed_url = "https://alice:password@downloads.example/release/123?custom_secret=opaque&X-Amz-Signature=very-secret"
+    manual_result = @request.search_results.create!(
+      guid: "manual-nzb:#{Digest::SHA256.hexdigest(signed_url)}",
+      title: "Manual NZB for #{@request.book.display_name}",
+      indexer: "Manual NZB",
+      source: SearchResult::SOURCE_MANUAL_NZB,
+      download_url: signed_url,
+      magnet_url: nil,
+      seeders: nil,
+      status: :selected
+    )
+    @download.update!(search_result: manual_result)
+    logger = build_test_logger
+
+    VCR.turned_off do
+      high_connection = stub_request(:get, "http://sab-high.test:8080/api")
+        .with(query: hash_including(
+          "mode" => "version",
+          "apikey" => "high-api-key",
+          "output" => "json"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "version" => "4.0.0" }.to_json
+        )
+      low_connection = stub_request(:get, "http://sab-low.test:8080/api")
+        .with(query: hash_including("mode" => "version"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "version" => "4.0.0" }.to_json
+        )
+      submission = stub_request(:get, "http://sab-high.test:8080/api")
+        .with(query: hash_including(
+          "mode" => "addurl",
+          "name" => signed_url,
+          "nzbname" => "Another Author - The Pending Ebook",
+          "apikey" => "high-api-key",
+          "output" => "json"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => true, "nzo_ids" => [ "SABnzbd_manual_123" ] }.to_json
+        )
+
+      Rails.stub(:logger, logger) do
+        DownloadJob.perform_now(@download.id)
+      end
+
+      assert_requested high_connection, times: 1
+      assert_not_requested low_connection
+      assert_requested submission, times: 1
+    end
+
+    @download.reload
+    assert @download.downloading?
+    assert_equal high_priority.id.to_s, @download.download_client_id
+    assert_equal "SABnzbd_manual_123", @download.external_id
+    assert_equal "usenet", @download.download_type
+
+    log_output = logger.messages.join("\n")
+    assert_includes log_output, "[REDACTED MANUAL NZB URL]"
+    assert_not_includes log_output, "alice"
+    assert_not_includes log_output, "password"
+    assert_not_includes log_output, "opaque"
+    assert_not_includes log_output, "very-secret"
+  end
+
   test "sends selected newznab result directly to a usenet client" do
     @client.destroy!
     sabnzbd = DownloadClient.create!(

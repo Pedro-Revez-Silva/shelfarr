@@ -1,7 +1,11 @@
+require "digest"
+require "uri"
+
 class Request < ApplicationRecord
   CREATED_VIA_VALUES = %w[web api telegram].freeze
   REQUEST_SCOPE_VALUES = %w[single collection].freeze
   MANUAL_MAGNET_GUID_PREFIX = "manual-magnet"
+  MANUAL_NZB_GUID_PREFIX = "manual-nzb"
 
   belongs_to :book
   belongs_to :user
@@ -224,9 +228,12 @@ class Request < ApplicationRecord
     not_found? && next_retry_at.present? && next_retry_at <= Time.current
   end
 
-  def manual_magnet_allowed?
+  def manual_download_allowed?
     !completed? && !processing?
   end
+
+  alias_method :manual_magnet_allowed?, :manual_download_allowed?
+  alias_method :manual_nzb_allowed?, :manual_download_allowed?
 
   # Select a search result and initiate download
   # Returns the created Download record
@@ -304,6 +311,28 @@ class Request < ApplicationRecord
       seeders: nil,
       leechers: nil,
       download_url: nil,
+      status: :pending
+    )
+    search_result.save!
+
+    select_result!(search_result)
+  end
+
+  def add_manual_nzb!(nzb_url)
+    nzb_url = nzb_url.to_s.strip
+    raise ArgumentError, "Enter a valid HTTP(S) NZB URL" unless valid_manual_nzb_url?(nzb_url)
+    raise ArgumentError, "Cannot add an NZB URL to a completed request" if completed?
+    raise ArgumentError, "Cannot add an NZB URL while post-processing is active" if processing?
+
+    search_result = search_results.find_or_initialize_by(guid: manual_nzb_guid(nzb_url))
+    search_result.assign_attributes(
+      title: "Manual NZB for #{book.display_name}",
+      download_url: nzb_url,
+      magnet_url: nil,
+      source: SearchResult::SOURCE_MANUAL_NZB,
+      indexer: "Manual NZB",
+      seeders: nil,
+      leechers: nil,
       status: :pending
     )
     search_result.save!
@@ -418,6 +447,17 @@ class Request < ApplicationRecord
 
   def manual_magnet_guid(info_hash)
     "#{MANUAL_MAGNET_GUID_PREFIX}:#{info_hash}"
+  end
+
+  def manual_nzb_guid(nzb_url)
+    "#{MANUAL_NZB_GUID_PREFIX}:#{Digest::SHA256.hexdigest(nzb_url)}"
+  end
+
+  def valid_manual_nzb_url?(value)
+    uri = URI.parse(value)
+    uri.is_a?(URI::HTTP) && uri.host.present?
+  rescue URI::InvalidURIError
+    false
   end
 
   def set_default_language

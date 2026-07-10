@@ -59,6 +59,7 @@ Rails.application.routes.draw do
     member do
       get :download
       post :manual_magnet
+      post :manual_nzb
       post :retry
     end
   end

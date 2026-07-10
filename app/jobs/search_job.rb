@@ -286,7 +286,7 @@ class SearchJob < ApplicationJob
 
   def save_results(request, tagged_results)
     blocklisted_by_guid = request.search_results
-      .where.not(source: SearchResult::SOURCE_MANUAL_MAGNET)
+      .where.not(source: SearchResult::MANUAL_SOURCES)
       .blocklisted
       .pluck(:guid, :blocklisted_at, :blocklist_reason)
       .to_h { |guid, blocklisted_at, blocklist_reason| [ guid, { blocklisted_at: blocklisted_at, blocklist_reason: blocklist_reason } ] }
@@ -298,7 +298,7 @@ class SearchJob < ApplicationJob
       .pluck(:search_result_id)
 
     request.search_results
-      .where.not(source: SearchResult::SOURCE_MANUAL_MAGNET)
+      .where.not(source: SearchResult::MANUAL_SOURCES)
       .where.not(id: active_download_result_ids)
       .not_blocklisted
       .destroy_all

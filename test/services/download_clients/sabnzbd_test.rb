@@ -21,7 +21,7 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: { "status" => true, "nzo_ids" => ["SABnzbd_nzo_12345"] }.to_json
+          body: { "status" => true, "nzo_ids" => [ "SABnzbd_nzo_12345" ] }.to_json
         )
 
       result = @client.add_torrent("http://example.com/test.nzb")
@@ -42,7 +42,7 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: { "status" => true, "nzo_ids" => ["SABnzbd_nzo_12345"] }.to_json
+          body: { "status" => true, "nzo_ids" => [ "SABnzbd_nzo_12345" ] }.to_json
         )
 
       result = @client.add_torrent("http://example.com/test.nzb", nzbname: "Another Author - The Pending Ebook")
@@ -50,6 +50,38 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
       assert result
       assert_requested request_stub
     end
+  end
+
+  test "add_torrent does not expose a sensitive URL echoed by an API error" do
+    url = "https://alice:password@downloads.example/book?X-Amz-Signature=very-secret"
+    logger = Struct.new(:messages) do
+      %i[debug info warn error].each do |level|
+        define_method(level) { |message| messages << message }
+      end
+    end.new([])
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "addurl", "name" => url))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => false, "error" => "Could not fetch #{url}" }.to_json
+        )
+
+      error = Rails.stub(:logger, logger) do
+        assert_raises(DownloadClients::Base::Error) do
+          @client.add_torrent(url, sensitive_url: true)
+        end
+      end
+
+      assert_equal "SABnzbd rejected the NZB URL", error.message
+    end
+
+    output = logger.messages.join("\n")
+    assert_not_includes output, "alice"
+    assert_not_includes output, "password"
+    assert_not_includes output, "very-secret"
   end
 
   test "list_torrents returns queue and history items" do

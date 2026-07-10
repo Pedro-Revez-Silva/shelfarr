@@ -700,7 +700,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "show displays manual magnet form for open request" do
+  test "show displays manual download forms for open request" do
     sign_out
     sign_in_as(@admin)
 
@@ -709,16 +709,19 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "form[action='#{manual_magnet_request_path(@pending_request)}']"
     assert_select "input[name='magnet_url']"
+    assert_select "form[action='#{manual_nzb_request_path(@pending_request)}']"
+    assert_select "input[name='nzb_url'][type='url'][autocomplete='off']"
   end
 
-  test "show hides manual magnet form from regular users" do
+  test "show hides manual download forms from regular users" do
     get request_path(@pending_request)
 
     assert_response :success
     assert_select "form[action='#{manual_magnet_request_path(@pending_request)}']", count: 0
+    assert_select "form[action='#{manual_nzb_request_path(@pending_request)}']", count: 0
   end
 
-  test "show hides manual magnet form for completed request" do
+  test "show hides manual download forms for completed request" do
     @pending_request.complete!
     sign_out
     sign_in_as(@admin)
@@ -727,9 +730,10 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "form[action='#{manual_magnet_request_path(@pending_request)}']", count: 0
+    assert_select "form[action='#{manual_nzb_request_path(@pending_request)}']", count: 0
   end
 
-  test "show hides manual magnet form for processing request" do
+  test "show hides manual download forms for processing request" do
     @pending_request.update!(status: :processing)
     sign_out
     sign_in_as(@admin)
@@ -738,6 +742,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "form[action='#{manual_magnet_request_path(@pending_request)}']", count: 0
+    assert_select "form[action='#{manual_nzb_request_path(@pending_request)}']", count: 0
   end
 
   test "manual magnet creates selected result and queues download" do
@@ -821,6 +826,80 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     assert_no_difference [ "SearchResult.count", "Download.count" ] do
       post manual_magnet_request_path(other_request), params: { magnet_url: "magnet:?xt=urn:btih:#{'c' * 40}" }
+    end
+
+    assert_response :not_found
+  end
+
+  test "manual NZB creates selected result and queues download" do
+    sign_out
+    sign_in_as(@admin)
+    url = "https://downloads.example/release/123?X-Amz-Signature=very-secret"
+
+    assert_enqueued_with(job: DownloadJob) do
+      assert_difference [ "SearchResult.count", "Download.count" ], 1 do
+        post manual_nzb_request_path(@pending_request), params: { nzb_url: "  #{url}  " }
+      end
+    end
+
+    @pending_request.reload
+    result = @pending_request.search_results.find_by!(source: SearchResult::SOURCE_MANUAL_NZB)
+    download = @pending_request.downloads.order(:created_at).last
+
+    assert @pending_request.downloading?
+    assert result.selected?
+    assert result.usenet?
+    assert_equal url, result.download_url
+    assert_equal result, download.search_result
+    assert_equal "NZB URL queued for download.", flash[:notice]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual NZB rejects invalid URL" do
+    sign_out
+    sign_in_as(@admin)
+
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      post manual_nzb_request_path(@pending_request), params: { nzb_url: "file:///tmp/book.nzb" }
+    end
+
+    assert_equal "Enter a valid HTTP(S) NZB URL", flash[:alert]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual NZB redirects when duplicate result save races" do
+    sign_out
+    sign_in_as(@admin)
+
+    request = @pending_request
+    request.define_singleton_method(:add_manual_nzb!) do |_nzb_url|
+      raise ActiveRecord::RecordNotUnique, "duplicate"
+    end
+    finder = Object.new
+    finder.define_singleton_method(:find) { |_id| request }
+
+    Request.stub(:includes, finder) do
+      post manual_nzb_request_path(@pending_request), params: { nzb_url: "https://downloads.example/book.nzb" }
+    end
+
+    assert_equal "NZB URL could not be queued. Please try again.", flash[:alert]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual NZB cannot be added by regular users" do
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      post manual_nzb_request_path(@pending_request), params: { nzb_url: "https://downloads.example/book.nzb" }
+    end
+
+    assert_equal "You don't have permission to add NZB URLs", flash[:alert]
+    assert_redirected_to request_path(@pending_request)
+  end
+
+  test "manual NZB cannot be added to another user's request" do
+    other_request = Request.create!(book: books(:ebook_pending), user: @admin, status: :pending)
+
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      post manual_nzb_request_path(other_request), params: { nzb_url: "https://downloads.example/book.nzb" }
     end
 
     assert_response :not_found

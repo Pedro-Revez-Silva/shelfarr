@@ -850,11 +850,19 @@ class DownloadJob < ApplicationJob
 
     download_link = search_result.download_link
     Rails.logger.info "[DownloadJob] Download link type: #{is_usenet ? 'usenet' : 'torrent'}, length: #{download_link.to_s.length} chars"
-    Rails.logger.debug "[DownloadJob] Full download URL: #{UrlRedactor.redact(download_link)}"
+    if search_result.from_manual_nzb?
+      Rails.logger.debug "[DownloadJob] Full download URL: [REDACTED MANUAL NZB URL]"
+    else
+      Rails.logger.debug "[DownloadJob] Full download URL: #{UrlRedactor.redact(download_link)}"
+    end
 
     if is_usenet
       # SABnzbd returns a hash with nzo_ids
-      result = client.add_torrent(download_link, nzbname: build_usenet_job_name(search_result))
+      result = client.add_torrent(
+        download_link,
+        nzbname: build_usenet_job_name(search_result),
+        sensitive_url: search_result.from_manual_nzb?
+      )
       external_id = result.is_a?(Hash) ? result["nzo_ids"]&.first : nil
       success = external_id.present?
     else
