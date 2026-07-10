@@ -60,6 +60,99 @@ module MetadataSearch
       assert_equal %w[book graphic], results.map(&:content_kind)
     end
 
+    test "logs a private strong classification mismatch diagnostic" do
+      title = "Private Classification Title"
+      author = "Private Classification Author"
+
+      payload = capture_disagreement_payloads do
+        Aggregator.call([
+          provider_result(source: "hardcover", source_id: "book-1", title: title, author: author, year: 1965,
+            content_kind: "book", classification_confidence: 90),
+          provider_result(source: "comic_vine", source_id: "comic-1", title: title, author: author, year: 1965,
+            content_kind: "graphic", classification_confidence: 100)
+        ])
+      end.fetch(0)
+
+      assert_equal "metadata_search.provider_disagreement", payload["event"]
+      assert_equal "strong_classification_mismatch", payload["reason"]
+      assert_equal %w[event providers reason], payload.keys.sort
+      assert_equal [ "hardcover", "comic_vine" ], payload.fetch("providers").pluck("source")
+      assert_equal [ "book", "graphic" ], payload.fetch("providers").pluck("content_kind")
+      assert_equal [ 90, 100 ], payload.fetch("providers").pluck("classification_confidence")
+      assert_equal [ "work", "work" ], payload.fetch("providers").pluck("resource_kind")
+      assert_not_includes JSON.generate(payload), title
+      assert_not_includes JSON.generate(payload), author
+      assert_not_includes JSON.generate(payload), "query"
+    end
+
+    test "logs ISBN and publication year disagreement reasons for matching provider records" do
+      payloads = capture_disagreement_payloads do
+        Aggregator.call([
+          provider_result(source: "openlibrary", source_id: "isbn-left", title: "ISBN Conflict", author: "Author", year: 2000,
+            isbn_13: "9780441172719"),
+          provider_result(source: "google_books", source_id: "isbn-right", title: "ISBN Conflict", author: "Author", year: 2000,
+            isbn_13: "9780593099322"),
+          provider_result(source: "hardcover", source_id: "year-left", title: "Year Conflict", author: "Author", year: 1990),
+          provider_result(source: "comic_vine", source_id: "year-right", title: "Year Conflict", author: "Author", year: 2020)
+        ])
+      end
+
+      assert_equal %w[conflicting_isbns conflicting_publication_years], payloads.pluck("reason").sort
+
+      isbn_payload = payloads.find { |payload| payload["reason"] == "conflicting_isbns" }
+      assert_equal [ "9780441172719", "9780593099322" ], isbn_payload.fetch("providers").pluck("isbn_13")
+
+      year_payload = payloads.find { |payload| payload["reason"] == "conflicting_publication_years" }
+      assert_equal [ 1990, 2020 ], year_payload.fetch("providers").pluck("year")
+    end
+
+    test "deduplicates disagreement diagnostics by reason and provider pair" do
+      payloads = capture_disagreement_payloads do
+        Aggregator.call([
+          provider_result(source: "openlibrary", source_id: "first-left", title: "First Conflict", author: "Author", isbn_13: "9780441172719"),
+          provider_result(source: "google_books", source_id: "first-right", title: "First Conflict", author: "Author", isbn_13: "9780593099322"),
+          provider_result(source: "openlibrary", source_id: "second-left", title: "Second Conflict", author: "Author", isbn_13: "9780061120084"),
+          provider_result(source: "google_books", source_id: "second-right", title: "Second Conflict", author: "Author", isbn_13: "9780743273565")
+        ])
+      end
+
+      assert_equal 1, payloads.size
+      assert_equal "conflicting_isbns", payloads.first["reason"]
+    end
+
+    test "logs disagreements only when records have comparable identity evidence" do
+      shared_isbn_payloads = capture_disagreement_payloads do
+        Aggregator.call([
+          provider_result(source: "openlibrary", source_id: "shared-book", title: "Book Title", author: "Book Author",
+            isbn_13: "9780441172719", content_kind: "book", classification_confidence: 90),
+          provider_result(source: "comic_vine", source_id: "shared-graphic", title: "Graphic Title", author: "Graphic Author",
+            isbn_13: "9780441172719", content_kind: "graphic", classification_confidence: 100)
+        ])
+      end
+      conflicting_isbn_payloads = capture_disagreement_payloads do
+        Aggregator.call([
+          provider_result(source: "openlibrary", source_id: "conflicting-book", title: "Shared Title", author: "Shared Author",
+            isbn_13: "9780441172719", content_kind: "book", classification_confidence: 90),
+          provider_result(source: "comic_vine", source_id: "conflicting-graphic", title: "Shared Title", author: "Shared Author",
+            isbn_13: "9780593099322", content_kind: "graphic", classification_confidence: 100)
+        ])
+      end
+      incomparable_payloads = capture_disagreement_payloads do
+        Aggregator.call([
+          provider_result(source: "hardcover", source_id: "series", resource_kind: "series",
+            content_kind: "book", classification_confidence: 90),
+          provider_result(source: "comic_vine", source_id: "work", resource_kind: "work",
+            content_kind: "graphic", classification_confidence: 100),
+          provider_result(source: "openlibrary", source_id: "missing-year", title: "Missing Year", author: "Author", year: nil),
+          provider_result(source: "google_books", source_id: "known-year", title: "Missing Year", author: "Author", year: 2024)
+        ])
+      end
+
+      assert_equal [ "strong_classification_mismatch" ], shared_isbn_payloads.pluck("reason")
+      assert_equal [ "conflicting_isbns" ], conflicting_isbn_payloads.pluck("reason")
+      assert_empty incomparable_payloads
+    end
+
     test "merges a low confidence default classification with strong graphic evidence" do
       results = Aggregator.call([
         provider_result(source: "openlibrary", source_id: "OL123W", content_kind: "book", classification_confidence: 10),
@@ -190,6 +283,14 @@ module MetadataSearch
     end
 
     private
+
+    def capture_disagreement_payloads
+      messages = []
+
+      Rails.logger.stub(:info, ->(message) { messages << message }) { yield }
+
+      messages.map { |message| JSON.parse(message) }
+    end
 
     def provider_result(source:, source_id:, title: "The Hobbit", author: "J.R.R. Tolkien", year: 1937,
       description: nil, cover_url: nil, isbn_10: nil, isbn_13: nil, has_ebook: nil, has_audiobook: nil,

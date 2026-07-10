@@ -15,12 +15,103 @@ module MetadataSearch
     end
 
     def call
+      @logged_disagreements = {}
+      log_provider_disagreements
+
       clusters.map { |cluster| candidate_for(cluster) }
     end
 
     private
 
     attr_reader :results, :priority, :requested_content_kind
+
+    def log_provider_disagreements
+      results.combination(2) do |left, right|
+        next unless cross_provider?(left, right)
+
+        disagreement_reasons(left, right).each do |reason|
+          log_provider_disagreement(reason, left, right)
+        end
+      end
+    end
+
+    def cross_provider?(left, right)
+      left.source.to_s != right.source.to_s
+    end
+
+    def same_normalized_title_and_author?(left, right)
+      left_title = normalized_text(left.title)
+      right_title = normalized_text(right.title)
+      left_author = normalized_text(left.author)
+      right_author = normalized_text(right.author)
+
+      left_title.present? && left_title == right_title &&
+        left_author.present? && left_author == right_author
+    end
+
+    def disagreement_reasons(left, right)
+      reasons = []
+      reasons << "strong_classification_mismatch" if classification_disagreement?(left, right)
+      reasons << "conflicting_isbns" if isbn_disagreement?(left, right)
+      reasons << "conflicting_publication_years" if publication_year_disagreement?(left, right)
+      reasons
+    end
+
+    def classification_disagreement?(left, right)
+      classification_conflict?(left, right) && same_identity_without_classification?(left, right)
+    end
+
+    def isbn_disagreement?(left, right)
+      same_resource_kind?(left, right) &&
+        same_normalized_title_and_author?(left, right) &&
+        conflicting_isbn?(left, right)
+    end
+
+    def publication_year_disagreement?(left, right)
+      same_resource_kind?(left, right) &&
+        same_normalized_title_and_author?(left, right) &&
+        left.year.present? && right.year.present? && !close_year?(left.year, right.year)
+    end
+
+    def same_identity_without_classification?(left, right)
+      return false unless same_resource_kind?(left, right)
+      return true if shared_isbn?(left, right)
+      return false if conflicting_isbn?(left, right)
+
+      same_normalized_title_and_author?(left, right) && close_year?(left.year, right.year)
+    end
+
+    def same_resource_kind?(left, right)
+      left.resource_kind.to_s == right.resource_kind.to_s
+    end
+
+    def log_provider_disagreement(reason, left, right)
+      source_pair = [ left.source.to_s, right.source.to_s ].sort
+      deduplication_key = [ reason, source_pair ]
+      return if @logged_disagreements[deduplication_key]
+
+      @logged_disagreements[deduplication_key] = true
+      Rails.logger.info(
+        JSON.generate(
+          event: "metadata_search.provider_disagreement",
+          reason: reason,
+          providers: [ disagreement_provider_payload(left), disagreement_provider_payload(right) ]
+        )
+      )
+    end
+
+    def disagreement_provider_payload(result)
+      {
+        source: result.source,
+        source_id: result.source_id,
+        content_kind: result.content_kind,
+        classification_confidence: result.classification_confidence,
+        isbn_10: result.isbn_10,
+        isbn_13: result.isbn_13,
+        year: result.year,
+        resource_kind: result.resource_kind
+      }.compact
+    end
 
     def clusters
       results.each_with_object([]) do |result, groups|
@@ -37,12 +128,7 @@ module MetadataSearch
       return false if classification_conflict?(left, right)
       return true if shared_isbn?(left, right)
       return false if conflicting_isbn?(left, right)
-      return false unless normalized_text(left.title) == normalized_text(right.title)
-
-      left_author = normalized_text(left.author)
-      right_author = normalized_text(right.author)
-      return false if left_author.blank? || right_author.blank?
-      return false unless left_author == right_author
+      return false unless same_normalized_title_and_author?(left, right)
 
       close_year?(left.year, right.year)
     end
