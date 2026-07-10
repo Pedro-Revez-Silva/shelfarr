@@ -189,14 +189,16 @@ class PostProcessingJob < ApplicationJob
   end
 
   def import_ebook_directory_entry(source_file, destination, book)
-    if File.directory?(source_file)
+    if File.directory?(source_file) && !File.symlink?(source_file)
       Dir.entries(source_file).reject { |f| f.start_with?(".") }.each do |file|
         import_ebook_directory_entry(File.join(source_file, file), destination, book)
       end
-    elsif ebook_file?(source_file)
+    elsif allowed_ebook_import_file?(source_file) && ebook_file?(source_file)
       import_renamed_file(source_file, destination, book)
-    else
+    elsif allowed_ebook_import_file?(source_file)
       import_sidecar_file(source_file, destination)
+    else
+      Rails.logger.info "[PostProcessingJob] Skipping unsupported ebook import file: #{File.basename(source_file)}"
     end
   end
 
@@ -205,17 +207,31 @@ class PostProcessingJob < ApplicationJob
   end
 
   def validate_ebook_source!(source)
-    paths = if File.directory?(source)
-      ebook_directory_files(source)
-    else
-      [ source ]
+    unless File.directory?(source)
+      return if ebook_file?(source) && allowed_ebook_import_file?(source)
+
+      raise "Unsupported ebook import file type: #{File.basename(source)}"
     end
+
+    supported_ebook_found = false
+    paths = ebook_directory_files(source)
 
     paths.each do |path|
-      next if allowed_ebook_import_file?(path)
+      if File.symlink?(path)
+        raise "Unsupported ebook import file type: #{File.basename(path)}"
+      end
 
-      raise "Unsupported ebook import file type: #{File.basename(path)}"
+      extension = File.extname(path).delete_prefix(".").downcase
+      next unless EBOOK_ALLOWED_EXTENSIONS.include?(extension)
+
+      unless allowed_ebook_import_file?(path)
+        raise "Unsupported ebook import file type: #{File.basename(path)}"
+      end
+
+      supported_ebook_found ||= EBOOK_FILE_EXTENSIONS.include?(extension)
     end
+
+    raise "No supported ebook files found in download" unless supported_ebook_found
   end
 
   def ebook_directory_files(source)
