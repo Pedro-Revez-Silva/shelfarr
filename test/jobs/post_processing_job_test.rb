@@ -902,12 +902,31 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_match /source path not found/i, @request.issue_description
   end
 
-  test "marks ebook directory import for attention when it contains unsupported files" do
+  test "imports supported ebook files and skips unsupported files in the directory" do
     FileUtils.rm_rf(@temp_source)
     nested_source = File.join(@temp_source, "Nested")
     FileUtils.mkdir_p(nested_source)
     write_valid_ebook_file(File.join(@temp_source, "Valid Book.epub"))
-    File.write(File.join(nested_source, "payload.exe"), "bad executable content")
+    File.write(File.join(nested_source, "alternate.rtf"), "unsupported alternate format")
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    @request.reload
+    assert @request.completed?
+    assert_not @request.attention_needed?
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+    assert_not File.exist?(File.join(expected_dest, "alternate.rtf"))
+  end
+
+  test "marks ebook directory import for attention when it has no supported ebook files" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    File.write(File.join(@temp_source, "alternate.rtf"), "unsupported alternate format")
 
     @book.update!(book_type: :ebook)
     SettingsService.set(:ebook_output_path, @temp_dest_base)
@@ -918,9 +937,8 @@ class PostProcessingJobTest < ActiveJob::TestCase
     expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
     @request.reload
     assert @request.attention_needed?
-    assert_match /unsupported ebook import file type/i, @request.issue_description
-    assert_not File.exist?(File.join(expected_dest, "payload.exe"))
-    assert_not File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+    assert_match /no supported ebook files found/i, @request.issue_description
+    assert_not File.exist?(File.join(expected_dest, "alternate.rtf"))
   end
 
   test "marks single file ebook import for attention when extension is unsupported" do
