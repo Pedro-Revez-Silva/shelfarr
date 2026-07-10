@@ -73,6 +73,46 @@ class API::V1::SearchControllerTest < ActionDispatch::IntegrationTest
     assert_equal 100, payload["confidence"]
   end
 
+  test "normalizes legacy graphic filters and result kinds" do
+    result = MetadataSearch::Candidate.new(
+      canonical_key: "comic_vine:4000-1",
+      title: "Graphic Title",
+      author: nil,
+      description: nil,
+      year: nil,
+      cover_url: nil,
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil,
+      confidence: 100,
+      editions: [],
+      sources: [ {
+        source: "comic_vine",
+        source_id: "4000-1",
+        source_name: "Comic Vine",
+        source_url: nil,
+        work_id: "comic_vine:4000-1"
+      } ],
+      content_kind: "manga"
+    )
+
+    MetadataService.stub(:search, ->(_query, limit:, content_kind:) {
+      assert_equal "graphic", content_kind
+      assert_equal 10, limit
+      [ result ]
+    }) do
+      get api_v1_search_path,
+        headers: { "Authorization" => "Bearer apitoken" },
+        params: { q: "akira", content_kind: "comic" }
+    end
+
+    assert_response :success
+    payload = JSON.parse(response.body).fetch("results").first
+    assert_equal "graphic", payload["content_kind"]
+    assert_equal [ "comicbook" ], payload["available_book_types"]
+  end
+
   test "requires a query" do
     get api_v1_search_path,
       headers: { "Authorization" => "Bearer apitoken" }

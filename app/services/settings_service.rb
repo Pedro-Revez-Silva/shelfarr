@@ -26,7 +26,8 @@ class SettingsService
   DEFAULT_INDEXER_CATEGORY_IDS = {
     audiobook: [ 3030 ],
     ebook: [ 7020, 7000 ],
-    all_books: [ 3030, 7020, 7000 ]
+    comicbook: [ 7030 ],
+    all_books: [ 3030, 7020, 7000, 7030 ]
   }.freeze
   DOWNLOAD_TYPE_OPTIONS = {
     "torrent" => {
@@ -50,6 +51,7 @@ class SettingsService
     indexer_search_scope: { type: "string", default: "broad", category: "indexer", description: "How broadly Shelfarr should search indexer categories." },
     indexer_custom_audiobook_categories: { type: "string", default: "", category: "indexer", description: "Audiobook category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
     indexer_custom_ebook_categories: { type: "string", default: "", category: "indexer", description: "Ebook category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
+    indexer_custom_comicbook_categories: { type: "string", default: "", category: "indexer", description: "Comics & Manga category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
     prowlarr_url: { type: "string", default: "", category: "indexer", description: "Base URL for Prowlarr instance (e.g., http://localhost:9696)" },
     prowlarr_api_key: { type: "string", default: "", category: "indexer", description: "API key from Prowlarr Settings > General" },
     prowlarr_tags: { type: "string", default: "", category: "indexer", description: "Comma-separated tag IDs or names to filter Prowlarr indexers (leave empty for all indexers)" },
@@ -79,15 +81,19 @@ class SettingsService
     grimmory_password: { type: "string", default: "", category: "audiobookshelf", description: "Grimmory password used to obtain an API access token" },
     audiobookshelf_audiobook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for audiobooks on the active library platform" },
     audiobookshelf_ebook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for ebooks on the active library platform" },
+    audiobookshelf_comicbook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for Comics & Manga on the active library platform" },
     audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
 
     # Output Paths
     audiobook_output_path: { type: "string", default: "/audiobooks", category: "paths", description: "Directory for completed audiobooks" },
     ebook_output_path: { type: "string", default: "/ebooks", category: "paths", description: "Directory for completed ebooks" },
+    comicbook_output_path: { type: "string", default: "/comics", category: "paths", description: "Directory for completed Comics & Manga" },
     audiobook_path_template: { type: "string", default: "{author}/{title}", category: "paths", description: "Folder structure for audiobooks. Leave blank to place files directly in the audiobook output directory. Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series/} or {series - }." },
     ebook_path_template: { type: "string", default: "{author}/{title}", category: "paths", description: "Folder structure for ebooks. Leave blank to place files directly in the ebook output directory. Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series/} or {series - }." },
+    comicbook_path_template: { type: "string", default: "{series/}{title}", category: "paths", description: "Folder structure for Comics & Manga. Leave blank to place files directly in the comic output directory. Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series/} or {series - }." },
     audiobook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for audiobooks (extension added automatically). Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series - }." },
     ebook_filename_template: { type: "string", default: "{author} - {title}", category: "paths", description: "Filename for ebooks (extension added automatically). Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series - }." },
+    comicbook_filename_template: { type: "string", default: "{series - }{seriesNum:00 - }{title}", category: "paths", description: "Filename for Comics & Manga (extension added automatically). Variables include {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, {narrator}. Optional suffix text is supported inside braces, e.g. {series - }." },
     download_remote_path: { type: "string", default: "", category: "paths", description: "Download client path (host path, e.g., /mnt/media/Torrents/Completed)" },
     download_local_path: { type: "string", default: "/downloads", category: "paths", description: "Container path for downloads (e.g., /downloads)" },
 
@@ -110,6 +116,11 @@ class SettingsService
     google_books_enabled: { type: "boolean", default: true, category: "google_books", description: "Enable Google Books as a metadata provider" },
     google_books_api_key: { type: "string", default: "", category: "google_books", description: "Optional Google Books API key. Leave blank to use anonymous public access; add a key for dedicated quota and more reliable requests." },
     google_books_search_limit: { type: "integer", default: 20, category: "google_books", description: "Maximum number of Google Books search results to return" },
+
+    # Comic Vine
+    comic_vine_enabled: { type: "boolean", default: true, category: "comic_vine", description: "Enable Comic Vine as a Comics & Manga metadata provider when an API key is configured" },
+    comic_vine_api_key: { type: "string", default: "", category: "comic_vine", description: "Comic Vine API key for Comics & Manga metadata" },
+    comic_vine_search_limit: { type: "integer", default: 10, category: "comic_vine", description: "Maximum number of Comic Vine search results to return" },
 
     # Health Monitoring
     health_check_interval: { type: "integer", default: 300, category: "health", description: "Seconds between system health checks (default: 5 minutes)" },
@@ -171,7 +182,7 @@ class SettingsService
     hardcover_enabled: { type: "boolean", default: true, category: "hardcover", description: "Enable Hardcover as a metadata provider when an API token is configured" },
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
     metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Legacy metadata source selector. Auto uses all enabled providers; selecting a provider restricts metadata search to that provider." },
-    metadata_provider_priority: { type: "string", default: "hardcover,openlibrary,google_books", category: "hardcover", description: "Comma-separated metadata provider priority used when merging duplicate search results." },
+    metadata_provider_priority: { type: "string", default: "hardcover,openlibrary,google_books,comic_vine", category: "hardcover", description: "Comma-separated metadata provider priority used when merging duplicate search results." },
     hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
 
     # Webhook Notifications
@@ -219,6 +230,7 @@ class SettingsService
     "librivox" => "LibriVox",
     "hardcover" => "Hardcover",
     "google_books" => "Google Books",
+    "comic_vine" => "Comic Vine",
     "paths" => "Output Paths",
     "queue" => "Queue Settings",
     "open_library" => "Open Library",
@@ -246,6 +258,7 @@ class SettingsService
     grimmory_password: "Grimmory Password",
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
+    audiobookshelf_comicbook_library_id: "Comics & Manga Library",
     audiobookshelf_library_sync_interval: "Library Sync Interval"
   }.freeze
 
@@ -454,6 +467,17 @@ class SettingsService
       LIBRARY_PLATFORMS.include?(platform) ? platform : "audiobookshelf"
     end
 
+    def library_id_for_book(book)
+      case book.book_type
+      when "audiobook"
+        get(:audiobookshelf_audiobook_library_id)
+      when "comicbook"
+        get(:audiobookshelf_comicbook_library_id).presence || get(:audiobookshelf_ebook_library_id)
+      else
+        get(:audiobookshelf_ebook_library_id)
+      end
+    end
+
     def bookorbit_library_platform?
       active_library_platform == "bookorbit"
     end
@@ -500,6 +524,10 @@ class SettingsService
 
     def hardcover_configured?
       configured?(:hardcover_api_token)
+    end
+
+    def comic_vine_configured?
+      get(:comic_vine_enabled, default: true) && configured?(:comic_vine_api_key)
     end
 
     def metadata_provider_priority
@@ -569,7 +597,7 @@ class SettingsService
 
     def format_preferences_for(book_type)
       type = book_type.to_s
-      return default_format_preferences unless %w[audiobook ebook].include?(type)
+      return default_format_preferences unless %w[audiobook ebook comicbook].include?(type)
 
       {
         approved_formats: normalized_list_setting("#{type}_approved_formats"),
@@ -595,6 +623,8 @@ class SettingsService
         get(:google_books_enabled, default: true)
       when "openlibrary"
         get(:open_library_enabled, default: true)
+      when "comic_vine"
+        comic_vine_configured?
       else
         false
       end
@@ -608,11 +638,11 @@ class SettingsService
     end
 
     def default_metadata_provider_priority
-      %w[hardcover openlibrary google_books]
+      %w[hardcover openlibrary google_books comic_vine]
     end
 
     def metadata_provider_keys
-      %w[hardcover openlibrary google_books]
+      %w[hardcover openlibrary google_books comic_vine]
     end
 
     def raw_setting_value(key)
@@ -635,6 +665,8 @@ class SettingsService
         :indexer_custom_audiobook_categories
       when :ebook
         :indexer_custom_ebook_categories
+      when :comicbook
+        :indexer_custom_comicbook_categories
       else
         nil
       end
@@ -643,7 +675,8 @@ class SettingsService
         normalize_category_ids(get(key))
       else
         (normalize_category_ids(get(:indexer_custom_audiobook_categories)) +
-          normalize_category_ids(get(:indexer_custom_ebook_categories))).uniq
+          normalize_category_ids(get(:indexer_custom_ebook_categories)) +
+          normalize_category_ids(get(:indexer_custom_comicbook_categories))).uniq
       end
     end
 
@@ -653,6 +686,8 @@ class SettingsService
         DEFAULT_INDEXER_CATEGORY_IDS[:audiobook]
       when :ebook
         DEFAULT_INDEXER_CATEGORY_IDS[:ebook]
+      when :comicbook
+        DEFAULT_INDEXER_CATEGORY_IDS[:comicbook]
       else
         DEFAULT_INDEXER_CATEGORY_IDS[:all_books]
       end

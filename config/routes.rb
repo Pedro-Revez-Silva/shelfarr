@@ -16,6 +16,8 @@ Rails.application.routes.draw do
 
   # Search
   get "search", to: "search#index"
+  get "search/details", to: "search#details"
+  get "search/modal/close", to: "search#close_modal", as: :search_modal_close
   get "search/results", to: "search#results"
   get "search/results/stream", to: "search#stream_results"
 
@@ -122,6 +124,7 @@ Rails.application.routes.draw do
         post :test_hardcover
         post :test_google_books
         post :test_open_library
+        post :test_comic_vine
         post :test_oidc
         post :test_webhook
         post :test_discord

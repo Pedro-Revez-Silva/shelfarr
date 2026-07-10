@@ -34,7 +34,7 @@ class HardcoverClient
 
   BookDetails = Data.define(
     :id, :title, :author, :description, :release_year,
-    :cover_url, :has_audiobook, :has_ebook, :pages, :genres, :series_name, :series_position
+    :cover_url, :has_audiobook, :has_ebook, :pages, :genres, :series_id, :series_name, :series_position
   ) do
     def work_id
       "hardcover:#{id}"
@@ -102,12 +102,14 @@ class HardcoverClient
             book_series {
               position
               series {
+                id
                 name
               }
             }
             featured_book_series {
               position
               series {
+                id
                 name
               }
             }
@@ -121,6 +123,59 @@ class HardcoverClient
       raise NotFoundError, "Book not found: #{book_id}" if books.empty?
 
       parse_book_details(books.first)
+    end
+
+    def series_books(series_id, limit: nil)
+      ensure_configured!
+
+      limit_clause = limit.present? ? ", limit: $limit" : ""
+      query_string = <<~GRAPHQL
+        query GetSeriesBooks($id: Int!#{", $limit: Int!" if limit.present?}) {
+          series(where: { id: { _eq: $id } }, limit: 1) {
+            id
+            name
+            book_series(order_by: { position: asc }#{limit_clause}) {
+              position
+              book {
+                id
+                title
+                description
+                release_year
+                cached_image
+                contributions {
+                  author {
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      GRAPHQL
+
+      variables = { id: series_id.to_i }
+      variables[:limit] = limit.to_i if limit.present?
+      response = execute_query(query_string, variables)
+      series = Array(response.dig("data", "series")).first
+      return [] unless series
+
+      Array(series["book_series"]).filter_map do |entry|
+        book = entry["book"]
+        next unless book.is_a?(Hash)
+
+        SearchResult.new(
+          id: book["id"]&.to_s,
+          title: book["title"],
+          author: extract_author(book),
+          description: book["description"],
+          release_year: book["release_year"],
+          cover_url: extract_cover_url(book),
+          has_audiobook: false,
+          has_ebook: false,
+          series_name: series["name"],
+          series_position: normalize_series_position(entry["position"])
+        )
+      end
     end
 
     # Test API connection
@@ -231,7 +286,7 @@ class HardcoverClient
     end
 
     def extract_author(doc)
-      doc["author_names"]&.first || doc["author"]
+      doc["author_names"]&.first || doc.dig("contributions", 0, "author", "name") || doc["author"]
     end
 
     def parse_book_details(book)
@@ -254,6 +309,7 @@ class HardcoverClient
         has_ebook: false,     # Not available in this query
         pages: pages,
         genres: [],           # Would need separate query
+        series_id: series&.dig("series", "id")&.to_s,
         series_name: series&.dig("series", "name"),
         series_position: normalize_series_position(series&.[]("position"))
       )

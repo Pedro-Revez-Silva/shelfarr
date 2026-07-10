@@ -32,6 +32,84 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "api", body.dig("requests", 0, "request", "external_source")
   end
 
+  test "normalizes legacy graphic content kinds from API requests" do
+    assert_difference [ "Book.count", "Request.count" ], 1 do
+      post api_v1_requests_path,
+        headers: { "Authorization" => "Bearer apitoken" },
+        params: {
+          username: @user.username,
+          work_id: "comic_vine:4000-api-legacy-comic",
+          book_type: "comicbook",
+          content_kind: "comic",
+          title: "API Legacy Comic"
+        }
+    end
+
+    assert_response :created
+    assert_equal "graphic", JSON.parse(response.body).dig("requests", 0, "book", "content_kind")
+  end
+
+  test "rejects incompatible formats from API requests" do
+    assert_no_difference [ "Book.count", "Request.count" ] do
+      post api_v1_requests_path,
+        headers: { "Authorization" => "Bearer apitoken" },
+        params: {
+          username: @user.username,
+          work_id: "comic_vine:4000-api-invalid-format",
+          book_type: "ebook",
+          content_kind: "manga",
+          title: "API Invalid Graphic Format"
+        }
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal [ "Ebook cannot be requested for Comics & Manga content" ], JSON.parse(response.body)["errors"]
+  end
+
+  test "rejects book formats for Comic Vine requests that omit content kind" do
+    assert_no_difference [ "Book.count", "Request.count" ] do
+      post api_v1_requests_path,
+        headers: { "Authorization" => "Bearer apitoken" },
+        params: {
+          username: @user.username,
+          work_id: "comic_vine:4000-api-source-policy",
+          book_type: "audiobook",
+          title: "API Source Policy"
+        }
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal [ "Audiobook cannot be requested for Comics & Manga content" ], JSON.parse(response.body)["errors"]
+  end
+
+  test "queues collection requests for background expansion" do
+    ComicVineClient.stub(:configured?, true) do
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        assert_enqueued_with(job: CollectionRequestExpansionJob) do
+          post api_v1_requests_path,
+            headers: { "Authorization" => "Bearer apitoken" },
+            params: {
+              username: @user.username,
+              work_id: "comic_vine:4050-99",
+              book_type: "comicbook",
+              title: "Saga",
+              content_kind: "comic",
+              request_scope: "collection",
+              collection_source: "comic_vine",
+              collection_id: "4050-99",
+              collection_title: "Saga"
+            }
+        end
+      end
+    end
+
+    assert_response :accepted
+    body = JSON.parse(response.body)
+    assert body["queued"]
+    assert_empty body["requests"]
+    assert_empty body["errors"]
+  end
+
   test "creates request with all candidate source work ids" do
     assert_difference [ "Book.count", "Request.count" ], 1 do
       post api_v1_requests_path,
@@ -122,6 +200,29 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     body = JSON.parse(response.body)
     assert body["requests"].all? { |request| request.dig("user", "username") == @user.username }
+  end
+
+  test "show includes collection request metadata" do
+    book = Book.create!(title: "Saga #1", book_type: :comicbook, content_kind: :graphic, comic_vine_id: "4000-101")
+    request = Request.create!(
+      book: book,
+      user: @user,
+      status: :pending,
+      request_scope: "collection",
+      collection_source: "comic_vine",
+      collection_id: "4050-99",
+      collection_title: "Saga"
+    )
+
+    get api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer apitoken" }
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "collection", body.dig("request", "request_scope")
+    assert_equal "comic_vine", body.dig("request", "collection_source")
+    assert_equal "4050-99", body.dig("request", "collection_id")
+    assert_equal "Saga", body.dig("request", "collection_title")
   end
 
   test "requires request write scope to create" do

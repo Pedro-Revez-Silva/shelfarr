@@ -220,7 +220,13 @@ class ReleaseParserService
     /\bepub\b/i,
     /\bmobi\b/i,
     /\bazw3?\b/i,
-    /\bpdf\b/i,
+    /\bpdf\b/i
+  ].freeze
+
+  COMICBOOK_PATTERNS = [
+    /\bcomic(?:book)?\b/i,
+    /\bmanga\b/i,
+    /\bgraphic\s+novel\b/i,
     /\bcbr\b/i,
     /\bcbz\b/i
   ].freeze
@@ -317,13 +323,14 @@ class ReleaseParserService
       MULTI_LANGUAGE_PATTERNS.any? { |pattern| title.match?(pattern) }
     end
 
-    # Detect the format (audiobook, ebook, or unknown) from the title
+    # Detect the format (audiobook, ebook, comicbook, or unknown) from the title
     # @param title [String] The release title
     # @return [Symbol, nil] :audiobook, :ebook, or nil if unknown
     def detect_format(title)
       return nil if title.blank?
 
       return :audiobook if AUDIOBOOK_PATTERNS.any? { |pattern| title.match?(pattern) }
+      return :comicbook if COMICBOOK_PATTERNS.any? { |pattern| title.match?(pattern) }
       return :ebook if EBOOK_PATTERNS.any? { |pattern| title.match?(pattern) }
 
       nil

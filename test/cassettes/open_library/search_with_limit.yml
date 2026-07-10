@@ -2,7 +2,7 @@
 http_interactions:
 - request:
     method: get
-    uri: https://openlibrary.org/search.json?fields=key,title,author_name,first_publish_year,cover_i,edition_count&limit=5&q=fiction
+    uri: https://openlibrary.org/search.json?fields=key,title,author_name,first_publish_year,cover_i,edition_count,subject&limit=5&q=fiction
     body:
       encoding: US-ASCII
       string: ''

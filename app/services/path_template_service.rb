@@ -73,6 +73,8 @@ class PathTemplateService
     def template_for(book)
       if book.audiobook?
         SettingsService.get(:audiobook_path_template, default: "{author}/{title}")
+      elsif book.comicbook?
+        SettingsService.get(:comicbook_path_template, default: "{series/}{title}")
       else
         SettingsService.get(:ebook_path_template, default: "{author}/{title}")
       end
@@ -108,6 +110,8 @@ class PathTemplateService
     def filename_template_for(book)
       if book.audiobook?
         SettingsService.get(:audiobook_filename_template, default: "{author} - {title}")
+      elsif book.comicbook?
+        SettingsService.get(:comicbook_filename_template, default: "{series - }{seriesNum:00 - }{title}")
       else
         SettingsService.get(:ebook_filename_template, default: "{author} - {title}")
       end
@@ -118,6 +122,8 @@ class PathTemplateService
     def default_base_path(book)
       if book.audiobook?
         SettingsService.get(:audiobook_output_path, default: "/audiobooks")
+      elsif book.comicbook?
+        SettingsService.get(:comicbook_output_path, default: "/comics")
       else
         SettingsService.get(:ebook_output_path, default: "/ebooks")
       end

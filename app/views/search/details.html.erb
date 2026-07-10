@@ -1,0 +1,241 @@
+<%
+  type_labels = {
+    "audiobook" => "Audiobook",
+    "ebook" => "Ebook",
+    "comicbook" => "Comics & Manga"
+  }
+  kind_label = case @content_kind
+  when "graphic" then "Comics & Manga"
+  else "Book"
+  end
+  request_label = "Request"
+  content_is_graphic = @content_kind == "graphic"
+  source_value = if @metadata_source_name.present? && @metadata_source_url.present?
+    link_to @metadata_source_name, @metadata_source_url, target: "_blank", rel: "noopener", class: "text-blue-300 hover:text-blue-200"
+  else
+    @metadata_source_name
+  end
+  overview_missing_message = if @details_enrichment_attempted && !@details_enrichment_loaded
+    "Detailed metadata could not be loaded from #{@metadata_source_name || 'the selected provider'}."
+  elsif @details_enrichment_loaded
+    "No overview was returned by #{@metadata_source_name || 'the selected provider'}."
+  else
+    "No overview was included with this search result."
+  end
+  detail_rows = if content_is_graphic
+    [
+      [ "Content type", kind_label ],
+      [ "Creators", @author ],
+      [ "First published", @first_publish_year ],
+      [ "Publisher", @publisher ],
+      [ "Series", @series.presence || @collection_title ],
+      [ "Issue", ("##{@issue_number}" if @issue_number.present?) ],
+      [ "Release date", @release_date ],
+      [ "Metadata source", source_value ]
+    ]
+  else
+    [
+      [ "Content type", kind_label ],
+      [ "Author", @author ],
+      [ "Published", @first_publish_year ],
+      [ "Publisher", @publisher ],
+      [ "Series", @series.presence || @collection_title ],
+      [ "Position", @series_position ],
+      [ "Pages", @page_count ],
+      [ "Language", @language ],
+      [ "Genres", @genres ],
+      [ "Metadata source", source_value ]
+    ]
+  end
+  metadata_params = {
+    work_id: @work_id,
+    title: @title,
+    author: @author,
+    cover_url: @cover_url,
+    first_publish_year: @first_publish_year,
+    description: @description,
+    content_kind: @content_kind,
+    publisher: @publisher,
+    issue_number: @issue_number,
+    release_date: @release_date,
+    series: @series,
+    series_position: @series_position,
+    collection_source: @collection_source,
+    collection_id: @collection_id,
+    collection_title: @collection_title,
+    source_work_ids: @source_work_ids
+  }.compact
+%>
+
+<% details_content = capture do %>
+  <div class="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
+    <div class="lg:sticky lg:top-6">
+      <% if @cover_url.present? %>
+        <img src="<%= @cover_url %>" alt="Cover of <%= @title %>" class="mx-auto w-full max-w-72 rounded-lg object-cover shadow-lg ring-1 ring-gray-800">
+      <% else %>
+        <div class="mx-auto flex aspect-[2/3] w-full max-w-72 items-center justify-center rounded-lg bg-gray-800 text-gray-500 ring-1 ring-gray-700">No cover</div>
+      <% end %>
+    </div>
+
+    <div class="min-w-0 space-y-6">
+      <div>
+        <div class="mb-3 flex flex-wrap gap-2">
+          <span class="rounded-full bg-gray-800 px-3 py-1 text-sm font-medium text-gray-300"><%= kind_label %></span>
+          <% if @metadata_source_name.present? %>
+            <span class="rounded-full bg-gray-800 px-3 py-1 text-sm font-medium text-gray-300"><%= @metadata_source_name %></span>
+          <% end %>
+          <% if @first_publish_year.present? %>
+            <span class="rounded-full bg-gray-800 px-3 py-1 text-sm font-medium text-gray-300"><%= @first_publish_year %></span>
+          <% end %>
+        </div>
+
+        <h1 id="search-details-title" class="text-3xl font-bold leading-tight text-white"><%= @title %></h1>
+        <p class="mt-2 text-lg text-gray-400">
+          <%= @author.presence || (content_is_graphic ? "Creators not available" : "Author not available") %>
+        </p>
+      </div>
+
+      <div class="flex flex-wrap gap-3">
+        <% if @available_book_types.any? %>
+          <%= link_to request_label, new_request_path(metadata_params), class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500", data: { turbo_frame: "_top" } %>
+        <% else %>
+          <span class="rounded-lg bg-gray-800 px-4 py-2 font-medium text-gray-400">No requestable formats</span>
+        <% end %>
+      </div>
+
+      <% if @collection_title.present? %>
+        <div class="border-l-2 border-emerald-500/60 pl-4">
+          <p class="text-sm font-medium text-emerald-300">Part of <%= @collection_title %></p>
+          <% if @series_position.present? %>
+            <p class="mt-1 text-xs text-emerald-100/80">Position <%= @series_position %></p>
+          <% end %>
+        </div>
+      <% end %>
+
+      <section>
+        <h2 class="text-sm font-medium uppercase text-gray-500">Metadata</h2>
+        <dl class="mt-3 grid overflow-hidden rounded-lg border border-gray-800 sm:grid-cols-2">
+          <% detail_rows.each do |label, value| %>
+            <div class="border-b border-gray-800 px-4 py-3 odd:border-r-0 sm:odd:border-r">
+              <dt class="text-xs font-medium uppercase text-gray-500"><%= label %></dt>
+              <dd class="mt-1 text-sm font-medium text-white">
+                <% if value.present? %>
+                  <%= value %>
+                <% else %>
+                  <span class="font-normal text-gray-500">Not available</span>
+                <% end %>
+              </dd>
+            </div>
+          <% end %>
+        </dl>
+      </section>
+
+      <section>
+        <h2 class="text-sm font-medium uppercase text-gray-500">Overview</h2>
+        <% if @description.present? %>
+          <p class="mt-2 whitespace-pre-line text-gray-300"><%= truncate(@description, length: 1200) %></p>
+        <% else %>
+          <p class="mt-2 text-gray-500"><%= overview_missing_message %></p>
+        <% end %>
+      </section>
+    </div>
+  </div>
+
+  <% if @collection_entries.any? %>
+    <div class="mt-10 border-t border-gray-800 pt-8">
+      <%= form_with url: requests_path, method: :post, data: { turbo: false, controller: "bulk-select" } do %>
+        <%= hidden_field_tag :work_id, @work_id %>
+        <%= hidden_field_tag :title, @title %>
+        <%= hidden_field_tag :author, @author %>
+        <%= hidden_field_tag :cover_url, @cover_url %>
+        <%= hidden_field_tag :content_kind, @content_kind %>
+        <%= hidden_field_tag :series, @series %>
+        <%= hidden_field_tag :request_scope, "collection" %>
+        <%= hidden_field_tag :collection_source, @collection_source %>
+        <%= hidden_field_tag :collection_id, @collection_id %>
+        <%= hidden_field_tag :collection_title, @collection_title %>
+
+        <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-semibold text-white"><%= content_is_graphic ? "Issues & Volumes" : "Series Books" %></h2>
+            <p class="mt-1 text-sm text-gray-500"><%= @collection_title %></p>
+          </div>
+          <div class="flex items-center gap-4 text-sm text-gray-300">
+            <span><span data-bulk-select-target="count">0</span> selected</span>
+            <label class="flex cursor-pointer items-center gap-2">
+              <input type="checkbox" checked data-bulk-select-target="selectAll" data-action="change->bulk-select#toggleAll" class="rounded border-gray-600 bg-gray-800 text-emerald-600 focus:ring-emerald-500 focus:ring-offset-gray-900">
+              Select all
+            </label>
+          </div>
+        </div>
+
+        <div class="grid max-h-96 gap-3 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
+          <% @collection_entries.each do |entry| %>
+            <% item = entry.item %>
+            <label class="grid grid-cols-[56px_1fr_auto] items-start gap-3 rounded-lg border p-3 <%= entry.requestable? ? 'cursor-pointer border-gray-800 bg-gray-900 hover:border-emerald-500/60' : 'border-gray-800 bg-gray-900/60 opacity-70' %>">
+              <% if item.cover_url.present? %>
+                <img src="<%= item.cover_url %>" alt="Cover of <%= item.title %>" class="aspect-[2/3] w-14 rounded object-cover">
+              <% else %>
+                <div class="flex aspect-[2/3] w-14 items-center justify-center rounded bg-gray-800 text-[10px] text-gray-500">No cover</div>
+              <% end %>
+              <div class="min-w-0">
+                <p class="line-clamp-2 text-sm font-medium text-white"><%= item.title %></p>
+                <% if item.issue_number.present? %>
+                  <p class="mt-1 text-xs text-gray-400">Issue #<%= item.issue_number %></p>
+                <% elsif item.series_position.present? %>
+                  <p class="mt-1 text-xs text-gray-400"><%= content_is_graphic ? "Issue/volume" : "Position" %> <%= item.series_position %></p>
+                <% end %>
+                <% if item.release_date.present? %>
+                  <p class="mt-1 text-xs text-gray-500"><%= item.release_date %></p>
+                <% end %>
+              </div>
+              <% if entry.requestable? %>
+                <%= check_box_tag "collection_item_ids[]", item.work_id, true, id: nil, data: { "bulk-select-target": "checkbox", action: "change->bulk-select#updateSelection" }, class: "mt-1 rounded border-gray-600 bg-gray-800 text-emerald-600 focus:ring-emerald-500 focus:ring-offset-gray-900" %>
+              <% else %>
+                <span class="mt-1 rounded-full px-2 py-0.5 text-[10px] font-medium <%= entry.status == :acquired ? 'bg-green-500/15 text-green-400' : 'bg-blue-500/15 text-blue-400' %>">
+                  <%= entry.status == :acquired ? "In library" : "Requested" %>
+                </span>
+              <% end %>
+            </label>
+          <% end %>
+        </div>
+
+        <div class="mt-5 flex flex-wrap gap-3" data-bulk-select-target="actions">
+          <% @available_book_types.each do |book_type| %>
+            <%= button_tag "Request Selected (#{type_labels.fetch(book_type, book_type.titleize)})", name: "book_type", value: book_type, class: "rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white transition hover:bg-emerald-500" %>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+<% end %>
+
+<% if @modal %>
+  <%= turbo_frame_tag "modal" do %>
+    <div class="fixed inset-0 z-50 overflow-y-auto bg-black/70 px-4 py-6 backdrop-blur-sm sm:px-6"
+         data-controller="search-modal"
+         data-action="click->search-modal#backdropClick">
+      <section class="mx-auto w-full max-w-6xl overflow-hidden rounded-lg border border-gray-800 bg-gray-950 shadow-2xl"
+               role="dialog"
+               aria-modal="true"
+               aria-labelledby="search-details-title">
+        <div class="flex items-center justify-between border-b border-gray-800 px-4 py-3">
+          <p class="text-sm font-medium text-gray-400">Details</p>
+          <%= link_to search_modal_close_path, class: "rounded-md px-3 py-2 text-sm font-medium text-gray-300 transition hover:bg-gray-800 hover:text-white", data: { turbo_frame: "modal", action: "click->search-modal#close" } do %>
+            Close
+          <% end %>
+        </div>
+        <div class="p-5 sm:p-6">
+          <%= details_content %>
+        </div>
+      </section>
+    </div>
+  <% end %>
+<% else %>
+  <div class="mx-auto max-w-5xl">
+    <div class="mb-6">
+      <%= link_to "&larr; Back to Search".html_safe, search_path(q: params[:q], content_kind: @content_kind), class: "text-blue-400 hover:text-blue-300" %>
+    </div>
+    <%= details_content %>
+  </div>
+<% end %>

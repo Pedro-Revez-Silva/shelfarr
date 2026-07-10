@@ -2,7 +2,7 @@
 http_interactions:
 - request:
     method: get
-    uri: https://openlibrary.org/search.json?fields=key,title,author_name,first_publish_year,cover_i,edition_count&limit=10&q=harry%20potter
+    uri: https://openlibrary.org/search.json?fields=key,title,author_name,first_publish_year,cover_i,edition_count,subject&limit=10&q=harry%20potter
     body:
       encoding: US-ASCII
       string: ''
@@ -49,7 +49,7 @@ http_interactions:
   recorded_at: Fri, 30 Jan 2026 12:11:04 GMT
 - request:
     method: get
-    uri: https://openlibrary.org/search.json?fields=key,title,author_name,first_publish_year,cover_i,edition_count&limit=20&q=harry%20potter
+    uri: https://openlibrary.org/search.json?fields=key,title,author_name,first_publish_year,cover_i,edition_count,subject&limit=20&q=harry%20potter
     body:
       encoding: US-ASCII
       string: ''

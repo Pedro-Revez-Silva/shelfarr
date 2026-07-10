@@ -138,6 +138,23 @@ class DuplicateDetectionServiceTest < ActiveSupport::TestCase
     assert_includes result.message, "exists as an audiobook"
   end
 
+  test "uses Comics & Manga in duplicate messages" do
+    Book.create!(
+      title: "Existing Graphic Title",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-duplicate-label"
+    )
+
+    result = DuplicateDetectionService.check(
+      work_id: "comic_vine:4000-duplicate-label",
+      book_type: "ebook"
+    )
+
+    assert result.warn?
+    assert_includes result.message, "exists as a Comics & Manga title"
+  end
+
   test "warns when previous request failed" do
     book = Book.create!(
       title: "Failed Book",

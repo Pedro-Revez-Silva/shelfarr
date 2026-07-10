@@ -120,7 +120,7 @@ class HardcoverClientTest < ActiveSupport::TestCase
         "cached_image" => "https://example.com/cover.jpg",
         "contributions" => [ { "author" => { "name" => "Test Author" } } ],
         "default_physical_edition" => { "pages" => 300 },
-        "book_series" => [ { "position" => 2, "series" => { "name" => "Test Series" } } ]
+        "book_series" => [ { "position" => 2, "series" => { "id" => 987, "name" => "Test Series" } } ]
       })
 
       book = HardcoverClient.book(12345)
@@ -130,8 +130,37 @@ class HardcoverClientTest < ActiveSupport::TestCase
       assert_equal "Test Author", book.author
       assert_equal 2020, book.release_year
       assert_equal 300, book.pages
+      assert_equal "987", book.series_id
       assert_equal "Test Series", book.series_name
       assert_equal "2", book.series_position
+    end
+  end
+
+  test "series_books returns books ordered within a series" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_hardcover_series_books(987, "Test Series", [
+        {
+          "position" => 1,
+          "book" => {
+            "id" => 111,
+            "title" => "Series Book One",
+            "description" => "First book",
+            "release_year" => 2020,
+            "cached_image" => "https://example.com/one.jpg",
+            "contributions" => [ { "author" => { "name" => "Series Author" } } ]
+          }
+        }
+      ])
+
+      books = HardcoverClient.series_books(987)
+
+      assert_equal 1, books.size
+      assert_equal "Series Book One", books.first.title
+      assert_equal "Series Author", books.first.author
+      assert_equal "Test Series", books.first.series_name
+      assert_equal "1", books.first.series_position
     end
   end
 
@@ -264,6 +293,16 @@ class HardcoverClientTest < ActiveSupport::TestCase
         status: 200,
         headers: { "Content-Type" => "application/json" },
         body: { "data" => { "books" => books } }.to_json
+      )
+  end
+
+  def stub_hardcover_series_books(id, name, book_series)
+    stub_request(:post, HardcoverClient::BASE_URL)
+      .with { |request| request.body.include?("GetSeriesBooks") && request.body.include?(id.to_s) }
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "data" => { "series" => [ { "id" => id, "name" => name, "book_series" => book_series } ] } }.to_json
       )
   end
 end

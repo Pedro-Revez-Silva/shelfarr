@@ -79,7 +79,8 @@ class AudiobookshelfClient
       # Search all configured libraries
       library_ids = [
         SettingsService.get(:audiobookshelf_audiobook_library_id),
-        SettingsService.get(:audiobookshelf_ebook_library_id)
+        SettingsService.get(:audiobookshelf_ebook_library_id),
+        SettingsService.get(:audiobookshelf_comicbook_library_id)
       ].compact.uniq
 
       library_ids.each do |lib_id|

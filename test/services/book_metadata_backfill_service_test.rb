@@ -3,6 +3,20 @@
 require "test_helper"
 
 class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
+  test "normalizes legacy graphic content kinds" do
+    book = Book.new(book_type: :comicbook)
+
+    MetadataService.stub(:book_details, nil) do
+      BookMetadataBackfillService.apply!(
+        book,
+        work_id: "comic_vine:4000-123",
+        fallback_attrs: { title: "Legacy Manga", content_kind: "manga" }
+      )
+    end
+
+    assert_equal "graphic", book.content_kind
+  end
+
   test "fills blank fields from metadata details and fallback attrs for a new book" do
     book = Book.new(book_type: :ebook)
     details = MetadataService::SearchResult.new(

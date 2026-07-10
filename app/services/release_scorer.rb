@@ -172,6 +172,8 @@ class ReleaseScorer
       detected == :audiobook ? 100 : 0
     when :ebook
       detected == :ebook ? 100 : 0
+    when :comicbook
+      detected == :comicbook ? 100 : 0
     else
       50  # Unknown book type
     end

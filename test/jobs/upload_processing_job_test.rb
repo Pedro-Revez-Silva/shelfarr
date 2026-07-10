@@ -100,6 +100,48 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "find_or_create_book_with_metadata defaults comicbook uploads to graphic content kind" do
+    parsed = Struct.new(:title, :author).new("Saga #1", "Brian K. Vaughan")
+
+    book = UploadProcessingJob.new.send(
+      :find_or_create_book_with_metadata,
+      metadata: nil,
+      extracted: nil,
+      parsed: parsed,
+      book_type: "comicbook"
+    )
+
+    assert book.comicbook?
+    assert book.content_graphic?
+  end
+
+  test "find_or_create_book_with_metadata normalizes legacy and unknown content kinds" do
+    metadata_class = Struct.new(
+      :title, :author, :work_id, :cover_url, :year, :description, :content_kind,
+      keyword_init: true
+    )
+    legacy_metadata = metadata_class.new(title: "Legacy Manga", author: "Creator", content_kind: "manga")
+    unknown_metadata = metadata_class.new(title: "Unknown Kind", author: "Author", content_kind: "periodical")
+
+    legacy_book = UploadProcessingJob.new.send(
+      :find_or_create_book_with_metadata,
+      metadata: legacy_metadata,
+      extracted: nil,
+      parsed: legacy_metadata,
+      book_type: "comicbook"
+    )
+    unknown_book = UploadProcessingJob.new.send(
+      :find_or_create_book_with_metadata,
+      metadata: unknown_metadata,
+      extracted: nil,
+      parsed: unknown_metadata,
+      book_type: "ebook"
+    )
+
+    assert legacy_book.content_graphic?
+    assert unknown_book.content_book?
+  end
+
   test "matches existing book instead of creating new" do
     VCR.turned_off do
       stub_open_library_search("Mistborn Brandon Sanderson")
@@ -525,6 +567,19 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     LibraryPlatformClient.stub(:scan_library, ->(*) { raise LibraryPlatformClient::Error, "scan failed" }) do
       assert_nothing_raised { UploadProcessingJob.new.send(:trigger_library_scan, book) }
     end
+  end
+
+  test "trigger_library_scan uses configured comic book library" do
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "comic-lib")
+    book = Book.create!(title: "Saga #1", author: "Brian K. Vaughan", book_type: :comicbook, content_kind: :graphic)
+    scanned = []
+
+    LibraryPlatformClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
+      UploadProcessingJob.new.send(:trigger_library_scan, book)
+    end
+
+    assert_equal [ "comic-lib" ], scanned
   end
 
   private

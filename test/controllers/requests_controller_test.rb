@@ -3,6 +3,8 @@
 require "test_helper"
 
 class RequestsControllerTest < ActionDispatch::IntegrationTest
+  include ActiveJob::TestHelper
+
   setup do
     @user = users(:one)
     @admin = users(:two)
@@ -303,6 +305,47 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "Test Book"
   end
 
+  test "new uses server-authoritative book formats" do
+    get new_request_path, params: {
+      work_id: "google_books:gb-ebook-only",
+      title: "Ebook Only",
+      author: "Format Author",
+      available_book_types: [ "ebook" ]
+    }
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='ebook']"
+    assert_select "input[name='book_types[]'][value='audiobook']"
+    assert_select "span", text: "Ebook"
+    assert_select "span", text: "Audiobook"
+  end
+
+  test "new normalizes legacy graphic content kinds" do
+    get new_request_path, params: {
+      work_id: "comic_vine:4000-legacy-comic",
+      title: "Legacy Comic",
+      content_kind: "comic",
+      available_book_types: [ "ebook" ]
+    }
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='comicbook'][checked]"
+    assert_select "input[name='book_types[]'][value='ebook']", count: 0
+  end
+
+  test "new treats Comic Vine identity as graphic when the supplied kind is wrong" do
+    get new_request_path, params: {
+      work_id: "comic_vine:4000-source-policy",
+      title: "Source Policy",
+      content_kind: "book"
+    }
+
+    assert_response :success
+    assert_select "input[name='content_kind'][value='graphic']"
+    assert_select "input[name='book_types[]'][value='comicbook'][checked]"
+    assert_select "input[name='book_types[]'][value='ebook']", count: 0
+  end
+
   test "create creates book and request" do
     assert_difference [ "Book.count", "Request.count" ], 1 do
       post requests_path, params: {
@@ -318,6 +361,52 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "audiobook", book.book_type
     assert_equal @user, book.requests.last.user
     assert_redirected_to request_path(Request.last)
+  end
+
+  test "create preserves errors when request creation partially succeeds" do
+    book = Book.create!(title: "Saga #1", book_type: :comicbook, content_kind: :graphic, comic_vine_id: "4000-101")
+    created_request = Request.create!(book: book, user: @user, status: :pending)
+    result = RequestCreationService::Result.new(
+      created_requests: [ created_request ],
+      warnings: [],
+      errors: [ "Saga #2 Comics & Manga: This Comics & Manga title already has an active request." ]
+    )
+
+    RequestCreationService.stub(:call, result) do
+      post requests_path, params: {
+        work_id: "comic_vine:4050-99",
+        title: "Saga",
+        book_type: "comicbook",
+        request_scope: "collection",
+        collection_source: "comic_vine",
+        collection_id: "4050-99",
+        collection_title: "Saga"
+      }
+    end
+
+    assert_redirected_to request_path(created_request)
+    assert_match "Request created for Saga #1", flash[:notice]
+    assert_match "Saga #2", flash[:alert]
+  end
+
+  test "create queues collection requests for background expansion" do
+    ComicVineClient.stub(:configured?, true) do
+      assert_enqueued_with(job: CollectionRequestExpansionJob) do
+        post requests_path, params: {
+          work_id: "comic_vine:4050-99",
+          title: "Saga",
+          content_kind: "comic",
+          book_type: "comicbook",
+          request_scope: "collection",
+          collection_source: "comic_vine",
+          collection_id: "4050-99",
+          collection_title: "Saga"
+        }
+      end
+    end
+
+    assert_redirected_to requests_path
+    assert_match "Collection request queued", flash[:notice]
   end
 
   test "create stores series from metadata details" do

@@ -1,28 +1,39 @@
 <div class="mx-auto max-w-6xl">
-  <h1 class="font-bold text-3xl mb-6 text-white">Search Books</h1>
+  <h1 class="font-bold text-3xl mb-6 text-white">Search Books, Comics &amp; Manga</h1>
 
   <div data-controller="search" data-search-url-value="<%= search_results_path %>" data-search-stream-url-value="<%= search_results_stream_path %>" data-search-debounce-value="700">
-    <div class="relative mb-8">
-      <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-        <svg class="h-5 w-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
+    <div class="mb-8 grid gap-3 md:grid-cols-[1fr_180px]">
+      <div class="relative">
+        <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+          <svg class="h-5 w-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </div>
+        <input
+          type="text"
+          data-search-target="input"
+          data-action="input->search#search"
+          placeholder="Search by title, author, series, issue, or volume..."
+          value="<%= @query %>"
+          class="w-full pl-12 pr-12 py-4 border border-gray-800 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-lg bg-gray-900 text-white placeholder-gray-500"
+          autofocus
+        >
+        <div data-search-target="spinner" class="hidden absolute right-4 top-1/2 -translate-y-1/2">
+          <svg class="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+        </div>
       </div>
-      <input
-        type="text"
-        data-search-target="input"
-        data-action="input->search#search"
-        placeholder="Search for books by title or author..."
-        value="<%= @query %>"
-        class="w-full pl-12 pr-12 py-4 border border-gray-800 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-lg bg-gray-900 text-white placeholder-gray-500"
-        autofocus
+      <select
+        data-search-target="contentKind"
+        data-action="change->search#search"
+        class="w-full rounded-xl border border-gray-800 bg-gray-900 px-4 py-4 text-lg text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
       >
-      <div data-search-target="spinner" class="hidden absolute right-4 top-1/2 -translate-y-1/2">
-        <svg class="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
-      </div>
+        <option value="" <%= "selected" if @content_kind.blank? %>>All</option>
+        <option value="book" <%= "selected" if @content_kind == "book" %>>Books</option>
+        <option value="graphic" <%= "selected" if @content_kind == "graphic" %>>Comics &amp; Manga</option>
+      </select>
     </div>
 
     <div id="search-results" data-search-target="results">
@@ -34,9 +45,11 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
           <p class="text-lg font-medium text-gray-400">Search for your next read</p>
-          <p class="text-sm mt-1 text-gray-500">Enter a book title or author name</p>
+          <p class="text-sm mt-1 text-gray-500">Enter a title, creator, or author name</p>
         </div>
       <% end %>
     </div>
   </div>
 </div>
+
+<%= turbo_frame_tag "modal" %>
