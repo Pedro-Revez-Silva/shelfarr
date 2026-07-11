@@ -258,13 +258,288 @@ class PostProcessingJobTest < ActiveJob::TestCase
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
     File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    File.write(File.join(@temp_source, ".bundle-metadata.json"), "release metadata")
 
     PostProcessingJob.perform_now(@download.id)
 
     assert @request.reload.completed?
     assert File.exist?(File.join(@temp_dest_base, @book.author, "Book One", "Book One.m4b"))
     assert File.exist?(File.join(@temp_dest_base, @book.author, "Book Two", "Book Two.m4b"))
+    assert File.exist?(File.join(@temp_dest_base, @book.author, "Book Two", ".bundle-metadata.json"))
     assert_not File.exist?(@temp_source), "Source download folder should be removed after successful split import"
+  end
+
+  test "preserves hidden directories when bundle splitting falls back" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    SettingsService.set(:move_completed_downloads, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    hidden_directory = File.join(@temp_source, ".release-metadata")
+    FileUtils.mkdir_p(hidden_directory)
+    File.write(File.join(hidden_directory, "manifest.json"), "{}")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    request_destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?
+    assert File.exist?(File.join(request_destination, "Book One.m4b"))
+    assert File.exist?(File.join(request_destination, ".release-metadata", "manifest.json"))
+    assert_not File.exist?(@temp_source)
+  end
+
+  test "rejects split destinations inside the source before move cleanup" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_output_path, @temp_source)
+    SettingsService.set(:audiobook_path_template, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    SettingsService.set(:move_completed_downloads, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    book_one_source = File.join(@temp_source, "Book One.m4b")
+    book_two_source = File.join(@temp_source, "Book Two.m4b")
+    File.write(book_one_source, "book one audio")
+    File.write(book_two_source, "book two audio")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.attention_needed?
+    assert_match(/destination overlaps/i, @request.issue_description)
+    assert File.exist?(book_one_source)
+    assert File.exist?(book_two_source)
+    assert File.directory?(@temp_source)
+  end
+
+  test "retries partial split imports without duplicating identical files" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    File.write(File.join(@temp_source, "cover.png"), "shared cover")
+    book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
+    FileUtils.mkdir_p(book_one_destination)
+    File.write(File.join(book_one_destination, "Book One.m4b"), "different existing audio")
+    fail_book_two_once = true
+
+    FileCopyService.stub(:cp, ->(source, destination) {
+      if File.basename(source) == "Book Two.m4b" && fail_book_two_once
+        fail_book_two_once = false
+        raise IOError, "simulated copy failure"
+      end
+
+      FileUtils.cp(source, destination)
+    }) do
+      first_job = PostProcessingJob.new(@download.id)
+      first_job.perform_now
+      assert @request.reload.attention_needed?
+
+      @request.clear_attention!
+      retry_job = PostProcessingJob.new(@download.id, 0, @download.reload.post_processing_job_id)
+      retry_job.perform_now
+    end
+
+    book_two_destination = File.join(@temp_dest_base, @book.author, "Book Two")
+    assert @request.reload.completed?
+    assert_equal [ "Book One (2).m4b", "Book One.m4b", "cover.png" ], Dir.children(book_one_destination).sort
+    assert_equal "book one audio", File.read(File.join(book_one_destination, "Book One (2).m4b"))
+    assert_equal [ "Book Two.m4b", "cover.png" ], Dir.children(book_two_destination).sort
+  end
+
+  test "removes partial temporary files before retrying a split import" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.m4b"), "book one complete audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    fail_book_one_once = true
+
+    FileCopyService.stub(:cp, ->(source, destination) {
+      if File.basename(source) == "Book One.m4b" && fail_book_one_once
+        fail_book_one_once = false
+        File.write(destination, "partial")
+        raise IOError, "simulated interrupted copy"
+      end
+
+      FileUtils.cp(source, destination)
+    }) do
+      first_job = PostProcessingJob.new(@download.id)
+      first_job.perform_now
+      assert @request.reload.attention_needed?
+
+      @request.clear_attention!
+      retry_job = PostProcessingJob.new(@download.id, 0, @download.reload.post_processing_job_id)
+      retry_job.perform_now
+    end
+
+    book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
+    assert @request.reload.completed?
+    assert_equal [ "Book One.m4b" ], Dir.children(book_one_destination)
+    assert_equal "book one complete audio", File.read(File.join(book_one_destination, "Book One.m4b"))
+  end
+
+  test "does not follow a destination symlink during split move imports" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    SettingsService.set(:move_completed_downloads, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    book_one_source = File.join(@temp_source, "Book One.m4b")
+    File.write(book_one_source, "book one audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
+    FileUtils.mkdir_p(book_one_destination)
+    symlink_path = File.join(book_one_destination, "Book One.m4b")
+    File.symlink(book_one_source, symlink_path)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?
+    assert File.symlink?(symlink_path)
+    assert_equal "book one audio", File.read(File.join(book_one_destination, "Book One (2).m4b"))
+    assert_not File.exist?(@temp_source)
+  end
+
+  test "does not overwrite a file created while publishing a split import" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    real_link = File.method(:link)
+    publish_race = true
+
+    File.stub(:link, ->(source, destination) {
+      if publish_race
+        publish_race = false
+        File.write(destination, "concurrent file")
+        raise Errno::EEXIST, destination
+      end
+
+      real_link.call(source, destination)
+    }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
+    assert @request.reload.completed?
+    assert_equal "concurrent file", File.read(File.join(book_one_destination, "Book One.m4b"))
+    assert_equal "book one audio", File.read(File.join(book_one_destination, "Book One (2).m4b"))
+  end
+
+  test "adds duplicate suffixes without exceeding the basename byte limit" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    long_filename = "#{'A' * 251}.m4b"
+    File.write(File.join(@temp_source, long_filename), "long-name audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    long_title_destination = File.join(@temp_dest_base, @book.author, "A" * 100)
+    FileUtils.mkdir_p(long_title_destination)
+    File.write(File.join(long_title_destination, long_filename), "existing audio")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    duplicate_filename = "#{'A' * 247} (2).m4b"
+    assert @request.reload.completed?
+    assert_equal 255, duplicate_filename.bytesize
+    assert_equal "existing audio", File.read(File.join(long_title_destination, long_filename))
+    assert_equal "long-name audio", File.read(File.join(long_title_destination, duplicate_filename))
+  end
+
+  test "publishes split imports when the destination filesystem rejects hard links" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+
+    File.stub(:link, ->(*) { raise Errno::EOPNOTSUPP, "hard links unavailable" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    book_one_destination = File.join(@temp_dest_base, @book.author, "Book One", "Book One.m4b")
+    book_two_destination = File.join(@temp_dest_base, @book.author, "Book Two", "Book Two.m4b")
+    assert @request.reload.completed?
+    assert_equal "book one audio", File.read(book_one_destination)
+    assert_equal "book two audio", File.read(book_two_destination)
+  end
+
+  test "does not overwrite a concurrent file when hard-link publication is unavailable" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    publish_race = true
+
+    File.stub(:link, ->(_source, destination) {
+      if publish_race
+        publish_race = false
+        File.write(destination, "concurrent file")
+      end
+      raise Errno::EOPNOTSUPP, "hard links unavailable"
+    }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
+    assert @request.reload.completed?
+    assert_equal "concurrent file", File.read(File.join(book_one_destination, "Book One.m4b"))
+    assert_equal "book one audio", File.read(File.join(book_one_destination, "Book One (2).m4b"))
+  end
+
+  test "reclaims interrupted temporary files after publication completed" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.m4b"), "book one complete audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    book_one_directory = File.join(@temp_dest_base, @book.author, "Book One")
+    FileUtils.mkdir_p(book_one_directory)
+    book_one_destination = File.join(book_one_directory, "Book One.m4b")
+    File.write(book_one_destination, "book one complete audio")
+    token = "a" * 32
+    temporary_path = File.join(book_one_directory, ".shelfarr-import-#{token}.tmp")
+    lock_path = File.join(book_one_directory, ".shelfarr-import-#{token}.lock")
+    File.write(temporary_path, "partial")
+    File.write(lock_path, "#{PostProcessingJob::IMPORT_TEMP_LOCK_MAGIC}:#{token}")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?
+    assert_equal "book one complete audio", File.read(book_one_destination)
+    assert_not File.exist?(temporary_path)
+    assert_not File.exist?(lock_path)
+  end
+
+  test "does not reclaim a temporary import owned by an active worker" do
+    destination_directory = File.join(@temp_dest_base, @book.author, "Book One")
+    FileUtils.mkdir_p(destination_directory)
+    token = "b" * 32
+    temporary_path = File.join(destination_directory, ".shelfarr-import-#{token}.tmp")
+    lock_path = File.join(destination_directory, ".shelfarr-import-#{token}.lock")
+    File.write(temporary_path, "active copy")
+
+    File.open(lock_path, "w+") do |lock|
+      lock.write("#{PostProcessingJob::IMPORT_TEMP_LOCK_MAGIC}:#{token}")
+      lock.flush
+      lock.flock(File::LOCK_EX)
+
+      PostProcessingJob.new.send(:cleanup_interrupted_imports, destination_directory)
+
+      assert_equal "active copy", File.read(temporary_path)
+      assert File.exist?(lock_path)
+    end
   end
 
   test "keeps exact-stem companions with each split book during move import" do

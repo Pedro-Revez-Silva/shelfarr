@@ -127,13 +127,15 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
 
   test "parses MP4 metadata atoms" do
     file = StringIO.new(
-      mp4_atom([ 0xA9 ].pack("C") + "nam", "M4B Title") +
+      mp4_metadata_file(
+        mp4_atom([ 0xA9 ].pack("C") + "nam", "M4B Title") +
         mp4_atom([ 0xA9 ].pack("C") + "ART", "M4B Author") +
         mp4_atom([ 0xA9 ].pack("C") + "alb", "M4B Album") +
         mp4_atom("aART", "Album Author") +
         mp4_atom([ 0xA9 ].pack("C") + "day", "2020") +
         mp4_atom("desc", "Description") +
         mp4_atom([ 0xA9 ].pack("C") + "wrt", "Narrator")
+      )
     )
     file.set_encoding(Encoding::BINARY)
 
@@ -151,7 +153,12 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
   test "extracts m4b metadata from parsed atoms" do
     Tempfile.create([ "book", ".m4b" ]) do |file|
       file.binmode
-      file.write(mp4_atom([ 0xA9 ].pack("C") + "nam", "M4B Title") + mp4_atom([ 0xA9 ].pack("C") + "ART", "M4B Author"))
+      file.write(
+        mp4_metadata_file(
+          mp4_atom([ 0xA9 ].pack("C") + "nam", "M4B Title") +
+          mp4_atom([ 0xA9 ].pack("C") + "ART", "M4B Author")
+        )
+      )
       file.flush
 
       result = MetadataExtractorService.extract(file.path)
@@ -162,10 +169,36 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "uses later MP4 fallback fields when primary fields are blank" do
+    Tempfile.create([ "book", ".m4b" ]) do |file|
+      file.binmode
+      file.write(
+        mp4_metadata_file(
+          mp4_atom([ 0xA9 ].pack("C") + "nam", "  ") +
+          mp4_atom([ 0xA9 ].pack("C") + "ART", "") +
+          mp4_atom([ 0xA9 ].pack("C") + "alb", "Album Title") +
+          mp4_atom("aART", "Album Author")
+        )
+      )
+      file.flush
+
+      result = MetadataExtractorService.extract(file.path)
+
+      assert result.success
+      assert_equal "Album Title", result.title
+      assert_equal "Album Author", result.author
+    end
+  end
+
   test "extracts AAX metadata through the MP4 parser" do
     Tempfile.create([ "book", ".aax" ]) do |file|
       file.binmode
-      file.write(mp4_atom([ 0xA9 ].pack("C") + "nam", "AAX Title") + mp4_atom([ 0xA9 ].pack("C") + "ART", "AAX Author"))
+      file.write(
+        mp4_metadata_file(
+          mp4_atom([ 0xA9 ].pack("C") + "nam", "AAX Title") +
+          mp4_atom([ 0xA9 ].pack("C") + "ART", "AAX Author")
+        )
+      )
       file.flush
 
       result = MetadataExtractorService.extract(file.path)
@@ -174,6 +207,125 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
       assert_equal "AAX Title", result.title
       assert_equal "AAX Author", result.author
     end
+  end
+
+  test "extracts AAXC metadata without treating it as a splittable format" do
+    Tempfile.create([ "book", ".aaxc" ]) do |file|
+      file.binmode
+      file.write(
+        mp4_metadata_file(
+          mp4_atom([ 0xA9 ].pack("C") + "nam", "AAXC Title") +
+          mp4_atom([ 0xA9 ].pack("C") + "ART", "AAXC Author")
+        )
+      )
+      file.flush
+
+      result = MetadataExtractorService.extract(file.path)
+
+      assert result.success
+      assert_equal "AAXC Title", result.title
+      assert_equal "AAXC Author", result.author
+    end
+  end
+
+  test "does not treat Audible AA files as MP4 containers" do
+    Tempfile.create([ "book", ".aa" ]) do |file|
+      file.binmode
+      file.write(mp4_metadata_file(mp4_atom([ 0xA9 ].pack("C") + "nam", "Not AA Metadata")))
+      file.flush
+
+      result = MetadataExtractorService.extract(file.path)
+
+      assert_not result.success
+      assert_nil result.title
+    end
+  end
+
+  test "stops parsing when an MP4 atom is smaller than its header" do
+    file = StringIO.new(([ 4 ].pack("N") + "free" + ("x" * 1024)).b)
+
+    metadata = MetadataExtractorService.send(:parse_mp4_atoms, file)
+
+    assert_empty metadata
+    assert_equal 8, file.pos
+  end
+
+  test "stops parsing when an MP4 atom exceeds the remaining file" do
+    file = StringIO.new(([ 4096 ].pack("N") + "free" + "short").b)
+
+    metadata = MetadataExtractorService.send(:parse_mp4_atoms, file)
+
+    assert_empty metadata
+    assert_equal 8, file.pos
+  end
+
+  test "ignores metadata atoms outside the MP4 metadata hierarchy" do
+    file = StringIO.new(mp4_atom([ 0xA9 ].pack("C") + "nam", "Top-level Title"))
+    file.set_encoding(Encoding::BINARY)
+
+    metadata = MetadataExtractorService.send(:parse_mp4_atoms, file)
+
+    assert_empty metadata
+  end
+
+  test "does not read a child atom past its container boundary" do
+    oversized_child_header = [ 100 ].pack("N") + "udta"
+    file = StringIO.new(mp4_container("moov", oversized_child_header))
+    file.set_encoding(Encoding::BINARY)
+
+    metadata = MetadataExtractorService.send(:parse_mp4_atoms, file)
+
+    assert_empty metadata
+  end
+
+  test "does not read an extended atom size past its container boundary" do
+    truncated_extended_atom = [ 1 ].pack("N") + "udta"
+    file = StringIO.new(truncated_extended_atom + "outside!")
+
+    atom = MetadataExtractorService.send(:read_mp4_atom_header, file, 8)
+
+    assert_nil atom
+    assert_equal 8, file.pos
+  end
+
+  test "limits the total number of inspected MP4 atoms" do
+    padding = mp4_container("free", "") * MetadataExtractorService::MAX_MP4_INSPECTED_ATOMS
+    trailing_metadata = mp4_container(
+      "udta",
+      mp4_container(
+        "meta",
+        ("\0" * 4) + mp4_container(
+          "ilst",
+          mp4_atom([ 0xA9 ].pack("C") + "nam", "Too Late")
+        )
+      )
+    )
+    file = StringIO.new(mp4_container("moov", padding + trailing_metadata))
+    file.set_encoding(Encoding::BINARY)
+
+    metadata = MetadataExtractorService.send(:parse_mp4_atoms, file)
+
+    assert_empty metadata
+  end
+
+  test "skips oversized MP4 metadata values without losing later atoms" do
+    oversized_payload_size = MetadataExtractorService::MAX_MP4_METADATA_ATOM_SIZE + 1
+    oversized_atom = (
+      [ 8 + oversized_payload_size ].pack("N") +
+      [ 0xA9 ].pack("C") + "nam" +
+      ("\0" * oversized_payload_size)
+    ).b
+    file = StringIO.new(
+      mp4_metadata_file(
+        oversized_atom + mp4_atom([ 0xA9 ].pack("C") + "ART", "M4B Author")
+      )
+    )
+    file.set_encoding(Encoding::BINARY)
+
+    metadata = MetadataExtractorService.send(:parse_mp4_atoms, file)
+
+    assert_nil metadata[:title]
+    assert_equal "M4B Author", metadata[:artist]
   end
 
   test "read_mp4_data_atom returns nil for invalid sizes" do
@@ -194,6 +346,18 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
     value = value.b
     data = [ 16 + value.bytesize ].pack("N") + "data" + ("\0" * 8).b + value
     ([ 8 + data.bytesize ].pack("N") + type.b + data).b
+  end
+
+  def mp4_metadata_file(metadata_atoms)
+    ilst = mp4_container("ilst", metadata_atoms)
+    meta = mp4_container("meta", ("\0" * 4) + ilst)
+    udta = mp4_container("udta", meta)
+    mp4_container("moov", udta)
+  end
+
+  def mp4_container(type, payload)
+    payload = payload.b
+    ([ 8 + payload.bytesize ].pack("N") + type.b + payload).b
   end
 
   def create_test_epub(title:, author:, date:)

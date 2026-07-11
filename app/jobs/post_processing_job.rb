@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "fiddle"
+
 # Imports completed downloads to the library folder and triggers library scan.
 # Files are copied by default to preserve seeding for torrent downloads.
 # Usenet downloads are removed from the client after successful import.
@@ -7,6 +9,14 @@ class PostProcessingJob < ApplicationJob
   EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
   EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
   EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
+  MAX_FILENAME_BYTES = 255
+  IMPORT_TEMP_LOCK_MAGIC = "shelfarr-import-v1"
+  IMPORT_TEMP_LOCK_PATTERN = /\A\.shelfarr-import-([0-9a-f]{32})\.lock\z/
+  AT_FDCWD = -100
+  LINUX_RENAME_NOREPLACE = 0x1
+  DARWIN_RENAME_EXCL = 0x4
+
+  class AtomicPublicationUnsupportedError < StandardError; end
 
   queue_as :default
 
@@ -186,10 +196,13 @@ class PostProcessingJob < ApplicationJob
 
     FileUtils.mkdir_p(destination)
 
-    # Import all files from source directory to destination.
-    # Use Dir.entries instead of Dir.glob to avoid pattern matching issues
-    # (e.g., [AUDIOBOOK] in path being treated as character class).
-    files = Dir.entries(source).reject { |f| f.start_with?(".") }
+    # Preserve dot-prefixed audiobook release files. Ebook/comic validation and
+    # recursive import intentionally retain their existing hidden-file policy.
+    files = if readable_file_import?(book)
+      Dir.entries(source).reject { |file| file.start_with?(".") }
+    else
+      Dir.children(source)
+    end
     Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to import"
     files.each do |file|
       source_file = File.join(source, file)
@@ -219,19 +232,22 @@ class PostProcessingJob < ApplicationJob
     plan.entries.each do |entry|
       FileUtils.mkdir_p(entry.destination)
       import_audiobook_bundle_file(entry.source_path, entry.destination)
-      entry.sidecar_paths.each { |sidecar| import_sidecar_file(sidecar, entry.destination) }
+      entry.sidecar_paths.each do |sidecar|
+        import_sidecar_file(sidecar, entry.destination, retry_safe: true)
+      end
     end
 
     tracked_destination = plan.tracked_entry.destination
     FileUtils.mkdir_p(tracked_destination)
-    plan.unassigned_paths.each { |path| import_sidecar_file(path, tracked_destination) }
+    plan.unassigned_paths.each do |path|
+      import_sidecar_file(path, tracked_destination, retry_safe: true)
+    end
     @imported_book_path_override = tracked_destination
   end
 
   def import_audiobook_bundle_file(source_file, destination)
     destination_file = File.join(destination, File.basename(source_file))
-    destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
-    import_file(source_file, destination_file)
+    import_file_without_duplicate_content(source_file, destination_file)
   end
 
   def import_ebook_directory_entry(source_file, destination, book)
@@ -347,10 +363,14 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def import_sidecar_file(source_file, destination)
+  def import_sidecar_file(source_file, destination, retry_safe: false)
     destination_file = File.join(destination, File.basename(source_file))
-    destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
-    import_file(source_file, destination_file)
+    if retry_safe
+      import_file_without_duplicate_content(source_file, destination_file)
+    else
+      destination_file = handle_duplicate_filename(destination_file) if path_occupied?(destination_file)
+      import_file(source_file, destination_file)
+    end
   end
 
   def import_renamed_file(source, destination, book)
@@ -366,6 +386,228 @@ class PostProcessingJob < ApplicationJob
     else
       FileCopyService.cp(source, destination)
     end
+  end
+
+  def import_file_without_duplicate_content(source, destination)
+    original_destination = destination
+    cleanup_interrupted_imports(File.dirname(original_destination))
+    destination, already_imported = retry_safe_destination(source, original_destination)
+    if already_imported
+      Rails.logger.info "[PostProcessingJob] Skipping already imported file: #{destination}"
+      return destination
+    end
+
+    atomic_import_file(source, original_destination, destination)
+  end
+
+  def retry_safe_destination(source, destination)
+    candidate = destination
+    counter = 1
+
+    loop do
+      break unless path_occupied?(candidate)
+
+      if !File.symlink?(candidate) && same_file_content?(source, candidate)
+        return [ candidate, true ]
+      end
+
+      counter += 1
+      candidate = duplicate_filename_candidate(destination, counter)
+    end
+
+    [ candidate, false ]
+  end
+
+  def atomic_import_file(source, original_destination, destination)
+    directory = File.dirname(destination)
+    token = SecureRandom.hex(16)
+    temporary_destination = File.join(directory, ".shelfarr-import-#{token}.tmp")
+    lock_path = File.join(directory, ".shelfarr-import-#{token}.lock")
+    lock_identity = nil
+    lock_flags = File::RDWR | File::CREAT | File::EXCL | File::BINARY
+
+    File.open(lock_path, lock_flags, 0o600) do |lock|
+      lock_identity = file_identity(lock.stat)
+      lock.flock(File::LOCK_EX)
+      lock.write("#{IMPORT_TEMP_LOCK_MAGIC}:#{token}")
+      flush_and_sync(lock)
+      sync_directory(directory)
+
+      begin
+        import_file(source, temporary_destination)
+        sync_regular_file(temporary_destination)
+        publish_imported_file(temporary_destination, original_destination, destination)
+      ensure
+        remove_regular_file(temporary_destination)
+        sync_directory(directory)
+      end
+    end
+  ensure
+    remove_path_if_identity(lock_path, lock_identity) if lock_path
+    sync_directory(directory) if directory
+  end
+
+  def publish_imported_file(temporary_source, original_destination, destination)
+    hard_links_supported = true
+
+    loop do
+      if hard_links_supported
+        link_result = try_hard_link(temporary_source, destination)
+        return destination if link_result == :published
+
+        hard_links_supported = false if link_result == :unsupported
+      end
+
+      unless hard_links_supported
+        rename_result = try_no_replace_rename(temporary_source, destination)
+        return destination if rename_result == :published
+
+        if rename_result == :unsupported
+          raise AtomicPublicationUnsupportedError,
+            "The destination filesystem cannot atomically publish split audiobook files"
+        end
+      end
+
+      destination, already_imported = retry_safe_destination(temporary_source, original_destination)
+      return destination if already_imported
+    end
+  end
+
+  def try_hard_link(source, destination)
+    File.link(source, destination)
+    :published
+  rescue Errno::EEXIST
+    :occupied
+  rescue Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOSYS, NotImplementedError
+    :unsupported
+  end
+
+  def try_no_replace_rename(source, destination)
+    function, platform = no_replace_rename_function
+    return :unsupported unless function
+
+    Fiddle.last_error = 0
+    result = if platform == :darwin
+      function.call(source, destination, DARWIN_RENAME_EXCL)
+    else
+      function.call(AT_FDCWD, source, AT_FDCWD, destination, LINUX_RENAME_NOREPLACE)
+    end
+    return :published if result.zero?
+
+    error_number = Fiddle.last_error
+    return :occupied if error_number == Errno::EEXIST::Errno
+    return :unsupported if atomic_rename_unsupported_error?(error_number)
+
+    raise SystemCallError.new("Atomic file publication failed", error_number)
+  end
+
+  def no_replace_rename_function
+    return @no_replace_rename_function if defined?(@no_replace_rename_function)
+
+    @no_replace_rename_function = if RUBY_PLATFORM.include?("darwin")
+      address = Fiddle::Handle::DEFAULT["renamex_np"]
+      function = Fiddle::Function.new(
+        address,
+        [ Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_UINT ],
+        Fiddle::TYPE_INT
+      )
+      [ function, :darwin ]
+    elsif RUBY_PLATFORM.include?("linux")
+      address = Fiddle::Handle::DEFAULT["renameat2"]
+      function = Fiddle::Function.new(
+        address,
+        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_UINT ],
+        Fiddle::TYPE_INT
+      )
+      [ function, :linux ]
+    else
+      [ nil, nil ]
+    end
+  rescue Fiddle::DLError
+    @no_replace_rename_function = [ nil, nil ]
+  end
+
+  def atomic_rename_unsupported_error?(error_number)
+    [ Errno::ENOSYS::Errno, Errno::EINVAL::Errno, Errno::EOPNOTSUPP::Errno ].include?(error_number)
+  end
+
+  def cleanup_interrupted_imports(directory)
+    Dir.children(directory).each do |entry|
+      match = IMPORT_TEMP_LOCK_PATTERN.match(entry)
+      next unless match
+
+      token = match[1]
+      lock_path = File.join(directory, entry)
+      lock_stat = File.lstat(lock_path)
+      next unless lock_stat.file? && !lock_stat.symlink?
+
+      File.open(lock_path, "r+b") do |lock|
+        next unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+        next unless path_matches_identity?(lock_path, file_identity(lock.stat))
+
+        lock.rewind
+        next unless lock.read == "#{IMPORT_TEMP_LOCK_MAGIC}:#{token}"
+
+        remove_regular_file(File.join(directory, ".shelfarr-import-#{token}.tmp"))
+        remove_path_if_identity(lock_path, file_identity(lock.stat))
+        sync_directory(directory)
+      end
+    rescue Errno::ENOENT, Errno::EACCES, IOError
+      next
+    end
+  end
+
+  def remove_regular_file(path)
+    stat = File.lstat(path)
+    FileUtils.rm_f(path) if stat.file? && !stat.symlink?
+  rescue Errno::ENOENT
+    nil
+  end
+
+  def remove_path_if_identity(path, identity)
+    FileUtils.rm_f(path) if path_matches_identity?(path, identity)
+  rescue Errno::ENOENT
+    nil
+  end
+
+  def flush_and_sync(file)
+    file.flush
+    file.fsync
+  rescue Errno::EINVAL, Errno::EOPNOTSUPP
+    nil
+  end
+
+  def sync_directory(path)
+    File.open(path, File::RDONLY) { |directory| directory.fsync }
+  rescue SystemCallError, IOError
+    nil
+  end
+
+  def sync_regular_file(path)
+    File.open(path, "rb", &:fsync)
+  rescue Errno::EINVAL, Errno::EOPNOTSUPP
+    nil
+  end
+
+  def file_identity(stat)
+    [ stat.dev, stat.ino ]
+  end
+
+  def path_matches_identity?(path, identity)
+    return false unless identity
+
+    stat = File.lstat(path)
+    stat.file? && !stat.symlink? && file_identity(stat) == identity
+  rescue Errno::ENOENT
+    false
+  end
+
+  def same_file_content?(source, destination)
+    return false unless File.file?(source) && File.file?(destination)
+
+    File.identical?(source, destination) || FileUtils.compare_file(source, destination)
+  rescue SystemCallError, IOError
+    false
   end
 
   def import_directory_entry(source, destination)
@@ -395,7 +637,7 @@ class PostProcessingJob < ApplicationJob
     new_filename = book ? PathTemplateService.build_filename(book, extension) : File.basename(source)
     destination_file = File.join(destination, new_filename)
 
-    destination_file = handle_duplicate_filename(destination_file) if File.exist?(destination_file)
+    destination_file = handle_duplicate_filename(destination_file) if path_occupied?(destination_file)
     destination_file
   end
 
@@ -404,17 +646,36 @@ class PostProcessingJob < ApplicationJob
   end
 
   def handle_duplicate_filename(path)
+    counter = 1
+    new_path = path
+    while path_occupied?(new_path)
+      counter += 1
+      new_path = duplicate_filename_candidate(path, counter)
+    end
+    new_path
+  end
+
+  def duplicate_filename_candidate(path, counter)
     dir = File.dirname(path)
     ext = File.extname(path)
     base = File.basename(path, ext)
+    suffix = " (#{counter})"
+    available_base_bytes = MAX_FILENAME_BYTES - suffix.bytesize - ext.bytesize
+    raise Errno::ENAMETOOLONG, path if available_base_bytes.negative?
 
-    counter = 1
-    new_path = path
-    while File.exist?(new_path)
-      counter += 1
-      new_path = File.join(dir, "#{base} (#{counter})#{ext}")
-    end
-    new_path
+    base = truncate_to_bytes(base, available_base_bytes)
+    File.join(dir, "#{base}#{suffix}#{ext}")
+  end
+
+  def truncate_to_bytes(value, maximum_bytes)
+    return value if value.bytesize <= maximum_bytes
+
+    truncated = value.byteslice(0, maximum_bytes).to_s
+    truncated.valid_encoding? ? truncated : truncated.scrub("")
+  end
+
+  def path_occupied?(path)
+    File.exist?(path) || File.symlink?(path)
   end
 
   # Remap paths from download client (host) to container paths.

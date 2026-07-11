@@ -3,6 +3,21 @@
 # Extracts metadata from uploaded files (audiobooks and ebooks)
 # Reads embedded metadata like ID3 tags, EPUB OPF, PDF info, etc.
 class MetadataExtractorService
+  MP4_ATOM_HEADER_SIZE = 8
+  MP4_EXTENDED_ATOM_HEADER_SIZE = 16
+  MAX_MP4_METADATA_ATOM_SIZE = 1024 * 1024
+  MAX_MP4_INSPECTED_ATOMS = 4096
+  MAX_MP4_METADATA_BYTES = 4 * 1024 * 1024
+  MP4_METADATA_ATOMS = {
+    "\xA9nam".b => :title,
+    "\xA9ART".b => :artist,
+    "\xA9alb".b => :album,
+    "aART".b => :album_artist,
+    "\xA9day".b => :year,
+    "desc".b => :description,
+    "\xA9wrt".b => :narrator
+  }.freeze
+
   # Result of metadata extraction
   Result = Data.define(:title, :author, :year, :description, :narrator, :success) do
     def self.empty
@@ -25,7 +40,7 @@ class MetadataExtractorService
       result = case extension
       when "mp3"
         extract_mp3(file_path)
-      when "m4b", "m4a", "aa", "aax", "aaxc"
+      when "m4b", "m4a", "aax", "aaxc"
         extract_m4b(file_path)
       when "epub"
         extract_epub(file_path)
@@ -78,14 +93,16 @@ class MetadataExtractorService
     def extract_m4b(file_path)
       File.open(file_path, "rb") do |file|
         metadata = parse_mp4_atoms(file)
+        title = clean_string(metadata[:title].presence || metadata[:album])
+        author = clean_string(metadata[:artist].presence || metadata[:album_artist])
 
         Result.new(
-          title: clean_string(metadata[:title] || metadata[:album]),
-          author: clean_string(metadata[:artist] || metadata[:album_artist]),
+          title: title,
+          author: author,
           year: parse_year(metadata[:year]),
           description: clean_string(metadata[:description]),
           narrator: clean_string(metadata[:narrator]),
-          success: metadata[:title].present? || metadata[:artist].present?
+          success: title.present? || author.present?
         )
       end
     rescue => e
@@ -164,54 +181,9 @@ class MetadataExtractorService
     # MP4 files use a tree of "atoms" (boxes) to store data
     def parse_mp4_atoms(file)
       metadata = {}
+      budget = { atoms: 0, metadata_bytes: 0 }
 
-      # Read atoms until we find moov > udta > meta > ilst
-      while !file.eof?
-        atom_header = file.read(8)
-        break if atom_header.nil? || atom_header.length < 8
-
-        size = atom_header[0, 4].unpack1("N")
-        type = atom_header[4, 4]
-
-        # Handle extended size
-        if size == 1
-          size = file.read(8).unpack1("Q>")
-          size -= 16
-        elsif size == 0
-          # Atom extends to end of file
-          break
-        else
-          size -= 8
-        end
-
-        case type
-        when "moov", "udta", "meta", "ilst"
-          # Container atoms - skip 4 bytes for meta (version/flags)
-          file.read(4) if type == "meta"
-          # Continue parsing inside these containers
-          next
-        when "\xA9nam".b # Title
-          metadata[:title] = read_mp4_data_atom(file, size)
-        when "\xA9ART".b # Artist
-          metadata[:artist] = read_mp4_data_atom(file, size)
-        when "\xA9alb".b # Album
-          metadata[:album] = read_mp4_data_atom(file, size)
-        when "aART" # Album artist
-          metadata[:album_artist] = read_mp4_data_atom(file, size)
-        when "\xA9day".b # Year
-          metadata[:year] = read_mp4_data_atom(file, size)
-        when "desc" # Description
-          metadata[:description] = read_mp4_data_atom(file, size)
-        when "\xA9wrt".b # Narrator (sometimes stored as composer)
-          metadata[:narrator] = read_mp4_data_atom(file, size)
-        else
-          # Skip unknown atoms
-          file.seek(size, IO::SEEK_CUR) if size > 0
-        end
-
-        # Safety check - don't read past end of file
-        break if file.pos >= file.size
-      end
+      parse_mp4_atom_range(file, file.size, metadata, budget, context: :root)
 
       metadata
     rescue => e
@@ -219,19 +191,122 @@ class MetadataExtractorService
       {}
     end
 
+    def parse_mp4_atom_range(file, range_end, metadata, budget, context:)
+      while file.pos + MP4_ATOM_HEADER_SIZE <= range_end && budget[:atoms] < MAX_MP4_INSPECTED_ATOMS
+        atom = read_mp4_atom_header(file, range_end)
+        break unless atom
+
+        budget[:atoms] += 1
+
+        begin
+          parse_mp4_atom(file, atom, metadata, budget, context: context)
+        ensure
+          file.seek(atom[:end], IO::SEEK_SET) unless file.pos == atom[:end]
+        end
+      end
+    end
+
+    def parse_mp4_atom(file, atom, metadata, budget, context:)
+      case context
+      when :root
+        parse_mp4_atom_range(file, atom[:end], metadata, budget, context: :moov) if atom[:type] == "moov".b
+      when :moov
+        if atom[:type] == "udta".b
+          parse_mp4_atom_range(file, atom[:end], metadata, budget, context: :udta)
+        elsif atom[:type] == "meta".b
+          parse_mp4_meta_atom(file, atom, metadata, budget)
+        end
+      when :udta
+        if atom[:type] == "meta".b
+          parse_mp4_meta_atom(file, atom, metadata, budget)
+        elsif atom[:type] == "ilst".b
+          parse_mp4_atom_range(file, atom[:end], metadata, budget, context: :ilst)
+        end
+      when :meta
+        parse_mp4_atom_range(file, atom[:end], metadata, budget, context: :ilst) if atom[:type] == "ilst".b
+      when :ilst
+        parse_mp4_metadata_atom(file, atom, metadata, budget)
+      end
+    end
+
+    def parse_mp4_meta_atom(file, atom, metadata, budget)
+      return if atom[:payload_size] < 4
+
+      file.seek(4, IO::SEEK_CUR) # version and flags
+      parse_mp4_atom_range(file, atom[:end], metadata, budget, context: :meta)
+    end
+
+    def parse_mp4_metadata_atom(file, atom, metadata, budget)
+      field = MP4_METADATA_ATOMS[atom[:type]]
+      return unless field
+      return if metadata.key?(field)
+
+      value = read_mp4_data_atom(file, atom[:payload_size], budget: budget)
+      metadata[field] = value if value.present?
+    end
+
+    def read_mp4_atom_header(file, range_end)
+      atom_start = file.pos
+      header = file.read(MP4_ATOM_HEADER_SIZE)
+      return unless header&.bytesize == MP4_ATOM_HEADER_SIZE
+
+      atom_size = header.byteslice(0, 4).unpack1("N")
+      type = header.byteslice(4, 4)
+      header_size = MP4_ATOM_HEADER_SIZE
+
+      if atom_size == 1
+        return if file.pos + 8 > range_end
+
+        extended_size = file.read(8)
+        return unless extended_size&.bytesize == 8
+
+        atom_size = extended_size.unpack1("Q>")
+        header_size = MP4_EXTENDED_ATOM_HEADER_SIZE
+      elsif atom_size == 0
+        atom_size = range_end - atom_start
+      end
+
+      return if atom_size < header_size
+
+      atom_end = atom_start + atom_size
+      return if atom_end > range_end
+
+      {
+        type: type,
+        end: atom_end,
+        payload_size: atom_end - file.pos
+      }
+    end
+
     # Read a data atom value from MP4 file
-    def read_mp4_data_atom(file, size)
-      return nil if size < 16
+    def read_mp4_data_atom(file, size, budget: nil)
+      return nil if size.negative?
 
-      # Data atom structure: size(4) + "data"(4) + type(4) + locale(4) + value
+      item_end = file.pos + size
+      return nil if item_end > file.size
+      return nil if size < 16 || size > MAX_MP4_METADATA_ATOM_SIZE
+
+      # Nested data atom: size(4), "data"(4), type(4), locale(4), value.
       data_header = file.read(16)
-      return nil unless data_header && data_header.length == 16
+      return nil unless data_header&.bytesize == 16
+      return nil unless data_header.byteslice(4, 4) == "data"
 
-      remaining = size - 16
-      return nil if remaining <= 0
+      data_size = data_header.byteslice(0, 4).unpack1("N")
+      data_size = size if data_size.zero?
+      return nil if data_size < 16 || data_size > size
 
-      value = file.read(remaining)
-      value&.force_encoding("UTF-8")&.scrub
+      value_size = data_size - 16
+      return nil if budget && budget[:metadata_bytes] + value_size > MAX_MP4_METADATA_BYTES
+
+      value = file.read(value_size)
+      return nil unless value&.bytesize == value_size
+
+      budget[:metadata_bytes] += value_size if budget
+      value.force_encoding("UTF-8").scrub
+    ensure
+      if defined?(item_end) && item_end
+        file.seek([ item_end, file.size ].min, IO::SEEK_SET)
+      end
     end
 
     # Parse year from various date formats

@@ -55,6 +55,17 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     assert_nil build_plan
   end
 
+  test "does not split when file contents reveal another audio format" do
+    write_file("Book One.m4b")
+    write_file("Book Two.m4b")
+    File.binwrite(
+      File.join(@source, "bonus.mp4"),
+      [ 24 ].pack("N") + "ftypM4A " + ("\0" * 12)
+    )
+
+    assert_nil build_plan
+  end
+
   test "does not split multipart M4B releases" do
     @book.title = "One Long Book"
     write_file("One Long Book - Part 1.m4b")
@@ -105,6 +116,34 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     second = write_file("One Long Book - Part 2.m4b")
     results = {
       first => metadata(title: "One Long Book", author: "Original Author"),
+      second => metadata(title: "Conclusion", author: "Original Author")
+    }
+
+    MetadataExtractorService.stub(:extract, ->(path) { results.fetch(path) }) do
+      assert_nil build_plan
+    end
+  end
+
+  test "does not split numbered multipart files whose embedded titles differ" do
+    @book.title = "One Long Book"
+    first = write_file("One Long Book - 1.m4b")
+    second = write_file("One Long Book - 2.m4b")
+    results = {
+      first => metadata(title: "One Long Book", author: "Original Author"),
+      second => metadata(title: "Conclusion", author: "Original Author")
+    }
+
+    MetadataExtractorService.stub(:extract, ->(path) { results.fetch(path) }) do
+      assert_nil build_plan
+    end
+  end
+
+  test "does not split dot-numbered multipart files whose embedded titles differ" do
+    @book.title = "Introduction"
+    first = write_file("One.Long.Book.01.m4b")
+    second = write_file("One.Long.Book.02.m4b")
+    results = {
+      first => metadata(title: "Introduction", author: "Original Author"),
       second => metadata(title: "Conclusion", author: "Original Author")
     }
 
@@ -205,6 +244,24 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     assert_equal "Sarah J. Maas", plan.tracked_entry.virtual_book.author
   end
 
+  test "does not track an arbitrary longer title when the requested book is absent" do
+    @book.title = "Dune"
+    @book.author = "Frank Herbert"
+    write_file("Dune Messiah.m4b")
+    write_file("Children of Dune.m4b")
+
+    assert_nil build_plan
+  end
+
+  test "does not substitute a conflicting qualified edition" do
+    @book.title = "Dune (Abridged)"
+    @book.author = "Frank Herbert"
+    write_file("Dune (Unabridged).m4b")
+    write_file("Other Book.m4b")
+
+    assert_nil build_plan
+  end
+
   test "does not split duplicate embedded titles" do
     first = write_file("first.m4b")
     second = write_file("second.m4b")
@@ -215,9 +272,46 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     end
   end
 
+  test "does not split canonically equivalent embedded titles" do
+    first = write_file("first.m4b")
+    second = write_file("second.m4b")
+    @book.title = "Café"
+    results = {
+      first => metadata(title: "Café", author: "Original Author"),
+      second => metadata(title: "Cafe\u0301", author: "Original Author")
+    }
+
+    MetadataExtractorService.stub(:extract, ->(path) { results.fetch(path) }) do
+      assert_nil build_plan
+    end
+  end
+
+  test "does not split embedded titles that are equivalent under full case folding" do
+    first = write_file("first.m4b")
+    second = write_file("second.m4b")
+    @book.title = "Straße"
+    results = {
+      first => metadata(title: "Straße", author: "Original Author"),
+      second => metadata(title: "STRASSE", author: "Original Author")
+    }
+
+    MetadataExtractorService.stub(:extract, ->(path) { results.fetch(path) }) do
+      assert_nil build_plan
+    end
+  end
+
   test "does not reorganize an already nested download" do
     FileUtils.mkdir_p(File.join(@source, "Book One"))
     File.write(File.join(@source, "Book One", "Book One.m4b"), "audio")
+    write_file("Book Two.m4b")
+
+    assert_nil build_plan
+  end
+
+  test "does not reorganize a download containing a hidden directory" do
+    FileUtils.mkdir_p(File.join(@source, ".release-metadata"))
+    File.write(File.join(@source, ".release-metadata", "manifest.json"), "{}")
+    write_file("Book One.m4b")
     write_file("Book Two.m4b")
 
     assert_nil build_plan
@@ -239,6 +333,16 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     assert_equal [ matching_cover, generic_cover, companion_pdf ].sort, one.sidecar_paths.sort
     assert_equal [ generic_cover, voucher ].sort, two.sidecar_paths.sort
     assert_equal [ readme ], plan.unassigned_paths
+  end
+
+  test "preserves hidden files as unassigned bundle extras" do
+    write_file("Book One.m4b")
+    write_file("Book Two.m4b")
+    hidden_extra = write_file(".bundle-metadata.json")
+
+    plan = build_plan
+
+    assert_includes plan.unassigned_paths, hidden_extra
   end
 
   test "preserves requested metadata used by the tracked path template" do
@@ -267,6 +371,56 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     assert_equal File.join(@destination, "Book Two"), plan.entries.second.destination
   end
 
+  test "rejects split destinations inside the source directory" do
+    SettingsService.set(:audiobook_path_template, "")
+    write_file("Book One.m4b")
+    write_file("Book Two.m4b")
+
+    error = assert_raises(AudiobookBundleImportPlanner::UnsafeDestinationError) do
+      build_plan(base_path: @source)
+    end
+
+    assert_match(/destination overlaps/i, error.message)
+  end
+
+  test "rejects split destinations that resolve into the source through a symlink" do
+    SettingsService.set(:audiobook_path_template, "")
+    write_file("Book One.m4b")
+    write_file("Book Two.m4b")
+    output_alias = File.join(@destination, "output-alias")
+    File.symlink(@source, output_alias)
+
+    assert_raises(AudiobookBundleImportPlanner::UnsafeDestinationError) do
+      build_plan(base_path: output_alias)
+    end
+  end
+
+  test "does not split destinations that resolve to the same directory" do
+    SettingsService.set(:audiobook_path_template, "")
+    write_file("Book One.m4b")
+    write_file("Book Two.m4b")
+    shared_destination = File.join(@destination, "shared")
+    FileUtils.mkdir_p(shared_destination)
+    File.symlink(shared_destination, File.join(@destination, "Book One"))
+    File.symlink(shared_destination, File.join(@destination, "Book Two"))
+
+    assert_nil build_plan
+  end
+
+  test "does not split missing destinations that differ only by case" do
+    SettingsService.set(:audiobook_path_template, "{author}")
+    first = write_file("Book One.m4b")
+    second = write_file("Book Two.m4b")
+    results = {
+      first => metadata(title: "Book One", author: "Case Author"),
+      second => metadata(title: "Book Two", author: "case author")
+    }
+
+    MetadataExtractorService.stub(:extract, ->(path) { results.fetch(path) }) do
+      assert_nil build_plan
+    end
+  end
+
   test "does not split when no entry matches the requested book" do
     @book.title = "Unrelated Request"
     write_file("Book One.m4b")
@@ -277,8 +431,8 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
 
   private
 
-  def build_plan
-    AudiobookBundleImportPlanner.call(source: @source, book: @book, base_path: @destination)
+  def build_plan(base_path: @destination)
+    AudiobookBundleImportPlanner.call(source: @source, book: @book, base_path: base_path)
   end
 
   def write_file(name)
