@@ -7,6 +7,18 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
   include Turbo::Broadcastable::TestHelper
 
+  class DeterministicRefreshDebouncer
+    def debounce(&callback)
+      @pending = callback
+    end
+
+    def flush
+      pending, @pending = @pending, nil
+      pending&.call
+    end
+  end
+  private_constant :DeterministicRefreshDebouncer
+
   setup do
     @old_queue_adapter = ActiveJob::Base.queue_adapter
     ActiveJob::Base.queue_adapter = :test
@@ -35,6 +47,16 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
     assert_refresh_broadcasted(streams)
   end
 
+  test "live update assertions do not depend on the asynchronous debounce scheduler" do
+    Concurrent::ScheduledTask.stub(:execute, ->(*) { flunk "Turbo's async scheduler should not run in this test" }) do
+      streams = capture_refresh_broadcasts(@request) do
+        @request.update!(status: :searching)
+      end
+
+      assert_refresh_broadcasted(streams)
+    end
+  end
+
   test "request does not broadcast a refresh for non-visible changes" do
     assert_no_refresh_broadcasts(@request) do
       @request.touch
@@ -42,7 +64,9 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
   end
 
   test "download broadcasts a refresh when progress changes" do
-    download = @request.downloads.create!(name: "Queued Download", status: :queued)
+    download = Request.suppressing_turbo_broadcasts do
+      @request.downloads.create!(name: "Queued Download", status: :queued)
+    end
     clear_enqueued_jobs
     clear_performed_jobs
 
@@ -54,7 +78,9 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
   end
 
   test "download does not broadcast a refresh for hidden bookkeeping changes" do
-    download = @request.downloads.create!(name: "Queued Download", status: :queued)
+    download = Request.suppressing_turbo_broadcasts do
+      @request.downloads.create!(name: "Queued Download", status: :queued)
+    end
     clear_enqueued_jobs
     clear_performed_jobs
 
@@ -92,10 +118,12 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
       clear_enqueued_jobs
       clear_performed_jobs
 
-      perform_enqueued_jobs do
-        capture_turbo_stream_broadcasts(request) do
-          block.call
-          wait_for_refresh_debouncer(request)
+      with_deterministic_refresh_debouncer do |debouncer|
+        perform_enqueued_jobs do
+          capture_turbo_stream_broadcasts(request) do
+            block.call
+            debouncer.flush
+          end
         end
       end
     end
@@ -106,17 +134,22 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
       clear_enqueued_jobs
       clear_performed_jobs
 
-      perform_enqueued_jobs do
-        assert_no_turbo_stream_broadcasts(request) do
-          block.call
-          wait_for_refresh_debouncer(request)
+      with_deterministic_refresh_debouncer do |debouncer|
+        perform_enqueued_jobs do
+          assert_no_turbo_stream_broadcasts(request) do
+            block.call
+            debouncer.flush
+          end
         end
       end
     end
   end
 
-  def wait_for_refresh_debouncer(request)
-    Turbo::StreamsChannel.send(:refresh_debouncer_for, request, request_id: Turbo.current_request_id).wait
+  def with_deterministic_refresh_debouncer
+    debouncer = DeterministicRefreshDebouncer.new
+    Turbo::StreamsChannel.stub(:refresh_debouncer_for, debouncer) do
+      yield debouncer
+    end
   end
 
   def assert_refresh_broadcasted(streams)
