@@ -43,9 +43,13 @@ class OutboundUrlGuardTest < ActiveSupport::TestCase
   test "always rejects link-local and metadata addresses" do
     %w[
       http://169.254.169.254/latest/meta-data
+      http://100.100.100.200/latest/meta-data
       http://0.0.0.0/file
       http://[fe80::1]/file
       http://[64:ff9b::a9fe:a9fe]/file
+      http://[fd00:a9fe:a9fe::1]/v1/instance
+      http://[fd00:ec2::254]/latest/meta-data
+      http://[fd20:ce::254]/computeMetadata/v1
     ].each do |url|
       assert_raises(OutboundUrlGuard::BlockedUrlError, "expected #{url} to be blocked") do
         OutboundUrlGuard.validate!(url, allow_private: true)

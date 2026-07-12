@@ -464,6 +464,23 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "ensure_running! starts a watchdog for a queued direct download without clients" do
+    DownloadClient.destroy_all
+    direct_result = search_results(:selected_result)
+    direct_result.update!(source: SearchResult::SOURCE_GUTENBERG)
+    @download.update!(
+      status: :queued,
+      external_id: nil,
+      download_client: nil,
+      download_type: nil,
+      search_result: direct_result
+    )
+
+    assert_enqueued_with(job: DownloadMonitorJob) do
+      DownloadMonitorJob.ensure_running!
+    end
+  end
+
   test "limits monitor execution to one protected job" do
     assert_equal DownloadMonitorJob::CONCURRENCY_KEY, DownloadMonitorJob.concurrency_key
     assert_equal 1, DownloadMonitorJob.concurrency_limit
@@ -572,6 +589,119 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
 
     assert_equal [ @request ], attention_requests
+  end
+
+  test "fails an abandoned claimed dispatch without an external ID" do
+    @download.update_columns(
+      status: Download.statuses[:downloading],
+      external_id: nil,
+      download_client_id: nil,
+      created_at: 10.minutes.ago,
+      updated_at: 10.minutes.ago
+    )
+    SettingsService.set(:download_enqueue_timeout_minutes, 5)
+
+    DownloadMonitorJob.perform_now
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "never sent to the download client"
+  end
+
+  test "does not fail an active direct download based on its old creation time" do
+    @download.update_columns(
+      status: Download.statuses[:downloading],
+      external_id: nil,
+      download_client_id: nil,
+      download_type: "direct",
+      created_at: 1.hour.ago,
+      updated_at: Time.current
+    )
+
+    DownloadMonitorJob.perform_now
+
+    assert @download.reload.downloading?
+    assert_not @request.reload.attention_needed?
+  end
+
+  test "fails a direct download whose heartbeat went stale" do
+    DownloadClient.destroy_all
+    stale_at = DownloadMonitorJob::DIRECT_DOWNLOAD_STALE_TIMEOUT.ago - 1.minute
+    @download.update_columns(
+      status: Download.statuses[:downloading],
+      external_id: nil,
+      download_client_id: nil,
+      download_type: "direct",
+      created_at: 1.hour.ago,
+      updated_at: stale_at
+    )
+
+    DownloadMonitorJob.perform_now
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "stopped reporting progress"
+  end
+
+  test "does not overwrite a direct download completed after the monitor loaded it" do
+    stale_at = DownloadMonitorJob::DIRECT_DOWNLOAD_STALE_TIMEOUT.ago - 1.minute
+    @download.update_columns(
+      status: Download.statuses[:downloading],
+      external_id: nil,
+      download_type: "direct",
+      updated_at: stale_at
+    )
+    stale_download = Download.find(@download.id)
+    @download.update!(status: :completed, progress: 100)
+
+    DownloadMonitorJob.new.send(:handle_stale_direct_download, stale_download)
+
+    assert @download.reload.completed?
+    assert_not @request.reload.attention_needed?
+  end
+
+  test "does not overwrite a dispatch finalized after the monitor loaded it" do
+    @download.update_columns(
+      status: Download.statuses[:queued],
+      external_id: nil,
+      download_type: nil,
+      created_at: 10.minutes.ago,
+      updated_at: 10.minutes.ago
+    )
+    stale_download = Download.find(@download.id)
+    @download.update!(
+      status: :downloading,
+      external_id: "finalized-hash",
+      download_type: "torrent",
+      download_client: @qbittorrent
+    )
+
+    DownloadMonitorJob.new.send(:handle_stale_queued_download, stale_download)
+
+    assert @download.reload.downloading?
+    assert_equal "finalized-hash", @download.external_id
+    assert_not @request.reload.attention_needed?
+  end
+
+  test "ignores a stale client failure after the download was replaced" do
+    stale_download = Download.find(@download.id)
+    @download.update!(status: :failed)
+
+    DownloadMonitorJob.new.send(:handle_failed, stale_download)
+
+    assert @download.reload.failed?
+    assert_not @request.reload.attention_needed?
+  end
+
+  test "ignores a stale missing result after the download was replaced" do
+    @download.update!(not_found_count: DownloadMonitorJob::NOT_FOUND_THRESHOLD - 1)
+    stale_download = Download.find(@download.id)
+    @download.update!(status: :failed)
+
+    DownloadMonitorJob.new.send(:handle_missing, stale_download)
+
+    assert @download.reload.failed?
+    assert_not @request.reload.attention_needed?
   end
 
   private

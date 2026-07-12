@@ -22,11 +22,15 @@ class OutboundUrlGuard
   # (incl. cloud metadata at 169.254.169.254), multicast, and reserved space.
   ALWAYS_BLOCKED_RANGES = %w[
     0.0.0.0/8
+    100.100.100.200/32
     169.254.0.0/16
     224.0.0.0/4
     240.0.0.0/4
     ::/128
     64:ff9b::/96
+    fd00:a9fe:a9fe::1/128
+    fd00:ec2::254/128
+    fd20:ce::254/128
     fe80::/10
     ff00::/8
   ].map { |cidr| IPAddr.new(cidr) }.freeze

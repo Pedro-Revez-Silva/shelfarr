@@ -15,6 +15,7 @@ class DownloadJob < ApplicationJob
   MAX_DIRECT_DOWNLOAD_BYTES = 512.megabytes
   MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES = 2.gigabytes
   MAX_DIRECT_DOWNLOAD_REDIRECTS = 5
+  DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL = 30.seconds
   DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
   DIRECT_AUDIOBOOK_FILE_EXTENSIONS = %w[m4b mp3 m4a aac flac ogg opus].freeze
@@ -51,6 +52,7 @@ class DownloadJob < ApplicationJob
       return
     end
     download.update!(search_result: search_result) unless download.search_result_id
+    return unless claim_dispatch!(download, search_result)
 
     begin
       # Handle Anna's Archive downloads differently
@@ -68,54 +70,83 @@ class DownloadJob < ApplicationJob
         handle_standard_download(download, search_result)
       end
     rescue DownloadClientSelector::NoClientAvailableError => e
-      Rails.logger.error "[DownloadJob] No download client available: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      download.request.mark_for_attention!(e.message)
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] No download client available: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        download.request.mark_for_attention!(e.message)
+      end
     rescue DownloadClients::Base::AuthenticationError => e
-      Rails.logger.error "[DownloadJob] Download client authentication failed: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      download.request.mark_for_attention!("Download client authentication failed. Please check credentials.")
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] Download client authentication failed: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        download.request.mark_for_attention!("Download client authentication failed. Please check credentials.")
+      end
     rescue DownloadClients::Base::ConnectionError => e
-      Rails.logger.error "[DownloadJob] Download client connection error: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      download.request.mark_for_attention!("Failed to connect to download client: #{e.message}")
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] Download client connection error: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        download.request.mark_for_attention!("Failed to connect to download client: #{e.message}")
+      end
     rescue DownloadClients::Base::Error => e
-      Rails.logger.error "[DownloadJob] Download client error for download ##{download.id}: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      download.request.handle_download_failure!(download, reason: "Download client error: #{e.message}")
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] Download client error for download ##{download.id}: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        download.request.handle_download_failure!(download, reason: "Download client error: #{e.message}")
+      end
     rescue AnnaArchiveClient::Error => e
-      Rails.logger.error "[DownloadJob] Anna's Archive error for download ##{download.id}: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      handle_download_source_failure(download, e, "Anna's Archive error: #{e.message}")
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] Anna's Archive error for download ##{download.id}: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        handle_download_source_failure(download, e, "Anna's Archive error: #{e.message}")
+      end
     rescue ZLibraryClient::Error => e
-      Rails.logger.error "[DownloadJob] Z-Library error for download ##{download.id}: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      handle_download_source_failure(download, e, "Z-Library error: #{e.message}")
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] Z-Library error for download ##{download.id}: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        handle_download_source_failure(download, e, "Z-Library error: #{e.message}")
+      end
     rescue LibrivoxClient::Error => e
-      Rails.logger.error "[DownloadJob] LibriVox error for download ##{download.id}: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      handle_download_source_failure(download, e, "LibriVox error: #{e.message}")
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] LibriVox error for download ##{download.id}: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        handle_download_source_failure(download, e, "LibriVox error: #{e.message}")
+      end
     rescue GutenbergClient::Error => e
-      Rails.logger.error "[DownloadJob] Project Gutenberg error for download ##{download.id}: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      handle_download_source_failure(download, e, "Project Gutenberg error: #{e.message}")
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] Project Gutenberg error for download ##{download.id}: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        handle_download_source_failure(download, e, "Project Gutenberg error: #{e.message}")
+      end
     rescue CustomAcquisitionProviderClient::Error => e
-      Rails.logger.error "[DownloadJob] Custom provider error for download ##{download.id}: #{e.message}"
-      track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
-      download.update!(status: :failed)
-      handle_download_source_failure(download, e, "Custom provider error: #{e.message}")
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] Custom provider error for download ##{download.id}: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        handle_download_source_failure(download, e, "Custom provider error: #{e.message}")
+      end
     end
   end
 
   private
+
+  def with_current_dispatch(download)
+    download.request.with_lock do
+      download.reload
+      next unless download.queued? || download.downloading?
+
+      yield
+    end
+  rescue ActiveRecord::RecordNotFound
+    nil
+  end
 
   def handle_download_source_failure(download, error, message)
     if transient_download_source_error?(error)
@@ -214,11 +245,7 @@ class DownloadJob < ApplicationJob
   rescue LibrivoxClient::Error
     raise
   rescue => e
-    Rails.logger.error "[DownloadJob] LibriVox download failed: #{e.message}"
-    Rails.logger.error e.backtrace.first(5).join("\n")
-    track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
-    download.update!(status: :failed)
-    handle_direct_download_failure(download, e, message: "LibriVox download failed: #{e.message}")
+    fail_direct_dispatch!(download, e, message: "LibriVox download failed: #{e.message}")
   end
 
   def handle_custom_provider_download(download, search_result)
@@ -244,14 +271,10 @@ class DownloadJob < ApplicationJob
     else
       raise CustomAcquisitionProviderClient::UnusableArtifactError, "Unsupported custom provider artifact type: #{acquisition.download_type}"
     end
-  rescue CustomAcquisitionProviderClient::Error
+  rescue CustomAcquisitionProviderClient::Error, DownloadClientSelector::NoClientAvailableError, DownloadClients::Base::Error
     raise
   rescue => e
-    Rails.logger.error "[DownloadJob] Custom provider download failed: #{e.message}"
-    Rails.logger.error e.backtrace.first(5).join("\n")
-    track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
-    download.update!(status: :failed)
-    handle_direct_download_failure(download, e, message: "Custom provider download failed: #{e.message}")
+    fail_direct_dispatch!(download, e, message: "Custom provider download failed: #{e.message}")
   end
 
   def handle_direct_audiobook_download(download, search_result, download_url, source_name:)
@@ -272,30 +295,33 @@ class DownloadJob < ApplicationJob
     destination_dir = PathTemplateService.build_destination(book, base_path: base_path)
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook to: #{destination_dir}"
-    FileUtils.mkdir_p(destination_dir)
+    mark_direct_download_active!(download)
+    FileUtils.mkdir_p(File.dirname(destination_dir))
 
-    Tempfile.create([ "shelfarr-audiobook-", ".zip" ]) do |archive|
-      archive.binmode
-      download_file_via_http(
-        search_result,
-        download_url,
-        archive.path,
-        max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES
-      )
-      verify_downloaded_zip!(archive.path)
-      extract_zip_to_directory(archive.path, destination_dir)
+    finalized = Dir.mktmpdir(".shelfarr-audiobook-", File.dirname(destination_dir)) do |staging_dir|
+      Tempfile.create([ "shelfarr-audiobook-", ".zip" ]) do |archive|
+        archive.binmode
+        download_file_via_http(
+          search_result,
+          download_url,
+          archive.path,
+          max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
+          download: download
+        )
+        verify_downloaded_zip!(archive.path)
+        refresh_direct_download_heartbeat!(download)
+        extract_zip_to_directory(archive.path, staging_dir)
+      end
+
+      refresh_direct_download_heartbeat!(download)
+      # Archives extract to many files, so flat output has no single file to
+      # track; the root is recorded and guarded against delete/zip by consumers.
+      finalize_direct_download!(download, download_path: destination_dir, book_path: destination_dir) do
+        install_staged_directory!(staging_dir, destination_dir)
+      end
     end
+    return unless finalized
 
-    download.update!(
-      status: :completed,
-      download_path: destination_dir,
-      download_type: "direct"
-    )
-
-    # Archives extract to many files, so flat output has no single file to
-    # track; the root is recorded and guarded against delete/zip by consumers
-    book.update!(file_path: destination_dir)
-    download.request.complete!
     trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
     track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
@@ -304,6 +330,7 @@ class DownloadJob < ApplicationJob
   end
 
   def handle_direct_audiobook_file_download(download, search_result, download_url, extension:, source_name:)
+    finalized = false
     book = download.request.book
     base_path = SettingsService.get(:audiobook_output_path, default: "/audiobooks")
     destination_dir = PathTemplateService.build_destination(book, base_path: base_path)
@@ -311,36 +338,43 @@ class DownloadJob < ApplicationJob
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook file to: #{destination_path}"
+    mark_direct_download_active!(download)
     FileUtils.mkdir_p(destination_dir)
 
     download_file_via_http(
       search_result,
       download_url,
       destination_path,
-      max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES
+      max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
+      download: download
     )
     verify_downloaded_audiobook_file!(destination_path)
 
-    download.update!(
-      status: :completed,
-      download_path: destination_path,
-      download_type: "direct"
-    )
-
+    refresh_direct_download_heartbeat!(download)
     # Flat output shares destination_dir across books; track the file itself
-    book.update!(file_path: PathTemplateService.flat_output?(book) ? destination_path : destination_dir)
-    download.request.complete!
+    book_path = PathTemplateService.flat_output?(book) ? destination_path : destination_dir
+    finalized = finalize_direct_download!(download, download_path: destination_path, book_path: book_path)
+    unless finalized
+      FileUtils.rm_f(destination_path)
+      return
+    end
+
     trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
     track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
 
     Rails.logger.info "[DownloadJob] #{source_name} download completed: #{destination_path}"
   rescue => e
-    FileUtils.rm_f(destination_path) if defined?(destination_path) && destination_path.present?
-    raise e
+    if finalized
+      Rails.logger.warn "[DownloadJob] Post-completion action failed for download ##{download.id}: #{e.class}"
+    else
+      FileUtils.rm_f(destination_path) if defined?(destination_path) && destination_path.present?
+      raise e
+    end
   end
 
   def handle_direct_http_download(download, search_result, download_url)
+    finalized = false
     book = download.request.book
 
     # Build destination path similar to how PostProcessingJob does it
@@ -352,28 +386,24 @@ class DownloadJob < ApplicationJob
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading directly to: #{destination_path}"
+    mark_direct_download_active!(download)
 
     # Ensure directory exists
     FileUtils.mkdir_p(destination_dir)
 
     # Download the file
     expected_extension = infer_extension(download_url, search_result)
-    download_file_via_http(search_result, download_url, destination_path)
+    download_file_via_http(search_result, download_url, destination_path, download: download)
     verify_downloaded_ebook!(destination_path, expected_extension: expected_extension)
 
-    # Update download record as completed
-    download.update!(
-      status: :completed,
-      download_path: destination_path,
-      download_type: "direct"
-    )
-
-    # Update book with file path
     # Flat output shares destination_dir across books; track the file itself
-    book.update!(file_path: PathTemplateService.flat_output?(book) ? destination_path : destination_dir)
-
-    # Complete the request
-    download.request.complete!
+    refresh_direct_download_heartbeat!(download)
+    book_path = PathTemplateService.flat_output?(book) ? destination_path : destination_dir
+    finalized = finalize_direct_download!(download, download_path: destination_path, book_path: book_path)
+    unless finalized
+      FileUtils.rm_f(destination_path)
+      return
+    end
 
     # Trigger library scan if configured
     trigger_library_scan(book) if LibraryPlatformClient.configured?
@@ -384,11 +414,12 @@ class DownloadJob < ApplicationJob
 
     Rails.logger.info "[DownloadJob] Direct download completed: #{destination_path}"
   rescue => e
-    Rails.logger.error "[DownloadJob] Direct download failed: #{e.message}"
-    Rails.logger.error e.backtrace.first(5).join("\n")
-    track_request_event(download.request, "failed", download: download, message: e.message, level: :error)
-    download.update!(status: :failed)
-    handle_direct_download_failure(download, e)
+    if finalized
+      Rails.logger.warn "[DownloadJob] Post-completion action failed for download ##{download.id}: #{e.class}"
+    else
+      FileUtils.rm_f(destination_path) if defined?(destination_path) && destination_path.present?
+      fail_direct_dispatch!(download, e, message: "Direct download failed: #{e.message}")
+    end
   end
 
   def infer_filename_from_url(url, search_result)
@@ -526,7 +557,7 @@ class DownloadJob < ApplicationJob
     result
   end
 
-  def download_file_via_http(search_result, url, destination, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES)
+  def download_file_via_http(search_result, url, destination, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES, download: nil)
     endpoint = validate_direct_download_url!(url, search_result)
 
     Rails.logger.info "[DownloadJob] Starting HTTP download..."
@@ -534,6 +565,7 @@ class DownloadJob < ApplicationJob
     bytes_written = 0
     redirects_followed = 0
     download_complete = false
+    last_heartbeat_at = refresh_direct_download_heartbeat!(download) if download
 
     loop do
       response_handled = false
@@ -573,6 +605,9 @@ class DownloadJob < ApplicationJob
 
           File.open(destination, "wb") do |dest|
             response.read_body do |chunk|
+              if download && last_heartbeat_at < DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL.ago
+                last_heartbeat_at = refresh_direct_download_heartbeat!(download)
+              end
               bytes_written += chunk.bytesize
               raise "Direct download exceeds size limit of #{max_bytes / 1.megabyte} MB" if bytes_written > max_bytes
 
@@ -595,6 +630,28 @@ class DownloadJob < ApplicationJob
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
   rescue SocketError, IOError, EOFError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError => e
     raise DirectDownloadError, "Direct download request failed: #{e.message}"
+  end
+
+  def mark_direct_download_active!(download)
+    now = Time.current
+    claimed = Download
+      .where(id: download.id, status: Download.statuses[:downloading], download_type: "dispatching")
+      .update_all(download_type: "direct", updated_at: now)
+    raise DirectDownloadError, "Direct download is no longer active" unless claimed == 1
+
+    download.download_type = "direct"
+    download.updated_at = now
+  end
+
+  def refresh_direct_download_heartbeat!(download)
+    now = Time.current
+    refreshed = Download
+      .where(id: download.id, status: Download.statuses[:downloading], download_type: "direct")
+      .update_all(updated_at: now)
+    raise DirectDownloadError, "Direct download is no longer active" unless refreshed == 1
+
+    download.updated_at = now
+    now
   end
 
   def validate_direct_download_url!(url, search_result = nil)
@@ -730,6 +787,14 @@ class DownloadJob < ApplicationJob
     raise "Failed to extract audiobook archive: #{e.message}"
   end
 
+  def install_staged_directory!(staging_dir, destination_dir)
+    if File.exist?(destination_dir)
+      FileUtils.cp_r(Dir.children(staging_dir).map { |entry| File.join(staging_dir, entry) }, destination_dir)
+    else
+      FileUtils.mv(staging_dir, destination_dir)
+    end
+  end
+
   def trigger_library_scan(book)
     lib_id = SettingsService.library_id_for_book(book)
 
@@ -751,40 +816,17 @@ class DownloadJob < ApplicationJob
     # add_torrent now returns the hash directly (or nil on failure)
     torrent_hash = client.add_torrent(download_url)
 
-    if torrent_hash
-      # Defensive check: warn if another download already has this external_id
-      check_for_duplicate_external_id(torrent_hash, download.id)
-
-      download.update!(
-        status: :downloading,
-        download_client: client_record,
-        external_id: torrent_hash,
+    if torrent_hash.present?
+      finalize_standard_dispatch!(
+        download,
+        search_result,
+        client,
+        client_record,
+        torrent_hash,
         download_type: "torrent"
       )
-      track_request_event(
-        download.request,
-        "dispatched",
-        download: download,
-        message: "Sent torrent download to #{client_record.name}",
-        details: {
-          client_name: client_record.name,
-          download_type: "torrent",
-          external_id: torrent_hash
-        }
-      )
-      Rails.logger.info "[DownloadJob] Successfully added torrent for download ##{download.id}, hash: #{torrent_hash}"
     else
-      track_request_event(
-        download.request,
-        "dispatch_failed",
-        download: download,
-        message: "Client did not return a torrent hash",
-        level: :error,
-        details: { client_name: client_record.name }
-      )
-      download.update!(status: :failed)
-      download.request.handle_download_failure!(download, reason: "Failed to add to #{client_record.name}")
-      Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
+      fail_standard_dispatch!(download, search_result, client_record, download_type: "torrent")
     end
   end
 
@@ -799,36 +841,16 @@ class DownloadJob < ApplicationJob
     external_id = result.is_a?(Hash) ? result["nzo_ids"]&.first : nil
 
     if external_id.present?
-      check_for_duplicate_external_id(external_id, download.id)
-
-      download.update!(
-        status: :downloading,
-        download_client: client_record,
-        external_id: external_id,
+      finalize_standard_dispatch!(
+        download,
+        search_result,
+        client,
+        client_record,
+        external_id,
         download_type: "usenet"
       )
-      track_request_event(
-        download.request,
-        "dispatched",
-        download: download,
-        message: "Sent usenet download to #{client_record.name}",
-        details: {
-          client_name: client_record.name,
-          download_type: "usenet",
-          external_id: external_id
-        }
-      )
     else
-      track_request_event(
-        download.request,
-        "dispatch_failed",
-        download: download,
-        message: "Client did not return an external ID",
-        level: :error,
-        details: { client_name: client_record.name, download_type: "usenet" }
-      )
-      download.update!(status: :failed)
-      download.request.handle_download_failure!(download, reason: "Failed to add to #{client_record.name}")
+      fail_standard_dispatch!(download, search_result, client_record, download_type: "usenet")
     end
   end
 
@@ -841,6 +863,9 @@ class DownloadJob < ApplicationJob
       return
     end
 
+    download_link = search_result.download_link
+    validate_manual_nzb_dispatch_url!(download_link) if search_result.from_manual_nzb?
+
     # Select best available client based on download type and priority
     client_record = DownloadClientSelector.for_download(search_result)
     client = client_record.adapter
@@ -848,7 +873,6 @@ class DownloadJob < ApplicationJob
 
     Rails.logger.info "[DownloadJob] Using client '#{client_record.name}' for download ##{download.id}"
 
-    download_link = search_result.download_link
     Rails.logger.info "[DownloadJob] Download link type: #{is_usenet ? 'usenet' : 'torrent'}, length: #{download_link.to_s.length} chars"
     if search_result.from_manual_nzb?
       Rails.logger.debug "[DownloadJob] Full download URL: [REDACTED MANUAL NZB URL]"
@@ -872,29 +896,83 @@ class DownloadJob < ApplicationJob
     end
 
     if success
-      # Defensive check: warn if another download already has this external_id
-      # This should not happen with the race condition fix, but log it if it does
-      check_for_duplicate_external_id(external_id, download.id)
-
-      download.update!(
-        status: :downloading,
-        download_client: client_record,
-        external_id: external_id,
+      finalize_standard_dispatch!(
+        download,
+        search_result,
+        client,
+        client_record,
+        external_id,
         download_type: is_usenet ? "usenet" : "torrent"
       )
-      track_request_event(
-        download.request,
-        "dispatched",
-        download: download,
-        message: "Sent #{download.download_type} download to #{client_record.name}",
-        details: {
-          client_name: client_record.name,
-          download_type: download.download_type,
-          external_id: external_id
-        }
-      )
-      Rails.logger.info "[DownloadJob] Successfully added #{download.download_type} for download ##{download.id}, external_id: #{external_id}"
     else
+      fail_standard_dispatch!(
+        download,
+        search_result,
+        client_record,
+        download_type: is_usenet ? "usenet" : "torrent"
+      )
+    end
+  end
+
+  def claim_dispatch!(download, search_result)
+    claimed = false
+
+    download.request.with_lock do
+      download.reload
+      search_result.reload
+      next unless download.queued?
+
+      download.update!(status: :downloading, download_type: "dispatching")
+      claimed = true
+    end
+
+    claimed
+  rescue ActiveRecord::RecordNotFound
+    false
+  end
+
+  def finalize_standard_dispatch!(download, search_result, client, client_record, external_id, download_type:)
+    finalized = false
+
+    begin
+      finalized = download.request.with_lock do
+        next false unless current_standard_dispatch?(download, search_result)
+
+        check_for_duplicate_external_id(external_id, download.id)
+        download.update!(
+          download_client: client_record,
+          external_id: external_id,
+          download_type: download_type
+        )
+        track_request_event(
+          download.request,
+          "dispatched",
+          download: download,
+          message: "Sent #{download_type} download to #{client_record.name}",
+          details: {
+            client_name: client_record.name,
+            download_type: download_type,
+            external_id: external_id
+          }
+        )
+        true
+      end
+    rescue ActiveRecord::RecordNotFound
+      finalized = false
+    ensure
+      remove_stale_client_dispatch(client, client_record, external_id, download.id) unless finalized
+    end
+
+    Rails.logger.info "[DownloadJob] Successfully added #{download_type} for download ##{download.id}, external_id: #{external_id}" if finalized
+    finalized
+  end
+
+  def fail_standard_dispatch!(download, search_result, client_record, download_type:)
+    failed = false
+
+    download.request.with_lock do
+      next unless current_standard_dispatch?(download, search_result)
+
       track_request_event(
         download.request,
         "dispatch_failed",
@@ -903,13 +981,79 @@ class DownloadJob < ApplicationJob
         level: :error,
         details: {
           client_name: client_record.name,
-          download_type: is_usenet ? "usenet" : "torrent"
+          download_type: download_type
         }
       )
       download.update!(status: :failed)
       download.request.handle_download_failure!(download, reason: "Failed to add to #{client_record.name}")
-      Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}"
+      failed = true
     end
+
+    Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}" if failed
+    failed
+  rescue ActiveRecord::RecordNotFound
+    false
+  end
+
+  def current_standard_dispatch?(download, search_result)
+    download.reload
+    search_result.reload
+    download.downloading? && download.download_type == "dispatching" && download.external_id.blank?
+  end
+
+  def finalize_direct_download!(download, download_path:, book_path:)
+    finalized = download.request.with_lock do
+      download.reload
+      next false unless download.downloading? && download.download_type == "direct" && download.external_id.blank?
+
+      yield if block_given?
+      download.request.book.update!(file_path: book_path)
+      download.update!(status: :completed, download_path: download_path)
+      download.request.complete!
+      true
+    end
+
+    Rails.logger.info "[DownloadJob] Direct dispatch no longer owns download ##{download.id}; discarding completion" unless finalized
+    finalized
+  rescue ActiveRecord::RecordNotFound
+    false
+  end
+
+  def fail_direct_dispatch!(download, error, message:)
+    handled = download.request.with_lock do
+      download.reload
+      next false unless download.downloading? && download.download_type.in?([ "dispatching", "direct" ])
+
+      Rails.logger.error "[DownloadJob] #{message}"
+      Rails.logger.error error.backtrace.first(5).join("\n") if error.backtrace
+      track_request_event(download.request, "failed", download: download, message: error.message, level: :error)
+      download.update!(status: :failed)
+      handle_direct_download_failure(download, error, message: message)
+      true
+    end
+
+    handled
+  rescue ActiveRecord::RecordNotFound
+    false
+  end
+
+  def remove_stale_client_dispatch(client, client_record, external_id, download_id)
+    removed = client.remove_torrent(external_id, delete_files: true)
+    if removed
+      Rails.logger.info "[DownloadJob] Removed stale client dispatch for replaced download ##{download_id}"
+    else
+      Rails.logger.warn "[DownloadJob] Client did not remove stale dispatch for replaced download ##{download_id}; scheduling cleanup"
+      enqueue_stale_client_cleanup(client_record.id, external_id, download_id)
+    end
+  rescue StandardError => e
+    Rails.logger.warn "[DownloadJob] Failed to remove stale dispatch for replaced download ##{download_id}: #{e.class}; scheduling cleanup"
+    enqueue_stale_client_cleanup(client_record.id, external_id, download_id)
+  end
+
+  def enqueue_stale_client_cleanup(client_id, external_id, download_id)
+    StaleClientDispatchCleanupJob.perform_later(client_id, external_id)
+  rescue StandardError => e
+    Rails.logger.error "[DownloadJob] Failed to enqueue stale dispatch cleanup for download ##{download_id}: #{e.class}"
   end
 
   def check_for_duplicate_external_id(external_id, current_download_id)
@@ -934,6 +1078,15 @@ class DownloadJob < ApplicationJob
     return parts.join(" - ") if parts.any?
 
     search_result.title.to_s.strip.presence
+  end
+
+  def validate_manual_nzb_dispatch_url!(url)
+    # Manual URLs are admin-provided and may intentionally target a home-lab
+    # service, but metadata, link-local, multicast, and reserved destinations
+    # should never be delegated to a download client.
+    OutboundUrlGuard.validate!(url, allow_private: true)
+  rescue OutboundUrlGuard::BlockedUrlError
+    raise DownloadClients::Base::Error, "Manual NZB URL points to a blocked or invalid destination"
   end
 
   def track_request_event(request, event_type, download: nil, message: nil, level: :info, details: {})

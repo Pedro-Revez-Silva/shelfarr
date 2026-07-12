@@ -4,12 +4,11 @@
 Rails.application.config.after_initialize do
   # Only start in server mode, not in console or rake tasks
   if defined?(Rails::Server)
-    # Check if any download client is configured
-    if DownloadClient.enabled.exists?
+    if DownloadMonitorJob.monitoring_required?
       Rails.logger.info "[Shelfarr] Starting DownloadMonitorJob chain"
       DownloadMonitorJob.ensure_running!
     else
-      Rails.logger.info "[Shelfarr] No download client configured, DownloadMonitorJob not started"
+      Rails.logger.info "[Shelfarr] No downloads require monitoring, DownloadMonitorJob not started"
     end
   end
 rescue => e

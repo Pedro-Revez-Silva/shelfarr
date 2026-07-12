@@ -108,6 +108,35 @@ class RequestManualNzbTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_manual_nzb reloads request state before overriding a download" do
+    stale_request = Request.find(@request.id)
+    @request.update!(status: :processing)
+
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      assert_raises(ArgumentError, match: /post-processing/) do
+        stale_request.add_manual_nzb!("https://downloads.example/book.nzb")
+      end
+    end
+
+    assert @request.reload.processing?
+  end
+
+  test "add_manual_nzb enqueues dispatch after its transaction commits" do
+    baseline_transactions = Request.connection.open_transactions
+    transactions_at_enqueue = nil
+    enqueued_download_id = nil
+
+    DownloadJob.stub(:perform_later, ->(download_id) {
+      transactions_at_enqueue = Request.connection.open_transactions
+      enqueued_download_id = download_id
+    }) do
+      download = @request.add_manual_nzb!("https://downloads.example/book.nzb")
+      assert_equal download.id, enqueued_download_id
+    end
+
+    assert_equal baseline_transactions, transactions_at_enqueue
+  end
+
   test "manual download allows a downloading override but not processing" do
     @request.update!(status: :downloading)
     assert @request.manual_download_allowed?
@@ -118,5 +147,21 @@ class RequestManualNzbTest < ActiveSupport::TestCase
     assert_not @request.manual_download_allowed?
     assert_not @request.manual_nzb_allowed?
     assert_not @request.manual_magnet_allowed?
+  end
+
+  test "manual download is blocked while a client dispatch is in progress" do
+    @request.update!(status: :downloading)
+    @request.downloads.create!(
+      name: "Dispatch in progress",
+      status: :downloading,
+      external_id: nil
+    )
+
+    assert_not @request.manual_download_allowed?
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      assert_raises(ArgumentError, match: /dispatch is in progress/) do
+        @request.add_manual_nzb!("https://downloads.example/book.nzb")
+      end
+    end
   end
 end

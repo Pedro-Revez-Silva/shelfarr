@@ -25,11 +25,15 @@ module DownloadClients
         []                                # PPParameters
       ], sensitive_url: options[:sensitive_url])
 
-      if result && result > 0
+      if result.is_a?(Integer) && result.positive?
         Rails.logger.info "[Nzbget] Added NZB with ID: #{result}"
         { "nzo_ids" => [ result.to_s ] }
       else
-        Rails.logger.error "[Nzbget] Failed to add NZB, result: #{result.inspect}"
+        if options[:sensitive_url]
+          Rails.logger.error "[Nzbget] Failed to add sensitive NZB URL"
+        else
+          Rails.logger.error "[Nzbget] Failed to add NZB, result: #{result.inspect}"
+        end
         false
       end
     rescue Faraday::Error => e
@@ -60,9 +64,12 @@ module DownloadClients
 
     # Test connection to NZBGet
     def test_connection
-      result = rpc_call("version")
-      if result.is_a?(String) && result.present?
-        Rails.logger.info "[Nzbget] Connection test passed - version: #{result}"
+      # Add-only NZBGet credentials can call version and append but cannot
+      # monitor queue/history. Probe status so accepted credentials cover the
+      # full lifecycle Shelfarr requires.
+      result = rpc_call("status")
+      if result.is_a?(Hash)
+        Rails.logger.info "[Nzbget] Connection test passed"
         true
       else
         Rails.logger.error "[Nzbget] Connection test failed - unexpected response: #{result.inspect}"
@@ -157,7 +164,11 @@ module DownloadClients
           end
           body["result"]
         else
-          Rails.logger.error "[Nzbget] Unexpected response format: #{body.inspect.truncate(200)}"
+          if sensitive_url
+            Rails.logger.error "[Nzbget] Unexpected response while submitting sensitive NZB URL"
+          else
+            Rails.logger.error "[Nzbget] Unexpected response format: #{body.inspect.truncate(200)}"
+          end
           raise Base::Error, "NZBGet returned unexpected response format"
         end
       when 401, 403
@@ -197,16 +208,11 @@ module DownloadClients
     end
 
     def find_in_queue(nzbget_id)
-      id = nzbget_id.to_i
       list_queue.find { |item| item.hash == nzbget_id.to_s }
-    rescue Base::Error
-      nil
     end
 
     def find_in_history(nzbget_id)
       list_history.find { |item| item.hash == nzbget_id.to_s }
-    rescue Base::Error
-      nil
     end
 
     def parse_queue_item(data)

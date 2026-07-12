@@ -69,6 +69,41 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "skips a completed download replaced by a manual selection" do
+    old_result = @request.search_results.create!(
+      guid: "old-result",
+      title: "Old result",
+      magnet_url: "magnet:?xt=urn:btih:#{'a' * 40}",
+      status: :selected
+    )
+    @download.update!(search_result: old_result)
+
+    replacement = @request.add_manual_nzb!("https://downloads.example/replacement.nzb")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.downloading?
+    assert replacement.search_result.reload.selected?
+    assert_nil @download.reload.post_processing_job_id
+    assert_nil @book.reload.file_path
+  end
+
+  test "skips a superseded completed download when no result remains selected" do
+    old_result = @request.search_results.create!(
+      guid: "superseded-result",
+      title: "Superseded result",
+      magnet_url: "magnet:?xt=urn:btih:#{'b' * 40}",
+      status: :rejected
+    )
+    @download.update!(search_result: old_result)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.downloading?
+    assert_nil @download.reload.post_processing_job_id
+    assert_nil @book.reload.file_path
+  end
+
   test "library_id_for routes comic books to comic library" do
     SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-lib")
     SettingsService.set(:audiobookshelf_comicbook_library_id, "comic-lib")

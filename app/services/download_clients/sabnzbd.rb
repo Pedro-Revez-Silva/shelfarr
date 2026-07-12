@@ -4,6 +4,8 @@ module DownloadClients
   # SABnzbd API client for usenet downloads
   # https://sabnzbd.org/wiki/advanced/api
   class Sabnzbd < Base
+    SAFE_NZO_ID = /\A[A-Za-z0-9][A-Za-z0-9._:-]{0,254}\z/
+
     # Add an NZB by URL
     def add_torrent(url, options = {})
       Rails.logger.info "[Sabnzbd] Adding URL to queue (#{url.to_s.length} chars)"
@@ -22,9 +24,20 @@ module DownloadClients
 
       response = connection.get("api", params)
       handle_response(response, sensitive_url: options[:sensitive_url]) do |data|
-        Rails.logger.info "[Sabnzbd] API response: status=#{data['status']}, nzo_ids=#{data['nzo_ids']&.inspect}"
-        # Return the response data so we can extract nzo_ids
-        data["status"] == true ? data : false
+        if options[:sensitive_url]
+          Rails.logger.info "[Sabnzbd] API response received for sensitive NZB URL"
+        else
+          Rails.logger.info "[Sabnzbd] API response: status=#{data['status']}, nzo_ids=#{data['nzo_ids']&.inspect}"
+        end
+
+        nzo_ids = data["nzo_ids"]
+        external_id = nzo_ids.first if nzo_ids.is_a?(Array)
+        if data["status"] == true && safe_nzo_id?(external_id)
+          data
+        else
+          Rails.logger.error "[Sabnzbd] API response did not include a valid external ID" if data["status"] == true
+          false
+        end
       end
     rescue Faraday::Error => e
       if options[:sensitive_url]
@@ -54,8 +67,11 @@ module DownloadClients
 
     # Test connection to SABnzbd
     def test_connection
-      response = connection.get("api", { mode: "version", apikey: api_key, output: "json" })
-      response.status == 200
+      # version/auth do not validate SABnzbd API keys. get_cats is a
+      # lightweight authenticated endpoint with the access level Shelfarr
+      # also needs for queue and history monitoring.
+      response = connection.get("api", { mode: "get_cats", apikey: api_key, output: "json" })
+      response.status == 200 && response.body.is_a?(Hash) && response.body["categories"].is_a?(Array)
     rescue Base::Error, Faraday::Error
       false
     end
@@ -105,6 +121,10 @@ module DownloadClients
       config.api_key
     end
 
+    def safe_nzo_id?(value)
+      value.is_a?(String) && value.match?(SAFE_NZO_ID)
+    end
+
     def connection
       @connection ||= Faraday.new(url: base_url) do |f|
         f.response :json, parser_options: { symbolize_names: false }
@@ -118,8 +138,17 @@ module DownloadClients
       case response.status
       when 200
         body = response.body
+        unless body.is_a?(Hash)
+          if sensitive_url
+            Rails.logger.error "[Sabnzbd] Unexpected response while submitting sensitive NZB URL"
+          else
+            Rails.logger.error "[Sabnzbd] Unexpected response format: #{body.inspect.truncate(200)}"
+          end
+          raise Base::Error, "SABnzbd returned unexpected response format"
+        end
+
         # SABnzbd returns error in JSON body sometimes
-        if body.is_a?(Hash) && body["error"]
+        if body["error"]
           if sensitive_url
             Rails.logger.error "[Sabnzbd] API rejected sensitive NZB URL"
             raise Base::Error, "SABnzbd rejected the NZB URL"
@@ -168,14 +197,10 @@ module DownloadClients
 
     def find_in_queue(nzo_id)
       list_queue.find { |item| item.hash == nzo_id }
-    rescue Base::Error
-      nil
     end
 
     def find_in_history(nzo_id)
       list_history.find { |item| item.hash == nzo_id }
-    rescue Base::Error
-      nil
     end
 
     def parse_queue_item(data)
