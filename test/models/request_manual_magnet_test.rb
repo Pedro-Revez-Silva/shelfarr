@@ -85,6 +85,19 @@ class RequestManualMagnetTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_manual_magnet reloads request state before overriding a download" do
+    stale_request = Request.find(@request.id)
+    @request.update!(status: :processing)
+
+    assert_no_difference [ "SearchResult.count", "Download.count" ] do
+      assert_raises(ArgumentError, match: /post-processing/) do
+        stale_request.add_manual_magnet!("magnet:?xt=urn:btih:#{'f' * 40}")
+      end
+    end
+
+    assert @request.reload.processing?
+  end
+
   test "manual_magnet_allowed allows downloading override but not processing" do
     @request.update!(status: :downloading)
     assert @request.manual_magnet_allowed?

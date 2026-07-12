@@ -8,10 +8,12 @@ module DownloadClients
     def add_torrent(url, options = {})
       Rails.logger.info "[Nzbget] Adding URL to queue (#{url.to_s.length} chars)"
 
-      # appendurl params: URL, NZBFilename, Category, Priority, AddToTop, AddPaused, DupeKey, DupeScore, DupeMode
-      result = rpc_call("appendurl", [
-        "",                               # Filename
-        url,                              # URL
+      # append params: Filename, Content, Category, Priority, AddToTop, AddPaused,
+      # DupeKey, DupeScore, DupeMode, AutoCategory, PPParameters.
+      # Content may be either an NZB payload or a URL for NZBGet to fetch.
+      result = rpc_call("append", [
+        nzb_filename(options[:nzbname]),  # Filename
+        url,                              # Content (URL)
         config.category.presence || "",   # Category
         0,                                # Priority
         false,                            # AddToTop
@@ -20,17 +22,26 @@ module DownloadClients
         0,                                # DupeScore
         "SCORE",                          # DupeMode
         false,                            # AutoCategory
-        [],                               # PPParameters
-      ])
+        []                                # PPParameters
+      ], sensitive_url: options[:sensitive_url])
 
-      if result && result > 0
+      if result.is_a?(Integer) && result.positive?
         Rails.logger.info "[Nzbget] Added NZB with ID: #{result}"
         { "nzo_ids" => [ result.to_s ] }
       else
-        Rails.logger.error "[Nzbget] Failed to add NZB, result: #{result.inspect}"
+        if options[:sensitive_url]
+          Rails.logger.error "[Nzbget] Failed to add sensitive NZB URL"
+        else
+          Rails.logger.error "[Nzbget] Failed to add NZB, result: #{result.inspect}"
+        end
         false
       end
     rescue Faraday::Error => e
+      if options[:sensitive_url]
+        Rails.logger.error "[Nzbget] Connection error while submitting sensitive NZB URL"
+        raise Base::ConnectionError, "Failed to connect to NZBGet while submitting NZB URL"
+      end
+
       Rails.logger.error "[Nzbget] Connection error: #{e.message}"
       raise Base::ConnectionError, "Failed to connect to NZBGet: #{e.message}"
     end
@@ -53,9 +64,12 @@ module DownloadClients
 
     # Test connection to NZBGet
     def test_connection
-      result = rpc_call("version")
-      if result.is_a?(String) && result.present?
-        Rails.logger.info "[Nzbget] Connection test passed - version: #{result}"
+      # Add-only NZBGet credentials can call version and append but cannot
+      # monitor queue/history. Probe status so accepted credentials cover the
+      # full lifecycle Shelfarr requires.
+      result = rpc_call("status")
+      if result.is_a?(Hash)
+        Rails.logger.info "[Nzbget] Connection test passed"
         true
       else
         Rails.logger.error "[Nzbget] Connection test failed - unexpected response: #{result.inspect}"
@@ -100,7 +114,18 @@ module DownloadClients
 
     private
 
-    def rpc_call(method, params = [])
+    def nzb_filename(value)
+      name = value.to_s
+        .gsub(/[<>:"\/\\|?*]/, "")
+        .gsub(/[\x00-\x1f]/, "")
+        .squish
+        .sub(/\.nzb\z/i, "")
+        .truncate(196, omission: "")
+
+      name.present? ? "#{name}.nzb" : ""
+    end
+
+    def rpc_call(method, params = [], sensitive_url: false)
       response = connection.post do |req|
         req.url "jsonrpc"
         req.headers["Content-Type"] = "application/json"
@@ -110,7 +135,7 @@ module DownloadClients
         }.to_json
       end
 
-      handle_response(response)
+      handle_response(response, sensitive_url: sensitive_url)
     end
 
     def connection
@@ -123,28 +148,46 @@ module DownloadClients
       end
     end
 
-    def handle_response(response)
+    def handle_response(response, sensitive_url: false)
       case response.status
       when 200
         body = response.body
         if body.is_a?(Hash)
           if body["error"]
+            if sensitive_url
+              Rails.logger.error "[Nzbget] API rejected sensitive NZB URL"
+              raise Base::Error, "NZBGet rejected the NZB URL"
+            end
+
             Rails.logger.error "[Nzbget] API returned error: #{body['error']}"
             raise Base::Error, "NZBGet error: #{body['error']}"
           end
           body["result"]
         else
-          Rails.logger.error "[Nzbget] Unexpected response format: #{body.inspect.truncate(200)}"
+          if sensitive_url
+            Rails.logger.error "[Nzbget] Unexpected response while submitting sensitive NZB URL"
+          else
+            Rails.logger.error "[Nzbget] Unexpected response format: #{body.inspect.truncate(200)}"
+          end
           raise Base::Error, "NZBGet returned unexpected response format"
         end
       when 401, 403
         Rails.logger.error "[Nzbget] Authentication failed (status #{response.status})"
         raise Base::AuthenticationError, "NZBGet authentication failed"
       else
-        Rails.logger.error "[Nzbget] API error (status #{response.status}): #{response.body.inspect.truncate(200)}"
+        if sensitive_url
+          Rails.logger.error "[Nzbget] API error while submitting sensitive NZB URL (status #{response.status})"
+        else
+          Rails.logger.error "[Nzbget] API error (status #{response.status}): #{response.body.inspect.truncate(200)}"
+        end
         raise Base::Error, "NZBGet API error: #{response.status}"
       end
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+      if sensitive_url
+        Rails.logger.error "[Nzbget] Connection error while submitting sensitive NZB URL"
+        raise Base::ConnectionError, "Failed to connect to NZBGet while submitting NZB URL"
+      end
+
       Rails.logger.error "[Nzbget] Connection error: #{e.message}"
       raise Base::ConnectionError, "Failed to connect to NZBGet: #{e.message}"
     end
@@ -165,16 +208,11 @@ module DownloadClients
     end
 
     def find_in_queue(nzbget_id)
-      id = nzbget_id.to_i
       list_queue.find { |item| item.hash == nzbget_id.to_s }
-    rescue Base::Error
-      nil
     end
 
     def find_in_history(nzbget_id)
       list_history.find { |item| item.hash == nzbget_id.to_s }
-    rescue Base::Error
-      nil
     end
 
     def parse_queue_item(data)

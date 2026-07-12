@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class RequestsController < ApplicationController
-  before_action :set_request, only: [ :show, :destroy, :retry, :manual_magnet ]
+  before_action :set_request, only: [ :show, :destroy, :retry, :manual_magnet, :manual_nzb ]
   before_action :set_request_for_download, only: [ :download ]
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
 
@@ -155,6 +155,20 @@ class RequestsController < ApplicationController
     redirect_to @request, alert: e.message
   rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
     redirect_to @request, alert: "Magnet link could not be queued. Please try again."
+  end
+
+  def manual_nzb
+    unless Current.user.admin?
+      redirect_to @request, alert: "You don't have permission to add NZB URLs"
+      return
+    end
+
+    @request.add_manual_nzb!(params[:nzb_url])
+    redirect_to @request, notice: "NZB URL queued for download."
+  rescue ArgumentError => e
+    redirect_to @request, alert: e.message
+  rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+    redirect_to @request, alert: "NZB URL could not be queued. Please try again."
   end
 
   def download

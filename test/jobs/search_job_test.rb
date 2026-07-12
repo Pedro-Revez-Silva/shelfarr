@@ -65,7 +65,81 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
-  test "preserves manual magnet results when saving new results" do
+  test "does not overwrite a manual NZB submitted while search results are in flight" do
+    manual_url = "https://downloads.example/manual-book.nzb?token=secret"
+    manual_submitted = false
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return do
+          unless manual_submitted
+            manual_submitted = true
+            @request.reload.add_manual_nzb!(manual_url)
+          end
+
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [ prowlarr_result_payload ].to_json
+          }
+        end
+
+      assert_enqueued_with(job: DownloadJob) do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    manual_result = @request.reload.search_results.find_by!(source: SearchResult::SOURCE_MANUAL_NZB)
+    assert @request.downloading?
+    assert manual_result.selected?
+    assert_equal manual_url, manual_result.download_url
+    assert_equal [ manual_result.id ], @request.downloads.pluck(:search_result_id)
+    assert_not @request.search_results.exists?(guid: "test-guid-123")
+  end
+
+  test "does not reclaim a request after a manual NZB selection" do
+    stale_request = Request.find(@request.id)
+    @request.add_manual_nzb!("https://downloads.example/manual-before-search.nzb")
+
+    claimed = SearchJob.new.send(:claim_search!, stale_request)
+
+    assert_not claimed
+    assert @request.reload.downloading?
+    assert @request.search_results.find_by!(source: SearchResult::SOURCE_MANUAL_NZB).selected?
+  end
+
+  test "does not schedule a retry when a manual NZB is submitted during an empty search" do
+    manual_submitted = false
+    original_retry_count = @request.retry_count
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return do
+          unless manual_submitted
+            manual_submitted = true
+            @request.reload.add_manual_nzb!("https://downloads.example/manual-book.nzb")
+          end
+
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [].to_json
+          }
+        end
+
+      assert_enqueued_with(job: DownloadJob) do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    @request.reload
+    assert @request.downloading?
+    assert_equal original_retry_count, @request.retry_count
+    assert_nil @request.next_retry_at
+    assert @request.search_results.find_by!(source: SearchResult::SOURCE_MANUAL_NZB).selected?
+  end
+
+  test "preserves manual download results when saving new results" do
     VCR.turned_off do
       stub_prowlarr_search_with_results
 
@@ -77,12 +151,23 @@ class SearchJobTest < ActiveJob::TestCase
         indexer: "Manual Magnet",
         status: :selected
       )
+      manual_nzb = @request.search_results.create!(
+        guid: "manual-nzb:#{'c' * 64}",
+        title: "Manual NZB result",
+        download_url: "https://downloads.example/book.nzb",
+        seeders: nil,
+        source: SearchResult::SOURCE_MANUAL_NZB,
+        indexer: "Manual NZB",
+        status: :selected
+      )
 
       SearchJob.perform_now(@request.id)
       @request.reload
 
       assert_includes @request.search_results, manual_result
       assert manual_result.reload.selected?
+      assert_includes @request.search_results, manual_nzb
+      assert manual_nzb.reload.selected?
     end
   end
 

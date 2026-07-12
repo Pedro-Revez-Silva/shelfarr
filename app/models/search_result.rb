@@ -23,6 +23,8 @@ class SearchResult < ApplicationRecord
   SOURCE_LIBRIVOX = "librivox"
   SOURCE_CUSTOM = "custom"
   SOURCE_MANUAL_MAGNET = "manual_magnet"
+  SOURCE_MANUAL_NZB = "manual_nzb"
+  MANUAL_SOURCES = [ SOURCE_MANUAL_MAGNET, SOURCE_MANUAL_NZB ].freeze
 
   validates :guid, presence: true, uniqueness: { scope: :request_id }
   validates :title, presence: true
@@ -268,6 +270,10 @@ class SearchResult < ApplicationRecord
     source == SOURCE_CUSTOM
   end
 
+  def from_manual_nzb?
+    source == SOURCE_MANUAL_NZB
+  end
+
   def source_display_name
     case source
     when SOURCE_JACKETT
@@ -286,6 +292,8 @@ class SearchResult < ApplicationRecord
       acquisition_provider&.name || indexer.presence || "Custom Provider"
     when SOURCE_MANUAL_MAGNET
       "Manual Magnet"
+    when SOURCE_MANUAL_NZB
+      "Manual NZB"
     else
       indexer.presence || "Prowlarr"
     end

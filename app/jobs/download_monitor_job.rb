@@ -5,13 +5,14 @@ class DownloadMonitorJob < ApplicationJob
   CONCURRENCY_KEY = "download_monitor"
   NOT_FOUND_THRESHOLD = 3
   SCHEDULE_CACHE_KEY = "download_monitor/next_run_at"
+  DIRECT_DOWNLOAD_STALE_TIMEOUT = 30.minutes
 
   queue_as :default
   limits_concurrency key: CONCURRENCY_KEY, duration: 30.minutes
 
   class << self
     def ensure_running!
-      return unless DownloadClient.enabled.exists?
+      return unless monitoring_required?
       return if monitor_job_pending?
 
       interval = poll_interval_seconds
@@ -23,6 +24,16 @@ class DownloadMonitorJob < ApplicationJob
       reserve_schedule!(interval)
       Rails.logger.info "[DownloadMonitorJob] Scheduling monitor chain"
       perform_later
+    end
+
+    def monitoring_required?
+      return true if DownloadClient.enabled.exists?
+      return true if Download.active.where(download_type: [ "direct", "dispatching" ]).exists?
+
+      Download.active
+        .where(download_type: [ nil, "" ])
+        .includes(:search_result)
+        .any? { |download| download.search_result&.direct_download? }
     end
 
     def clear_schedule!
@@ -66,7 +77,7 @@ class DownloadMonitorJob < ApplicationJob
   end
 
   def perform
-    unless any_client_configured?
+    unless self.class.monitoring_required?
       self.class.clear_schedule!
       return
     end
@@ -87,7 +98,11 @@ class DownloadMonitorJob < ApplicationJob
 
   def check_download_status(download)
     unless download.external_id.present?
-      handle_stale_queued_download(download)
+      if download.download_type == "direct"
+        handle_stale_direct_download(download)
+      else
+        handle_stale_queued_download(download)
+      end
       return
     end
 
@@ -132,57 +147,119 @@ class DownloadMonitorJob < ApplicationJob
   end
 
   def handle_failed(download)
-    Rails.logger.error "[DownloadMonitorJob] Download #{download.id} failed in client"
+    download.request.with_lock do
+      download.reload
+      next unless current_monitored_download?(download)
 
-    track_request_event(download.request, "failed", download: download, message: "Download failed in client", level: :error)
-    download.update!(status: :failed)
-    download.request.handle_download_failure!(download, reason: "Download failed in client")
+      Rails.logger.error "[DownloadMonitorJob] Download #{download.id} failed in client"
+      track_request_event(download.request, "failed", download: download, message: "Download failed in client", level: :error)
+      download.update!(status: :failed)
+      download.request.handle_download_failure!(download, reason: "Download failed in client")
+    end
+  rescue ActiveRecord::RecordNotFound
+    nil
   end
 
   def handle_missing(download)
-    client_name = download.download_client&.name || "unknown"
-    new_count = download.not_found_count + 1
+    download.request.with_lock do
+      download.reload
+      next unless current_monitored_download?(download)
 
-    if new_count >= NOT_FOUND_THRESHOLD
-      Rails.logger.error "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}' after #{new_count} consecutive checks"
+      client_name = download.download_client&.name || "unknown"
+      new_count = download.not_found_count + 1
 
-      track_request_event(
-        download.request,
-        "failed",
-        download: download,
-        message: "Download not found in client after #{new_count} checks",
-        level: :error,
-        details: { client_name: client_name }
-      )
-      download.update!(status: :failed, not_found_count: new_count)
-      download.request.handle_download_failure!(download, reason: "Download not found in client '#{client_name}' (hash: #{download.external_id})")
-    else
-      Rails.logger.warn "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}' (attempt #{new_count}/#{NOT_FOUND_THRESHOLD})"
+      if new_count >= NOT_FOUND_THRESHOLD
+        Rails.logger.error "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}' after #{new_count} consecutive checks"
 
-      download.update!(not_found_count: new_count)
+        track_request_event(
+          download.request,
+          "failed",
+          download: download,
+          message: "Download not found in client after #{new_count} checks",
+          level: :error,
+          details: { client_name: client_name }
+        )
+        download.update!(status: :failed, not_found_count: new_count)
+        download.request.handle_download_failure!(download, reason: "Download not found in client '#{client_name}' (hash: #{download.external_id})")
+      else
+        Rails.logger.warn "[DownloadMonitorJob] Download #{download.id} (hash: #{download.external_id}) not found in client '#{client_name}' (attempt #{new_count}/#{NOT_FOUND_THRESHOLD})"
+
+        download.update!(not_found_count: new_count)
+      end
     end
+  rescue ActiveRecord::RecordNotFound
+    nil
   end
 
   def handle_stale_queued_download(download)
-    return unless download.queued?
+    return unless download.queued? || download.downloading?
 
     timeout_minutes = SettingsService.get(:download_enqueue_timeout_minutes, default: 5).to_i
     return if timeout_minutes <= 0
-    return if download.created_at > timeout_minutes.minutes.ago
+    cutoff = timeout_minutes.minutes.ago
+    download.request.with_lock do
+      stale_scope = Download.where(id: download.id, external_id: [ nil, "" ])
+      stale_scope = if download.queued?
+        stale_scope.where(status: Download.statuses[:queued]).where("created_at <= ?", cutoff)
+      else
+        stale_scope
+          .where(
+            status: Download.statuses[:downloading],
+            download_type: [ nil, "", "dispatching", "torrent", "usenet" ]
+          )
+          .where("updated_at <= ?", cutoff)
+      end
+      claimed = stale_scope.update_all(status: Download.statuses[:failed], updated_at: Time.current)
+      next unless claimed == 1
 
-    Rails.logger.error "[DownloadMonitorJob] Download #{download.id} stayed queued for more than #{timeout_minutes} minutes without reaching a download client"
+      download.reload
+      Rails.logger.error "[DownloadMonitorJob] Download #{download.id} stayed queued for more than #{timeout_minutes} minutes without reaching a download client"
+      track_request_event(
+        download.request,
+        "dispatch_stalled",
+        download: download,
+        message: "Download stayed queued for more than #{timeout_minutes} minutes without an external client ID",
+        level: :warn
+      )
+      download.request.mark_for_attention!(
+        "Download stayed queued in Shelfarr for more than #{timeout_minutes} minutes and was never sent to the download client. Retry the request and check the job queue/logs."
+      )
+    end
+  rescue ActiveRecord::RecordNotFound
+    nil
+  end
 
-    track_request_event(
-      download.request,
-      "dispatch_stalled",
-      download: download,
-      message: "Download stayed queued for more than #{timeout_minutes} minutes without an external client ID",
-      level: :warn
-    )
-    download.update!(status: :failed)
-    download.request.mark_for_attention!(
-      "Download stayed queued in Shelfarr for more than #{timeout_minutes} minutes and was never sent to the download client. Retry the request and check the job queue/logs."
-    )
+  def handle_stale_direct_download(download)
+    return unless download.downloading?
+    cutoff = DIRECT_DOWNLOAD_STALE_TIMEOUT.ago
+
+    download.request.with_lock do
+      claimed = Download
+        .where(
+          id: download.id,
+          status: Download.statuses[:downloading],
+          download_type: "direct",
+          external_id: [ nil, "" ]
+        )
+        .where("updated_at <= ?", cutoff)
+        .update_all(status: Download.statuses[:failed], updated_at: Time.current)
+      next unless claimed == 1
+
+      download.reload
+      Rails.logger.error "[DownloadMonitorJob] Direct download #{download.id} stopped reporting progress"
+      track_request_event(
+        download.request,
+        "dispatch_stalled",
+        download: download,
+        message: "Direct download stopped reporting progress",
+        level: :warn
+      )
+      download.request.mark_for_attention!(
+        "Direct download stopped reporting progress. Retry the request and check the job queue/logs."
+      )
+    end
+  rescue ActiveRecord::RecordNotFound
+    nil
   end
 
   def schedule_next_run
@@ -197,8 +274,11 @@ class DownloadMonitorJob < ApplicationJob
     DownloadMonitorJob.set(wait: interval.seconds).perform_later
   end
 
-  def any_client_configured?
-    DownloadClient.enabled.exists?
+  def current_monitored_download?(download)
+    return false unless download.downloading? && download.external_id.present?
+    return true if download.search_result_id.blank?
+
+    download.request.search_results.selected.where(id: download.search_result_id).exists?
   end
 
   def track_request_event(request, event_type, download: nil, message: nil, level: :info, details: {})

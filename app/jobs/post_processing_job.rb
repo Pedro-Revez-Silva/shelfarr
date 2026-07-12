@@ -25,15 +25,11 @@ class PostProcessingJob < ApplicationJob
     return unless download&.completed?
 
     request = download.request
-    return if request.completed?
-    return unless request.downloading? || request.processing?
-    return unless download.claim_post_processing!(job_id, expected_owner_job_id: expected_owner_job_id)
+    return unless claim_request_for_post_processing(download, request, expected_owner_job_id)
 
     book = request.book
 
     Rails.logger.info "[PostProcessingJob] Starting post-processing for download #{download.id} (#{book.title})"
-
-    request.update!(status: :processing) unless request.processing?
 
     begin
       base_path = get_base_path(book)
@@ -71,6 +67,24 @@ class PostProcessingJob < ApplicationJob
   end
 
   private
+
+  def claim_request_for_post_processing(download, request, expected_owner_job_id)
+    request.with_lock do
+      download.reload
+      return false unless download.completed?
+      return false if request.completed?
+      return false unless request.downloading? || request.processing?
+
+      selected_result_id = request.search_results.selected.pick(:id)
+      return false if download.search_result_id.present? && download.search_result_id != selected_result_id
+      return false if request.downloads.active.where.not(id: download.id).exists?
+      return false unless download.claim_post_processing!(job_id, expected_owner_job_id: expected_owner_job_id)
+
+      request.update!(status: :processing) unless request.processing?
+    end
+
+    true
+  end
 
   def source_path_unavailable?(source_path)
     source_path.present? && !File.exist?(source_path)

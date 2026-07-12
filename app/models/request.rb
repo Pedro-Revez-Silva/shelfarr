@@ -1,7 +1,11 @@
+require "digest"
+require "uri"
+
 class Request < ApplicationRecord
   CREATED_VIA_VALUES = %w[web api telegram].freeze
   REQUEST_SCOPE_VALUES = %w[single collection].freeze
   MANUAL_MAGNET_GUID_PREFIX = "manual-magnet"
+  MANUAL_NZB_GUID_PREFIX = "manual-nzb"
 
   belongs_to :book
   belongs_to :user
@@ -191,10 +195,16 @@ class Request < ApplicationRecord
     if download.external_id.present? && download.download_client.present?
       begin
         client = download.download_client.client_instance
-        client.remove_torrent(download.external_id, delete_files: true)
-        Rails.logger.info "[Request] Removed download #{download.id} from #{download.download_client.name}"
+        removed = client.remove_torrent(download.external_id, delete_files: true)
+        if removed
+          Rails.logger.info "[Request] Removed download #{download.id} from #{download.download_client.name}"
+        else
+          Rails.logger.warn "[Request] Client did not confirm removal for download #{download.id}; scheduling cleanup"
+          enqueue_stale_client_cleanup(download)
+        end
       rescue => e
-        Rails.logger.warn "[Request] Failed to remove download from client: #{e.message}"
+        Rails.logger.warn "[Request] Failed to remove download from client: #{e.class}; scheduling cleanup"
+        enqueue_stale_client_cleanup(download)
       end
     end
 
@@ -224,9 +234,12 @@ class Request < ApplicationRecord
     not_found? && next_retry_at.present? && next_retry_at <= Time.current
   end
 
-  def manual_magnet_allowed?
-    !completed? && !processing?
+  def manual_download_allowed?
+    !completed? && !processing? && !download_dispatch_in_progress?
   end
+
+  alias_method :manual_magnet_allowed?, :manual_download_allowed?
+  alias_method :manual_nzb_allowed?, :manual_download_allowed?
 
   # Select a search result and initiate download
   # Returns the created Download record
@@ -234,81 +247,66 @@ class Request < ApplicationRecord
     raise ArgumentError, "Result not downloadable" unless search_result.downloadable?
     raise ArgumentError, "Result does not belong to this request" unless search_result.request_id == id
 
-    download = nil
-    ActiveRecord::Base.transaction do
-      downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
-        cancel_download(download)
-      end
+    with_lock do
+      raise ArgumentError, "Cannot replace a download while dispatch is in progress" if download_dispatch_in_progress?
 
-      if search_result.blocklisted?
-        search_result.clear_blocklist!
-        track_diagnostic(
-          "blocklist_overridden",
-          message: "Blocklist overridden for selected release",
-          level: :warn,
-          user_visible: true,
-          details: {
-            search_result_id: search_result.id,
-            title: search_result.title
-          }
-        )
-      end
-
-      search_results.where.not(id: search_result.id).update_all(status: :rejected)
-      search_result.update!(status: :selected)
-
-      download = downloads.create!(
-        name: search_result.title,
-        size_bytes: search_result.size_bytes,
-        search_result: search_result,
-        status: :queued
-      )
-
-      update!(
-        status: :downloading,
-        next_retry_at: nil,
-        attention_needed: false,
-        issue_description: nil
-      )
+      select_result_under_lock!(search_result)
     end
-
-    track_diagnostic(
-      "download_queued",
-      download: download,
-      message: "Download queued from manual result selection",
-      details: {
-        search_result_id: search_result.id,
-        title: search_result.title,
-        trigger: "manual_select"
-      }
-    )
-    DownloadJob.perform_later(download.id)
-    download
   end
 
   def add_manual_magnet!(magnet_link)
     magnet_link = magnet_link.to_s.strip
     raise ArgumentError, "Enter a valid magnet link" unless magnet_link.start_with?("magnet:?")
-    raise ArgumentError, "Cannot add a magnet link to a completed request" if completed?
-    raise ArgumentError, "Cannot add a magnet link while post-processing is active" if processing?
 
     info_hash = MagnetLink.info_hash(magnet_link)
     raise ArgumentError, "Enter a magnet link with a valid info hash" if info_hash.blank?
 
-    search_result = search_results.find_or_initialize_by(guid: manual_magnet_guid(info_hash))
-    search_result.assign_attributes(
-      title: "Manual magnet for #{book.display_name}",
-      magnet_url: magnet_link,
-      source: SearchResult::SOURCE_MANUAL_MAGNET,
-      indexer: "Manual Magnet",
-      seeders: nil,
-      leechers: nil,
-      download_url: nil,
-      status: :pending
-    )
-    search_result.save!
+    with_lock do
+      raise ArgumentError, "Cannot add a magnet link to a completed request" if completed?
+      raise ArgumentError, "Cannot add a magnet link while post-processing is active" if processing?
+      raise ArgumentError, "Cannot replace a download while dispatch is in progress" if download_dispatch_in_progress?
 
-    select_result!(search_result)
+      search_result = search_results.find_or_initialize_by(guid: manual_magnet_guid(info_hash))
+      search_result.assign_attributes(
+        title: "Manual magnet for #{book.display_name}",
+        magnet_url: magnet_link,
+        source: SearchResult::SOURCE_MANUAL_MAGNET,
+        indexer: "Manual Magnet",
+        seeders: nil,
+        leechers: nil,
+        download_url: nil,
+        status: :pending
+      )
+      search_result.save!
+
+      select_result_under_lock!(search_result)
+    end
+  end
+
+  def add_manual_nzb!(nzb_url)
+    nzb_url = nzb_url.to_s.strip
+    raise ArgumentError, "Enter a valid HTTP(S) NZB URL" unless valid_manual_nzb_url?(nzb_url)
+
+    with_lock do
+      raise ArgumentError, "Cannot add an NZB URL to a completed request" if completed?
+      raise ArgumentError, "Cannot add an NZB URL while post-processing is active" if processing?
+      raise ArgumentError, "Cannot replace a download while dispatch is in progress" if download_dispatch_in_progress?
+
+      search_result = search_results.find_or_initialize_by(guid: manual_nzb_guid(nzb_url))
+      search_result.assign_attributes(
+        title: "Manual NZB for #{book.display_name}",
+        download_url: nzb_url,
+        magnet_url: nil,
+        source: SearchResult::SOURCE_MANUAL_NZB,
+        indexer: "Manual NZB",
+        seeders: nil,
+        leechers: nil,
+        status: :pending
+      )
+      search_result.save!
+
+      select_result_under_lock!(search_result)
+    end
   end
 
   def next_retry_in_words
@@ -338,6 +336,66 @@ class Request < ApplicationRecord
   end
 
   private
+
+  def select_result_under_lock!(search_result)
+    downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
+      cancel_download(download)
+    end
+
+    if search_result.blocklisted?
+      search_result.clear_blocklist!
+      track_diagnostic(
+        "blocklist_overridden",
+        message: "Blocklist overridden for selected release",
+        level: :warn,
+        user_visible: true,
+        details: {
+          search_result_id: search_result.id,
+          title: search_result.title
+        }
+      )
+    end
+
+    search_results.where.not(id: search_result.id).update_all(status: :rejected)
+    search_result.update!(status: :selected)
+
+    download = downloads.create!(
+      name: search_result.title,
+      size_bytes: search_result.size_bytes,
+      search_result: search_result,
+      status: :queued
+    )
+
+    update!(
+      status: :downloading,
+      next_retry_at: nil,
+      attention_needed: false,
+      issue_description: nil
+    )
+
+    track_diagnostic(
+      "download_queued",
+      download: download,
+      message: "Download queued from manual result selection",
+      details: {
+        search_result_id: search_result.id,
+        title: search_result.title,
+        trigger: "manual_select"
+      }
+    )
+
+    download_id = download.id
+    monitor_direct_download = search_result.direct_download?
+    ActiveRecord.after_all_transactions_commit do
+      DownloadJob.perform_later(download_id)
+      begin
+        DownloadMonitorJob.ensure_running! if monitor_direct_download
+      rescue StandardError => e
+        Rails.logger.error "[Request] Failed to start direct download monitor: #{e.class}"
+      end
+    end
+    download
+  end
 
   def broadcast_show_refresh_later_if_needed
     broadcast_show_refresh_later if (previous_changes.keys & SHOW_PAGE_BROADCAST_ATTRIBUTES).any?
@@ -418,6 +476,27 @@ class Request < ApplicationRecord
 
   def manual_magnet_guid(info_hash)
     "#{MANUAL_MAGNET_GUID_PREFIX}:#{info_hash}"
+  end
+
+  def manual_nzb_guid(nzb_url)
+    "#{MANUAL_NZB_GUID_PREFIX}:#{Digest::SHA256.hexdigest(nzb_url)}"
+  end
+
+  def valid_manual_nzb_url?(value)
+    uri = URI.parse(value)
+    uri.is_a?(URI::HTTP) && uri.host.present?
+  rescue URI::InvalidURIError
+    false
+  end
+
+  def download_dispatch_in_progress?
+    downloads.downloading.where(external_id: [ nil, "" ]).exists?
+  end
+
+  def enqueue_stale_client_cleanup(download)
+    StaleClientDispatchCleanupJob.perform_later(download.download_client_id, download.external_id)
+  rescue StandardError => e
+    Rails.logger.error "[Request] Failed to enqueue stale client cleanup for download #{download.id}: #{e.class}"
   end
 
   def set_default_language

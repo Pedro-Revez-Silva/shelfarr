@@ -20,7 +20,7 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
     VCR.turned_off do
       stub_request(:post, "http://localhost:6789/jsonrpc")
         .with(
-          body: hash_including("method" => "appendurl"),
+          body: hash_including("method" => "append"),
           basic_auth: [ "nzbget", "tegbzn6789" ]
         )
         .to_return(
@@ -32,6 +32,44 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
       result = @client.add_torrent("http://example.com/test.nzb")
       assert result
       assert_equal [ "12345" ], result["nzo_ids"]
+    end
+  end
+
+  test "add_torrent submits an opaque URL with a sanitized NZB filename" do
+    url = "https://downloads.example/api/release/123?token=opaque"
+
+    VCR.turned_off do
+      request_stub = stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(
+          body: ->(body) {
+            payload = JSON.parse(body)
+            payload["method"] == "append" &&
+              payload["params"] == [
+                "Author Book.nzb",
+                url,
+                "",
+                0,
+                false,
+                false,
+                "",
+                0,
+                "SCORE",
+                false,
+                []
+              ]
+          },
+          basic_auth: [ "nzbget", "tegbzn6789" ]
+        )
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => 54321 }.to_json
+        )
+
+      result = @client.add_torrent(url, nzbname: "Author / Book")
+
+      assert_equal [ "54321" ], result["nzo_ids"]
+      assert_requested request_stub
     end
   end
 
@@ -48,6 +86,115 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
       result = @client.add_torrent("http://example.com/test.nzb")
       assert_not result
     end
+  end
+
+  test "add_torrent rejects a non-integer job ID" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(basic_auth: [ "nzbget", "tegbzn6789" ])
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => 1.5 }.to_json
+        )
+
+      assert_not @client.add_torrent("http://example.com/test.nzb")
+    end
+  end
+
+  test "add_torrent does not expose a sensitive URL echoed by an API error" do
+    url = "https://alice:password@downloads.example/book?X-Amz-Signature=very-secret"
+    logger = Struct.new(:messages) do
+      %i[debug info warn error].each do |level|
+        define_method(level) { |message| messages << message }
+      end
+    end.new([])
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(
+          body: hash_including("method" => "append"),
+          basic_auth: [ "nzbget", "tegbzn6789" ]
+        )
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "Could not fetch #{url}" }.to_json
+        )
+
+      error = Rails.stub(:logger, logger) do
+        assert_raises(DownloadClients::Base::Error) do
+          @client.add_torrent(url, sensitive_url: true)
+        end
+      end
+
+      assert_equal "NZBGet rejected the NZB URL", error.message
+    end
+
+    output = logger.messages.join("\n")
+    assert_not_includes output, "alice"
+    assert_not_includes output, "password"
+    assert_not_includes output, "very-secret"
+  end
+
+  test "add_torrent does not expose a sensitive URL in an unexpected response" do
+    url = "https://alice:password@downloads.example/book?X-Amz-Signature=very-secret"
+    logger = Struct.new(:messages) do
+      %i[debug info warn error].each do |level|
+        define_method(level) { |message| messages << message }
+      end
+    end.new([])
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(body: hash_including("method" => "append"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: "Could not fetch #{url}".to_json
+        )
+
+      Rails.stub(:logger, logger) do
+        assert_raises(DownloadClients::Base::Error) do
+          @client.add_torrent(url, sensitive_url: true)
+        end
+      end
+    end
+
+    output = logger.messages.join("\n")
+    assert_not_includes output, "alice"
+    assert_not_includes output, "password"
+    assert_not_includes output, "very-secret"
+  end
+
+  test "add_torrent does not expose a sensitive URL returned as a failed result" do
+    url = "https://alice:password@downloads.example/book?X-Amz-Signature=very-secret"
+    logger = Struct.new(:messages) do
+      %i[debug info warn error].each do |level|
+        define_method(level) { |message| messages << message }
+      end
+    end.new([])
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(body: hash_including("method" => "append"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "Could not fetch #{url}" }.to_json
+        )
+
+      result = Rails.stub(:logger, logger) do
+        @client.add_torrent(url, sensitive_url: true)
+      end
+
+      assert_not result
+    end
+
+    output = logger.messages.join("\n")
+    assert_not_includes output, "alice"
+    assert_not_includes output, "password"
+    assert_not_includes output, "very-secret"
   end
 
   test "list_torrents returns queue and history items" do
@@ -118,13 +265,13 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
     VCR.turned_off do
       stub_request(:post, "http://localhost:6789/jsonrpc")
         .with(
-          body: hash_including("method" => "version"),
+          body: hash_including("method" => "status"),
           basic_auth: [ "nzbget", "tegbzn6789" ]
         )
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: { "result" => "21.1" }.to_json
+          body: { "result" => { "RemainingSizeMB" => 0 } }.to_json
         )
 
       assert @client.test_connection
@@ -142,13 +289,13 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
 
         request_stub = stub_request(:post, jsonrpc_url)
           .with(
-            body: hash_including("method" => "version"),
+            body: hash_including("method" => "status"),
             basic_auth: [ "nzbget", "tegbzn6789" ]
           )
           .to_return(
             status: 200,
             headers: { "Content-Type" => "application/json" },
-            body: { "result" => "21.1" }.to_json
+            body: { "result" => { "RemainingSizeMB" => 0 } }.to_json
           )
 
         assert client.test_connection, "#{base_url} should connect through #{jsonrpc_url}"
@@ -253,6 +400,18 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
       assert_equal "888", info.hash
       assert_equal "Completed Item", info.name
       assert_equal :completed, info.state
+    end
+  end
+
+  test "torrent_info propagates queue API failures" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(body: hash_including("method" => "listgroups"))
+        .to_return(status: 503, body: "temporarily unavailable")
+
+      assert_raises(DownloadClients::Base::Error) do
+        @client.torrent_info("999")
+      end
     end
   end
 

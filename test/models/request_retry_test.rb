@@ -624,6 +624,23 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_equal replacement_result, request.downloads.order(:created_at).last.search_result
   end
 
+  test "select_result! rejects an override while dispatch is in progress" do
+    request = requests(:pending_request)
+    replacement_result = search_results(:pending_result)
+    request.downloads.create!(
+      name: "Dispatch in progress",
+      status: :downloading,
+      external_id: nil,
+      download_type: "dispatching"
+    )
+
+    assert_no_difference -> { request.downloads.count } do
+      assert_raises(ArgumentError, match: /dispatch is in progress/) do
+        request.select_result!(replacement_result)
+      end
+    end
+  end
+
   test "cancel! removes active downloads from download client" do
     book = Book.create!(title: "Cancel Test Book", book_type: :ebook, open_library_work_id: "OL_CANCEL_TEST")
     request = Request.create!(
@@ -646,6 +663,42 @@ class RequestRetryTest < ActiveSupport::TestCase
 
     assert request.failed?
     assert download.failed?
+  end
+
+  test "cancel_download schedules cleanup when the client does not confirm removal" do
+    client = DownloadClient.create!(
+      name: "Cancellation SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8089",
+      api_key: "cancel-api-key",
+      priority: 0,
+      enabled: true
+    )
+    request = requests(:pending_request)
+    download = request.downloads.create!(
+      name: "Client dispatch",
+      status: :downloading,
+      external_id: "SABnzbd_nzo_cancel",
+      download_client: client
+    )
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:8089/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete"))
+        .to_return(status: 200, body: { "status" => false }.to_json)
+      stub_request(:get, "http://localhost:8089/api")
+        .with(query: hash_including("mode" => "history", "name" => "delete"))
+        .to_return(status: 200, body: { "status" => false }.to_json)
+
+      assert_enqueued_with(
+        job: StaleClientDispatchCleanupJob,
+        args: [ client.id.to_s, "SABnzbd_nzo_cancel" ]
+      ) do
+        request.cancel_download(download)
+      end
+    end
+
+    assert download.reload.failed?
   end
 
   test "cancel! also cancels paused downloads" do

@@ -439,12 +439,22 @@ class SearchResultTest < ActiveSupport::TestCase
     assert SearchResult.new(source: SearchResult::SOURCE_ANNA_ARCHIVE).from_anna_archive?
     assert SearchResult.new(source: SearchResult::SOURCE_ZLIBRARY).from_zlibrary?
     assert SearchResult.new(source: SearchResult::SOURCE_GUTENBERG).from_gutenberg?
+    manual_nzb = SearchResult.new(
+      source: SearchResult::SOURCE_MANUAL_NZB,
+      download_url: "https://downloads.example/book.nzb",
+      seeders: nil
+    )
+    assert manual_nzb.from_manual_nzb?
+    assert manual_nzb.usenet?
+    assert_not manual_nzb.from_indexer?
+    assert_equal [ SearchResult::SOURCE_MANUAL_MAGNET, SearchResult::SOURCE_MANUAL_NZB ], SearchResult::MANUAL_SOURCES
 
     assert_equal "Custom Jackett", SearchResult.new(source: SearchResult::SOURCE_JACKETT, indexer: "Custom Jackett").source_display_name
     assert_equal "NZBHydra Books", SearchResult.new(source: SearchResult::SOURCE_NEWZNAB, indexer: "NZBHydra Books").source_display_name
     assert_equal "Anna's Archive", SearchResult.new(source: SearchResult::SOURCE_ANNA_ARCHIVE).source_display_name
     assert_equal "Z-Library", SearchResult.new(source: SearchResult::SOURCE_ZLIBRARY).source_display_name
     assert_equal "Project Gutenberg", SearchResult.new(source: SearchResult::SOURCE_GUTENBERG).source_display_name
+    assert_equal "Manual NZB", manual_nzb.source_display_name
     assert_equal "Prowlarr", SearchResult.new.source_display_name
   end
 end

@@ -44,12 +44,9 @@ class SearchJob < ApplicationJob
   def perform(request_id)
     request = Request.find_by(id: request_id)
     return unless request
-    return unless request.pending?
-    return unless request.book # Guard against orphaned requests
+    return unless claim_search!(request)
 
     Rails.logger.info "[SearchJob] Starting search for request ##{request.id} (book: #{request.book.title})"
-
-    request.update!(status: :searching)
 
     # Check if any search sources are configured
     indexer_available = IndexerClient.configured?
@@ -61,7 +58,11 @@ class SearchJob < ApplicationJob
 
     unless indexer_available || anna_available || zlibrary_available || gutenberg_available || librivox_available || custom_providers.any?
       Rails.logger.error "[SearchJob] No search sources configured"
-      request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, or a custom acquisition provider.")
+      request.with_lock do
+        next unless request.searching?
+
+        request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, or a custom acquisition provider.")
+      end
       return
     end
 
@@ -105,17 +106,35 @@ class SearchJob < ApplicationJob
       Rails.logger.info "[SearchJob] Found #{provider_results.count} custom provider results from #{provider.name}"
     end
 
-    if all_results.any?
-      save_results(request, all_results)
-      Rails.logger.info "[SearchJob] Total #{all_results.count} results for request ##{request.id}"
-      attempt_auto_select(request)
-    else
-      Rails.logger.info "[SearchJob] No results found for request ##{request.id}"
-      handle_no_results(request, indexer_error)
+    request.with_lock do
+      unless request.searching?
+        Rails.logger.info "[SearchJob] Request ##{request.id} left searching state; discarding stale search results"
+        return
+      end
+
+      if all_results.any?
+        save_results(request, all_results)
+        Rails.logger.info "[SearchJob] Total #{all_results.count} results for request ##{request.id}"
+        attempt_auto_select(request)
+      else
+        Rails.logger.info "[SearchJob] No results found for request ##{request.id}"
+        handle_no_results(request, indexer_error)
+      end
     end
   end
 
   private
+
+  def claim_search!(request)
+    request.with_lock do
+      next false unless request.pending? && request.book
+
+      request.update!(status: :searching)
+      true
+    end
+  rescue ActiveRecord::RecordNotFound
+    false
+  end
 
   def search_indexer_safely(request)
     results = search_indexer(request)
@@ -286,7 +305,7 @@ class SearchJob < ApplicationJob
 
   def save_results(request, tagged_results)
     blocklisted_by_guid = request.search_results
-      .where.not(source: SearchResult::SOURCE_MANUAL_MAGNET)
+      .where.not(source: SearchResult::MANUAL_SOURCES)
       .blocklisted
       .pluck(:guid, :blocklisted_at, :blocklist_reason)
       .to_h { |guid, blocklisted_at, blocklist_reason| [ guid, { blocklisted_at: blocklisted_at, blocklist_reason: blocklist_reason } ] }
@@ -298,7 +317,7 @@ class SearchJob < ApplicationJob
       .pluck(:search_result_id)
 
     request.search_results
-      .where.not(source: SearchResult::SOURCE_MANUAL_MAGNET)
+      .where.not(source: SearchResult::MANUAL_SOURCES)
       .where.not(id: active_download_result_ids)
       .not_blocklisted
       .destroy_all

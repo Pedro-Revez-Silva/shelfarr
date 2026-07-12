@@ -177,8 +177,8 @@ module Admin
       assert_match /refreshed/, flash[:notice]
     end
 
-    test "refresh preserves manual magnet results" do
-      manual_result = @request_record.search_results.create!(
+    test "refresh preserves manual download results" do
+      manual_magnet = @request_record.search_results.create!(
         guid: "manual-magnet:#{'a' * 40}",
         title: "Manual magnet result",
         magnet_url: "magnet:?xt=urn:btih:#{'a' * 40}",
@@ -186,11 +186,20 @@ module Admin
         indexer: "Manual Magnet",
         status: :selected
       )
+      manual_nzb = @request_record.search_results.create!(
+        guid: "manual-nzb:#{'b' * 64}",
+        title: "Manual NZB result",
+        download_url: "https://downloads.example/book.nzb",
+        seeders: nil,
+        source: SearchResult::SOURCE_MANUAL_NZB,
+        indexer: "Manual NZB",
+        status: :selected
+      )
 
       post refresh_admin_request_search_results_path(@request_record)
 
       @request_record.reload
-      assert_equal [ manual_result ], @request_record.search_results.to_a
+      assert_equal [ manual_magnet, manual_nzb ], @request_record.search_results.order(:id).to_a
     end
   end
 end

@@ -61,13 +61,50 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
     )
 
     VCR.turned_off do
-      stub_sabnzbd_version
+      stub_sabnzbd_connection
 
       search_result = Minitest::Mock.new
       search_result.expect :usenet?, true
 
       selected = DownloadClientSelector.for_download(search_result)
       assert_equal sab, selected
+    end
+  end
+
+  test "skips a higher-priority SABnzbd client with an invalid API key" do
+    DownloadClient.create!(
+      name: "Invalid SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8080",
+      api_key: "invalid-key",
+      priority: 0
+    )
+    fallback = DownloadClient.create!(
+      name: "Authenticated SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8081",
+      api_key: "valid-key",
+      priority: 10
+    )
+
+    VCR.turned_off do
+      rejected = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "get_cats", "apikey" => "invalid-key"))
+        .to_return(status: 403)
+      accepted = stub_request(:get, "http://localhost:8081/api")
+        .with(query: hash_including("mode" => "get_cats", "apikey" => "valid-key"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "categories" => [ "*" ] }.to_json
+        )
+
+      search_result = Minitest::Mock.new
+      search_result.expect :usenet?, true
+
+      assert_equal fallback, DownloadClientSelector.for_download(search_result)
+      assert_requested rejected
+      assert_requested accepted
     end
   end
 
@@ -172,7 +209,7 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: { "result" => ["new-id"], "error" => nil, "id" => 1 }.to_json
+          body: { "result" => [ "new-id" ], "error" => nil, "id" => 1 }.to_json
         )
 
       search_result = Minitest::Mock.new
@@ -388,12 +425,12 @@ class DownloadClientSelectorTest < ActiveSupport::TestCase
 
   private
 
-  def stub_sabnzbd_version
-    stub_request(:get, %r{localhost:8080/api.*mode=version})
+  def stub_sabnzbd_connection
+    stub_request(:get, %r{localhost:8080/api.*mode=get_cats})
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },
-        body: { "version" => "4.0.0" }.to_json
+        body: { "categories" => [ "*" ] }.to_json
       )
   end
 end

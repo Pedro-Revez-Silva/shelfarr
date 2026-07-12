@@ -496,14 +496,14 @@ class DownloadJobTest < ActiveJob::TestCase
       VCR.turned_off do
         stub_request(:get, "http://localhost:8080/api")
           .with(query: hash_including(
-            "mode" => "version",
+            "mode" => "get_cats",
             "apikey" => "test-api-key-12345",
             "output" => "json"
           ))
           .to_return(
             status: 200,
             headers: { "Content-Type" => "application/json" },
-            body: { "version" => "4.0.0" }.to_json
+            body: { "categories" => [ "*" ] }.to_json
           )
 
         request_stub = stub_request(:get, "http://localhost:8080/api")
@@ -538,6 +538,223 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not_includes log_output, "apikey=secret"
   end
 
+  test "dispatches a manual NZB URL unchanged to the highest-priority healthy usenet client without logging secrets" do
+    @client.destroy!
+    high_priority = DownloadClient.create!(
+      name: "High Priority SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://sab-high.test:8080",
+      api_key: "high-api-key",
+      priority: 0,
+      enabled: true
+    )
+    DownloadClient.create!(
+      name: "Low Priority SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://sab-low.test:8080",
+      api_key: "low-api-key",
+      priority: 10,
+      enabled: true
+    )
+    signed_url = "https://alice:password@downloads.example/release/123?custom_secret=opaque&X-Amz-Signature=very-secret"
+    manual_result = @request.search_results.create!(
+      guid: "manual-nzb:#{Digest::SHA256.hexdigest(signed_url)}",
+      title: "Manual NZB for #{@request.book.display_name}",
+      indexer: "Manual NZB",
+      source: SearchResult::SOURCE_MANUAL_NZB,
+      download_url: signed_url,
+      magnet_url: nil,
+      seeders: nil,
+      status: :selected
+    )
+    @download.update!(search_result: manual_result)
+    logger = build_test_logger
+
+    VCR.turned_off do
+      high_connection = stub_request(:get, "http://sab-high.test:8080/api")
+        .with(query: hash_including(
+          "mode" => "get_cats",
+          "apikey" => "high-api-key",
+          "output" => "json"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "categories" => [ "*" ] }.to_json
+        )
+      low_connection = stub_request(:get, "http://sab-low.test:8080/api")
+        .with(query: hash_including("mode" => "get_cats"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "categories" => [ "*" ] }.to_json
+        )
+      submission = stub_request(:get, "http://sab-high.test:8080/api")
+        .with(query: hash_including(
+          "mode" => "addurl",
+          "name" => signed_url,
+          "nzbname" => "Another Author - The Pending Ebook",
+          "apikey" => "high-api-key",
+          "output" => "json"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => true, "nzo_ids" => [ "SABnzbd_manual_123" ] }.to_json
+        )
+
+      Rails.stub(:logger, logger) do
+        DownloadJob.perform_now(@download.id)
+      end
+
+      assert_requested high_connection, times: 1
+      assert_not_requested low_connection
+      assert_requested submission, times: 1
+    end
+
+    @download.reload
+    assert @download.downloading?
+    assert_equal high_priority.id.to_s, @download.download_client_id
+    assert_equal "SABnzbd_manual_123", @download.external_id
+    assert_equal "usenet", @download.download_type
+
+    log_output = logger.messages.join("\n")
+    assert_includes log_output, "[REDACTED MANUAL NZB URL]"
+    assert_not_includes log_output, "alice"
+    assert_not_includes log_output, "password"
+    assert_not_includes log_output, "opaque"
+    assert_not_includes log_output, "very-secret"
+  end
+
+  test "rejects manual NZB URLs targeting link-local services before client selection" do
+    blocked_url = "http://169.254.169.254/latest/meta-data?token=very-secret"
+    manual_result = @request.search_results.create!(
+      guid: "manual-nzb:#{Digest::SHA256.hexdigest(blocked_url)}",
+      title: "Manual NZB for #{@request.book.display_name}",
+      indexer: "Manual NZB",
+      source: SearchResult::SOURCE_MANUAL_NZB,
+      download_url: blocked_url,
+      magnet_url: nil,
+      seeders: nil,
+      status: :selected
+    )
+    @download.update!(search_result: manual_result)
+    SettingsService.set(:auto_select_enabled, false)
+    logger = build_test_logger
+
+    Rails.stub(:logger, logger) do
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert manual_result.reload.blocklisted?
+    assert_includes @request.reload.issue_description, "blocked or invalid destination"
+
+    log_output = logger.messages.join("\n")
+    assert_not_includes log_output, blocked_url
+    assert_not_includes log_output, "very-secret"
+  end
+
+  test "rejects a manual replacement while a client dispatch is in flight" do
+    @client.destroy!
+    DownloadClient.create!(
+      name: "Test SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8080",
+      api_key: "test-api-key-12345",
+      priority: 0,
+      enabled: true
+    )
+    @selected_result.update!(
+      magnet_url: nil,
+      download_url: "https://indexer.example/old.nzb",
+      seeders: nil,
+      status: :selected
+    )
+    replacement_url = "https://downloads.example/replacement.nzb"
+    replacement_error = nil
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "get_cats"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "categories" => [ "*" ] }.to_json
+        )
+      submission = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "addurl", "name" => "https://indexer.example/old.nzb"))
+        .to_return do
+          replacement_error = assert_raises(ArgumentError) do
+            @request.reload.add_manual_nzb!(replacement_url)
+          end
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "status" => true, "nzo_ids" => [ "SABnzbd_nzo_current" ] }.to_json
+          }
+        end
+
+      DownloadJob.perform_now(@download.id)
+
+      assert_requested submission
+    end
+
+    assert_match(/dispatch is in progress/, replacement_error.message)
+    assert_nil @request.reload.search_results.find_by(download_url: replacement_url)
+    assert @selected_result.reload.selected?
+    assert @download.reload.downloading?
+    assert_equal "SABnzbd_nzo_current", @download.external_id
+  end
+
+  test "cleans up a custom client dispatch that loses ownership before finalization" do
+    @download.update!(status: :downloading, download_type: "dispatching")
+    removed_ids = []
+    claimed_download = @download
+    client = Object.new
+    client.define_singleton_method(:add_torrent) do |_url|
+      claimed_download.update!(status: :failed)
+      "stale-torrent-hash"
+    end
+    client.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
+      removed_ids << [ external_id, delete_files ]
+      true
+    end
+
+    DownloadClientSelector.stub(:for_torrent, @client) do
+      @client.stub(:adapter, client) do
+        DownloadJob.new.send(
+          :send_to_torrent_client,
+          @download,
+          @selected_result,
+          "magnet:?xt=urn:btih:#{'c' * 40}"
+        )
+      end
+    end
+
+    assert @download.reload.failed?
+    assert_nil @download.external_id
+    assert_equal [ [ "stale-torrent-hash", true ] ], removed_ids
+  end
+
+  test "does not finalize a direct download after ownership is lost" do
+    @download.update!(status: :downloading, download_type: "direct")
+    @download.update!(status: :failed)
+    job = DownloadJob.new
+
+    finalized = job.send(
+      :finalize_direct_download!,
+      @download,
+      download_path: "/tmp/stale-book.epub",
+      book_path: "/tmp/stale-book.epub"
+    )
+
+    assert_not finalized
+    assert @download.reload.failed?
+    assert_not @request.reload.completed?
+    assert_nil @request.book.reload.file_path
+  end
+
   test "sends selected newznab result directly to a usenet client" do
     @client.destroy!
     sabnzbd = DownloadClient.create!(
@@ -563,14 +780,14 @@ class DownloadJobTest < ActiveJob::TestCase
     VCR.turned_off do
       stub_request(:get, "http://localhost:8080/api")
         .with(query: hash_including(
-          "mode" => "version",
+          "mode" => "get_cats",
           "apikey" => "test-api-key-12345",
           "output" => "json"
         ))
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: { "version" => "4.0.0" }.to_json
+          body: { "categories" => [ "*" ] }.to_json
         )
 
       request_stub = stub_request(:get, "http://localhost:8080/api")
@@ -841,11 +1058,11 @@ class DownloadJobTest < ActiveJob::TestCase
             body: { download_type: "usenet", nzb_url: "https://files.test/custom-book.nzb" }.to_json
           )
         stub_request(:get, "http://localhost:8080/api")
-          .with(query: hash_including("mode" => "version"))
+          .with(query: hash_including("mode" => "get_cats"))
           .to_return(
             status: 200,
             headers: { "Content-Type" => "application/json" },
-            body: { "version" => "4.0.0" }.to_json
+            body: { "categories" => [ "*" ] }.to_json
           )
         stub_request(:get, "http://localhost:8080/api")
           .with(query: hash_including(
@@ -1028,6 +1245,26 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "librivox discards staged extraction after dispatch ownership is lost" do
+    Dir.mktmpdir do |dir|
+      setup_librivox_download(output_path: dir)
+      zip_body = build_zip_archive("chapter_01.mp3" => "audio-data")
+      job = DownloadJob.new
+
+      VCR.turned_off do
+        stub_request(:get, "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3")
+          .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+        job.stub(:finalize_direct_download!, ->(*) { false }) do
+          job.perform(@librivox_download.id)
+        end
+      end
+
+      assert_equal "downloading", @librivox_download.reload.status
+      assert_empty Dir.glob(File.join(dir, "**", "chapter_01.mp3"))
+    end
+  end
+
   test "librivox download rejects unsafe zip paths" do
     Dir.mktmpdir do |dir|
       setup_librivox_download(output_path: dir)
@@ -1147,6 +1384,7 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "send_to_torrent_client marks attention when client returns no hash" do
+    @download.update!(status: :downloading, download_type: "dispatching")
     client = Object.new
     def client.add_torrent(_url)
       nil
