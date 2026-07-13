@@ -78,6 +78,44 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search tries next configured URL when first URL has an incompatible search page" do
+    VCR.turned_off do
+      SettingsService.set(:anna_archive_url, "https://incompatible.example\nhttps://annas-archive.org")
+
+      stub_request(:get, /incompatible\.example\/search/)
+        .to_return(status: 200, body: '<html><form action="/s/"></form></html>')
+      stub_anna_search_with_results
+
+      results = AnnaArchiveClient.search("test book")
+
+      assert_equal "abc123def456", results.first.md5
+      assert_requested :get, /incompatible\.example\/search/
+      assert_requested :get, /annas-archive\.org\/search/
+    end
+  end
+
+  test "search raises IncompatibleSiteError for a successful non-Anna response" do
+    VCR.turned_off do
+      stub_request(:get, /annas-archive\.org\/search/)
+        .to_return(status: 200, body: '<html><form action="/s/"></form><p>404 Page not found</p></html>')
+
+      error = assert_raises AnnaArchiveClient::IncompatibleSiteError do
+        AnnaArchiveClient.search("test query")
+      end
+
+      assert_includes error.message, "compatible Anna's Archive /search interface"
+    end
+  end
+
+  test "search accepts a compatible page with no results" do
+    VCR.turned_off do
+      stub_request(:get, /annas-archive\.org\/search/)
+        .to_return(status: 200, body: anna_search_page_without_results)
+
+      assert_empty AnnaArchiveClient.search("missing book")
+    end
+  end
+
   test "search returns empty array on connection error" do
     VCR.turned_off do
       stub_request(:get, /annas-archive\.org\/search/)
@@ -129,10 +167,10 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "test_connection returns true when site is reachable" do
+  test "test_connection returns true when search interface is compatible" do
     VCR.turned_off do
-      stub_request(:get, "https://annas-archive.org/")
-        .to_return(status: 200, body: "<html></html>")
+      stub_request(:get, "https://annas-archive.org/search?q=shelfarr")
+        .to_return(status: 200, body: anna_search_page_without_results)
 
       assert AnnaArchiveClient.test_connection
     end
@@ -142,21 +180,30 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     VCR.turned_off do
       SettingsService.set(:anna_archive_url, "https://offline.example\nhttps://annas-archive.org")
 
-      stub_request(:get, "https://offline.example/")
+      stub_request(:get, "https://offline.example/search?q=shelfarr")
         .to_raise(Faraday::ConnectionFailed.new("Connection failed"))
-      stub_request(:get, "https://annas-archive.org/")
-        .to_return(status: 200, body: "<html></html>")
+      stub_request(:get, "https://annas-archive.org/search?q=shelfarr")
+        .to_return(status: 200, body: anna_search_page_without_results)
 
       assert AnnaArchiveClient.test_connection
-      assert_requested :get, "https://offline.example/"
-      assert_requested :get, "https://annas-archive.org/"
+      assert_requested :get, "https://offline.example/search?q=shelfarr"
+      assert_requested :get, "https://annas-archive.org/search?q=shelfarr"
     end
   end
 
   test "test_connection returns false when site is unreachable" do
     VCR.turned_off do
-      stub_request(:get, "https://annas-archive.org/")
+      stub_request(:get, "https://annas-archive.org/search?q=shelfarr")
         .to_raise(Faraday::ConnectionFailed.new("Connection failed"))
+
+      assert_not AnnaArchiveClient.test_connection
+    end
+  end
+
+  test "test_connection returns false when homepage-like HTML is incompatible" do
+    VCR.turned_off do
+      stub_request(:get, "https://annas-archive.org/search?q=shelfarr")
+        .to_return(status: 200, body: "<html><body>Not Anna's Archive</body></html>")
 
       assert_not AnnaArchiveClient.test_connection
     end
@@ -237,6 +284,19 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
   end
 
   private
+
+  def anna_search_page_without_results
+    <<~HTML
+      <html>
+        <body>
+          <form action="/search">
+            <input name="q">
+          </form>
+          <p>No files found.</p>
+        </body>
+      </html>
+    HTML
+  end
 
   def stub_flaresolverr_with_search_results
     html = <<~HTML

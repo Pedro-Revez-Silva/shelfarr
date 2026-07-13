@@ -12,6 +12,7 @@ class AnnaArchiveClient
   class NotConfiguredError < Error; end
   class ConfigurationError < Error; end
   class ScrapingError < Error; end
+  class IncompatibleSiteError < Error; end
   class BotProtectionError < Error; end
   class RetryableError < Error; end
 
@@ -29,7 +30,7 @@ class AnnaArchiveClient
     end
   end
 
-  DEFAULT_BASE_URL = "https://annas-archive.se"
+  DEFAULT_BASE_URL = SettingsService::DEFAULT_ANNA_ARCHIVE_URL
   ALLOWED_BASE_URL_SCHEMES = %w[http https].freeze
 
   class << self
@@ -53,7 +54,7 @@ class AnnaArchiveClient
       url = build_search_url(query, file_types, language: language)
       Rails.logger.info "[AnnaArchiveClient] Searching: #{url}"
 
-      html = fetch_with_rotation(url, context: "search")
+      html = fetch_with_rotation(url, context: "search", validator: method(:validate_search_page!))
       parse_search_results(html, limit)
     end
 
@@ -97,23 +98,25 @@ class AnnaArchiveClient
       @working_base_url = nil
     end
 
-    # Test connection by fetching search page
+    # Test the search interface rather than accepting any homepage returning 200.
     def test_connection
-      configured_base_urls.any? do |base_url|
-        response = connection_for(base_url).get("/")
-        response.status == 200
-      rescue Faraday::Error
-        false
-      end
-    rescue Error
+      fetch_with_rotation(
+        "/search?q=shelfarr",
+        context: "connection test",
+        validator: method(:validate_search_page!)
+      )
+      true
+    rescue Error, Faraday::Error
       false
     end
 
     private
 
-    def fetch_with_rotation(path, context:)
+    def fetch_with_rotation(path, context:, validator: nil)
       with_base_url_rotation(context: context) do |base_url|
-        fetch_with_protection_bypass(path, base_url: base_url)
+        html = fetch_with_protection_bypass(path, base_url: base_url)
+        validator&.call(html)
+        html
       end
     end
 
@@ -124,7 +127,7 @@ class AnnaArchiveClient
       ordered_base_urls.each do |base_url|
         return yield(base_url).tap { remember_working_base_url(base_url) }
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError,
-             ConnectionError, BotProtectionError, RetryableError => e
+             ConnectionError, IncompatibleSiteError, BotProtectionError, RetryableError => e
         last_error = e
         bot_protection_error ||= e if e.is_a?(BotProtectionError)
         Rails.logger.debug "[AnnaArchiveClient] #{context} failed on #{base_url}: #{e.message}"
@@ -163,6 +166,17 @@ class AnnaArchiveClient
         html.include?("Checking your browser") ||
         html.include?("Just a moment") ||
         html.include?("Enable JavaScript and cookies")
+    end
+
+    def validate_search_page!(html)
+      require "nokogiri"
+
+      doc = Nokogiri::HTML(html)
+      return if doc.at_css("a[href*='/md5/']")
+      return if doc.at_css('form[action="/search"], form[action$="/search"]')
+
+      raise IncompatibleSiteError,
+        "Configured URL does not expose a compatible Anna's Archive /search interface"
     end
 
     def ensure_configured!

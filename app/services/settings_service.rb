@@ -1,4 +1,5 @@
 class SettingsService
+  DEFAULT_ANNA_ARCHIVE_URL = "https://annas-archive.gl"
   DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
   ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
 
@@ -159,7 +160,7 @@ class SettingsService
 
     # Anna's Archive
     anna_archive_enabled: { type: "boolean", default: false, category: "anna_archive", description: "Enable Anna's Archive as an additional search source for ebooks" },
-    anna_archive_url: { type: "string", default: "https://annas-archive.se", category: "anna_archive", description: "Anna's Archive base URLs to try. Shelfarr uses the first reachable URL." },
+    anna_archive_url: { type: "string", default: DEFAULT_ANNA_ARCHIVE_URL, category: "anna_archive", description: "Anna's Archive base URLs to try. Shelfarr uses the first compatible URL." },
     anna_archive_api_key: { type: "string", default: "", category: "anna_archive", description: "Member API key from Anna's Archive (requires donation)" },
     flaresolverr_url: { type: "string", default: "", category: "anna_archive", description: "FlareSolverr URL for bypassing DDoS protection (e.g., http://flaresolverr:8191)" },
 
