@@ -65,7 +65,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:prowlarr_url, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.text_field "settings[prowlarr_url]", value: settings.dig(:prowlarr_url, :value), id: "settings_prowlarr_url", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.url_field "settings[prowlarr_url]", value: settings.dig(:prowlarr_url, :value), id: "settings_prowlarr_url", disabled: selected_provider != "prowlarr", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
         </div>
       </div>
 
@@ -97,7 +97,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:jackett_url, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.text_field "settings[jackett_url]", value: settings.dig(:jackett_url, :value), id: "settings_jackett_url", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.url_field "settings[jackett_url]", value: settings.dig(:jackett_url, :value), id: "settings_jackett_url", disabled: selected_provider != "jackett", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
         </div>
       </div>
 
@@ -129,7 +129,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:newznab_url, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.text_field "settings[newznab_url]", value: settings.dig(:newznab_url, :value), id: "settings_newznab_url", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.url_field "settings[newznab_url]", value: settings.dig(:newznab_url, :value), id: "settings_newznab_url", disabled: selected_provider != "newznab", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
         </div>
       </div>
 

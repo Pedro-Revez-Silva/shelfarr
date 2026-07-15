@@ -249,6 +249,9 @@ class SettingsService
   }.freeze
 
   LABELS = {
+    prowlarr_url: "Prowlarr URL",
+    jackett_url: "Jackett URL",
+    newznab_url: "Newznab URL",
     library_platform: "Active Library Platform",
     audiobookshelf_url: "Audiobookshelf URL",
     audiobookshelf_api_key: "Audiobookshelf API Key",

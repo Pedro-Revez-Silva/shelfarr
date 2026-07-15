@@ -8,6 +8,7 @@ module IndexerClients
     class ConnectionError < Error; end
     class AuthenticationError < Error; end
     class NotConfiguredError < Error; end
+    class InvalidUrlError < Error; end
 
     class << self
       def search(...)
@@ -30,6 +31,11 @@ module IndexerClients
         name.demodulize
       end
 
+      def validate_url!(url)
+        normalize_base_url(url)
+        true
+      end
+
       private
 
       def categories_for_type(book_type)
@@ -50,17 +56,17 @@ module IndexerClients
 
       def normalize_base_url(url)
         value = url.to_s.strip
-        raise ArgumentError, "#{display_name} URL is blank" if value.blank?
+        raise InvalidUrlError, "#{display_name} URL is blank" if value.blank?
 
         uri = URI.parse(value)
         unless %w[http https].include?(uri.scheme) && uri.host.present?
-          raise ArgumentError, "#{display_name} URL must be a valid http or https URL"
+          raise InvalidUrlError, "#{display_name} URL must be a valid http or https URL"
         end
 
         normalized = uri.to_s
         normalized.end_with?("/") ? normalized : "#{normalized}/"
       rescue URI::InvalidURIError => e
-        raise ArgumentError, "Invalid #{display_name} URL: #{e.message}"
+        raise InvalidUrlError, "Invalid #{display_name} URL: #{e.message}"
       end
     end
   end

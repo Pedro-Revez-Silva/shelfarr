@@ -17,10 +17,10 @@ module Admin
         return
       end
 
-      value = params[:setting][:value]
+      value = normalize_setting_value(key, params[:setting][:value])
 
       unless preserve_blank_secret?(key, value)
-        validate_path_template!(key, value)
+        validate_setting_value!(key, value)
         SettingsService.set(key, value)
         handle_settings_side_effects([ key.to_s ])
       end
@@ -41,9 +41,10 @@ module Admin
         next if SettingsService.env_managed?(key)
         next if preserve_blank_secret?(key, value)
 
-        error = validate_path_template(key, value)
+        value = normalize_setting_value(key, value)
+        error = validate_setting_value(key, value)
         if error
-          errors << "#{key.to_s.titleize}: #{error}"
+          errors << "#{SettingsService.label_for(key)}: #{error}"
         else
           SettingsService.set(key, value)
           changed_keys << key.to_s
@@ -483,10 +484,19 @@ module Admin
 
     PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze
     FILENAME_TEMPLATE_SETTINGS = %w[audiobook_filename_template ebook_filename_template].freeze
+    INDEXER_URL_PROVIDERS = {
+      "prowlarr_url" => IndexerClients::Prowlarr,
+      "jackett_url" => IndexerClients::Jackett,
+      "newznab_url" => IndexerClients::Newznab
+    }.freeze
 
-    def validate_path_template!(key, value)
-      error = validate_path_template(key, value)
-      raise ArgumentError, error if error
+    def validate_setting_value!(key, value)
+      error = validate_setting_value(key, value)
+      raise ArgumentError, "#{SettingsService.label_for(key)}: #{error}" if error
+    end
+
+    def validate_setting_value(key, value)
+      validate_path_template(key, value) || validate_indexer_url(key, value)
     end
 
     def validate_path_template(key, value)
@@ -501,6 +511,21 @@ module Admin
 
       valid, error = PathTemplateService.validate_template(value, mode: mode)
       valid ? nil : error
+    end
+
+    def validate_indexer_url(key, value)
+      provider = INDEXER_URL_PROVIDERS[key.to_s]
+      return nil unless provider
+      return nil if value.blank?
+
+      provider.validate_url!(value)
+      nil
+    rescue IndexerClients::Base::InvalidUrlError
+      "must be a valid HTTP or HTTPS URL"
+    end
+
+    def normalize_setting_value(key, value)
+      INDEXER_URL_PROVIDERS.key?(key.to_s) ? value.to_s.strip : value
     end
 
     def fetch_audiobookshelf_libraries

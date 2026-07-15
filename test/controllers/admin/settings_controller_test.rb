@@ -52,6 +52,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index shows indexer provider dropdown" do
+    SettingsService.set(:indexer_provider, "prowlarr")
     SettingsService.set(:prowlarr_api_key, "stored-prowlarr-secret")
 
     get admin_settings_url
@@ -61,7 +62,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "option[value='prowlarr']", text: "Prowlarr"
     assert_select "option[value='jackett']", text: "Jackett"
     assert_select "option[value='newznab']", text: "NZBHydra2 / Newznab"
-    assert_select "input[name='settings[newznab_url]']"
+    assert_select "input[type='url'][name='settings[prowlarr_url]']:not([disabled])"
+    assert_select "input[type='url'][name='settings[jackett_url]'][disabled]"
+    assert_select "input[type='url'][name='settings[newznab_url]'][disabled]"
     assert_select "input[name='settings[newznab_api_key]']"
     assert_select "input[type='password'][name='settings[prowlarr_api_key]'][value='']"
     assert_no_match /stored-prowlarr-secret/, @response.body
@@ -457,6 +460,18 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert flash[:alert].present?
   end
 
+  test "update rejects malformed indexer URL without replacing saved value" do
+    SettingsService.set(:prowlarr_url, "https://prowlarr.example.com")
+
+    patch admin_setting_url("prowlarr_url"), params: {
+      setting: { value: "prowlarr.example.com:9696" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/Prowlarr URL: must be a valid HTTP or HTTPS URL/, flash[:alert])
+    assert_equal "https://prowlarr.example.com", SettingsService.get(:prowlarr_url)
+  end
+
   test "index shows webhook settings" do
     get admin_settings_url
 
@@ -537,6 +552,54 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert flash[:alert].present?
+  end
+
+  test "bulk_update rejects malformed URLs for every indexer provider" do
+    original_urls = {
+      prowlarr_url: "https://prowlarr.example.com",
+      jackett_url: "https://jackett.example.com",
+      newznab_url: "https://newznab.example.com"
+    }
+    original_urls.each { |key, value| SettingsService.set(key, value) }
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        prowlarr_url: "prowlarr.example.com:9696",
+        jackett_url: "ftp://jackett.example.com",
+        newznab_url: "not a url"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/Prowlarr URL: must be a valid HTTP or HTTPS URL/, flash[:alert])
+    assert_match(/Jackett URL: must be a valid HTTP or HTTPS URL/, flash[:alert])
+    assert_match(/Newznab URL: must be a valid HTTP or HTTPS URL/, flash[:alert])
+    original_urls.each do |key, value|
+      assert_equal value, SettingsService.get(key), "expected #{key} to keep its saved value"
+    end
+  end
+
+  test "bulk_update reports malformed indexer URL in turbo response" do
+    SettingsService.set(:jackett_url, "https://jackett.example.com")
+
+    patch bulk_update_admin_settings_url,
+      params: { settings: { jackett_url: "jackett.example.com:9117" } },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_match "turbo-stream", response.body
+    assert_match "Jackett URL: must be a valid HTTP or HTTPS URL", response.body
+    assert_equal "https://jackett.example.com", SettingsService.get(:jackett_url)
+  end
+
+  test "bulk_update trims valid indexer URLs before saving" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: { newznab_url: "  https://newznab.example.com/api  " }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert flash[:alert].blank?
+    assert_equal "https://newznab.example.com/api", SettingsService.get(:newznab_url)
   end
 
   test "bulk_update accepts blank path templates" do
@@ -660,6 +723,24 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
       assert_redirected_to admin_settings_path
       assert flash[:alert].present?
+    end
+  end
+
+  test "test_indexer handles previously stored malformed provider URLs" do
+    {
+      "prowlarr" => [ :prowlarr_url, :prowlarr_api_key ],
+      "jackett" => [ :jackett_url, :jackett_api_key ],
+      "newznab" => [ :newznab_url, :newznab_api_key ]
+    }.each do |provider, (url_key, api_key)|
+      SettingsService.set(:indexer_provider, provider)
+      SettingsService.set(url_key, "#{provider}.example.com:1234")
+      SettingsService.set(api_key, "test-api-key")
+      IndexerClient.reset_all_connections!
+
+      post test_indexer_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match(/connection failed/i, flash[:alert], "expected #{provider} to fail without a server error")
     end
   end
 
