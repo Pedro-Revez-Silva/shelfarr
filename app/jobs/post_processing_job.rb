@@ -38,6 +38,7 @@ class PostProcessingJob < ApplicationJob
       if source_path_unavailable?(source_path)
         return retry_source_path_later(download, request, source_path, source_path_retry_count)
       end
+      validate_download_specific_source_path!(source_path, download)
 
       source_cleanup = import_files(source_path, destination, book: book, base_path: base_path)
       cleanup_usenet_download(download)
@@ -88,6 +89,48 @@ class PostProcessingJob < ApplicationJob
 
   def source_path_unavailable?(source_path)
     source_path.present? && !File.exist?(source_path)
+  end
+
+  def validate_download_specific_source_path!(source_path, download)
+    return unless source_path.present? && File.directory?(source_path)
+
+    source = canonical_path(source_path)
+    shared_roots = shared_download_roots(download).filter_map do |path|
+      canonical_path(path) if path.present?
+    end
+    return unless shared_roots.include?(source)
+
+    raise "Refusing to import shared download root: #{source_path}. " \
+      "The download client must report a download-specific file or directory."
+  end
+
+  def shared_download_roots(download)
+    roots = [
+      SettingsService.get(:download_local_path, default: "/downloads"),
+      SettingsService.get(:download_remote_path),
+      download.download_client&.download_path
+    ].compact_blank
+
+    categories = category_path_variants(download.download_client&.category)
+    return roots if categories.empty?
+
+    roots + roots.flat_map { |root| categories.map { |category| File.join(root, category) } }
+  end
+
+  # Deluge normalizes labels to lowercase while other clients preserve the
+  # configured category casing. Include both forms so path checks match disk.
+  def category_path_variants(category)
+    return [] if category.blank?
+
+    value = category.to_s
+    [ value, value.downcase, value.strip, value.strip.downcase ].map(&:presence).compact.uniq
+  end
+
+  def canonical_path(path)
+    expanded = File.expand_path(normalize_path_separators(path))
+    File.realpath(expanded)
+  rescue SystemCallError
+    expanded
   end
 
   def retry_source_path_later(download, request, source_path, retry_count)
@@ -731,7 +774,7 @@ class PostProcessingJob < ApplicationJob
     normalized_path = normalize_path_separators(path)
     remote_path = normalize_path_separators(SettingsService.get(:download_remote_path))
     local_path = normalize_path_separators(SettingsService.get(:download_local_path, default: "/downloads"))
-    category = download.download_client&.category
+    categories = category_path_variants(download.download_client&.category)
     client_download_path = normalize_path_separators(download.download_client&.download_path)
     basename = File.basename(normalized_path)
 
@@ -741,19 +784,24 @@ class PostProcessingJob < ApplicationJob
     end
 
     # 2. local_path/category/basename — most common torrent client layout
-    if category.present?
+    categories.each do |category|
       candidates << { strategy: "local_path_with_category", path: File.join(local_path, category, basename) }
     end
 
     # 3. Category-aware sibling remap — when remote_path points to a sibling folder
     #    e.g., remote=/mnt/Torrents/Completed, path=/mnt/Torrents/shelfarr/File
-    if category.present? && remote_path.present? && normalized_path.include?("/#{category}/")
-      category_idx = normalized_path.index("/#{category}/")
-      remote_base = normalized_path[0...category_idx]
-      relative_after_base = normalized_path[(category_idx)..]
+    if remote_path.present?
+      categories.each do |category|
+        marker = "/#{category}/"
+        next unless normalized_path.include?(marker)
 
-      if remote_base == File.dirname(remote_path)
-        candidates << { strategy: "category_sibling_remap", path: File.join(File.dirname(local_path), relative_after_base) }
+        category_idx = normalized_path.index(marker)
+        remote_base = normalized_path[0...category_idx]
+        relative_after_base = normalized_path[(category_idx)..]
+
+        if remote_base == File.dirname(remote_path)
+          candidates << { strategy: "category_sibling_remap", path: File.join(File.dirname(local_path), relative_after_base) }
+        end
       end
     end
 

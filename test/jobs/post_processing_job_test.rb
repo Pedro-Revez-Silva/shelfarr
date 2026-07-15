@@ -69,6 +69,51 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "refuses to import a shared download client root" do
+    client = DownloadClient.create!(
+      name: "Shared Deluge Root",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "deluge",
+      category: "shelfarr",
+      download_path: @temp_source
+    )
+    @download.update!(download_client: client)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    refute File.exist?(File.join(expected_dest, "audiobook.mp3"))
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "Refusing to import shared download root"
+  end
+
+  test "refuses to import a Deluge label category root when category casing differs" do
+    # Deluge stores labels lowercase on disk; config may retain mixed case.
+    category_root = File.join(@temp_source, "shelfarr")
+    FileUtils.mkdir_p(category_root)
+    File.write(File.join(category_root, "audiobook.mp3"), "test audio content")
+
+    client = DownloadClient.create!(
+      name: "Deluge Mixed Case Label",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "deluge",
+      category: " Shelfarr ",
+      download_path: @temp_source
+    )
+    @download.update!(download_client: client, download_path: category_root)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    refute File.exist?(File.join(expected_dest, "audiobook.mp3"))
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "Refusing to import shared download root"
+  end
+
   test "skips a completed download replaced by a manual selection" do
     old_result = @request.search_results.create!(
       guid: "old-result",

@@ -3,7 +3,10 @@
 require "test_helper"
 
 class DownloadClients::DelugeTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   setup do
+    clear_enqueued_jobs
     @client_record = DownloadClient.create!(
       name: "Test Deluge",
       client_type: "deluge",
@@ -48,6 +51,276 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
 
       result = @client.add_torrent("magnet:?xt=urn:btih:abcdef")
       assert_equal "new_torrent_id", result
+    end
+  end
+
+  test "add_torrent assigns configured category through the Label plugin" do
+    VCR.turned_off do
+      @client_record.update!(category: "Shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_enabled_plugins", [ "Label" ])
+      stub_deluge_rpc("label.get_labels", [ "shelfarr" ])
+      stub_deluge_rpc("core.get_session_state", [ "known_torrent_id" ])
+
+      add_stub = stub_request(:post, "http://localhost:8112/json")
+        .with do |request|
+          body = JSON.parse(request.body)
+          options = body.dig("params", 1)
+          body["method"] == "core.add_torrent_magnet" && !options.key?("label")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { result: "new_torrent_id", error: nil, id: 1 }.to_json
+        )
+
+      label_stub = stub_request(:post, "http://localhost:8112/json")
+        .with do |request|
+          body = JSON.parse(request.body)
+          body["method"] == "label.set_torrent" && body["params"] == [ "new_torrent_id", "shelfarr" ]
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { result: nil, error: nil, id: 1 }.to_json
+        )
+
+      assert_equal "new_torrent_id", client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      assert_requested(add_stub)
+      assert_requested(label_stub)
+    end
+  end
+
+  test "add_torrent retries transient label failures before removing its partial files" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_enabled_plugins", [ "Label" ])
+      stub_deluge_rpc("label.get_labels", [ "shelfarr" ])
+      stub_deluge_rpc("core.get_session_state", [ "known_torrent_id" ])
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+      set_stub = stub_deluge_rpc("label.set_torrent", nil, error: { "message" => "Unknown Torrent" })
+      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], true ])
+
+      client.stub(:sleep, nil) do
+        assert_raises DownloadClients::Base::Error do
+          client.add_torrent("magnet:?xt=urn:btih:abcdef")
+        end
+      end
+
+      assert_requested(set_stub, times: DownloadClients::Deluge::LABEL_ASSIGN_MAX_ATTEMPTS)
+      assert_requested(remove_stub)
+    end
+  end
+
+  test "add_torrent schedules cleanup when Deluge reports a removal error" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_enabled_plugins", [ "Label" ])
+      stub_deluge_rpc("label.get_labels", [ "shelfarr" ])
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+      stub_deluge_rpc("label.set_torrent", nil, error: { "message" => "Permission denied" })
+      stub_deluge_rpc(
+        "core.remove_torrents",
+        [ [ "new_torrent_id", "Permission denied" ] ],
+        params: [ [ "new_torrent_id" ], true ]
+      )
+
+      assert_enqueued_with(job: StaleClientDispatchCleanupJob, args: [ @client_record.id, "new_torrent_id" ]) do
+        assert_raises DownloadClients::Base::Error do
+          client.add_torrent("magnet:?xt=urn:btih:abcdef")
+        end
+      end
+    end
+  end
+
+  test "add_torrent cleans up after repeated label connection failures" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_enabled_plugins", [ "Label" ])
+      stub_deluge_rpc("label.get_labels", [ "shelfarr" ])
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+      set_stub = stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"label.set_torrent"/)
+        .to_raise(Faraday::ConnectionFailed.new("connection lost"))
+      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], true ])
+
+      client.stub(:sleep, nil) do
+        assert_raises DownloadClients::Base::ConnectionError do
+          client.add_torrent("magnet:?xt=urn:btih:abcdef")
+        end
+      end
+
+      assert_requested(set_stub, times: DownloadClients::Deluge::LABEL_ASSIGN_MAX_ATTEMPTS)
+      assert_requested(remove_stub)
+    end
+  end
+
+  test "add_torrent recovers when label assignment fails transiently then succeeds" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_enabled_plugins", [ "Label" ])
+      stub_deluge_rpc("label.get_labels", [ "shelfarr" ])
+      stub_deluge_rpc("core.get_session_state", [ "known_torrent_id" ])
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+
+      set_stub = stub_request(:post, "http://localhost:8112/json")
+        .with do |request|
+          body = JSON.parse(request.body)
+          body["method"] == "label.set_torrent" && body["params"] == [ "new_torrent_id", "shelfarr" ]
+        end
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: nil, error: { "message" => "Unknown Torrent" }, id: 1 }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: nil, error: nil, id: 1 }.to_json
+          }
+        )
+
+      client.stub(:sleep, nil) do
+        assert_equal "new_torrent_id", client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+
+      assert_requested(set_stub, times: 2)
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
+    end
+  end
+
+  test "add_torrent recreates a label deleted during dispatch" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      plugins_stub = stub_deluge_rpc("core.get_enabled_plugins", [ "Label" ])
+      labels_stub = stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"label.get_labels"/)
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: [ "shelfarr" ], error: nil, id: 1 }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: [], error: nil, id: 1 }.to_json
+          }
+        )
+      add_label_stub = stub_deluge_rpc("label.add", nil, params: [ "shelfarr" ])
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+
+      set_stub = stub_request(:post, "http://localhost:8112/json")
+        .with do |request|
+          body = JSON.parse(request.body)
+          body["method"] == "label.set_torrent" && body["params"] == [ "new_torrent_id", "shelfarr" ]
+        end
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: nil, error: { "message" => "Unknown Label" }, id: 1 }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: nil, error: nil, id: 1 }.to_json
+          }
+        )
+
+      assert_equal "new_torrent_id", client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      assert_requested(plugins_stub, times: 2)
+      assert_requested(labels_stub, times: 2)
+      assert_requested(add_label_stub)
+      assert_requested(set_stub, times: 2)
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
+    end
+  end
+
+  test "add_torrent raises when a label is configured but no torrent id is returned" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_enabled_plugins", [ "Label" ])
+      stub_deluge_rpc("label.get_labels", [ "shelfarr" ])
+      stub_deluge_rpc("core.get_session_state", [ "known_torrent_id", "foreign_torrent_id" ])
+      stub_deluge_rpc("core.add_torrent_magnet", nil)
+
+      error = assert_raises DownloadClients::Base::Error do
+        client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+      assert_match(/did not return a torrent id/i, error.message)
+      assert_not_requested :post, "http://localhost:8112/json", body: /"label.set_torrent"/
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.get_session_state"/
     end
   end
 
@@ -223,6 +496,172 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection enables Label plugin and creates configured label" do
+    VCR.turned_off do
+      @client_record.update!(category: "Shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_session_state", [])
+      stub_deluge_rpc("core.get_enabled_plugins", [])
+      stub_deluge_rpc("core.get_available_plugins", [ "Label" ])
+      enable_stub = stub_deluge_rpc("core.enable_plugin", true, params: [ "Label" ])
+      stub_deluge_rpc("label.get_labels", [])
+      add_label_stub = stub_deluge_rpc("label.add", nil, params: [ "shelfarr" ])
+
+      assert client.test_connection
+      assert_requested(enable_stub)
+      assert_requested(add_label_stub)
+    end
+  end
+
+  test "test_connection retries Label RPC until the plugin is ready after enable" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_session_state", [])
+      stub_deluge_rpc("core.get_enabled_plugins", [])
+      stub_deluge_rpc("core.get_available_plugins", [ "Label" ])
+      stub_deluge_rpc("core.enable_plugin", true, params: [ "Label" ])
+
+      labels_stub = stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"label.get_labels"/)
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: nil, error: { "message" => "Unknown method" }, id: 1 }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: [], error: nil, id: 1 }.to_json
+          }
+        )
+      add_label_stub = stub_deluge_rpc("label.add", nil, params: [ "shelfarr" ])
+
+      client.stub(:sleep, nil) do
+        assert client.test_connection
+      end
+
+      assert_requested(labels_stub, times: 2)
+      assert_requested(add_label_stub)
+    end
+  end
+
+  test "test_connection revalidates label readiness for every call" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_session_state", [])
+      plugins_stub = stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.get_enabled_plugins"/)
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: [ "Label" ], error: nil, id: 1 }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: [], error: nil, id: 1 }.to_json
+          }
+        )
+      stub_deluge_rpc("core.get_available_plugins", [ "Label" ])
+      enable_stub = stub_deluge_rpc("core.enable_plugin", true, params: [ "Label" ])
+      labels_stub = stub_deluge_rpc("label.get_labels", [ "shelfarr" ])
+
+      assert client.test_connection
+      assert client.test_connection
+      assert_requested(plugins_stub, times: 2)
+      assert_requested(labels_stub, times: 2)
+      assert_requested(enable_stub)
+    end
+  end
+
+  test "test_connection tolerates a label created concurrently" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_session_state", [])
+      stub_deluge_rpc("core.get_enabled_plugins", [ "Label" ])
+      labels_stub = stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"label.get_labels"/)
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: [], error: nil, id: 1 }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { result: [ "shelfarr" ], error: nil, id: 1 }.to_json
+          }
+        )
+      stub_deluge_rpc("label.add", nil, error: { "message" => "Label already exists" })
+
+      assert client.test_connection
+      assert_requested(labels_stub, times: 2)
+    end
+  end
+
+  test "test_connection fails when configured label plugin is unavailable" do
+    VCR.turned_off do
+      @client_record.update!(category: "shelfarr")
+      client = @client_record.adapter
+
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc("core.get_session_state", [])
+      stub_deluge_rpc("core.get_enabled_plugins", [])
+      stub_deluge_rpc("core.get_available_plugins", [])
+
+      assert_not client.test_connection
+    end
+  end
+
   test "test_connection preserves path-based reverse proxy URL" do
     VCR.turned_off do
       [
@@ -277,7 +716,8 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
                 "progress" => 1.0,
                 "state" => "Seeding",
                 "total_size" => 2048,
-                "save_path" => "/downloads/Info Torrent"
+                "download_location" => "/downloads",
+                "save_path" => "/legacy-downloads"
               }
             },
             error: nil,
@@ -290,7 +730,14 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       assert_equal "known_torrent", info.hash
       assert_equal "Info Torrent", info.name
       assert_equal :completed, info.state
+      assert_equal "/downloads/Info Torrent", info.download_path
     end
+  end
+
+  test "torrent download path appends a name matching the download root basename" do
+    data = { "download_location" => "/downloads/shelfarr", "name" => "shelfarr" }
+
+    assert_equal "/downloads/shelfarr/shelfarr", @client.send(:torrent_download_path, data)
   end
 
   test "remove_torrent returns true on success" do
@@ -308,10 +755,45 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: { result: { "removed" => true }, error: nil, id: 1 }.to_json
+          body: { result: [], error: nil, id: 1 }.to_json
         )
 
       assert @client.remove_torrent("known_torrent")
     end
+  end
+
+  test "remove_torrent returns false when Deluge reports removal errors" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      stub_deluge_rpc(
+        "core.remove_torrents",
+        [ [ "known_torrent", "Unknown Torrent" ] ],
+        params: [ [ "known_torrent" ], false ]
+      )
+
+      assert_not @client.remove_torrent("known_torrent")
+    end
+  end
+
+  private
+
+  def stub_deluge_rpc(method, result, params: nil, error: nil)
+    stub_request(:post, "http://localhost:8112/json")
+      .with do |request|
+        body = JSON.parse(request.body)
+        body["method"] == method && (params.nil? || body["params"] == params)
+      end
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { result: result, error: error, id: 1 }.to_json
+      )
   end
 end

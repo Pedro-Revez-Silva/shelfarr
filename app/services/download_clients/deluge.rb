@@ -23,19 +23,35 @@ module DownloadClients
       "save_path"
     ].freeze
 
+    LABEL_ASSIGN_MAX_ATTEMPTS = 3
+    LABEL_ASSIGN_RETRY_WAIT = 0.25
+    LABEL_PLUGIN_READY_MAX_ATTEMPTS = 5
+    LABEL_PLUGIN_READY_RETRY_WAIT = 0.2
+    TRANSIENT_LABEL_ERROR_PATTERNS = [
+      /unknown torrent/i,
+      /timeout/i,
+      /timed out/i
+    ].freeze
+
     def add_torrent(url, options = {})
       ensure_authenticated!
+      ensure_configured_label!
 
       params = build_add_params(options)
       prepared = prepare_torrent_submission(url)
-      existing_ids = torrent_ids
-
       result = submit_torrent(prepared, params)
+      torrent_id = result if result.is_a?(String) && result.present?
 
-      return result if result.is_a?(String) && result.present?
+      if torrent_id.blank?
+        if configured_label.present?
+          raise Base::Error, "Deluge did not return a torrent id after add; cannot assign label"
+        end
 
-      new_ids = torrent_ids - existing_ids
-      new_ids.first
+        return nil
+      end
+
+      assign_configured_label!(torrent_id)
+      torrent_id
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Deluge: #{e.message}"
     end
@@ -60,6 +76,7 @@ module DownloadClients
       ensure_authenticated!
 
       torrent_ids
+      ensure_configured_label!
       true
     rescue Base::Error, Base::AuthenticationError, Faraday::Error => e
       Rails.logger.warn "[Deluge] Connection test failed: #{e.message}"
@@ -71,7 +88,7 @@ module DownloadClients
 
       # Deluge accepts arrays of torrent IDs
       result = rpc_call("core.remove_torrents", [Array(hash), delete_files])
-      !result.nil?
+      result == true || (result.is_a?(Array) && result.empty?)
 
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Deluge: #{e.message}"
@@ -181,8 +198,16 @@ module DownloadClients
         progress: progress,
         state: normalize_state(data["state"].to_s),
         size_bytes: data["total_size"].to_f,
-        download_path: data["download_location"].presence || data["save_path"].to_s
+        download_path: torrent_download_path(data)
       )
+    end
+
+    def torrent_download_path(data)
+      location = data["download_location"].presence || data["save_path"].presence
+      name = data["name"].presence
+      return location.to_s if location.blank? || name.blank?
+
+      File.join(location, name)
     end
 
     def normalize_progress(progress)
@@ -213,9 +238,129 @@ module DownloadClients
     def build_add_params(options)
       params = {}
       params["download_location"] = options[:save_path] if options[:save_path].present?
-      params["label"] = config.category if config.category.present?
       params["add_paused"] = options[:paused] if options.key?(:paused)
       params
+    end
+
+    def ensure_configured_label!
+      label = configured_label
+      return unless label
+
+      ensure_label_plugin_enabled!
+      labels = fetch_labels_with_retry!
+      add_label!(label) unless labels.include?(label)
+    end
+
+    def ensure_label_plugin_enabled!
+      enabled_plugins = Array(rpc_call("core.get_enabled_plugins"))
+      return if enabled_plugins.include?("Label")
+
+      available_plugins = Array(rpc_call("core.get_available_plugins"))
+      unless available_plugins.include?("Label")
+        raise Base::NotConfiguredError, "Deluge Label plugin is not available"
+      end
+
+      enabled = rpc_call("core.enable_plugin", [ "Label" ])
+      raise Base::NotConfiguredError, "Deluge Label plugin could not be enabled" unless enabled
+    end
+
+    def fetch_labels_with_retry!
+      last_error = nil
+
+      LABEL_PLUGIN_READY_MAX_ATTEMPTS.times do |attempt|
+        sleep LABEL_PLUGIN_READY_RETRY_WAIT if attempt > 0
+
+        begin
+          return Array(rpc_call("label.get_labels"))
+        rescue Base::Error => e
+          last_error = e
+          next if plugin_method_not_ready?(e)
+
+          raise
+        end
+      end
+
+      raise last_error if last_error
+
+      raise Base::NotConfiguredError, "Deluge Label plugin methods are not available yet"
+    end
+
+    def plugin_method_not_ready?(error)
+      error.message.match?(/unknown method|method not found|not available|has no attribute/i)
+    end
+
+    def add_label!(label)
+      rpc_call("label.add", [ label ])
+    rescue Base::Error
+      raise unless fetch_labels_with_retry!.include?(label)
+    end
+
+    def assign_configured_label!(torrent_id)
+      label = configured_label
+      return if label.blank? || torrent_id.blank?
+
+      set_torrent_label_with_retry!(torrent_id, label)
+    rescue Base::Error, Faraday::Error => label_error
+      if stale_label_configuration_error?(label_error)
+        begin
+          ensure_configured_label!
+          return set_torrent_label_with_retry!(torrent_id, label)
+        rescue Base::Error, Faraday::Error => retry_error
+          label_error = retry_error
+        end
+      end
+
+      remove_unlabelled_torrent(torrent_id)
+      raise label_error
+    end
+
+    def stale_label_configuration_error?(error)
+      error.message.match?(/unknown label|unknown method|method not found|not available|has no attribute/i)
+    end
+
+    def set_torrent_label_with_retry!(torrent_id, label)
+      last_error = nil
+
+      LABEL_ASSIGN_MAX_ATTEMPTS.times do |attempt|
+        sleep LABEL_ASSIGN_RETRY_WAIT if attempt > 0
+
+        begin
+          return rpc_call("label.set_torrent", [ torrent_id, label ])
+        rescue Base::Error, Faraday::Error => e
+          last_error = e
+          next if transient_label_error?(e)
+
+          raise
+        end
+      end
+
+      raise last_error
+    end
+
+    def transient_label_error?(error)
+      return true if error.is_a?(Faraday::Error)
+
+      TRANSIENT_LABEL_ERROR_PATTERNS.any? { |pattern| pattern.match?(error.message) }
+    end
+
+    def remove_unlabelled_torrent(torrent_id)
+      # The ID came directly from this add request, so removing its partial data
+      # cannot affect a torrent submitted by another application.
+      removed = remove_torrent(torrent_id, delete_files: true)
+      enqueue_stale_cleanup(torrent_id) unless removed
+    rescue Base::Error => cleanup_error
+      Rails.logger.error "[Deluge] Failed to remove unlabelled torrent #{torrent_id}: #{cleanup_error.message}"
+      enqueue_stale_cleanup(torrent_id)
+    end
+
+    def enqueue_stale_cleanup(torrent_id)
+      StaleClientDispatchCleanupJob.perform_later(config.id, torrent_id)
+    rescue StandardError => e
+      Rails.logger.error "[Deluge] Failed to enqueue cleanup for unlabelled torrent #{torrent_id}: #{e.class}"
+    end
+
+    def configured_label
+      config.category.to_s.strip.downcase.presence
     end
 
     def connection
