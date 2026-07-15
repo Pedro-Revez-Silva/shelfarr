@@ -42,9 +42,11 @@ ensure_storage_path_permissions() {
   mkdir -p "$path"
 
   if [ "$(id -u)" = "0" ] && [ "$policy" != "never" ]; then
-    if verify_path_writable "$path"; then
+    if verify_path_writable "$path" 2>/dev/null; then
       return 0
     fi
+
+    echo "Storage path ${path} is not yet writable by the rails user; adjusting ownership..."
 
     if ! chown -R rails:rails "$path" 2>/tmp/shelfarr-chown-error.$$; then
       if [ "$policy" = "always" ]; then
