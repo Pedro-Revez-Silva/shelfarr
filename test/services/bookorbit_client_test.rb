@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "timeout"
 
 class BookOrbitClientTest < ActiveSupport::TestCase
   setup do
@@ -46,6 +47,125 @@ class BookOrbitClientTest < ActiveSupport::TestCase
       assert_equal "Kobo Books", libraries.first.name
       assert_equal [ "/books/kobo" ], libraries.first.folder_paths
       assert libraries.first.audiobook_library?
+    end
+  end
+
+  test "libraries rebuilds cached connection when BookOrbit settings change" do
+    VCR.turned_off do
+      old_login = stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "old-token" }.to_json
+        )
+      old_libraries = stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer old-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 1, name: "Old Library", folders: [] } ].to_json
+        )
+
+      assert_equal "Old Library", BookOrbitClient.libraries.first.name
+
+      SettingsService.set(:bookorbit_url, "http://localhost:4000")
+
+      new_login = stub_request(:post, "http://localhost:4000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "new-token" }.to_json
+        )
+      new_libraries = stub_request(:get, "http://localhost:4000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer new-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 2, name: "New Library", folders: [] } ].to_json
+        )
+
+      assert_equal "New Library", BookOrbitClient.libraries.first.name
+      assert_requested old_login, times: 1
+      assert_requested old_libraries, times: 1
+      assert_requested new_login, times: 1
+      assert_requested new_libraries, times: 1
+    end
+  end
+
+  test "concurrent connection rebuilds cannot publish stale BookOrbit settings" do
+    VCR.turned_off do
+      old_configuration_read = Queue.new
+      release_old_configuration = Queue.new
+
+      stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "old-token" }.to_json
+        )
+      stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer old-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 1, name: "Old Library", folders: [] } ].to_json
+        )
+      stub_request(:post, "http://localhost:4000/api/v1/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "new-token" }.to_json
+        )
+      stub_request(:get, "http://localhost:4000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer new-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 2, name: "New Library", folders: [] } ].to_json
+        )
+
+      original_configuration = BookOrbitClient.method(:current_connection_configuration)
+      configuration_reader = lambda do
+        configuration = original_configuration.call
+        if Thread.current[:bookorbit_old_connection]
+          old_configuration_read << true
+          release_old_configuration.pop
+        end
+        configuration
+      end
+
+      old_request = nil
+      new_request = nil
+      BookOrbitClient.stub(:current_connection_configuration, configuration_reader) do
+        begin
+          old_request = Thread.new do
+            Thread.current[:bookorbit_old_connection] = true
+            BookOrbitClient.libraries
+          end
+          Timeout.timeout(2) { old_configuration_read.pop }
+
+          SettingsService.set(:bookorbit_url, "http://localhost:4000")
+          new_request = Thread.new { BookOrbitClient.libraries }
+
+          assert_nil new_request.join(0.2), "new connection build should wait for the in-flight rebuild"
+          release_old_configuration << true
+
+          assert_equal "Old Library", Timeout.timeout(2) { old_request.value.first.name }
+          assert_equal "New Library", Timeout.timeout(2) { new_request.value.first.name }
+        ensure
+          release_old_configuration << true
+          [ old_request, new_request ].compact.each do |thread|
+            next if thread.join(2)
+
+            thread.kill
+            thread.join
+          end
+        end
+      end
+
+      assert_equal "New Library", BookOrbitClient.libraries.first.name
     end
   end
 
