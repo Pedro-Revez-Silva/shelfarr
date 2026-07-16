@@ -3,6 +3,8 @@
 # Client for BookOrbit's current internal API. BookOrbit does not publish stable
 # API docs yet, so this intentionally covers only library inventory and scans.
 class BookOrbitClient
+  CONNECTION_MUTEX = Mutex.new
+
   class Error < StandardError; end
   class ConnectionError < Error; end
   class AuthenticationError < Error; end
@@ -89,9 +91,7 @@ class BookOrbitClient
     end
 
     def reset_connection!
-      @connection = nil
-      @access_token = nil
-      @connection_configuration = nil
+      CONNECTION_MUTEX.synchronize { clear_connection_cache! }
     end
 
     private
@@ -107,20 +107,27 @@ class BookOrbitClient
     end
 
     def connection
-      refresh_connection_cache!
+      configuration = current_connection_configuration
 
-      @connection ||= Faraday.new(url: base_url) do |f|
+      CONNECTION_MUTEX.synchronize do
+        rebuild_connection!(configuration) if @connection.nil? || @connection_configuration != configuration
+        @connection
+      end
+    end
+
+    def build_connection(configuration)
+      Faraday.new(url: validated_base_url(configuration)) do |f|
         f.request :json
         f.response :json, parser_options: { symbolize_names: false }
         f.adapter Faraday.default_adapter
-        f.headers["Authorization"] = "Bearer #{access_token}"
+        f.headers["Authorization"] = "Bearer #{access_token(configuration)}"
         f.options.timeout = 15
         f.options.open_timeout = 5
       end
     end
 
-    def auth_connection
-      Faraday.new(url: base_url) do |f|
+    def auth_connection(configuration)
+      Faraday.new(url: validated_base_url(configuration)) do |f|
         f.request :json
         f.response :json, parser_options: { symbolize_names: false }
         f.adapter Faraday.default_adapter
@@ -129,12 +136,12 @@ class BookOrbitClient
       end
     end
 
-    def access_token
+    def access_token(configuration)
       @access_token ||= begin
         response = request do
-          auth_connection.post("/api/v1/auth/login", {
-            username: SettingsService.get(:bookorbit_username),
-            password: SettingsService.get(:bookorbit_password)
+          auth_connection(configuration).post("/api/v1/auth/login", {
+            username: configuration.fetch(1),
+            password: configuration.fetch(2)
           })
         end
         handle_response(response) do |data|
@@ -146,25 +153,31 @@ class BookOrbitClient
       end
     end
 
-    def refresh_connection_cache!
-      configuration = current_connection_configuration
-      return if @connection_configuration == configuration
-
+    def clear_connection_cache!
       @connection = nil
       @access_token = nil
+      @connection_configuration = nil
+    end
+
+    def rebuild_connection!(configuration)
+      clear_connection_cache!
+      connection = build_connection(configuration)
+      @connection = connection
       @connection_configuration = configuration
     end
 
     def current_connection_configuration
-      [
+      configuration = [
         SettingsService.get(:bookorbit_url).to_s.strip,
         SettingsService.get(:bookorbit_username).to_s,
         SettingsService.get(:bookorbit_password).to_s
       ]
+      configuration.each(&:freeze)
+      configuration.freeze
     end
 
-    def base_url
-      url = SettingsService.get(:bookorbit_url).to_s.strip
+    def validated_base_url(configuration)
+      url = configuration.fetch(0)
       parsed_url = URI.parse(url)
 
       unless parsed_url.is_a?(URI::HTTP) && parsed_url.host.present?

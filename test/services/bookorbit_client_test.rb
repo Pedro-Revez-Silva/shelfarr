@@ -93,6 +93,77 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "concurrent connection rebuilds cannot publish stale BookOrbit settings" do
+    VCR.turned_off do
+      old_login_started = Queue.new
+      release_old_login = Queue.new
+
+      stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .to_return do
+          old_login_started << true
+          release_old_login.pop
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "old-token" }.to_json
+          }
+        end
+      stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer old-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 1, name: "Old Library", folders: [] } ].to_json
+        )
+      stub_request(:post, "http://localhost:4000/api/v1/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "new-token" }.to_json
+        )
+      stub_request(:get, "http://localhost:4000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer new-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 2, name: "New Library", folders: [] } ].to_json
+        )
+
+      original_configuration = BookOrbitClient.method(:current_connection_configuration)
+      new_configuration_read = Queue.new
+      configuration_reader = lambda do
+        configuration = original_configuration.call
+        new_configuration_read << true if Thread.current[:bookorbit_new_connection]
+        configuration
+      end
+
+      BookOrbitClient.stub(:current_connection_configuration, configuration_reader) do
+        old_request = Thread.new { BookOrbitClient.libraries }
+        old_login_started.pop
+
+        SettingsService.set(:bookorbit_url, "http://localhost:4000")
+        new_request = Thread.new do
+          Thread.current[:bookorbit_new_connection] = true
+          BookOrbitClient.libraries
+        end
+        new_configuration_read.pop
+
+        begin
+          assert_nil new_request.join(0.2), "new connection build should wait for the in-flight rebuild"
+        ensure
+          release_old_login << true
+          old_request.join
+          new_request.join
+        end
+
+        assert_equal "Old Library", old_request.value.first.name
+        assert_equal "New Library", new_request.value.first.name
+      end
+
+      assert_equal "New Library", BookOrbitClient.libraries.first.name
+    end
+  end
+
   test "library_items maps BookOrbit book cards into Shelfarr library item attributes" do
     VCR.turned_off do
       stub_login
