@@ -91,6 +91,7 @@ class BookOrbitClient
     def reset_connection!
       @connection = nil
       @access_token = nil
+      @connection_configuration = nil
     end
 
     private
@@ -106,6 +107,8 @@ class BookOrbitClient
     end
 
     def connection
+      refresh_connection_cache!
+
       @connection ||= Faraday.new(url: base_url) do |f|
         f.request :json
         f.response :json, parser_options: { symbolize_names: false }
@@ -141,6 +144,23 @@ class BookOrbitClient
           token
         end
       end
+    end
+
+    def refresh_connection_cache!
+      configuration = current_connection_configuration
+      return if @connection_configuration == configuration
+
+      @connection = nil
+      @access_token = nil
+      @connection_configuration = configuration
+    end
+
+    def current_connection_configuration
+      [
+        SettingsService.get(:bookorbit_url).to_s.strip,
+        SettingsService.get(:bookorbit_username).to_s,
+        SettingsService.get(:bookorbit_password).to_s
+      ]
     end
 
     def base_url

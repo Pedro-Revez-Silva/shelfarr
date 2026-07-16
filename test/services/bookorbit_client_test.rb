@@ -49,6 +49,50 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "libraries rebuilds cached connection when BookOrbit settings change" do
+    VCR.turned_off do
+      old_login = stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "old-token" }.to_json
+        )
+      old_libraries = stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer old-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 1, name: "Old Library", folders: [] } ].to_json
+        )
+
+      assert_equal "Old Library", BookOrbitClient.libraries.first.name
+
+      SettingsService.set(:bookorbit_url, "http://localhost:4000")
+
+      new_login = stub_request(:post, "http://localhost:4000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "new-token" }.to_json
+        )
+      new_libraries = stub_request(:get, "http://localhost:4000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer new-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 2, name: "New Library", folders: [] } ].to_json
+        )
+
+      assert_equal "New Library", BookOrbitClient.libraries.first.name
+      assert_requested old_login, times: 1
+      assert_requested old_libraries, times: 1
+      assert_requested new_login, times: 1
+      assert_requested new_libraries, times: 1
+    end
+  end
+
   test "library_items maps BookOrbit book cards into Shelfarr library item attributes" do
     VCR.turned_off do
       stub_login
