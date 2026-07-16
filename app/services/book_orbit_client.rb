@@ -107,9 +107,8 @@ class BookOrbitClient
     end
 
     def connection
-      configuration = current_connection_configuration
-
       CONNECTION_MUTEX.synchronize do
+        configuration = current_connection_configuration
         rebuild_connection!(configuration) if @connection.nil? || @connection_configuration != configuration
         @connection
       end
