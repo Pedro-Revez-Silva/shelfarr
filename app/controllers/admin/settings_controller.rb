@@ -520,8 +520,17 @@ module Admin
 
       provider.validate_url!(value)
       nil
-    rescue IndexerClients::Base::InvalidUrlError
-      "must be a valid HTTP or HTTPS URL"
+    rescue IndexerClients::Base::InvalidUrlError => e
+      indexer_url_validation_message(e)
+    end
+
+    def indexer_url_validation_message(error)
+      detail = error.message.to_s
+      if (match = detail.match(/\AInvalid .+ URL: (.+)\z/))
+        "must be a valid HTTP or HTTPS URL (#{match[1]})"
+      else
+        "must be a valid HTTP or HTTPS URL (include http:// or https://)"
+      end
     end
 
     def normalize_setting_value(key, value)

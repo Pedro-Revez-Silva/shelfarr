@@ -25,7 +25,7 @@
 %>
 
 <div data-controller="settings-tabs" data-settings-tabs-active-value="search">
-  <%= form_with url: bulk_update_admin_settings_path, method: :patch, data: { settings_form_target: "form" } do |form| %>
+  <%= form_with url: bulk_update_admin_settings_path, method: :patch, html: { novalidate: true }, data: { settings_form_target: "form" } do |form| %>
     <div class="flex justify-between items-center mb-6">
       <h1 class="font-bold text-4xl text-white">Settings</h1>
       <div class="flex items-center gap-4">

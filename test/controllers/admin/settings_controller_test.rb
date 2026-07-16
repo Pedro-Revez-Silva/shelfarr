@@ -468,7 +468,10 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     }
 
     assert_redirected_to admin_settings_path
-    assert_match(/Prowlarr URL: must be a valid HTTP or HTTPS URL/, flash[:alert])
+    assert_match(
+      %r{Prowlarr URL: must be a valid HTTP or HTTPS URL \(include http:// or https://\)},
+      flash[:alert]
+    )
     assert_equal "https://prowlarr.example.com", SettingsService.get(:prowlarr_url)
   end
 
@@ -571,9 +574,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     }
 
     assert_redirected_to admin_settings_path
-    assert_match(/Prowlarr URL: must be a valid HTTP or HTTPS URL/, flash[:alert])
-    assert_match(/Jackett URL: must be a valid HTTP or HTTPS URL/, flash[:alert])
-    assert_match(/Newznab URL: must be a valid HTTP or HTTPS URL/, flash[:alert])
+    assert_match(
+      %r{Prowlarr URL: must be a valid HTTP or HTTPS URL \(include http:// or https://\)},
+      flash[:alert]
+    )
+    assert_match(
+      %r{Jackett URL: must be a valid HTTP or HTTPS URL \(include http:// or https://\)},
+      flash[:alert]
+    )
+    # Space-containing values fail URI.parse and include the parser detail.
+    assert_match(%r{Newznab URL: must be a valid HTTP or HTTPS URL \(}, flash[:alert])
+    assert_match(/not a url/i, flash[:alert])
     original_urls.each do |key, value|
       assert_equal value, SettingsService.get(key), "expected #{key} to keep its saved value"
     end
@@ -588,8 +599,21 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_match "turbo-stream", response.body
-    assert_match "Jackett URL: must be a valid HTTP or HTTPS URL", response.body
+    assert_match "Jackett URL: must be a valid HTTP or HTTPS URL (include http:// or https://)", response.body
     assert_equal "https://jackett.example.com", SettingsService.get(:jackett_url)
+  end
+
+  test "bulk_update surfaces URI parse details for invalid indexer URLs" do
+    SettingsService.set(:prowlarr_url, "https://prowlarr.example.com")
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { prowlarr_url: "http://[not-a-valid-host" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(%r{Prowlarr URL: must be a valid HTTP or HTTPS URL \(}, flash[:alert])
+    assert_no_match(/include http:\/\/ or https:\/\//, flash[:alert])
+    assert_equal "https://prowlarr.example.com", SettingsService.get(:prowlarr_url)
   end
 
   test "bulk_update trims valid indexer URLs before saving" do

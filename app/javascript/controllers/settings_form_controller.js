@@ -108,14 +108,13 @@ export default class extends Controller {
   }
 
   submitForm() {
-    if (this.hasFormTarget) {
-      if (!this.formTarget.reportValidity()) {
-        this.hideStatus();
-        return;
-      }
+    if (!this.hasFormTarget) return;
 
-      this.formTarget.requestSubmit();
-    }
+    // Server-side validation is authoritative for bulk auto-save. Full-form
+    // HTML5 constraint validation would block unrelated settings when an
+    // indexer URL is mid-edit or on a hidden tab (where the browser bubble is
+    // easy to miss). The form uses novalidate; type="url" remains a soft hint.
+    this.formTarget.requestSubmit();
   }
 
   handleSubmitEnd(event) {

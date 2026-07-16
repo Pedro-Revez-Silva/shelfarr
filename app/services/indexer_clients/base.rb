@@ -50,6 +50,10 @@ module IndexerClients
         yield
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
         raise ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
+      rescue InvalidUrlError => e
+        # Preserve connection-error classification for malformed stored URLs so
+        # search/dispatch paths keep treating them like other connect failures.
+        raise ConnectionError, e.message
       rescue URI::Error, ArgumentError => e
         raise ConnectionError, "Invalid #{display_name} URL: #{e.message}"
       end

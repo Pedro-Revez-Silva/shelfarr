@@ -59,6 +59,19 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
     end
   end
 
+  test "search maps InvalidUrlError to ConnectionError for malformed stored URLs" do
+    SettingsService.set(:jackett_url, "jackett.example.com:9117")
+    IndexerClients::Jackett.reset_connection!
+
+    error = assert_raises IndexerClients::Base::ConnectionError do
+      IndexerClients::Jackett.search("test query", book_type: :ebook)
+    end
+
+    assert_match(/must be a valid http or https URL/i, error.message)
+    assert_kind_of IndexerClients::Base::ConnectionError, error
+    refute_kind_of IndexerClients::Base::InvalidUrlError, error
+  end
+
   test "search does not treat info link as a download url when enclosure is missing" do
     body = <<~XML
       <?xml version="1.0" encoding="UTF-8"?>
