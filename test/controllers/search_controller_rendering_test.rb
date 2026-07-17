@@ -58,6 +58,52 @@ class SearchControllerRenderingTest < ActionController::TestCase
     assert_includes html, "Search failed. Please try again."
   end
 
+  test "render_search_results_stream keeps the mounted prefix in chunks rendered after SCRIPT_NAME reverts mid-stream" do
+    @controller.instance_variable_set(:@query, "dune")
+
+    @request.set_header("SCRIPT_NAME", "")
+    @request.set_header("PATH_INFO", "/books/search/results/stream")
+
+    mounted = Rack::URLMap.new(
+      "/books" => lambda do |env|
+        # #stream_results captures @relative_url_root once, up front, from
+        # whatever prefix mounted the app for this request (e.g. Rack::URLMap
+        # under RAILS_RELATIVE_URL_ROOT).
+        @controller.instance_variable_set(:@relative_url_root, env[Rack::SCRIPT_NAME])
+
+        @controller.send(
+          :render_search_results_stream,
+          results: [],
+          loading: true,
+          pending_providers: %w[openlibrary],
+          completed_providers: [],
+          error: nil
+        )
+
+        [ 200, {}, [] ]
+      end
+    )
+    mounted.call(@request.env)
+
+    # ActionController::Live returns control up the Rack stack as soon as the
+    # first chunk commits, well before later chunks render on the background
+    # thread. Whatever mounted the app at /books is done touching SCRIPT_NAME
+    # on this (shared) env by then, so it can revert -- reproduce that here.
+    @request.set_header("SCRIPT_NAME", "")
+
+    second_chunk = @controller.send(
+      :render_search_results_stream,
+      results: [ candidate ],
+      loading: false,
+      pending_providers: [],
+      completed_providers: %w[openlibrary],
+      error: nil
+    )
+
+    assert_match %r{href="/books/search/details\?}, second_chunk
+    assert_no_match %r{href="/search/details\?}, second_chunk
+  end
+
   test "audiobookshelf_matches_for returns placeholders without library items" do
     LibraryItem.destroy_all
 

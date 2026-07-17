@@ -45,6 +45,7 @@ class SearchController < ApplicationController
   end
 
   def stream_results
+    @relative_url_root = request.script_name
     @query = params[:q].to_s.strip
     @content_kind = normalized_content_kind(params[:content_kind])
 
@@ -169,11 +170,32 @@ class SearchController < ApplicationController
     @audiobookshelf_matches = enrichment[:audiobookshelf_matches]
     @existing_books_lookup = enrichment[:existing_books_lookup]
 
-    render_to_string(
-      template: "search/results",
-      formats: [ :turbo_stream ],
-      layout: false
-    )
+    with_relative_url_root do
+      render_to_string(
+        template: "search/results",
+        formats: [ :turbo_stream ],
+        layout: false
+      )
+    end
+  end
+
+  # ActionController::Live runs the action body in a background thread and
+  # returns the response back up the Rack stack as soon as the first chunk
+  # commits, so path-prefixing middleware (e.g. Rack::URLMap, used when the
+  # app is mounted under RAILS_RELATIVE_URL_ROOT) can unwind its SCRIPT_NAME
+  # mutation on the shared env hash before later chunks are rendered. Without
+  # reapplying the prefix captured at the top of #stream_results, url_for and
+  # friends would drop it from links in every chunk after the first. We
+  # restore the previous value afterwards so the mutation doesn't leak beyond
+  # this render.
+  def with_relative_url_root
+    return yield if @relative_url_root.blank?
+
+    original_script_name = request.script_name
+    request.script_name = @relative_url_root
+    yield
+  ensure
+    request.script_name = original_script_name if @relative_url_root.present?
   end
 
   def audiobookshelf_matches_for(results)
