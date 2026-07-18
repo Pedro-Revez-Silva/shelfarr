@@ -168,16 +168,19 @@ class OwnedMediaImportFileServiceTest < ActiveSupport::TestCase
     service = persistent_service
     service.with_destination_lock { service.finalize! }
     destination = @media_import.reload.destination_path
-    original_size = File.size(destination)
-    File.unlink(destination)
-    File.binwrite(destination, "y" * original_size)
+    original_stat = File.stat(destination)
+    replacement = "#{destination}.replacement"
+    File.binwrite(replacement, "y" * original_stat.size)
+    replacement_stat = File.stat(replacement)
+    assert_not_equal [ original_stat.dev, original_stat.ino ], [ replacement_stat.dev, replacement_stat.ino ]
+    File.rename(replacement, destination)
 
     error = assert_raises(OwnedMediaImportFileService::Error) do
       service.with_destination_lock { service.finalize! }
     end
 
     assert_match(/identity changed/, error.message)
-    assert_equal "y" * original_size, File.binread(destination)
+    assert_equal "y" * original_stat.size, File.binread(destination)
   end
 
   test "rejects a same-size source-only replacement before clearing recovery provenance" do

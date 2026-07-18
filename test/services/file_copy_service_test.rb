@@ -255,8 +255,12 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     source_file = File.join(source_root_path, "chapter.mp3")
     File.binwrite(source_file, "expected chapter")
     snapshot = FileCopyService.snapshot_source_root(source_root_path)
-    File.unlink(source_file)
-    File.binwrite(source_file, "replacement bytes")
+    original_stat = File.stat(source_file)
+    replacement = File.join(source_root_path, "replacement-chapter.mp3")
+    File.binwrite(replacement, "replacement bytes")
+    replacement_stat = File.stat(replacement)
+    assert_not_equal [ original_stat.dev, original_stat.ino ], [ replacement_stat.dev, replacement_stat.ino ]
+    File.rename(replacement, source_file)
     destination = File.join(@dest_dir, "chapter.mp3")
 
     assert_raises(Errno::ESTALE) do
@@ -276,7 +280,9 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     source_file = File.join(source_root_path, "chapter.mp3")
     File.binwrite(source_file, "original chapter")
     snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    snapshotted_stat = File.stat(source_file)
     File.open(source_file, "r+b") { |file| file.write("mutated chapter") }
+    File.utime(snapshotted_stat.atime, snapshotted_stat.mtime + 1, source_file)
     destination = File.join(@dest_dir, "chapter.mp3")
 
     assert_raises(Errno::ESTALE) do
