@@ -94,6 +94,7 @@ class RequestQueueJobTest < ActiveJob::TestCase
     )
     killed_job = SearchJob.new
     killed_generation = killed_job.send(:claim_search!, request)
+    assert request.reload.search_claimed_at.present?
 
     travel RequestQueueJob::STALE_SEARCH_LEASE + 1.minute do
       assert_enqueued_with(job: SearchJob, args: [ request.id ]) do
@@ -102,6 +103,7 @@ class RequestQueueJobTest < ActiveJob::TestCase
 
       request.reload
       assert request.pending?
+      assert_nil request.search_claimed_at
       assert_operator request.search_generation, :>, killed_generation
       assert_not killed_job.send(
         :complete_search,
@@ -133,17 +135,18 @@ class RequestQueueJobTest < ActiveJob::TestCase
     end
   end
 
-  test "stale-search recovery rechecks a refreshed heartbeat under the generation lock" do
+  test "stale-search recovery rechecks a refreshed claim timestamp under the generation lock" do
     stale_before = Time.current
     request = Request.create!(
       book: books(:ebook_pending),
       user: users(:one),
       status: :searching,
       search_generation: 7,
+      search_claimed_at: 1.minute.ago,
       updated_at: 1.minute.ago
     )
     stale_candidate = Request.find(request.id)
-    request.update_columns(updated_at: 1.minute.from_now)
+    request.update_columns(search_claimed_at: 1.minute.from_now, updated_at: 1.minute.from_now)
 
     assert_not stale_candidate.recover_stale_search!(stale_before: stale_before)
     assert request.reload.searching?
@@ -159,6 +162,7 @@ class RequestQueueJobTest < ActiveJob::TestCase
         user_id: users(:one).id,
         status: Request.statuses.fetch("searching"),
         search_generation: index + 1,
+        search_claimed_at: now - RequestQueueJob::STALE_SEARCH_LEASE - 1.minute,
         notes: "bounded-stale-search-recovery",
         language: "en",
         created_via: "web",
@@ -186,6 +190,7 @@ class RequestQueueJobTest < ActiveJob::TestCase
       user: users(:one),
       status: :searching,
       search_generation: 3,
+      search_claimed_at: RequestQueueJob::STALE_SEARCH_LEASE.ago - 1.minute,
       updated_at: RequestQueueJob::STALE_SEARCH_LEASE.ago - 1.minute
     )
     failed_enqueues = 0
@@ -204,6 +209,33 @@ class RequestQueueJobTest < ActiveJob::TestCase
     assert_enqueued_with(job: SearchJob, args: [ request.id ]) do
       RequestQueueJob.new.send(:process_pending_requests)
     end
+  end
+
+  test "does not recover a completed search awaiting manual selection" do
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :searching,
+      search_generation: 3,
+      search_claimed_at: nil,
+      attention_needed: true,
+      issue_description: "Search results found. Please review and select a result.",
+      updated_at: RequestQueueJob::STALE_SEARCH_LEASE.ago - 1.minute
+    )
+    result = request.search_results.create!(
+      guid: "completed-manual-review-search",
+      title: "Completed manual review result",
+      magnet_url: "magnet:?xt=urn:btih:#{'f' * 40}"
+    )
+
+    assert_no_enqueued_jobs only: SearchJob do
+      RequestQueueJob.new.send(:recover_stale_searches)
+    end
+
+    assert request.reload.searching?
+    assert request.attention_needed?
+    assert_nil request.search_claimed_at
+    assert SearchResult.exists?(result.id)
   end
 
   test "retry reconciliation bounds each recurring run" do

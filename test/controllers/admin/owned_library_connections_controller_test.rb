@@ -1075,7 +1075,8 @@ class Admin::OwnedLibraryConnectionsControllerTest < ActionDispatch::Integration
       assert_select "option[value='4320']", text: "Every 3 days"
       assert_select "option[value='10080']", text: "Weekly"
       assert_select "#automatic-backup-help", text: /Requires scheduled sync/
-      assert_select "#automatic-backup-help", text: /later syncs/
+      assert_select "#automatic-backup-help", text: /later manual or scheduled syncs/
+      assert_select "#future-audible-backups-heading + p", text: /manual or scheduled sync/
       assert_select "input[name='owned_library_connection[automatic_backup_enabled]']:not([disabled])"
     end
   end

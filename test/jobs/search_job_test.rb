@@ -58,6 +58,7 @@ class SearchJobTest < ActiveJob::TestCase
       @request.reload
 
       assert @request.searching?
+      assert_nil @request.search_claimed_at
     end
   end
 
@@ -104,6 +105,7 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal manual_url, manual_result.download_url
     assert_equal [ manual_result.id ], @request.downloads.pluck(:search_result_id)
     assert_not @request.search_results.exists?(guid: "test-guid-123")
+    assert_nil @request.search_claimed_at
   end
 
   test "does not reclaim a request after a manual NZB selection" do
@@ -586,6 +588,7 @@ class SearchJobTest < ActiveJob::TestCase
 
     assert @request.attention_needed?
     assert_includes @request.issue_description, "No search sources configured"
+    assert_nil @request.search_claimed_at
   end
 
   test "sends attention notification when no search sources configured" do
@@ -648,6 +651,7 @@ class SearchJobTest < ActiveJob::TestCase
       assert @request.searching?
       assert @request.attention_needed?
       assert_includes @request.issue_description, "Please review and select a result"
+      assert_nil @request.search_claimed_at
     end
   end
 
@@ -681,6 +685,7 @@ class SearchJobTest < ActiveJob::TestCase
       assert @request.searching?
       assert @request.attention_needed?
       assert_includes @request.issue_description, "none matched auto-select criteria"
+      assert_nil @request.search_claimed_at
     end
   end
 

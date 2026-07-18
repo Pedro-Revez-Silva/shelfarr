@@ -70,14 +70,15 @@ class RequestQueueJob < ApplicationJob
       end
   end
 
-  # A hard-killed SearchJob cannot run an ensure block. Recover claims whose
-  # request heartbeat has exceeded the bounded lease, but only after ordinary
+  # A hard-killed SearchJob cannot clear its durable claim. Recover claims whose
+  # start timestamp has exceeded the bounded lease, but only after ordinary
   # pending dispatch so the replacement is not enqueued twice in this run.
   def recover_stale_searches
     stale_before = STALE_SEARCH_LEASE.ago
     Request.searching
-      .where("updated_at <= ?", stale_before)
-      .order(:updated_at, :id)
+      .where.not(search_claimed_at: nil)
+      .where("search_claimed_at <= ?", stale_before)
+      .order(:search_claimed_at, :id)
       .limit(RECONCILIATION_BATCH_SIZE)
       .each do |request|
         next unless request.recover_stale_search!(stale_before: stale_before)

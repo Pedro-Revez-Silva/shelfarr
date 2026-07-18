@@ -127,6 +127,7 @@ class SearchJob < ApplicationJob
   end
 
   def claim_search!(request)
+    claimed_at = Time.current
     generation = request.class.transaction do
       claimed = request.class
         .where(id: request.id, status: :pending)
@@ -134,7 +135,10 @@ class SearchJob < ApplicationJob
         .update_all(
           status: Request.statuses.fetch("searching"),
           search_generation: Arel.sql("search_generation + 1"),
-          updated_at: Time.current
+          search_claimed_at: claimed_at,
+          attention_needed: false,
+          issue_description: nil,
+          updated_at: claimed_at
         )
       next unless claimed == 1
 
@@ -154,6 +158,7 @@ class SearchJob < ApplicationJob
       end
 
       request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, a DRM-free store, or a custom acquisition provider.")
+      clear_search_claim!(request)
       true
     end
   rescue ActiveRecord::RecordNotFound
@@ -186,6 +191,7 @@ class SearchJob < ApplicationJob
         handle_no_results(request, indexer_error)
       end
 
+      clear_search_claim!(request)
       true
     end
   rescue ActiveRecord::RecordNotFound
@@ -194,6 +200,10 @@ class SearchJob < ApplicationJob
 
   def owns_search_attempt?(request, search_generation)
     request.persisted? && request.searching? && request.search_generation == search_generation
+  end
+
+  def clear_search_claim!(request)
+    request.update_column(:search_claimed_at, nil)
   end
 
   def log_stale_search(request)

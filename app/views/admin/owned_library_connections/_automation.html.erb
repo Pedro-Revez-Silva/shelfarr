@@ -74,7 +74,7 @@
         <div class="flex flex-col gap-3 border-b border-gray-800 px-6 py-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 id="future-audible-backups-heading" class="text-xl font-bold text-white">New-purchase backups</h2>
-            <p class="mt-1 text-sm text-gray-400">Optionally queue newly discovered purchases after each successful scheduled sync.</p>
+            <p class="mt-1 text-sm text-gray-400">Optionally queue newly discovered purchases after each successful manual or scheduled sync.</p>
           </div>
           <span class="shrink-0 rounded px-2.5 py-1 text-xs font-medium <%= @connection.automatic_backup_enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-800 text-gray-400' %>">
             <%= @connection.automatic_backup_enabled? ? "On" : "Off" %>
@@ -96,7 +96,7 @@
                 <span class="block font-medium text-gray-200">Automatically back up new purchases</span>
               </label>
               <p id="automatic-backup-help" class="mt-1 text-xs text-gray-500">
-                Requires scheduled sync. After the safe no-download baseline, purchased audiobooks first discovered on later syncs are queued automatically.
+                Requires scheduled sync to stay enabled. After the safe no-download baseline, purchased audiobooks first discovered on later manual or scheduled syncs are queued automatically.
               </p>
 
               <% if @connection.last_synced_at.blank? %>

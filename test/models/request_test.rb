@@ -96,7 +96,9 @@ class RequestTest < ActiveSupport::TestCase
     request = Request.create!(
       book: books(:ebook_pending),
       user: users(:one),
-      status: :not_found
+      status: :not_found,
+      attention_needed: true,
+      issue_description: "Old search needs attention"
     )
     selected = request.search_results.create!(
       guid: "refresh-preserved-selected",
@@ -121,6 +123,8 @@ class RequestTest < ActiveSupport::TestCase
     request.refresh_search!
 
     assert request.reload.pending?
+    assert_not request.attention_needed?
+    assert_nil request.issue_description
     assert SearchResult.exists?(selected.id)
     assert SearchResult.exists?(manual.id)
     assert_not SearchResult.exists?(disposable.id)

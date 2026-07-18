@@ -65,6 +65,7 @@ class Request < ApplicationRecord
   }
 
   before_validation :set_default_language, on: :create
+  before_save :clear_search_claim_when_not_searching
   after_update_commit :broadcast_show_refresh_later_if_needed
 
   validates :status, presence: true
@@ -176,12 +177,14 @@ class Request < ApplicationRecord
   end
 
   # A worker can be killed after atomically claiming a pending request but
-  # before publishing results. Recheck the lease while holding the same
-  # generation transition lock used by SearchJob completion, then invalidate
-  # the killed worker before making the request eligible for replacement.
+  # before publishing results. Completed searches clear search_claimed_at even
+  # when their user-facing status remains searching for manual review. Recheck
+  # that explicit lease while holding the same generation transition lock used
+  # by SearchJob completion, then invalidate the killed worker before making
+  # the request eligible for replacement.
   def recover_stale_search!(stale_before:)
     with_search_transition_lock do
-      next false unless searching? && updated_at <= stale_before
+      next false unless searching? && search_claimed_at.present? && search_claimed_at <= stale_before
 
       queue_fresh_search_under_lock!
       true
@@ -618,11 +621,19 @@ class Request < ApplicationRecord
 
   def queue_fresh_search_under_lock!(**attributes)
     update!(
-      attributes.merge(
+      {
+        attention_needed: false,
+        issue_description: nil
+      }.merge(attributes).merge(
         status: :pending,
-        search_generation: search_generation + 1
+        search_generation: search_generation + 1,
+        search_claimed_at: nil
       )
     )
+  end
+
+  def clear_search_claim_when_not_searching
+    self.search_claimed_at = nil unless searching?
   end
 
   def prevent_destroy_during_active_acquisition
