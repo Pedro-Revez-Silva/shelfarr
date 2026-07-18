@@ -148,16 +148,19 @@ class OwnedMediaImportFileServiceTest < ActiveSupport::TestCase
   test "rejects a same-size staged-file replacement after identity reservation" do
     service = persistent_service
     service.with_destination_lock { }
-    original_size = File.size(@upload.file_path)
-    File.unlink(@upload.file_path)
-    File.binwrite(@upload.file_path, "x" * original_size)
+    original_stat = File.stat(@upload.file_path)
+    replacement = "#{@upload.file_path}.replacement"
+    File.binwrite(replacement, "x" * original_stat.size)
+    replacement_stat = File.stat(replacement)
+    assert_not_equal [ original_stat.dev, original_stat.ino ], [ replacement_stat.dev, replacement_stat.ino ]
+    File.rename(replacement, @upload.file_path)
 
     error = assert_raises(OwnedMediaImportFileService::Error) do
       service.with_destination_lock { service.finalize! }
     end
 
     assert_match(/identity changed/, error.message)
-    assert_equal "x" * original_size, File.binread(@upload.file_path)
+    assert_equal "x" * original_stat.size, File.binread(@upload.file_path)
     assert_not File.exist?(@media_import.reload.destination_path)
   end
 

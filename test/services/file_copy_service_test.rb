@@ -123,8 +123,11 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
   test "open_pinned_regular_file rejects a replacement installed before open" do
     stat = File.stat(@src_file)
-    File.unlink(@src_file)
-    File.binwrite(@src_file, "replacement bytes")
+    replacement = File.join(@tmp_dir, "replacement-source.txt")
+    File.binwrite(replacement, "replacement bytes")
+    replacement_stat = File.stat(replacement)
+    assert_not_equal [ stat.dev, stat.ino ], [ replacement_stat.dev, replacement_stat.ino ]
+    File.rename(replacement, @src_file)
 
     assert_raises(Errno::ESTALE) do
       FileCopyService.open_pinned_regular_file(
