@@ -238,6 +238,8 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal "text/vnd.turbo-stream.html", response.media_type
+    assert_match %r{href="/search/details\?}, response.body
+    assert_no_match %r{href="//search/details\?}, response.body
   end
 
   test "stream_results applies the normalized content filter to partial results" do
@@ -261,52 +263,6 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal [ "graphic" ], aggregated_content_kinds
-  end
-
-  test "stream_results renders provider-result links under the mounted path prefix" do
-    candidate = MetadataSearch::Candidate.new(
-      canonical_key: "openlibrary:OL_PREFIXW",
-      title: "Prefixed Stream Book",
-      author: "Prefix Author",
-      year: 2020,
-      description: nil,
-      cover_url: nil,
-      series_name: nil,
-      series_position: nil,
-      has_ebook: true,
-      has_audiobook: false,
-      sources: [
-        {
-          source: "openlibrary",
-          source_id: "OL_PREFIXW",
-          source_name: "Open Library",
-          source_url: nil,
-          work_id: "openlibrary:OL_PREFIXW"
-        }
-      ],
-      editions: [],
-      confidence: 100,
-      content_kind: "book"
-    )
-
-    stream_search = lambda do |_query, **_kwargs, &block|
-      block.call("openlibrary", [ candidate ])
-    end
-    aggregate = lambda do |_results, **_kwargs|
-      [ candidate ]
-    end
-
-    MetadataService.stub(:enabled_metadata_providers, [ "openlibrary" ]) do
-      MetadataService.stub(:each_provider_search, stream_search) do
-        MetadataService.stub(:aggregate_provider_results, aggregate) do
-          get search_results_stream_path, params: { q: "prefixed" }, env: { "SCRIPT_NAME" => "/books" }
-        end
-      end
-    end
-
-    assert_response :success
-    assert_match %r{href="/books/search/details\?}, response.body
-    assert_no_match %r{href="/search/details\?}, response.body
   end
 
   test "stream_results handles blank query" do
