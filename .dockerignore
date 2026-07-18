@@ -36,6 +36,9 @@
 !/app/assets/builds/.keep
 /public/assets
 
+# Ignore local test and analysis reports.
+/coverage/
+
 # Ignore CI service files.
 /.github
 
