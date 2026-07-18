@@ -58,19 +58,34 @@ class SearchControllerRenderingTest < ActionController::TestCase
     assert_includes html, "Search failed. Please try again."
   end
 
-  test "with_relative_url_root reapplies the captured prefix and restores the prior SCRIPT_NAME afterward" do
-    @controller.instance_variable_set(:@relative_url_root, "/books")
+  test "stream_results keeps mounted paths after the first live chunk commits" do
+    @controller.define_singleton_method(:require_authentication) { true }
+    @request.set_header("SCRIPT_NAME", "/books")
+    writes = 0
+    @controller.define_singleton_method(:write_search_results_stream) do |**arguments|
+      super(**arguments).tap do
+        writes += 1
+        request.script_name = "" if writes == 1
+      end
+    end
+    stream_search = lambda do |_query, **_kwargs, &block|
+      block.call("openlibrary", [ candidate ])
+    end
 
-    # Simulates SCRIPT_NAME having reverted on the shared env since the
-    # prefix was captured at the top of #stream_results (e.g. once whatever
-    # mounted the app under /books is done touching this request).
-    @request.set_header("SCRIPT_NAME", "")
+    MetadataService.stub(:enabled_metadata_providers, [ "openlibrary" ]) do
+      MetadataService.stub(:each_provider_search, stream_search) do
+        MetadataService.stub(:aggregate_provider_results, [ candidate ]) do
+          get :stream_results, params: { q: "dune" }
+        end
+      end
+    end
 
-    observed_script_name = nil
-    @controller.send(:with_relative_url_root) { observed_script_name = @request.script_name }
-
-    assert_equal "/books", observed_script_name
-    assert_equal "", @request.script_name
+    assert_response :success
+    assert_match %r{href="/books/search/details\?}, response.body
+    assert_match %r{href="/books/requests/new\?}, response.body
+    assert_no_match %r{href="/search/details\?}, response.body
+    assert_no_match %r{href="/requests/new\?}, response.body
+    assert_no_match %r{href="/books/books/}, response.body
   end
 
   test "audiobookshelf_matches_for returns placeholders without library items" do
