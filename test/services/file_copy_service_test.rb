@@ -102,6 +102,64 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "open_pinned_regular_file retains the authorized descriptor after pathname replacement" do
+    stat = File.stat(@src_file)
+    pinned = FileCopyService.open_pinned_regular_file(
+      @src_file,
+      root: @tmp_dir,
+      expected_device: stat.dev,
+      expected_inode: stat.ino
+    )
+    displaced = File.join(@tmp_dir, "authorized-source.txt")
+    outside = File.join(@tmp_dir, "outside.txt")
+    File.binwrite(outside, "replacement bytes")
+    File.rename(@src_file, displaced)
+    File.symlink(outside, @src_file)
+
+    assert_equal "test content", pinned.read
+  ensure
+    pinned&.close
+  end
+
+  test "open_pinned_regular_file rejects a replacement installed before open" do
+    stat = File.stat(@src_file)
+    File.unlink(@src_file)
+    File.binwrite(@src_file, "replacement bytes")
+
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.open_pinned_regular_file(
+        @src_file,
+        root: @tmp_dir,
+        expected_device: stat.dev,
+        expected_inode: stat.ino
+      )
+    end
+  end
+
+  test "nonblocking private lock admission returns without changing persistent lock identity" do
+    lock_path = File.join(@dest_dir, ".archive-build-slot-00")
+    entered = Queue.new
+    release = Queue.new
+    holder = Thread.new do
+      FileCopyService.with_private_lock(lock_path, root: @dest_dir) do
+        entered << true
+        release.pop
+      end
+    end
+    entered.pop
+    identity = File.stat(lock_path)
+
+    acquired = FileCopyService.with_private_lock(lock_path, root: @dest_dir, nonblock: true) do
+      flunk "occupied admission slot must not run the operation"
+    end
+
+    assert_equal false, acquired
+    assert_equal [ identity.dev, identity.ino ], [ File.stat(lock_path).dev, File.stat(lock_path).ino ]
+  ensure
+    release << true if release && holder&.alive?
+    holder&.join
+  end
+
   test "cp_noreplace rejects symbolic link and fifo sources without creating a final" do
     destination = File.join(@dest_dir, "output.txt")
     symlink = File.join(@tmp_dir, "source-link")

@@ -114,6 +114,27 @@ class CleanupTempFilesJobIsolatedTest < ActiveJob::TestCase
     assert File.file?(lock), "the stable lock remains available for concurrent waiters"
   end
 
+  test "cleanup preserves fixed archive admission lock identities" do
+    slots = LibraryDownloadArchiveService.admission_lock_paths(directory: @downloads_dir)
+    identities = slots.to_h do |slot|
+      File.binwrite(slot, "")
+      FileUtils.touch(slot, mtime: 2.hours.ago.to_time)
+      stat = File.stat(slot)
+      [ slot, [ stat.dev, stat.ino ] ]
+    end
+
+    deleted = CleanupTempFilesJob.new.send(
+      :cleanup_download_directory,
+      @downloads_dir,
+      max_age: 1.hour.ago
+    )
+
+    assert_equal 0, deleted
+    identities.each do |slot, identity|
+      assert_equal identity, [ File.stat(slot).dev, File.stat(slot).ino ]
+    end
+  end
+
   test "cleanup waits for an archive lease refresh and does not unlink the returned cache" do
     book_id = 987_654_322
     cache = @downloads_dir.join("book_#{book_id}_v2_#{"b" * 64}.zip")

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_18_121000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_18_121500) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -367,6 +367,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_18_121000) do
     t.text "notes"
     t.string "request_scope", default: "single", null: false
     t.integer "retry_count", default: 0
+    t.bigint "search_generation", default: 0, null: false
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false
     t.integer "user_id", null: false

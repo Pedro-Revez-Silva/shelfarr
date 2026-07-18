@@ -11,6 +11,7 @@ class CleanupTempFilesJob < ApplicationJob
   ARCHIVE_CACHE_PATTERN = /\Abook_(\d+)_v\d+_[0-9a-f]{64}\.zip\z/
   ARCHIVE_STAGING_PATTERN = /\A\.book_(\d+)_archive-[0-9a-f]{32}\.zip\z/
   ARCHIVE_LOCK_PATTERN = /\A\.archive-lock-[0-9a-f]{2}\z/
+  ARCHIVE_ADMISSION_PATTERN = /\A\.archive-build-slot-[0-9a-f]{2}\z/
 
   def perform
     cleanup_download_temps
@@ -50,7 +51,7 @@ class CleanupTempFilesJob < ApplicationJob
           book_id: match[1],
           max_age: max_age
         )
-      elsif ARCHIVE_LOCK_PATTERN.match?(entry)
+      elsif ARCHIVE_LOCK_PATTERN.match?(entry) || ARCHIVE_ADMISSION_PATTERN.match?(entry)
         0
       else
         cleanup_legacy_download_entry(downloads_dir, entry, max_age: max_age)

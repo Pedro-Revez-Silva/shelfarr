@@ -50,7 +50,8 @@ class SearchJob < ApplicationJob
   def perform_search(request_id)
     request = Request.find_by(id: request_id)
     return unless request
-    return unless claim_search!(request)
+    search_generation = claim_search!(request)
+    return unless search_generation
 
     Rails.logger.info "[SearchJob] Starting search for request ##{request.id}"
 
@@ -65,11 +66,7 @@ class SearchJob < ApplicationJob
 
     unless indexer_available || anna_available || zlibrary_available || gutenberg_available || librivox_available || custom_providers.any? || store_providers.any?
       Rails.logger.error "[SearchJob] No search sources configured"
-      request.with_lock do
-        next unless request.searching?
-
-        request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, a DRM-free store, or a custom acquisition provider.")
-      end
+      handle_no_search_sources(request, search_generation)
       return
     end
 
@@ -120,42 +117,87 @@ class SearchJob < ApplicationJob
       Rails.logger.info "[SearchJob] Found #{provider_offers.count} DRM-free store offers from #{provider.name}"
     end
 
-    request.with_lock do
-      unless request.searching?
-        Rails.logger.info "[SearchJob] Request ##{request.id} left searching state; discarding stale search results"
-        return
+    complete_search(
+      request,
+      search_generation,
+      results: all_results,
+      store_offers: all_store_offers,
+      indexer_error: indexer_error
+    )
+  end
+
+  def claim_search!(request)
+    generation = request.class.transaction do
+      claimed = request.class
+        .where(id: request.id, status: :pending)
+        .where.not(book_id: nil)
+        .update_all(
+          status: Request.statuses.fetch("searching"),
+          search_generation: Arel.sql("search_generation + 1"),
+          updated_at: Time.current
+        )
+      next unless claimed == 1
+
+      request.reload.search_generation
+    end
+    request.broadcast_show_refresh_later if generation
+    generation
+  rescue ActiveRecord::RecordNotFound
+    nil
+  end
+
+  def handle_no_search_sources(request, search_generation)
+    request.with_search_transition_lock do
+      unless owns_search_attempt?(request, search_generation)
+        log_stale_search(request)
+        next false
+      end
+
+      request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, a DRM-free store, or a custom acquisition provider.")
+      true
+    end
+  rescue ActiveRecord::RecordNotFound
+    false
+  end
+
+  def complete_search(request, search_generation, results:, store_offers:, indexer_error:)
+    request.with_search_transition_lock do
+      unless owns_search_attempt?(request, search_generation)
+        log_stale_search(request)
+        next false
       end
 
       # A provider can be disabled or switch market while its network request
       # is in flight. Revalidate the captured results after acquiring the
       # request lock so that race cannot create an awaiting state whose offers
       # are already hidden by the current configuration.
-      all_store_offers = currently_eligible_store_offers(request, all_store_offers)
-      save_store_offers(request, all_store_offers)
+      store_offers = currently_eligible_store_offers(request, store_offers)
+      save_store_offers(request, store_offers)
 
-      if all_results.any?
-        save_results(request, all_results)
-        Rails.logger.info "[SearchJob] Total #{all_results.count} results for request ##{request.id}"
+      if results.any?
+        save_results(request, results)
+        Rails.logger.info "[SearchJob] Total #{results.count} results for request ##{request.id}"
         attempt_auto_select(request)
-      elsif all_store_offers.any?
+      elsif store_offers.any?
         Rails.logger.info "[SearchJob] Store offers found for request ##{request.id}; awaiting purchase or import"
-        handle_store_offers(request, all_store_offers.count)
+        handle_store_offers(request, store_offers.count)
       else
         Rails.logger.info "[SearchJob] No results found for request ##{request.id}"
         handle_no_results(request, indexer_error)
       end
-    end
-  end
 
-  def claim_search!(request)
-    request.with_lock do
-      next false unless request.pending? && request.book
-
-      request.update!(status: :searching)
       true
     end
   rescue ActiveRecord::RecordNotFound
     false
+  end
+
+  def owns_search_attempt?(request, search_generation)
+    request.persisted? && request.searching? && request.search_generation == search_generation
+  end
+
+  def log_stale_search(request)
+    Rails.logger.info "[SearchJob] Request ##{request.id} search ownership changed; discarding stale search results"
   end
 
   def search_indexer_safely(request)

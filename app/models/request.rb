@@ -144,7 +144,19 @@ class Request < ApplicationRecord
 
   # Re-queue a not_found request back to pending
   def requeue!
-    update!(status: :pending, next_retry_at: nil)
+    with_search_transition_lock do
+      queue_fresh_search_under_lock!(next_retry_at: nil)
+    end
+  end
+
+  # Discard provider-owned search data and invalidate every in-flight search
+  # before a replacement job is enqueued. Manual results remain available.
+  def refresh_search!
+    with_search_transition_lock do
+      queue_fresh_search_under_lock!
+      search_results.where.not(source: SearchResult::MANUAL_SOURCES).destroy_all
+      store_offers.destroy_all
+    end
   end
 
   # Retry now - reset for immediate processing.
@@ -167,16 +179,15 @@ class Request < ApplicationRecord
       end
     end
 
-    transaction do
+    with_search_transition_lock do
       # A retry starts a fresh provider search. Do not keep showing purchase
       # options quoted by the previous search while that retry is queued.
-      store_offers.delete_all
-      update!(
-        status: :pending,
+      queue_fresh_search_under_lock!(
         next_retry_at: nil,
         attention_needed: false,
         issue_description: nil
       )
+      store_offers.delete_all
     end
   end
 
@@ -305,6 +316,19 @@ class Request < ApplicationRecord
   def with_acquisition_transition_lock
     self.class.transaction do
       serialize_acquisition_transition!
+      reload
+      yield self
+    end
+  end
+
+  # SQLite does not provide row-level SELECT ... FOR UPDATE locking. Making a
+  # no-op UPDATE the first statement serializes search state transitions there,
+  # while also taking the request row lock on databases that support it.
+  def with_search_transition_lock
+    self.class.transaction do
+      locked = self.class.where(id: id).update_all("search_generation = search_generation")
+      raise ActiveRecord::RecordNotFound, "Request is no longer available" unless locked == 1
+
       reload
       yield self
     end
@@ -548,6 +572,15 @@ class Request < ApplicationRecord
   end
 
   private
+
+  def queue_fresh_search_under_lock!(**attributes)
+    update!(
+      attributes.merge(
+        status: :pending,
+        search_generation: search_generation + 1
+      )
+    )
+  end
 
   def prevent_destroy_during_active_acquisition
     serialize_acquisition_transition!

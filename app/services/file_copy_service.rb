@@ -301,7 +301,7 @@ class FileCopyService
     # Coordinate work on a stable private pathname through a no-follow file
     # beneath a pinned directory. Lock files persist so separate processes can
     # never flock different inodes for the same logical lock.
-    def with_private_lock(path, root:)
+    def with_private_lock(path, root:, nonblock: false)
       raise ArgumentError, "a lock block is required" unless block_given?
 
       with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
@@ -327,7 +327,17 @@ class FileCopyService
           end
 
           native_fchmod(lock.fileno, 0o600)
-          raise UnsafePathError, "private lock could not be acquired" unless lock.flock(File::LOCK_EX)
+          lock_flags = File::LOCK_EX
+          lock_flags |= File::LOCK_NB if nonblock
+          acquired = begin
+            lock.flock(lock_flags)
+          rescue Errno::EWOULDBLOCK
+            raise unless nonblock
+
+            false
+          end
+          return false if nonblock && !acquired
+          raise UnsafePathError, "private lock could not be acquired" unless acquired
 
           identity = file_identity(lock.stat)
           with_pinned_regular_child(parent, basename) do |current|
@@ -346,6 +356,38 @@ class FileCopyService
           lock.close unless lock.closed?
         end
       end
+    end
+
+    # Open a regular file beneath a trusted root through no-follow parent
+    # descriptors and transfer ownership of that exact descriptor to the
+    # caller. The pathname may subsequently be replaced without changing the
+    # bytes read from the returned descriptor.
+    def open_pinned_regular_file(path, root:, expected_device:, expected_inode:)
+      opened = nil
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        descriptor = native_openat(
+          parent.fileno,
+          basename,
+          File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+          0
+        )
+        candidate = File.for_fd(descriptor, "rb", autoclose: true)
+        begin
+          stat = candidate.stat
+          unless stat.file? && [ stat.dev, stat.ino ] == [ expected_device, expected_inode ]
+            raise Errno::ESTALE, "regular file changed after download authorization"
+          end
+
+          validate_current_directory_identity!(parent_path, parent)
+          opened = candidate
+          candidate = nil
+        ensure
+          candidate&.close unless candidate&.closed?
+        end
+      end
+      opened
+    rescue Errno::ELOOP, Errno::ENOTDIR => error
+      raise UnsafePathError, "download path contains a symbolic link or non-directory: #{error.message}"
     end
 
     # Yield a regular file through a pinned parent and reject any identity/stat

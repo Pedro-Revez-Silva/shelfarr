@@ -238,6 +238,146 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
     assert_equal paths.first, paths[LibraryDownloadArchiveService::ARCHIVE_LOCK_SHARDS]
   end
 
+  test "archive build admission uses a fixed persistent slot pool" do
+    first = LibraryDownloadArchiveService.admission_lock_paths.map(&:basename)
+    second = LibraryDownloadArchiveService.admission_lock_paths.map(&:basename)
+
+    assert_equal LibraryDownloadArchiveService::ARCHIVE_BUILD_SLOTS, first.length
+    assert_equal first, second
+    assert_equal first.length, first.uniq.length
+    assert first.all? { |name| name.to_s.match?(/\A\.archive-build-slot-[0-9a-f]{2}\z/) }
+  end
+
+  test "aggregate source bytes are rejected before staging is created" do
+    File.binwrite(File.join(@source_path, "large.m4b"), "x" * 32)
+    service = archive_service
+
+    service.stub(:max_archive_source_bytes, 16) do
+      assert_raises(LibraryDownloadArchiveService::ResourceLimitError) { service.call }
+    end
+
+    assert_no_archive_artifacts
+  end
+
+  test "aggregate portable path-name bytes are bounded before staging" do
+    File.binwrite(File.join(@source_path, "a-very-long-chapter-name.m4b"), "chapter")
+    service = archive_service
+
+    service.stub(:max_archive_name_bytes, 8) do
+      assert_raises(LibraryDownloadArchiveService::ResourceLimitError) { service.call }
+    end
+
+    assert_no_archive_artifacts
+  end
+
+  test "archive output bytes are bounded during writing and staging is removed on abort" do
+    File.binwrite(File.join(@source_path, "incompressible.m4b"), SecureRandom.random_bytes(4_096))
+    service = archive_service
+
+    service.stub(:max_archive_output_bytes, 128) do
+      assert_raises(LibraryDownloadArchiveService::ResourceLimitError) { service.call }
+    end
+
+    assert_no_archive_artifacts
+  end
+
+  test "source and path budgets are independently rechecked while writing" do
+    File.binwrite(File.join(@source_path, "chapter-with-a-name.m4b"), "sixteen-byte-file")
+
+    [ :max_archive_source_bytes, :max_archive_name_bytes ].each do |budget_method|
+      service = archive_service
+      checks = 0
+      changing_budget = lambda do
+        checks += 1
+        checks == 1 ? 1_024 : 8
+      end
+
+      service.stub(budget_method, changing_budget) do
+        assert_raises(LibraryDownloadArchiveService::ResourceLimitError) { service.call }
+      end
+      assert_no_archive_artifacts
+    end
+  end
+
+  test "archive runtime is bounded during source streaming and staging is removed on abort" do
+    File.binwrite(File.join(@source_path, "slow.m4b"), "slow chapter")
+    service = archive_service
+    clock = 0.0
+    real_copy = service.method(:copy_to_archive)
+
+    service.stub(:monotonic_time, -> { clock }) do
+      service.stub(:copy_to_archive, lambda { |source, archive, output:|
+        clock = LibraryDownloadArchiveService::MAX_ARCHIVE_RUNTIME_SECONDS + 1
+        real_copy.call(source, archive, output: output)
+      }) do
+        assert_raises(LibraryDownloadArchiveService::ResourceLimitError) { service.call }
+      end
+    end
+
+    assert_no_archive_artifacts
+  end
+
+  test "archive admission fails within a bounded wait without staging or lock proliferation" do
+    File.binwrite(File.join(@source_path, "chapter.m4b"), "busy chapter")
+    service = archive_service
+    real_lock = FileCopyService.method(:with_private_lock)
+    clock = 0.0
+    lock_calls = []
+    wrapper = lambda do |path, root:, nonblock: false, &operation|
+      if File.basename(path).start_with?(".archive-build-slot-")
+        lock_calls << path.to_s
+        false
+      else
+        real_lock.call(path, root: root, nonblock: nonblock, &operation)
+      end
+    end
+
+    FileCopyService.stub(:with_private_lock, wrapper) do
+      service.stub(:monotonic_time, -> { clock }) do
+        service.stub(:archive_admission_wait_seconds, 0.1) do
+          service.stub(:pause_before_admission_retry, ->(seconds) { clock += seconds }) do
+            assert_raises(LibraryDownloadArchiveService::BusyError) { service.call }
+          end
+        end
+      end
+    end
+
+    assert_equal LibraryDownloadArchiveService::ARCHIVE_BUILD_SLOTS, lock_calls.uniq.length
+    assert_no_archive_artifacts
+  end
+
+  test "same-cache-key coordination fails within a bounded wait instead of blocking a request thread" do
+    File.binwrite(File.join(@source_path, "chapter.m4b"), "contended chapter")
+    service = archive_service
+    real_lock = FileCopyService.method(:with_private_lock)
+    clock = 0.0
+    cache_lock_calls = []
+    wrapper = lambda do |path, root:, nonblock: false, &operation|
+      if File.basename(path).start_with?(".archive-lock-")
+        cache_lock_calls << path.to_s
+        false
+      else
+        real_lock.call(path, root: root, nonblock: nonblock, &operation)
+      end
+    end
+
+    FileCopyService.stub(:with_private_lock, wrapper) do
+      service.stub(:monotonic_time, -> { clock }) do
+        service.stub(:archive_coordination_wait_seconds, 0.1) do
+          service.stub(:pause_before_admission_retry, ->(seconds) { clock += seconds }) do
+            service.stub(:preflight_source_tree!, ->(*) { flunk "contended request must not scan the source tree" }) do
+              assert_raises(LibraryDownloadArchiveService::BusyError) { service.call }
+            end
+          end
+        end
+      end
+    end
+
+    assert_equal 1, cache_lock_calls.uniq.length
+    assert_operator cache_lock_calls.length, :>=, 2
+    assert_no_archive_artifacts
+  end
+
   test "portable ZIP-name collisions are rejected" do
     File.binwrite(File.join(@source_path, "chapter?.m4b"), "question")
     File.binwrite(File.join(@source_path, "chapter*.m4b"), "asterisk")
@@ -310,5 +450,12 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
     )
     service.send(:prepare_cache_directory!)
     service.send(:cache_path_for, source_root)
+  end
+
+  def assert_no_archive_artifacts
+    entries = Dir.each_child(LibraryDownloadArchiveService::CACHE_DIRECTORY).select do |entry|
+      entry.start_with?("book_#{@book.id}_", ".book_#{@book.id}_archive-")
+    end
+    assert_empty entries
   end
 end

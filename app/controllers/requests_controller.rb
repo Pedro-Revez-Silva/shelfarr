@@ -245,18 +245,24 @@ class RequestsController < ApplicationController
   private
 
   def send_single_file(boundary, book)
-    revalidate_download_target!(boundary)
     path = boundary.target
     filename = File.basename(path)
-    content_type = Marcel::MimeType.for(name: filename) || "application/octet-stream"
-
-    send_file path,
-              filename: filename,
-              type: content_type,
-              disposition: "attachment"
+    file = FileCopyService.open_pinned_regular_file(
+      path,
+      root: boundary.root,
+      expected_device: boundary.device,
+      expected_inode: boundary.inode
+    )
+    send_pinned_file(
+      file,
+      filename: filename,
+      type: Marcel::MimeType.for(name: filename) || "application/octet-stream"
+    )
   rescue Errno::ENOENT, ActionController::MissingFile
+    file&.close unless file&.closed?
     redirect_to @request, alert: "File not found on server"
-  rescue UnsafeDownloadPathError, SystemCallError, ArgumentError
+  rescue UnsafeDownloadPathError, FileCopyService::UnsafePathError, SystemCallError, ArgumentError
+    file&.close unless file&.closed?
     Rails.logger.warn(
       "[Security] Rejected changed library download target for request ##{@request.id}, book ##{book.id}"
     )
@@ -271,13 +277,38 @@ class RequestsController < ApplicationController
       output_root: output_root
     )
 
-    send_file cached_zip_path,
-              filename: zip_filename,
-              type: "application/zip",
-              disposition: "attachment"
-  rescue LibraryDownloadArchiveService::Error, ActionController::MissingFile, SystemCallError => e
+    cache_stat = File.lstat(cached_zip_path)
+    cache_file = FileCopyService.open_pinned_regular_file(
+      cached_zip_path,
+      root: LibraryDownloadArchiveService::CACHE_DIRECTORY.to_s,
+      expected_device: cache_stat.dev,
+      expected_inode: cache_stat.ino
+    )
+    send_pinned_file(cache_file, filename: zip_filename, type: "application/zip")
+  rescue LibraryDownloadArchiveService::ResourceLimitError => e
+    cache_file&.close unless cache_file&.closed?
+    Rails.logger.warn "[Download] Archive resource limit for book ##{book.id}: #{e.class}"
+    redirect_to @request, alert: "This library item exceeds the safe archive limits and cannot be bundled."
+  rescue LibraryDownloadArchiveService::BusyError => e
+    cache_file&.close unless cache_file&.closed?
+    Rails.logger.warn "[Download] Archive capacity unavailable for book ##{book.id}: #{e.class}"
+    redirect_to @request, alert: "Archive preparation is busy. Please try again shortly."
+  rescue LibraryDownloadArchiveService::Error, FileCopyService::UnsafePathError,
+    ActionController::MissingFile, SystemCallError => e
+    cache_file&.close unless cache_file&.closed?
     Rails.logger.error "[Download] Error creating zip for book ##{book.id}: #{e.class}"
     redirect_to @request, alert: "Library files changed while preparing the download. Please try again."
+  end
+
+  def send_pinned_file(file, filename:, type:)
+    body = PinnedFileResponseBody.new(file)
+    send_file_headers!(filename: filename, type: type, disposition: "attachment")
+    headers["Content-Length"] = file.stat.size.to_s
+    self.status = :ok
+    self.response_body = body
+    body = nil
+  ensure
+    body&.close
   end
 
   def archive_download_filename(book)
@@ -349,16 +380,6 @@ class RequestsController < ApplicationController
     rescue SystemCallError, ArgumentError
       nil
     end.uniq
-  end
-
-  def revalidate_download_target!(boundary)
-    current = File.lstat(boundary.target)
-    expected_kind = boundary.kind == :file ? current.file? : current.directory?
-    unless expected_kind && [ current.dev, current.ino ] == [ boundary.device, boundary.inode ]
-      raise UnsafeDownloadPathError, "library target changed after validation"
-    end
-
-    true
   end
 
   def set_request

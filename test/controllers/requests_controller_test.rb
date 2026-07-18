@@ -1369,6 +1369,40 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "audio/mp4", response.content_type
     assert_match /attachment/, response.headers["Content-Disposition"]
     assert_match /test_audiobook\.m4b/, response.headers["Content-Disposition"]
+    assert_equal File.size(temp_file).to_s, response.headers["Content-Length"]
+    assert_equal "test audio content", response.body
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "single-file download streams the authorized descriptor after its pathname is swapped" do
+    temp_dir = Dir.mktmpdir
+    target = File.join(temp_dir, "book.m4b")
+    displaced = File.join(temp_dir, "authorized-book.m4b")
+    outside = File.join(temp_dir, "private-server-file")
+    File.binwrite(target, "authorized audio bytes")
+    File.binwrite(outside, "private replacement bytes")
+    SettingsService.set(:audiobook_output_path, temp_dir)
+    book = Book.create!(
+      title: "Pinned descriptor",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: target
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    Marcel::MimeType.stub(:for, lambda { |**_options|
+      File.rename(target, displaced)
+      File.symlink(outside, target)
+      "audio/mp4"
+    }) do
+      get download_request_path(request)
+    end
+
+    assert_response :success
+    assert_equal "authorized audio bytes", response.body
+    refute_includes response.body, "private replacement bytes"
+    assert_equal "22", response.headers["Content-Length"]
   ensure
     FileUtils.rm_rf(temp_dir)
   end
@@ -1682,7 +1716,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(temp_dir)
   end
 
-  test "single-file send disappearance redirects without raising" do
+  test "single-file pathname disappearance after open still serves the pinned bytes" do
     temp_dir = Dir.mktmpdir
     target = File.join(temp_dir, "vanishing.m4b")
     File.binwrite(target, "temporary audio")
@@ -1702,8 +1736,35 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       assert_nothing_raised { get download_request_path(request) }
     end
 
+    assert_response :success
+    assert_equal "temporary audio", response.body
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "single-file pinned-open safety rejection returns invalid-path feedback" do
+    temp_dir = Dir.mktmpdir
+    target = File.join(temp_dir, "changed-parent.m4b")
+    File.binwrite(target, "temporary audio")
+    SettingsService.set(:audiobook_output_path, temp_dir)
+    book = Book.create!(
+      title: "Changed parent",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: target
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    FileCopyService.stub(
+      :open_pinned_regular_file,
+      ->(*, **) { raise FileCopyService::UnsafePathError, "sensitive path detail" }
+    ) do
+      assert_nothing_raised { get download_request_path(request) }
+    end
+
     assert_redirected_to request_path(request)
-    assert_equal "File not found on server", flash[:alert]
+    assert_equal "Invalid file path", flash[:alert]
+    refute_includes response.body, "sensitive path detail"
   ensure
     FileUtils.rm_rf(temp_dir)
   end
@@ -1729,6 +1790,73 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to request_path(request)
     assert_includes flash[:alert], "Please try again"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "directory download streams its opened cache descriptor after pathname replacement" do
+    temp_dir, request = create_directory_download_request("pinned-cache")
+    cache_dir = LibraryDownloadArchiveService::CACHE_DIRECTORY
+    FileUtils.mkdir_p(cache_dir)
+    File.chmod(0o700, cache_dir)
+    cache = cache_dir.join("test-pinned-cache-#{SecureRandom.hex(8)}.zip")
+    displaced = cache_dir.join("test-pinned-cache-original-#{SecureRandom.hex(8)}.zip")
+    outside = cache_dir.join("test-pinned-cache-private-#{SecureRandom.hex(8)}")
+    File.binwrite(cache, "authorized cached archive bytes")
+    File.binwrite(outside, "private replacement bytes")
+    real_body = PinnedFileResponseBody.method(:new)
+
+    LibraryDownloadArchiveService.stub(:call, cache.to_s) do
+      PinnedFileResponseBody.stub(:new, lambda { |file|
+        File.rename(cache, displaced)
+        File.symlink(outside, cache)
+        real_body.call(file)
+      }) do
+        get download_request_path(request)
+      end
+    end
+
+    assert_response :success
+    assert_equal "authorized cached archive bytes", response.body
+    refute_includes response.body, "private replacement bytes"
+    assert_equal "application/zip", response.content_type
+  ensure
+    FileUtils.rm_rf(temp_dir)
+    FileUtils.rm_f(cache) if cache
+    FileUtils.rm_f(displaced) if displaced
+    FileUtils.rm_f(outside) if outside
+  end
+
+  test "directory download reports safe archive resource-limit feedback" do
+    temp_dir, request = create_directory_download_request("resource-limit")
+
+    LibraryDownloadArchiveService.stub(
+      :call,
+      ->(**) { raise LibraryDownloadArchiveService::ResourceLimitError, "sensitive internal limit" }
+    ) do
+      get download_request_path(request)
+    end
+
+    assert_redirected_to request_path(request)
+    assert_equal "This library item exceeds the safe archive limits and cannot be bundled.", flash[:alert]
+    refute_includes response.body, "sensitive internal limit"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "directory download reports bounded archive admission feedback" do
+    temp_dir, request = create_directory_download_request("busy")
+
+    LibraryDownloadArchiveService.stub(
+      :call,
+      ->(**) { raise LibraryDownloadArchiveService::BusyError, "sensitive lock state" }
+    ) do
+      get download_request_path(request)
+    end
+
+    assert_redirected_to request_path(request)
+    assert_equal "Archive preparation is busy. Please try again shortly.", flash[:alert]
+    refute_includes response.body, "sensitive lock state"
   ensure
     FileUtils.rm_rf(temp_dir)
   end
@@ -1871,6 +1999,22 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
   end
 
   private
+
+  def create_directory_download_request(suffix)
+    root = Dir.mktmpdir("directory-download-#{suffix}")
+    book_dir = File.join(root, "book")
+    FileUtils.mkdir_p(book_dir)
+    File.binwrite(File.join(book_dir, "chapter.m4b"), "chapter")
+    SettingsService.set(:audiobook_output_path, root)
+    book = Book.create!(
+      title: "Directory download #{suffix}",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: book_dir
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+    [ root, request ]
+  end
 
   def create_direct_recovery_request
     book = Book.create!(title: "Direct Cancellation", author: "Safety Author", book_type: :ebook)

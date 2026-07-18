@@ -165,6 +165,7 @@ module Admin
 
     test "refresh clears results and requeues search" do
       assert @request_record.search_results.any?
+      previous_generation = @request_record.search_generation
       @request_record.store_offers.create!(
         provider: "ebooks_com",
         external_id: "refresh-offer",
@@ -175,13 +176,14 @@ module Admin
         storefront_url: "https://www.ebooks.com/en-pt/book/refresh-offer/the-pending-ebook/"
       )
 
-      assert_enqueued_with(job: SearchJob) do
+      assert_enqueued_with(job: SearchJob, args: [ @request_record.id ]) do
         post refresh_admin_request_search_results_path(@request_record),
           headers: { "HTTP_REFERER" => "https://attacker.example/phishing" }
       end
 
       @request_record.reload
       assert @request_record.pending?
+      assert_equal previous_generation + 1, @request_record.search_generation
       assert @request_record.search_results.empty?
       assert @request_record.store_offers.empty?
 

@@ -129,11 +129,13 @@ class RequestRetryTest < ActiveSupport::TestCase
   test "requeue! moves not_found back to pending" do
     request = requests(:not_found_retry_due)
     assert request.not_found?
+    previous_generation = request.search_generation
 
     request.requeue!
 
     assert request.pending?
     assert_nil request.next_retry_at
+    assert_equal previous_generation + 1, request.search_generation
   end
 
   # === retry_now! ===
@@ -141,6 +143,7 @@ class RequestRetryTest < ActiveSupport::TestCase
   test "retry_now! resets request for immediate processing when no selected result" do
     request = @max_retries_exceeded
     assert request.attention_needed?
+    previous_generation = request.search_generation
 
     request.retry_now!
 
@@ -148,6 +151,7 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_nil request.next_retry_at
     assert_not request.attention_needed?
     assert_nil request.issue_description
+    assert_equal previous_generation + 1, request.search_generation
   end
 
   test "retry_now! clears stale store offers from an awaiting purchase request" do

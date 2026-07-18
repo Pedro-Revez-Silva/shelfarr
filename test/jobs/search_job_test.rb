@@ -117,6 +117,143 @@ class SearchJobTest < ActiveJob::TestCase
     assert @request.search_results.find_by!(source: SearchResult::SOURCE_MANUAL_NZB).selected?
   end
 
+  test "only the exact claimed generation can publish search results" do
+    stale_job = SearchJob.new
+    current_job = SearchJob.new
+    stale_generation = stale_job.send(:claim_search!, @request)
+
+    @request.refresh_search!
+    current_generation = current_job.send(:claim_search!, @request)
+
+    current_result = tagged_indexer_result(guid: "current-generation", title: "Current Result")
+    stale_result = tagged_indexer_result(guid: "stale-generation", title: "Stale Result")
+    skip_auto_select = ->(*) { }
+
+    current_job.stub(:attempt_auto_select, skip_auto_select) do
+      assert current_job.send(
+        :complete_search,
+        @request,
+        current_generation,
+        results: [ current_result ],
+        store_offers: [],
+        indexer_error: nil
+      )
+    end
+
+    stale_job.stub(:attempt_auto_select, skip_auto_select) do
+      assert_not stale_job.send(
+        :complete_search,
+        @request,
+        stale_generation,
+        results: [ stale_result ],
+        store_offers: [],
+        indexer_error: nil
+      )
+    end
+
+    @request.reload
+    assert @request.searching?
+    assert_equal current_generation, @request.search_generation
+    assert @request.search_results.exists?(guid: "current-generation")
+    assert_not @request.search_results.exists?(guid: "stale-generation")
+  end
+
+  test "an in-flight search cannot overwrite a replacement search that finishes first" do
+    replacement_started = false
+    replacement_running = false
+    SettingsService.set(:auto_select_enabled, false)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return do
+          unless replacement_started
+            replacement_started = true
+            @request.reload.refresh_search!
+            replacement_running = true
+            SearchJob.perform_now(@request.id)
+            replacement_running = false
+          end
+
+          generation = replacement_running ? "replacement" : "stale"
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [
+              prowlarr_result_payload.merge(
+                "guid" => "#{generation}-result",
+                "title" => "#{generation.titleize} Result"
+              )
+            ].to_json
+          }
+        end
+
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    assert replacement_started
+    assert @request.search_results.exists?(guid: "replacement-result")
+    assert_not @request.search_results.exists?(guid: "stale-result")
+  end
+
+  test "stale no-source completion cannot flag a replacement search" do
+    stale_job = SearchJob.new
+    stale_generation = stale_job.send(:claim_search!, @request)
+
+    @request.refresh_search!
+    current_generation = SearchJob.new.send(:claim_search!, @request)
+
+    assert_not stale_job.send(:handle_no_search_sources, @request, stale_generation)
+
+    @request.reload
+    assert @request.searching?
+    assert_equal current_generation, @request.search_generation
+    assert_not @request.attention_needed?
+    assert_nil @request.issue_description
+  end
+
+  test "manual retry invalidates an in-flight search before it can complete" do
+    @request.refresh_search!
+    stale_job = SearchJob.new
+    stale_generation = stale_job.send(:claim_search!, @request)
+
+    @request.retry_now!
+
+    assert @request.pending?
+    assert_operator @request.search_generation, :>, stale_generation
+    assert_not stale_job.send(
+      :complete_search,
+      @request,
+      stale_generation,
+      results: [ tagged_indexer_result(guid: "retry-stale", title: "Retry Stale") ],
+      store_offers: [],
+      indexer_error: nil
+    )
+    assert_not @request.search_results.exists?(guid: "retry-stale")
+  end
+
+  test "duplicate queued jobs cannot share a search generation" do
+    first_generation = SearchJob.new.send(:claim_search!, @request)
+
+    assert_nil SearchJob.new.send(:claim_search!, Request.find(@request.id))
+    assert_equal first_generation, @request.reload.search_generation
+  end
+
+  test "completion safely discards a request deleted after claim" do
+    job = SearchJob.new
+    generation = job.send(:claim_search!, @request)
+    @request.destroy!
+
+    assert_not job.send(
+      :complete_search,
+      @request,
+      generation,
+      results: [],
+      store_offers: [],
+      indexer_error: nil
+    )
+  end
+
   test "does not schedule a retry when a manual NZB is submitted during an empty search" do
     manual_submitted = false
     original_retry_count = @request.retry_count
@@ -2195,6 +2332,24 @@ class SearchJobTest < ActiveJob::TestCase
   end
 
   private
+
+  def tagged_indexer_result(guid:, title:)
+    {
+      source: SearchResult::SOURCE_PROWLARR,
+      result: IndexerClients::Result.new(
+        guid: guid,
+        title: title,
+        indexer: "TestIndexer",
+        size_bytes: 1.megabyte,
+        seeders: 10,
+        leechers: 0,
+        download_url: "https://downloads.example/#{guid}",
+        magnet_url: nil,
+        info_url: "https://indexer.example/#{guid}",
+        published_at: Time.current
+      )
+    }
+  end
 
   def stub_prowlarr_search_with_results
     stub_request(:get, %r{localhost:9696/api/v1/search})
