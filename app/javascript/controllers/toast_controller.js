@@ -1,28 +1,17 @@
 import { Controller } from "@hotwired/stimulus"
 
-// Handles toast notifications that auto-dismiss
+// Handles persistent toast notifications. Messages remain available until the
+// user dismisses them or navigates, so assistive-technology users are not put
+// on a timer while reading an authentication, sync, or backup result.
 export default class extends Controller {
-  static values = {
-    duration: { type: Number, default: 5000 }
-  }
-
   connect() {
-    // Start auto-dismiss timer
-    this.timeout = setTimeout(() => {
-      this.dismiss()
-    }, this.durationValue)
+    this.element.classList.add("translate-x-full", "opacity-0")
 
     // Trigger enter animation
     requestAnimationFrame(() => {
       this.element.classList.remove("translate-x-full", "opacity-0")
       this.element.classList.add("translate-x-0", "opacity-100")
     })
-  }
-
-  disconnect() {
-    if (this.timeout) {
-      clearTimeout(this.timeout)
-    }
   }
 
   dismiss() {

@@ -16,12 +16,17 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:librivox_url, "https://librivox.org")
     SettingsService.set(:gutenberg_enabled, false)
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:ebooks_com_enabled, false)
+    SettingsService.set(:ebooks_com_country_code, "")
+    SettingsService.set(:ebooks_com_search_limit, 5)
     SettingsService.set(:indexer_search_scope, "broad")
     SettingsService.set(:indexer_custom_audiobook_categories, "")
     SettingsService.set(:indexer_custom_ebook_categories, "")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     LibrivoxClient.reset_connection! if defined?(LibrivoxClient)
     GutenbergClient.reset_connection! if defined?(GutenbergClient)
+    EbooksComClient.reset_connection! if defined?(EbooksComClient)
+    @request.store_offers.delete_all
   end
 
   teardown do
@@ -33,12 +38,16 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:librivox_url, "https://librivox.org")
     SettingsService.set(:gutenberg_enabled, false)
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:ebooks_com_enabled, false)
+    SettingsService.set(:ebooks_com_country_code, "")
+    SettingsService.set(:ebooks_com_search_limit, 5)
     SettingsService.set(:indexer_search_scope, "broad")
     SettingsService.set(:indexer_custom_audiobook_categories, "")
     SettingsService.set(:indexer_custom_ebook_categories, "")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     LibrivoxClient.reset_connection! if defined?(LibrivoxClient)
     GutenbergClient.reset_connection! if defined?(GutenbergClient)
+    EbooksComClient.reset_connection! if defined?(EbooksComClient)
   end
 
   test "updates request status to searching" do
@@ -250,6 +259,185 @@ class SearchJobTest < ActiveJob::TestCase
       assert @request.not_found?
       assert @request.next_retry_at.present?
     end
+  end
+
+  test "persists an eBooks.com offer without creating or selecting a download" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    @request.search_results.destroy_all
+
+    stub_ebooks_offer_search
+
+    VCR.turned_off do
+      assert_no_enqueued_jobs only: DownloadJob do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    offer = @request.reload.store_offers.first
+    assert @request.awaiting_purchase?
+    assert_not @request.attention_needed?
+    assert_nil @request.issue_description
+    assert_equal 0, @request.retry_count
+    assert_nil @request.next_retry_at
+    assert_equal 1, @request.store_offers.count
+    assert_equal "ebooks_com", offer.provider
+    assert_equal "PT", offer.market
+    assert_equal "9,99 €", offer.localized_price
+    assert_empty @request.downloads
+    assert_empty @request.search_results
+  end
+
+  test "malformed eBooks.com results do not leave the request stuck searching" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+
+    stub_request(:get, "https://api.ebooks.com/v2/PT/book/search")
+      .with(query: hash_including(
+        "title" => "The Pending Ebook",
+        "author" => "Another Author",
+        "drmFree" => "true"
+      ))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: {
+          generatedAt: "2026-07-17T14:13:27Z",
+          results: [
+            {
+              id: 123,
+              title: "The Pending Ebook",
+              storefrontUrl: "https://www.ebooks.com/en-pt/book/123/the-pending-ebook/",
+              drm: "changed upstream",
+              formats: { epub: true }
+            }
+          ]
+        }.to_json
+      )
+
+    VCR.turned_off { SearchJob.perform_now(@request.id) }
+
+    assert @request.reload.not_found?
+    assert_empty @request.store_offers
+    assert @request.next_retry_at.present?
+  end
+
+  test "discards a store response when the provider is disabled in flight" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    result = EbooksComClient::Result.new(
+      id: "disabled-in-flight",
+      title: @request.book.title,
+      author: @request.book.author,
+      isbns: [],
+      language: "en",
+      formats: [ "epub" ],
+      market: "PT",
+      drm_type: "NoRestriction",
+      price_amount: BigDecimal("9.99"),
+      price_currency: "EUR",
+      localized_price: "9,99 €",
+      storefront_url: "https://www.ebooks.com/en-pt/book/disabled-in-flight/",
+      checkout_url: nil,
+      cover_url: nil,
+      quoted_at: Time.current
+    )
+
+    search = lambda do |**|
+      SettingsService.set(:ebooks_com_enabled, false)
+      [ result ]
+    end
+
+    EbooksComClient.stub(:search, search) do
+      SearchJob.perform_now(@request.id)
+    end
+
+    assert @request.reload.not_found?
+    assert_empty @request.store_offers
+    assert @request.next_retry_at.present?
+  end
+
+  test "store search logs omit catalog interests and upstream error text" do
+    title = "PRIVATE_TITLE_DO_NOT_LOG"
+    author = "PRIVATE_AUTHOR_DO_NOT_LOG"
+    upstream_text = "UPSTREAM_BODY_DO_NOT_LOG"
+    @request.book.update!(title: title, author: author)
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    messages = []
+    logger = Object.new
+    %i[debug info warn error].each do |level|
+      logger.define_singleton_method(level) { |message = nil, **| messages << message.to_s }
+    end
+    failing_search = ->(**) { raise EbooksComClient::ConnectionError, upstream_text }
+
+    Rails.stub(:logger, logger) do
+      EbooksComClient.stub(:search, failing_search) do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    output = messages.join("\n")
+    assert_not_includes output, title
+    assert_not_includes output, author
+    assert_not_includes output, upstream_text
+    assert_includes output, "EbooksComClient::ConnectionError"
+    assert_includes output, "request ##{@request.id}"
+  end
+
+  test "search persistence suppresses database debug logging" do
+    levels = []
+    fake_logger = Object.new
+    fake_logger.define_singleton_method(:silence) do |level, &block|
+      levels << level
+      block.call
+    end
+
+    result = ActiveRecord::Base.stub(:logger, fake_logger) do
+      SearchJob.new.send(:suppress_database_debug_logging) { :persisted }
+    end
+
+    assert_equal :persisted, result
+    assert_equal [ Logger::INFO ], levels
+  end
+
+  test "auto-selection downloads an acquisition result while preserving a store offer" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    stub_ebooks_offer_search
+
+    acquisition_payload = prowlarr_result_payload.merge(
+      "guid" => "mixed-acquisition-result",
+      "title" => "The Pending Ebook Another Author English EPUB"
+    )
+    stub_request(:get, %r{localhost:9696/api/v1/search})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: [ acquisition_payload ].to_json
+      )
+
+    VCR.turned_off do
+      assert_enqueued_with(job: DownloadJob) { SearchJob.perform_now(@request.id) }
+    end
+
+    assert @request.reload.downloading?
+    assert_equal 1, @request.downloads.count
+    assert_equal 1, @request.store_offers.count
+    assert_equal "mixed-acquisition-result", @request.downloads.sole.search_result.guid
   end
 
   test "marks for attention when no search sources configured" do
@@ -2033,6 +2221,37 @@ class SearchJobTest < ActiveJob::TestCase
         status: 200,
         headers: { "Content-Type" => "application/json" },
         body: [].to_json
+      )
+  end
+
+  def stub_ebooks_offer_search
+    stub_request(:get, "https://api.ebooks.com/v2/PT/book/search")
+      .with(query: hash_including(
+        "title" => "The Pending Ebook",
+        "author" => "Another Author",
+        "drmFree" => "true"
+      ))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: {
+          generatedAt: "2026-07-17T14:13:27Z",
+          totalResults: 1,
+          results: [
+            {
+              id: 123,
+              title: "The Pending Ebook",
+              storefrontUrl: "https://www.ebooks.com/en-pt/book/123/the-pending-ebook/another-author/",
+              addToCartUrl: "https://www.ebooks.com/en-pt/cart/add/123/",
+              isbns: [ "9781234567890" ],
+              authors: [ { name: "Another Author", type: "Author" } ],
+              price: { currency: "EUR", countryCode: "PT", value: 9.99, localisedValue: "9,99 €" },
+              drm: { drmFreeAvailable: true, drmFreeType: "Watermarked" },
+              formats: { epub: true, pdf: false, onlineReader: true },
+              language: { code: "eng", name: "English" }
+            }
+          ]
+        }.to_json
       )
   end
 

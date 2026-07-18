@@ -36,6 +36,7 @@ class RequestsController < ApplicationController
 
   def show
     @request_events = Current.user.admin? ? @request.request_events.recent.limit(10) : RequestEvent.none
+    @store_offers = StoreProviderRegistry.visible_offers_for(@request).best_first.to_a
   end
 
   def new
@@ -111,10 +112,24 @@ class RequestsController < ApplicationController
       return
     end
 
-    unless @request.can_be_cancelled?
-      redirect_to @request, alert: "Cannot cancel request in #{@request.status} status"
+    # A direct acquisition may have a complete atomic publication which has
+    # not yet been committed to Book/Request state. Keep its recovery owner
+    # durable instead of cascading the Download row away. Recovery either
+    # finalizes those bytes or safely removes stale private staging later.
+    if @request.direct_acquisition_recovery_pending?
+      @request.cancel!(allow_direct_recovery: true)
+      DirectDownloadRecoveryJob.perform_later
+      redirect_to @request,
+        notice: "Request cancellation recorded. Direct download cleanup will finish in the background.",
+        status: :see_other
       return
     end
+
+    # This durable, idempotent claim is the authoritative cancellation guard.
+    # It makes the request non-fulfillable and stops active Download rows under
+    # the same lock used by upload/Audible admission before any external or
+    # activity-log side effect is attempted.
+    @request.claim_destructive_cancellation!
 
     # Optionally remove torrent from download client
     if params[:remove_torrent] == "1"
@@ -122,15 +137,20 @@ class RequestsController < ApplicationController
     end
 
     book = @request.book
-    ActivityTracker.track("request.cancelled", trackable: @request)
     @request.destroy!
+    ActivityTracker.track("request.cancelled", trackable: @request)
 
     # Clean up orphaned books with no requests and no file
-    if book.requests.empty? && !book.acquired?
+    if book.requests.empty? && !book.acquisition_blocked?
       book.destroy
     end
 
     redirect_to destroy_redirect_location, notice: "Request cancelled", status: :see_other
+  rescue ActiveRecord::RecordNotDestroyed, Request::CancellationBlockedError => error
+    message = error.respond_to?(:record) ? error.record.errors.full_messages.to_sentence : error.message
+    redirect_to @request,
+      alert: message.presence || @request.upload_cancellation_blocked_message,
+      status: :see_other
   end
 
   def retry
@@ -139,8 +159,20 @@ class RequestsController < ApplicationController
       return
     end
 
-    @request.retry_now!
-    redirect_back fallback_location: @request, notice: "Request has been queued for retry."
+    outcome = @request.retry_now!
+    case outcome
+    when :post_processing_recovery_pending
+      redirect_back fallback_location: @request,
+        alert: "The immediate post-processing retry could not be queued. " \
+          "Its durable recovery claim was kept and the watchdog will retry it automatically."
+    when :active
+      redirect_back fallback_location: @request, notice: "Post-processing recovery is already active."
+    when :superseded
+      redirect_back fallback_location: @request,
+        notice: "Another post-processing recovery attempt took ownership."
+    else
+      redirect_back fallback_location: @request, notice: "Request has been queued for retry."
+    end
   end
 
   def manual_magnet
@@ -302,9 +334,9 @@ class RequestsController < ApplicationController
 
   def set_request
     @request = if Current.user.admin?
-      Request.includes(:search_results).find(params[:id])
+      Request.includes(:search_results, :store_offers).find(params[:id])
     else
-      Request.for_user(Current.user).includes(:search_results).find(params[:id])
+      Request.for_user(Current.user).includes(:search_results, :store_offers).find(params[:id])
     end
   end
 
@@ -324,10 +356,14 @@ class RequestsController < ApplicationController
   def destroy_redirect_location
     return requests_path if request.referer.blank?
 
-    referer_path = URI.parse(request.referer).path
+    referer = URI.parse(request.referer)
+    referer_path = referer.path.to_s
+    return requests_path if referer.host.present? && referer.host != request.host
+    return requests_path unless referer_path.start_with?("/")
+    return requests_path if referer_path.start_with?("//") || referer_path.include?("\\")
     return requests_path if referer_path == request_path(@request)
 
-    request.referer
+    referer.query.present? ? "#{referer_path}?#{referer.query}" : referer_path
   rescue URI::InvalidURIError
     requests_path
   end
@@ -352,9 +388,11 @@ class RequestsController < ApplicationController
       begin
         client = download.download_client.adapter
         client.remove_torrent(download.external_id, delete_files: false)
-        Rails.logger.info "[RequestsController] Removed torrent #{download.external_id} for download ##{download.id}"
+        Rails.logger.info "[RequestsController] Removed torrent for download ##{download.id}"
       rescue DownloadClients::Base::Error => e
-        Rails.logger.warn "[RequestsController] Failed to remove torrent: #{e.message}"
+        Rails.logger.warn(
+          "[RequestsController] Failed to remove torrent for download ##{download.id}: #{e.class}"
+        )
       end
     end
   end

@@ -30,6 +30,7 @@
 
 /public/assets
 /coverage
+/.mutant/
 
 # Ignore key files for decrypting credentials and more.
 /config/*.key
@@ -40,6 +41,10 @@
 
 /app/assets/builds/*
 !/app/assets/builds/.keep
+
+# .NET build outputs for the optional Libation companion.
+/services/libation_companion/**/bin/
+/services/libation_companion/**/obj/
 
 # Agent instructions (local development reference only)
 /AGENTS.md

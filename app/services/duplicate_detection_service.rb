@@ -55,7 +55,7 @@ class DuplicateDetectionService
 
       # Check 3: Same work + type has pending/active request
       if existing_book
-        active_request = existing_book.requests.active.first
+        active_request = existing_book.requests.open.first
         if active_request
           return Result.new(
             status: BLOCK,

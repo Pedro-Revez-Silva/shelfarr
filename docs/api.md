@@ -34,7 +34,8 @@ Returns metadata results with `work_id` values that can be passed to request cre
 
 Optional filters:
 
-- `status`
+- `status` (`pending`, `searching`, `awaiting_purchase`, `not_found`,
+  `downloading`, `processing`, `completed`, or `failed`)
 - `created_via`
 - `limit`
 
@@ -57,6 +58,15 @@ Admin/global tokens may also pass `username` or `user_id` to create on behalf of
 `GET /api/v1/requests/:id`
 
 Returns request status, book metadata, user attribution, and request origin metadata.
+`awaiting_purchase` means Shelfarr found at least one enabled third-party store
+offer, no acquisition download is running, and the request can be completed by
+importing the file after purchase or retried for a fresh search.
+
+Compatibility note: `awaiting_purchase` is an additive status. The meanings of
+the existing statuses are unchanged, but API clients that exhaustively match
+status strings should accept this new value before enabling a store provider.
+Retrying one of these requests removes its previous quotes before starting a
+fresh provider search.
 
 `DELETE /api/v1/requests/:id`
 
@@ -65,6 +75,10 @@ Cancels a cancellable request.
 `POST /api/v1/requests/:id/retry`
 
 Requires `requests:admin`.
+
+`GET /api/v1/requests/:id/search_results`
+
+Requires `requests:read`. Returns downloadable acquisition candidates in `search_results` and currently enabled, market-valid third-party purchase options in a separate `store_offers` array. The first beta provider returns DRM-free ebook offers. Store offers include normalized provider, format, DRM, market, price, product URL, and quote-time fields; they are never downloadable or auto-selected by Shelfarr.
 
 ## Users
 

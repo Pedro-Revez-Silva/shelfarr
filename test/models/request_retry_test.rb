@@ -150,6 +150,25 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_nil request.issue_description
   end
 
+  test "retry_now! clears stale store offers from an awaiting purchase request" do
+    request = @pending
+    request.update!(status: :awaiting_purchase)
+    request.store_offers.create!(
+      provider: "ebooks_com",
+      external_id: "retry-stale-offer",
+      title: request.book.title,
+      market: "PT",
+      formats: [ "epub" ],
+      drm_free: true,
+      storefront_url: "https://www.ebooks.com/en-pt/book/retry-stale-offer/"
+    )
+
+    request.retry_now!
+
+    assert request.reload.pending?
+    assert_empty request.store_offers.reload
+  end
+
   test "mark_for_attention! creates a request event" do
     request = @pending
 
@@ -663,6 +682,45 @@ class RequestRetryTest < ActiveSupport::TestCase
 
     assert request.failed?
     assert download.failed?
+  end
+
+  test "cancel! commits its durable claim before remote client cleanup" do
+    client = DownloadClient.create!(
+      name: "Cancellation transaction boundary #{SecureRandom.hex(4)}",
+      client_type: "qbittorrent",
+      url: "http://localhost:8091",
+      priority: 0,
+      enabled: true
+    )
+    request = Request.create!(
+      book: Book.create!(title: "Cancellation boundary", book_type: :ebook),
+      user: users(:one),
+      status: :downloading
+    )
+    download = request.downloads.create!(
+      name: "Cancellation boundary",
+      status: :downloading,
+      external_id: "boundary-hash",
+      download_client: client
+    )
+    transaction_depth = nil
+    request_was_claimed = nil
+    baseline_transaction_depth = ActiveRecord::Base.connection.open_transactions
+    adapter = Object.new
+    adapter.define_singleton_method(:remove_torrent) do |*_arguments, **_options|
+      transaction_depth = ActiveRecord::Base.connection.open_transactions
+      request_was_claimed = Request.find(request.id).failed?
+      true
+    end
+
+    DownloadClients::Qbittorrent.stub(:new, ->(*) { adapter }) do
+      request.cancel!
+    end
+
+    assert_equal baseline_transaction_depth, transaction_depth
+    assert request_was_claimed
+    assert request.reload.failed?
+    assert download.reload.failed?
   end
 
   test "cancel_download schedules cleanup when the client does not confirm removal" do

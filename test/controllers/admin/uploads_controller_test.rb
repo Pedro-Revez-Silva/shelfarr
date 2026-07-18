@@ -64,12 +64,48 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_difference "Upload.count", 1 do
       assert_enqueued_with(job: UploadProcessingJob) do
-        post admin_uploads_url, params: { file: file }
+        post admin_uploads_url,
+          params: { file: file },
+          headers: { "HTTP_REFERER" => "https://attacker.example/phishing" }
       end
     end
 
     assert_redirected_to admin_uploads_path
     assert_equal "File uploaded successfully. Processing started.", flash[:notice]
+  end
+
+  test "create records a retryable failure when initial queueing is rejected" do
+    file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+
+    UploadProcessingJob.stub(:perform_later, false) do
+      assert_difference "Upload.count", 1 do
+        post admin_uploads_url, params: { file: file }
+      end
+    end
+
+    upload = Upload.order(:created_at).last
+    assert_redirected_to new_admin_upload_path
+    assert_match(/could not be queued/, flash[:alert])
+    assert upload.failed?
+    assert File.exist?(upload.file_path)
+  ensure
+    FileUtils.rm_f(upload&.file_path)
+  end
+
+  test "create records a retryable failure when initial queueing raises" do
+    file = fixture_file_upload("test_ebook.epub", "application/epub+zip")
+    failure = ->(*) { raise ActiveJob::EnqueueError, "queue unavailable" }
+
+    UploadProcessingJob.stub(:perform_later, failure) do
+      post admin_uploads_url, params: { file: file }
+    end
+
+    upload = Upload.order(:created_at).last
+    assert_redirected_to new_admin_upload_path
+    assert_match(/could not be queued/, flash[:alert])
+    assert upload.failed?
+  ensure
+    FileUtils.rm_f(upload&.file_path)
   end
 
   test "create with multiple files starts processing each file" do
@@ -204,10 +240,66 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     )
 
     assert_difference "Upload.count", -1 do
+      delete admin_upload_url(upload),
+        headers: { "HTTP_REFERER" => "http://[malformed" }
+    end
+
+    assert_redirected_to admin_uploads_path
+  end
+
+  test "destroy preserves a destination-only failed Audible import" do
+    upload, media_import = create_failed_audible_import
+    destination_root = Dir.mktmpdir("audible-reserved-destination")
+    destination = File.join(destination_root, "Reserved Title.m4b")
+    File.binwrite(destination, "owned audiobook")
+    upload.update!(file_path: File.join(destination_root, "missing-staging.m4b"))
+    media_import.update!(
+      destination_path: destination,
+      library_path: destination
+    )
+
+    assert_no_difference "Upload.count" do
       delete admin_upload_url(upload)
     end
 
     assert_redirected_to admin_uploads_path
+    assert_match(/cannot be deleted safely/, flash[:alert])
+    assert upload.reload.failed?
+    assert_equal upload, media_import.reload.upload
+    assert_equal "owned audiobook", File.binread(destination)
+  ensure
+    FileUtils.rm_rf(destination_root) if destination_root
+  end
+
+  test "destroy preserves a failed ordinary upload with an unresolved reservation" do
+    root = Dir.mktmpdir("ordinary-reserved-destination")
+    source = File.join(root, "source.epub")
+    destination = File.join(root, "library", "reserved.epub")
+    File.binwrite(source, "reserved upload")
+    upload = Upload.create!(
+      user: @admin,
+      original_filename: "reserved.epub",
+      file_path: source,
+      file_size: File.size(source),
+      status: :failed,
+      destination_path: destination,
+      destination_root: File.realpath(root),
+      destination_configured_root: root,
+      library_path: destination,
+      content_sha256: Digest::SHA256.file(source).hexdigest,
+      cleanup_source_path: File.realpath(source)
+    )
+
+    assert_no_difference "Upload.count" do
+      delete admin_upload_url(upload)
+    end
+
+    assert_redirected_to admin_uploads_path
+    assert_match(/reserved library file/, flash[:alert])
+    assert upload.reload.failed?
+    assert_equal "reserved upload", File.binread(source)
+  ensure
+    FileUtils.rm_rf(root) if root
   end
 
   test "retry requeues failed upload" do
@@ -220,12 +312,66 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     )
 
     assert_enqueued_with(job: UploadProcessingJob) do
-      post retry_admin_upload_url(upload)
+      post retry_admin_upload_url(upload),
+        headers: { "HTTP_REFERER" => "https://attacker.example/phishing" }
     end
 
     upload.reload
     assert upload.pending?
     assert_nil upload.error_message
+  end
+
+  test "retrying a failed Audible import starts its durable backup watchdog" do
+    upload, media_import = create_failed_audible_import
+    old_poll_token = media_import.poll_token
+
+    assert_enqueued_with(
+      job: OwnedMediaBackupJob,
+      args: ->(args) { args == [ media_import.id, media_import.reload.poll_token ] }
+    ) do
+      post retry_admin_upload_url(upload)
+    end
+
+    assert_no_enqueued_jobs only: UploadProcessingJob
+    upload.reload
+    media_import.reload
+    assert upload.pending?
+    assert_nil upload.error_message
+    assert media_import.processing?
+    assert_nil media_import.completed_at
+    assert_nil media_import.error_message
+    assert media_import.started_at.present?
+    assert_not_equal old_poll_token, media_import.poll_token
+  end
+
+  test "an Audible retry remains recoverable when the queue rejects the watchdog" do
+    upload, media_import = create_failed_audible_import
+    failed_job = Struct.new(:successfully_enqueued?).new(false)
+
+    OwnedMediaBackupJob.stub(:perform_later, failed_job) do
+      post retry_admin_upload_url(upload)
+    end
+
+    assert_redirected_to admin_uploads_path
+    assert_match(/recover this Audible import automatically/, flash[:alert])
+    assert upload.reload.pending?
+    assert media_import.reload.processing?
+    assert media_import.poll_token.present?
+  end
+
+  test "an Audible retry remains recoverable when watchdog enqueueing raises" do
+    upload, media_import = create_failed_audible_import
+    enqueue_failure = ->(*) { raise ActiveJob::EnqueueError, "queue unavailable" }
+
+    OwnedMediaBackupJob.stub(:perform_later, enqueue_failure) do
+      assert_nothing_raised { post retry_admin_upload_url(upload) }
+    end
+
+    assert_redirected_to admin_uploads_path
+    assert_match(/recover this Audible import automatically/, flash[:alert])
+    assert upload.reload.pending?
+    assert media_import.reload.processing?
+    assert media_import.poll_token.present?
   end
 
   test "retry non-failed upload shows error" do
@@ -240,5 +386,34 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_uploads_path
     assert_equal "Can only retry failed uploads", flash[:alert]
+  end
+
+
+  private
+
+  def create_failed_audible_import
+    connection = OwnedLibraryConnection.create!(enabled: true)
+    item = connection.owned_library_items.create!(
+      external_id: "B0RETRY#{SecureRandom.hex(2).upcase}",
+      title: "Retryable Audible title",
+      ownership_type: "purchased"
+    )
+    upload = Upload.create!(
+      user: @admin,
+      original_filename: "retryable.m4b",
+      file_path: "/tmp/retryable.m4b",
+      status: :failed,
+      error_message: "Import worker stopped"
+    )
+    media_import = item.owned_media_imports.create!(
+      requested_by: @admin,
+      upload: upload,
+      status: "failed",
+      error_message: "Import worker stopped",
+      completed_at: 1.minute.ago,
+      poll_token: "stale-poll-token"
+    )
+
+    [ upload, media_import ]
   end
 end

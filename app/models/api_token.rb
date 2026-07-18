@@ -4,6 +4,7 @@ class APIToken < ApplicationRecord
   TOKEN_PREFIX = "shf_"
   AVAILABLE_SCOPES = %w[search:read requests:read requests:write requests:admin users:write].freeze
   SELF_SERVICE_SCOPES = %w[search:read requests:read requests:write].freeze
+  PRIVILEGED_SCOPES = (AVAILABLE_SCOPES - SELF_SERVICE_SCOPES).freeze
 
   belongs_to :user, optional: true
 
@@ -33,7 +34,9 @@ class APIToken < ApplicationRecord
       return nil if raw_token.blank?
 
       token = active.find_by(token_digest: digest(raw_token))
-      token&.touch(:last_used_at)
+      return nil if token.nil? || token.user&.deleted?
+
+      token.touch(:last_used_at)
       token
     end
 
@@ -57,7 +60,11 @@ class APIToken < ApplicationRecord
   end
 
   def has_scope?(scope)
-    scope_list.include?(scope.to_s)
+    scope = scope.to_s
+    return false unless scope_list.include?(scope)
+    return true unless PRIVILEGED_SCOPES.include?(scope)
+
+    user&.admin?
   end
 
   def revoked?

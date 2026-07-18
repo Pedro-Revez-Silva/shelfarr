@@ -18,6 +18,18 @@ default: &default
     class: CleanupTempFilesJob
     queue: default
     schedule: every hour
+  upload_recovery:
+    class: UploadRecoveryJob
+    queue: default
+    schedule: every 5 minutes
+  direct_download_recovery:
+    class: DirectDownloadRecoveryJob
+    queue: default
+    schedule: every 5 minutes
+  post_processing_recovery:
+    class: PostProcessingRecoveryJob
+    queue: default
+    schedule: every 5 minutes
   book_metadata_backfill:
     class: BookMetadataBackfillJob
     queue: default
@@ -26,6 +38,10 @@ default: &default
     class: UpdateCheckJob
     queue: default
     schedule: every 6 hours
+  owned_library_automation:
+    class: OwnedLibraryAutomationJob
+    queue: default
+    schedule: every 5 minutes
 
 development:
   <<: *default

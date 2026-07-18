@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_18_121000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -64,6 +64,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
   end
 
   create_table "books", force: :cascade do |t|
+    t.integer "acquisition_reservation_owner_id"
+    t.string "acquisition_reservation_owner_type"
+    t.string "acquisition_reservation_token"
     t.string "author"
     t.integer "book_type", default: 0, null: false
     t.string "comic_vine_id"
@@ -88,6 +91,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
     t.string "title", null: false
     t.datetime "updated_at", null: false
     t.integer "year"
+    t.index ["acquisition_reservation_token"], name: "index_books_on_acquisition_reservation_token", unique: true, where: "acquisition_reservation_token IS NOT NULL"
     t.index ["book_type"], name: "index_books_on_book_type"
     t.index ["comic_vine_id"], name: "index_books_on_comic_vine_id"
     t.index ["content_kind"], name: "index_books_on_content_kind"
@@ -135,6 +139,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
 
   create_table "downloads", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.string "direct_book_path"
+    t.text "direct_content_manifest"
+    t.string "direct_destination_path"
+    t.string "direct_output_root"
+    t.integer "direct_output_root_device"
+    t.integer "direct_output_root_inode"
+    t.string "direct_publication_kind"
+    t.string "direct_reservation_token"
+    t.integer "direct_staging_device"
+    t.integer "direct_staging_inode"
+    t.integer "direct_staging_parent_device"
+    t.integer "direct_staging_parent_inode"
+    t.string "direct_staging_path"
     t.string "download_client_id"
     t.string "download_path"
     t.string "download_type"
@@ -148,6 +165,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
     t.bigint "size_bytes"
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false
+    t.index ["direct_reservation_token"], name: "index_downloads_on_direct_reservation_token", unique: true, where: "direct_reservation_token IS NOT NULL"
+    t.index ["direct_staging_path"], name: "index_downloads_on_direct_staging_path", where: "direct_staging_path IS NOT NULL"
     t.index ["download_client_id"], name: "index_downloads_on_download_client_id"
     t.index ["external_id"], name: "index_downloads_on_external_id"
     t.index ["request_id"], name: "index_downloads_on_request_id"
@@ -210,6 +229,107 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
     t.index ["user_id", "created_at"], name: "index_notifications_on_user_id_and_created_at"
     t.index ["user_id", "read_at"], name: "index_notifications_on_user_id_and_read_at"
     t.index ["user_id"], name: "index_notifications_on_user_id"
+  end
+
+  create_table "owned_library_connections", force: :cascade do |t|
+    t.boolean "allow_private_network", default: true, null: false
+    t.datetime "auth_expires_at"
+    t.text "auth_login_url"
+    t.text "auth_session_id"
+    t.boolean "automatic_backup_enabled", default: false, null: false
+    t.datetime "automatic_backup_enabled_at"
+    t.integer "automatic_backup_user_id"
+    t.datetime "backlog_backup_decided_at"
+    t.text "bridge_token"
+    t.string "companion_version"
+    t.datetime "created_at", null: false
+    t.boolean "enabled", default: false, null: false
+    t.text "last_sync_error"
+    t.datetime "last_synced_at"
+    t.string "name", null: false
+    t.datetime "next_scheduled_sync_at"
+    t.string "provider", null: false
+    t.string "provider_version"
+    t.boolean "scheduled_sync_enabled", default: false, null: false
+    t.integer "scheduled_sync_interval_minutes", default: 1440, null: false
+    t.string "sync_job_id"
+    t.datetime "sync_started_at"
+    t.string "sync_status", default: "idle", null: false
+    t.integer "timeout_seconds", default: 30, null: false
+    t.datetime "updated_at", null: false
+    t.string "url", null: false
+    t.index ["automatic_backup_user_id"], name: "index_owned_library_connections_on_automatic_backup_user_id"
+    t.index ["enabled"], name: "index_owned_library_connections_on_enabled"
+    t.index ["provider"], name: "index_owned_library_connections_on_provider", unique: true
+    t.index ["scheduled_sync_enabled", "next_scheduled_sync_at"], name: "index_owned_library_connections_on_scheduled_sync_due"
+    t.index ["sync_status"], name: "index_owned_library_connections_on_sync_status"
+  end
+
+  create_table "owned_library_items", force: :cascade do |t|
+    t.datetime "absent_since"
+    t.boolean "active", default: true, null: false
+    t.json "authors", default: [], null: false
+    t.datetime "backed_up_at"
+    t.integer "book_id"
+    t.string "cover_url"
+    t.datetime "created_at", null: false
+    t.boolean "downloaded", default: false, null: false
+    t.integer "duration_seconds"
+    t.string "external_id", null: false
+    t.string "file_path"
+    t.string "language"
+    t.datetime "last_seen_at"
+    t.string "media_type", default: "audiobook", null: false
+    t.json "narrators", default: [], null: false
+    t.integer "owned_library_connection_id", null: false
+    t.string "ownership_type", default: "unknown", null: false
+    t.json "provider_metadata", default: {}, null: false
+    t.datetime "purchased_at"
+    t.string "subtitle"
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.index ["book_id"], name: "index_owned_library_items_on_book_id"
+    t.index ["owned_library_connection_id", "active"], name: "idx_on_owned_library_connection_id_active_59d197ebba"
+    t.index ["owned_library_connection_id", "external_id"], name: "index_owned_library_items_on_connection_and_external_id", unique: true
+    t.index ["owned_library_connection_id"], name: "index_owned_library_items_on_owned_library_connection_id"
+    t.index ["ownership_type"], name: "index_owned_library_items_on_ownership_type"
+    t.index ["title"], name: "index_owned_library_items_on_title"
+  end
+
+  create_table "owned_media_imports", force: :cascade do |t|
+    t.string "artifact_path"
+    t.boolean "automatic", default: false, null: false
+    t.integer "companion_start_attempts", default: 0, null: false
+    t.datetime "completed_at"
+    t.datetime "created_at", null: false
+    t.integer "created_book_id"
+    t.string "destination_path"
+    t.datetime "dispatched_at"
+    t.text "error_message"
+    t.string "external_job_id"
+    t.string "library_path"
+    t.integer "owned_library_item_id", null: false
+    t.string "poll_token"
+    t.integer "request_id"
+    t.bigint "requested_by_id"
+    t.boolean "separate_edition", default: false, null: false
+    t.integer "staged_device"
+    t.integer "staged_inode"
+    t.datetime "started_at"
+    t.string "status", default: "queued", null: false
+    t.datetime "updated_at", null: false
+    t.integer "upload_id"
+    t.integer "upload_recovery_attempts", default: 0, null: false
+    t.index ["created_book_id"], name: "index_owned_media_imports_on_created_book_id"
+    t.index ["destination_path"], name: "index_owned_media_imports_on_active_destination", unique: true, where: "destination_path IS NOT NULL AND status != 'completed'"
+    t.index ["external_job_id"], name: "index_owned_media_imports_on_external_job_id", unique: true, where: "external_job_id IS NOT NULL"
+    t.index ["library_path"], name: "index_owned_media_imports_on_active_library_path", unique: true, where: "library_path IS NOT NULL AND status != 'completed'"
+    t.index ["owned_library_item_id"], name: "index_owned_media_imports_on_item_active", unique: true, where: "status IN ('queued', 'starting', 'downloading', 'processing') OR (destination_path IS NOT NULL AND status != 'completed')"
+    t.index ["owned_library_item_id"], name: "index_owned_media_imports_on_owned_library_item_id"
+    t.index ["request_id"], name: "index_owned_media_imports_on_request_id"
+    t.index ["requested_by_id"], name: "index_owned_media_imports_on_requested_by_id"
+    t.index ["status"], name: "index_owned_media_imports_on_status"
+    t.index ["upload_id"], name: "index_owned_media_imports_on_upload_id"
   end
 
   create_table "request_events", force: :cascade do |t|
@@ -315,6 +435,32 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
+  create_table "store_offers", force: :cascade do |t|
+    t.string "author"
+    t.string "checkout_url"
+    t.string "cover_url"
+    t.datetime "created_at", null: false
+    t.boolean "drm_free", default: true, null: false
+    t.string "drm_type"
+    t.string "external_id", null: false
+    t.json "formats", default: [], null: false
+    t.json "isbns", default: [], null: false
+    t.string "language"
+    t.string "localized_price"
+    t.string "market", null: false
+    t.decimal "price_amount", precision: 12, scale: 4
+    t.string "price_currency"
+    t.string "provider", null: false
+    t.datetime "quoted_at"
+    t.integer "request_id", null: false
+    t.string "storefront_url", null: false
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.index ["provider"], name: "index_store_offers_on_provider"
+    t.index ["request_id", "provider", "external_id"], name: "index_store_offers_on_request_provider_external_id", unique: true
+    t.index ["request_id"], name: "index_store_offers_on_request_id"
+  end
+
   create_table "system_healths", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.datetime "last_check_at"
@@ -359,12 +505,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
 
   create_table "uploads", force: :cascade do |t|
     t.integer "book_id"
+    t.boolean "book_reservation_created_book", default: false, null: false
+    t.string "book_reservation_token"
     t.integer "book_type"
+    t.string "cleanup_source_path"
+    t.string "content_sha256"
     t.string "content_type"
     t.datetime "created_at", null: false
+    t.string "destination_configured_root"
+    t.string "destination_path"
+    t.string "destination_root"
     t.text "error_message"
     t.string "file_path"
     t.bigint "file_size"
+    t.string "library_path"
     t.integer "match_confidence"
     t.string "original_filename"
     t.string "parsed_author"
@@ -375,7 +529,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
     t.datetime "updated_at", null: false
     t.integer "user_id", null: false
     t.index ["book_id"], name: "index_uploads_on_book_id"
+    t.index ["book_reservation_token"], name: "index_uploads_on_book_reservation_token", unique: true, where: "book_reservation_token IS NOT NULL"
     t.index ["book_type"], name: "index_uploads_on_book_type"
+    t.index ["destination_path"], name: "index_active_uploads_on_destination_path", unique: true, where: "destination_path IS NOT NULL AND status IN (0, 1, 3)"
+    t.index ["library_path"], name: "index_active_uploads_on_library_path", unique: true, where: "library_path IS NOT NULL AND status IN (0, 1, 3)"
     t.index ["processed_at"], name: "index_uploads_on_processed_at"
     t.index ["request_id"], name: "index_uploads_on_request_id"
     t.index ["status"], name: "index_uploads_on_status"
@@ -417,6 +574,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
   add_foreign_key "downloads", "requests"
   add_foreign_key "downloads", "search_results", on_delete: :nullify
   add_foreign_key "notifications", "users"
+  add_foreign_key "owned_library_connections", "users", column: "automatic_backup_user_id", on_delete: :nullify
+  add_foreign_key "owned_library_items", "books", on_delete: :nullify
+  add_foreign_key "owned_library_items", "owned_library_connections"
+  add_foreign_key "owned_media_imports", "books", column: "created_book_id", on_delete: :nullify
+  add_foreign_key "owned_media_imports", "owned_library_items"
+  add_foreign_key "owned_media_imports", "requests", on_delete: :nullify
+  add_foreign_key "owned_media_imports", "uploads", on_delete: :nullify
+  add_foreign_key "owned_media_imports", "users", column: "requested_by_id", on_delete: :nullify
   add_foreign_key "request_events", "downloads"
   add_foreign_key "request_events", "requests"
   add_foreign_key "requests", "books"
@@ -424,6 +589,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_12_120000) do
   add_foreign_key "search_results", "acquisition_providers"
   add_foreign_key "search_results", "requests"
   add_foreign_key "sessions", "users"
+  add_foreign_key "store_offers", "requests", on_delete: :cascade
   add_foreign_key "telegram_chat_authorizations", "users", column: "approved_by_id"
   add_foreign_key "uploads", "books"
   add_foreign_key "uploads", "requests"

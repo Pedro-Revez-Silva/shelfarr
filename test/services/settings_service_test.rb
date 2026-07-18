@@ -12,6 +12,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
       prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key
       preferred_download_type preferred_download_types move_completed_downloads split_audiobook_bundle_imports audiobook_path_template api_token
       zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url
+      ebooks_com_enabled ebooks_com_country_code ebooks_com_search_limit
       metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled
       comic_vine_enabled comic_vine_api_key
       library_platform audiobookshelf_url audiobookshelf_api_key bookorbit_url bookorbit_username bookorbit_password
@@ -159,6 +160,66 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
     SettingsService.set(:gutenberg_enabled, false)
     assert_not SettingsService.gutenberg_configured?
+  end
+
+  test "ebooks_com_configured? requires opt in and an explicit two-letter country" do
+    assert_not SettingsService.ebooks_com_configured?
+
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    assert SettingsService.ebooks_com_configured?
+
+    SettingsService.set(:ebooks_com_country_code, "Portugal")
+    assert_not SettingsService.ebooks_com_configured?
+
+    SettingsService.set(:ebooks_com_country_code, "XX")
+    assert_not SettingsService.ebooks_com_configured?
+  end
+
+  test "ebooks.com store offers are disabled by default without creating settings" do
+    Setting.where(key: %w[ebooks_com_enabled ebooks_com_country_code ebooks_com_search_limit]).delete_all
+
+    assert_equal false, SettingsService.get(:ebooks_com_enabled)
+    assert_equal "", SettingsService.get(:ebooks_com_country_code)
+    assert_equal 5, SettingsService.get(:ebooks_com_search_limit)
+  end
+
+  test "changing the eBooks.com market purges stale localized offers" do
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    requests(:pending_request).store_offers.create!(
+      provider: "ebooks_com",
+      external_id: "stale-market-offer",
+      title: "The Pending Ebook",
+      market: "PT",
+      drm_free: true,
+      formats: [ "epub" ],
+      storefront_url: "https://www.ebooks.com/en-pt/book/stale-market-offer/the-pending-ebook/"
+    )
+
+    assert_difference "StoreOffer.count", -1 do
+      SettingsService.set(:ebooks_com_country_code, "US")
+    end
+  end
+
+  test "changing the eBooks.com offer limit preserves still-valid localized offers" do
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    SettingsService.set(:ebooks_com_search_limit, 5)
+    requests(:pending_request).store_offers.create!(
+      provider: "ebooks_com",
+      external_id: "old-limit-offer",
+      title: "The Pending Ebook",
+      market: "PT",
+      drm_free: true,
+      formats: [ "epub" ],
+      storefront_url: "https://www.ebooks.com/en-pt/book/old-limit-offer/the-pending-ebook/"
+    )
+
+    assert_no_difference "StoreOffer.count" do
+      SettingsService.set(:ebooks_com_search_limit, 3)
+    end
+    assert StoreOffer.exists?(external_id: "old-limit-offer")
   end
 
   test "metadata provider priority normalizes configured order and appends missing providers" do

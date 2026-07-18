@@ -7,9 +7,9 @@
   </div>
 
   <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-    <div class="p-6">
-      <div class="flex gap-6 mb-6">
-        <div class="flex-shrink-0 w-32">
+    <div class="p-4 sm:p-6">
+      <div class="mb-6 flex min-w-0 flex-col gap-4 sm:flex-row sm:gap-6">
+        <div class="w-24 flex-shrink-0 sm:w-32">
           <% if @request.book.cover_url.present? %>
             <img
               src="<%= @request.book.cover_url %>"
@@ -25,7 +25,7 @@
           <% end %>
         </div>
 
-        <div class="flex-grow">
+        <div class="min-w-0 flex-grow">
           <h1 class="font-bold text-2xl text-white mb-1"><%= @request.book.title %></h1>
           <% if @request.book.author.present? %>
             <p class="text-gray-400 mb-2"><%= @request.book.author %></p>
@@ -50,7 +50,7 @@
                 <%= @request.book.book_type_label %>
               <% end %>
             </span>
-            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= request_status_color(@request.status) %>">
+            <span role="status" aria-live="polite" aria-atomic="true" class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <%= request_status_color(@request.status) %>">
               <%= @request.status.humanize %>
             </span>
             <% if @request.book.metadata_source_name.present? %>
@@ -106,12 +106,37 @@
                 </div>
                 <% message = diagnostic_event_message(event) %>
                 <% if message.present? %>
-                  <p class="mt-2 text-sm text-gray-300 break-all"><%= message %></p>
+                  <p class="mt-2 break-words text-sm text-gray-300"><%= message %></p>
                 <% end %>
               </div>
             <% end %>
           </div>
         </div>
+      <% end %>
+
+      <% if @store_offers.any? && !@request.completed? %>
+        <section class="mb-6" data-store-offers aria-labelledby="store-offers-heading">
+          <div class="mb-3">
+            <h3 id="store-offers-heading" class="text-sm font-medium text-emerald-300">
+              Buy DRM-free
+              <span class="text-gray-500">(<%= @store_offers.count %>)</span>
+            </h3>
+            <p class="mt-1 text-sm text-gray-400">
+              Checkout, account details, and payment stay with the seller.
+              <% if allowed_to?(:new?, Upload) %>
+                After purchase, download the EPUB or PDF and import it into this request.
+              <% else %>
+                After purchase, download the EPUB or PDF and ask an administrator to import it into this request.
+              <% end %>
+              Prices and availability can change at checkout.
+            </p>
+          </div>
+          <div class="space-y-2">
+            <% @store_offers.each do |offer| %>
+              <%= render "requests/store_offer", offer: offer, request: @request %>
+            <% end %>
+          </div>
+        </section>
       <% end %>
 
       <% if Current.user.admin? && @request.search_results.any? %>
@@ -170,7 +195,7 @@
             </div>
           </div>
         </div>
-      <% elsif @request.searching? %>
+      <% elsif @request.searching? && @store_offers.empty? %>
         <div class="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
           <div class="flex items-center">
             <svg class="animate-spin w-5 h-5 text-blue-400 mr-2" fill="none" viewBox="0 0 24 24">
@@ -307,7 +332,7 @@
               class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
         <% end %>
 
-        <% if allowed_to?(:new?, Upload) && !@request.completed? %>
+        <% if allowed_to?(:new?, Upload) && @request.upload_fulfillable? %>
           <% request_upload_path = Current.user.admin? ? new_admin_upload_path(request_id: @request.id) : new_upload_path(request_id: @request.id) %>
           <%= link_to "Upload File", request_upload_path,
               class: "px-4 py-2 bg-green-600 hover:bg-green-500 text-white font-medium rounded-lg transition" %>

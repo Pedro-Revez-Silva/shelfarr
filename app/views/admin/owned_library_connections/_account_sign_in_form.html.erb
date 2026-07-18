@@ -1,0 +1,20 @@
+<%= form_with url: auth_start_admin_owned_library_connection_path(@connection), method: :post, class: "grid gap-4 sm:grid-cols-[minmax(0,1fr)_12rem_auto] sm:items-end" do |form| %>
+  <div>
+    <%= form.label :account, "Audible account email", class: "block text-sm font-medium text-gray-300" %>
+    <%= form.email_field :account,
+      required: true,
+      maxlength: 320,
+      autocomplete: "username",
+      class: "mt-1 block w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+  </div>
+  <div>
+    <%= form.label :locale, "Marketplace", class: "block text-sm font-medium text-gray-300" %>
+    <%= form.select :locale,
+      LibationCompanionClient::AUDIBLE_MARKETPLACES.map { |locale| [LibationCompanionClient::AUDIBLE_MARKETPLACE_NAMES.fetch(locale), locale] },
+      {},
+      class: "mt-1 block w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+  </div>
+  <%= form.submit "Start sign-in",
+    data: { turbo_submits_with: "Starting sign-in…" },
+    class: "rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+<% end %>

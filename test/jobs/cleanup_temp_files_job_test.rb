@@ -132,6 +132,135 @@ class CleanupTempFilesJobIsolatedTest < ActiveJob::TestCase
     assert File.exist?(old_file), "File with pending upload should be kept"
   end
 
+  test "actual cleanup traverses database-specific staging directories" do
+    nested = @uploads_dir.join("database-fingerprint")
+    FileUtils.mkdir_p(nested)
+    orphan = nested.join("orphan.m4b")
+    File.binwrite(orphan, "orphan")
+    FileUtils.touch(orphan, mtime: 25.hours.ago.to_time)
+
+    deleted = CleanupTempFilesJob.new.send(
+      :cleanup_upload_directory,
+      @uploads_dir,
+      max_age: 24.hours.ago,
+      protected_paths: Set.new
+    )
+
+    assert_equal 1, deleted
+    assert_not File.exist?(orphan)
+    assert_not File.directory?(nested)
+  end
+
+  test "actual cleanup preserves nested files used by active uploads" do
+    nested = @uploads_dir.join("database-fingerprint")
+    FileUtils.mkdir_p(nested)
+    staged = nested.join("active.m4b")
+    File.binwrite(staged, "active")
+    FileUtils.touch(staged, mtime: 25.hours.ago.to_time)
+
+    deleted = CleanupTempFilesJob.new.send(
+      :cleanup_upload_directory,
+      @uploads_dir,
+      max_age: 24.hours.ago,
+      protected_paths: Set.new([ staged.to_s ])
+    )
+
+    assert_equal 0, deleted
+    assert File.exist?(staged)
+  end
+
+  test "actual cleanup preserves an empty staging directory needed to recover a finalized upload" do
+    nested = @uploads_dir.join("database-fingerprint")
+    FileUtils.mkdir_p(nested)
+    missing_stage = nested.join("finalized-before-database-commit.m4b")
+
+    CleanupTempFilesJob.new.send(
+      :cleanup_upload_directory,
+      @uploads_dir,
+      max_age: 24.hours.ago,
+      protected_paths: Set.new([ missing_stage.to_s ])
+    )
+
+    assert File.directory?(nested)
+  end
+
+  test "cleanup includes durable staging roots retained from earlier path settings" do
+    old_root = @temp_base.join("old-audiobooks")
+    current_root = @temp_base.join("current-audiobooks")
+    FileUtils.mkdir_p([ old_root, current_root ])
+    SettingsService.set(:audiobook_output_path, current_root.to_s)
+    connection = OwnedLibraryConnection.create!
+    item = connection.owned_library_items.create!(
+      external_id: "OLD-STAGING-ROOT",
+      title: "Old staging root",
+      ownership_type: "purchased"
+    )
+    media_import = item.owned_media_imports.create!(status: "failed")
+    staged = OwnedMediaImportFileService.staging_path_for(media_import, ".m4b", root: old_root)
+    File.binwrite(staged, "referenced failed backup")
+    FileUtils.touch(staged, mtime: 25.hours.ago.to_time)
+    orphan = staged.dirname.join("unreferenced-old-root.m4b")
+    File.binwrite(orphan, "orphaned old-root backup")
+    FileUtils.touch(orphan, mtime: 25.hours.ago.to_time)
+    upload = Upload.create!(
+      user: users(:one),
+      original_filename: "old-root.m4b",
+      file_path: staged.to_s,
+      file_size: staged.size,
+      status: :failed
+    )
+    media_import.update!(upload: upload)
+
+    CleanupTempFilesJob.perform_now
+
+    assert File.exist?(staged)
+    assert_not File.exist?(orphan)
+  end
+
+  test "cleanup never scans another Shelfarr database fingerprint" do
+    root = @temp_base.join("shared-audiobooks")
+    FileUtils.mkdir_p(root)
+    SettingsService.set(:audiobook_output_path, root.to_s)
+    own_directory = OwnedMediaImportFileService.staging_upload_directory(root: root)
+    foreign_directory = own_directory.parent.join("another-database")
+    FileUtils.mkdir_p(foreign_directory)
+    foreign_file = foreign_directory.join("active-in-another-shelfarr.m4b")
+    File.binwrite(foreign_file, "foreign active bytes")
+    FileUtils.touch(foreign_file, mtime: 25.hours.ago.to_time)
+
+    CleanupTempFilesJob.perform_now
+
+    assert_equal "foreign active bytes", File.binread(foreign_file)
+  end
+
+  test "cleanup rechecks upload activity after its initial protected snapshot" do
+    root = @temp_base.join("retry-race-audiobooks")
+    FileUtils.mkdir_p(root)
+    SettingsService.set(:audiobook_output_path, root.to_s)
+    directory = OwnedMediaImportFileService.staging_upload_directory(root: root)
+    staged = directory.join("retry-race.m4b")
+    File.binwrite(staged, "retry bytes")
+    FileUtils.touch(staged, mtime: 25.hours.ago.to_time)
+    upload = Upload.create!(
+      user: users(:one),
+      original_filename: staged.basename.to_s,
+      file_path: staged.to_s,
+      file_size: staged.size,
+      status: :failed
+    )
+    upload.update!(status: :pending)
+
+    deleted = CleanupTempFilesJob.new.send(
+      :cleanup_upload_directory,
+      directory,
+      max_age: 24.hours.ago,
+      protected_paths: Set.new
+    )
+
+    assert_equal 0, deleted
+    assert_equal "retry bytes", File.binread(staged)
+  end
+
   private
 
   def perform_cleanup_for(downloads_dir, uploads_dir)

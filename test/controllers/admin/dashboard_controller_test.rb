@@ -8,6 +8,13 @@ class Admin::DashboardControllerTest < ActionDispatch::IntegrationTest
     sign_in_as(@admin)
   end
 
+  test "index links to Audible Backup beta" do
+    get admin_root_url
+
+    assert_response :success
+    assert_select "a[href='#{admin_owned_library_connections_path}']", text: "Audible Backup (Beta)"
+  end
+
   test "run_health_check requires admin" do
     sign_out
     post admin_run_health_check_url

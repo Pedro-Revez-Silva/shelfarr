@@ -3,21 +3,61 @@ class Book < ApplicationRecord
 
   has_many :requests, dependent: :restrict_with_error
   has_many :uploads, dependent: :nullify
+  has_many :owned_library_items, dependent: :nullify
+
+  before_destroy :prevent_destroy_during_active_acquisition, prepend: true
 
   enum :book_type, { audiobook: 0, ebook: 1, comicbook: 2 }
   enum :content_kind, { book: 0, graphic: 1 }, prefix: :content
 
   validates :title, presence: true
   validates :book_type, presence: true
+  validates :acquisition_reservation_owner_type,
+    :acquisition_reservation_owner_id,
+    presence: true,
+    if: :acquisition_reserved?
 
   scope :audiobooks, -> { where(book_type: :audiobook) }
   scope :ebooks, -> { where(book_type: :ebook) }
   scope :comicbooks, -> { where(book_type: :comicbook) }
-  scope :acquired, -> { where.not(file_path: nil) }
+  scope :acquired, -> { where.not(file_path: nil).where("TRIM(file_path) <> ''") }
   scope :pending, -> { where(file_path: nil) }
+  scope :acquisition_reserved, -> { where.not(acquisition_reservation_token: nil) }
 
   def acquired?
     file_path.present?
+  end
+
+  def acquisition_reserved?
+    acquisition_reservation_token.present?
+  end
+
+  def acquisition_blocked?
+    acquired? || acquisition_reserved?
+  end
+
+  def owned_media_recovery_pending?
+    return false unless persisted?
+
+    upload_ids = uploads.select(:id)
+    created_book_imports = OwnedMediaImport.cancellation_blocking.where(created_book_id: id)
+    upload_book_imports = OwnedMediaImport.cancellation_blocking.where(upload_id: upload_ids)
+    created_book_imports.or(upload_book_imports).exists?
+  end
+
+  # Post-processing publishes library bytes before it can atomically attach
+  # their path to this Book and complete the Request. Keep the Book record (and
+  # therefore its recovery graph) alive while any non-completed Request owns
+  # that recoverable publication. Completed legacy requests are excluded
+  # because older Shelfarr versions did not clear successful owner IDs.
+  def post_processing_recovery_pending?
+    return false unless persisted?
+
+    requests
+      .where.not(status: Request.statuses[:completed])
+      .joins(:downloads)
+      .merge(Download.completed.where.not(post_processing_job_id: [ nil, "" ]))
+      .exists?
   end
 
   def display_name
@@ -206,5 +246,21 @@ class Book < ApplicationRecord
     else
       self.open_library_work_id ||= source_id
     end
+  end
+
+  private
+
+  def prevent_destroy_during_active_acquisition
+    message = if acquisition_reserved?
+      "An acquisition still owns a recovery reservation for this book"
+    elsif owned_media_recovery_pending?
+      "An Audible backup still owns recovery state for this book"
+    elsif post_processing_recovery_pending?
+      "A completed download still owns recoverable post-processing for this book"
+    end
+    return unless message
+
+    errors.add(:base, message)
+    throw :abort
   end
 end

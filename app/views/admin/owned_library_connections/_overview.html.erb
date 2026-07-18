@@ -1,0 +1,233 @@
+<section class="rounded-lg border border-gray-800 bg-gray-900" aria-labelledby="audible-setup-status-heading">
+  <div class="border-b border-gray-800 px-6 py-4">
+    <h2 id="audible-setup-status-heading" class="text-xl font-bold text-white">Setup status</h2>
+    <p class="mt-1 text-sm text-gray-400">Audible backups keep running in the background if you leave this page.</p>
+  </div>
+
+  <div class="divide-y divide-gray-800 px-6">
+    <div class="flex flex-col gap-4 py-5 md:flex-row md:items-start">
+      <div class="md:w-1/3">
+        <h3 class="font-medium text-gray-300">Libation companion</h3>
+        <p class="text-sm text-gray-500">Runs Libation and keeps Audible credentials isolated from Shelfarr.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 md:w-2/3">
+        <span class="rounded px-2.5 py-1 text-xs font-medium <%= @companion_error.present? ? 'bg-red-500/20 text-red-300' : (@connection.enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-800 text-gray-400') %>">
+          <%= @companion_error.present? ? "Unavailable" : (@connection.enabled? ? (@companion_busy ? "Ready · Busy" : "Ready") : "Needs setup") %>
+        </span>
+        <% if @connection.persisted? && (@connection.companion_version.present? || @connection.provider_version.present?) %>
+          <span class="text-sm text-gray-400">
+            Companion <%= @connection.companion_version.presence || "unknown" %>
+            &middot; Libation <%= @connection.provider_version.presence || "unknown" %>
+          </span>
+        <% end %>
+        <%= link_to @connection.enabled? ? "Edit connection" : "Configure connection",
+          admin_owned_library_connections_path(anchor: "connection"),
+          data: { action: "click->settings-tabs#switch", tab: "connection" },
+          class: "text-sm font-medium text-blue-400 hover:text-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+      </div>
+    </div>
+
+    <div class="flex flex-col gap-4 py-5 md:flex-row md:items-start">
+      <div class="md:w-1/3">
+        <h3 class="font-medium text-gray-300">Audible account</h3>
+        <p class="text-sm text-gray-500">Authentication happens directly on Amazon/Audible through Libation.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 md:w-2/3">
+        <span class="rounded px-2.5 py-1 text-xs font-medium <%= @auth_active ? 'bg-blue-500/20 text-blue-300' : (@audible_connected ? 'bg-green-500/20 text-green-400' : 'bg-amber-500/20 text-amber-300') %>">
+          <%= @auth_starting ? "Starting sign-in" : (@auth_pending ? "Finish sign-in" : (@audible_connected ? "Connected" : "Needs sign-in")) %>
+        </span>
+        <% if @accounts.any? %>
+          <span class="text-sm text-gray-400"><%= @accounts.filter(&:authenticated).map { |account| account.name.presence || account.account }.join(", ") %></span>
+        <% elsif @companion_busy && @audible_connected %>
+          <span class="text-sm text-gray-400">Account details are paused while Libation works.</span>
+        <% end %>
+        <%= link_to @audible_connected ? "Manage account" : "Connect Audible",
+          admin_owned_library_connections_path(anchor: "connection"),
+          data: { action: "click->settings-tabs#switch", tab: "connection" },
+          class: "text-sm font-medium text-blue-400 hover:text-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+      </div>
+    </div>
+
+    <div class="flex flex-col gap-4 py-5 md:flex-row md:items-start">
+      <div class="md:w-1/3">
+        <h3 class="font-medium text-gray-300">Owned library</h3>
+        <p class="text-sm text-gray-500">Purchased titles appear in the main Shelfarr Library with an Audible tag.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 md:w-2/3">
+        <span class="rounded px-2.5 py-1 text-xs font-medium <%= @connection.last_synced_at.present? ? 'bg-green-500/20 text-green-400' : 'bg-gray-800 text-gray-400' %>">
+          <%= @connection.last_synced_at.present? ? "#{@library_total_items} titles" : "Not synced" %>
+        </span>
+        <% if @connection.last_synced_at.present? %>
+          <span class="text-sm text-gray-400"><%= @purchased_items %> purchased &middot; <%= @subscription_items %> subscription</span>
+        <% end %>
+        <%= link_to "Browse in Library",
+          library_index_path(anchor: "library-catalog"),
+          class: "text-sm font-medium text-blue-400 hover:text-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+      </div>
+    </div>
+  </div>
+</section>
+
+<% if @connection.persisted? && @connection.enabled? %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900" aria-labelledby="audible-library-sync-heading">
+    <div class="flex flex-col gap-3 border-b border-gray-800 px-6 py-4 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <h2 id="audible-library-sync-heading" class="text-xl font-bold text-white">Library sync</h2>
+        <p class="mt-1 text-sm text-gray-400">Refresh Shelfarr's private catalog from the account cached by your local companion.</p>
+      </div>
+      <%= link_to "Automation settings",
+        admin_owned_library_connections_path(anchor: "automation"),
+        data: { action: "click->settings-tabs#switch", tab: "automation" },
+        class: "shrink-0 text-sm font-medium text-blue-400 hover:text-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+    </div>
+
+    <div class="p-6">
+      <div
+        id="audible-sync-status"
+        data-state="<%= @sync_state %>"
+        role="<%= @sync_state == 'failed' ? 'alert' : 'status' %>"
+        aria-live="<%= @sync_state == 'failed' ? 'assertive' : 'polite' %>"
+        aria-atomic="true"
+        class="rounded-lg border p-4 <%= @sync_state == 'failed' ? 'border-red-800 bg-red-950/30' : (@connection.sync_active? ? 'border-blue-800 bg-blue-950/30' : 'border-gray-800 bg-gray-950/30') %>"
+      >
+        <% case @sync_state %>
+        <% when "queued" %>
+          <p class="font-medium text-blue-200">Library sync queued</p>
+          <% if @sync_recoverable %>
+            <p class="mt-1 text-sm text-amber-300">The queue acknowledgement is stale. Use Recover sync to safely enqueue a fresh check.</p>
+          <% else %>
+            <p class="mt-1 text-sm text-blue-300">Waiting for Shelfarr's background worker. This page will update automatically.</p>
+          <% end %>
+        <% when "syncing" %>
+          <p class="font-medium text-blue-200"><%= @connection.last_synced_at.present? ? "Refreshing" : "Syncing" %> your Audible library…</p>
+          <p
+            class="mt-1 text-sm text-blue-300"
+            aria-live="off"
+            data-controller="elapsed-time"
+            data-elapsed-time-started-at-value="<%= @connection.sync_started_at&.iso8601 %>"
+          >
+            <span aria-hidden="true">Elapsed <span data-elapsed-time-target="output"><%= time_ago_in_words(@connection.sync_started_at || Time.current) %></span>. </span>
+            Libation does not report a percentage or reliable ETA. You can leave this page safely.
+          </p>
+          <% if @sync_recoverable %>
+            <p class="mt-2 text-sm text-amber-300">
+              <%= @connection.sync_job_id.present? ? "You can request an immediate status check if the polling chain was interrupted." : "Shelfarr did not record a companion job in time. Use Recover sync to resume safely." %>
+            </p>
+          <% end %>
+          <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-950">
+            <div class="h-full w-1/3 animate-pulse rounded-full bg-blue-500"></div>
+          </div>
+        <% when "failed" %>
+          <p class="font-medium text-red-200">Library sync failed</p>
+          <p class="mt-1 text-sm text-red-300"><%= @connection.last_sync_error.presence || "Libation could not complete the library sync." %></p>
+          <% if @library_total_items.positive? %>
+            <p class="mt-2 text-xs text-gray-400">Your previous snapshot of <%= @library_total_items %> titles is still available.</p>
+          <% end %>
+        <% when "succeeded" %>
+          <% if @library_total_items.zero? %>
+            <p class="font-medium text-gray-200">Sync completed, but no supported Audible titles were found.</p>
+          <% else %>
+            <p class="font-medium text-green-300">Library ready · <%= @library_total_items %> active titles</p>
+            <p class="mt-1 text-sm text-gray-400"><%= @purchased_items %> purchased &middot; <%= @subscription_items %> subscription</p>
+          <% end %>
+          <p class="mt-2 text-xs text-gray-500" title="<%= @connection.last_synced_at&.iso8601 %>">Last sync completed <%= time_ago_in_words(@connection.last_synced_at) %> ago.</p>
+        <% else %>
+          <% if @audible_connected %>
+            <p class="font-medium text-amber-200">Audible connected. One more step: sync your library.</p>
+            <p class="mt-1 text-sm text-gray-400">No titles have been loaded into Shelfarr yet.</p>
+          <% else %>
+            <p class="font-medium text-gray-200">Connect an Audible account before the first sync.</p>
+          <% end %>
+        <% end %>
+
+        <% if @active_backup_total.to_i.positive? %>
+          <p class="mt-3 text-sm text-blue-300">
+            <%= @active_backup_total %> <%= "backup".pluralize(@active_backup_total) %> currently active
+            <% if @active_backup_counts.any? %>
+              &middot; <%= @active_backup_counts.map { |status, count| "#{count} #{status}" }.join(" · ") %>
+            <% end %>
+          </p>
+        <% end %>
+      </div>
+
+      <div class="mt-4 flex flex-wrap items-center gap-3">
+        <% sync_button_label = if @active_backup_total.to_i.positive?
+          "Backups running…"
+        elsif !@audible_connected
+          "Connect Audible first"
+        elsif @sync_recoverable
+          @connection.sync_job_id.present? ? "Check sync status" : "Recover sync"
+        elsif @connection.queued?
+          "Sync queued…"
+        elsif @connection.syncing?
+          "Syncing…"
+        elsif @connection.failed?
+          "Retry sync"
+        else
+          "Sync library"
+        end %>
+        <%= button_to sync_button_label,
+          sync_admin_owned_library_connection_path(@connection),
+          method: :post,
+          disabled: @auth_active || (@connection.sync_active? && !@sync_recoverable) || @active_backup_total.to_i.positive? || !@audible_connected,
+          data: { turbo_submits_with: "Queueing sync…" },
+          class: "rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50" %>
+        <p class="text-xs text-gray-500">A sync reads the cached account only when requested or scheduled; normal page views do not query Audible.</p>
+      </div>
+    </div>
+  </section>
+
+  <% if @backlog_backup_prompt && @backlog_backup_available %>
+    <section id="existing-library-backup-prompt" class="rounded-lg border border-blue-800 bg-blue-950/20" aria-labelledby="existing-library-backup-heading">
+      <div class="border-b border-blue-900/70 px-6 py-4">
+        <p class="text-xs font-medium uppercase tracking-wide text-blue-300">First sync complete</p>
+        <h2 id="existing-library-backup-heading" class="mt-1 text-xl font-bold text-white">Back up your existing Audible library?</h2>
+      </div>
+      <div class="space-y-5 p-6">
+        <p class="text-sm text-gray-300">
+          Shelfarr found purchased audiobooks that may be eligible for a one-time backup.
+          If you continue, Shelfarr will perform the full local-library safety check, queue every eligible title in a durable background batch, and let Libation process one title at a time.
+        </p>
+        <div class="rounded-md border border-amber-800/70 bg-amber-950/20 p-4 text-sm text-amber-200">
+          A full backup can take a long time and use significant bandwidth and disk space. Temporary import staging may require additional free space. Subscription titles, existing local files, ambiguous matches, and previously attempted titles are skipped.
+        </div>
+
+        <%= form_with url: backup_existing_admin_owned_library_connection_path(@connection), method: :post, class: "space-y-4" do |form| %>
+          <label class="flex items-start gap-3 text-sm text-gray-300">
+            <%= check_box_tag :confirm_existing_library_backup,
+              "1",
+              false,
+              required: true,
+              class: "mt-0.5 h-5 w-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500" %>
+            <span>I understand this will queue every currently eligible personal backup and continue in the background.</span>
+          </label>
+          <div class="flex flex-wrap items-center gap-3">
+            <%= form.submit "Queue eligible backups",
+              data: { turbo_submits_with: "Creating backup batch…" },
+              class: "rounded-md bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            <%= link_to "Review in Library",
+              library_index_path(anchor: "library-catalog"),
+              class: "rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+          </div>
+        <% end %>
+
+        <div class="border-t border-blue-900/70 pt-4">
+          <%= button_to "Not now",
+            dismiss_existing_backup_admin_owned_library_connection_path(@connection),
+            method: :post,
+            class: "text-sm font-medium text-gray-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+          <p class="mt-1 text-xs text-gray-500">The one-time action remains available on the Automation tab.</p>
+        </div>
+      </div>
+    </section>
+  <% end %>
+<% else %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6" aria-labelledby="audible-overview-setup-heading">
+    <h2 id="audible-overview-setup-heading" class="text-xl font-bold text-white">Configure the Libation companion first</h2>
+    <p class="mt-2 text-sm text-gray-400">Enable the integration on the Connection tab, then connect Audible and run your first library sync.</p>
+    <%= link_to "Open connection settings",
+      admin_owned_library_connections_path(anchor: "connection"),
+      data: { action: "click->settings-tabs#switch", tab: "connection" },
+      class: "mt-4 inline-block rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+  </section>
+<% end %>

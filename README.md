@@ -49,6 +49,17 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 - **Download Routing** — Route specific indexers to specific clients, with priority ordering
 - **REST API** — Scoped, per-user API tokens under `/api/v1`
 - **Custom Acquisition Providers** — Trusted HTTP providers can contribute search results and resolve selected items into direct, torrent or usenet artifacts
+- **Third-Party Store Offers (Beta)** — Surface legitimate DRM-free editions from supported sellers without handling checkout or payment data
+- **Audible Backup (Beta)** — Sync purchased Audible titles, explicitly queue a one-time backup of eligible existing purchases, optionally back up future purchases automatically, and import them through the separately packaged Libation companion
+
+### Beta integrations
+
+The following integrations are opt-in and disabled by default:
+
+- **Third-party stores** add a separate purchase-options section to a request. Shelfarr checks the seller's catalog, shows DRM-free formats, localized availability and an external purchase link, but never handles payment or treats an offer as a downloadable result. The first provider is eBooks.com. See [Third-party stores (Beta)](docs/drm-free-store-providers.md).
+- **Audible Backup, powered by Libation** connects Shelfarr to an optional companion service running the unmodified, pinned [Libation](https://github.com/rmcrackan/Libation) CLI. Its Settings-style page separates Overview, Connection, Automation, and diagnostic Catalog concerns. After the first sync, Shelfarr asks whether to queue a conservative one-time backup of eligible existing purchases; the durable background batch and individual-title work are managed from the main Library while Libation processes one title at a time. Scheduled sync is optional, with a 24-hour default and an hourly option. Automatic backup for future purchases remains a separate opt-in. It is not an Audible store or general metadata provider. See [Audible Backup (Beta)](docs/audible-backup.md).
+
+Both features are designed to preserve existing installations: upgrades add new, default-disabled configuration without changing existing providers or encryption keys. Review the linked guides before enabling a beta integration.
 
 ## Quick Start
 
@@ -64,12 +75,16 @@ mv docker-compose.example.yml docker-compose.yml
 #    - /path/to/audiobooks → your Audiobookshelf audiobooks folder
 #    - /path/to/ebooks → your Audiobookshelf ebooks folder
 #    - /path/to/downloads → your download client's completed folder
+#    - Optionally set SHELFARR_VERSION in .env to pin Shelfarr and its companion
+#      (use the OCI image version without the GitHub tag's leading "v")
 
 # 3. Start
 docker compose up -d
 ```
 
 A secret key is auto-generated on first run and saved to the data volume.
+
+The current Compose example also starts the internal Audible Backup companion, powered by Libation. It stays idle until an administrator enables the beta integration, exposes no host port, and requires no Audible account for users who leave it disabled. Existing installations must merge the companion service and volumes from the current Compose example once before enabling Audible Backup; see the [Audible Backup guide](docs/audible-backup.md#existing-installations).
 
 Visit `http://localhost:5056` — the first user to register becomes admin.
 
@@ -79,10 +94,16 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 |----------|---------|-------------|
 | `PUID` | `1000` | User ID for file permissions. Should match the owner of your mounted volumes |
 | `PGID` | `1000` | Group ID for file permissions. Should match the group of your mounted volumes |
-| `CHOWN_ON_START` | `auto` | Control startup ownership fixes for mounted storage. `auto` (default) attempts to `chown`, but continues if unsupported (eg NFS root-squash). `always` fails on `chown` errors. `never` skips all `chown` calls (use only if volume is pre-permissioned). |
+| `CHOWN_ON_START` | `auto` | Control startup ownership fixes for both standard containers. `auto` (default) adjusts only when needed, `always` fails on adjustment errors, and `never` skips `chown` calls for pre-permissioned/root-squashed volumes. The Audible companion still rejects group/world-accessible private state or credential/token files. |
 | `HTTP_PORT` | `80` | Internal container port. Change if port 80 is in use (e.g., behind gluetun) |
 | `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set |
 | `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
+| `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vX.Y.Z`, use `X.Y.Z`) |
+| `LIBATION_BOOKS_PATH` | Docker named volume | Optional host path for retained Audible backup copies; useful for large libraries |
+
+Audible Backup additionally requires the audiobook output filesystem to support advisory locks, hard links within that same mount, and Unix mode changes. Keep Shelfarr's `.shelfarr-staging` directory on the audiobook output filesystem; see the [Audible Backup storage requirements](docs/audible-backup.md#existing-installations).
+
+Filesystem race defenses assume every process running as Shelfarr's `PUID` is trusted. A malicious process with the same UID can modify any library file that Shelfarr itself can modify; isolate untrusted download tools under a different UID and grant only the narrow shared-directory access they need.
 
 Example with custom port:
 ```yaml
@@ -166,6 +187,8 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 | **SABnzbd**, **NZBGet** | Usenet downloads |
 | **Anna's Archive** / **Z-Library** | Direct ebook downloads |
 | **LibriVox** | Public-domain audiobook downloads |
+| **eBooks.com** *(Beta)* | External DRM-free ebook offers; checkout remains with the seller |
+| **Libation** *(Beta)* | Optional Audible owned-library backup companion |
 | **Audiobookshelf** / **BookOrbit** / **Grimmory** | Library management |
 | **Discord** / **Telegram** / **Webhooks** | Notifications |
 
@@ -174,8 +197,11 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 - Docker
 - At least one way to find books:
   - An indexer — Prowlarr, Jackett or Newznab/NZBHydra2 — plus a download client (qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet), **and/or**
-  - A direct source — Anna's Archive or Z-Library (ebooks), LibriVox (audiobooks)
+  - A direct source — Anna's Archive or Z-Library (ebooks), LibriVox (audiobooks), **and/or**
+  - The beta eBooks.com store integration for external purchase and manual import of DRM-free ebooks
 - Audiobookshelf, BookOrbit or Grimmory (optional, for library integration)
+
+Audible Backup is independent of request acquisition: the optional Libation companion can preserve titles already owned by the connected Audible account without configuring an indexer or store provider.
 
 BookOrbit support uses BookOrbit's current `/api/v1` endpoints for library listing, inventory sync, and scan triggers. Shelfarr still delivers files through configured output paths; direct Book Dock upload/finalize is not implemented because BookOrbit does not currently publish a stable external API for that workflow.
 

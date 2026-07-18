@@ -28,6 +28,7 @@ module Admin
     def refresh
       # Clear existing results and re-queue for search, keeping manually added downloads.
       @request.search_results.where.not(source: SearchResult::MANUAL_SOURCES).destroy_all
+      @request.store_offers.destroy_all
       @request.update!(status: :pending)
       SearchJob.perform_later(@request.id)
 

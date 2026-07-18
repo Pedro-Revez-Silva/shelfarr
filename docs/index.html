@@ -908,6 +908,26 @@
                         </p>
                     </div>
                     <div class="feature-card">
+                        <div class="feature-card-icon">🏪</div>
+                        <h3>Third-Party Stores (Beta)</h3>
+                        <p>
+                            See legitimate DRM-free ebook offers from supported
+                            sellers in a separate section. Checkout and payment
+                            always stay with the store.
+                        </p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-card-icon">🎧</div>
+                        <h3>Audible Backup (Beta)</h3>
+                        <p>
+                            Browse and preserve audiobooks you already own,
+                            confirm a safe one-time backup of eligible existing
+                            purchases, schedule hourly or longer library
+                            refreshes, and optionally back up future purchases
+                            using the Libation companion.
+                        </p>
+                    </div>
+                    <div class="feature-card">
                         <div class="feature-card-icon">⬆️</div>
                         <h3>Manual Uploads</h3>
                         <p>
@@ -1002,6 +1022,40 @@
                         <p>
                             Users can search and request books. Admins can
                             review requests and manage the download queue.
+                        </p>
+                    </div>
+                    <div class="faq-item">
+                        <h3>Does Shelfarr sell books or handle payment?</h3>
+                        <p>
+                            No. Beta store integrations only show eligible
+                            offers and send you to the seller. Shelfarr never
+                            receives card details, store passwords or order
+                            information.
+                        </p>
+                    </div>
+                    <div class="faq-item">
+                        <h3>Can Shelfarr back up new Audible purchases automatically?</h3>
+                        <p>
+                            Yes, as an explicit beta opt-in. Run one manual sync
+                            first, enable scheduled sync, then enable automatic
+                            backup. The next successful manual or scheduled sync
+                            refreshes a no-download baseline. Only purchased
+                            audiobooks first discovered by later syncs are queued.
+                            The existing library is separate: after the first sync,
+                            Shelfarr asks whether to queue a confirmed, conservatively
+                            filtered background batch. Subscriptions, local matches,
+                            identity conflicts and prior attempts are excluded, and
+                            progress is managed from Library while Libation processes
+                            one title at a time.
+                        </p>
+                    </div>
+                    <div class="faq-item">
+                        <h3>Is Audible Backup built by Shelfarr?</h3>
+                        <p>
+                            Shelfarr provides the management and import
+                            integration around a separate, pinned Libation
+                            companion. Libation remains an independent GPL-3.0
+                            project and is credited throughout the feature.
                         </p>
                     </div>
                 </div>

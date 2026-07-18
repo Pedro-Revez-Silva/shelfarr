@@ -1,0 +1,223 @@
+<% if @connection.persisted? && @connection.enabled? %>
+  <div id="audible-automation" class="space-y-6">
+    <%= form_with model: @connection,
+      url: automation_admin_owned_library_connection_path(@connection),
+      method: :patch,
+      class: "space-y-6" do |form| %>
+      <section class="rounded-lg border border-gray-800 bg-gray-900" aria-labelledby="scheduled-audible-sync-heading">
+        <div class="flex flex-col gap-3 border-b border-gray-800 px-6 py-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 id="scheduled-audible-sync-heading" class="text-xl font-bold text-white">Scheduled library sync</h2>
+            <p class="mt-1 text-sm text-gray-400">Keep the owned-title catalog current without querying Audible on normal page loads.</p>
+          </div>
+          <span class="shrink-0 rounded px-2.5 py-1 text-xs font-medium <%= @connection.scheduled_sync_enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-800 text-gray-400' %>">
+            <%= @connection.scheduled_sync_enabled? ? "On" : "Off" %>
+          </span>
+        </div>
+
+        <div class="space-y-6 p-6">
+          <div class="flex flex-col gap-4 md:flex-row md:items-start">
+            <div class="md:w-1/3">
+              <span class="font-medium text-gray-300">Automatic sync</span>
+              <p id="scheduled-audible-sync-help" class="text-sm text-gray-500">Runs through the same serialized Libation workflow as a manual sync.</p>
+            </div>
+            <div class="md:w-2/3">
+              <label class="inline-flex cursor-pointer items-start gap-3 text-sm text-gray-300">
+                <%= form.check_box :scheduled_sync_enabled,
+                  aria: { describedby: "scheduled-audible-sync-help" },
+                  class: "mt-0.5 h-5 w-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500" %>
+                <span>Sync the Audible library automatically</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="flex flex-col gap-4 md:flex-row md:items-start">
+            <div class="md:w-1/3">
+              <%= form.label :scheduled_sync_interval_minutes, "Sync interval", class: "font-medium text-gray-300" %>
+              <p class="text-sm text-gray-500">Hourly is available for fast discovery; the default remains every 24 hours.</p>
+            </div>
+            <div class="md:w-2/3">
+              <%= form.select :scheduled_sync_interval_minutes,
+                Admin::OwnedLibraryConnectionsController::AUTOMATION_INTERVAL_OPTIONS,
+                {},
+                class: "w-full max-w-xs rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            </div>
+          </div>
+
+          <div class="flex flex-col gap-4 border-t border-gray-800 pt-4 md:flex-row md:items-start">
+            <div class="md:w-1/3">
+              <span class="font-medium text-gray-300">Schedule status</span>
+              <p class="text-sm text-gray-500">Manual sync remains available from Overview at any time.</p>
+            </div>
+            <div class="text-sm text-gray-400 md:w-2/3">
+              <% if @connection.scheduled_sync_enabled? %>
+                <% if @connection.sync_active? %>
+                  <p class="text-blue-300">A library sync is already in progress. Shelfarr will set the next scheduled time when it completes.</p>
+                <% elsif @connection.next_scheduled_sync_at.present? %>
+                  <% if @connection.next_scheduled_sync_at.future? %>
+                    <p>Next sync in <%= distance_of_time_in_words(Time.current, @connection.next_scheduled_sync_at) %>.</p>
+                  <% else %>
+                    <p>The next sync is due and will be picked up by Shelfarr's scheduler.</p>
+                  <% end %>
+                <% else %>
+                  <p>Shelfarr will set the next sync after these settings are saved.</p>
+                <% end %>
+              <% else %>
+                <p>Scheduled sync is disabled.</p>
+              <% end %>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="rounded-lg border border-gray-800 bg-gray-900" aria-labelledby="future-audible-backups-heading">
+        <div class="flex flex-col gap-3 border-b border-gray-800 px-6 py-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 id="future-audible-backups-heading" class="text-xl font-bold text-white">New-purchase backups</h2>
+            <p class="mt-1 text-sm text-gray-400">Optionally queue newly discovered purchases after each successful scheduled sync.</p>
+          </div>
+          <span class="shrink-0 rounded px-2.5 py-1 text-xs font-medium <%= @connection.automatic_backup_enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-800 text-gray-400' %>">
+            <%= @connection.automatic_backup_enabled? ? "On" : "Off" %>
+          </span>
+        </div>
+
+        <div class="space-y-6 p-6">
+          <div class="flex flex-col gap-4 md:flex-row md:items-start">
+            <div class="md:w-1/3">
+              <span class="font-medium text-gray-300">Automatic backup</span>
+              <p id="automatic-backup-context" class="text-sm text-gray-500">This controls future purchases only. Existing-library backups are managed separately below.</p>
+            </div>
+            <div class="md:w-2/3">
+              <label class="inline-flex items-start gap-3 text-sm text-gray-300 <%= 'cursor-not-allowed opacity-60' if @connection.last_synced_at.blank? %>">
+                <%= form.check_box :automatic_backup_enabled,
+                  disabled: @connection.last_synced_at.blank?,
+                  class: "mt-0.5 h-5 w-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed",
+                  aria: { describedby: "automatic-backup-context automatic-backup-help" } %>
+                <span class="block font-medium text-gray-200">Automatically back up new purchases</span>
+              </label>
+              <p id="automatic-backup-help" class="mt-1 text-xs text-gray-500">
+                Requires scheduled sync. After the safe no-download baseline, purchased audiobooks first discovered on later syncs are queued automatically.
+              </p>
+
+              <% if @connection.last_synced_at.blank? %>
+                <p class="mt-3 text-xs text-amber-300">Run the first library sync before enabling automatic backups so Shelfarr can establish the existing-library baseline.</p>
+              <% elsif @connection.automatic_backup_enabled? %>
+                <p class="mt-3 text-xs text-gray-500">
+                  New backups are attributed to <%= @connection.automatic_backup_user&.name || "the administrator who saves these settings" %>.
+                  Turning this option off and on again starts a new future-purchase baseline; it does not backfill purchases found while it was off.
+                </p>
+              <% end %>
+            </div>
+          </div>
+
+          <% automatic_backup_owner_ready = @connection.automatic_backup_ready? && @connection.automatic_backup_user&.admin? %>
+          <% if @connection.automatic_backup_enabled? && !automatic_backup_owner_ready %>
+            <div class="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-300" role="alert">
+              Automatic backup is paused because its assigned administrator is no longer active and eligible. Save again to assign the current administrator.
+            </div>
+          <% elsif @connection.automatic_backup_enabled? && !@connection.automatic_backup_baseline_ready? %>
+            <div class="rounded-md border border-blue-800 bg-blue-950/30 p-3 text-sm text-blue-300" role="status">
+              Automatic backup is enabled. The next successful sync refreshes the baseline without queueing downloads; purchases first discovered on later syncs can then be queued automatically.
+            </div>
+          <% end %>
+
+          <div class="flex flex-col gap-4 border-t border-gray-800 pt-4 md:flex-row md:items-start">
+            <div class="md:w-1/3">
+              <span class="font-medium text-gray-300">Save automation</span>
+              <p class="text-sm text-gray-500">Changes apply to future scheduler runs and never alter stored Audible credentials.</p>
+            </div>
+            <div class="md:w-2/3">
+              <%= form.submit "Save automation",
+                data: { turbo_submits_with: "Saving automation…" },
+                class: "rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            </div>
+          </div>
+        </div>
+      </section>
+    <% end %>
+
+    <section class="rounded-lg border border-gray-800 bg-gray-900" aria-labelledby="existing-audible-backups-heading">
+      <div class="border-b border-gray-800 px-6 py-4">
+        <h2 id="existing-audible-backups-heading" class="text-xl font-bold text-white">Existing-library backup</h2>
+        <p class="mt-1 text-sm text-gray-400">A separate, one-time action for purchases that were already in Audible at the first sync.</p>
+      </div>
+
+      <div class="space-y-5 p-6">
+        <% if @backlog_backup_total.to_i.positive? %>
+          <div class="rounded-md border border-blue-800 bg-blue-950/30 p-4" role="status">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <p class="font-medium text-blue-200"><%= @backlog_backup_remaining.to_i.positive? ? "Existing-library batch running" : "Existing-library batch processed" %></p>
+              <span class="rounded bg-blue-500/20 px-2.5 py-1 text-xs font-medium text-blue-300"><%= @backlog_backup_processed %> of <%= @backlog_backup_total %> processed</span>
+            </div>
+            <% if @backlog_backup_counts.present? %>
+              <p class="mt-2 text-sm text-blue-300"><%= @backlog_backup_counts.map { |status, count| "#{count} #{status}" }.join(" · ") %></p>
+            <% end %>
+            <p class="mt-2 text-xs text-gray-400">Libation processes one admitted title at a time. Pending titles stay passive, so scheduled sync and account management are not locked for the entire batch.</p>
+          </div>
+        <% end %>
+
+        <div class="flex flex-col gap-4 md:flex-row md:items-start">
+          <div class="md:w-1/3">
+            <span class="font-medium text-gray-300">Back up existing purchases</span>
+            <p class="text-sm text-gray-500">Eligible titles are rechecked before each backup. Subscription titles, local matches, conflicts, and prior attempts are excluded.</p>
+          </div>
+          <div class="md:w-2/3">
+            <% if @connection.last_synced_at.blank? %>
+              <p class="text-sm text-amber-300">Run the first library sync from Overview before starting an existing-library backup.</p>
+            <% elsif @backlog_backup_remaining.to_i.positive? %>
+              <p class="text-sm text-gray-400">The current batch is already being managed in the background.</p>
+            <% elsif @backlog_backup_prompt && @backlog_backup_available %>
+              <p class="text-sm text-gray-300">Shelfarr found purchased audiobooks that may be eligible for the one-time backup.</p>
+              <%= link_to "Review and confirm on Overview",
+                admin_owned_library_connections_path(anchor: "overview"),
+                data: { action: "click->settings-tabs#switch", tab: "overview" },
+                class: "mt-3 inline-block rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            <% elsif @backlog_backup_available %>
+              <p class="text-sm text-gray-300">Purchased audiobooks remain to be checked for one-time backup eligibility.</p>
+              <%= form_with url: backup_existing_admin_owned_library_connection_path(@connection), method: :post, class: "mt-4 space-y-4" do |backup_form| %>
+                <label class="flex items-start gap-3 text-sm text-gray-300">
+                  <%= check_box_tag :confirm_existing_library_backup,
+                    "1",
+                    false,
+                    id: "confirm_existing_library_backup_automation",
+                    required: true,
+                    class: "mt-0.5 h-5 w-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500" %>
+                  <span>I understand this background batch may take a long time and use significant bandwidth and disk space.</span>
+                </label>
+                <%= backup_form.submit "Queue eligible backups",
+                  data: { turbo_submits_with: "Creating backup batch…" },
+                  class: "rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+              <% end %>
+            <% else %>
+              <p class="text-sm text-green-300">No unattempted purchased audiobooks remain to be checked for the one-time backup.</p>
+            <% end %>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-4 border-t border-gray-800 pt-4 md:flex-row md:items-start">
+          <div class="md:w-1/3">
+            <span class="font-medium text-gray-300">Backup queue</span>
+            <p class="text-sm text-gray-500">Review individual status, retry a failed title, or queue manual backups from Library.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3 md:w-2/3">
+            <% if @active_backup_total.to_i.positive? %>
+              <span class="rounded bg-blue-500/20 px-2.5 py-1 text-xs font-medium text-blue-300"><%= @active_backup_total %> active</span>
+            <% end %>
+            <%= link_to "Manage in Library",
+              library_index_path(anchor: "library-catalog"),
+              class: "rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+<% else %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6" aria-labelledby="audible-automation-prerequisite-heading">
+    <h2 id="audible-automation-prerequisite-heading" class="text-xl font-bold text-white">Audible automation</h2>
+    <p class="mt-2 text-sm text-gray-400">Enable the Libation companion before configuring scheduled sync or backups.</p>
+    <%= link_to "Open connection settings",
+      admin_owned_library_connections_path(anchor: "connection"),
+      data: { action: "click->settings-tabs#switch", tab: "connection" },
+      class: "mt-4 inline-block rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+  </section>
+<% end %>

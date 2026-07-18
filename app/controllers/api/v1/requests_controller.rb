@@ -64,6 +64,11 @@ class API::V1::RequestsController < API::V1::ApplicationController
   end
 
   def destroy
+    if @request.upload_cancellation_blocked?
+      render json: { errors: [ @request.upload_cancellation_blocked_message ] }, status: :unprocessable_entity
+      return
+    end
+
     unless @request.can_be_cancelled?
       render json: { errors: [ "Cannot cancel request in #{@request.status} status" ] }, status: :unprocessable_entity
       return
@@ -71,6 +76,8 @@ class API::V1::RequestsController < API::V1::ApplicationController
 
     @request.cancel!
     render json: request_payload(@request)
+  rescue Request::CancellationBlockedError => error
+    render json: { errors: [ error.message ] }, status: :unprocessable_entity
   end
 
   def retry
@@ -85,7 +92,8 @@ class API::V1::RequestsController < API::V1::ApplicationController
 
   def search_results
     render json: {
-      search_results: @request.search_results.includes(:acquisition_provider).best_first.map { |result| search_result_payload(result) }
+      search_results: @request.search_results.includes(:acquisition_provider).best_first.map { |result| search_result_payload(result) },
+      store_offers: StoreProviderRegistry.visible_offers_for(@request).best_first.map { |offer| store_offer_payload(offer) }
     }
   end
 
@@ -231,6 +239,30 @@ class API::V1::RequestsController < API::V1::ApplicationController
       blocklisted: result.blocklisted?,
       blocklisted_at: result.blocklisted_at&.iso8601,
       blocklist_reason: result.blocklist_reason
+    }
+  end
+
+  def store_offer_payload(offer)
+    {
+      id: offer.id,
+      provider: offer.provider,
+      provider_name: offer.provider_name,
+      external_id: offer.external_id,
+      title: offer.title,
+      author: offer.author,
+      isbns: offer.isbns,
+      language: offer.language,
+      formats: offer.formats,
+      market: offer.market,
+      drm_free: offer.drm_free,
+      drm_type: offer.drm_type,
+      price: {
+        amount: offer.price_amount&.to_s("F"),
+        currency: offer.price_currency,
+        localized: offer.localized_price
+      },
+      storefront_url: offer.storefront_url,
+      quoted_at: offer.quoted_at&.iso8601
     }
   end
 

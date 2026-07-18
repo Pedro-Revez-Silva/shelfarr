@@ -67,4 +67,121 @@ class RequestQueueJobTest < ActiveJob::TestCase
     # Verify the job runs without error
     assert_nothing_raised { RequestQueueJob.perform_now }
   end
+
+  test "recurring queue execution is serialized" do
+    assert_equal 1, RequestQueueJob.concurrency_limit
+    assert_equal "request-queue", RequestQueueJob.concurrency_key
+    assert_equal :discard, RequestQueueJob.concurrency_on_conflict
+  end
+
+  test "pathological queue batch settings cannot enqueue an unbounded run" do
+    job = RequestQueueJob.new
+
+    SettingsService.stub(:get, -1) do
+      assert_equal 0, job.send(:processing_batch_size)
+    end
+    SettingsService.stub(:get, 1_000_000) do
+      assert_equal RequestQueueJob::MAX_PROCESS_BATCH_SIZE,
+        job.send(:processing_batch_size)
+    end
+  end
+
+  test "retry reconciliation bounds each recurring run" do
+    Request.retry_due.update_all(next_retry_at: 1.hour.from_now)
+    now = Time.current
+    rows = 102.times.map do
+      {
+        book_id: books(:ebook_pending).id,
+        user_id: users(:one).id,
+        status: Request.statuses.fetch("not_found"),
+        next_retry_at: 1.minute.ago,
+        notes: "bounded-retry-reconciliation",
+        language: "en",
+        created_via: "web",
+        request_scope: "single",
+        created_at: now,
+        updated_at: now
+      }
+    end
+    Request.insert_all!(rows)
+
+    RequestQueueJob.new.send(:requeue_retry_due_requests)
+
+    reconciled = Request.where(notes: "bounded-retry-reconciliation")
+    assert_equal 100, reconciled.pending.count
+    assert_equal 2, reconciled.not_found.count
+  end
+
+  test "expired offer reconciliation bounds each recurring run" do
+    SettingsService.set(:ebooks_com_enabled, false)
+    now = Time.current
+    rows = 102.times.map do
+      {
+        book_id: books(:ebook_pending).id,
+        user_id: users(:one).id,
+        status: Request.statuses.fetch("awaiting_purchase"),
+        notes: "bounded-offer-reconciliation",
+        language: "en",
+        created_via: "web",
+        request_scope: "single",
+        created_at: now,
+        updated_at: now
+      }
+    end
+    Request.insert_all!(rows)
+
+    RequestQueueJob.new.send(:requeue_requests_without_visible_store_offers)
+
+    reconciled = Request.where(notes: "bounded-offer-reconciliation")
+    assert_equal 100, reconciled.pending.count
+    assert_equal 2, reconciled.awaiting_purchase.count
+  end
+
+  test "requeues an awaiting purchase request after its store quote expires" do
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    request = requests(:pending_request)
+    request.update!(status: :awaiting_purchase)
+    request.store_offers.create!(
+      provider: "ebooks_com",
+      external_id: "expired-queue-offer",
+      title: request.book.title,
+      formats: [ "epub" ],
+      market: "PT",
+      drm_free: true,
+      storefront_url: "https://www.ebooks.com/en-pt/book/expired-queue-offer/expired/",
+      quoted_at: StoreOffer::FRESHNESS_TTL.ago - 1.minute
+    )
+
+    RequestQueueJob.perform_now
+
+    assert request.reload.pending?
+  ensure
+    SettingsService.set(:ebooks_com_enabled, false)
+    SettingsService.set(:ebooks_com_country_code, "")
+  end
+
+  test "preserves an awaiting purchase request while its quote is fresh" do
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    request = requests(:pending_request)
+    request.update!(status: :awaiting_purchase)
+    request.store_offers.create!(
+      provider: "ebooks_com",
+      external_id: "fresh-queue-offer",
+      title: request.book.title,
+      formats: [ "epub" ],
+      market: "PT",
+      drm_free: true,
+      storefront_url: "https://www.ebooks.com/en-pt/book/fresh-queue-offer/fresh/",
+      quoted_at: Time.current
+    )
+
+    RequestQueueJob.perform_now
+
+    assert request.reload.awaiting_purchase?
+  ensure
+    SettingsService.set(:ebooks_com_enabled, false)
+    SettingsService.set(:ebooks_com_country_code, "")
+  end
 end

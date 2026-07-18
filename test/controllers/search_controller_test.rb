@@ -74,6 +74,36 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "results keep an awaiting purchase work marked as requested" do
+    source_id = "OL_SEARCH_AWAITING_PURCHASE"
+    ebook = Book.create!(
+      title: "Awaiting Store Purchase",
+      book_type: :ebook,
+      open_library_work_id: source_id
+    )
+    Request.create!(book: ebook, user: @user, status: :awaiting_purchase)
+    Book.create!(
+      title: "Awaiting Store Purchase",
+      book_type: :audiobook,
+      open_library_work_id: source_id,
+      file_path: "/audiobooks/awaiting-store-purchase"
+    )
+    result = metadata_result(
+      source_id: source_id,
+      title: "Awaiting Store Purchase",
+      author: "Store Author",
+      year: 2026
+    )
+
+    MetadataService.stub(:search, [ result ]) do
+      get search_results_path, params: { q: "Awaiting Store Purchase" }
+    end
+
+    assert_response :success
+    assert_select "span", text: "Requested"
+    assert_select "a", text: "Request", count: 0
+  end
+
   test "results with empty query returns empty results" do
     get search_results_path, params: { q: "" }
     assert_response :success

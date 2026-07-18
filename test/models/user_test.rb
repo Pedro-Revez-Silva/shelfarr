@@ -82,12 +82,18 @@ class UserTest < ActiveSupport::TestCase
   test "soft_delete! marks user as deleted and clears sessions" do
     user = users(:one)
     user.sessions.create!(user_agent: "test", ip_address: "127.0.0.1")
+    token, = APIToken.issue!(
+      name: "Token revoked with account",
+      user: user,
+      scopes: %w[requests:read]
+    )
 
     assert_difference("user.sessions.count", -1) do
       user.soft_delete!
     end
 
     assert user.reload.deleted?
+    assert token.reload.revoked?
   end
 
   test "allows reusing username from a soft-deleted user" do

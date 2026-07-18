@@ -92,7 +92,9 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
 
     assert_difference "Upload.count", 1 do
       assert_enqueued_with(job: UploadProcessingJob) do
-        post uploads_url, params: { file: file }
+        post uploads_url,
+          params: { file: file },
+          headers: { "HTTP_REFERER" => "http://[malformed" }
       end
     end
 

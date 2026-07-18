@@ -232,6 +232,7 @@ class DownloadMonitorJob < ApplicationJob
   def handle_stale_direct_download(download)
     return unless download.downloading?
     cutoff = DIRECT_DOWNLOAD_STALE_TIMEOUT.ago
+    stalled = false
 
     download.request.with_lock do
       claimed = Download
@@ -254,10 +255,14 @@ class DownloadMonitorJob < ApplicationJob
         message: "Direct download stopped reporting progress",
         level: :warn
       )
-      download.request.mark_for_attention!(
-        "Direct download stopped reporting progress. Retry the request and check the job queue/logs."
-      )
+      stalled = true
     end
+    return unless stalled
+    return if DirectDownloadFileService.reconcile!(download.reload)
+
+    download.request.mark_for_attention!(
+      "Direct download stopped reporting progress. Retry the request and check the job queue/logs."
+    )
   rescue ActiveRecord::RecordNotFound
     nil
   end

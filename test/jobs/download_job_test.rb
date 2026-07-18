@@ -737,24 +737,6 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal [ [ "stale-torrent-hash", true ] ], removed_ids
   end
 
-  test "does not finalize a direct download after ownership is lost" do
-    @download.update!(status: :downloading, download_type: "direct")
-    @download.update!(status: :failed)
-    job = DownloadJob.new
-
-    finalized = job.send(
-      :finalize_direct_download!,
-      @download,
-      download_path: "/tmp/stale-book.epub",
-      book_path: "/tmp/stale-book.epub"
-    )
-
-    assert_not finalized
-    assert @download.reload.failed?
-    assert_not @request.reload.completed?
-    assert_nil @request.book.reload.file_path
-  end
-
   test "sends selected newznab result directly to a usenet client" do
     @client.destroy!
     sabnzbd = DownloadClient.create!(
@@ -937,6 +919,174 @@ class DownloadJobTest < ActiveJob::TestCase
       assert File.exist?(@gutenberg_download.download_path)
       assert_equal "1342.epub", File.basename(@gutenberg_download.download_path)
       assert_equal File.dirname(@gutenberg_download.download_path), @gutenberg_request.book.file_path
+      assert_equal 0o640, File.stat(@gutenberg_download.download_path).mode & 0o777
+    end
+  end
+
+  test "direct download preserves an existing destination with different bytes" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      destination = gutenberg_destination_path(dir)
+      FileUtils.mkdir_p(File.dirname(destination))
+      File.binwrite(destination, "existing-owner-bytes")
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: "PK\x03\x04" + ("new" * 256),
+            headers: { "Content-Type" => "application/epub+zip" }
+          )
+
+        DownloadJob.perform_now(@gutenberg_download.id)
+      end
+
+      assert_equal "existing-owner-bytes", File.binread(destination)
+      assert @gutenberg_download.reload.failed?
+      assert @gutenberg_request.reload.attention_needed?
+      assert_not @gutenberg_download.search_result.reload.blocklisted?
+      assert_nil @gutenberg_request.book.reload.file_path
+      assert_empty Dir.glob("#{destination}.*")
+    end
+  end
+
+  test "direct download retry reuses an exact complete publication without a suffix" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      destination = gutenberg_destination_path(dir)
+      bytes = "PK\x03\x04" + ("same" * 256)
+      FileUtils.mkdir_p(File.dirname(destination))
+      File.binwrite(destination, bytes)
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(status: 200, body: bytes, headers: { "Content-Type" => "application/epub+zip" })
+
+        DownloadJob.perform_now(@gutenberg_download.id)
+      end
+
+      assert @gutenberg_download.reload.completed?
+      assert_equal destination, @gutenberg_download.download_path
+      assert_equal File.dirname(destination), @gutenberg_request.book.reload.file_path
+      assert_equal [ destination ], Dir.glob("#{destination}*")
+      assert_equal bytes, File.binread(destination)
+    end
+  end
+
+  test "an interrupted direct response never exposes partial bytes at the final path" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      destination = gutenberg_destination_path(dir)
+      job = DownloadJob.new
+
+      interrupted_download = lambda do |_result, _url, staged_file, **_options|
+        staged_file.write("PK\x03\x04partial")
+        staged_file.flush
+        raise IOError, "simulated disk interruption"
+      end
+
+      job.stub(:download_file_via_http, interrupted_download) do
+        job.perform(@gutenberg_download.id)
+      end
+
+      assert_not File.exist?(destination)
+      assert @gutenberg_download.reload.failed?
+      assert_nil @gutenberg_request.book.reload.file_path
+      assert_empty Dir.glob(File.join(dir, ".shelfarr-staging", "direct-downloads", "**", "download-*"))
+    end
+  end
+
+  test "direct download rejects a symbolic-link destination ancestor" do
+    Dir.mktmpdir do |dir|
+      Dir.mktmpdir do |outside|
+        setup_gutenberg_download(output_path: dir)
+        destination = gutenberg_destination_path(dir)
+        author_directory = Pathname(destination).dirname.dirname
+        File.symlink(outside, author_directory)
+
+        VCR.turned_off do
+          stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+            .with(query: hash_including("download" => "1"))
+            .to_return(
+              status: 200,
+              body: "PK\x03\x04" + ("x" * 1024),
+              headers: { "Content-Type" => "application/epub+zip" }
+            )
+
+          DownloadJob.perform_now(@gutenberg_download.id)
+        end
+
+        assert @gutenberg_download.reload.failed?
+        assert_empty Dir.children(outside)
+        assert_nil @gutenberg_request.book.reload.file_path
+      end
+    end
+  end
+
+  test "direct download rejects a destination ancestor swapped before publication" do
+    Dir.mktmpdir do |dir|
+      Dir.mktmpdir do |outside|
+        setup_gutenberg_download(output_path: dir)
+        destination = gutenberg_destination_path(dir)
+        original_copy = FileCopyService.method(:cp_io_noreplace)
+        swap_then_copy = lambda do |source, path, root: nil, heartbeat: nil|
+          parent = File.dirname(path)
+          File.rename(parent, "#{parent}.moved")
+          File.symlink(outside, parent)
+          original_copy.call(source, path, root: root, heartbeat: heartbeat)
+        end
+
+        VCR.turned_off do
+          stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+            .with(query: hash_including("download" => "1"))
+            .to_return(
+              status: 200,
+              body: "PK\x03\x04" + ("x" * 1024),
+              headers: { "Content-Type" => "application/epub+zip" }
+            )
+
+          FileCopyService.stub(:cp_io_noreplace, swap_then_copy) do
+            DownloadJob.perform_now(@gutenberg_download.id)
+          end
+        end
+
+        assert @gutenberg_download.reload.failed?
+        assert_empty Dir.children(outside)
+        assert_nil @gutenberg_request.book.reload.file_path
+      end
+    end
+  end
+
+  test "direct download preserves a different Book acquisition winner" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      destination = gutenberg_destination_path(dir)
+      winner_directory = File.dirname(destination)
+      winner_file = File.join(winner_directory, "winner.epub")
+      FileUtils.mkdir_p(winner_directory)
+      File.binwrite(winner_file, "winner")
+      @gutenberg_request.book.update!(file_path: winner_directory)
+
+      VCR.turned_off do
+        remote_download = stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: "PK\x03\x04" + ("x" * 1024),
+            headers: { "Content-Type" => "application/epub+zip" }
+          )
+
+        DownloadJob.perform_now(@gutenberg_download.id)
+        assert_not_requested remote_download
+      end
+
+      assert_equal winner_directory, @gutenberg_request.book.reload.file_path
+      assert_equal "winner", File.binread(winner_file)
+      assert_not File.exist?(destination)
+      assert @gutenberg_download.reload.failed?
+      assert_not @gutenberg_download.search_result.reload.blocklisted?
     end
   end
 
@@ -1241,27 +1391,33 @@ class DownloadJobTest < ActiveJob::TestCase
       assert_equal "direct", @librivox_download.download_type
       assert @librivox_request.completed?
       assert_equal @librivox_request.book.file_path, @librivox_download.download_path
-      assert File.exist?(File.join(@librivox_download.download_path, "chapter_01.mp3"))
+      chapter = File.join(@librivox_download.download_path, "chapter_01.mp3")
+      assert File.exist?(chapter)
+      assert_equal 0o640, File.stat(chapter).mode & 0o777
     end
   end
 
-  test "librivox discards staged extraction after dispatch ownership is lost" do
+  test "librivox archive uses an atomic per-title directory when audiobook output is flat" do
     Dir.mktmpdir do |dir|
+      original_template = SettingsService.get(:audiobook_path_template)
+      SettingsService.set(:audiobook_path_template, "")
       setup_librivox_download(output_path: dir)
       zip_body = build_zip_archive("chapter_01.mp3" => "audio-data")
-      job = DownloadJob.new
 
       VCR.turned_off do
         stub_request(:get, "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3")
           .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
 
-        job.stub(:finalize_direct_download!, ->(*) { false }) do
-          job.perform(@librivox_download.id)
-        end
+        DownloadJob.perform_now(@librivox_download.id)
       end
 
-      assert_equal "downloading", @librivox_download.reload.status
-      assert_empty Dir.glob(File.join(dir, "**", "chapter_01.mp3"))
+      destination = @librivox_download.reload.download_path
+      assert @librivox_download.completed?
+      assert_not_equal dir, destination
+      assert_equal "Jane Austen - Test LibriVox Book", File.basename(destination)
+      assert_equal "audio-data", File.binread(File.join(destination, "chapter_01.mp3"))
+    ensure
+      SettingsService.set(:audiobook_path_template, original_template)
     end
   end
 
@@ -1282,6 +1438,46 @@ class DownloadJobTest < ActiveJob::TestCase
       assert @librivox_download.failed?
       assert @librivox_request.attention_needed?
       assert_not File.exist?(File.join(dir, "escape.mp3"))
+    end
+  end
+
+  test "archive extraction heartbeats while traversing many small entries" do
+    require "zip"
+
+    Dir.mktmpdir do |destination|
+      Tempfile.create([ "heartbeat-archive-", ".zip" ]) do |archive|
+        archive.close
+        Zip::File.open(archive.path, create: true) do |zipfile|
+          zipfile.mkdir("disc-one")
+          zipfile.mkdir("disc-two")
+          zipfile.get_output_stream("chapter.mp3") { |stream| stream.write("audio") }
+        end
+
+        job = DownloadJob.new
+        heartbeat_count = 0
+        tick = -11.0
+        clock = ->(*) { tick += 11.0 }
+        heartbeat = lambda do |_download|
+          heartbeat_count += 1
+        end
+
+        Process.stub(:clock_gettime, clock) do
+          job.stub(:refresh_direct_download_heartbeat!, heartbeat) do
+            File.open(archive.path, "rb") do |source|
+              job.send(
+                :extract_zip_to_directory,
+                source,
+                destination,
+                output_root: destination,
+                download: @download
+              )
+            end
+          end
+        end
+
+        assert_operator heartbeat_count, :>=, 2
+        assert_equal "audio", File.binread(File.join(destination, "chapter.mp3"))
+      end
     end
   end
 
@@ -1360,7 +1556,7 @@ class DownloadJobTest < ActiveJob::TestCase
       html_path = File.join(dir, "book.epub")
       File.binwrite(html_path, "<!doctype html><html></html>")
       assert_raises(RuntimeError) { DownloadJob.new.send(:verify_downloaded_ebook!, html_path, expected_extension: "epub") }
-      assert_not File.exist?(html_path)
+      assert File.exist?(html_path), "validation must not unlink a path it does not own"
 
       epub_path = File.join(dir, "bad.epub")
       File.binwrite(epub_path, "not a zip")
@@ -1527,6 +1723,13 @@ class DownloadJobTest < ActiveJob::TestCase
       name: gutenberg_result.title,
       search_result: gutenberg_result,
       status: :queued
+    )
+  end
+
+  def gutenberg_destination_path(output_path)
+    File.join(
+      PathTemplateService.build_destination(@gutenberg_request.book, base_path: output_path),
+      "1342.epub"
     )
   end
 

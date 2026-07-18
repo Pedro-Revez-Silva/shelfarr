@@ -95,7 +95,8 @@ module Admin
 
     test "select creates download and updates statuses" do
       assert_difference -> { Download.count }, 1 do
-        post select_admin_request_search_result_path(@request_record, @pending_result)
+        post select_admin_request_search_result_path(@request_record, @pending_result),
+          headers: { "HTTP_REFERER" => "http://[malformed" }
       end
 
       @pending_result.reload
@@ -164,14 +165,25 @@ module Admin
 
     test "refresh clears results and requeues search" do
       assert @request_record.search_results.any?
+      @request_record.store_offers.create!(
+        provider: "ebooks_com",
+        external_id: "refresh-offer",
+        title: "The Pending Ebook",
+        formats: [ "epub" ],
+        market: "PT",
+        drm_free: true,
+        storefront_url: "https://www.ebooks.com/en-pt/book/refresh-offer/the-pending-ebook/"
+      )
 
       assert_enqueued_with(job: SearchJob) do
-        post refresh_admin_request_search_results_path(@request_record)
+        post refresh_admin_request_search_results_path(@request_record),
+          headers: { "HTTP_REFERER" => "https://attacker.example/phishing" }
       end
 
       @request_record.reload
       assert @request_record.pending?
       assert @request_record.search_results.empty?
+      assert @request_record.store_offers.empty?
 
       assert_redirected_to request_path(@request_record)
       assert_match /refreshed/, flash[:notice]

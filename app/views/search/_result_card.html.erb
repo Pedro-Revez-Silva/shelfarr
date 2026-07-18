@@ -40,7 +40,7 @@
     existing_book = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: book_type)
     status = if existing_book&.acquired?
       :acquired
-    elsif existing_book&.requests&.active&.any?
+    elsif existing_book&.requests&.open&.any?
       :requested
     else
       :available

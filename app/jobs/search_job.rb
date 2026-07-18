@@ -42,11 +42,17 @@ class SearchJob < ApplicationJob
   ROMAN_VARIANT_NUMERALS = ROMAN_NUMERALS.except("I").freeze
 
   def perform(request_id)
+    suppress_database_debug_logging { perform_search(request_id) }
+  end
+
+  private
+
+  def perform_search(request_id)
     request = Request.find_by(id: request_id)
     return unless request
     return unless claim_search!(request)
 
-    Rails.logger.info "[SearchJob] Starting search for request ##{request.id} (book: #{request.book.title})"
+    Rails.logger.info "[SearchJob] Starting search for request ##{request.id}"
 
     # Check if any search sources are configured
     indexer_available = IndexerClient.configured?
@@ -55,18 +61,20 @@ class SearchJob < ApplicationJob
     gutenberg_available = GutenbergClient.configured? && request.book.ebook?
     librivox_available = LibrivoxClient.configured? && request.book.audiobook?
     custom_providers = AcquisitionProvider.enabled.for_book_type(request.book.book_type).by_priority.to_a
+    store_providers = StoreProviderRegistry.enabled_for(request.book.book_type)
 
-    unless indexer_available || anna_available || zlibrary_available || gutenberg_available || librivox_available || custom_providers.any?
+    unless indexer_available || anna_available || zlibrary_available || gutenberg_available || librivox_available || custom_providers.any? || store_providers.any?
       Rails.logger.error "[SearchJob] No search sources configured"
       request.with_lock do
         next unless request.searching?
 
-        request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, or a custom acquisition provider.")
+        request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, a DRM-free store, or a custom acquisition provider.")
       end
       return
     end
 
     all_results = []
+    all_store_offers = []
     indexer_error = nil
 
     if indexer_available
@@ -106,24 +114,38 @@ class SearchJob < ApplicationJob
       Rails.logger.info "[SearchJob] Found #{provider_results.count} custom provider results from #{provider.name}"
     end
 
+    store_providers.each do |provider|
+      provider_offers = search_store_provider(request, provider)
+      all_store_offers.concat(provider_offers)
+      Rails.logger.info "[SearchJob] Found #{provider_offers.count} DRM-free store offers from #{provider.name}"
+    end
+
     request.with_lock do
       unless request.searching?
         Rails.logger.info "[SearchJob] Request ##{request.id} left searching state; discarding stale search results"
         return
       end
 
+      # A provider can be disabled or switch market while its network request
+      # is in flight. Revalidate the captured results after acquiring the
+      # request lock so that race cannot create an awaiting state whose offers
+      # are already hidden by the current configuration.
+      all_store_offers = currently_eligible_store_offers(request, all_store_offers)
+      save_store_offers(request, all_store_offers)
+
       if all_results.any?
         save_results(request, all_results)
         Rails.logger.info "[SearchJob] Total #{all_results.count} results for request ##{request.id}"
         attempt_auto_select(request)
+      elsif all_store_offers.any?
+        Rails.logger.info "[SearchJob] Store offers found for request ##{request.id}; awaiting purchase or import"
+        handle_store_offers(request, all_store_offers.count)
       else
         Rails.logger.info "[SearchJob] No results found for request ##{request.id}"
         handle_no_results(request, indexer_error)
       end
     end
   end
-
-  private
 
   def claim_search!(request)
     request.with_lock do
@@ -140,13 +162,13 @@ class SearchJob < ApplicationJob
     results = search_indexer(request)
     [ results, nil ]
   rescue IndexerClients::Base::AuthenticationError => e
-    Rails.logger.error "[SearchJob] #{IndexerClient.display_name} authentication failed: #{e.message}"
+    Rails.logger.error "[SearchJob] #{IndexerClient.display_name} authentication failed (#{e.class})"
     [ [], e ]
   rescue IndexerClients::Base::ConnectionError => e
-    Rails.logger.error "[SearchJob] #{IndexerClient.display_name} connection error for request ##{request.id}: #{e.message}"
+    Rails.logger.error "[SearchJob] #{IndexerClient.display_name} connection error for request ##{request.id} (#{e.class})"
     [ [], e ]
   rescue IndexerClients::Base::Error => e
-    Rails.logger.error "[SearchJob] #{IndexerClient.display_name} error for request ##{request.id}: #{e.message}"
+    Rails.logger.error "[SearchJob] #{IndexerClient.display_name} error for request ##{request.id} (#{e.class})"
     [ [], e ]
   end
 
@@ -158,6 +180,22 @@ class SearchJob < ApplicationJob
     else
       request.schedule_retry!
     end
+  end
+
+  def handle_store_offers(request, count)
+    request.update!(
+      status: :awaiting_purchase,
+      attention_needed: false,
+      issue_description: nil,
+      next_retry_at: nil
+    )
+    RequestEvent.record!(
+      request: request,
+      event_type: "store_offers_found",
+      source: "store_provider",
+      message: "#{count} DRM-free store #{'offer'.pluralize(count)} found",
+      details: { offer_count: count }
+    )
   end
 
   def search_indexer(request)
@@ -177,7 +215,7 @@ class SearchJob < ApplicationJob
     query = indexer_language_hint(request)
     categories = primary_indexer_categories(request)
 
-    Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} book query for title='#{book.title}' author='#{book.author}' extra='#{query}' (type: #{book.book_type})"
+    Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for request ##{request.id} (type: #{book.book_type})"
 
     structured_results = tag_indexer_results(
       IndexerClient.search(
@@ -190,17 +228,16 @@ class SearchJob < ApplicationJob
       attempt: SearchAttempt.new(name: :structured_book, query: query, score_penalty: 0)
     )
 
-    fallback_query = generic_indexer_query(request)
     results = structured_results
 
     if structured_results.empty?
-      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with generic query '#{fallback_query}'"
+      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with a generic query"
       results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
     elsif book.ebook?
-      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} ebook search found #{structured_results.count} structured results for request ##{request.id}; supplementing with generic query '#{fallback_query}'"
+      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} ebook search found #{structured_results.count} structured results for request ##{request.id}; supplementing with a generic query"
       results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
     elsif !strong_indexer_match?(results, request)
-      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search found no strong match for request ##{request.id}; supplementing with generic query '#{fallback_query}'"
+      Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search found no strong match for request ##{request.id}; supplementing with a generic query"
       results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
     end
 
@@ -209,9 +246,8 @@ class SearchJob < ApplicationJob
 
   def search_generic_indexer(request)
     book = request.book
-    query = generic_indexer_query(request)
     categories = primary_indexer_categories(request)
-    Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for: #{query} (type: #{book.book_type})"
+    Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for request ##{request.id} (type: #{book.book_type})"
 
     results = search_generic_indexer_attempts(request, categories: categories)
     finalize_indexer_results(request, results)
@@ -236,7 +272,7 @@ class SearchJob < ApplicationJob
 
     # Pass language to Anna's Archive for better filtering
     language = request.effective_language
-    Rails.logger.debug "[SearchJob] Searching Anna's Archive for: #{query} (language: #{language})"
+    Rails.logger.debug "[SearchJob] Searching Anna's Archive for request ##{request.id}"
 
     results = AnnaArchiveClient.search(query, language: language)
 
@@ -245,12 +281,12 @@ class SearchJob < ApplicationJob
       { result: r, source: SearchResult::SOURCE_ANNA_ARCHIVE }
     end
   rescue AnnaArchiveClient::BotProtectionError => e
-    Rails.logger.warn "[SearchJob] Anna's Archive bot protection: #{e.message}"
+    Rails.logger.warn "[SearchJob] Anna's Archive bot protection for request ##{request.id} (#{e.class})"
     # Store the error message to show user if no other results
     @anna_archive_bot_protection_error = e.message
     []
   rescue AnnaArchiveClient::Error => e
-    Rails.logger.warn "[SearchJob] Anna's Archive search failed: #{e.message}"
+    Rails.logger.warn "[SearchJob] Anna's Archive search failed for request ##{request.id} (#{e.class})"
     []
   end
 
@@ -258,39 +294,39 @@ class SearchJob < ApplicationJob
     book = request.book
     query = [ book.title, book.author ].compact.join(" ")
     language = zlibrary_language_filter(request)
-    Rails.logger.debug "[SearchJob] Searching Z-Library for: #{query} (language: #{language || 'any'})"
+    Rails.logger.debug "[SearchJob] Searching Z-Library for request ##{request.id}"
 
     ZLibraryClient.search(query, language: language).map do |result|
       { result: result, source: SearchResult::SOURCE_ZLIBRARY }
     end
   rescue ZLibraryClient::Error => e
-    Rails.logger.warn "[SearchJob] Z-Library search failed: #{e.message}"
+    Rails.logger.warn "[SearchJob] Z-Library search failed for request ##{request.id} (#{e.class})"
     []
   end
 
   def search_librivox(request)
     book = request.book
     language = request.effective_language
-    Rails.logger.debug "[SearchJob] Searching LibriVox for title='#{book.title}' author='#{book.author}' (language: #{language})"
+    Rails.logger.debug "[SearchJob] Searching LibriVox for request ##{request.id}"
 
     LibrivoxClient.search(title: book.title, author: book.author, language: language).map do |result|
       { result: result, source: SearchResult::SOURCE_LIBRIVOX }
     end
   rescue LibrivoxClient::Error => e
-    Rails.logger.warn "[SearchJob] LibriVox search failed: #{e.message}"
+    Rails.logger.warn "[SearchJob] LibriVox search failed for request ##{request.id} (#{e.class})"
     []
   end
 
   def search_gutenberg(request)
     book = request.book
     language = request.effective_language
-    Rails.logger.debug "[SearchJob] Searching Project Gutenberg for title='#{book.title}' author='#{book.author}' (language: #{language})"
+    Rails.logger.debug "[SearchJob] Searching Project Gutenberg for request ##{request.id}"
 
     GutenbergClient.search(title: book.title, author: book.author, language: language).map do |result|
       { result: result, source: SearchResult::SOURCE_GUTENBERG }
     end
   rescue GutenbergClient::Error => e
-    Rails.logger.warn "[SearchJob] Project Gutenberg search failed: #{e.message}"
+    Rails.logger.warn "[SearchJob] Project Gutenberg search failed for request ##{request.id} (#{e.class})"
     []
   end
 
@@ -299,8 +335,64 @@ class SearchJob < ApplicationJob
       { result: result, source: SearchResult::SOURCE_CUSTOM, provider: provider }
     end
   rescue CustomAcquisitionProviderClient::Error => e
-    Rails.logger.warn "[SearchJob] Custom provider #{provider.name} search failed: #{e.message}"
+    Rails.logger.warn "[SearchJob] Custom provider #{provider.name} search failed for request ##{request.id} (#{e.class})"
     []
+  end
+
+  def search_store_provider(request, provider)
+    book = request.book
+    provider.client.search(
+      title: book.title,
+      author: book.author,
+      isbn: book.isbn,
+      language: request.effective_language
+    ).map do |result|
+      { result: result, provider: provider }
+    end
+  rescue StoreProviderError => e
+    Rails.logger.warn "[SearchJob] Store provider #{provider.name} search failed for request ##{request.id} (#{e.class})"
+    []
+  end
+
+  def currently_eligible_store_offers(request, tagged_offers)
+    current_providers = StoreProviderRegistry.enabled_for(request.book.book_type).index_by(&:key)
+
+    tagged_offers.select do |tagged|
+      current_provider = current_providers[tagged[:provider].key]
+      next false unless current_provider
+
+      current_market = current_provider.market
+      current_market.blank? || tagged[:result].market.to_s.strip.upcase == current_market
+    end
+  end
+
+  def save_store_offers(request, tagged_offers)
+    request.store_offers.delete_all
+
+    tagged_offers.each do |tagged|
+      result = tagged[:result]
+      provider = tagged[:provider]
+
+      request.store_offers.create!(
+        provider: provider.key,
+        external_id: result.id,
+        title: result.title,
+        author: result.author,
+        isbns: result.isbns,
+        language: result.language,
+        formats: result.formats,
+        market: result.market,
+        drm_free: true,
+        drm_type: result.drm_type,
+        price_amount: result.price_amount,
+        price_currency: result.price_currency,
+        localized_price: result.localized_price,
+        storefront_url: result.storefront_url,
+        checkout_url: result.checkout_url,
+        cover_url: result.cover_url,
+        quoted_at: result.quoted_at
+      )
+    end
   end
 
   def save_results(request, tagged_results)
@@ -574,7 +666,7 @@ class SearchJob < ApplicationJob
     attempts = generic_indexer_attempts(request)
     return results if attempts.empty?
 
-    Rails.logger.info "[SearchJob] Supplementing #{IndexerClient.display_name} search for request ##{request.id} without category restrictions using '#{attempts.first.query}'"
+    Rails.logger.info "[SearchJob] Supplementing #{IndexerClient.display_name} search for request ##{request.id} without category restrictions"
 
     broad_results = search_generic_indexer_attempts(request, categories: [], starting_results: results, attempts: attempts)
     merged = merge_indexer_results(results, filter_broad_results(broad_results, request))
@@ -582,7 +674,7 @@ class SearchJob < ApplicationJob
 
     low_confidence_fallback_results(broad_results, request)
   rescue IndexerClients::Base::Error => e
-    Rails.logger.warn "[SearchJob] #{IndexerClient.display_name} broad search failed for request ##{request.id}: #{e.message}"
+    Rails.logger.warn "[SearchJob] #{IndexerClient.display_name} broad search failed for request ##{request.id} (#{e.class})"
     results
   end
 
@@ -679,7 +771,7 @@ class SearchJob < ApplicationJob
     last_error = nil
 
     attempts.each do |attempt|
-      Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} generic query '#{attempt.query}' for request ##{request.id} (attempt: #{attempt.name})"
+      Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for request ##{request.id} (attempt: #{attempt.name})"
 
       begin
         attempt_results = tag_indexer_results(
@@ -691,7 +783,7 @@ class SearchJob < ApplicationJob
         # Every remaining attempt would fail the same way; let the caller surface it.
         raise
       rescue IndexerClients::Base::Error => e
-        Rails.logger.warn "[SearchJob] #{IndexerClient.display_name} generic query '#{attempt.query}' failed for request ##{request.id}: #{e.message}"
+        Rails.logger.warn "[SearchJob] #{IndexerClient.display_name} generic attempt failed for request ##{request.id} (attempt: #{attempt.name}, error: #{e.class})"
         last_error = e
       end
 
@@ -725,6 +817,13 @@ class SearchJob < ApplicationJob
     end
 
     deduplicate_search_attempts(attempts)
+  end
+
+  def suppress_database_debug_logging(&block)
+    logger = ActiveRecord::Base.logger
+    return yield unless logger&.respond_to?(:silence)
+
+    logger.silence(Logger::INFO, &block)
   end
 
   def build_search_attempt(name, parts)

@@ -202,6 +202,8 @@
         <a class="nav-link" href="#guide-clients">Download Clients</a>
         <a class="nav-link" href="#guide-abs">Audiobookshelf</a>
         <a class="nav-link" href="#guide-direct">Direct Downloads</a>
+        <a class="nav-link" href="#guide-stores">Third-Party Stores (Beta)</a>
+        <a class="nav-link" href="#guide-audible">Audible Backup (Beta)</a>
         <a class="nav-link" href="#guide-notifications">Notifications</a>
         <a class="nav-link" href="#guide-auth">Authentication &amp; SSO</a>
         <a class="nav-link" href="#guide-api">API Access</a>
@@ -259,29 +261,14 @@
 
         <section id="installation">
           <h2>Installation <a class="anchor" href="#installation">#</a></h2>
-          <p class="section-desc">Shelfarr ships as a single Docker image, <code>ghcr.io/pedro-revez-silva/shelfarr</code>. Docker Compose is the recommended way to run it.</p>
+          <p class="section-desc">The core application image is <code>ghcr.io/pedro-revez-silva/shelfarr</code>. The standard Docker Compose stack also includes the internal, idle Audible Backup companion so the beta can be enabled later without a manual Libation installation.</p>
 
           <h3>1. Create a compose file</h3>
-          <p>Make a folder and drop in a <code>docker-compose.yml</code>. Start from the example and edit the three media paths to match your system:</p>
-<pre><span class="c"># docker-compose.yml</span>
-services:
-  shelfarr:
-    image: ghcr.io/pedro-revez-silva/shelfarr:latest
-    container_name: shelfarr
-    restart: unless-stopped
-    ports:
-      - <span class="k">"5056:80"</span>
-    volumes:
-      <span class="c"># App data — holds the database and auto-generated secret key (required)</span>
-      - ./data:/rails/storage
-      <span class="c"># Your library + download folders — edit the left side</span>
-      - /path/to/audiobooks:/audiobooks
-      - /path/to/ebooks:/ebooks
-      - /path/to/downloads:/downloads
-    environment:
-      - SOLID_QUEUE_IN_PUMA=1
-      <span class="c"># - PUID=1000      # match the owner of your mounted folders</span>
-      <span class="c"># - PGID=1000</span></pre>
+          <p>Download the complete current example rather than copying only the Shelfarr service from an older file:</p>
+<pre><span class="k">mkdir</span> shelfarr &amp;&amp; <span class="k">cd</span> shelfarr
+<span class="k">curl</span> -O https://raw.githubusercontent.com/Pedro-Revez-Silva/shelfarr/main/docker-compose.example.yml
+<span class="k">mv</span> docker-compose.example.yml docker-compose.yml</pre>
+          <p>Edit the left side of the three media mounts: <code>/path/to/audiobooks</code>, <code>/path/to/ebooks</code>, and <code>/path/to/downloads</code>. Optionally set <code>SHELFARR_VERSION</code> to a concrete OCI image version in <code>.env</code> so the Shelfarr and companion images remain paired. Omit the GitHub release tag's leading <code>v</code>: for a release shown as <code>vX.Y.Z</code>, use <code>X.Y.Z</code>.</p>
 
           <div class="callout">
             <span class="ico">📁</span>
@@ -292,7 +279,7 @@ services:
 
           <h3>2. Start it</h3>
 <pre><span class="k">docker compose</span> up -d</pre>
-          <p>A secret key is generated on first run and saved to <code>./data</code> &mdash; keep that folder.</p>
+          <p>A secret key is generated on first run and saved to <code>./data</code> &mdash; keep that folder. Compose also creates private Libation state, completed-backup, and bridge-token volumes. The companion remains idle and does not contact Audible unless an administrator enables Audible Backup.</p>
 
           <h3>3. Open the web UI</h3>
           <p>Visit <code>http://&lt;your-server-ip&gt;:5056</code>. <strong>The first account you register becomes the admin.</strong></p>
@@ -304,10 +291,12 @@ services:
               <tbody>
                 <tr><td class="key"><code>PUID</code></td><td class="default"><code>1000</code></td><td>User ID for file permissions. Match the owner of your mounted volumes.</td></tr>
                 <tr><td class="key"><code>PGID</code></td><td class="default"><code>1000</code></td><td>Group ID for file permissions. Match the group of your mounted volumes.</td></tr>
-                <tr><td class="key"><code>CHOWN_ON_START</code></td><td class="default"><code>auto</code></td><td>Startup ownership fixes for mounted storage. <code>auto</code> tries but continues on failure (e.g. NFS root-squash); <code>always</code> fails on errors; <code>never</code> skips it.</td></tr>
+                <tr><td class="key"><code>CHOWN_ON_START</code></td><td class="default"><code>auto</code></td><td>Startup ownership policy for both standard containers. <code>auto</code> adjusts only when needed; <code>always</code> fails on adjustment errors; <code>never</code> skips <code>chown</code> for pre-permissioned/root-squashed mounts. The Audible companion still rejects group/world-accessible private state and credential/token files.</td></tr>
                 <tr><td class="key"><code>HTTP_PORT</code></td><td class="default"><code>80</code></td><td>Internal container port. Change if 80 clashes (e.g. behind gluetun), then update the port mapping.</td></tr>
                 <tr><td class="key"><code>RAILS_MASTER_KEY</code></td><td class="default"><code>(auto)</code></td><td>Encryption key for stored secrets. Auto-generated on first run if unset.</td></tr>
                 <tr><td class="key"><code>RAILS_RELATIVE_URL_ROOT</code></td><td class="default"><code>/</code></td><td>Base path when running behind a reverse proxy at a sub-path, e.g. <code>/shelfarr</code>.</td></tr>
+                <tr><td class="key"><code>SHELFARR_VERSION</code></td><td class="default"><code>latest</code></td><td>OCI image version used for both Shelfarr and its matching Libation companion. Use the numeric version without a leading <code>v</code>.</td></tr>
+                <tr><td class="key"><code>LIBATION_BOOKS_PATH</code></td><td class="default"><code>libation_books</code></td><td>Optional host path for Libation's retained Audible backup copies. Leave unset to use the Docker named volume.</td></tr>
               </tbody>
             </table>
           </div>
@@ -397,6 +386,49 @@ services:
           <p class="section-desc">Full field list: <a class="inline" href="configuration.html#direct-downloads">Settings reference &rarr; Direct Downloads</a>.</p>
         </section>
 
+        <section id="guide-stores">
+          <h2>Third-Party Stores <span style="color:var(--t-boolean);font-weight:500;font-size:0.78rem">BETA</span> <a class="anchor" href="#guide-stores">#</a></h2>
+          <p>Shelfarr can show legitimate DRM-free store offers without handling checkout. The first provider is eBooks.com. Offers appear in a separate <strong>Buy DRM-free</strong> section on an ebook request and never enter auto-selection or the download queue. When downloadable releases also exist, administrators see both sections; regular requesters see the store offers plus the existing <strong>Search Results Available</strong> banner while release selection remains with an administrator. Lookups run only with request searches, identical responses and displayed quotes expire after 24 hours, and seller rate-limit responses activate a shared cooldown.</p>
+          <ol class="steps">
+            <li>Open <strong>Admin &rarr; Settings &rarr; Search &rarr; eBooks.com Store (Beta)</strong>.</li>
+            <li>Enable it, enter the buyer's two-letter country code (for example <code>US</code>, <code>GB</code>, or <code>PT</code>), choose an offer limit, save, and test the catalog.</li>
+            <li>Request an ebook normally. Follow an eligible offer to eBooks.com, complete payment there, and download the purchased file.</li>
+            <li>Upload the file to its Shelfarr request. If normal users cannot upload, ask an administrator to import it.</li>
+          </ol>
+          <p>New and existing installations need no extra service. An update adds a default-disabled table and settings; it does not replace existing settings or encryption keys. Prices and availability are market-specific, and DRM-free files can still have a social watermark.</p>
+          <div class="callout warn">
+            <span class="ico">⚠️</span>
+            <div>Shelfarr never receives payment details, store credentials, orders, or purchased files automatically. Confirm eBooks.com partner or affiliate permission before enabling catalog deep links for a production deployment.</div>
+          </div>
+          <p class="section-desc">Architecture, permissions, and limitations: <a class="inline" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/docs/drm-free-store-providers.md" target="_blank" rel="noopener">Third-party stores (Beta)</a>.</p>
+        </section>
+
+        <section id="guide-audible">
+          <h2>Audible Backup <span style="color:var(--t-boolean);font-weight:500;font-size:0.78rem">BETA</span> <a class="anchor" href="#guide-audible">#</a></h2>
+          <p>Audible Backup lets you browse and preserve audiobooks already attached to your Audible account. It uses a separately packaged, pinned, unmodified <a class="inline" href="https://github.com/rmcrackan/Libation" target="_blank" rel="noopener">Libation</a> CLI companion. It does not search or advertise Audible's store.</p>
+          <h3>New Compose installation</h3>
+          <p>Use the current Shelfarr Compose example and run <code>docker compose up -d</code>. The private companion is included but stays idle until Audible Backup is enabled; there is no separate Libation installer or public companion port.</p>
+          <h3>Existing Compose installation</h3>
+          <p>Back up your Shelfarr data and Compose file, then merge the companion service, its private state volumes, read-only Shelfarr output and token mounts, and private network configuration from the Compose example for the same Shelfarr release. Set one matching <code>PUID</code>/<code>PGID</code> pair in <code>.env</code>; for a large library, set <code>LIBATION_BOOKS_PATH</code> to storage with enough capacity for Libation's retained copy. Run <code>docker compose pull</code> followed by <code>docker compose up -d</code>. This additive, one-time deployment change preserves existing settings, encrypted records, and Active Record encryption keys; never give Shelfarr access to the Docker socket.</p>
+          <h3>Storage requirement</h3>
+          <p>The configured audiobook output filesystem must support advisory file locks, hard links on the same mount, and Unix mode changes. Shelfarr probes these capabilities before a backup and keeps its private <code>.shelfarr-staging</code> directory inside the audiobook output root for an atomic handoff; do not mount that nested directory from another volume. NFS/SMB appliances that disable reliable <code>flock</code> or hard links are not compatible with Audible imports even if ordinary file copies work.</p>
+          <p>Treat every process running as Shelfarr's <code>PUID</code> as trusted. A malicious same-UID process can modify any writable library file regardless of application-level race defenses; run untrusted download tools under another UID and share only the narrow exchange paths they require.</p>
+          <h3>Connect and back up</h3>
+          <ol class="steps">
+            <li>Open <strong>Admin &rarr; Audible Backup &rarr; Connection</strong>, enable and test the companion, then connect the Audible account from the account card on the same tab.</li>
+            <li>Enter the Audible email and marketplace, start sign-in, and authenticate directly on Amazon/Audible. The validated sign-in link survives a page reload in encrypted, short-lived Shelfarr state until completion or expiry; start again if Shelfarr reports that it expired.</li>
+            <li>Paste the final redirected browser URL into Shelfarr. The Audible password never reaches Shelfarr, and the response URL is not persisted or logged.</li>
+            <li>Run the initial owned-library sync. When <strong>Overview</strong> asks whether to back up the eligible existing library, confirm the displayed count to start a durable background batch or choose <strong>Not now</strong>. The batch excludes subscriptions, local matches, identity conflicts, and prior backup/import attempts; Libation processes one admitted title at a time and progress is managed from <strong>Library</strong>. If you have not verified storage and import paths, choose <strong>Not now</strong>, test one title in Library, then use the reusable action under <strong>Automation</strong>.</li>
+            <li>Optionally enable scheduled sync every hour, 6 hours, 12 hours, 24 hours, 3 days, or weekly. The default is still 24 hours. Automatic backup is a separate opt-in: the next successful manual or scheduled sync refreshes a no-download baseline, then purchased audiobooks first discovered by later syncs are queued automatically.</li>
+          </ol>
+          <p>Automation is off by default and does not affect manual controls. Automatic future-purchase backup requires a completed initial sync and scheduled sync; turning scheduled sync off also turns automatic backup off. Re-enabling automatic backup requires a new no-download baseline refresh rather than downloading older cached titles. It never starts the separately confirmed existing-library batch.</p>
+          <div class="callout warn">
+            <span class="ico">⚠️</span>
+            <div>The first beta supports manual and scheduled sync, cached Library browsing, individual-title backup, a confirmed and conservatively filtered existing-library batch, future-purchase automatic backup, and job status. An unfiltered Back up all, retroactive automatic backup, pause/resume, and cancellation are not yet available. The integration is unofficial and upstream authentication or interfaces can change.</div>
+          </div>
+          <p class="section-desc">Deployment contract, storage, security, attribution, and limitations: <a class="inline" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/docs/audible-backup.md" target="_blank" rel="noopener">Audible Backup, powered by Libation (Beta)</a>.</p>
+        </section>
+
         <section id="guide-notifications">
           <h2>Notifications <a class="anchor" href="#guide-notifications">#</a></h2>
           <p>In-app notifications are always on. You can also forward request events (<code>created</code>, <code>completed</code>, <code>failed</code>, <code>attention</code>) to:</p>
@@ -451,10 +483,16 @@ services:
           <p>Almost always a path mismatch: Shelfarr can't see the files where the download client reports them. Make sure the client's completed folder is mounted into Shelfarr at the same path. If the client runs on a different host or uses a different path, set <code>download_remote_path</code> (the client's path) and <code>download_local_path</code> (what Shelfarr sees) so the two can be mapped.</p>
 
           <h3>Permission denied writing to the library</h3>
-          <p>Set <code>PUID</code>/<code>PGID</code> to match the owner of your mounted folders (run <code>ls -n</code> on them to check). On NFS shares that block <code>chown</code>, set <code>CHOWN_ON_START=never</code> and pre-permission the folders yourself.</p>
+          <p>Set <code>PUID</code>/<code>PGID</code> to match the owner of your mounted folders (run <code>ls -n</code> on them to check). The Compose example passes one <code>CHOWN_ON_START</code> policy to Shelfarr and its companion. On NFS shares that block <code>chown</code>, set it to <code>never</code> and pre-permission every mounted folder yourself.</p>
 
           <h3>Anna's Archive returns nothing</h3>
           <p>The site may be behind anti-bot protection &mdash; configure <code>flaresolverr_url</code>. Member-speed downloads also require an <code>anna_archive_api_key</code>.</p>
+
+          <h3>No eBooks.com offers appear</h3>
+          <p>Confirm <strong>eBooks.com Store (Beta)</strong> is enabled, the buyer country is exactly two letters, and <strong>Test eBooks.com Catalog</strong> succeeds. Offers are checked only for ebook requests and only results explicitly reported as DRM-free EPUB or PDF are retained.</p>
+
+          <h3>Audible Backup says the companion is unavailable</h3>
+          <p>Confirm the current Compose file includes <code>shelfarr-libation</code> and all three Libation volumes, then run <code>docker compose ps</code> and <code>docker compose logs shelfarr-libation</code>. The companion must share Shelfarr's Compose network and token volume, but port 8080 must not be published publicly. For import failures, also verify matching <code>PUID</code>/<code>PGID</code> access to the shared completed-backup volume. Never include the token, Audible redirect URL, or private Libation state in a support log.</p>
 
           <h3>Running behind a reverse proxy at a sub-path</h3>
           <p>Set <code>RAILS_RELATIVE_URL_ROOT</code> (e.g. <code>/shelfarr</code>) so generated links and assets resolve correctly.</p>

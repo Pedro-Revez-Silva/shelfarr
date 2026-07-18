@@ -4,17 +4,20 @@ require "net/http"
 require "uri"
 require "tempfile"
 require "timeout"
+require "pathname"
 
 class DownloadJob < ApplicationJob
   # Wraps network-level failures during a direct HTTP download so failure
   # handling can classify them as transient without message matching.
   class DirectDownloadError < StandardError; end
+  class BookAcquisitionConflictError < StandardError; end
 
   queue_as :default
 
   MAX_DIRECT_DOWNLOAD_BYTES = 512.megabytes
   MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES = 2.gigabytes
   MAX_DIRECT_DOWNLOAD_REDIRECTS = 5
+  MAX_DIRECT_ARCHIVE_ENTRIES = 10_000
   DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL = 30.seconds
   DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
@@ -158,7 +161,9 @@ class DownloadJob < ApplicationJob
 
   def handle_direct_download_failure(download, error, message: nil)
     message ||= "Direct download failed: #{error.message}"
-    if transient_direct_download_error?(error)
+    if error.is_a?(BookAcquisitionConflictError) ||
+        error.is_a?(DirectDownloadFileService::ConflictError) ||
+        transient_direct_download_error?(error)
       download.request.mark_for_attention!(message)
     else
       download.request.handle_download_failure!(download, reason: message)
@@ -292,33 +297,63 @@ class DownloadJob < ApplicationJob
   def handle_direct_audiobook_archive_download(download, search_result, download_url, source_name:)
     book = download.request.book
     base_path = SettingsService.get(:audiobook_output_path, default: "/audiobooks")
-    destination_dir = PathTemplateService.build_destination(book, base_path: base_path)
+    destination_dir = direct_audiobook_archive_destination(book, base_path)
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook to: #{destination_dir}"
+    ensure_book_available_for_direct_download!(book)
     mark_direct_download_active!(download)
-    FileUtils.mkdir_p(File.dirname(destination_dir))
+    ensure_output_root!(base_path)
+    file_service = DirectDownloadFileService.new(
+      download: download,
+      book: book,
+      output_root: base_path,
+      destination_path: destination_dir,
+      book_path: destination_dir,
+      kind: :directory
+    )
+    working_dir = file_service.create_staging!
 
-    finalized = Dir.mktmpdir(".shelfarr-audiobook-", File.dirname(destination_dir)) do |staging_dir|
-      Tempfile.create([ "shelfarr-audiobook-", ".zip" ]) do |archive|
+    finalized = begin
+      extracted = FileCopyService.create_private_directory(
+        working_dir,
+        root: base_path,
+        prefix: "extracted-"
+      )
+      staging_dir = extracted.name
+      staged_archive = FileCopyService.create_private_file(
+        working_dir,
+        root: base_path,
+        prefix: "archive-",
+        suffix: ".zip"
+      )
+      begin
+        archive = staged_archive.io
         archive.binmode
         download_file_via_http(
           search_result,
           download_url,
-          archive.path,
+          archive,
           max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
           download: download
         )
-        verify_downloaded_zip!(archive.path)
+        verify_downloaded_zip!(archive)
         refresh_direct_download_heartbeat!(download)
-        extract_zip_to_directory(archive.path, staging_dir)
+        extract_zip_to_directory(
+          archive,
+          staging_dir,
+          output_root: base_path,
+          download: download
+        )
+      ensure
+        staged_archive.io.close unless staged_archive.io.closed?
       end
 
       refresh_direct_download_heartbeat!(download)
       # Archives extract to many files, so flat output has no single file to
       # track; the root is recorded and guarded against delete/zip by consumers.
-      finalize_direct_download!(download, download_path: destination_dir, book_path: destination_dir) do
-        install_staged_directory!(staging_dir, destination_dir)
-      end
+      file_service.publish_directory_and_finalize!(staging_dir)
+    ensure
+      file_service.cleanup_after_run!
     end
     return unless finalized
 
@@ -338,26 +373,46 @@ class DownloadJob < ApplicationJob
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook file to: #{destination_path}"
+    ensure_book_available_for_direct_download!(book)
     mark_direct_download_active!(download)
-    FileUtils.mkdir_p(destination_dir)
-
-    download_file_via_http(
-      search_result,
-      download_url,
-      destination_path,
-      max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
-      download: download
-    )
-    verify_downloaded_audiobook_file!(destination_path)
-
-    refresh_direct_download_heartbeat!(download)
-    # Flat output shares destination_dir across books; track the file itself
+    ensure_output_root!(base_path)
+    # Flat output shares destination_dir across books; track the file itself.
     book_path = PathTemplateService.flat_output?(book) ? destination_path : destination_dir
-    finalized = finalize_direct_download!(download, download_path: destination_path, book_path: book_path)
-    unless finalized
-      FileUtils.rm_f(destination_path)
-      return
+    file_service = DirectDownloadFileService.new(
+      download: download,
+      book: book,
+      output_root: base_path,
+      destination_path: destination_path,
+      book_path: book_path,
+      kind: :file
+    )
+    working_dir = file_service.create_staging!
+
+    staged = FileCopyService.create_private_file(
+      working_dir,
+      root: base_path,
+      prefix: "audiobook-",
+      suffix: ".#{extension}"
+    )
+    begin
+      staged_file = staged.io
+      staged_file.binmode
+      download_file_via_http(
+        search_result,
+        download_url,
+        staged_file,
+        max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
+        download: download
+      )
+      verify_downloaded_audiobook_file!(staged_file)
+
+      refresh_direct_download_heartbeat!(download)
+      finalized = file_service.publish_file_and_finalize!(staged_file)
+    ensure
+      staged.io.close unless staged.io.closed?
     end
+    file_service.cleanup_after_run!
+    return unless finalized
 
     trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
@@ -368,7 +423,7 @@ class DownloadJob < ApplicationJob
     if finalized
       Rails.logger.warn "[DownloadJob] Post-completion action failed for download ##{download.id}: #{e.class}"
     else
-      FileUtils.rm_f(destination_path) if defined?(destination_path) && destination_path.present?
+      file_service&.cleanup_after_run!
       raise e
     end
   end
@@ -386,24 +441,41 @@ class DownloadJob < ApplicationJob
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading directly to: #{destination_path}"
+    ensure_book_available_for_direct_download!(book)
     mark_direct_download_active!(download)
-
-    # Ensure directory exists
-    FileUtils.mkdir_p(destination_dir)
-
-    # Download the file
-    expected_extension = infer_extension(download_url, search_result)
-    download_file_via_http(search_result, download_url, destination_path, download: download)
-    verify_downloaded_ebook!(destination_path, expected_extension: expected_extension)
-
-    # Flat output shares destination_dir across books; track the file itself
-    refresh_direct_download_heartbeat!(download)
+    ensure_output_root!(base_path)
+    # Flat output shares destination_dir across books; track the file itself.
     book_path = PathTemplateService.flat_output?(book) ? destination_path : destination_dir
-    finalized = finalize_direct_download!(download, download_path: destination_path, book_path: book_path)
-    unless finalized
-      FileUtils.rm_f(destination_path)
-      return
+    file_service = DirectDownloadFileService.new(
+      download: download,
+      book: book,
+      output_root: base_path,
+      destination_path: destination_path,
+      book_path: book_path,
+      kind: :file
+    )
+    working_dir = file_service.create_staging!
+
+    expected_extension = infer_extension(download_url, search_result)
+    staged = FileCopyService.create_private_file(
+      working_dir,
+      root: base_path,
+      prefix: "ebook-",
+      suffix: ".#{expected_extension}"
+    )
+    begin
+      staged_file = staged.io
+      staged_file.binmode
+      download_file_via_http(search_result, download_url, staged_file, download: download)
+      verify_downloaded_ebook!(staged_file, expected_extension: expected_extension)
+
+      refresh_direct_download_heartbeat!(download)
+      finalized = file_service.publish_file_and_finalize!(staged_file)
+    ensure
+      staged.io.close unless staged.io.closed?
     end
+    file_service.cleanup_after_run!
+    return unless finalized
 
     # Trigger library scan if configured
     trigger_library_scan(book) if LibraryPlatformClient.configured?
@@ -417,7 +489,7 @@ class DownloadJob < ApplicationJob
     if finalized
       Rails.logger.warn "[DownloadJob] Post-completion action failed for download ##{download.id}: #{e.class}"
     else
-      FileUtils.rm_f(destination_path) if defined?(destination_path) && destination_path.present?
+      file_service&.cleanup_after_run!
       fail_direct_dispatch!(download, e, message: "Direct download failed: #{e.message}")
     end
   end
@@ -491,6 +563,18 @@ class DownloadJob < ApplicationJob
     sanitize_filename("#{author} - #{title}.#{extension}")
   end
 
+  def direct_audiobook_archive_destination(book, base_path)
+    destination = PathTemplateService.build_destination(book, base_path: base_path)
+    return destination unless PathTemplateService.flat_output?(book)
+
+    # A multi-file archive cannot be atomically merged into a shared flat
+    # output root. Give it one deterministic per-title directory instead.
+    folder = sanitize_filename(
+      "#{book.author.presence || 'Unknown Author'} - #{book.title.presence || 'Unknown'}"
+    )
+    File.join(base_path, folder)
+  end
+
   def extension_from_url(url, allowed_extensions)
     uri = URI.parse(normalize_direct_download_url(url))
     extension = File.extname(uri.path).delete(".").downcase
@@ -559,6 +643,9 @@ class DownloadJob < ApplicationJob
 
   def download_file_via_http(search_result, url, destination, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES, download: nil)
     endpoint = validate_direct_download_url!(url, search_result)
+    unless destination.respond_to?(:write) && destination.respond_to?(:stat)
+      raise ArgumentError, "Direct downloads must target an already-open private staging file"
+    end
 
     Rails.logger.info "[DownloadJob] Starting HTTP download..."
 
@@ -603,17 +690,21 @@ class DownloadJob < ApplicationJob
             max_bytes: max_bytes
           )
 
-          File.open(destination, "wb") do |dest|
-            response.read_body do |chunk|
-              if download && last_heartbeat_at < DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL.ago
-                last_heartbeat_at = refresh_direct_download_heartbeat!(download)
-              end
-              bytes_written += chunk.bytesize
-              raise "Direct download exceeds size limit of #{max_bytes / 1.megabyte} MB" if bytes_written > max_bytes
-
-              dest.write(chunk)
+          destination.rewind
+          destination.truncate(0)
+          bytes_written = 0
+          response.read_body do |chunk|
+            if download && last_heartbeat_at < DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL.ago
+              last_heartbeat_at = refresh_direct_download_heartbeat!(download)
             end
+            bytes_written += chunk.bytesize
+            raise "Direct download exceeds size limit of #{max_bytes / 1.megabyte} MB" if bytes_written > max_bytes
+
+            destination.write(chunk)
           end
+          destination.flush
+          destination.fsync
+          destination.rewind
 
           response_handled = true
           download_complete = true
@@ -626,7 +717,7 @@ class DownloadJob < ApplicationJob
       raise "Direct download failed without a response"
     end
 
-    file_size = File.size(destination)
+    file_size = destination.stat.size
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
   rescue SocketError, IOError, EOFError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError => e
     raise DirectDownloadError, "Direct download request failed: #{e.message}"
@@ -700,99 +791,124 @@ class DownloadJob < ApplicationJob
   end
 
   def verify_downloaded_ebook!(path, expected_extension: nil)
-    raise "Downloaded file does not exist" unless File.exist?(path)
+    with_regular_download_io(path) do |file|
+      file_size = file.stat.size
+      raise "Downloaded file is empty" if file_size.zero?
 
-    file_size = File.size(path)
-    raise "Downloaded file is empty" if file_size.zero?
+      head = read_download_head(file, [ 512, file_size ].min)
+      lowered = head.downcase
+      if lowered.include?("<html") || lowered.include?("<!doctype")
+        raise "Downloaded file is an HTML page, not an ebook"
+      end
 
-    head = File.binread(path, [ 512, file_size ].min)
-    lowered = head.downcase
-    if lowered.include?("<html") || lowered.include?("<!doctype")
-      FileUtils.rm_f(path)
-      raise "Downloaded file is an HTML page, not an ebook"
-    end
-
-    case expected_extension.to_s.downcase
-    when "epub"
-      raise "Downloaded file is not a valid EPUB" unless head.start_with?("PK\x03\x04")
-    when "pdf"
-      raise "Downloaded file is not a valid PDF" unless head.start_with?("%PDF")
-    when "mobi"
-      mobi_signature = File.binread(path, [ 68, file_size ].min).byteslice(60, 8)
-      raise "Downloaded file is not a valid MOBI" unless mobi_signature == "BOOKMOBI"
+      case expected_extension.to_s.downcase
+      when "epub"
+        raise "Downloaded file is not a valid EPUB" unless head.start_with?("PK\x03\x04")
+      when "pdf"
+        raise "Downloaded file is not a valid PDF" unless head.start_with?("%PDF")
+      when "mobi"
+        mobi_signature = read_download_head(file, [ 68, file_size ].min).byteslice(60, 8)
+        raise "Downloaded file is not a valid MOBI" unless mobi_signature == "BOOKMOBI"
+      end
     end
   rescue Errno::ENOENT => e
     raise "Downloaded file is missing: #{e.message}"
   end
 
   def verify_downloaded_zip!(path)
-    raise "Downloaded file does not exist" unless File.exist?(path)
+    with_regular_download_io(path) do |file|
+      file_size = file.stat.size
+      raise "Downloaded file is empty" if file_size.zero?
 
-    file_size = File.size(path)
-    raise "Downloaded file is empty" if file_size.zero?
+      head = read_download_head(file, [ 512, file_size ].min)
+      lowered = head.downcase
+      if lowered.include?("<html") || lowered.include?("<!doctype")
+        raise "Downloaded file is an HTML page, not an audiobook archive"
+      end
 
-    head = File.binread(path, [ 512, file_size ].min)
-    lowered = head.downcase
-    if lowered.include?("<html") || lowered.include?("<!doctype")
-      FileUtils.rm_f(path)
-      raise "Downloaded file is an HTML page, not an audiobook archive"
+      raise "Downloaded file is not a valid ZIP archive" unless head.start_with?("PK\x03\x04")
     end
-
-    raise "Downloaded file is not a valid ZIP archive" unless head.start_with?("PK\x03\x04")
   rescue Errno::ENOENT => e
     raise "Downloaded file is missing: #{e.message}"
   end
 
   def verify_downloaded_audiobook_file!(path)
-    raise "Downloaded file does not exist" unless File.exist?(path)
+    with_regular_download_io(path) do |file|
+      file_size = file.stat.size
+      raise "Downloaded file is empty" if file_size.zero?
 
-    file_size = File.size(path)
-    raise "Downloaded file is empty" if file_size.zero?
-
-    head = File.binread(path, [ 512, file_size ].min)
-    lowered = head.downcase
-    if lowered.include?("<html") || lowered.include?("<!doctype")
-      FileUtils.rm_f(path)
-      raise "Downloaded file is an HTML page, not an audiobook"
+      head = read_download_head(file, [ 512, file_size ].min)
+      lowered = head.downcase
+      if lowered.include?("<html") || lowered.include?("<!doctype")
+        raise "Downloaded file is an HTML page, not an audiobook"
+      end
     end
   rescue Errno::ENOENT => e
     raise "Downloaded file is missing: #{e.message}"
   end
 
-  def extract_zip_to_directory(zip_path, destination_dir)
-    require "zip"
+  def with_regular_download_io(path_or_io)
+    if path_or_io.respond_to?(:stat) && path_or_io.respond_to?(:read)
+      raise "Downloaded path is not a regular file" unless path_or_io.stat.file?
 
-    destination_root = File.expand_path(destination_dir)
-    extracted_files = 0
-
-    Zip::File.open(zip_path) do |zipfile|
-      zipfile.each do |entry|
-        next if entry.directory?
-
-        target = File.expand_path(File.join(destination_root, entry.name))
-        unless target.start_with?("#{destination_root}#{File::SEPARATOR}")
-          raise "ZIP archive contains an unsafe path: #{entry.name}"
-        end
-
-        FileUtils.mkdir_p(File.dirname(target))
-        entry.get_input_stream do |input|
-          File.open(target, "wb") { |output| IO.copy_stream(input, output) }
-        end
-        extracted_files += 1
-      end
+      return yield path_or_io
     end
 
-    raise "ZIP archive did not contain any files" if extracted_files.zero?
-  rescue Zip::Error => e
-    raise "Failed to extract audiobook archive: #{e.message}"
+    File.open(
+      path_or_io,
+      File::RDONLY | File::NOFOLLOW | File::NONBLOCK
+    ) do |file|
+      raise "Downloaded path is not a regular file" unless file.stat.file?
+
+      yield file
+    end
+  rescue Errno::ELOOP, Errno::ENXIO, Errno::ENODEV
+    raise "Downloaded path is not a safe regular file"
   end
 
-  def install_staged_directory!(staging_dir, destination_dir)
-    if File.exist?(destination_dir)
-      FileUtils.cp_r(Dir.children(staging_dir).map { |entry| File.join(staging_dir, entry) }, destination_dir)
-    else
-      FileUtils.mv(staging_dir, destination_dir)
+  def read_download_head(file, length)
+    position = file.pos
+    file.rewind
+    file.read(length).to_s
+  ensure
+    file.seek(position, IO::SEEK_SET) if position
+  end
+
+  def extract_zip_to_directory(source, destination_dir, output_root:, download: nil)
+    unless source.respond_to?(:stat) && source.respond_to?(:read)
+      raise ArgumentError, "Direct ZIP extraction requires an already-open staging file"
     end
+
+    heartbeat = -> { refresh_direct_download_heartbeat!(download) } if download
+    DirectDownloadArchiveExtractor.new(
+      source: source,
+      destination: destination_dir,
+      output_root: output_root,
+      max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
+      max_entries: MAX_DIRECT_ARCHIVE_ENTRIES,
+      heartbeat: heartbeat
+    ).extract!
+  end
+
+  def ensure_book_available_for_direct_download!(book)
+    return unless book.reload.acquisition_blocked?
+
+    raise BookAcquisitionConflictError,
+      "Another acquisition already claimed this title; its existing library file was preserved"
+  end
+
+  def ensure_output_root!(base_path)
+    root = Pathname(base_path).expand_path
+    return FileCopyService.ensure_directory(root.to_s, root: root.to_s) if root.directory?
+
+    existing_parent = root.parent
+    existing_parent = existing_parent.parent until existing_parent.exist? || existing_parent.root?
+    stat = File.lstat(existing_parent)
+    unless stat.directory?
+      raise FileCopyService::UnsafePathError, "Configured library path has an unsafe parent"
+    end
+
+    FileCopyService.ensure_directory(root.to_s, root: existing_parent.to_s)
   end
 
   def trigger_library_scan(book)
@@ -999,24 +1115,6 @@ class DownloadJob < ApplicationJob
     download.reload
     search_result.reload
     download.downloading? && download.download_type == "dispatching" && download.external_id.blank?
-  end
-
-  def finalize_direct_download!(download, download_path:, book_path:)
-    finalized = download.request.with_lock do
-      download.reload
-      next false unless download.downloading? && download.download_type == "direct" && download.external_id.blank?
-
-      yield if block_given?
-      download.request.book.update!(file_path: book_path)
-      download.update!(status: :completed, download_path: download_path)
-      download.request.complete!
-      true
-    end
-
-    Rails.logger.info "[DownloadJob] Direct dispatch no longer owns download ##{download.id}; discarding completion" unless finalized
-    finalized
-  rescue ActiveRecord::RecordNotFound
-    false
   end
 
   def fail_direct_dispatch!(download, error, message:)

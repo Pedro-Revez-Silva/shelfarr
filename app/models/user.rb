@@ -153,6 +153,8 @@ class User < ApplicationRecord
   def soft_delete!
     transaction do
       sessions.destroy_all
+      now = Time.current
+      api_tokens.where(revoked_at: nil).update_all(revoked_at: now, updated_at: now)
       update!(deleted_at: Time.current)
     end
   end
