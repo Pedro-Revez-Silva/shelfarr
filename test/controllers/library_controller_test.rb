@@ -102,6 +102,35 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "inactive Audible ownership does not tag an acquired book" do
+    connection = create_audible_connection
+    book = Book.create!(
+      title: "Former Audible Account Title",
+      author: "Former Account Author",
+      book_type: :audiobook,
+      file_path: "/audiobooks/former-audible-account-title"
+    )
+    connection.owned_library_items.create!(
+      external_id: "B012345679",
+      title: book.title,
+      ownership_type: "purchased",
+      active: false,
+      book: book
+    )
+
+    get library_index_path(q: book.title)
+
+    assert_response :success
+    assert_select "[data-library-book-id='#{book.id}']", count: 1 do
+      assert_select "span", text: "Audible", count: 0
+    end
+
+    get library_index_path(source: "audible", q: book.title)
+
+    assert_response :success
+    assert_select "[data-library-book-id='#{book.id}']", count: 0
+  end
+
   test "Audible filter shows only cards carrying the Audible tag" do
     sign_out
     sign_in_as(@admin)

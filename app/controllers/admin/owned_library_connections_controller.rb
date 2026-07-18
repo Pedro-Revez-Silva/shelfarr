@@ -54,7 +54,7 @@ module Admin
         identity_changed = endpoint_identity_change?(attributes)
         if active_operation?
           :busy
-        elsif identity_changed && pending_backup_queue?
+        elsif identity_changed && account_bound_backup_state?
           :pending_backups
         elsif @connection.update(attributes)
           reset_account_bound_catalog! if identity_changed
@@ -71,7 +71,7 @@ module Admin
       end
       if update_result == :pending_backups
         redirect_to admin_owned_library_connections_path(tab: "connection", anchor: "connection"),
-          alert: "Finish the queued Audible backups before changing the companion URL or token."
+          alert: "Finish queued Audible backups and resolve recoverable Audible backups before changing the companion URL or token."
         return
       end
 
@@ -113,7 +113,7 @@ module Admin
       auth_request_token = claim_auth_start
       unless auth_request_token
         redirect_to admin_owned_library_connections_path(tab: "connection", anchor: "connection"),
-          alert: "Wait for current Libation work and queued Audible backups to finish before changing accounts."
+          alert: "Wait for current Libation work and queued Audible backups to finish, and resolve recoverable Audible backups, before changing accounts."
         return
       end
 
@@ -503,8 +503,8 @@ module Admin
         @connection.owned_media_imports.active.exists?
     end
 
-    def pending_backup_queue?
-      @connection.owned_media_imports.pending.exists?
+    def account_bound_backup_state?
+      @connection.owned_media_imports.cancellation_blocking.exists?
     end
 
     def endpoint_identity_change?(attributes)
@@ -680,7 +680,7 @@ module Admin
     def claim_auth_start
       @connection.with_lock do
         @connection.reload
-        next if active_operation? || pending_backup_queue?
+        next if active_operation? || account_bound_backup_state?
 
         token = "#{OwnedLibraryConnection::AUTH_START_PREFIX}#{SecureRandom.hex(16)}"
         @connection.update!(

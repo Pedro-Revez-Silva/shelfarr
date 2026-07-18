@@ -36,11 +36,14 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-123")
 
     # Create temp directories for testing file operations
-    @temp_source = Dir.mktmpdir("source")
+    @temp_download_base = Dir.mktmpdir("downloads")
+    @temp_source = File.join(@temp_download_base, "source")
+    FileUtils.mkdir_p(@temp_source)
     @temp_dest_base = Dir.mktmpdir("dest")
 
     # Set output path to temp destination (Shelfarr always uses its own settings)
     SettingsService.set(:audiobook_output_path, @temp_dest_base)
+    SettingsService.set(:download_local_path, @temp_download_base)
     SettingsService.set(:move_completed_downloads, false)
 
     # Update download path to temp source
@@ -52,7 +55,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
   teardown do
     LibraryPlatformClient.reset_connections!
-    FileUtils.rm_rf(@temp_source) if @temp_source && File.exist?(@temp_source)
+    FileUtils.rm_rf(@temp_download_base) if @temp_download_base && File.exist?(@temp_download_base)
     FileUtils.rm_rf(@temp_dest_base) if @temp_dest_base && File.exist?(@temp_dest_base)
   end
 
@@ -113,6 +116,41 @@ class PostProcessingJobTest < ActiveJob::TestCase
     refute File.exist?(File.join(expected_dest, "audiobook.mp3"))
     assert @request.reload.attention_needed?
     assert_includes @request.issue_description, "Refusing to import shared download root"
+  end
+
+  test "refuses a download client path outside configured source roots" do
+    unauthorized_source = Dir.mktmpdir("outside-download-root")
+    secret_path = File.join(unauthorized_source, "credentials.sqlite3")
+    File.binwrite(secret_path, "sensitive application data")
+    @download.update!(download_path: unauthorized_source)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    refute File.exist?(File.join(expected_dest, "credentials.sqlite3"))
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "configured download root"
+  ensure
+    FileUtils.rm_rf(unauthorized_source) if unauthorized_source && File.exist?(unauthorized_source)
+  end
+
+  test "refuses a source symlink that escapes a configured download root" do
+    unauthorized_source = Dir.mktmpdir("outside-download-root")
+    File.binwrite(File.join(unauthorized_source, "credentials.sqlite3"), "sensitive application data")
+    escaped_source = File.join(@temp_download_base, "escaped-source")
+    File.symlink(unauthorized_source, escaped_source)
+    @download.update!(download_path: escaped_source)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    refute File.exist?(File.join(expected_dest, "credentials.sqlite3"))
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "configured download root"
+  ensure
+    FileUtils.rm_rf(unauthorized_source) if unauthorized_source && File.exist?(unauthorized_source)
   end
 
   test "skips a completed download replaced by a manual selection" do

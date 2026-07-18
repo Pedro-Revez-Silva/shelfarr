@@ -266,6 +266,37 @@ class Admin::OwnedLibraryConnectionsControllerTest < ActionDispatch::Integration
     assert pending_import.reload.pending?
   end
 
+  test "recoverable failed backup blocks companion identity changes" do
+    connection = create_connection
+    item = connection.owned_library_items.create!(
+      external_id: "B012345678",
+      title: "Recoverable Account-Bound Title",
+      ownership_type: "purchased"
+    )
+    item.owned_media_imports.create!(
+      requested_by: users(:two),
+      status: "failed",
+      destination_path: "/audiobooks/recoverable-account-bound-title.m4b",
+      completed_at: Time.current
+    )
+
+    patch admin_owned_library_connection_url(connection), params: {
+      owned_library_connection: {
+        url: "https://replacement-libation.test",
+        bridge_token: "replacement-token",
+        enabled: "1",
+        allow_private_network: "0",
+        timeout_seconds: "30"
+      }
+    }
+
+    assert_redirected_to admin_owned_library_connections_path(tab: "connection", anchor: "connection")
+    assert_match(/recoverable Audible backups/, flash[:alert])
+    assert_equal "https://libation.test", connection.reload.url
+    assert_equal "token", connection.bridge_token
+    assert item.reload.active?
+  end
+
   test "a backlog admitted immediately before an endpoint update wins the connection transition" do
     connection = create_connection
     item = connection.owned_library_items.create!(
@@ -369,6 +400,43 @@ class Admin::OwnedLibraryConnectionsControllerTest < ActionDispatch::Integration
     end
 
     assert_match(/queued Audible backups/, flash[:alert])
+    assert_nil connection.reload.auth_session_id
+  end
+
+  test "recoverable failed backup blocks authentication for a different Audible account" do
+    connection = create_connection
+    item = connection.owned_library_items.create!(
+      external_id: "B012345678",
+      title: "Recoverable Account-Bound Title",
+      ownership_type: "purchased"
+    )
+    item.owned_media_imports.create!(
+      requested_by: users(:two),
+      status: "failed",
+      destination_path: "/audiobooks/recoverable-auth-title.m4b",
+      completed_at: Time.current
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "https://libation.test/v1/auth/start")
+        .to_return(
+          status: 200,
+          body: {
+            sessionId: "session-1",
+            loginUrl: "https://www.amazon.com/ap/signin?example=1",
+            expiresAt: 10.minutes.from_now.iso8601
+          }.to_json
+        )
+
+      post auth_start_admin_owned_library_connection_url(connection), params: {
+        account: "different@example.com",
+        locale: "us"
+      }
+
+      assert_not_requested :post, "https://libation.test/v1/auth/start"
+    end
+
+    assert_match(/recoverable Audible backups/, flash[:alert])
     assert_nil connection.reload.auth_session_id
   end
 

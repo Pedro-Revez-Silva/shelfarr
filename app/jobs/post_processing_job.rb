@@ -74,11 +74,12 @@ class PostProcessingJob < ApplicationJob
 
       base_path = get_base_path(book)
       destination = build_destination_path(book, base_path: base_path)
-      source_path = remap_download_path(download.download_path, download)
+      source_resolution = remap_download_path(download.download_path, download)
+      source_path = source_resolution[:path]
       if source_path_unavailable?(source_path)
         return retry_source_path_later(download, request, source_path, source_path_retry_count)
       end
-      validate_download_specific_source_path!(source_path, download)
+      validate_download_specific_source_path!(source_path, source_resolution[:authorized_roots], download)
 
       source_cleanup = import_files(source_path, destination, book: book, base_path: base_path)
 
@@ -225,6 +226,8 @@ class PostProcessingJob < ApplicationJob
       "Source path not found at Shelfarr's configured download mount"
     when /shared download root/i
       "Refusing to import shared download root; a download-specific path is required"
+    when /outside (?:a )?configured download root/i
+      "Refusing to import source outside configured download roots"
     when /no supported ebook files/i
       "No supported ebook files found in the completed download"
     when /unsupported ebook import file type/i
@@ -247,17 +250,21 @@ class PostProcessingJob < ApplicationJob
     source_path.present? && !File.exist?(source_path)
   end
 
-  def validate_download_specific_source_path!(source_path, download)
-    return unless source_path.present? && File.directory?(source_path)
+  def validate_download_specific_source_path!(source_path, authorized_roots, download)
+    return unless source_path.present?
 
     source = canonical_path(source_path)
-    shared_roots = shared_download_roots(download).filter_map do |path|
-      canonical_path(path) if path.present?
-    end
-    return unless shared_roots.include?(source)
+    roots = Array(authorized_roots).filter_map { |path| canonical_download_root(path) }.uniq
+    shared_roots = shared_download_roots(download).filter_map { |path| canonical_download_root(path) }.uniq
 
-    raise "Refusing to import shared download root. " \
-      "The download client must report a download-specific file or directory."
+    if shared_roots.include?(source)
+      raise "Refusing to import shared download root. " \
+        "The download client must report a download-specific file or directory."
+    end
+
+    return if roots.any? { |root| path_inside_root?(source, root) }
+
+    raise "Refusing to import source outside a configured download root."
   end
 
   def shared_download_roots(download)
@@ -285,8 +292,22 @@ class PostProcessingJob < ApplicationJob
   def canonical_path(path)
     expanded = File.expand_path(normalize_path_separators(path))
     File.realpath(expanded)
-  rescue SystemCallError
-    expanded
+  end
+
+  def canonical_download_root(path)
+    expanded = File.expand_path(normalize_path_separators(path))
+    return unless File.directory?(expanded)
+
+    canonical = File.realpath(expanded)
+    return if Pathname(canonical).root?
+
+    canonical
+  rescue ArgumentError, SystemCallError
+    nil
+  end
+
+  def path_inside_root?(path, root)
+    path.start_with?("#{root}#{File::SEPARATOR}")
   end
 
   def retry_source_path_later(download, request, source_path, retry_count)
@@ -810,7 +831,7 @@ class PostProcessingJob < ApplicationJob
   def remap_download_path(path, download)
     if path.blank?
       Rails.logger.warn "[PostProcessingJob] Download path is blank - download client didn't report a path"
-      return path
+      return { path: path, authorized_roots: [] }
     end
 
     Rails.logger.info "[PostProcessingJob] Resolving the download client path"
@@ -824,7 +845,7 @@ class PostProcessingJob < ApplicationJob
 
       if File.exist?(candidate[:path])
         Rails.logger.info "[PostProcessingJob] Path resolved via #{candidate[:strategy]}"
-        return candidate[:path]
+        return candidate
       end
     end
 
@@ -835,7 +856,7 @@ class PostProcessingJob < ApplicationJob
 
     # Return the first non-nil candidate so import_files produces a clear "not found" error
     best_guess = candidates.find { |c| c[:path].present? }
-    best_guess ? best_guess[:path] : path
+    best_guess || { path: path, authorized_roots: [] }
   end
 
   def build_path_candidates(path, download)
@@ -846,15 +867,24 @@ class PostProcessingJob < ApplicationJob
     categories = category_path_variants(download.download_client&.category)
     client_download_path = normalize_path_separators(download.download_client&.download_path)
     basename = File.basename(normalized_path)
+    original_path_roots = [ local_path, remote_path, client_download_path ].compact_blank
 
     # 1. Global remote_path → local_path prefix replacement
     if remote_path.present? && path_prefix_match?(normalized_path, remote_path)
-      candidates << { strategy: "global_prefix_remap", path: replace_path_prefix(normalized_path, remote_path, local_path) }
+      candidates << {
+        strategy: "global_prefix_remap",
+        path: replace_path_prefix(normalized_path, remote_path, local_path),
+        authorized_roots: [ local_path ]
+      }
     end
 
     # 2. local_path/category/basename — most common torrent client layout
     categories.each do |category|
-      candidates << { strategy: "local_path_with_category", path: File.join(local_path, category, basename) }
+      candidates << {
+        strategy: "local_path_with_category",
+        path: File.join(local_path, category, basename),
+        authorized_roots: [ local_path ]
+      }
     end
 
     # 3. Category-aware sibling remap — when remote_path points to a sibling folder
@@ -869,21 +899,37 @@ class PostProcessingJob < ApplicationJob
         relative_after_base = normalized_path[(category_idx)..]
 
         if remote_base == File.dirname(remote_path)
-          candidates << { strategy: "category_sibling_remap", path: File.join(File.dirname(local_path), relative_after_base) }
+          candidates << {
+            strategy: "category_sibling_remap",
+            path: File.join(File.dirname(local_path), relative_after_base),
+            authorized_roots: [ File.dirname(local_path) ]
+          }
         end
       end
     end
 
     # 4. Client download_path + basename
     if client_download_path.present?
-      candidates << { strategy: "client_download_path", path: File.join(client_download_path, basename) }
+      candidates << {
+        strategy: "client_download_path",
+        path: File.join(client_download_path, basename),
+        authorized_roots: [ client_download_path ]
+      }
     end
 
     # 5. local_path/basename (no category)
-    candidates << { strategy: "local_path_basename", path: File.join(local_path, basename) }
+    candidates << {
+      strategy: "local_path_basename",
+      path: File.join(local_path, basename),
+      authorized_roots: [ local_path ]
+    }
 
     # 6. Original path as-is (works when download client runs in the same filesystem)
-    candidates << { strategy: "original_path", path: path }
+    candidates << {
+      strategy: "original_path",
+      path: path,
+      authorized_roots: original_path_roots
+    }
 
     candidates
   end

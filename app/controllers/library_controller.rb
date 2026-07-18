@@ -240,7 +240,9 @@ class LibraryController < ApplicationController
         INNER JOIN owned_library_connections
           ON owned_library_connections.id = tagged_items.owned_library_connection_id
         WHERE tagged_items.book_id IS NOT NULL
+          AND tagged_items.active = 1
           AND tagged_items.ownership_type = 'purchased'
+          AND tagged_items.media_type = 'audiobook'
           AND owned_library_connections.provider = 'libation'
         UNION
         SELECT matched_book_id AS book_id
