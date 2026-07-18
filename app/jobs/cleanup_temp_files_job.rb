@@ -8,6 +8,10 @@ require "find"
 class CleanupTempFilesJob < ApplicationJob
   queue_as :default
 
+  ARCHIVE_CACHE_PATTERN = /\Abook_(\d+)_v\d+_[0-9a-f]{64}\.zip\z/
+  ARCHIVE_STAGING_PATTERN = /\A\.book_(\d+)_archive-[0-9a-f]{32}\.zip\z/
+  ARCHIVE_LOCK_PATTERN = /\A\.archive-lock-[0-9a-f]{2}\z/
+
   def perform
     cleanup_download_temps
     cleanup_upload_temps
@@ -19,25 +23,79 @@ class CleanupTempFilesJob < ApplicationJob
 
   def cleanup_download_temps
     downloads_dir = Rails.root.join("tmp", "downloads")
-    return unless File.directory?(downloads_dir)
+    return unless File.lstat(downloads_dir).directory?
 
-    max_age = 1.hour.ago
-    deleted_count = 0
+    FileCopyService.directory_identity(downloads_dir, root: Rails.root.join("tmp"))
 
-    Dir.glob(downloads_dir.join("*")).each do |file|
-      next if File.directory?(file)
-      # Handle race condition where file is deleted between glob and mtime check
-      begin
-        next if File.mtime(file) > max_age
-      rescue Errno::ENOENT
-        next
-      end
-
-      FileUtils.rm_f(file)
-      deleted_count += 1
-    end
+    deleted_count = cleanup_download_directory(downloads_dir, max_age: 1.hour.ago)
 
     Rails.logger.info "[CleanupTempFilesJob] Deleted #{deleted_count} old download temp files" if deleted_count > 0
+  rescue Errno::ENOENT
+    nil
+  rescue FileCopyService::UnsafePathError, SystemCallError => error
+    Rails.logger.warn "[CleanupTempFilesJob] Could not safely inspect download archives: #{error.class}"
+  end
+
+  def cleanup_download_directory(downloads_dir, max_age:)
+    downloads_dir = Pathname(downloads_dir).expand_path
+    entries = Dir.each_child(downloads_dir).to_a
+    deleted = entries.sum do |entry|
+      next 0 unless entry.valid_encoding?
+
+      match = ARCHIVE_CACHE_PATTERN.match(entry) || ARCHIVE_STAGING_PATTERN.match(entry)
+      if match
+        cleanup_coordinated_archive_entry(
+          downloads_dir,
+          entry,
+          book_id: match[1],
+          max_age: max_age
+        )
+      elsif ARCHIVE_LOCK_PATTERN.match?(entry)
+        0
+      else
+        cleanup_legacy_download_entry(downloads_dir, entry, max_age: max_age)
+      end
+    end
+
+    deleted
+  rescue Errno::ENOENT
+    0
+  end
+
+  def cleanup_coordinated_archive_entry(downloads_dir, entry, book_id:, max_age:)
+    path = downloads_dir.join(entry)
+    lock_path = LibraryDownloadArchiveService.lock_path_for_book(
+      book_id,
+      directory: downloads_dir
+    )
+    removed = false
+    FileCopyService.with_private_lock(lock_path, root: downloads_dir.to_s) do
+      stale = FileCopyService.with_regular_file(path, root: downloads_dir.to_s) do |file|
+        file.stat.mtime <= max_age
+      end
+      removed = FileCopyService.remove_regular_file_safely(path, root: downloads_dir.to_s) if stale
+    end
+    removed ? 1 : 0
+  rescue Errno::ENOENT
+    0
+  rescue FileCopyService::UnsafePathError, FileCopyService::AtomicPublicationUnsupportedError,
+    SystemCallError => error
+    Rails.logger.warn "[CleanupTempFilesJob] Could not safely clean a download archive: #{error.class}"
+    0
+  end
+
+  def cleanup_legacy_download_entry(downloads_dir, entry, max_age:)
+    path = downloads_dir.join(entry)
+    stat = File.lstat(path)
+    return 0 unless stat.file? && stat.mtime <= max_age
+
+    FileCopyService.remove_regular_file_safely(path, root: downloads_dir.to_s) ? 1 : 0
+  rescue Errno::ENOENT
+    0
+  rescue FileCopyService::UnsafePathError, FileCopyService::AtomicPublicationUnsupportedError,
+    SystemCallError => error
+    Rails.logger.warn "[CleanupTempFilesJob] Could not safely clean a legacy download file: #{error.class}"
+    0
   end
 
   def cleanup_upload_temps

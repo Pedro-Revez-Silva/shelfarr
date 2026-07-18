@@ -24,6 +24,25 @@ class OwnedLibraryConnectionTest < ActiveSupport::TestCase
     assert_includes connection.errors[:url], "must be a valid http or https URL without embedded credentials"
   end
 
+  test "allows a companion path prefix but rejects query and fragment components" do
+    connection = OwnedLibraryConnection.new(
+      url: "https://companion.test/reverse-proxy/libation",
+      allow_private_network: false
+    )
+    assert connection.valid?, connection.errors.full_messages.join(", ")
+
+    [
+      "https://companion.test/reverse-proxy/libation?tenant=one",
+      "https://companion.test/reverse-proxy/libation#settings",
+      "https://companion.test/reverse-proxy/libation?",
+      "https://companion.test/reverse-proxy/libation#"
+    ].each do |url|
+      connection.url = url
+      assert_not connection.valid?, "#{url} would append API routes inside a query or fragment"
+      assert_includes connection.errors[:url], "must not include a query string or fragment"
+    end
+  end
+
   test "requires HTTPS unless private network access is enabled" do
     connection = OwnedLibraryConnection.new(
       url: "http://public-companion.example",

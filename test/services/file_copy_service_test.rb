@@ -173,6 +173,21 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "outside bytes", File.binread(File.join(outside, "chapter.mp3"))
   end
 
+  test "source snapshots bound both entry count and directory depth" do
+    source_root_path = File.join(@tmp_dir, "bounded-download")
+    nested = File.join(source_root_path, "nested")
+    FileUtils.mkdir_p(nested)
+    File.binwrite(File.join(source_root_path, "one.mp3"), "one")
+    File.binwrite(File.join(nested, "two.mp3"), "two")
+
+    assert_raises(FileCopyService::UnsafePathError) do
+      FileCopyService.snapshot_source_root(source_root_path, max_entries: 1)
+    end
+    assert_raises(FileCopyService::UnsafePathError) do
+      FileCopyService.snapshot_source_root(source_root_path, max_depth: 0)
+    end
+  end
+
   test "snapshotted source root rejects a same-path file replacement" do
     source_root_path = File.join(@tmp_dir, "download")
     FileUtils.mkdir_p(source_root_path)

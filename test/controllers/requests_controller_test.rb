@@ -1373,6 +1373,262 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(temp_dir)
   end
 
+  test "download rejects a final file symlink that escapes the configured output root without logging paths" do
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    outside_file = File.join(temp_dir, "private.txt")
+    exposed_path = File.join(output_root, "book.m4b")
+    FileUtils.mkdir_p(output_root)
+    File.binwrite(outside_file, "private server data")
+    File.symlink(outside_file, exposed_path)
+    SettingsService.set(:audiobook_output_path, output_root)
+
+    book = Book.create!(
+      title: "Escaping leaf",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: exposed_path
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+    output = StringIO.new
+    capture_logger = ActiveSupport::Logger.new(output)
+    logger = Rails.logger
+    logger.broadcast_to(capture_logger)
+    begin
+      get download_request_path(request)
+    ensure
+      logger.stop_broadcasting_to(capture_logger)
+      capture_logger.close
+    end
+    messages = output.string.lines.select do |message|
+      message.include?("request ##{request.id}") && message.include?("book ##{book.id}")
+    end
+
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+    assert_not_includes response.body, "private server data"
+    assert messages.any? { |message| message.include?("request ##{request.id}") }
+    assert messages.none? { |message| message.include?(temp_dir) }
+    assert messages.none? { |message| message.include?(outside_file) }
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download rejects a symlinked directory below the configured output root" do
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    outside_dir = File.join(temp_dir, "private")
+    FileUtils.mkdir_p([ output_root, outside_dir ])
+    File.binwrite(File.join(outside_dir, "secret.m4b"), "private directory data")
+    File.symlink(outside_dir, File.join(output_root, "linked-author"))
+    SettingsService.set(:audiobook_output_path, output_root)
+
+    book = Book.create!(
+      title: "Escaping ancestor",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: File.join(output_root, "linked-author", "secret.m4b")
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+    assert_not_includes response.body, "private directory data"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download accepts a regular file beneath a deliberately symlinked configured output root" do
+    temp_dir = Dir.mktmpdir
+    real_root = File.join(temp_dir, "mounted-library")
+    configured_root = File.join(temp_dir, "audiobooks")
+    FileUtils.mkdir_p(real_root)
+    File.symlink(real_root, configured_root)
+    temp_file = File.join(configured_root, "book.m4b")
+    File.binwrite(File.join(real_root, "book.m4b"), "trusted audio data")
+    SettingsService.set(:audiobook_output_path, configured_root)
+
+    book = Book.create!(
+      title: "Configured root alias",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: temp_file
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_response :success
+    assert_equal "trusted audio data", response.body
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download accepts a canonical stored path beneath a symlinked configured output root" do
+    temp_dir = Dir.mktmpdir
+    real_root = File.join(temp_dir, "mounted-library")
+    configured_root = File.join(temp_dir, "audiobooks")
+    canonical_file = File.join(real_root, "book.m4b")
+    FileUtils.mkdir_p(real_root)
+    File.symlink(real_root, configured_root)
+    File.binwrite(canonical_file, "canonical trusted audio data")
+    SettingsService.set(:audiobook_output_path, configured_root)
+
+    book = Book.create!(
+      title: "Canonical root alias",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: canonical_file
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_response :success
+    assert_equal "canonical trusted audio data", response.body
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download boundary rejects a non-regular target before it can be served" do
+    temp_dir = Dir.mktmpdir
+    fifo_path = File.join(temp_dir, "library-source")
+    File.mkfifo(fifo_path)
+    SettingsService.set(:audiobook_output_path, temp_dir)
+
+    book = Book.create!(
+      title: "Special target",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: fifo_path
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "a malformed configured root does not hide a later valid canonical root" do
+    temp_dir = Dir.mktmpdir
+    target = File.join(temp_dir, "book.epub")
+    File.binwrite(target, "trusted ebook")
+    SettingsService.set(:audiobook_output_path, File.join(temp_dir, "x" * 5_000))
+    SettingsService.set(:ebook_output_path, temp_dir)
+
+    book = Book.create!(
+      title: "Later valid root",
+      author: "Security Test",
+      book_type: :ebook,
+      file_path: target
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_response :success
+    assert_equal "trusted ebook", response.body
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download containment requires a full path-component boundary" do
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    sibling_root = File.join(temp_dir, "library-private")
+    FileUtils.mkdir_p([ output_root, sibling_root ])
+    sibling_file = File.join(sibling_root, "secret.m4b")
+    File.binwrite(sibling_file, "sibling private data")
+    SettingsService.set(:audiobook_output_path, output_root)
+
+    book = Book.create!(
+      title: "Prefix sibling",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: sibling_file
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+    assert_not_includes response.body, "sibling private data"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download rejects the filesystem root as a configured output boundary" do
+    temp_dir = Dir.mktmpdir
+    private_file = File.join(temp_dir, "server-private.m4b")
+    File.binwrite(private_file, "root boundary private data")
+    SettingsService.set(:audiobook_output_path, File::SEPARATOR)
+
+    book = Book.create!(
+      title: "Filesystem root",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: private_file
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+    assert_not_includes response.body, "root boundary private data"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download rejects a regular file as a configured output boundary" do
+    temp_dir = Dir.mktmpdir
+    private_file = File.join(temp_dir, "server-private.m4b")
+    File.binwrite(private_file, "file boundary private data")
+    SettingsService.set(:audiobook_output_path, private_file)
+
+    book = Book.create!(
+      title: "File boundary",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: private_file
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+    assert_not_includes response.body, "file boundary private data"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download rejects malformed overlong stored paths without raising" do
+    temp_dir = Dir.mktmpdir
+    SettingsService.set(:audiobook_output_path, temp_dir)
+    malformed_path = File.join(temp_dir, "x" * 5_000)
+
+    book = Book.create!(
+      title: "Malformed stored path",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: malformed_path
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    assert_nothing_raised { get download_request_path(request) }
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
   test "download sends zipped directory" do
     temp_dir = Dir.mktmpdir
     book_dir = File.join(temp_dir, "Test Author", "Test Book")
@@ -1400,6 +1656,126 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(temp_dir)
   end
 
+  test "directory download uses a bounded control-safe attachment filename" do
+    temp_dir = Dir.mktmpdir
+    book_dir = File.join(temp_dir, "safe-book")
+    FileUtils.mkdir_p(book_dir)
+    File.binwrite(File.join(book_dir, "chapter.m4b"), "chapter")
+    SettingsService.set(:audiobook_output_path, temp_dir)
+    unsafe_title = "Header\r\nX-Injected: yes #{"é" * 1_000}"
+    book = Book.create!(
+      title: unsafe_title,
+      author: "Control\u0007Author",
+      book_type: :audiobook,
+      file_path: book_dir
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_response :success
+    disposition = response.headers.fetch("Content-Disposition")
+    refute_match(/[\r\n\x00-\x1f\x7f]/, disposition)
+    assert_operator disposition.bytesize, :<=, 800
+    assert_includes disposition, ".zip"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "single-file send disappearance redirects without raising" do
+    temp_dir = Dir.mktmpdir
+    target = File.join(temp_dir, "vanishing.m4b")
+    File.binwrite(target, "temporary audio")
+    SettingsService.set(:audiobook_output_path, temp_dir)
+    book = Book.create!(
+      title: "Vanishing file",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: target
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    Marcel::MimeType.stub(:for, lambda { |**_options|
+      File.unlink(target)
+      "audio/mp4"
+    }) do
+      assert_nothing_raised { get download_request_path(request) }
+    end
+
+    assert_redirected_to request_path(request)
+    assert_equal "File not found on server", flash[:alert]
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "directory cache disappearance before send redirects without raising" do
+    temp_dir = Dir.mktmpdir
+    book_dir = File.join(temp_dir, "vanishing-cache-book")
+    FileUtils.mkdir_p(book_dir)
+    File.binwrite(File.join(book_dir, "chapter.m4b"), "chapter")
+    SettingsService.set(:audiobook_output_path, temp_dir)
+    book = Book.create!(
+      title: "Vanishing cache",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: book_dir
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+    missing_cache = Rails.root.join("tmp", "downloads", "missing-cache-#{SecureRandom.hex(8)}.zip")
+
+    LibraryDownloadArchiveService.stub(:call, missing_cache.to_s) do
+      assert_nothing_raised { get download_request_path(request) }
+    end
+
+    assert_redirected_to request_path(request)
+    assert_includes flash[:alert], "Please try again"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download refreshes a cached directory archive when nested content changes" do
+    require "zip"
+
+    temp_dir = Dir.mktmpdir
+    book_dir = File.join(temp_dir, "Cache Author", "Cache Book")
+    chapter_dir = File.join(book_dir, "disc-one")
+    chapter_file = File.join(chapter_dir, "chapter.m4b")
+    FileUtils.mkdir_p(chapter_dir)
+    File.binwrite(chapter_file, "old nested audio")
+    old_time = 2.hours.ago.to_time
+    File.utime(old_time, old_time, chapter_dir)
+    SettingsService.set(:audiobook_output_path, temp_dir)
+
+    book = Book.create!(
+      title: "Nested cache #{SecureRandom.hex(4)}",
+      author: "Cache Author",
+      book_type: :audiobook,
+      file_path: book_dir
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+    assert_response :success
+    first_content = nil
+    Zip::File.open_buffer(StringIO.new(response.body)) do |archive|
+      first_content = archive.get_input_stream("disc-one/chapter.m4b").read
+    end
+    assert_equal "old nested audio", first_content
+
+    File.binwrite(chapter_file, "new nested audio")
+    File.utime(old_time, old_time, chapter_dir)
+
+    get download_request_path(request)
+    assert_response :success
+    second_content = nil
+    Zip::File.open_buffer(StringIO.new(response.body)) do |archive|
+      second_content = archive.get_input_stream("disc-one/chapter.m4b").read
+    end
+    assert_equal "new nested audio", second_content
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
   test "download refuses to zip the output root for flat-imported books" do
     temp_dir = Dir.mktmpdir
     File.write(File.join(temp_dir, "book-a.m4b"), "audio a")
@@ -1418,6 +1794,30 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     get download_request_path(request)
     assert_redirected_to request_path(request)
     assert flash[:alert].present?
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download refuses the most specific output root when configured roots are nested" do
+    temp_dir = Dir.mktmpdir
+    nested_root = File.join(temp_dir, "ebooks")
+    FileUtils.mkdir_p(nested_root)
+    File.binwrite(File.join(nested_root, "unrelated.epub"), "unrelated library bytes")
+    SettingsService.set(:audiobook_output_path, temp_dir)
+    SettingsService.set(:ebook_output_path, nested_root)
+
+    book = Book.create!(
+      title: "Nested Flat Root",
+      author: "Security Test",
+      book_type: :ebook,
+      file_path: nested_root
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_redirected_to request_path(request)
+    assert_includes flash[:alert], "cannot be downloaded as a bundle"
   ensure
     FileUtils.rm_rf(temp_dir)
   end

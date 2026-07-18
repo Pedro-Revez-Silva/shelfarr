@@ -266,6 +266,36 @@ class Admin::OwnedLibraryConnectionsControllerTest < ActionDispatch::Integration
     assert pending_import.reload.pending?
   end
 
+  test "blank companion URL cannot bypass identity-change guards by falling back to the managed endpoint" do
+    connection = create_connection
+    item = connection.owned_library_items.create!(
+      external_id: "B012345678",
+      title: "Queued Account-Bound Title",
+      ownership_type: "purchased"
+    )
+    item.owned_media_imports.create!(
+      requested_by: users(:two),
+      status: "pending",
+      automatic: true
+    )
+
+    patch admin_owned_library_connection_url(connection), params: {
+      owned_library_connection: {
+        url: "",
+        bridge_token: "",
+        enabled: "1",
+        allow_private_network: "1",
+        timeout_seconds: "30"
+      }
+    }
+
+    assert_redirected_to admin_owned_library_connections_path(tab: "connection", anchor: "connection")
+    assert_match(/queued Audible backups/, flash[:alert])
+    assert_equal "https://libation.test", connection.reload.url
+    assert_equal "token", connection.bridge_token
+    assert item.reload.active?
+  end
+
   test "recoverable failed backup blocks companion identity changes" do
     connection = create_connection
     item = connection.owned_library_items.create!(
@@ -579,6 +609,47 @@ class Admin::OwnedLibraryConnectionsControllerTest < ActionDispatch::Integration
     assert_not connection.reload.auth_pending?
     assert_nil connection.auth_session_id
     assert_nil connection.auth_login_url
+  end
+
+  test "auth completion invalidates ownership and automation state from the previous account" do
+    connection = create_connection
+    item = connection.owned_library_items.create!(
+      external_id: "B012345678",
+      title: "Previous Account Purchase",
+      ownership_type: "purchased"
+    )
+    connection.update!(
+      last_synced_at: 1.day.ago,
+      backlog_backup_decided_at: 1.day.ago,
+      scheduled_sync_enabled: true,
+      automatic_backup_enabled: true,
+      automatic_backup_user: users(:two),
+      automatic_backup_enabled_at: 1.day.ago,
+      auth_session_id: "replacement-account-session",
+      auth_login_url: "https://www.amazon.com/ap/signin?replacement=1",
+      auth_expires_at: 10.minutes.from_now
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "https://libation.test/v1/auth/complete")
+        .to_return(status: 204)
+
+      post auth_complete_admin_owned_library_connection_url(connection),
+        params: {
+          auth_session_id: "replacement-account-session",
+          response_url: "https://www.amazon.com/ap/maplanding?replacement=1"
+        }
+    end
+
+    assert_redirected_to admin_owned_library_connections_path(tab: "connection", anchor: "connection")
+    assert_not item.reload.active?, "ownership from the previously synced Audible account must become stale"
+    connection.reload
+    assert_nil connection.last_synced_at
+    assert_nil connection.backlog_backup_decided_at
+    assert_not connection.automatic_backup_enabled?
+    assert_nil connection.automatic_backup_user
+    assert_nil connection.automatic_backup_enabled_at
+    assert_nil connection.auth_session_id
   end
 
   test "auth completion does not call the companion for a replaced session" do

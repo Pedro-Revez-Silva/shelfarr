@@ -30,6 +30,9 @@ class FileCopyService
     :canonical_path,
     :device,
     :inode,
+    :size,
+    :mtime,
+    :ctime,
     :parent_path,
     :canonical_parent_path,
     :parent_device,
@@ -244,7 +247,7 @@ class FileCopyService
     # directory. Callers perform all I/O through the returned descriptor, so a
     # later ancestor rename or symlink swap cannot redirect staged bytes.
     def create_private_file(parent_path, root:, prefix:, suffix: "")
-      unless prefix.match?(/\A[a-zA-Z0-9_-]+\z/) && suffix.match?(/\A(?:\.[a-zA-Z0-9_-]+)?\z/)
+      unless prefix.match?(/\A\.?[a-zA-Z0-9_-]+\z/) && suffix.match?(/\A(?:\.[a-zA-Z0-9_-]+)?\z/)
         raise UnsafePathError, "private file name is unsafe"
       end
 
@@ -293,6 +296,204 @@ class FileCopyService
           end
         end
       end
+    end
+
+    # Coordinate work on a stable private pathname through a no-follow file
+    # beneath a pinned directory. Lock files persist so separate processes can
+    # never flock different inodes for the same logical lock.
+    def with_private_lock(path, root:)
+      raise ArgumentError, "a lock block is required" unless block_given?
+
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        attempts = 0
+        descriptor = begin
+          attempts += 1
+          native_openat(
+            parent.fileno,
+            basename,
+            File::RDWR | File::CREAT | File::NOFOLLOW,
+            0o600
+          )
+        rescue Errno::ENOENT
+          retry if attempts < 3
+
+          raise
+        end
+        lock = File.for_fd(descriptor, "r+b", autoclose: true)
+        begin
+          stat = lock.stat
+          unless stat.file? && stat.uid == Process.euid
+            raise UnsafePathError, "private lock is not an application-owned regular file"
+          end
+
+          native_fchmod(lock.fileno, 0o600)
+          raise UnsafePathError, "private lock could not be acquired" unless lock.flock(File::LOCK_EX)
+
+          identity = file_identity(lock.stat)
+          with_pinned_regular_child(parent, basename) do |current|
+            raise Errno::ESTALE, "private lock changed before use" unless file_identity(current.stat) == identity
+          end
+          validate_current_directory_identity!(parent_path, parent)
+
+          result = yield
+
+          with_pinned_regular_child(parent, basename) do |current|
+            raise Errno::ESTALE, "private lock changed during use" unless file_identity(current.stat) == identity
+          end
+          validate_current_directory_identity!(parent_path, parent)
+          result
+        ensure
+          lock.close unless lock.closed?
+        end
+      end
+    end
+
+    # Yield a regular file through a pinned parent and reject any identity/stat
+    # change across the read.
+    def with_regular_file(path, root:)
+      raise ArgumentError, "a file block is required" unless block_given?
+
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        with_pinned_regular_child(parent, basename) do |file|
+          expected = file_manifest_entry(file.stat)
+          result = yield file
+          raise Errno::ESTALE, "regular file changed during validation" unless file_manifest_entry(file.stat) == expected
+
+          with_pinned_regular_child(parent, basename) do |current|
+            raise Errno::ESTALE, "regular file changed after validation" unless file_manifest_entry(current.stat) == expected
+          end
+          validate_current_directory_identity!(parent_path, parent)
+          result
+        end
+      end
+    end
+
+    # Refresh a regular file's cleanup lease through its pinned descriptor.
+    # Identity is checked before and after futimes so a pathname replacement is
+    # never refreshed on behalf of the validated file.
+    def refresh_regular_file_times(path, root:)
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        with_pinned_regular_child(parent, basename) do |file|
+          identity = file_identity(file.stat)
+          native_futimes_now(file.fileno)
+          sync_io(file)
+          with_pinned_regular_child(parent, basename) do |current|
+            raise Errno::ESTALE, "regular file changed while its lease was refreshed" unless file_identity(current.stat) == identity
+          end
+          validate_current_directory_identity!(parent_path, parent)
+        end
+      end
+      true
+    end
+
+    # Atomically publish a complete PrivateFile into the same pinned directory.
+    # Publication is no-replace and uses the existing platform fallback.
+    def publish_private_file_noreplace(private_file, destination, root:, mode: 0o600)
+      source = Pathname(private_file.name).expand_path
+      destination = Pathname(destination).expand_path
+      unless source.parent == destination.parent && source.basename != destination.basename
+        raise UnsafePathError, "private publication paths do not share a safe parent"
+      end
+      unless private_file.io.stat.file? && file_identity(private_file.io.stat) == [ private_file.device, private_file.inode ]
+        raise Errno::ESTALE, "private publication descriptor changed"
+      end
+
+      native_fchmod(private_file.io.fileno, mode)
+      flush_and_sync(private_file.io)
+      with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
+        with_pinned_regular_child(parent, source.basename.to_s) do |current|
+          unless file_identity(current.stat) == [ private_file.device, private_file.inode ]
+            raise Errno::ESTALE, "private publication source changed"
+          end
+
+          publish_private_child_noreplace!(
+            parent,
+            source.basename.to_s,
+            basename,
+            [ private_file.device, private_file.inode ],
+            mode: mode
+          )
+        end
+        validate_published_child!(
+          parent,
+          basename,
+          [ private_file.device, private_file.inode ],
+          expected_mode: mode
+        )
+        validate_current_directory_identity!(parent_path, parent)
+        sync_io(parent)
+      end
+      destination.to_s
+    end
+
+    # Remove only the still-identical staging pathname associated with a
+    # PrivateFile. A replacement at the same name is retained.
+    def remove_private_file(private_file, root:)
+      source = Pathname(private_file.name).expand_path
+      removed = false
+      with_pinned_destination_parent(source, root: root) do |parent, basename, parent_path|
+        with_pinned_regular_child(parent, basename) do |current|
+          next unless file_identity(current.stat) == [ private_file.device, private_file.inode ]
+
+          native_unlinkat(parent.fileno, basename)
+          removed = true
+        end
+        validate_current_directory_identity!(parent_path, parent)
+        sync_io(parent)
+      end
+      removed
+    rescue Errno::ENOENT
+      false
+    end
+
+    # Remove a regular file only after atomically moving it to a unique name
+    # inside the same pinned private directory and verifying that the moved
+    # entry is the inode inspected by this process.
+    def remove_regular_file_safely(path, root:)
+      path = Pathname(path).expand_path
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        expected_identity = nil
+        with_pinned_regular_child(parent, basename) do |current|
+          expected_identity = file_identity(current.stat)
+        end
+
+        quarantine = ".shelfarr-discard-#{SecureRandom.hex(16)}.tmp"
+        renamed = native_rename_noreplace(
+          parent.fileno,
+          basename,
+          parent.fileno,
+          quarantine
+        )
+        unless renamed
+          raise AtomicPublicationUnsupportedError,
+            "The cache filesystem cannot atomically quarantine invalid files"
+        end
+
+        actual_identity = nil
+        with_pinned_regular_child(parent, quarantine) do |current|
+          actual_identity = file_identity(current.stat)
+        end
+        unless actual_identity == expected_identity
+          restored = native_rename_noreplace(
+            parent.fileno,
+            quarantine,
+            parent.fileno,
+            basename
+          )
+          unless restored
+            raise UnsafePathError, "a changed cache file was retained for manual review"
+          end
+
+          raise Errno::ESTALE, "cache file changed while it was quarantined"
+        end
+
+        native_unlinkat(parent.fileno, quarantine)
+        validate_current_directory_identity!(parent_path, parent)
+        sync_io(parent)
+        true
+      end
+    rescue Errno::ENOENT
+      false
     end
 
     # Safely materialize a regular staging file at a caller-validated relative
@@ -414,6 +615,9 @@ class FileCopyService
             canonical_path: canonical_parent.join(child_name),
             device: stat.dev,
             inode: stat.ino,
+            size: stat.size,
+            mtime: stat.mtime.to_r,
+            ctime: stat.ctime.to_r,
             parent_path: parent_path,
             canonical_parent_path: canonical_parent,
             parent_device: parent_stat.dev,
@@ -462,10 +666,21 @@ class FileCopyService
       source.seek(original_position) if original_position
     end
 
+    # Yield a regular source file through the immutable directory snapshot that
+    # authorized it. The descriptor remains pinned for the whole read and the
+    # source identity/stat manifest is revalidated before and after the block.
+    def with_source_file(path, source_root:)
+      raise ArgumentError, "a source block is required" unless block_given?
+
+      with_pinned_source(path, source_root: source_root) do |source, _parent, _basename, _parent_path|
+        yield source
+      end
+    end
+
     # Snapshot and validate a directory tree through no-follow descriptors.
     # Later source opens can use the returned token to reject root replacement
     # and symlink swaps in every relative component.
-    def snapshot_source_root(path, heartbeat: nil)
+    def snapshot_source_root(path, heartbeat: nil, max_entries: nil, max_depth: nil)
       expanded = Pathname(path).expand_path
       canonical = expanded.realpath
       parent_path = expanded.parent
@@ -475,13 +690,21 @@ class FileCopyService
         validate_current_directory_identity!(expanded, directory)
         raise UnsafePathError, "source root is not a directory" unless directory.stat.directory?
 
-        entries = snapshot_pinned_regular_tree(directory, heartbeat: heartbeat)
+        entries = snapshot_pinned_regular_tree(
+          directory,
+          heartbeat: heartbeat,
+          max_entries: max_entries,
+          max_depth: max_depth
+        )
         stat = directory.stat
         return SourceRoot.new(
           path: expanded,
           canonical_path: canonical,
           device: stat.dev,
           inode: stat.ino,
+          size: stat.size,
+          mtime: stat.mtime.to_r,
+          ctime: stat.ctime.to_r,
           parent_path: parent_path,
           canonical_parent_path: canonical_parent,
           parent_device: parent_stat.dev,
@@ -716,7 +939,7 @@ class FileCopyService
       end
     end
 
-    def publish_private_child_noreplace!(parent, temporary_basename, destination_basename, identity)
+    def publish_private_child_noreplace!(parent, temporary_basename, destination_basename, identity, mode: LIBRARY_FILE_MODE)
       native_linkat(
         parent.fileno,
         temporary_basename,
@@ -735,15 +958,15 @@ class FileCopyService
           "The destination filesystem cannot atomically publish library files"
       end
 
-      validate_published_child!(parent, destination_basename, identity)
+      validate_published_child!(parent, destination_basename, identity, expected_mode: mode)
     end
 
-    def validate_published_child!(parent, basename, expected_identity)
+    def validate_published_child!(parent, basename, expected_identity, expected_mode: LIBRARY_FILE_MODE)
       with_pinned_regular_child(parent, basename) do |published|
         unless file_identity(published.stat) == expected_identity
           raise Errno::ESTALE, "destination changed during no-clobber publication"
         end
-        unless (published.stat.mode & 0o777) == LIBRARY_FILE_MODE
+        unless (published.stat.mode & 0o777) == expected_mode
           raise UnsafePathError, "published library file permissions changed"
         end
       end
@@ -854,8 +1077,17 @@ class FileCopyService
       raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
     end
 
-    def snapshot_pinned_regular_tree(directory, prefix = nil, manifest = {}, heartbeat: nil)
-      pinned_directory_children(directory).each do |entry|
+    def snapshot_pinned_regular_tree(
+      directory,
+      prefix = nil,
+      manifest = {},
+      heartbeat: nil,
+      max_entries: nil,
+      max_depth: nil,
+      depth: 0
+    )
+      remaining = max_entries && max_entries - manifest.size
+      pinned_directory_children(directory, max_entries: remaining).each do |entry|
         heartbeat&.call
         descriptor = native_openat(
           directory.fileno,
@@ -868,8 +1100,20 @@ class FileCopyService
           stat = child.stat
           relative = prefix ? prefix.join(entry) : Pathname(entry)
           if stat.directory?
+            if max_depth && depth + 1 > max_depth
+              raise UnsafePathError, "source tree nesting is too deep"
+            end
+
             manifest[relative.to_s] = directory_manifest_entry(stat)
-            snapshot_pinned_regular_tree(child, relative, manifest, heartbeat: heartbeat)
+            snapshot_pinned_regular_tree(
+              child,
+              relative,
+              manifest,
+              heartbeat: heartbeat,
+              max_entries: max_entries,
+              max_depth: max_depth,
+              depth: depth + 1
+            )
           elsif stat.file?
             manifest[relative.to_s] = file_manifest_entry(stat)
           else
@@ -1008,18 +1252,26 @@ class FileCopyService
       end
     end
 
-    def pinned_directory_children(directory)
+    def pinned_directory_children(directory, max_entries: nil)
       duplicate = directory.dup
       listing = Dir.for_fd(duplicate.fileno)
       duplicate.autoclose = false
-      listing.each_child.to_a.sort
+      children = []
+      listing.each_child do |entry|
+        if max_entries && children.length >= max_entries
+          raise UnsafePathError, "source tree contains too many entries"
+        end
+
+        children << entry
+      end
+      children.sort
     ensure
       listing&.close
       duplicate&.close unless duplicate&.closed?
     end
 
     def directory_manifest_entry(stat)
-      [ stat.dev, stat.ino, :directory ]
+      [ stat.dev, stat.ino, :directory, stat.size, stat.mtime.to_r, stat.ctime.to_r ]
     end
 
     def file_manifest_entry(stat)
@@ -1284,6 +1536,14 @@ class FileCopyService
         native_function(:fchmod, [ Fiddle::TYPE_INT, Fiddle::TYPE_INT ]),
         descriptor,
         mode
+      )
+    end
+
+    def native_futimes_now(descriptor)
+      call_native_function(
+        native_function(:futimes, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP ]),
+        descriptor,
+        nil
       )
     end
 

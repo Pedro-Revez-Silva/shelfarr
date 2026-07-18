@@ -156,7 +156,7 @@ module Admin
         session_id: auth_state.fetch(:session_id),
         response_url: params[:response_url]
       )
-      @connection.clear_auth_state_if_current!(auth_state)
+      invalidate_account_bound_catalog_after_auth!(auth_state)
       redirect_to admin_owned_library_connections_path(tab: "connection", anchor: "connection"),
         notice: "Audible account connected through Libation."
     rescue ArgumentError, LibationCompanionClient::Error => e
@@ -509,23 +509,30 @@ module Admin
 
     def endpoint_identity_change?(attributes)
       requested_url = attributes[:url]&.to_s&.strip&.delete_suffix("/")
-      url_changed = requested_url.present? && requested_url != @connection.url
+      requested_url = OwnedLibraryConnection.default_libation_url if requested_url.blank?
+      url_changed = attributes.key?(:url) && requested_url != @connection.url
       token_changed = attributes[:bridge_token].present? &&
         attributes[:bridge_token] != @connection.bridge_token
       url_changed || token_changed
     end
 
-    def reset_account_bound_catalog!
+    def invalidate_account_bound_catalog_after_auth!(completed_auth_state)
+      @connection.with_lock do
+        @connection.reload
+        reset_account_bound_catalog!(
+          clear_auth_state: @connection.auth_state_snapshot == completed_auth_state
+        )
+      end
+    end
+
+    def reset_account_bound_catalog!(clear_auth_state: true)
       now = Time.current
       @connection.owned_library_items.active.update_all(
         active: false,
         absent_since: now,
         updated_at: now
       )
-      @connection.update!(
-        auth_session_id: nil,
-        auth_login_url: nil,
-        auth_expires_at: nil,
+      attributes = {
         companion_version: nil,
         provider_version: nil,
         last_synced_at: nil,
@@ -536,7 +543,15 @@ module Admin
         automatic_backup_enabled_at: nil,
         next_scheduled_sync_at: @connection.scheduled_sync_enabled? ?
           @connection.next_scheduled_sync_time : nil
-      )
+      }
+      if clear_auth_state
+        attributes.merge!(
+          auth_session_id: nil,
+          auth_login_url: nil,
+          auth_expires_at: nil
+        )
+      end
+      @connection.update!(attributes)
     end
 
     def load_library_summary

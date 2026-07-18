@@ -273,6 +273,10 @@ class OwnedLibraryConnection < ApplicationRecord
 
   def url_is_http
     uri = URI.parse(url.to_s)
+    unless uri.query.nil? && uri.fragment.nil?
+      errors.add(:url, "must not include a query string or fragment")
+      return
+    end
     return if %w[http https].include?(uri.scheme) && uri.host.present? && uri.userinfo.blank?
 
     errors.add(:url, "must be a valid http or https URL without embedded credentials")

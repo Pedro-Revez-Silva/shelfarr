@@ -96,6 +96,76 @@ class CleanupTempFilesJobIsolatedTest < ActiveJob::TestCase
     assert File.exist?(recent_file), "Recent file should be kept"
   end
 
+  test "cleans hidden stale archive staging through the stable per-book lock" do
+    book_id = 987_654_321
+    staging = @downloads_dir.join(".book_#{book_id}_archive-#{"a" * 32}.zip")
+    lock = LibraryDownloadArchiveService.lock_path_for_book(book_id, directory: @downloads_dir)
+    File.binwrite(staging, "stale staged archive")
+    FileUtils.touch(staging, mtime: 2.hours.ago.to_time)
+
+    deleted = CleanupTempFilesJob.new.send(
+      :cleanup_download_directory,
+      @downloads_dir,
+      max_age: 1.hour.ago
+    )
+
+    assert_equal 1, deleted
+    refute File.exist?(staging)
+    assert File.file?(lock), "the stable lock remains available for concurrent waiters"
+  end
+
+  test "cleanup waits for an archive lease refresh and does not unlink the returned cache" do
+    book_id = 987_654_322
+    cache = @downloads_dir.join("book_#{book_id}_v2_#{"b" * 64}.zip")
+    lock = LibraryDownloadArchiveService.lock_path_for_book(book_id, directory: @downloads_dir)
+    File.binwrite(cache, "complete archive")
+    File.chmod(0o600, cache)
+    FileUtils.touch(cache, mtime: 2.hours.ago.to_time)
+    holder_entered = Queue.new
+    release_holder = Queue.new
+    cleanup_attempted = Queue.new
+    errors = Queue.new
+    real_lock = FileCopyService.method(:with_private_lock)
+
+    holder = Thread.new do
+      real_lock.call(lock, root: @downloads_dir.to_s) do
+        holder_entered << true
+        release_holder.pop
+        FileCopyService.refresh_regular_file_times(cache, root: @downloads_dir.to_s)
+      end
+    rescue => error
+      errors << error
+    end
+    holder_entered.pop
+
+    wrapper = lambda do |path, root:, &operation|
+      cleanup_attempted << true if Thread.current[:archive_cleanup_test]
+      real_lock.call(path, root: root, &operation)
+    end
+    deleted = nil
+    FileCopyService.stub(:with_private_lock, wrapper) do
+      cleanup = Thread.new do
+        Thread.current[:archive_cleanup_test] = true
+        deleted = CleanupTempFilesJob.new.send(
+          :cleanup_download_directory,
+          @downloads_dir,
+          max_age: 1.hour.ago
+        )
+      rescue => error
+        errors << error
+      end
+      cleanup_attempted.pop
+      release_holder << true
+      holder.join
+      cleanup.join
+    end
+
+    assert errors.empty?, "archive cleanup race error: #{errors.pop.inspect unless errors.empty?}"
+    assert_equal 0, deleted
+    assert File.file?(cache)
+    assert_operator File.mtime(cache), :>, 1.minute.ago
+  end
+
   test "deletes old upload temp files" do
     old_file = @uploads_dir.join("old_upload.m4b")
     File.write(old_file, "content")

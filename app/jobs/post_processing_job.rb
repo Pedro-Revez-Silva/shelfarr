@@ -184,7 +184,17 @@ class PostProcessingJob < ApplicationJob
     # Pre-create zip for directories (audiobooks) so download is instant.
     # Flat imports share the output root, which must never be zipped whole.
     if File.directory?(book_path) && (!PathTemplateService.flat_output?(book) || @imported_book_path_override.present?)
-      pre_create_download_zip(book, book_path)
+      begin
+        LibraryDownloadArchiveService.call(
+          book: book,
+          source_path: book_path,
+          output_root: get_base_path(book)
+        )
+      rescue LibraryDownloadArchiveService::Error, SystemCallError => error
+        Rails.logger.warn(
+          "[PostProcessingJob] Download archive pre-creation failed for book ##{book.id}: #{error.class}"
+        )
+      end
     end
 
     trigger_library_scan(book) if LibraryPlatformClient.configured?
@@ -987,32 +997,6 @@ class PostProcessingJob < ApplicationJob
       .strip
       .gsub(/\s+/, " ")           # Collapse whitespace
       .truncate(100, omission: "") # Limit length
-  end
-
-  def pre_create_download_zip(book, path)
-    require "zip"
-
-    zip_filename = "#{book.author} - #{book.title}.zip".gsub(/[\/\\:*?"<>|]/, "_")
-    safe_filename = zip_filename.gsub(/\s+/, "_")
-
-    downloads_dir = Rails.root.join("tmp", "downloads")
-    FileUtils.mkdir_p(downloads_dir)
-    zip_path = downloads_dir.join("book_#{book.id}_#{safe_filename}")
-
-    Rails.logger.info "[PostProcessingJob] Pre-creating download zip for book ##{book.id}"
-
-    Zip::File.open(zip_path.to_s, create: true) do |zipfile|
-      Dir.entries(path).reject { |f| f.start_with?(".") }.each do |file|
-        full_path = File.join(path, file)
-        next if File.directory?(full_path)
-        zipfile.add(file, full_path)
-      end
-    end
-
-    Rails.logger.info "[PostProcessingJob] Download zip ready: #{(File.size(zip_path) / 1024.0 / 1024.0).round(2)} MB"
-  rescue => e
-    Rails.logger.warn "[PostProcessingJob] Zip pre-creation failed for book ##{book.id}: #{e.class}"
-    # Non-fatal - zip will be created on first download
   end
 
   def trigger_library_scan(book)

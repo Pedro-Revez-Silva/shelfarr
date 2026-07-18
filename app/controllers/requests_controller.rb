@@ -1,6 +1,10 @@
 # frozen_string_literal: true
 
 class RequestsController < ApplicationController
+  class UnsafeDownloadPathError < StandardError; end
+  DownloadBoundary = Data.define(:target, :root, :device, :inode, :kind)
+  MAX_ARCHIVE_DOWNLOAD_FILENAME_BYTES = 120
+
   before_action :set_request, only: [ :show, :destroy, :retry, :manual_magnet, :manual_nzb ]
   before_action :set_request_for_download, only: [ :download ]
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
@@ -211,37 +215,38 @@ class RequestsController < ApplicationController
       return
     end
 
-    path = book.file_path
-
-    # Security: Validate path is within allowed directories
-    unless path_within_allowed_directories?(path)
-      Rails.logger.warn "[Security] Attempted path traversal: #{path}"
+    begin
+      boundary = canonical_download_boundary(book.file_path)
+    rescue Errno::ENOENT
+      redirect_to @request, alert: "File not found on server"
+      return
+    rescue UnsafeDownloadPathError, SystemCallError, ArgumentError
+      Rails.logger.warn(
+        "[Security] Rejected unsafe library download path for request ##{@request.id}, book ##{book.id}"
+      )
       redirect_to @request, alert: "Invalid file path"
       return
     end
 
-    unless File.exist?(path)
-      redirect_to @request, alert: "File not found on server"
-      return
-    end
-
-    if File.directory?(path)
+    if boundary.kind == :directory
       # Books imported with a blank path template share the output root as
       # their file_path; zipping it would bundle the entire library
-      if output_root_path?(path)
+      if boundary.target == boundary.root
         redirect_to @request, alert: "This book was imported directly into the library folder and cannot be downloaded as a bundle"
         return
       end
 
-      send_zipped_directory(path, book)
+      send_zipped_directory(boundary.target, book, output_root: boundary.root)
     else
-      send_single_file(path, book)
+      send_single_file(boundary, book)
     end
   end
 
   private
 
-  def send_single_file(path, book)
+  def send_single_file(boundary, book)
+    revalidate_download_target!(boundary)
+    path = boundary.target
     filename = File.basename(path)
     content_type = Marcel::MimeType.for(name: filename) || "application/octet-stream"
 
@@ -249,87 +254,111 @@ class RequestsController < ApplicationController
               filename: filename,
               type: content_type,
               disposition: "attachment"
+  rescue Errno::ENOENT, ActionController::MissingFile
+    redirect_to @request, alert: "File not found on server"
+  rescue UnsafeDownloadPathError, SystemCallError, ArgumentError
+    Rails.logger.warn(
+      "[Security] Rejected changed library download target for request ##{@request.id}, book ##{book.id}"
+    )
+    redirect_to @request, alert: "Invalid file path"
   end
 
-  def send_zipped_directory(path, book)
-    zip_filename = "#{book.author} - #{book.title}.zip".gsub(/[\/\\:*?"<>|]/, "_")
-    safe_filename = zip_filename.gsub(/\s+/, "_")
-
-    # Use a stable path based on book ID so we can cache the zip
-    downloads_dir = Rails.root.join("tmp", "downloads")
-    FileUtils.mkdir_p(downloads_dir)
-    cached_zip_path = downloads_dir.join("book_#{book.id}_#{safe_filename}")
-
-    # Check if cached zip exists and is newer than source directory
-    source_mtime = Dir.glob("#{path}/*").map { |f| File.mtime(f) }.max
-    if File.exist?(cached_zip_path) && File.mtime(cached_zip_path) >= source_mtime
-      Rails.logger.info "[Download] Serving cached zip: #{cached_zip_path}"
-    else
-      Rails.logger.info "[Download] Creating zip for #{book.title} (this may take a while for large files)..."
-      create_zip_file(path, cached_zip_path.to_s)
-      Rails.logger.info "[Download] Zip created: #{cached_zip_path}"
-    end
+  def send_zipped_directory(path, book, output_root:)
+    zip_filename = archive_download_filename(book)
+    cached_zip_path = LibraryDownloadArchiveService.call(
+      book: book,
+      source_path: path,
+      output_root: output_root
+    )
 
     send_file cached_zip_path,
               filename: zip_filename,
               type: "application/zip",
               disposition: "attachment"
-  rescue => e
-    Rails.logger.error "[Download] Error creating zip: #{e.message}"
-    raise
+  rescue LibraryDownloadArchiveService::Error, ActionController::MissingFile, SystemCallError => e
+    Rails.logger.error "[Download] Error creating zip for book ##{book.id}: #{e.class}"
+    redirect_to @request, alert: "Library files changed while preparing the download. Please try again."
   end
 
-  def create_zip_file(source_dir, zip_path)
-    require "zip"
+  def archive_download_filename(book)
+    extension = ".zip"
+    byte_budget = MAX_ARCHIVE_DOWNLOAD_FILENAME_BYTES - extension.bytesize
+    value = "#{book.author} - #{book.title}".encode(
+      Encoding::UTF_8,
+      invalid: :replace,
+      undef: :replace,
+      replace: "_"
+    ).unicode_normalize(:nfc)
+    value = value.gsub(/[\/\\:*?"<>|\x00-\x1f\x7f]/, "_").strip
+    value = "library-download" if value.blank?
+    value = value.byteslice(0, byte_budget).to_s.force_encoding(Encoding::UTF_8).scrub("_")
+    value = value.sub(/[ .]+\z/, "")
+    value = "library-download" if value.blank?
+    "#{value}#{extension}"
+  end
 
-    # Delete existing zip to avoid "Entry already exists" errors
-    File.delete(zip_path) if File.exist?(zip_path)
+  def canonical_download_boundary(path)
+    raise UnsafeDownloadPathError, "library path is blank" if path.blank?
 
-    source_dir_real = File.realpath(source_dir)
-
-    Zip::File.open(zip_path, create: true) do |zipfile|
-      Dir[File.join(source_dir, "**", "*")].each do |file|
-        next if File.directory?(file)
-        next if File.symlink?(file) # Skip symlinks for security
-
-        # Verify file is within source directory (prevent symlink attacks)
-        file_real = File.realpath(file) rescue next
-        next unless file_real.start_with?(source_dir_real)
-
-        relative_path = file.sub("#{source_dir}/", "")
-        zipfile.add(relative_path, file)
-      end
+    canonical_target = Pathname(path).expand_path.realpath
+    target_stat = File.lstat(canonical_target)
+    kind = if target_stat.file?
+      :file
+    elsif target_stat.directory?
+      :directory
+    else
+      raise UnsafeDownloadPathError, "library target is not a regular file or directory"
     end
+
+    canonical_root = canonical_output_roots.select do |root|
+      canonical_path_contained?(canonical_target.to_s, root.to_s)
+    end.max_by { |root| root.to_s.length }
+    raise UnsafeDownloadPathError, "library path resolves outside configured roots" unless canonical_root
+
+    DownloadBoundary.new(
+      target: canonical_target.to_s,
+      root: canonical_root.to_s,
+      device: target_stat.dev,
+      inode: target_stat.ino,
+      kind: kind
+    )
   end
 
-  def path_within_allowed_directories?(path)
-    return false if path.blank?
-
-    # Resolve to absolute path
-    expanded_path = File.expand_path(path)
-
-    # Get allowed base directories from settings
-    allowed_paths = [
-      SettingsService.get(:audiobook_output_path),
-      SettingsService.get(:ebook_output_path),
-      SettingsService.get(:comicbook_output_path)
-    ].compact.reject(&:blank?)
-
-    # Check if path is within any allowed directory
-    allowed_paths.any? do |allowed|
-      expanded_allowed = File.expand_path(allowed)
-      expanded_path.start_with?(expanded_allowed + "/") || expanded_path == expanded_allowed
-    end
-  end
-
-  def output_root_path?(path)
-    expanded_path = File.expand_path(path)
-
+  def allowed_output_paths
     [
       SettingsService.get(:audiobook_output_path),
       SettingsService.get(:ebook_output_path),
       SettingsService.get(:comicbook_output_path)
-    ].compact.reject(&:blank?).any? { |root| File.expand_path(root) == expanded_path }
+    ].compact.reject(&:blank?)
+  end
+
+  def canonical_path_contained?(path, root)
+    return true if path == root
+
+    root_prefix = root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}"
+    path.start_with?(root_prefix)
+  end
+
+  def canonical_output_roots
+    allowed_output_paths.filter_map do |configured_root|
+      candidate = Pathname(configured_root).expand_path.realpath
+      next if candidate.root?
+      next unless candidate.lstat.directory?
+
+      candidate
+    rescue SystemCallError, ArgumentError
+      nil
+    end.uniq
+  end
+
+  def revalidate_download_target!(boundary)
+    current = File.lstat(boundary.target)
+    expected_kind = boundary.kind == :file ? current.file? : current.directory?
+    unless expected_kind && [ current.dev, current.ino ] == [ boundary.device, boundary.inode ]
+      raise UnsafeDownloadPathError, "library target changed after validation"
+    end
+
+    true
   end
 
   def set_request

@@ -73,6 +73,23 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "archive precreation failure does not skip later completion side effects" do
+    completed_notifications = []
+    library_scans = []
+    job = PostProcessingJob.new
+
+    LibraryDownloadArchiveService.stub(:call, ->(**) { raise LibraryDownloadArchiveService::Error, "archive failed" }) do
+      job.stub(:trigger_library_scan, ->(book) { library_scans << book.id }) do
+        NotificationService.stub(:request_completed, ->(request) { completed_notifications << request.id }) do
+          job.send(:run_completion_side_effects, @request, @download, @book, @temp_source)
+        end
+      end
+    end
+
+    assert_equal [ @book.id ], library_scans
+    assert_equal [ @request.id ], completed_notifications
+  end
+
   test "refuses to import a shared download client root" do
     client = DownloadClient.create!(
       name: "Shared Deluge Root",
