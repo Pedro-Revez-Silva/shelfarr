@@ -78,6 +78,29 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search stops mirror rotation when its continuation is cancelled" do
+    VCR.turned_off do
+      SettingsService.set(:anna_archive_url, "https://offline.example\nhttps://annas-archive.org")
+      continuation_checks = 0
+      after_attempt = lambda do
+        continuation_checks += 1
+        false
+      end
+
+      stub_request(:get, /offline\.example\/search/)
+        .to_raise(Faraday::ConnectionFailed.new("Connection failed"))
+      second_mirror = stub_request(:get, /annas-archive\.org\/search/)
+
+      assert_raises AnnaArchiveClient::SearchCancelled do
+        AnnaArchiveClient.search("test book", after_attempt: after_attempt)
+      end
+
+      assert_equal 1, continuation_checks
+      assert_requested :get, /offline\.example\/search/
+      assert_not_requested second_mirror
+    end
+  end
+
   test "search tries next configured URL when first URL has an incompatible search page" do
     VCR.turned_off do
       SettingsService.set(:anna_archive_url, "https://incompatible.example\nhttps://annas-archive.org")

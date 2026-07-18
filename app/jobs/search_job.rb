@@ -76,43 +76,57 @@ class SearchJob < ApplicationJob
 
     if indexer_available
       indexer_results, indexer_error = search_indexer_safely(request)
+      return unless heartbeat_search!(request, search_generation)
+
       all_results.concat(indexer_results)
       Rails.logger.info "[SearchJob] Found #{indexer_results.count} #{IndexerClient.display_name} results"
     end
 
     # Search Anna's Archive for ebooks if configured
     if anna_available
-      anna_results = search_anna_archive(request)
+      anna_results = search_anna_archive(request, search_generation)
+      return unless heartbeat_search!(request, search_generation)
+
       all_results.concat(anna_results)
       Rails.logger.info "[SearchJob] Found #{anna_results.count} Anna's Archive results"
     end
 
     if zlibrary_available
-      zlibrary_results = search_zlibrary(request)
+      zlibrary_results = search_zlibrary(request, search_generation)
+      return unless heartbeat_search!(request, search_generation)
+
       all_results.concat(zlibrary_results)
       Rails.logger.info "[SearchJob] Found #{zlibrary_results.count} Z-Library results"
     end
 
     if gutenberg_available
       gutenberg_results = search_gutenberg(request)
+      return unless heartbeat_search!(request, search_generation)
+
       all_results.concat(gutenberg_results)
       Rails.logger.info "[SearchJob] Found #{gutenberg_results.count} Project Gutenberg results"
     end
 
     if librivox_available
       librivox_results = search_librivox(request)
+      return unless heartbeat_search!(request, search_generation)
+
       all_results.concat(librivox_results)
       Rails.logger.info "[SearchJob] Found #{librivox_results.count} LibriVox results"
     end
 
     custom_providers.each do |provider|
       provider_results = search_custom_provider(request, provider)
+      return unless heartbeat_search!(request, search_generation)
+
       all_results.concat(provider_results)
       Rails.logger.info "[SearchJob] Found #{provider_results.count} custom provider results from #{provider.name}"
     end
 
     store_providers.each do |provider|
       provider_offers = search_store_provider(request, provider)
+      return unless heartbeat_search!(request, search_generation)
+
       all_store_offers.concat(provider_offers)
       Rails.logger.info "[SearchJob] Found #{provider_offers.count} DRM-free store offers from #{provider.name}"
     end
@@ -200,6 +214,26 @@ class SearchJob < ApplicationJob
 
   def owns_search_attempt?(request, search_generation)
     request.persisted? && request.searching? && request.search_generation == search_generation
+  end
+
+  # Each individual remote call is bounded well below the watchdog lease, but
+  # a configured provider list can make the aggregate search longer. Renew the
+  # exact generation's durable claim between calls. The compare-and-swap also
+  # tells a superseded worker to stop before contacting another provider.
+  def heartbeat_search!(request, search_generation)
+    heartbeat_at = Time.current
+    renewed = request.class
+      .where(
+        id: request.id,
+        status: Request.statuses.fetch("searching"),
+        search_generation: search_generation
+      )
+      .where.not(search_claimed_at: nil)
+      .update_all(search_claimed_at: heartbeat_at)
+    return true if renewed == 1
+
+    log_stale_search(request)
+    false
   end
 
   def clear_search_claim!(request)
@@ -315,7 +349,7 @@ class SearchJob < ApplicationJob
     language_search_term(request)
   end
 
-  def search_anna_archive(request)
+  def search_anna_archive(request, search_generation)
     book = request.book
 
     query_parts = [ book.title ]
@@ -326,7 +360,11 @@ class SearchJob < ApplicationJob
     language = request.effective_language
     Rails.logger.debug "[SearchJob] Searching Anna's Archive for request ##{request.id}"
 
-    results = AnnaArchiveClient.search(query, language: language)
+    results = AnnaArchiveClient.search(
+      query,
+      language: language,
+      after_attempt: -> { heartbeat_search!(request, search_generation) }
+    )
 
     # Tag results with source
     results.map do |r|
@@ -337,20 +375,28 @@ class SearchJob < ApplicationJob
     # Store the error message to show user if no other results
     @anna_archive_bot_protection_error = e.message
     []
+  rescue AnnaArchiveClient::SearchCancelled
+    []
   rescue AnnaArchiveClient::Error => e
     Rails.logger.warn "[SearchJob] Anna's Archive search failed for request ##{request.id} (#{e.class})"
     []
   end
 
-  def search_zlibrary(request)
+  def search_zlibrary(request, search_generation)
     book = request.book
     query = [ book.title, book.author ].compact.join(" ")
     language = zlibrary_language_filter(request)
     Rails.logger.debug "[SearchJob] Searching Z-Library for request ##{request.id}"
 
-    ZLibraryClient.search(query, language: language).map do |result|
+    ZLibraryClient.search(
+      query,
+      language: language,
+      after_attempt: -> { heartbeat_search!(request, search_generation) }
+    ).map do |result|
       { result: result, source: SearchResult::SOURCE_ZLIBRARY }
     end
+  rescue ZLibraryClient::SearchCancelled
+    []
   rescue ZLibraryClient::Error => e
     Rails.logger.warn "[SearchJob] Z-Library search failed for request ##{request.id} (#{e.class})"
     []

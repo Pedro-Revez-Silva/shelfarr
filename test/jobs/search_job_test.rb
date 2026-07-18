@@ -2193,6 +2193,77 @@ class SearchJobTest < ActiveJob::TestCase
     assert saved_result.downloadable?
   end
 
+  test "heartbeats a long provider sequence so the watchdog does not preempt healthy work" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    providers = 16.times.map { |index| OpenStruct.new(name: "Slow Provider #{index}") }
+    provider_scope = Object.new
+    provider_scope.define_singleton_method(:for_book_type) { |*| self }
+    provider_scope.define_singleton_method(:by_priority) { self }
+    provider_scope.define_singleton_method(:to_a) { providers }
+    searched = []
+    job = SearchJob.new
+    slow_search = lambda do |_request, provider|
+      travel 2.minutes
+      RequestQueueJob.new.send(:recover_stale_searches)
+      searched << provider.name
+      []
+    end
+
+    AcquisitionProvider.stub(:enabled, provider_scope) do
+      job.stub(:search_custom_provider, slow_search) do
+        assert_no_enqueued_jobs only: SearchJob do
+          job.send(:perform_search, @request.id)
+        end
+      end
+    end
+
+    assert_equal providers.map(&:name), searched
+    assert @request.reload.not_found?
+    assert_nil @request.search_claimed_at
+  end
+
+  test "heartbeats inside a mirror-rotating built-in search" do
+    SettingsService.set(:prowlarr_api_key, "")
+    mirror_attempts = 0
+    slow_mirror_search = lambda do |_query, after_attempt:, **_kwargs|
+      16.times do
+        travel 2.minutes
+        RequestQueueJob.new.send(:recover_stale_searches)
+        mirror_attempts += 1
+        assert after_attempt.call
+      end
+      []
+    end
+
+    AnnaArchiveClient.stub(:configured?, true) do
+      AnnaArchiveClient.stub(:search, slow_mirror_search) do
+        assert_no_enqueued_jobs only: SearchJob do
+          SearchJob.perform_now(@request.id)
+        end
+      end
+    end
+
+    assert_equal 16, mirror_attempts
+    assert @request.reload.not_found?
+    assert_nil @request.search_claimed_at
+  end
+
+  test "heartbeat stops a superseded worker before the next provider" do
+    job = SearchJob.new
+    generation = job.send(:claim_search!, @request)
+    original_claim = @request.reload.search_claimed_at
+
+    travel 1.minute
+    assert job.send(:heartbeat_search!, @request, generation)
+    assert_operator @request.reload.search_claimed_at, :>, original_claim
+
+    @request.refresh_search!
+
+    assert_not job.send(:heartbeat_search!, @request, generation)
+    assert @request.reload.pending?
+  end
+
   test "skips unavailable custom acquisition provider results" do
     SettingsService.set(:prowlarr_api_key, "")
     provider = AcquisitionProvider.create!(

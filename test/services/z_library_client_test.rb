@@ -81,6 +81,29 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search stops login mirror rotation when its continuation is cancelled" do
+    SettingsService.set(:zlibrary_url, "https://offline.example\nhttps://z-library.sk")
+    continuation_checks = 0
+    after_attempt = lambda do
+      continuation_checks += 1
+      false
+    end
+
+    VCR.turned_off do
+      stub_request(:post, "https://offline.example/eapi/user/login")
+        .to_return(status: 503, body: "unavailable")
+      second_mirror = stub_request(:post, "https://z-library.sk/eapi/user/login")
+
+      assert_raises ZLibraryClient::SearchCancelled do
+        ZLibraryClient.search("Test Book", after_attempt: after_attempt)
+      end
+
+      assert_equal 1, continuation_checks
+      assert_requested :post, "https://offline.example/eapi/user/login"
+      assert_not_requested second_mirror
+    end
+  end
+
   test "search uses the domain that accepted login" do
     SettingsService.set(:zlibrary_url, "https://offline.example, https://z-library.sk")
 
@@ -170,6 +193,32 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       assert_equal "Recovered via API", results.first.title
       assert_requested(bz_search)
       assert_not_requested(:get, %r{https://z-library\.sk/s/})
+    end
+  end
+
+  test "search cancellation after alternate login prevents its search request" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-library.bz")
+    continuation_checks = 0
+    after_attempt = -> { (continuation_checks += 1) < 3 }
+
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_zlibrary_login_success("z-library.bz")
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(
+          status: 400,
+          body: { success: 0, error: "Some errors occured." }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+      alternate_search = stub_request(:post, "https://z-library.bz/eapi/book/search")
+
+      assert_raises ZLibraryClient::SearchCancelled do
+        ZLibraryClient.search("Test Book", after_attempt: after_attempt)
+      end
+
+      assert_equal 3, continuation_checks
+      assert_requested :post, "https://z-library.bz/eapi/user/login"
+      assert_not_requested alternate_search
     end
   end
 
