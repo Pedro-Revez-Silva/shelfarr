@@ -58,6 +58,21 @@ class SearchControllerRenderingTest < ActionController::TestCase
     assert_includes html, "Search failed. Please try again."
   end
 
+  test "with_relative_url_root reapplies the captured prefix and restores the prior SCRIPT_NAME afterward" do
+    @controller.instance_variable_set(:@relative_url_root, "/books")
+
+    # Simulates SCRIPT_NAME having reverted on the shared env since the
+    # prefix was captured at the top of #stream_results (e.g. once whatever
+    # mounted the app under /books is done touching this request).
+    @request.set_header("SCRIPT_NAME", "")
+
+    observed_script_name = nil
+    @controller.send(:with_relative_url_root) { observed_script_name = @request.script_name }
+
+    assert_equal "/books", observed_script_name
+    assert_equal "", @request.script_name
+  end
+
   test "audiobookshelf_matches_for returns placeholders without library items" do
     LibraryItem.destroy_all
 
