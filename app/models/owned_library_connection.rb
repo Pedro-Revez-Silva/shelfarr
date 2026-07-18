@@ -28,7 +28,8 @@ class OwnedLibraryConnection < ApplicationRecord
   DEFAULT_LIBATION_URL = "http://shelfarr-libation:8080"
   AUTH_START_PREFIX = "shelfarr-starting:"
   AUTH_START_TIMEOUT = 3.minutes
-  SYNC_JOB_STATE_PREFIX = "shelfarr-sync:v1:"
+  LEGACY_SYNC_JOB_STATE_PREFIX = "shelfarr-sync:v1:"
+  SYNC_JOB_STATE_PREFIX = "shelfarr-sync:v2:"
 
   encrypts :bridge_token, :auth_session_id, :auth_login_url
 
@@ -115,9 +116,11 @@ class OwnedLibraryConnection < ApplicationRecord
     backlog_backup_decided_at.present?
   end
 
-  # Keep the companion job ID and Shelfarr's polling-chain token in the
-  # existing sync_job_id column. Raw IDs written by older Shelfarr releases
-  # remain readable, so this does not require a data migration.
+  # Keep the companion job ID, polling-chain token, and exact Active Job
+  # delivery ID in the existing sync_job_id column. The delivery ID remains
+  # stable while a worker rotates the poll token, allowing recovery admission
+  # to prove that exact Solid Queue delivery is still alive. Raw IDs and v1
+  # tokenized values remain readable, so this does not require a migration.
   def sync_job_id
     state = decoded_sync_job_state
     state ? state.fetch(:job_id).presence : self[:sync_job_id]
@@ -127,9 +130,14 @@ class OwnedLibraryConnection < ApplicationRecord
     decoded_sync_job_state&.fetch(:poll_token)
   end
 
-  def sync_job_state_value(job_id:, poll_token:)
+  def sync_delivery_job_id
+    decoded_sync_job_state&.fetch(:delivery_job_id)
+  end
+
+  def sync_job_state_value(job_id:, poll_token:, delivery_job_id: nil)
     encoded_job_id = Base64.urlsafe_encode64(job_id.to_s, padding: false)
-    "#{SYNC_JOB_STATE_PREFIX}#{poll_token}:#{encoded_job_id}"
+    encoded_delivery_job_id = Base64.urlsafe_encode64(delivery_job_id.to_s, padding: false)
+    "#{SYNC_JOB_STATE_PREFIX}#{poll_token}:#{encoded_job_id}:#{encoded_delivery_job_id}"
   end
 
   def failed?
@@ -195,15 +203,29 @@ class OwnedLibraryConnection < ApplicationRecord
 
   def decoded_sync_job_state
     raw_value = self[:sync_job_id].to_s
-    return unless raw_value.start_with?(SYNC_JOB_STATE_PREFIX)
+    if raw_value.start_with?(SYNC_JOB_STATE_PREFIX)
+      poll_token, encoded_job_id, encoded_delivery_job_id = raw_value
+        .delete_prefix(SYNC_JOB_STATE_PREFIX)
+        .split(":", -1)
+      return if poll_token.blank? || encoded_job_id.nil? || encoded_delivery_job_id.nil?
 
-    poll_token, encoded_job_id = raw_value.delete_prefix(SYNC_JOB_STATE_PREFIX).split(":", 2)
-    return if poll_token.blank? || encoded_job_id.nil?
+      {
+        job_id: Base64.urlsafe_decode64(encoded_job_id),
+        poll_token: poll_token,
+        delivery_job_id: Base64.urlsafe_decode64(encoded_delivery_job_id).presence
+      }
+    elsif raw_value.start_with?(LEGACY_SYNC_JOB_STATE_PREFIX)
+      poll_token, encoded_job_id = raw_value
+        .delete_prefix(LEGACY_SYNC_JOB_STATE_PREFIX)
+        .split(":", 2)
+      return if poll_token.blank? || encoded_job_id.nil?
 
-    {
-      job_id: Base64.urlsafe_decode64(encoded_job_id),
-      poll_token: poll_token
-    }
+      {
+        job_id: Base64.urlsafe_decode64(encoded_job_id),
+        poll_token: poll_token,
+        delivery_job_id: nil
+      }
+    end
   rescue ArgumentError
     nil
   end

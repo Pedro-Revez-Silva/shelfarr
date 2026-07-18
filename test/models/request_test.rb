@@ -30,6 +30,133 @@ class RequestTest < ActiveSupport::TestCase
     assert_not_includes Request.active, request
   end
 
+  test "search refresh is available only from non-acquisition request states" do
+    Request::SEARCH_REFRESHABLE_STATUSES.each do |status|
+      request = Request.create!(
+        book: books(:ebook_pending),
+        user: users(:one),
+        status: status
+      )
+
+      assert request.search_refresh_allowed?, "expected #{status} to allow search refresh"
+    end
+
+    %w[downloading processing completed].each do |status|
+      request = Request.create!(
+        book: books(:ebook_pending),
+        user: users(:one),
+        status: status
+      )
+
+      assert_not request.search_refresh_allowed?, "expected #{status} to block search refresh"
+      assert_raises(Request::SearchRefreshBlockedError) { request.refresh_search! }
+    end
+  end
+
+  test "search refresh rechecks acquisition state under the transition lock" do
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :pending
+    )
+    selected = request.search_results.create!(
+      guid: "refresh-race-selected",
+      title: "Refresh race selected release",
+      magnet_url: "magnet:?xt=urn:btih:#{'a' * 40}",
+      status: :selected
+    )
+    disposable = request.search_results.create!(
+      guid: "refresh-race-disposable",
+      title: "Refresh race disposable release",
+      magnet_url: "magnet:?xt=urn:btih:#{'b' * 40}",
+      status: :pending
+    )
+    stale_request = Request.find(request.id)
+    download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :queued
+    )
+    request.update!(status: :downloading)
+    previous_generation = request.search_generation
+
+    error = assert_raises(Request::SearchRefreshBlockedError) do
+      stale_request.refresh_search!
+    end
+
+    assert_match(/acquisition.*active|awaiting recovery/i, error.message)
+    assert request.reload.downloading?
+    assert_equal previous_generation, request.search_generation
+    assert SearchResult.exists?(selected.id)
+    assert SearchResult.exists?(disposable.id)
+    assert_equal selected, download.reload.search_result
+  end
+
+  test "search refresh preserves selected and manual results after safe admission" do
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :not_found
+    )
+    selected = request.search_results.create!(
+      guid: "refresh-preserved-selected",
+      title: "Preserved selected release",
+      magnet_url: "magnet:?xt=urn:btih:#{'c' * 40}",
+      status: :selected
+    )
+    manual = request.search_results.create!(
+      guid: "manual-magnet:#{'d' * 40}",
+      title: "Preserved manual release",
+      magnet_url: "magnet:?xt=urn:btih:#{'d' * 40}",
+      source: SearchResult::SOURCE_MANUAL_MAGNET,
+      status: :pending
+    )
+    disposable = request.search_results.create!(
+      guid: "refresh-removed-provider",
+      title: "Removed provider release",
+      magnet_url: "magnet:?xt=urn:btih:#{'e' * 40}",
+      status: :pending
+    )
+
+    request.refresh_search!
+
+    assert request.reload.pending?
+    assert SearchResult.exists?(selected.id)
+    assert SearchResult.exists?(manual.id)
+    assert_not SearchResult.exists?(disposable.id)
+  end
+
+  test "search refresh rejects upload and direct-download recovery from otherwise safe states" do
+    upload_request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :pending
+    )
+    Upload.create!(
+      user: users(:one),
+      request: upload_request,
+      original_filename: "refresh-blocked.epub",
+      file_path: "/tmp/refresh-blocked.epub",
+      status: :pending
+    )
+
+    direct_request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :failed
+    )
+    direct_request.downloads.create!(
+      name: "Refresh direct recovery",
+      status: :failed,
+      direct_reservation_token: SecureRandom.hex(16)
+    )
+
+    assert_not upload_request.search_refresh_allowed?
+    assert_not direct_request.search_refresh_allowed?
+    assert_raises(Request::SearchRefreshBlockedError) { upload_request.refresh_search! }
+    assert_raises(Request::SearchRefreshBlockedError) { direct_request.refresh_search! }
+  end
+
   test "validates request scope" do
     request = Request.new(
       book: books(:ebook_pending),

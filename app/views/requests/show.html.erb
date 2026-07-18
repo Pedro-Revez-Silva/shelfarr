@@ -147,8 +147,19 @@
               <span class="text-gray-500">(<%= @request.search_results.count %>)</span>
             </h3>
             <div class="flex items-center gap-2">
-              <%= button_to "Refresh Search", refresh_admin_request_search_results_path(@request),
-                  method: :post, class: "px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition" %>
+              <% if @request.search_refresh_allowed? %>
+                <%= button_to "Refresh Search", refresh_admin_request_search_results_path(@request),
+                    method: :post, class: "px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition" %>
+              <% else %>
+                <button type="button"
+                        disabled
+                        aria-disabled="true"
+                        title="<%= @request.search_refresh_blocked_message %>"
+                        data-search-refresh-disabled
+                        class="cursor-not-allowed rounded bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-500 opacity-70">
+                  Refresh Search
+                </button>
+              <% end %>
               <%= link_to "Manage Results", admin_request_search_results_path(@request),
                   class: "px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition" %>
               <button type="button"

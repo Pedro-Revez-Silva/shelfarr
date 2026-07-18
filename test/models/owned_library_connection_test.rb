@@ -194,6 +194,17 @@ class OwnedLibraryConnectionTest < ActiveSupport::TestCase
 
     assert_equal "job:id/with symbols", connection.sync_job_id
     assert_equal "poll-token", connection.sync_poll_token
+    assert_nil connection.sync_delivery_job_id
+
+    connection.sync_job_id = connection.sync_job_state_value(
+      job_id: "job-with-delivery",
+      poll_token: "delivery-poll-token",
+      delivery_job_id: "active-job-id"
+    )
+
+    assert_equal "job-with-delivery", connection.sync_job_id
+    assert_equal "delivery-poll-token", connection.sync_poll_token
+    assert_equal "active-job-id", connection.sync_delivery_job_id
 
     connection.sync_job_id = connection.sync_job_state_value(
       job_id: nil,
@@ -202,6 +213,14 @@ class OwnedLibraryConnectionTest < ActiveSupport::TestCase
 
     assert_nil connection.sync_job_id
     assert_equal "startup-token", connection.sync_poll_token
+
+    legacy_encoded_job_id = Base64.urlsafe_encode64("v1-job-id", padding: false)
+    connection.sync_job_id = "#{OwnedLibraryConnection::LEGACY_SYNC_JOB_STATE_PREFIX}" \
+      "v1-poll-token:#{legacy_encoded_job_id}"
+
+    assert_equal "v1-job-id", connection.sync_job_id
+    assert_equal "v1-poll-token", connection.sync_poll_token
+    assert_nil connection.sync_delivery_job_id
   end
 
   test "applies disabled automation defaults without changing existing connection defaults" do

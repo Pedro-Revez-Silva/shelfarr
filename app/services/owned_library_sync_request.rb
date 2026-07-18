@@ -26,7 +26,13 @@ class OwnedLibrarySyncRequest
     new(connection: connection, mode: mode, now: now).call
   end
 
-  def self.sync_job_pending?(connection_id, request_token, poll_token)
+  def self.sync_job_pending?(
+    connection_id,
+    request_token,
+    expected_sync_job_id,
+    poll_token,
+    delivery_job_id
+  )
     return false unless ActiveJob::Base.queue_adapter.class.name ==
       "ActiveJob::QueueAdapters::SolidQueueAdapter"
 
@@ -35,9 +41,19 @@ class OwnedLibrarySyncRequest
       .where.missing(:failed_execution)
       .any? do |job|
         arguments = Array(job.arguments["arguments"])
-        arguments.first.to_i == connection_id.to_i &&
-          arguments.second.to_s == request_token.to_s &&
+        next false unless arguments.first.to_i == connection_id.to_i
+        next false unless arguments.second.to_s == request_token.to_s
+
+        # A running delivery rotates the connection's poll token before
+        # blocking on the companion, so its serialized token is intentionally
+        # stale. Its globally unique Active Job ID is the stable liveness proof.
+        # A queued handoff has not run yet, and is instead proven by the exact
+        # companion-job/poll-token chain it will claim.
+        exact_delivery = delivery_job_id.present? &&
+          job.active_job_id.to_s == delivery_job_id.to_s
+        exact_poll_chain = arguments.third.to_s == expected_sync_job_id.to_s &&
           arguments.fourth.to_s == poll_token.to_s
+        exact_delivery || exact_poll_chain
       end
   rescue ActiveRecord::ActiveRecordError, NameError
     # If queue inspection is unavailable, preserving the current claim is
@@ -63,6 +79,7 @@ class OwnedLibrarySyncRequest
       return result.tap { |value| value.status = :enqueue_failed }
     end
 
+    persist_enqueued_delivery(result, job)
     result.tap { |value| value.job = job }
   end
 
@@ -86,7 +103,9 @@ class OwnedLibrarySyncRequest
           self.class.sync_job_pending?(
             connection.id,
             sync_request_token,
-            connection.sync_poll_token
+            connection.sync_job_id,
+            connection.sync_poll_token,
+            connection.sync_delivery_job_id
           )
         next result(:active)
       end
@@ -162,6 +181,28 @@ class OwnedLibrarySyncRequest
         sync_job_id: nil,
         sync_started_at: nil,
         last_sync_error: ENQUEUE_FAILURE_MESSAGE
+      )
+    end
+  end
+
+  def persist_enqueued_delivery(result, job)
+    delivery_job_id = job.job_id if job.respond_to?(:job_id)
+    return if delivery_job_id.blank?
+
+    connection.with_lock do
+      connection.reload
+      next unless connection.sync_active?
+      next unless sync_request_token == result.request_token
+      next unless connection.sync_job_id == result.expected_sync_job_id
+      next unless connection.sync_poll_token == result.poll_token
+
+      connection.update_column(
+        :sync_job_id,
+        connection.sync_job_state_value(
+          job_id: result.expected_sync_job_id,
+          poll_token: result.poll_token,
+          delivery_job_id: delivery_job_id
+        )
       )
     end
   end

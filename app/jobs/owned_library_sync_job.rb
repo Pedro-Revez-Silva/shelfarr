@@ -119,7 +119,8 @@ class OwnedLibrarySyncJob < ApplicationJob
         sync_status: "syncing",
         sync_job_id: connection.sync_job_state_value(
           job_id: nil,
-          poll_token: next_poll_token
+          poll_token: next_poll_token,
+          delivery_job_id: job_id
         ),
         sync_started_at: connection.sync_started_at || Time.current,
         last_sync_error: nil
@@ -140,7 +141,8 @@ class OwnedLibrarySyncJob < ApplicationJob
       connection.update!(
         sync_job_id: connection.sync_job_state_value(
           job_id: companion_job.id,
-          poll_token: next_poll_token
+          poll_token: next_poll_token,
+          delivery_job_id: job_id
         )
       )
       attempt.job_id = companion_job.id
@@ -493,13 +495,16 @@ class OwnedLibrarySyncJob < ApplicationJob
   end
 
   def schedule_poll(connection, attempt)
-    job = self.class.set(wait: POLL_INTERVAL).perform_later(
+    scheduled_job = self.class.set(wait: POLL_INTERVAL).perform_later(
       connection.id,
       attempt.request_token,
       attempt.job_id,
       attempt.poll_token
     )
-    return if job.respond_to?(:successfully_enqueued?) && job.successfully_enqueued?
+    if scheduled_job.respond_to?(:successfully_enqueued?) && scheduled_job.successfully_enqueued?
+      persist_scheduled_delivery(connection, attempt, scheduled_job)
+      return
+    end
 
     raise CompanionJobFailed, "Shelfarr could not queue the next Libation sync check"
   end
@@ -530,7 +535,7 @@ class OwnedLibrarySyncJob < ApplicationJob
     return false unless current_request?(connection, attempt.request_token)
 
     if attempt.poll_token.present?
-      poll_attempt_current?(connection, attempt)
+      claim_delivery_liveness(connection, attempt)
     else
       claim_legacy_poll_chain(connection, attempt)
     end
@@ -544,7 +549,27 @@ class OwnedLibrarySyncJob < ApplicationJob
       next false if connection.sync_poll_token.present?
 
       attempt.poll_token = SecureRandom.hex(16)
-      write_poll_state(connection, attempt.job_id, attempt.poll_token)
+      write_poll_state(
+        connection,
+        attempt.job_id,
+        attempt.poll_token,
+        delivery_job_id: job_id
+      )
+      true
+    end
+  end
+
+  def claim_delivery_liveness(connection, attempt)
+    connection.with_lock do
+      connection.reload
+      next false unless poll_attempt_current?(connection, attempt)
+
+      write_poll_state(
+        connection,
+        attempt.job_id,
+        attempt.poll_token,
+        delivery_job_id: job_id
+      )
       true
     end
   end
@@ -565,20 +590,43 @@ class OwnedLibrarySyncJob < ApplicationJob
       next false unless terminal_request_current?(connection, attempt)
 
       attempt.poll_token = SecureRandom.hex(16)
-      write_poll_state(connection, attempt.job_id, attempt.poll_token)
+      write_poll_state(
+        connection,
+        attempt.job_id,
+        attempt.poll_token,
+        delivery_job_id: job_id
+      )
       true
     end
   end
 
-  def write_poll_state(connection, job_id, poll_token)
+  def write_poll_state(connection, companion_job_id, poll_token, delivery_job_id:)
     heartbeat_at = [ Time.current, connection.updated_at + 0.000001 ].max
     connection.update_columns(
       sync_job_id: connection.sync_job_state_value(
-        job_id: job_id,
-        poll_token: poll_token
+        job_id: companion_job_id,
+        poll_token: poll_token,
+        delivery_job_id: delivery_job_id
       ),
       updated_at: heartbeat_at
     )
+  end
+
+  def persist_scheduled_delivery(connection, attempt, scheduled_job)
+    delivery_job_id = scheduled_job.job_id if scheduled_job.respond_to?(:job_id)
+    return if delivery_job_id.blank?
+
+    connection.with_lock do
+      connection.reload
+      next unless terminal_request_current?(connection, attempt)
+
+      write_poll_state(
+        connection,
+        attempt.job_id,
+        attempt.poll_token,
+        delivery_job_id: delivery_job_id
+      )
+    end
   end
 
   def max_sync_runtime

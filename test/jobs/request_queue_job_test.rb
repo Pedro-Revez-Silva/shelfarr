@@ -86,6 +86,126 @@ class RequestQueueJobTest < ActiveJob::TestCase
     end
   end
 
+  test "recovers a search orphaned after claim and invalidates the killed worker" do
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :pending
+    )
+    killed_job = SearchJob.new
+    killed_generation = killed_job.send(:claim_search!, request)
+
+    travel RequestQueueJob::STALE_SEARCH_LEASE + 1.minute do
+      assert_enqueued_with(job: SearchJob, args: [ request.id ]) do
+        RequestQueueJob.new.send(:recover_stale_searches)
+      end
+
+      request.reload
+      assert request.pending?
+      assert_operator request.search_generation, :>, killed_generation
+      assert_not killed_job.send(
+        :complete_search,
+        request,
+        killed_generation,
+        results: [],
+        store_offers: [],
+        indexer_error: nil
+      )
+      assert request.reload.pending?
+    end
+  end
+
+  test "stale-search recovery leaves a recent legitimate search untouched" do
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :pending
+    )
+    generation = SearchJob.new.send(:claim_search!, request)
+
+    travel RequestQueueJob::STALE_SEARCH_LEASE - 1.minute do
+      assert_no_enqueued_jobs only: SearchJob do
+        RequestQueueJob.new.send(:recover_stale_searches)
+      end
+
+      assert request.reload.searching?
+      assert_equal generation, request.search_generation
+    end
+  end
+
+  test "stale-search recovery rechecks a refreshed heartbeat under the generation lock" do
+    stale_before = Time.current
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :searching,
+      search_generation: 7,
+      updated_at: 1.minute.ago
+    )
+    stale_candidate = Request.find(request.id)
+    request.update_columns(updated_at: 1.minute.from_now)
+
+    assert_not stale_candidate.recover_stale_search!(stale_before: stale_before)
+    assert request.reload.searching?
+    assert_equal 7, request.search_generation
+  end
+
+  test "stale-search recovery bounds and enqueues each recurring batch" do
+    Request.searching.update_all(updated_at: Time.current)
+    now = Time.current
+    rows = 102.times.map do |index|
+      {
+        book_id: books(:ebook_pending).id,
+        user_id: users(:one).id,
+        status: Request.statuses.fetch("searching"),
+        search_generation: index + 1,
+        notes: "bounded-stale-search-recovery",
+        language: "en",
+        created_via: "web",
+        request_scope: "single",
+        created_at: now - 1.hour,
+        updated_at: now - RequestQueueJob::STALE_SEARCH_LEASE - 1.minute
+      }
+    end
+    Request.insert_all!(rows)
+
+    assert_enqueued_jobs RequestQueueJob::RECONCILIATION_BATCH_SIZE, only: SearchJob do
+      RequestQueueJob.new.send(:recover_stale_searches)
+    end
+
+    reconciled = Request.where(notes: "bounded-stale-search-recovery")
+    assert_equal 100, reconciled.pending.count
+    assert_equal 2, reconciled.searching.count
+    assert_equal (2..101).to_a,
+      reconciled.pending.order(:search_generation).pluck(:search_generation)
+  end
+
+  test "an enqueue failure leaves stale-search recovery eligible for the next pending pass" do
+    request = Request.create!(
+      book: books(:ebook_pending),
+      user: users(:one),
+      status: :searching,
+      search_generation: 3,
+      updated_at: RequestQueueJob::STALE_SEARCH_LEASE.ago - 1.minute
+    )
+    failed_enqueues = 0
+    failure = lambda do |*|
+      failed_enqueues += 1
+      raise ActiveJob::EnqueueError, "simulated queue outage"
+    end
+
+    SearchJob.stub(:perform_later, failure) do
+      assert_nothing_raised { RequestQueueJob.new.send(:recover_stale_searches) }
+    end
+
+    assert_equal 1, failed_enqueues
+    assert request.reload.pending?
+    assert_equal 4, request.search_generation
+    assert_enqueued_with(job: SearchJob, args: [ request.id ]) do
+      RequestQueueJob.new.send(:process_pending_requests)
+    end
+  end
+
   test "retry reconciliation bounds each recurring run" do
     Request.retry_due.update_all(next_retry_at: 1.hour.from_now)
     now = Time.current

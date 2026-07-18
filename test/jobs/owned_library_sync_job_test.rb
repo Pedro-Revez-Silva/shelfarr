@@ -30,6 +30,24 @@ class OwnedLibrarySyncJobTest < ActiveJob::TestCase
     assert @connection.syncing?
     assert_equal "sync-1", @connection.sync_job_id
     assert @connection.sync_started_at.present?
+    scheduled_poll = enqueued_jobs.find { |payload| payload[:job] == OwnedLibrarySyncJob }
+    assert_equal scheduled_poll.fetch("job_id"), @connection.sync_delivery_job_id
+  end
+
+  test "starts a legacy one-argument queued delivery" do
+    @connection.update!(sync_status: "queued", sync_started_at: Time.current)
+
+    VCR.turned_off do
+      stub_request(:post, "https://libation.test/v1/sync")
+        .to_return(status: 202, body: { jobId: "sync-legacy-start", status: "queued" }.to_json)
+
+      OwnedLibrarySyncJob.perform_now(@connection.id)
+    end
+
+    @connection.reload
+    assert @connection.syncing?
+    assert_equal "sync-legacy-start", @connection.sync_job_id
+    assert @connection.sync_poll_token.present?
   end
 
   test "recovers a missing companion job id after the startup grace period" do

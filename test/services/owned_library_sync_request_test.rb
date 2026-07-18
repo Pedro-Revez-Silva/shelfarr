@@ -135,6 +135,97 @@ class OwnedLibrarySyncRequestTest < ActiveJob::TestCase
     assert_equal original_poll_token, @connection.sync_poll_token
   end
 
+  test "a claimed start delivery remains live after its poll token rotates" do
+    with_solid_queue_sync_jobs do |sync_jobs|
+      queued, worker = enqueue_and_claim_start
+      assert_not_equal queued.poll_token, @connection.reload.sync_poll_token
+      @connection.update_column(:updated_at, 2.minutes.ago)
+
+      result = nil
+      assert_no_difference -> { sync_jobs.count } do
+        result = OwnedLibrarySyncRequest.call(connection: @connection)
+      end
+
+      assert_equal :active, result.status
+      assert_equal worker.job_id, sync_jobs.first.active_job_id
+    end
+  end
+
+  test "a finished claimed delivery does not suppress stale-start recovery" do
+    with_solid_queue_sync_jobs do |sync_jobs|
+      _queued, worker = enqueue_and_claim_start
+      sync_jobs.find_by!(active_job_id: worker.job_id).update!(finished_at: Time.current)
+      @connection.update_column(:updated_at, 2.minutes.ago)
+
+      result = nil
+      assert_difference -> { sync_jobs.count }, 1 do
+        result = OwnedLibrarySyncRequest.call(connection: @connection)
+      end
+
+      assert_equal :recovery, result.status
+      assert_not_equal worker.job_id, result.job.job_id
+    end
+  end
+
+  test "an unfinished old-token delivery does not suppress current-chain recovery" do
+    with_solid_queue_sync_jobs do |sync_jobs|
+      _queued, worker = enqueue_and_claim_start
+      current_poll_token = SecureRandom.hex(16)
+      @connection.update_columns(
+        sync_job_id: @connection.sync_job_state_value(
+          job_id: nil,
+          poll_token: current_poll_token,
+          delivery_job_id: SecureRandom.uuid
+        ),
+        updated_at: 2.minutes.ago
+      )
+
+      result = nil
+      assert_difference -> { sync_jobs.count }, 1 do
+        result = OwnedLibrarySyncRequest.call(connection: @connection)
+      end
+
+      assert_equal :recovery, result.status
+      assert sync_jobs.where(active_job_id: worker.job_id).exists?
+      assert_not_equal current_poll_token, @connection.reload.sync_poll_token
+    end
+  end
+
+  test "concurrent retries preserve one live claimed start delivery" do
+    with_solid_queue_sync_jobs do |sync_jobs|
+      _queued, worker = enqueue_and_claim_start
+      @connection.update_column(:updated_at, 2.minutes.ago)
+
+      ready = Queue.new
+      release = Queue.new
+      outcomes = Queue.new
+      failures = Queue.new
+      threads = 2.times.map do
+        Thread.new do
+          ActiveRecord::Base.connection_pool.with_connection do
+            SolidQueue::Record.connection_pool.with_connection do
+              ready << true
+              release.pop
+              connection = OwnedLibraryConnection.find(@connection.id)
+              outcomes << OwnedLibrarySyncRequest.call(connection: connection).status
+            end
+          end
+        rescue StandardError => error
+          failures << error
+        end
+      end
+
+      2.times { ready.pop }
+      2.times { release << true }
+      threads.each(&:join)
+
+      assert failures.empty?, failures.size.times.map { failures.pop.full_message }.join("\n")
+      assert_equal [ :active, :active ], 2.times.map { outcomes.pop }.sort
+      assert_equal 1, sync_jobs.count
+      assert_equal worker.job_id, @connection.reload.sync_delivery_job_id
+    end
+  end
+
   test "enqueue failure becomes a durable failed state" do
     result = nil
     OwnedLibrarySyncJob.stub(:perform_later, false) do
@@ -176,5 +267,38 @@ class OwnedLibrarySyncRequestTest < ActiveJob::TestCase
     end
 
     assert_match(/Unsupported owned-library sync mode/, error.message)
+  end
+
+  private
+
+  def with_solid_queue_sync_jobs
+    original_adapter = ActiveJob::Base.queue_adapter
+    original_config = SolidQueue::Record.connection_db_config
+    sync_jobs = nil
+
+    SolidQueue::Record.establish_connection(:queue)
+    ActiveJob::Base.queue_adapter = :solid_queue
+    sync_jobs = SolidQueue::Job.where(class_name: OwnedLibrarySyncJob.name)
+    sync_jobs.destroy_all
+
+    yield sync_jobs.where(finished_at: nil)
+  ensure
+    sync_jobs&.destroy_all
+    ActiveJob::Base.queue_adapter = original_adapter
+    SolidQueue::Record.establish_connection(original_config)
+  end
+
+  def enqueue_and_claim_start
+    queued = OwnedLibrarySyncRequest.call(connection: @connection)
+    worker = queued.job
+    attempt = OwnedLibrarySyncJob::SyncAttempt.new(
+      request_token: queued.request_token,
+      job_id: queued.expected_sync_job_id,
+      poll_token: queued.poll_token
+    )
+
+    assert worker.send(:prepare_poll_attempt, @connection, attempt)
+    assert worker.send(:claim_sync, @connection, attempt)
+    [ queued, worker ]
   end
 end

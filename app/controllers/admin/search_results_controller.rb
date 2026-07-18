@@ -32,6 +32,8 @@ module Admin
 
       redirect_to request_path(@request),
                   notice: "Search refreshed. Results will appear shortly."
+    rescue Request::SearchRefreshBlockedError => e
+      redirect_to request_path(@request), alert: e.message
     end
 
     private

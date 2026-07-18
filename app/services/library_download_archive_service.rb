@@ -67,27 +67,28 @@ class LibraryDownloadArchiveService
     canonical_root, canonical_source = validate_boundary!
     prepare_cache_directory!
     with_cache_coordination do
-      # Admission by stable book shard precedes the potentially expensive tree
-      # walk so repeated requests for the same item cannot all consume workers
-      # while independently snapshotting one large directory.
-      preflight_source_tree!(canonical_source, canonical_root)
-      source_root = FileCopyService.snapshot_source_root(
-        canonical_source,
-        heartbeat: method(:enforce_runtime_budget!),
-        max_entries: MAX_ARCHIVE_ENTRIES,
-        max_depth: MAX_ARCHIVE_DEPTH
-      )
-      validate_snapshot!(source_root, canonical_root)
-      cache_path = cache_path_for(source_root)
+      # Per-book coordination is acquired first so duplicate requests for one
+      # item cannot consume multiple global slots. The global admission lock
+      # then covers every potentially expensive scan, manifest, cache check,
+      # and build across distinct books.
+      with_build_admission do
+        preflight_source_tree!(canonical_source, canonical_root)
+        source_root = FileCopyService.snapshot_source_root(
+          canonical_source,
+          heartbeat: method(:enforce_runtime_budget!),
+          max_entries: MAX_ARCHIVE_ENTRIES,
+          max_depth: MAX_ARCHIVE_DEPTH
+        )
+        validate_snapshot!(source_root, canonical_root)
+        cache_path = cache_path_for(source_root)
 
-      unless cache_file_valid?(cache_path, source_root: source_root)
-        repair_invalid_cache!(cache_path)
-        with_build_admission do
+        unless cache_file_valid?(cache_path, source_root: source_root)
+          repair_invalid_cache!(cache_path)
           build_and_publish!(source_root, canonical_root, cache_path)
         end
+        FileCopyService.refresh_regular_file_times(cache_path, root: CACHE_DIRECTORY.to_s)
+        validated_cache_path(cache_path, source_root: source_root)
       end
-      FileCopyService.refresh_regular_file_times(cache_path, root: CACHE_DIRECTORY.to_s)
-      validated_cache_path(cache_path, source_root: source_root)
     end
   rescue FileCopyService::UnsafePathError => error
     raise UnsafePathError, "library archive source is unsafe (#{error.class})"

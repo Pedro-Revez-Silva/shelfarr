@@ -3,6 +3,7 @@ require "uri"
 
 class Request < ApplicationRecord
   class CancellationBlockedError < StandardError; end
+  class SearchRefreshBlockedError < StandardError; end
 
   UPLOAD_FULFILLABLE_STATUSES = %w[
     pending
@@ -72,6 +73,14 @@ class Request < ApplicationRecord
 
   ACTIVE_STATUSES = %w[pending searching downloading processing].freeze
   OPEN_STATUSES = [ *ACTIVE_STATUSES, "awaiting_purchase" ].freeze
+  SEARCH_REFRESHABLE_STATUSES = %w[
+    pending
+    searching
+    awaiting_purchase
+    not_found
+    failed
+  ].freeze
+  SEARCH_REFRESH_BLOCKING_DOWNLOAD_STATUSES = %w[queued downloading paused].freeze
 
   scope :active, -> { where(status: ACTIVE_STATUSES) }
   scope :open, -> { where(status: OPEN_STATUSES) }
@@ -152,10 +161,30 @@ class Request < ApplicationRecord
   # Discard provider-owned search data and invalidate every in-flight search
   # before a replacement job is enqueued. Manual results remain available.
   def refresh_search!
-    with_search_transition_lock do
+    with_acquisition_transition_lock do
+      unless search_refresh_allowed?
+        raise SearchRefreshBlockedError, search_refresh_blocked_message
+      end
+
       queue_fresh_search_under_lock!
-      search_results.where.not(source: SearchResult::MANUAL_SOURCES).destroy_all
+      search_results
+        .where.not(source: SearchResult::MANUAL_SOURCES)
+        .where.not(status: :selected)
+        .destroy_all
       store_offers.destroy_all
+    end
+  end
+
+  # A worker can be killed after atomically claiming a pending request but
+  # before publishing results. Recheck the lease while holding the same
+  # generation transition lock used by SearchJob completion, then invalidate
+  # the killed worker before making the request eligible for replacement.
+  def recover_stale_search!(stale_before:)
+    with_search_transition_lock do
+      next false unless searching? && updated_at <= stale_before
+
+      queue_fresh_search_under_lock!
+      true
     end
   end
 
@@ -417,6 +446,20 @@ class Request < ApplicationRecord
       !upload_cancellation_blocked? &&
       !post_processing_recovery_pending? &&
       !direct_acquisition_recovery_pending?
+  end
+
+  def search_refresh_allowed?
+    status.in?(SEARCH_REFRESHABLE_STATUSES) && !search_refresh_acquisition_blocked?
+  end
+
+  def search_refresh_blocked_message
+    if completed?
+      "Cannot refresh search for a completed request."
+    elsif downloading? || processing? || search_refresh_acquisition_blocked?
+      "Cannot refresh search while an acquisition or library import is active or awaiting recovery."
+    else
+      "Cannot refresh search from the current request state."
+    end
   end
 
   def upload_cancellation_blocked?
@@ -757,6 +800,13 @@ class Request < ApplicationRecord
 
   def download_dispatch_in_progress?
     downloads.downloading.where(external_id: [ nil, "" ]).exists?
+  end
+
+  def search_refresh_acquisition_blocked?
+    downloads.where(status: SEARCH_REFRESH_BLOCKING_DOWNLOAD_STATUSES).exists? ||
+      upload_cancellation_blocked? ||
+      post_processing_recovery_pending? ||
+      direct_acquisition_recovery_pending?
   end
 
   def enqueue_stale_client_cleanup(download)

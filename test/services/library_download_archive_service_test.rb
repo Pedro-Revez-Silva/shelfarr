@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "timeout"
 require "zip"
 
 class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
@@ -131,7 +132,24 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
     expired = 2.hours.ago.to_time
     File.utime(expired, expired, cache_path)
 
-    assert_equal cache_path, build_archive
+    real_lock = FileCopyService.method(:with_private_lock)
+    admission_entries = 0
+    wrapper = lambda do |path, root:, nonblock: false, &operation|
+      unless File.basename(path).start_with?(".archive-build-slot-")
+        next real_lock.call(path, root: root, nonblock: nonblock, &operation)
+      end
+
+      real_lock.call(path, root: root, nonblock: nonblock) do
+        admission_entries += 1
+        operation.call
+      end
+    end
+
+    FileCopyService.stub(:with_private_lock, wrapper) do
+      assert_equal cache_path, build_archive
+    end
+
+    assert_equal 1, admission_entries
     assert_operator File.mtime(cache_path), :>, 1.minute.ago
   end
 
@@ -248,6 +266,100 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
     assert first.all? { |name| name.to_s.match?(/\A\.archive-build-slot-[0-9a-f]{2}\z/) }
   end
 
+  test "archive admission limits distinct books before preflight" do
+    books = 3.times.map { |offset| BookIdentity.new(@book.id + offset) }
+    services = books.map do |book|
+      source_path = File.join(@output_root, "Author", "Book #{book.id}")
+      FileUtils.mkdir_p(source_path)
+      File.binwrite(File.join(source_path, "chapter.m4b"), "chapter #{book.id}")
+      LibraryDownloadArchiveService.new(book: book, source_path: source_path, output_root: @output_root)
+    end
+    mutex = Mutex.new
+    condition = ConditionVariable.new
+    ready = 0
+    started = false
+    release_preflight = false
+    entered_preflight = []
+    errors = []
+    stop_error = Class.new(StandardError)
+    held_admission_slots = {}
+    lock_wrapper = lambda do |path, root:, nonblock: false, &operation|
+      basename = File.basename(path)
+      next operation.call if basename.start_with?(".archive-lock-")
+
+      unless basename.start_with?(".archive-build-slot-")
+        raise "unexpected lock path in archive admission test: #{path}"
+      end
+
+      acquired = mutex.synchronize do
+        next false if held_admission_slots[path.to_s]
+
+        held_admission_slots[path.to_s] = true
+      end
+      next false unless acquired
+
+      begin
+        operation.call
+      ensure
+        mutex.synchronize { held_admission_slots.delete(path.to_s) }
+      end
+    end
+    threads = []
+
+    FileCopyService.stub(:with_private_lock, lock_wrapper) do
+      threads = services.zip(books).map do |service, book|
+        Thread.new do
+          mutex.synchronize do
+            ready += 1
+            condition.broadcast
+            condition.wait(mutex) until started
+          end
+
+          preflight = lambda do |*|
+            mutex.synchronize do
+              entered_preflight << book.id
+              condition.broadcast
+              condition.wait(mutex) until release_preflight
+            end
+            raise stop_error, "stop after admission assertion"
+          end
+
+          service.stub(:archive_admission_wait_seconds, 0.1) do
+            service.stub(:preflight_source_tree!, preflight) do
+              service.call
+            end
+          end
+        rescue => error
+          mutex.synchronize do
+            errors << error
+            condition.broadcast
+          end
+        end
+      end
+
+      begin
+        Timeout.timeout(2) do
+          mutex.synchronize do
+            condition.wait(mutex) until ready == services.length
+            started = true
+            condition.broadcast
+            condition.wait(mutex) until entered_preflight.length == services.length || errors.any?
+
+            assert_equal LibraryDownloadArchiveService::ARCHIVE_BUILD_SLOTS, entered_preflight.length
+            assert errors.any?(LibraryDownloadArchiveService::BusyError),
+              "expected the third distinct book to be rejected before preflight, got: #{errors.map(&:class)}"
+          end
+        end
+      ensure
+        mutex.synchronize do
+          release_preflight = true
+          condition.broadcast
+        end
+        threads.each(&:join)
+      end
+    end
+  end
+
   test "aggregate source bytes are rejected before staging is created" do
     File.binwrite(File.join(@source_path, "large.m4b"), "x" * 32)
     service = archive_service
@@ -336,7 +448,9 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
       service.stub(:monotonic_time, -> { clock }) do
         service.stub(:archive_admission_wait_seconds, 0.1) do
           service.stub(:pause_before_admission_retry, ->(seconds) { clock += seconds }) do
-            assert_raises(LibraryDownloadArchiveService::BusyError) { service.call }
+            service.stub(:preflight_source_tree!, ->(*) { flunk "busy request must not scan the source tree" }) do
+              assert_raises(LibraryDownloadArchiveService::BusyError) { service.call }
+            end
           end
         end
       end
@@ -344,6 +458,25 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
 
     assert_equal LibraryDownloadArchiveService::ARCHIVE_BUILD_SLOTS, lock_calls.uniq.length
     assert_no_archive_artifacts
+  end
+
+  test "an admitted preflight failure releases its slot without archive artifacts" do
+    outside = File.join(@output_root, "outside.m4b")
+    unsafe_path = File.join(@source_path, "unsafe-entry")
+    File.binwrite(outside, "outside bytes")
+    File.symlink(outside, unsafe_path)
+
+    assert_raises(LibraryDownloadArchiveService::UnsafePathError) { build_archive }
+    assert_no_archive_artifacts
+
+    FileUtils.rm_f(unsafe_path)
+    File.binwrite(File.join(@source_path, "chapter.m4b"), "safe chapter")
+    cache_path = build_archive
+
+    assert File.file?(cache_path)
+    Zip::File.open(cache_path) do |archive|
+      assert_equal "safe chapter", archive.get_input_stream("chapter.m4b").read
+    end
   end
 
   test "same-cache-key coordination fails within a bounded wait instead of blocking a request thread" do

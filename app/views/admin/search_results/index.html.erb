@@ -1,8 +1,19 @@
 <div class="mx-auto max-w-4xl">
   <div class="mb-6 flex items-center justify-between">
     <%= link_to "&larr; Back to Request".html_safe, request_path(@request), class: "text-blue-400 hover:text-blue-300" %>
-    <%= button_to "Refresh Search", refresh_admin_request_search_results_path(@request),
-        method: :post, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition" %>
+    <% if @request.search_refresh_allowed? %>
+      <%= button_to "Refresh Search", refresh_admin_request_search_results_path(@request),
+          method: :post, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-lg transition" %>
+    <% else %>
+      <button type="button"
+              disabled
+              aria-disabled="true"
+              title="<%= @request.search_refresh_blocked_message %>"
+              data-search-refresh-disabled
+              class="cursor-not-allowed rounded-lg bg-gray-800 px-4 py-2 font-medium text-gray-500 opacity-70">
+        Refresh Search
+      </button>
+    <% end %>
   </div>
 
   <div class="bg-gray-900 rounded-lg border border-gray-800 shadow overflow-hidden mb-6">
@@ -120,9 +131,20 @@
         </svg>
         <h3 class="text-lg font-medium text-white mb-2">No search results</h3>
         <p class="mb-4 text-gray-500">No results have been found yet. The search may still be in progress.</p>
-        <%= button_to "Run Search", refresh_admin_request_search_results_path(@request),
-            method: :post,
-            class: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition" %>
+        <% if @request.search_refresh_allowed? %>
+          <%= button_to "Run Search", refresh_admin_request_search_results_path(@request),
+              method: :post,
+              class: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition" %>
+        <% else %>
+          <button type="button"
+                  disabled
+                  aria-disabled="true"
+                  title="<%= @request.search_refresh_blocked_message %>"
+                  data-search-refresh-disabled
+                  class="cursor-not-allowed rounded-lg bg-gray-800 px-4 py-2 font-medium text-gray-500 opacity-70">
+            Run Search
+          </button>
+        <% end %>
       </div>
     <% end %>
   </div>

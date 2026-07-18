@@ -259,6 +259,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", text: /Search Results/
     assert_select "p", text: /The Pending Ebook - Complete Audiobook/
     assert_select "form[action='#{select_admin_request_search_result_path(@pending_request, search_results(:pending_result))}']"
+    assert_select "form[action='#{refresh_admin_request_search_results_path(@pending_request)}']", count: 1
+    assert_select "[data-search-refresh-disabled]", count: 0
   end
 
   test "show displays diagnostics timeline for request activity" do
@@ -326,6 +328,9 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     assert_select "a[href='#{admin_request_search_results_path(@pending_request)}']", text: "Manage Results"
+    assert_select "form[action='#{refresh_admin_request_search_results_path(@pending_request)}']", count: 0
+    assert_select "button[data-search-refresh-disabled][disabled][aria-disabled='true']",
+      text: "Refresh Search"
   end
 
   test "show hides completed search result controls from regular users" do

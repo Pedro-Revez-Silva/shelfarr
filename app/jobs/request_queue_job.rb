@@ -4,6 +4,7 @@ class RequestQueueJob < ApplicationJob
   RECONCILIATION_BATCH_SIZE = 100
   MAX_PROCESS_BATCH_SIZE = 100
   CONCURRENCY_LEASE = 10.minutes
+  STALE_SEARCH_LEASE = 30.minutes
 
   queue_as :default
   limits_concurrency to: 1,
@@ -15,6 +16,7 @@ class RequestQueueJob < ApplicationJob
     requeue_retry_due_requests
     requeue_requests_without_visible_store_offers
     process_pending_requests
+    recover_stale_searches
   end
 
   private
@@ -65,6 +67,31 @@ class RequestQueueJob < ApplicationJob
         end
       rescue ActiveRecord::RecordNotFound
         next
+      end
+  end
+
+  # A hard-killed SearchJob cannot run an ensure block. Recover claims whose
+  # request heartbeat has exceeded the bounded lease, but only after ordinary
+  # pending dispatch so the replacement is not enqueued twice in this run.
+  def recover_stale_searches
+    stale_before = STALE_SEARCH_LEASE.ago
+    Request.searching
+      .where("updated_at <= ?", stale_before)
+      .order(:updated_at, :id)
+      .limit(RECONCILIATION_BATCH_SIZE)
+      .each do |request|
+        next unless request.recover_stale_search!(stale_before: stale_before)
+
+        enqueue_search(request)
+      rescue ActiveRecord::RecordNotFound
+        next
+      rescue StandardError => e
+        # The request is already pending with a rotated generation when an
+        # enqueue fails. The ordinary pending pass repairs it on the next run;
+        # keep reconciling the remainder of this bounded batch now.
+        Rails.logger.error(
+          "[RequestQueueJob] Failed to recover stale search for request ##{request.id}: #{e.class}"
+        )
       end
   end
 
