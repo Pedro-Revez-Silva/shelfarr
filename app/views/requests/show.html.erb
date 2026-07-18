@@ -102,7 +102,7 @@
                   <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= diagnostic_event_color(event) %>">
                     <%= diagnostic_event_title(event) %>
                   </span>
-                  <span class="text-xs text-gray-500"><%= event.created_at.strftime("%B %d, %Y at %I:%M %p") %></span>
+                  <span class="text-xs text-gray-500"><%= event.updated_at.strftime("%B %d, %Y at %I:%M %p") %></span>
                 </div>
                 <% message = diagnostic_event_message(event) %>
                 <% if message.present? %>

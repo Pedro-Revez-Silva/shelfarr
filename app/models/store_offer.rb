@@ -4,6 +4,7 @@ require "uri"
 
 class StoreOffer < ApplicationRecord
   FRESHNESS_TTL = 24.hours
+  MAX_FUTURE_QUOTE_SKEW = 5.minutes
   MAX_EXTERNAL_ID_LENGTH = 64
   MAX_TITLE_LENGTH = 500
   MAX_AUTHOR_LENGTH = 300
@@ -51,8 +52,14 @@ class StoreOffer < ApplicationRecord
   scope :best_first, -> { order(Arel.sql("CASE WHEN localized_price IS NULL OR localized_price = '' THEN 1 ELSE 0 END"), :price_amount, :id) }
   scope :fresh, lambda {
     quoted_or_created = "COALESCE(store_offers.quoted_at, store_offers.created_at)"
-    where("#{quoted_or_created} >= ? AND #{quoted_or_created} <= ?", FRESHNESS_TTL.ago, 5.minutes.from_now)
+    where("#{quoted_or_created} >= ? AND #{quoted_or_created} <= ?", FRESHNESS_TTL.ago, MAX_FUTURE_QUOTE_SKEW.from_now)
   }
+
+  def self.fresh_quote?(quoted_at, now: Time.current)
+    quoted_at.present? && quoted_at.between?(now - FRESHNESS_TTL, now + MAX_FUTURE_QUOTE_SKEW)
+  rescue ArgumentError, NoMethodError, TypeError
+    false
+  end
 
   def provider_name
     PROVIDER_NAMES.fetch(provider, provider.titleize)
@@ -157,7 +164,7 @@ class StoreOffer < ApplicationRecord
   end
 
   def quoted_at_is_not_in_the_future
-    if quoted_at.present? && quoted_at > 5.minutes.from_now
+    if quoted_at.present? && quoted_at > MAX_FUTURE_QUOTE_SKEW.from_now
       errors.add(:quoted_at, "cannot be in the future")
     end
   end

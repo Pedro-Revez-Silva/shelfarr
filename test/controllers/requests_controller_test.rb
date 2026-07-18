@@ -23,6 +23,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     get requests_path
     assert_response :success
     assert_select "h1", "My Requests"
+    assert_select "main h1 + a[href=?]", search_path, count: 0
+    assert_select "nav a[href=?]", search_path, text: "Search", minimum: 1
   end
 
   test "admin sees all requests" do

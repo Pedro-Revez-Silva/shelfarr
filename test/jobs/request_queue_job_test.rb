@@ -304,10 +304,18 @@ class RequestQueueJobTest < ActiveJob::TestCase
       storefront_url: "https://www.ebooks.com/en-pt/book/expired-queue-offer/expired/",
       quoted_at: StoreOffer::FRESHNESS_TTL.ago - 1.minute
     )
+    RequestEvent.record_latest!(
+      request: request,
+      event_type: "store_offers_found",
+      source: "store_provider",
+      message: "1 DRM-free store offer found"
+    )
 
     RequestQueueJob.perform_now
 
     assert request.reload.pending?
+    assert_empty request.store_offers
+    assert_nil request.request_events.find_by(event_type: "store_offers_found", source: "store_provider")
   ensure
     SettingsService.set(:ebooks_com_enabled, false)
     SettingsService.set(:ebooks_com_country_code, "")

@@ -425,8 +425,73 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "ebooks_com", offer.provider
     assert_equal "PT", offer.market
     assert_equal "9,99 €", offer.localized_price
+    event = @request.request_events.find_by!(event_type: "store_offers_found", source: "store_provider")
+    assert_equal "1 DRM-free store offer found", event.message
+    assert_equal({ "offer_count" => 1 }, event.details)
     assert_empty @request.downloads
     assert_empty @request.search_results
+  end
+
+  test "refreshing the same store offer replaces its diagnostic event" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    @request.search_results.destroy_all
+    stub_ebooks_offer_search
+
+    VCR.turned_off { SearchJob.perform_now(@request.id) }
+    original_event = @request.request_events.find_by!(event_type: "store_offers_found", source: "store_provider")
+
+    travel 1.minute do
+      @request.update!(status: :pending)
+      VCR.turned_off { SearchJob.perform_now(@request.id) }
+    end
+
+    events = @request.request_events.where(event_type: "store_offers_found", source: "store_provider")
+    assert_equal 1, events.count
+    assert_equal original_event.id, events.sole.id
+    assert_equal "1 DRM-free store offer found", events.sole.message
+  end
+
+  test "discards a store offer whose quote expired before the search completed" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    RequestEvent.record_latest!(
+      request: @request,
+      event_type: "store_offers_found",
+      source: "store_provider",
+      message: "1 DRM-free store offer found",
+      details: { offer_count: 1 }
+    )
+    result = EbooksComClient::Result.new(
+      id: "expired-in-flight",
+      title: @request.book.title,
+      author: @request.book.author,
+      isbns: [],
+      language: "en",
+      formats: [ "epub" ],
+      market: "PT",
+      drm_type: "NoRestriction",
+      price_amount: BigDecimal("9.99"),
+      price_currency: "EUR",
+      localized_price: "9,99 €",
+      storefront_url: "https://www.ebooks.com/en-pt/book/expired-in-flight/",
+      checkout_url: nil,
+      cover_url: nil,
+      quoted_at: StoreOffer::FRESHNESS_TTL.ago - 1.minute
+    )
+
+    EbooksComClient.stub(:search, [ result ]) do
+      SearchJob.perform_now(@request.id)
+    end
+
+    assert @request.reload.not_found?
+    assert_empty @request.store_offers
+    assert_nil @request.request_events.find_by(event_type: "store_offers_found", source: "store_provider")
+    assert @request.next_retry_at.present?
   end
 
   test "malformed eBooks.com results do not leave the request stuck searching" do

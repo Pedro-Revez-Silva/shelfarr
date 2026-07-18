@@ -25,6 +25,10 @@ class EbooksComClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "cached catalog quotes expire before visible store offers" do
+    assert_operator EbooksComClient::CACHE_TTL, :<, StoreOffer::FRESHNESS_TTL
+  end
+
   test "configuration rejects alphabetic values that are not ISO country codes" do
     SettingsService.set(:ebooks_com_country_code, "XX")
 

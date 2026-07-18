@@ -109,6 +109,17 @@ class StoreOfferTest < ActiveSupport::TestCase
     assert_includes @offer.errors[:quoted_at], "cannot be in the future"
   end
 
+  test "identifies only currently usable quote timestamps as fresh" do
+    now = Time.current
+
+    assert StoreOffer.fresh_quote?(now - StoreOffer::FRESHNESS_TTL, now: now)
+    assert StoreOffer.fresh_quote?(now + StoreOffer::MAX_FUTURE_QUOTE_SKEW, now: now)
+    assert_not StoreOffer.fresh_quote?(now - StoreOffer::FRESHNESS_TTL - 1.second, now: now)
+    assert_not StoreOffer.fresh_quote?(now + StoreOffer::MAX_FUTURE_QUOTE_SKEW + 1.second, now: now)
+    assert_not StoreOffer.fresh_quote?(nil, now: now)
+    assert_not StoreOffer.fresh_quote?("not-a-time", now: now)
+  end
+
   test "falls back to currency and numeric price" do
     @offer.localized_price = nil
 

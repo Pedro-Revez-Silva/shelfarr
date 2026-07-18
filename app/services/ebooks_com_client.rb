@@ -37,7 +37,9 @@ class EbooksComClient
   MAX_LOCALIZED_PRICE_LENGTH = 64
   MAX_URL_LENGTH = 2_048
   MAX_LANGUAGE_NAME_LENGTH = 100
-  CACHE_TTL = 24.hours
+  # Expire cached catalog payloads before persisted offers become stale. This
+  # prevents reconciliation from restoring an already-expired cached quote.
+  CACHE_TTL = 23.hours
   RATE_LIMIT_CACHE_KEY = "ebooks_com:v2:rate_limit_until"
   REQUEST_LOCK_CACHE_KEY = "ebooks_com:v2:request_lock"
   REQUEST_LOCK_TTL = 30.seconds

@@ -171,6 +171,7 @@ class SearchJob < ApplicationJob
         next false
       end
 
+      save_store_offers(request, [])
       request.mark_for_attention!("No search sources configured. Please configure an indexer, Anna's Archive, Z-Library, Project Gutenberg, LibriVox, a DRM-free store, or a custom acquisition provider.")
       clear_search_claim!(request)
       true
@@ -275,7 +276,7 @@ class SearchJob < ApplicationJob
       issue_description: nil,
       next_retry_at: nil
     )
-    RequestEvent.record!(
+    RequestEvent.record_latest!(
       request: request,
       event_type: "store_offers_found",
       source: "store_provider",
@@ -458,6 +459,7 @@ class SearchJob < ApplicationJob
     tagged_offers.select do |tagged|
       current_provider = current_providers[tagged[:provider].key]
       next false unless current_provider
+      next false unless StoreOffer.fresh_quote?(tagged[:result].quoted_at)
 
       current_market = current_provider.market
       current_market.blank? || tagged[:result].market.to_s.strip.upcase == current_market
@@ -466,6 +468,14 @@ class SearchJob < ApplicationJob
 
   def save_store_offers(request, tagged_offers)
     request.store_offers.delete_all
+    if tagged_offers.empty?
+      RequestEvent.clear_latest!(
+        request: request,
+        event_type: "store_offers_found",
+        source: "store_provider"
+      )
+      return
+    end
 
     tagged_offers.each do |tagged|
       result = tagged[:result]

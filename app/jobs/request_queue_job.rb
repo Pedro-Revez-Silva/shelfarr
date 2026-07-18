@@ -58,6 +58,12 @@ class RequestQueueJob < ApplicationJob
           next unless request.awaiting_purchase?
           next if StoreProviderRegistry.visible_offers_for(request).exists?
 
+          request.store_offers.delete_all
+          RequestEvent.clear_latest!(
+            request: request,
+            event_type: "store_offers_found",
+            source: "store_provider"
+          )
           request.update!(
             status: :pending,
             attention_needed: false,

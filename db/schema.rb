@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_18_122000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_18_122500) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -346,6 +346,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_18_122000) do
     t.index ["created_at"], name: "index_request_events_on_created_at"
     t.index ["download_id"], name: "index_request_events_on_download_id"
     t.index ["event_type"], name: "index_request_events_on_event_type"
+    t.index ["request_id", "event_type", "source"], name: "index_request_events_on_unique_store_offer_state", unique: true, where: "event_type = 'store_offers_found' AND source = 'store_provider'"
     t.index ["request_id"], name: "index_request_events_on_request_id"
   end
 
