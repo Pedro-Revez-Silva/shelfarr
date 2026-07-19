@@ -101,7 +101,7 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vX.Y.Z`, use `X.Y.Z`) |
 | `LIBATION_BOOKS_PATH` | Docker named volume | Optional host path for retained Audible backup copies; useful for large libraries |
 
-Audible Backup additionally requires the audiobook output filesystem to support advisory locks, hard links within that same mount, and Unix mode changes. Keep Shelfarr's `.shelfarr-staging` directory on the audiobook output filesystem; see the [Audible Backup storage requirements](docs/audible-backup.md#existing-installations).
+Audible Backup additionally requires the audiobook output filesystem to support advisory locks, hard links within that same mount, and Unix mode changes. Keep Shelfarr's `.shelfarr-staging` directory on the audiobook output filesystem and run the documented preflight before connecting Audible. mergerfs/libfuse mounts with a `umask=` mode override need a compatible underlying bind or a coordinated mount correction; do not bypass the check. See the [Audible Backup storage requirements and filesystem preflight](docs/audible-backup.md#preflight-the-audiobook-filesystem).
 
 Filesystem race defenses assume every process running as Shelfarr's `PUID` is trusted. A malicious process with the same UID can modify any library file that Shelfarr itself can modify; isolate untrusted download tools under a different UID and grant only the narrow shared-directory access they need.
 

@@ -70,24 +70,53 @@ SHELFARR_VERSION=X.Y.Z
 
 For example, GitHub release `vX.Y.Z` is published as container image tag `X.Y.Z`; setting `SHELFARR_VERSION=vX.Y.Z` will not select that image. Replace `X.Y.Z` with the release number you are deploying.
 
+Normal installations should use a published release. Shelfarr publishes the application and matching companion images for releases, but pull-request builds are not published as installable image tags. Building both images from source is a contributor or release-candidate test workflow, not part of a normal update.
+
 After Shelfarr starts, continue with [Connect an Audible account](#connect-an-audible-account).
 
 ## Existing installations
 
 An existing Shelfarr container cannot safely create a sibling container. Doing that would require the Docker socket, which would give the web application control over the host. Existing installations therefore need a one-time Compose update before Audible Backup can be enabled in the UI.
 
-1. Back up the Shelfarr data volume and your current `docker-compose.yml`.
-2. Download the Compose example from the same Shelfarr release you are installing.
-3. Merge its `shelfarr-libation` service, the `libation_config`, `libation_books`, and `libation_control` volumes, and the Shelfarr-side mounts and environment variables into your Compose file. Preserve your existing Shelfarr data, media paths, ports, environment, and reverse-proxy configuration.
-4. Pull and recreate the stack:
+1. Wait for active downloads, uploads, imports, and request processing to finish.
+2. Record the Compose project that owns the running container and its active mounts. The storage source shown for `/rails/storage` is the installation you must preserve:
 
    ```bash
-   docker compose pull
-   docker compose up -d
+   docker inspect shelfarr \
+     --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}'
+   docker inspect shelfarr \
+     --format '{{ range .Mounts }}{{ println .Source "->" .Destination }}{{ end }}'
    ```
 
-5. Open **Admin > Audible Backup** (or `/admin/owned_library_connections`) and verify that the companion test succeeds.
-6. Enable the integration and connect the account as described below.
+3. Stop Shelfarr and back up the **complete** `/rails/storage` source plus the current Compose files and `.env`. Keep the primary, queue, cache, and cable SQLite databases together with `.encryption_keys`, `.secret_key_base`, and Active Storage data. Do not copy only `production.sqlite3`. For a Linux host, replace the example source with the absolute path reported above:
+
+   ```bash
+   docker compose stop shelfarr
+   mkdir -p backups/pre-audible-upgrade
+   cp -p docker-compose*.yml backups/pre-audible-upgrade/
+   if [ -f .env ]; then cp -p .env backups/pre-audible-upgrade/; fi
+   tar --xattrs --acls --numeric-owner \
+     -C /absolute/current/storage/source \
+     -czf backups/pre-audible-upgrade/storage.tar.gz .
+   sha256sum backups/pre-audible-upgrade/storage.tar.gz \
+     > backups/pre-audible-upgrade/storage.tar.gz.sha256
+   sha256sum -c backups/pre-audible-upgrade/storage.tar.gz.sha256
+   ```
+4. Download the Compose example from the same published Shelfarr release you are installing. Use the numeric image version without a leading `v` for both Shelfarr images.
+5. Merge its `shelfarr-libation` service, the `libation_config`, `libation_books`, and `libation_control` volumes, and the Shelfarr-side mounts and environment variables into your Compose file, or use the separate override shown below. Preserve the existing source of `/rails/storage`, media paths, ports, environment, and reverse-proxy configuration. In particular, do not replace an older `./data/storage:/rails/storage` mount with `./data:/rails/storage`; that would start Shelfarr against a different directory and make the installation appear empty. If you keep `docker-compose.audible.yml` separate, add `-f docker-compose.yml -f docker-compose.audible.yml` to every Compose command in the remaining steps.
+6. Validate the Compose merge without printing resolved environment values, then pull and recreate the stack:
+
+   ```bash
+   docker compose config -q
+   docker compose pull
+   docker compose up -d
+   docker compose ps
+   ```
+
+7. Confirm both services are healthy, `/up` returns HTTP 200, and the active `/rails/storage`, `/audiobooks`, `/ebooks`, and `/downloads` mounts still point to the intended host paths.
+8. Run the [audiobook filesystem preflight](#preflight-the-audiobook-filesystem).
+9. Open **Admin > Audible Backup** (or `/admin/owned_library_connections`) and verify that the companion test succeeds.
+10. Enable the integration and connect the account as described below.
 
 This update is additive. Audible Backup is disabled by default and does not change existing acquisition sources, download clients, stored provider credentials, Active Record encryption keys, or media paths. Once the companion is part of the deployment, future enable/disable, account, sync-schedule, and backup actions are managed from Shelfarr.
 
@@ -165,6 +194,62 @@ The default `CHOWN_ON_START=auto` initializes fresh named volumes but avoids a r
 If you later change `PUID` or `PGID`, keep `CHOWN_ON_START=auto` for the first restart. The companion performs a one-time ownership migration of nested Libation state, cached jobs, partial downloads, completed books, and the bridge token without following symbolic links, then records the new IDs so ordinary restarts do not rescan the volumes. With `CHOWN_ON_START=never`, an ID change deliberately fails closed; pre-permission the complete mounted trees to the new IDs before restarting. Compose also monitors the companion's internal `/health` endpoint, so `docker compose ps` should report it as healthy before you enable or test the integration in Shelfarr.
 
 Audible imports also require the configured Shelfarr audiobook output filesystem to support advisory file locks, same-filesystem hard links, and Unix permission changes. Shelfarr probes all three before enabling or starting a backup and finalizes imported files as group-readable mode `0640`. Its private `.shelfarr-staging` directory is created inside the audiobook output root deliberately; do not mount that nested directory from a different filesystem or volume, because the atomic handoff would cross devices. Some NFS/SMB appliances disable hard links or reliable `flock` even when ordinary reads and writes work. In that case the capability test fails before Libation downloads anything; use a compatible local or network filesystem rather than bypassing the check.
+
+### Preflight the audiobook filesystem
+
+Run the same capability check Shelfarr uses before connecting Audible or starting a large backup. Run it as Shelfarr's unprivileged user; running it as root can hide a real permission problem. If you use the separate Audible override, include both Compose files as shown:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.audible.yml \
+  exec -T --user rails shelfarr sh -lc '
+    set -a
+    if [ -f /rails/storage/.encryption_keys ]; then
+      . /rails/storage/.encryption_keys
+    fi
+    set +a
+    bin/rails runner '\''
+      raise "filesystem capability check failed" unless
+        OwnedMediaImportFileService.verify_filesystem_capabilities!
+      puts "audiobook filesystem: ok"
+    '\''
+  '
+```
+
+The command briefly creates and removes probe files. It leaves only Shelfarr's intended private staging and lock directories. Do not start an existing-library batch until this command succeeds.
+
+### mergerfs and FUSE mode overrides
+
+Some mergerfs installations include a libfuse mount option such as `umask=0002`. In this context `umask` is a **reported-mode override**, not the normal process file-creation mask: the [FUSE mount documentation](https://man7.org/linux/man-pages/man8/fuse.8.html) describes it as overriding the permission bits reported in `st_mode`. `umask=0002` therefore makes files appear as mode `0775` even after Shelfarr successfully requests `0640`. Shelfarr cannot verify the backing inode's group/other permissions through that view, so the capability check fails closed. Setting `umask=0000` is not a fix; it reports `0777`.
+
+Check the filesystem and its persistent mount configuration before enabling Audible Backup:
+
+```bash
+findmnt -T /path/to/audiobooks -o TARGET,SOURCE,FSTYPE,OPTIONS
+grep -E '[[:space:]]/path/to/mergerfs-mount[[:space:]]' /etc/fstab
+```
+
+Do not bypass the Shelfarr check. Use one of these resolutions:
+
+1. **Maintenance-window fix:** audit ownership and modes on every mergerfs branch, remove the libfuse `umask=` override from the persistent mount configuration, stop every service using the pool, fully unmount and mount it again, then test all consumers and rerun the Shelfarr preflight. FUSE cannot change this option safely in place. Restore the original mount configuration and repeat the coordinated remount if another consumer loses access.
+2. **Container-only direct bind:** if one underlying POSIX filesystem contains every audiobook path Shelfarr needs and has sufficient free space, replace only Shelfarr's `/audiobooks` source with that underlying directory. For example, add the repeated target to the Audible override:
+
+   ```yaml
+   services:
+     shelfarr:
+       volumes:
+         - /mnt/drive-containing-the-complete-library/audiobooks:/audiobooks
+   ```
+
+   Compose replaces the original `/audiobooks` mount by container target. Verify the complete file and directory set before switching. This bypasses mergerfs balancing for future Shelfarr writes and can hide titles stored only on another branch; other applications may continue using the pooled path. Revert the override to return Shelfarr to the pool.
+
+After either resolution, recreate Shelfarr, inspect the active mount, and rerun the preflight:
+
+```bash
+docker inspect shelfarr \
+  --format '{{ range .Mounts }}{{ if eq .Destination "/audiobooks" }}{{ println .Source "->" .Destination }}{{ end }}{{ end }}'
+```
 
 Treat every process that shares Shelfarr's `PUID` as trusted. Descriptor pinning, atomic publication, and inode checks prevent accidental and cross-process pathname races, but POSIX does not let an application revoke another same-UID process's ability to rename or replace writable library entries. Run untrusted download or automation tools under a separate UID and expose only the specific exchange directories they require.
 

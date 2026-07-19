@@ -675,6 +675,10 @@
             </tbody>
           </table>
         </div>
+        <div class="callout warn">
+          <span class="ico">⚠️</span>
+          <div>Before connecting Audible, run the unprivileged audiobook filesystem preflight in the <a class="inline" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/docs/audible-backup.md#preflight-the-audiobook-filesystem" target="_blank" rel="noopener">Audible Backup guide</a>. mergerfs/libfuse mounts with a persistent <code>umask=</code> option can force misleading reported modes and are rejected even when ordinary file writes work. Use the documented coordinated remount or verified complete underlying bind; do not run Shelfarr as root or bypass the check.</div>
+        </div>
         <p class="section-desc">The first beta supports enable/test, external-browser sign-in, manual or scheduled sync, cached library browsing, individual-title backup, a confirmed and conservatively filtered existing-library batch, future-purchase automatic backup, and Library job status. Automation is disabled by default. Turning automatic backup off and on requires a new no-download baseline refresh; it does not start the existing-library action. An unfiltered Back up all, retroactive automatic backup, pause/resume, cancellation, and a targeted in-app purge of Shelfarr's cached Audible metadata and import history are not yet available. Disabling the connection does not erase those database records or an encrypted manual bridge token. See the <a class="inline" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/docs/audible-backup.md" target="_blank" rel="noopener">complete Audible Backup guide</a> for new and existing installation steps, retention, storage, security, version pinning, and Libation attribution.</p>
 
         <h2 id="paths">Output Paths &amp; Templates <a class="anchor" href="#paths" aria-label="Link to Output Paths">#</a></h2>
