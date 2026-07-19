@@ -80,6 +80,28 @@ class DuplicateDetectionServiceTest < ActiveSupport::TestCase
     assert_equal request, result.existing_request
   end
 
+  test "blocks request while the matching work is awaiting purchase" do
+    book = Book.create!(
+      title: "Store Offer Book",
+      book_type: :ebook,
+      open_library_work_id: "OL_AWAITING_PURCHASE"
+    )
+    request = Request.create!(
+      book: book,
+      user: @user,
+      status: :awaiting_purchase
+    )
+
+    result = DuplicateDetectionService.check(
+      work_id: "OL_AWAITING_PURCHASE",
+      book_type: "ebook"
+    )
+
+    assert result.block?
+    assert_includes result.message, "active request"
+    assert_equal request, result.existing_request
+  end
+
   test "reuses preloaded lookup for same and other book type checks" do
     book = Book.create!(
       title: "Existing Audiobook",

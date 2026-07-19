@@ -1,4 +1,5 @@
 class UploadCreator
+  MAX_UPLOAD_BYTES = 10.gigabytes
   Result = Struct.new(:upload, :uploads, :notice, :alert, :success, keyword_init: true) do
     def success?
       success.nil? ? alert.blank? : success
@@ -81,23 +82,49 @@ class UploadCreator
       return Result.new(alert: "Uploaded file type does not match this #{request.book.book_type} request")
     end
 
-    temp_path = save_uploaded_file
+    if request.present? && !request.upload_fulfillable?
+      return Result.new(alert: "This request is no longer open for file fulfillment")
+    end
+    if request.present? && request.upload_cancellation_blocked?
+      return Result.new(alert: request.upload_cancellation_blocked_message)
+    end
+    if request.present? && request.direct_acquisition_recovery_pending?
+      return Result.new(alert: request.direct_acquisition_recovery_message)
+    end
+
+    begin
+      temp_path, actual_size = save_uploaded_file
+    rescue UploadImportFileService::IngressTooLargeError => error
+      return Result.new(alert: error.message)
+    rescue UploadImportFileService::Error
+      return Result.new(alert: "Shelfarr could not save the upload safely. Please try again.")
+    end
 
     upload = Upload.new(
       user: user,
       request: request,
       original_filename: uploaded_file.original_filename,
       file_path: temp_path,
-      file_size: uploaded_file.size,
+      file_size: actual_size,
       content_type: uploaded_file.content_type,
       status: :pending
     )
 
-    if upload.save
-      UploadProcessingJob.perform_later(upload.id)
-      Result.new(upload: upload, notice: "File uploaded successfully. Processing started.")
+    if persist_upload(upload)
+      if enqueue_processing(upload)
+        Result.new(upload: upload, notice: "File uploaded successfully. Processing started.")
+      else
+        upload.update!(
+          status: :failed,
+          error_message: "Shelfarr could not queue this upload for processing"
+        )
+        Result.new(
+          upload: upload,
+          alert: "The file was saved, but processing could not be queued. Retry it from Uploads."
+        )
+      end
     else
-      FileUtils.rm_f(temp_path)
+      UploadImportFileService.discard_ingress!(temp_path)
       Result.new(upload: upload, alert: upload.errors.full_messages.join(", "))
     end
   end
@@ -113,19 +140,55 @@ class UploadCreator
   end
 
   def save_uploaded_file
-    upload_dir = Rails.root.join("tmp", "uploads")
-    FileUtils.mkdir_p(upload_dir)
-
     timestamp = Time.current.strftime("%Y%m%d%H%M%S")
-    random = SecureRandom.hex(4)
+    random = SecureRandom.hex(16)
     extension = File.extname(uploaded_file.original_filename)
     filename = "#{timestamp}_#{random}#{extension}"
-    path = upload_dir.join(filename)
+    UploadImportFileService.stage_ingress!(
+      uploaded_file,
+      filename,
+      max_bytes: MAX_UPLOAD_BYTES
+    )
+  end
 
-    File.open(path, "wb") do |file|
-      file.write(uploaded_file.read)
+  def persist_upload(upload)
+    return upload.save unless request
+
+    request.with_acquisition_transition_lock do |locked_request|
+      unless locked_request.upload_fulfillable?
+        raise Request::CancellationBlockedError,
+          "This request is no longer open for file fulfillment"
+      end
+      if locked_request.upload_cancellation_blocked?
+        raise Request::CancellationBlockedError,
+          locked_request.upload_cancellation_blocked_message
+      end
+      if locked_request.direct_acquisition_recovery_pending?
+        raise Request::CancellationBlockedError,
+          locked_request.direct_acquisition_recovery_message
+      end
+
+      upload.request = locked_request
+      upload.save!
     end
+    true
+  rescue Request::CancellationBlockedError => error
+    upload.errors.add(:base, error.message)
+    false
+  rescue ActiveRecord::RecordNotFound
+    upload.errors.add(:base, "This request is no longer available for file fulfillment")
+    false
+  rescue ActiveRecord::RecordInvalid
+    false
+  end
 
-    path.to_s
+  def enqueue_processing(upload)
+    job = UploadProcessingJob.perform_later(upload.id)
+    job.respond_to?(:successfully_enqueued?) && job.successfully_enqueued?
+  rescue StandardError => error
+    Rails.logger.error(
+      "[UploadCreator] Could not enqueue upload ##{upload.id}: #{error.class}"
+    )
+    false
   end
 end

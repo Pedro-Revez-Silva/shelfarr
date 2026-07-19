@@ -32,14 +32,20 @@ class UrlRedactorTest < ActiveSupport::TestCase
     )
   end
 
-  test "Rails parameter filtering hides NZB and persisted download URLs" do
+  test "Rails parameter filtering hides download and Audible authentication values" do
     filter = ActiveSupport::ParameterFilter.new(Rails.application.config.filter_parameters)
     filtered = filter.filter(
       nzb_url: "https://example.com/nzb?token=secret",
-      download_url: "https://example.com/download?token=secret"
+      download_url: "https://example.com/download?token=secret",
+      response_url: "https://www.amazon.com/ap/maplanding?authorization_code=secret",
+      account: "reader@example.com",
+      session_id: "private-session"
     )
 
     assert_equal "[FILTERED]", filtered[:nzb_url]
     assert_equal "[FILTERED]", filtered[:download_url]
+    assert_equal "[FILTERED]", filtered[:response_url]
+    assert_equal "[FILTERED]", filtered[:account]
+    assert_equal "[FILTERED]", filtered[:session_id]
   end
 end

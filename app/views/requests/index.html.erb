@@ -1,11 +1,10 @@
 <div class="mx-auto max-w-4xl">
-  <div class="flex justify-between items-center mb-6">
+  <div class="mb-6">
     <h1 class="font-bold text-4xl text-white"><%= Current.user.admin? ? "All Requests" : "My Requests" %></h1>
-    <%= link_to "Search Books", search_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
   </div>
 
   <%# Filter Tabs %>
-  <div class="mb-6">
+  <nav class="mb-6" aria-label="Request filters">
     <div class="flex flex-wrap gap-2">
       <%
         current_filter = params[:attention] == "true" ? "attention" : (params[:status].presence || "all")
@@ -13,6 +12,7 @@
           { key: "all", label: "All", path: requests_path },
           { key: "attention", label: "Need Attention", path: requests_path(attention: "true"), count: @attention_count, alert: true },
           { key: "active", label: "Active", path: requests_path(status: "active"), count: @active_count },
+          { key: "awaiting_purchase", label: "Store Offers", path: requests_path(status: "awaiting_purchase") },
           { key: "completed", label: "Completed", path: requests_path(status: "completed") },
           { key: "not_found", label: "Not Found", path: requests_path(status: "not_found") },
           { key: "failed", label: "Cancelled", path: requests_path(status: "failed") }
@@ -25,7 +25,7 @@
           active_classes = filter[:alert] && filter[:count].to_i > 0 ? "bg-red-600 text-white" : "bg-blue-600 text-white"
           inactive_classes = filter[:alert] && filter[:count].to_i > 0 ? "bg-red-500/20 text-red-400 hover:bg-red-500/30" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
         %>
-        <%= link_to filter[:path], class: "#{base_classes} #{is_active ? active_classes : inactive_classes}" do %>
+        <%= link_to filter[:path], aria: { current: ("page" if is_active) }, class: "#{base_classes} #{is_active ? active_classes : inactive_classes}" do %>
           <%= filter[:label] %>
           <% if filter[:count].to_i > 0 %>
             <span class="ml-2 px-2 py-0.5 text-xs rounded-full <%= is_active ? 'bg-white/20' : (filter[:alert] ? 'bg-red-500 text-white' : 'bg-gray-700') %>">
@@ -35,7 +35,7 @@
         <% end %>
       <% end %>
     </div>
-  </div>
+  </nav>
 
   <%
     has_filters = params[:status].present? || params[:attention].present?
@@ -75,7 +75,7 @@
       <% @requests.each do |request| %>
         <% has_view_results = Current.user.admin? && request.search_results.any? %>
         <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition" <%= "data-controller=search-results" if has_view_results %>>
-          <div class="flex gap-4">
+          <div class="flex min-w-0 gap-3 sm:gap-4">
             <div class="flex-shrink-0 w-16 aspect-[2/3] bg-gray-800 rounded shadow overflow-hidden">
               <% if request.book.cover_url.present? %>
                 <img
@@ -95,14 +95,14 @@
 
             <div class="flex-grow min-w-0">
               <%= link_to request, class: "block" do %>
-                <div class="flex items-start justify-between gap-2">
-                  <div class="min-w-0">
+                <div data-request-card-header class="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div class="min-w-0 w-full sm:flex-1">
                     <h3 class="font-semibold text-white truncate"><%= request.book.title %></h3>
                     <% if request.book.author.present? %>
                       <p class="text-sm text-gray-400 truncate"><%= request.book.author %></p>
                     <% end %>
                   </div>
-                  <div class="flex-shrink-0 flex items-center gap-2">
+                  <div class="flex max-w-full flex-wrap items-center gap-2 sm:flex-shrink-0">
                     <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request.book.audiobook? ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400' %>">
                       <%= request.book.audiobook? ? 'Audiobook' : 'Ebook' %>
                     </span>
@@ -122,7 +122,7 @@
               <% end %>
 
               <%# Metadata row %>
-              <div class="mt-2 flex items-center gap-4 text-xs text-gray-500">
+              <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
                 <% if Current.user.admin? && request.user != Current.user %>
                   <span>Requested by <%= request.user.name %></span>
                 <% end %>
@@ -138,16 +138,16 @@
                 <% has_cancel = request.can_be_cancelled? %>
                 <% has_issue = request.issue_description.present? %>
                 <% if has_view_results || has_retry || has_cancel || has_issue %>
-                  <div class="mt-2 flex items-center justify-between gap-4">
+                  <div data-request-card-action-row class="mt-2 flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                     <% if has_issue %>
-                      <span class="text-xs text-red-400 truncate min-w-0" title="<%= request.issue_description %>">
+                      <span class="block min-w-0 max-w-full truncate text-xs text-red-400 sm:flex-1" title="<%= request.issue_description %>">
                         <%= request.issue_description.truncate(60) %>
                       </span>
                     <% else %>
                       <span></span>
                     <% end %>
                     <% if has_view_results || has_retry || has_cancel %>
-                      <div class="flex-shrink-0 flex items-center gap-2">
+                      <div class="flex max-w-full flex-wrap items-center gap-2 sm:flex-shrink-0">
                         <% if has_view_results %>
                           <button type="button"
                               data-action="click->search-results#toggle"

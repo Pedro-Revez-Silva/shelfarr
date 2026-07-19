@@ -462,6 +462,8 @@
         <a class="nav-link" href="#audiobookshelf">Audiobookshelf</a>
         <a class="nav-link" href="#metadata">Metadata Sources</a>
         <a class="nav-link" href="#direct-downloads">Direct Downloads</a>
+        <a class="nav-link" href="#third-party-stores">Third-Party Stores (Beta)</a>
+        <a class="nav-link" href="#audible-backup">Audible Backup (Beta)</a>
       </div>
       <div class="nav-group">
         <div class="nav-group-title">Library &amp; Processing</div>
@@ -614,6 +616,70 @@
             </tbody>
           </table>
         </div>
+
+        <h2 id="third-party-stores">Third-Party Stores <span style="color:var(--t-boolean);font-weight:500;font-size:0.78rem">BETA</span> <a class="anchor" href="#third-party-stores" aria-label="Link to Third-Party Stores">#</a></h2>
+        <p class="section-desc">Optional catalog offers shown separately from downloadable acquisition results. The first provider is eBooks.com and is limited to editions the API explicitly reports as DRM-free.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="key"><code>ebooks_com_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Show beta DRM-free eBooks.com offers. Checkout and payment remain on eBooks.com. Confirm affiliate or partner permission before production use.</td></tr>
+              <tr><td class="key"><code>ebooks_com_country_code</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">ISO 3166-1 two-letter buyer country used for territorial availability, currency, and localized prices, for example <code>US</code>, <code>GB</code>, or <code>PT</code>.</td></tr>
+              <tr><td class="key"><code>ebooks_com_search_limit</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>5</code></td><td class="desc">Maximum matching offers retained per ebook request; clamped to 1&ndash;10.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warn">
+          <span class="ico">⚠️</span>
+          <div>Store offers are never auto-selected or sent to a download client. Shelfarr does not handle store accounts, payment, orders, or automatic bookshelf download. See the <a class="inline" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/docs/drm-free-store-providers.md" target="_blank" rel="noopener">Third-party stores beta guide</a>.</div>
+        </div>
+
+        <h2 id="audible-backup">Audible Backup, powered by Libation <span style="color:var(--t-boolean);font-weight:500;font-size:0.78rem">BETA</span> <a class="anchor" href="#audible-backup" aria-label="Link to Audible Backup">#</a></h2>
+        <p class="section-desc">Managed from <strong>Admin &rarr; Audible Backup</strong> in Settings-style <strong>Overview</strong>, <strong>Connection</strong>, <strong>Automation</strong>, and diagnostic <strong>Catalog</strong> tabs. This optional owned-library backup uses the separately packaged, pinned Libation companion and never asks Shelfarr for an Audible password.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Admin field</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="key"><code>Companion URL</code></td><td class="default"><code>http://shelfarr-libation:8080</code></td><td class="desc">Internal base URL. The standard Compose value comes from <code>SHELFARR_LIBATION_URL</code>. Public endpoints must use HTTPS; HTTP is accepted only for resolved private/loopback addresses.</td></tr>
+              <tr><td class="key"><code>Bridge token</code></td><td class="default"><code>(token file)</code></td><td class="desc">Leave blank while the URL matches <code>SHELFARR_LIBATION_URL</code>. A different URL requires its own token, stored in a dedicated encrypted attribute; the bundled token is never sent to that host.</td></tr>
+              <tr><td class="key"><code>Enable Audible Backup beta</code></td><td class="default"><code>false</code></td><td class="desc">Opt in to account, sync, Library, individual-title, and confirmed existing-library backup actions.</td></tr>
+              <tr><td class="key"><code>Allow local/private companion address</code></td><td class="default"><code>true</code></td><td class="desc">Required for the standard private Compose hostname. Disable it only when the companion is reached through an appropriately secured public address.</td></tr>
+              <tr><td class="key"><code>Request timeout</code></td><td class="default"><code>30</code></td><td class="desc">HTTP request timeout in seconds, from 1&ndash;120. Long-running sync and backup work is polled asynchronously.</td></tr>
+              <tr><td class="key"><code>Sync the Audible library automatically</code></td><td class="default"><code>false</code></td><td class="desc">Opt in to scheduled owned-library refreshes. Manual sync remains available. Turning this off also turns off automatic backup.</td></tr>
+              <tr><td class="key"><code>Sync interval</code></td><td class="default"><code>Every 24 hours</code></td><td class="desc">Choose every hour, 6 hours, 12 hours, 24 hours, 3 days, or weekly. The interval is inactive until scheduled sync is enabled; adding the hourly option does not change the 24-hour default.</td></tr>
+              <tr><td class="key"><code>Back up existing library</code></td><td class="default"><code>Confirmation required</code></td><td class="desc">After the first sync, Overview asks whether to queue eligible existing purchased audiobooks. The same reusable action is available in Automation. Each run recalculates the count, excludes subscriptions, local matches, identity conflicts, and prior backup/import attempts, then records a durable bounded background batch. Libation processes one admitted title at a time and progress is managed from Library.</td></tr>
+              <tr><td class="key"><code>Automatically back up new purchases</code></td><td class="default"><code>false</code></td><td class="desc">Separate opt-in available after the first successful sync and requiring scheduled sync. The next manual or scheduled sync refreshes a no-download baseline; purchased audiobooks first discovered by later successful syncs are queued and attributed to the administrator who enabled it. It never starts the existing-library batch.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="section-desc">Use <strong>Connection</strong> to save and test the companion and manage Audible sign-in, <strong>Overview</strong> for readiness and the first existing-library decision, <strong>Automation</strong> for scheduling and explicit backup actions, and the main <strong>Library</strong> for queue progress and retries. Audible account email and marketplace are sent only when starting Libation's external sign-in; they are not Shelfarr password credentials. The validated sign-in link remains in encrypted, short-lived Shelfarr state across reloads until completion or expiry. During a serialized sync or backup, account status can show <strong>Busy</strong> while cached titles and job progress remain available.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Deployment setting</th><th>Default</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="key"><code>SHELFARR_LIBATION_URL</code></td><td class="default"><code>http://shelfarr-libation:8080</code></td><td class="desc">Private companion base URL. Do not expose the companion port publicly.</td></tr>
+              <tr><td class="key"><code>SHELFARR_LIBATION_TOKEN_FILE</code></td><td class="default"><code>/run/shelfarr-libation/token</code></td><td class="desc">Bearer-token file mounted read-only into Shelfarr and used only for the configured <code>SHELFARR_LIBATION_URL</code>.</td></tr>
+              <tr><td class="key"><code>SHELFARR_LIBATION_IMPORT_ROOT</code></td><td class="default"><code>/imports/libation</code></td><td class="desc">Read-only Shelfarr side of the shared completed-backup volume. The companion sees the same storage at <code>/data</code>.</td></tr>
+              <tr><td class="key"><code>LIBATION_BOOKS_PATH</code></td><td class="default"><code>libation_books</code></td><td class="desc">Optional host bind path for retained Libation copies. Set it in <code>.env</code> for large libraries instead of using Docker's default named-volume location.</td></tr>
+              <tr><td class="key"><code>PUID</code> / <code>PGID</code></td><td class="default"><code>1000</code></td><td class="desc">The same IDs are passed to Shelfarr and the companion so the mode-0600 bridge token and shared files remain accessible.</td></tr>
+              <tr><td class="key"><code>CHOWN_ON_START</code></td><td class="default"><code>auto</code></td><td class="desc">Passed to both containers. <code>auto</code> initializes fresh volumes while avoiding unnecessary root ownership changes; use <code>never</code> only for correctly pre-permissioned/root-squashed mounts, or <code>always</code> to fail on an ownership-adjustment error. The Audible companion rejects group/world-accessible private state and credential/token files even in <code>never</code> mode.</td></tr>
+              <tr><td class="key"><code>LIBATION_FILES_DIR</code></td><td class="default"><code>/config</code></td><td class="desc">Companion-only persistent Libation configuration and database. Contains account authorization material; never mount it into Shelfarr.</td></tr>
+              <tr><td class="key"><code>LIBATION_BOOKS_DIR</code></td><td class="default"><code>/data</code></td><td class="desc">Completed backup output shared with Shelfarr for import.</td></tr>
+              <tr><td class="key"><code>LIBATION_IN_PROGRESS_DIR</code></td><td class="default"><code>/config/in-progress</code></td><td class="desc">Private in-progress workspace.</td></tr>
+              <tr><td class="key"><code>COMPANION_STATE_DIR</code></td><td class="default"><code>/config/shelfarr-companion</code></td><td class="desc">Bridge state and normalized cached export.</td></tr>
+              <tr><td class="key"><code>COMPANION_TOKEN_FILE</code></td><td class="default"><code>/control/token</code></td><td class="desc">Companion side of the private shared token-file mount.</td></tr>
+              <tr><td class="key"><code>COMPANION_MAX_ACTIVE_JOBS</code></td><td class="default"><code>500</code></td><td class="desc">Maximum queued plus running companion jobs; allowed range 1&ndash;10,000.</td></tr>
+              <tr><td class="key"><code>COMPANION_MAX_TERMINAL_JOBS</code></td><td class="default"><code>5000</code></td><td class="desc">Maximum retained succeeded/failed companion job records; allowed range 100&ndash;100,000.</td></tr>
+              <tr><td class="key"><code>COMPANION_TERMINAL_JOB_RETENTION_DAYS</code></td><td class="default"><code>30</code></td><td class="desc">Maximum age of succeeded/failed job records; allowed range 1&ndash;365 days. Active jobs are not pruned.</td></tr>
+              <tr><td class="key"><code>ASPNETCORE_URLS</code></td><td class="default"><code>http://0.0.0.0:8080</code></td><td class="desc">Internal listener. Connect it only to Shelfarr's private container network.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warn">
+          <span class="ico">⚠️</span>
+          <div>Before connecting Audible, run the unprivileged audiobook filesystem preflight in the <a class="inline" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/docs/audible-backup.md#preflight-the-audiobook-filesystem" target="_blank" rel="noopener">Audible Backup guide</a>. mergerfs/libfuse mounts with a persistent <code>umask=</code> option can force misleading reported modes and are rejected even when ordinary file writes work. Use the documented coordinated remount or verified complete underlying bind; do not run Shelfarr as root or bypass the check.</div>
+        </div>
+        <p class="section-desc">The first beta supports enable/test, external-browser sign-in, manual or scheduled sync, cached library browsing, individual-title backup, a confirmed and conservatively filtered existing-library batch, future-purchase automatic backup, and Library job status. Automation is disabled by default. Turning automatic backup off and on requires a new no-download baseline refresh; it does not start the existing-library action. An unfiltered Back up all, retroactive automatic backup, pause/resume, cancellation, and a targeted in-app purge of Shelfarr's cached Audible metadata and import history are not yet available. Disabling the connection does not erase those database records or an encrypted manual bridge token. See the <a class="inline" href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/docs/audible-backup.md" target="_blank" rel="noopener">complete Audible Backup guide</a> for new and existing installation steps, retention, storage, security, version pinning, and Libation attribution.</p>
 
         <h2 id="paths">Output Paths &amp; Templates <a class="anchor" href="#paths" aria-label="Link to Output Paths">#</a></h2>
         <p class="section-desc">Where completed books are placed, and how their folders and filenames are named.</p>
@@ -803,7 +869,7 @@
         </div>
 
         <div class="doc-footer">
-          <span>Reference generated from <code>SettingsService::DEFINITIONS</code>.</span>
+          <span>Application settings reflect <code>SettingsService::DEFINITIONS</code>; deployment-only companion values are documented separately.</span>
           <a href="https://github.com/Pedro-Revez-Silva/shelfarr" target="_blank" rel="noopener">Shelfarr on GitHub &rarr;</a>
         </div>
       </article>

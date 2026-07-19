@@ -14,6 +14,7 @@ class ZLibraryClient
   class NotConfiguredError < Error; end
   class RateLimitError < Error; end
   class ConfigurationError < Error; end
+  class SearchCancelled < StandardError; end
 
   Result = Data.define(
     :id, :hash, :title, :author, :year,
@@ -40,24 +41,36 @@ class ZLibraryClient
       false
     end
 
-    def search(query, file_types: %w[epub pdf], limit: 50, language: nil)
+    def search(query, file_types: %w[epub pdf], limit: 50, language: nil, after_attempt: nil)
       ensure_configured!
 
-      with_authenticated_retry(context: "search") do |auth|
+      with_authenticated_retry(context: "search", after_attempt: after_attempt) do |auth|
         Rails.logger.info "[ZLibraryClient] Searching for '#{query}'"
 
         payload = [ [ "message", query ], [ "limit", limit.to_s ] ]
         Array(file_types).each { |ext| payload << [ "extensions[]", ext ] }
         payload << [ "languages[]", language ] if language.present?
 
-        response = post_search(auth, payload)
+        response = post_search(auth, payload, after_attempt: after_attempt)
 
         if search_html_fallback_response?(response)
-          alternate_results = search_eapi_alternate_domains(auth, payload, limit)
+          alternate_results = search_eapi_alternate_domains(
+            auth,
+            payload,
+            limit,
+            after_attempt: after_attempt
+          )
           return alternate_results if alternate_results
 
           Rails.logger.warn "[ZLibraryClient] eAPI search unavailable; falling back to HTML search"
-          return search_html(auth, query, file_types: file_types, limit: limit, language: language)
+          return search_html(
+            auth,
+            query,
+            file_types: file_types,
+            limit: limit,
+            language: language,
+            after_attempt: after_attempt
+          )
         end
 
         data = parse_response(response, context: "search")
@@ -95,7 +108,7 @@ class ZLibraryClient
 
     private
 
-    def login
+    def login(after_attempt: nil)
       cached = @auth_cache
       signature = credential_signature
 
@@ -107,13 +120,13 @@ class ZLibraryClient
       end
 
       @last_auth_from_cache = false
-      auth = perform_login(signature)
+      auth = perform_login(signature, after_attempt: after_attempt)
       raise AuthenticationError, "Z-Library login failed" unless auth
 
       auth
     end
 
-    def perform_login(signature)
+    def perform_login(signature, after_attempt: nil)
       email = SettingsService.get(:zlibrary_email).to_s.strip
       password = SettingsService.get(:zlibrary_password).to_s
 
@@ -121,7 +134,7 @@ class ZLibraryClient
         base_url = uri.to_s.delete_suffix("/")
         domain = uri.host
 
-        auth = authenticate_uri(uri)
+        auth = authenticate_uri(uri, after_attempt: after_attempt)
         next unless auth
 
         Rails.logger.info "[ZLibraryClient] Login succeeded via #{domain}"
@@ -134,13 +147,15 @@ class ZLibraryClient
       nil
     end
 
-    def authenticate_uri(uri)
+    def authenticate_uri(uri, after_attempt: nil)
       email = SettingsService.get(:zlibrary_email).to_s.strip
       password = SettingsService.get(:zlibrary_password).to_s
       base_url = uri.to_s.delete_suffix("/")
 
-      response = connection.post("#{base_url}/eapi/user/login") do |req|
-        req.body = URI.encode_www_form(email: email, password: password)
+      response = observe_search_attempt(after_attempt) do
+        connection.post("#{base_url}/eapi/user/login") do |req|
+          req.body = URI.encode_www_form(email: email, password: password)
+        end
       end
 
       return unless response.status == 200
@@ -212,11 +227,11 @@ class ZLibraryClient
       raise ConfigurationError, "Z-Library URL is invalid: #{e.message}"
     end
 
-    def with_authenticated_retry(context:)
+    def with_authenticated_retry(context:, after_attempt: nil)
       attempted_retry = false
 
       begin
-        auth = login
+        auth = login(after_attempt: after_attempt)
         using_cached_auth = @last_auth_from_cache
 
         yield auth
@@ -259,10 +274,12 @@ class ZLibraryClient
       "remix_userid=#{auth[:remix_userid]}; remix_userkey=#{auth[:remix_userkey]}"
     end
 
-    def post_search(auth, payload)
-      connection.post("#{auth[:base_url]}/eapi/book/search") do |req|
-        req.headers["Cookie"] = cookie_header(auth)
-        req.body = URI.encode_www_form(payload)
+    def post_search(auth, payload, after_attempt: nil)
+      observe_search_attempt(after_attempt) do
+        connection.post("#{auth[:base_url]}/eapi/book/search") do |req|
+          req.headers["Cookie"] = cookie_header(auth)
+          req.body = URI.encode_www_form(payload)
+        end
       end
     end
 
@@ -296,9 +313,9 @@ class ZLibraryClient
       JSON.parse(response.body)
     end
 
-    def search_eapi_alternate_domains(current_auth, payload, limit)
-      each_alternate_auth(current_auth) do |auth|
-        response = post_search(auth, payload)
+    def search_eapi_alternate_domains(current_auth, payload, limit, after_attempt: nil)
+      each_alternate_auth(current_auth, after_attempt: after_attempt) do |auth|
+        response = post_search(auth, payload, after_attempt: after_attempt)
         next if search_html_fallback_response?(response)
 
         data = parse_response(response, context: "search")
@@ -324,14 +341,14 @@ class ZLibraryClient
       nil
     end
 
-    def each_alternate_auth(current_auth)
+    def each_alternate_auth(current_auth, after_attempt: nil)
       signature = credential_signature
 
       configured_uris.each do |uri|
         base_url = uri.to_s.delete_suffix("/")
         next if base_url == current_auth[:base_url]
 
-        auth = authenticate_uri(uri)
+        auth = authenticate_uri(uri, after_attempt: after_attempt)
         next unless auth
 
         Rails.logger.info "[ZLibraryClient] Retrying eAPI via #{auth[:domain]}"
@@ -342,9 +359,11 @@ class ZLibraryClient
       end
     end
 
-    def search_html(auth, query, file_types:, limit:, language:)
-      response = connection.get(html_search_url(auth[:base_url], query, file_types: file_types, language: language)) do |req|
-        req.headers["Cookie"] = cookie_header(auth)
+    def search_html(auth, query, file_types:, limit:, language:, after_attempt: nil)
+      response = observe_search_attempt(after_attempt) do
+        connection.get(html_search_url(auth[:base_url], query, file_types: file_types, language: language)) do |req|
+          req.headers["Cookie"] = cookie_header(auth)
+        end
       end
 
       unless response.status == 200
@@ -352,6 +371,18 @@ class ZLibraryClient
       end
 
       parse_html_search_results(response.body.to_s, limit)
+    end
+
+    def observe_search_attempt(after_attempt)
+      yield
+    ensure
+      ensure_search_continues!(after_attempt)
+    end
+
+    def ensure_search_continues!(after_attempt)
+      return if after_attempt.nil? || after_attempt.call
+
+      raise SearchCancelled, "Search ownership changed"
     end
 
     def html_search_url(base_url, query, file_types:, language:)

@@ -36,6 +36,9 @@
 !/app/assets/builds/.keep
 /public/assets
 
+# Ignore local test and analysis reports.
+/coverage/
+
 # Ignore CI service files.
 /.github
 
@@ -49,3 +52,6 @@
 # Ignore Docker-related files
 /.dockerignore
 /Dockerfile*
+
+# Companion services are built as separate images.
+/services

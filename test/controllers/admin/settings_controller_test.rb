@@ -13,6 +13,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     GoogleBooksClient.reset_connection!
     OpenLibraryClient.reset_connection!
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
+    EbooksComClient.reset_connection! if defined?(EbooksComClient)
+    SettingsService.set(:ebooks_com_enabled, false)
+    SettingsService.set(:ebooks_com_country_code, "")
   end
 
   teardown do
@@ -23,6 +26,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     GoogleBooksClient.reset_connection!
     OpenLibraryClient.reset_connection!
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
+    EbooksComClient.reset_connection! if defined?(EbooksComClient)
+    SettingsService.set(:ebooks_com_enabled, false)
+    SettingsService.set(:ebooks_com_country_code, "")
   end
 
   test "index requires admin" do
@@ -35,6 +41,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     get admin_settings_url
     assert_response :success
     assert_select "h1", "Settings"
+    assert_select "#settings-tabs noscript", text: /Use Save All/
   end
 
   test "index shows telegram group authorization only in integrations tab" do
@@ -78,6 +85,76 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a[href='#{test_open_library_admin_settings_path}']", text: "Test Open Library Connection"
     assert_select "a[href='#{test_comic_vine_admin_settings_path}']", text: "Test Comic Vine Connection"
     assert_select "select[name='settings[metadata_source]'] option[value='comic_vine']", text: "Comic Vine"
+  end
+
+  test "index shows beta eBooks.com store settings" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "h2", text: "eBooks.com Store (Beta)"
+    assert_select "input[name='settings[ebooks_com_enabled]']"
+    assert_select "input[name='settings[ebooks_com_country_code]'][maxlength='2'][pattern='[A-Za-z]{2}'][autocapitalize='characters']"
+    assert_select "input[name='settings[ebooks_com_search_limit]'][min='1'][max='#{EbooksComClient::MAX_RESULTS}']"
+    assert_select "button[formaction='#{test_ebooks_com_admin_settings_path}'][formmethod='post']", text: "Test eBooks.com Catalog"
+  end
+
+  test "bulk_update rejects an invalid eBooks.com country and missing enabled country" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        ebooks_com_enabled: "1",
+        ebooks_com_country_code: "Portugal",
+        ebooks_com_search_limit: "5"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/ISO 3166-1/i, flash[:alert])
+    assert_not SettingsService.get(:ebooks_com_enabled)
+    assert_equal "", SettingsService.get(:ebooks_com_country_code)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        ebooks_com_enabled: "1",
+        ebooks_com_country_code: "",
+        ebooks_com_search_limit: "5"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/Buyer Country Code/i, flash[:alert])
+    assert_not SettingsService.get(:ebooks_com_enabled)
+  end
+
+  test "bulk_update normalizes a valid eBooks.com country and validates the offer limit" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        ebooks_com_enabled: "1",
+        ebooks_com_country_code: " pt ",
+        ebooks_com_search_limit: "3"
+      }
+    }, headers: { "HTTP_REFERER" => "https://attacker.example/phishing" }
+
+    assert_redirected_to admin_settings_path
+    assert flash[:alert].blank?
+    assert SettingsService.get(:ebooks_com_enabled)
+    assert_equal "PT", SettingsService.get(:ebooks_com_country_code)
+    assert_equal 3, SettingsService.get(:ebooks_com_search_limit)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { ebooks_com_search_limit: "3-results" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/between 1 and #{EbooksComClient::MAX_RESULTS}/, flash[:alert])
+    assert_equal 3, SettingsService.get(:ebooks_com_search_limit)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { ebooks_com_search_limit: (EbooksComClient::MAX_RESULTS + 1).to_s }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/between 1 and #{EbooksComClient::MAX_RESULTS}/, flash[:alert])
+    assert_equal 3, SettingsService.get(:ebooks_com_search_limit)
   end
 
   test "index warns when disabling authentication is enabled" do
@@ -1163,6 +1240,38 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     GutenbergClient.stub :test_connection, false do
       post test_gutenberg_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /failed/i, flash[:alert]
+  end
+
+  test "test_ebooks_com requires opt in and a valid country code" do
+    post test_ebooks_com_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /two-letter buyer country/i, flash[:alert]
+  end
+
+  test "test_ebooks_com succeeds when the catalog is reachable" do
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+
+    EbooksComClient.stub :test_connection, true do
+      post test_ebooks_com_admin_settings_url,
+        headers: { "HTTP_REFERER" => "http://[malformed" }
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match /successful/i, flash[:notice]
+  end
+
+  test "test_ebooks_com reports a catalog failure" do
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+
+    EbooksComClient.stub :test_connection, false do
+      post test_ebooks_com_admin_settings_url
     end
 
     assert_redirected_to admin_settings_path

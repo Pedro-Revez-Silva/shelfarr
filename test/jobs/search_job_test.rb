@@ -16,12 +16,17 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:librivox_url, "https://librivox.org")
     SettingsService.set(:gutenberg_enabled, false)
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:ebooks_com_enabled, false)
+    SettingsService.set(:ebooks_com_country_code, "")
+    SettingsService.set(:ebooks_com_search_limit, 5)
     SettingsService.set(:indexer_search_scope, "broad")
     SettingsService.set(:indexer_custom_audiobook_categories, "")
     SettingsService.set(:indexer_custom_ebook_categories, "")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     LibrivoxClient.reset_connection! if defined?(LibrivoxClient)
     GutenbergClient.reset_connection! if defined?(GutenbergClient)
+    EbooksComClient.reset_connection! if defined?(EbooksComClient)
+    @request.store_offers.delete_all
   end
 
   teardown do
@@ -33,12 +38,16 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:librivox_url, "https://librivox.org")
     SettingsService.set(:gutenberg_enabled, false)
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:ebooks_com_enabled, false)
+    SettingsService.set(:ebooks_com_country_code, "")
+    SettingsService.set(:ebooks_com_search_limit, 5)
     SettingsService.set(:indexer_search_scope, "broad")
     SettingsService.set(:indexer_custom_audiobook_categories, "")
     SettingsService.set(:indexer_custom_ebook_categories, "")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     LibrivoxClient.reset_connection! if defined?(LibrivoxClient)
     GutenbergClient.reset_connection! if defined?(GutenbergClient)
+    EbooksComClient.reset_connection! if defined?(EbooksComClient)
   end
 
   test "updates request status to searching" do
@@ -49,6 +58,7 @@ class SearchJobTest < ActiveJob::TestCase
       @request.reload
 
       assert @request.searching?
+      assert_nil @request.search_claimed_at
     end
   end
 
@@ -95,6 +105,7 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal manual_url, manual_result.download_url
     assert_equal [ manual_result.id ], @request.downloads.pluck(:search_result_id)
     assert_not @request.search_results.exists?(guid: "test-guid-123")
+    assert_nil @request.search_claimed_at
   end
 
   test "does not reclaim a request after a manual NZB selection" do
@@ -106,6 +117,143 @@ class SearchJobTest < ActiveJob::TestCase
     assert_not claimed
     assert @request.reload.downloading?
     assert @request.search_results.find_by!(source: SearchResult::SOURCE_MANUAL_NZB).selected?
+  end
+
+  test "only the exact claimed generation can publish search results" do
+    stale_job = SearchJob.new
+    current_job = SearchJob.new
+    stale_generation = stale_job.send(:claim_search!, @request)
+
+    @request.refresh_search!
+    current_generation = current_job.send(:claim_search!, @request)
+
+    current_result = tagged_indexer_result(guid: "current-generation", title: "Current Result")
+    stale_result = tagged_indexer_result(guid: "stale-generation", title: "Stale Result")
+    skip_auto_select = ->(*) { }
+
+    current_job.stub(:attempt_auto_select, skip_auto_select) do
+      assert current_job.send(
+        :complete_search,
+        @request,
+        current_generation,
+        results: [ current_result ],
+        store_offers: [],
+        indexer_error: nil
+      )
+    end
+
+    stale_job.stub(:attempt_auto_select, skip_auto_select) do
+      assert_not stale_job.send(
+        :complete_search,
+        @request,
+        stale_generation,
+        results: [ stale_result ],
+        store_offers: [],
+        indexer_error: nil
+      )
+    end
+
+    @request.reload
+    assert @request.searching?
+    assert_equal current_generation, @request.search_generation
+    assert @request.search_results.exists?(guid: "current-generation")
+    assert_not @request.search_results.exists?(guid: "stale-generation")
+  end
+
+  test "an in-flight search cannot overwrite a replacement search that finishes first" do
+    replacement_started = false
+    replacement_running = false
+    SettingsService.set(:auto_select_enabled, false)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return do
+          unless replacement_started
+            replacement_started = true
+            @request.reload.refresh_search!
+            replacement_running = true
+            SearchJob.perform_now(@request.id)
+            replacement_running = false
+          end
+
+          generation = replacement_running ? "replacement" : "stale"
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [
+              prowlarr_result_payload.merge(
+                "guid" => "#{generation}-result",
+                "title" => "#{generation.titleize} Result"
+              )
+            ].to_json
+          }
+        end
+
+      SearchJob.perform_now(@request.id)
+    end
+
+    @request.reload
+    assert replacement_started
+    assert @request.search_results.exists?(guid: "replacement-result")
+    assert_not @request.search_results.exists?(guid: "stale-result")
+  end
+
+  test "stale no-source completion cannot flag a replacement search" do
+    stale_job = SearchJob.new
+    stale_generation = stale_job.send(:claim_search!, @request)
+
+    @request.refresh_search!
+    current_generation = SearchJob.new.send(:claim_search!, @request)
+
+    assert_not stale_job.send(:handle_no_search_sources, @request, stale_generation)
+
+    @request.reload
+    assert @request.searching?
+    assert_equal current_generation, @request.search_generation
+    assert_not @request.attention_needed?
+    assert_nil @request.issue_description
+  end
+
+  test "manual retry invalidates an in-flight search before it can complete" do
+    @request.refresh_search!
+    stale_job = SearchJob.new
+    stale_generation = stale_job.send(:claim_search!, @request)
+
+    @request.retry_now!
+
+    assert @request.pending?
+    assert_operator @request.search_generation, :>, stale_generation
+    assert_not stale_job.send(
+      :complete_search,
+      @request,
+      stale_generation,
+      results: [ tagged_indexer_result(guid: "retry-stale", title: "Retry Stale") ],
+      store_offers: [],
+      indexer_error: nil
+    )
+    assert_not @request.search_results.exists?(guid: "retry-stale")
+  end
+
+  test "duplicate queued jobs cannot share a search generation" do
+    first_generation = SearchJob.new.send(:claim_search!, @request)
+
+    assert_nil SearchJob.new.send(:claim_search!, Request.find(@request.id))
+    assert_equal first_generation, @request.reload.search_generation
+  end
+
+  test "completion safely discards a request deleted after claim" do
+    job = SearchJob.new
+    generation = job.send(:claim_search!, @request)
+    @request.destroy!
+
+    assert_not job.send(
+      :complete_search,
+      @request,
+      generation,
+      results: [],
+      store_offers: [],
+      indexer_error: nil
+    )
   end
 
   test "does not schedule a retry when a manual NZB is submitted during an empty search" do
@@ -252,6 +400,250 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "persists an eBooks.com offer without creating or selecting a download" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    @request.search_results.destroy_all
+
+    stub_ebooks_offer_search
+
+    VCR.turned_off do
+      assert_no_enqueued_jobs only: DownloadJob do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    offer = @request.reload.store_offers.first
+    assert @request.awaiting_purchase?
+    assert_not @request.attention_needed?
+    assert_nil @request.issue_description
+    assert_equal 0, @request.retry_count
+    assert_nil @request.next_retry_at
+    assert_equal 1, @request.store_offers.count
+    assert_equal "ebooks_com", offer.provider
+    assert_equal "PT", offer.market
+    assert_equal "9,99 €", offer.localized_price
+    event = @request.request_events.find_by!(event_type: "store_offers_found", source: "store_provider")
+    assert_equal "1 DRM-free store offer found", event.message
+    assert_equal({ "offer_count" => 1 }, event.details)
+    assert_empty @request.downloads
+    assert_empty @request.search_results
+  end
+
+  test "refreshing the same store offer replaces its diagnostic event" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    @request.search_results.destroy_all
+    stub_ebooks_offer_search
+
+    VCR.turned_off { SearchJob.perform_now(@request.id) }
+    original_event = @request.request_events.find_by!(event_type: "store_offers_found", source: "store_provider")
+
+    travel 1.minute do
+      @request.update!(status: :pending)
+      VCR.turned_off { SearchJob.perform_now(@request.id) }
+    end
+
+    events = @request.request_events.where(event_type: "store_offers_found", source: "store_provider")
+    assert_equal 1, events.count
+    assert_equal original_event.id, events.sole.id
+    assert_equal "1 DRM-free store offer found", events.sole.message
+  end
+
+  test "discards a store offer whose quote expired before the search completed" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    RequestEvent.record_latest!(
+      request: @request,
+      event_type: "store_offers_found",
+      source: "store_provider",
+      message: "1 DRM-free store offer found",
+      details: { offer_count: 1 }
+    )
+    result = EbooksComClient::Result.new(
+      id: "expired-in-flight",
+      title: @request.book.title,
+      author: @request.book.author,
+      isbns: [],
+      language: "en",
+      formats: [ "epub" ],
+      market: "PT",
+      drm_type: "NoRestriction",
+      price_amount: BigDecimal("9.99"),
+      price_currency: "EUR",
+      localized_price: "9,99 €",
+      storefront_url: "https://www.ebooks.com/en-pt/book/expired-in-flight/",
+      checkout_url: nil,
+      cover_url: nil,
+      quoted_at: StoreOffer::FRESHNESS_TTL.ago - 1.minute
+    )
+
+    EbooksComClient.stub(:search, [ result ]) do
+      SearchJob.perform_now(@request.id)
+    end
+
+    assert @request.reload.not_found?
+    assert_empty @request.store_offers
+    assert_nil @request.request_events.find_by(event_type: "store_offers_found", source: "store_provider")
+    assert @request.next_retry_at.present?
+  end
+
+  test "malformed eBooks.com results do not leave the request stuck searching" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+
+    stub_request(:get, "https://api.ebooks.com/v2/PT/book/search")
+      .with(query: hash_including(
+        "title" => "The Pending Ebook",
+        "author" => "Another Author",
+        "drmFree" => "true"
+      ))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: {
+          generatedAt: "2026-07-17T14:13:27Z",
+          results: [
+            {
+              id: 123,
+              title: "The Pending Ebook",
+              storefrontUrl: "https://www.ebooks.com/en-pt/book/123/the-pending-ebook/",
+              drm: "changed upstream",
+              formats: { epub: true }
+            }
+          ]
+        }.to_json
+      )
+
+    VCR.turned_off { SearchJob.perform_now(@request.id) }
+
+    assert @request.reload.not_found?
+    assert_empty @request.store_offers
+    assert @request.next_retry_at.present?
+  end
+
+  test "discards a store response when the provider is disabled in flight" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    result = EbooksComClient::Result.new(
+      id: "disabled-in-flight",
+      title: @request.book.title,
+      author: @request.book.author,
+      isbns: [],
+      language: "en",
+      formats: [ "epub" ],
+      market: "PT",
+      drm_type: "NoRestriction",
+      price_amount: BigDecimal("9.99"),
+      price_currency: "EUR",
+      localized_price: "9,99 €",
+      storefront_url: "https://www.ebooks.com/en-pt/book/disabled-in-flight/",
+      checkout_url: nil,
+      cover_url: nil,
+      quoted_at: Time.current
+    )
+
+    search = lambda do |**|
+      SettingsService.set(:ebooks_com_enabled, false)
+      [ result ]
+    end
+
+    EbooksComClient.stub(:search, search) do
+      SearchJob.perform_now(@request.id)
+    end
+
+    assert @request.reload.not_found?
+    assert_empty @request.store_offers
+    assert @request.next_retry_at.present?
+  end
+
+  test "store search logs omit catalog interests and upstream error text" do
+    title = "PRIVATE_TITLE_DO_NOT_LOG"
+    author = "PRIVATE_AUTHOR_DO_NOT_LOG"
+    upstream_text = "UPSTREAM_BODY_DO_NOT_LOG"
+    @request.book.update!(title: title, author: author)
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    messages = []
+    logger = Object.new
+    %i[debug info warn error].each do |level|
+      logger.define_singleton_method(level) { |message = nil, **| messages << message.to_s }
+    end
+    failing_search = ->(**) { raise EbooksComClient::ConnectionError, upstream_text }
+
+    Rails.stub(:logger, logger) do
+      EbooksComClient.stub(:search, failing_search) do
+        SearchJob.perform_now(@request.id)
+      end
+    end
+
+    output = messages.join("\n")
+    assert_not_includes output, title
+    assert_not_includes output, author
+    assert_not_includes output, upstream_text
+    assert_includes output, "EbooksComClient::ConnectionError"
+    assert_includes output, "request ##{@request.id}"
+  end
+
+  test "search persistence suppresses database debug logging" do
+    levels = []
+    fake_logger = Object.new
+    fake_logger.define_singleton_method(:silence) do |level, &block|
+      levels << level
+      block.call
+    end
+
+    result = ActiveRecord::Base.stub(:logger, fake_logger) do
+      SearchJob.new.send(:suppress_database_debug_logging) { :persisted }
+    end
+
+    assert_equal :persisted, result
+    assert_equal [ Logger::INFO ], levels
+  end
+
+  test "auto-selection downloads an acquisition result while preserving a store offer" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    stub_ebooks_offer_search
+
+    acquisition_payload = prowlarr_result_payload.merge(
+      "guid" => "mixed-acquisition-result",
+      "title" => "The Pending Ebook Another Author English EPUB"
+    )
+    stub_request(:get, %r{localhost:9696/api/v1/search})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: [ acquisition_payload ].to_json
+      )
+
+    VCR.turned_off do
+      assert_enqueued_with(job: DownloadJob) { SearchJob.perform_now(@request.id) }
+    end
+
+    assert @request.reload.downloading?
+    assert_equal 1, @request.downloads.count
+    assert_equal 1, @request.store_offers.count
+    assert_equal "mixed-acquisition-result", @request.downloads.sole.search_result.guid
+  end
+
   test "marks for attention when no search sources configured" do
     SettingsService.set(:prowlarr_api_key, "")
     SettingsService.set(:anna_archive_enabled, false)
@@ -261,6 +653,7 @@ class SearchJobTest < ActiveJob::TestCase
 
     assert @request.attention_needed?
     assert_includes @request.issue_description, "No search sources configured"
+    assert_nil @request.search_claimed_at
   end
 
   test "sends attention notification when no search sources configured" do
@@ -323,6 +716,7 @@ class SearchJobTest < ActiveJob::TestCase
       assert @request.searching?
       assert @request.attention_needed?
       assert_includes @request.issue_description, "Please review and select a result"
+      assert_nil @request.search_claimed_at
     end
   end
 
@@ -356,6 +750,7 @@ class SearchJobTest < ActiveJob::TestCase
       assert @request.searching?
       assert @request.attention_needed?
       assert_includes @request.issue_description, "none matched auto-select criteria"
+      assert_nil @request.search_claimed_at
     end
   end
 
@@ -1863,6 +2258,77 @@ class SearchJobTest < ActiveJob::TestCase
     assert saved_result.downloadable?
   end
 
+  test "heartbeats a long provider sequence so the watchdog does not preempt healthy work" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, false)
+    providers = 16.times.map { |index| OpenStruct.new(name: "Slow Provider #{index}") }
+    provider_scope = Object.new
+    provider_scope.define_singleton_method(:for_book_type) { |*| self }
+    provider_scope.define_singleton_method(:by_priority) { self }
+    provider_scope.define_singleton_method(:to_a) { providers }
+    searched = []
+    job = SearchJob.new
+    slow_search = lambda do |_request, provider|
+      travel 2.minutes
+      RequestQueueJob.new.send(:recover_stale_searches)
+      searched << provider.name
+      []
+    end
+
+    AcquisitionProvider.stub(:enabled, provider_scope) do
+      job.stub(:search_custom_provider, slow_search) do
+        assert_no_enqueued_jobs only: SearchJob do
+          job.send(:perform_search, @request.id)
+        end
+      end
+    end
+
+    assert_equal providers.map(&:name), searched
+    assert @request.reload.not_found?
+    assert_nil @request.search_claimed_at
+  end
+
+  test "heartbeats inside a mirror-rotating built-in search" do
+    SettingsService.set(:prowlarr_api_key, "")
+    mirror_attempts = 0
+    slow_mirror_search = lambda do |_query, after_attempt:, **_kwargs|
+      16.times do
+        travel 2.minutes
+        RequestQueueJob.new.send(:recover_stale_searches)
+        mirror_attempts += 1
+        assert after_attempt.call
+      end
+      []
+    end
+
+    AnnaArchiveClient.stub(:configured?, true) do
+      AnnaArchiveClient.stub(:search, slow_mirror_search) do
+        assert_no_enqueued_jobs only: SearchJob do
+          SearchJob.perform_now(@request.id)
+        end
+      end
+    end
+
+    assert_equal 16, mirror_attempts
+    assert @request.reload.not_found?
+    assert_nil @request.search_claimed_at
+  end
+
+  test "heartbeat stops a superseded worker before the next provider" do
+    job = SearchJob.new
+    generation = job.send(:claim_search!, @request)
+    original_claim = @request.reload.search_claimed_at
+
+    travel 1.minute
+    assert job.send(:heartbeat_search!, @request, generation)
+    assert_operator @request.reload.search_claimed_at, :>, original_claim
+
+    @request.refresh_search!
+
+    assert_not job.send(:heartbeat_search!, @request, generation)
+    assert @request.reload.pending?
+  end
+
   test "skips unavailable custom acquisition provider results" do
     SettingsService.set(:prowlarr_api_key, "")
     provider = AcquisitionProvider.create!(
@@ -2008,6 +2474,24 @@ class SearchJobTest < ActiveJob::TestCase
 
   private
 
+  def tagged_indexer_result(guid:, title:)
+    {
+      source: SearchResult::SOURCE_PROWLARR,
+      result: IndexerClients::Result.new(
+        guid: guid,
+        title: title,
+        indexer: "TestIndexer",
+        size_bytes: 1.megabyte,
+        seeders: 10,
+        leechers: 0,
+        download_url: "https://downloads.example/#{guid}",
+        magnet_url: nil,
+        info_url: "https://indexer.example/#{guid}",
+        published_at: Time.current
+      )
+    }
+  end
+
   def stub_prowlarr_search_with_results
     stub_request(:get, %r{localhost:9696/api/v1/search})
       .to_return(
@@ -2033,6 +2517,37 @@ class SearchJobTest < ActiveJob::TestCase
         status: 200,
         headers: { "Content-Type" => "application/json" },
         body: [].to_json
+      )
+  end
+
+  def stub_ebooks_offer_search
+    stub_request(:get, "https://api.ebooks.com/v2/PT/book/search")
+      .with(query: hash_including(
+        "title" => "The Pending Ebook",
+        "author" => "Another Author",
+        "drmFree" => "true"
+      ))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: {
+          generatedAt: "2026-07-17T14:13:27Z",
+          totalResults: 1,
+          results: [
+            {
+              id: 123,
+              title: "The Pending Ebook",
+              storefrontUrl: "https://www.ebooks.com/en-pt/book/123/the-pending-ebook/another-author/",
+              addToCartUrl: "https://www.ebooks.com/en-pt/cart/add/123/",
+              isbns: [ "9781234567890" ],
+              authors: [ { name: "Another Author", type: "Author" } ],
+              price: { currency: "EUR", countryCode: "PT", value: 9.99, localisedValue: "9,99 €" },
+              drm: { drmFreeAvailable: true, drmFreeType: "Watermarked" },
+              formats: { epub: true, pdf: false, onlineReader: true },
+              language: { code: "eng", name: "English" }
+            }
+          ]
+        }.to_json
       )
   end
 

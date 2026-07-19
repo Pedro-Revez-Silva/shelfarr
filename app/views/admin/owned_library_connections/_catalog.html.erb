@@ -1,0 +1,115 @@
+<% if @connection.persisted? && @connection.enabled? %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900" aria-labelledby="audible-catalog-heading">
+    <div class="border-b border-gray-800 px-6 py-4">
+      <h2 id="audible-catalog-heading" class="text-xl font-bold text-white">Audible catalog details</h2>
+      <p class="mt-1 text-sm text-gray-400">Diagnostic ownership and backup state for <%= @library_total_items %> active <%= "title".pluralize(@library_total_items) %>. Backup actions remain in the main Library.</p>
+    </div>
+
+    <div class="p-6">
+      <%= form_with url: admin_owned_library_connections_path(anchor: "catalog"), method: :get, class: "flex flex-col gap-2 sm:flex-row" do |form| %>
+        <%= hidden_field_tag :tab, "catalog" %>
+        <%= form.label :q, "Filter Audible catalog by title or author", class: "sr-only" %>
+        <%= form.search_field :q,
+          value: @query,
+          placeholder: "Filter by title or author",
+          class: "min-w-0 flex-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+        <%= form.submit "Filter",
+          class: "rounded-md bg-gray-700 px-4 py-2 text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+        <% if @query.present? %>
+          <%= link_to "Clear",
+            admin_owned_library_connections_path(tab: "catalog", anchor: "catalog"),
+            class: "rounded-md px-4 py-2 text-center text-gray-400 hover:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+        <% end %>
+      <% end %>
+
+      <% if @items.empty? %>
+        <div class="py-10 text-center text-gray-500">
+          <% if @query.present? %>
+            <p>No Audible titles match this filter.</p>
+          <% elsif @connection.last_synced_at.blank? %>
+            <p>No Audible catalog has been synced yet.</p>
+            <%= link_to "Run the first library sync",
+              admin_owned_library_connections_path(anchor: "overview"),
+              data: { action: "click->settings-tabs#switch", tab: "overview" },
+              class: "mt-2 inline-block text-blue-400 hover:text-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+          <% else %>
+            <p>No active Audible titles are available.</p>
+          <% end %>
+        </div>
+      <% else %>
+        <div class="mt-5 overflow-x-auto">
+          <table class="min-w-full divide-y divide-gray-800">
+            <thead>
+              <tr class="text-left text-xs uppercase tracking-wider text-gray-500">
+                <th scope="col" class="px-3 py-3">Title</th>
+                <th scope="col" class="px-3 py-3">Ownership</th>
+                <th scope="col" class="px-3 py-3">Backup</th>
+                <th scope="col" class="px-3 py-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+              <% @items.each do |item| %>
+                <% latest_import = item.latest_import %>
+                <tr>
+                  <td class="px-3 py-4">
+                    <p class="font-medium text-white"><%= item.display_title %></p>
+                    <p class="text-sm text-gray-500"><%= item.author.presence || item.external_id %></p>
+                  </td>
+                  <td class="px-3 py-4 text-sm text-gray-400"><%= item.ownership_type.titleize %></td>
+                  <td class="px-3 py-4 text-sm">
+                    <% if latest_import&.pending? %>
+                      <span class="text-blue-400">Waiting in batch</span>
+                    <% elsif latest_import&.active? %>
+                      <span class="text-blue-400"><%= latest_import.status.titleize %></span>
+                    <% elsif latest_import&.failed? %>
+                      <details class="text-red-400">
+                        <summary class="cursor-pointer rounded focus:outline-none focus:ring-2 focus:ring-red-500">Failed</summary>
+                        <p class="mt-1 max-w-xs break-words text-xs text-red-300"><%= latest_import.error_message.presence || "No error detail was reported." %></p>
+                      </details>
+                    <% elsif item.book&.acquired? %>
+                      <span class="text-green-400">In Shelfarr</span>
+                    <% elsif item.downloaded? %>
+                      <span class="text-emerald-400">Backup in Libation</span>
+                    <% else %>
+                      <span class="text-gray-500">Not backed up</span>
+                    <% end %>
+                  </td>
+                  <td class="px-3 py-4 text-right">
+                    <% if item.purchased? %>
+                      <%= link_to "View in Library",
+                        library_index_path(q: item.title, anchor: "library-catalog"),
+                        class: "text-sm font-medium text-blue-400 hover:text-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+                    <% else %>
+                      <span class="text-xs text-gray-600">Not backup-eligible</span>
+                    <% end %>
+                  </td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-gray-800 pt-4 text-sm text-gray-400">
+          <p><%= @total_items %> filtered <%= "title".pluralize(@total_items) %> &middot; Page <%= @page %> of <%= @total_pages %></p>
+          <div class="flex gap-2">
+            <% if @page > 1 %>
+              <%= link_to "Previous",
+                admin_owned_library_connections_path(tab: "catalog", q: @query.presence, page: @page - 1, anchor: "catalog"),
+                class: "rounded-md bg-gray-800 px-3 py-2 text-white hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            <% end %>
+            <% if @page < @total_pages %>
+              <%= link_to "Next",
+                admin_owned_library_connections_path(tab: "catalog", q: @query.presence, page: @page + 1, anchor: "catalog"),
+                class: "rounded-md bg-gray-800 px-3 py-2 text-white hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  </section>
+<% else %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6" aria-labelledby="audible-catalog-prerequisite-heading">
+    <h2 id="audible-catalog-prerequisite-heading" class="text-xl font-bold text-white">Audible catalog</h2>
+    <p class="mt-2 text-sm text-gray-400">Enable the Libation companion and sync an Audible account before catalog details are available.</p>
+  </section>
+<% end %>

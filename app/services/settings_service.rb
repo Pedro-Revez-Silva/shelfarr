@@ -180,6 +180,11 @@ class SettingsService
     gutenberg_url: { type: "string", default: "https://www.gutenberg.org", category: "gutenberg", description: "Project Gutenberg OPDS catalog base URL" },
     gutenberg_search_limit: { type: "integer", default: 10, category: "gutenberg", description: "Maximum number of Project Gutenberg ebook results to return" },
 
+    # DRM-free Stores
+    ebooks_com_enabled: { type: "boolean", default: false, category: "ebooks_com", description: "Show DRM-free eBooks.com offers (Beta). Checkout and payment stay on eBooks.com. Confirm affiliate or partner permission before production use." },
+    ebooks_com_country_code: { type: "string", default: "", category: "ebooks_com", description: "ISO 3166-1 two-letter buyer country code used for territorial availability, currency, and localized pricing (for example US, GB, or PT)." },
+    ebooks_com_search_limit: { type: "integer", default: 5, category: "ebooks_com", description: "Maximum number of matching eBooks.com offers to show per request (1-10)." },
+
     # Hardcover Integration
     hardcover_enabled: { type: "boolean", default: true, category: "hardcover", description: "Enable Hardcover as a metadata provider when an API token is configured" },
     hardcover_api_token: { type: "string", default: "", category: "hardcover", description: "API token from Hardcover account settings (hardcover.app/account/api)" },
@@ -230,6 +235,7 @@ class SettingsService
     "zlibrary" => "Z-Library",
     "gutenberg" => "Project Gutenberg",
     "librivox" => "LibriVox",
+    "ebooks_com" => "eBooks.com Store (Beta)",
     "hardcover" => "Hardcover",
     "google_books" => "Google Books",
     "comic_vine" => "Comic Vine",
@@ -261,6 +267,9 @@ class SettingsService
     grimmory_url: "Grimmory URL",
     grimmory_username: "Grimmory Username",
     grimmory_password: "Grimmory Password",
+    ebooks_com_enabled: "Show DRM-free eBooks.com Offers",
+    ebooks_com_country_code: "Buyer Country Code",
+    ebooks_com_search_limit: "Offer Limit",
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
     audiobookshelf_comicbook_library_id: "Comics & Manga Library",
@@ -322,14 +331,23 @@ class SettingsService
 
       raise ArgumentError, "Unknown setting: #{key}" unless definition
 
-      setting = Setting.find_or_initialize_by(key: key.to_s)
-      setting.value_type = definition[:type]
-      setting.category = definition[:category]
-      setting.description = definition[:description]
-      setting.typed_value = value
-      setting.save!
+      Setting.transaction do
+        setting = Setting.find_or_initialize_by(key: key.to_s)
+        previous_value = setting.persisted? ? setting.typed_value : definition[:default]
+        setting.value_type = definition[:type]
+        setting.category = definition[:category]
+        setting.description = definition[:description]
+        setting.typed_value = value
+        setting.save!
 
-      setting.typed_value
+        current_value = setting.typed_value
+        StoreProviderRegistry.setting_changed!(
+          key,
+          previous_value: previous_value,
+          current_value: current_value
+        )
+        current_value
+      end
     end
 
     # Bulk getter for a category
@@ -508,6 +526,11 @@ class SettingsService
 
     def gutenberg_configured?
       get(:gutenberg_enabled, default: false) && configured?(:gutenberg_url)
+    end
+
+    def ebooks_com_configured?
+      country_code = get(:ebooks_com_country_code).to_s.strip
+      get(:ebooks_com_enabled, default: false) && EbooksComClient.valid_country_code?(country_code)
     end
 
     def flaresolverr_configured?

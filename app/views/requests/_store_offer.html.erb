@@ -1,0 +1,46 @@
+<div class="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4" data-store-offer>
+  <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div class="min-w-0">
+      <div class="flex flex-wrap items-center gap-2">
+        <p class="font-medium text-white"><%= offer.title %></p>
+        <span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/20">
+          <%= offer.drm_label %>
+        </span>
+      </div>
+
+      <% if offer.author.present? %>
+        <p class="mt-1 text-sm text-gray-400"><%= offer.author %></p>
+      <% end %>
+
+      <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+        <span><%= offer.provider_name %></span>
+        <% if offer.display_price.present? %>
+          <span class="font-medium text-emerald-300"><%= offer.display_price %></span>
+        <% end %>
+        <% offer.format_labels.each do |format| %>
+          <span><%= format %></span>
+        <% end %>
+        <% if offer.language.present? %>
+          <span><%= ReleaseParserService.language_info(offer.language)&.dig(:name) || offer.language %></span>
+        <% end %>
+        <% if offer.quoted_at.present? %>
+          <time datetime="<%= offer.quoted_at.iso8601 %>" title="Price and availability checked at <%= offer.quoted_at.iso8601 %>">
+            Checked <%= time_ago_in_words(offer.quoted_at) %> ago
+          </time>
+        <% end %>
+      </div>
+    </div>
+
+    <div class="flex shrink-0 flex-wrap items-center gap-2">
+      <% if allowed_to?(:new?, Upload) && !request.completed? %>
+        <% upload_path = Current.user.admin? ? new_admin_upload_path(request_id: request.id) : new_upload_path(request_id: request.id) %>
+        <%= link_to "Upload after purchase", upload_path,
+            class: "px-3 py-2 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded font-medium transition" %>
+      <% end %>
+      <%= link_to "View & buy at #{offer.provider_name}", offer.storefront_url,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          class: "px-3 py-2 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded font-medium transition" %>
+    </div>
+  </div>
+</div>

@@ -110,6 +110,18 @@ Rails.application.routes.draw do
         post :test
       end
     end
+    resources :owned_library_connections, only: [ :index, :create, :update ] do
+      member do
+        post :test
+        post :auth_start
+        post :auth_complete
+        post :sync
+        post :backup_existing
+        post :dismiss_existing_backup
+        patch :automation, action: :update_automation
+        post "items/:item_id/backup", action: :backup, as: :backup_item
+      end
+    end
     resources :download_routing_rules, except: [ :show ]
     resources :settings, only: [ :index, :update ] do
       collection do
@@ -122,6 +134,7 @@ Rails.application.routes.draw do
         post :test_zlibrary
         post :test_gutenberg
         post :test_librivox
+        post :test_ebooks_com
         post :test_hardcover
         post :test_google_books
         post :test_open_library

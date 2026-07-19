@@ -49,6 +49,19 @@ module Admin
 
       assert_select "h2", /Search Results for/
       assert_select "p", /#{@pending_result.title}/
+      assert_select "form[action='#{refresh_admin_request_search_results_path(@request_record)}']", count: 1
+      assert_select "[data-search-refresh-disabled]", count: 0
+    end
+
+    test "index disables refresh while the request is acquiring" do
+      @request_record.update!(status: :downloading)
+
+      get admin_request_search_results_path(@request_record)
+
+      assert_response :success
+      assert_select "form[action='#{refresh_admin_request_search_results_path(@request_record)}']", count: 0
+      assert_select "button[data-search-refresh-disabled][disabled][aria-disabled='true']",
+        text: "Refresh Search"
     end
 
     test "index shows empty state when no results" do
@@ -95,7 +108,8 @@ module Admin
 
     test "select creates download and updates statuses" do
       assert_difference -> { Download.count }, 1 do
-        post select_admin_request_search_result_path(@request_record, @pending_result)
+        post select_admin_request_search_result_path(@request_record, @pending_result),
+          headers: { "HTTP_REFERER" => "http://[malformed" }
       end
 
       @pending_result.reload
@@ -164,14 +178,27 @@ module Admin
 
     test "refresh clears results and requeues search" do
       assert @request_record.search_results.any?
+      previous_generation = @request_record.search_generation
+      @request_record.store_offers.create!(
+        provider: "ebooks_com",
+        external_id: "refresh-offer",
+        title: "The Pending Ebook",
+        formats: [ "epub" ],
+        market: "PT",
+        drm_free: true,
+        storefront_url: "https://www.ebooks.com/en-pt/book/refresh-offer/the-pending-ebook/"
+      )
 
-      assert_enqueued_with(job: SearchJob) do
-        post refresh_admin_request_search_results_path(@request_record)
+      assert_enqueued_with(job: SearchJob, args: [ @request_record.id ]) do
+        post refresh_admin_request_search_results_path(@request_record),
+          headers: { "HTTP_REFERER" => "https://attacker.example/phishing" }
       end
 
       @request_record.reload
       assert @request_record.pending?
-      assert @request_record.search_results.empty?
+      assert_equal previous_generation + 1, @request_record.search_generation
+      assert_equal [ @selected_result ], @request_record.search_results.to_a
+      assert @request_record.store_offers.empty?
 
       assert_redirected_to request_path(@request_record)
       assert_match /refreshed/, flash[:notice]
@@ -199,7 +226,31 @@ module Admin
       post refresh_admin_request_search_results_path(@request_record)
 
       @request_record.reload
-      assert_equal [ manual_magnet, manual_nzb ], @request_record.search_results.order(:id).to_a
+      assert_equal [ @selected_result, manual_magnet, manual_nzb ],
+        @request_record.search_results.order(:id).to_a
+    end
+
+    test "refresh rejects an active acquisition without deleting its selected result" do
+      selected = @selected_result
+      download = @request_record.downloads.create!(
+        name: selected.title,
+        search_result: selected,
+        status: :queued
+      )
+      @request_record.update!(status: :downloading)
+      previous_generation = @request_record.search_generation
+      previous_result_ids = @request_record.search_result_ids.sort
+
+      assert_no_enqueued_jobs only: SearchJob do
+        post refresh_admin_request_search_results_path(@request_record)
+      end
+
+      assert_redirected_to request_path(@request_record)
+      assert_match(/cannot refresh search/i, flash[:alert])
+      assert @request_record.reload.downloading?
+      assert_equal previous_generation, @request_record.search_generation
+      assert_equal previous_result_ids, @request_record.search_result_ids.sort
+      assert_equal selected, download.reload.search_result
     end
   end
 end

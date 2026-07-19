@@ -1,0 +1,104 @@
+<% if @connection.persisted? %>
+  <%= turbo_stream_from @connection %>
+  <% turbo_refreshes_with(method: :morph, scroll: :preserve) %>
+<% end %>
+
+<%
+  audible_tabs = {
+    "overview" => "Overview",
+    "connection" => "Connection",
+    "automation" => "Automation",
+    "catalog" => "Catalog"
+  }
+  requested_tab = params[:tab].to_s.presence_in(audible_tabs.keys)
+  default_tab = requested_tab || if !@connection.persisted? || !@connection.enabled? ||
+      @connection.errors.any? || @companion_error.present? ||
+      (@connection.persisted? && @connection.enabled? && !@audible_connected)
+    "connection"
+  else
+    "overview"
+  end
+%>
+
+<div
+  id="audible-backup-tabs"
+  class="mx-auto max-w-4xl"
+  data-controller="settings-tabs"
+  data-settings-tabs-active-value="<%= default_tab %>"
+>
+  <div class="mb-6">
+    <div>
+      <div class="flex flex-wrap items-center gap-3">
+        <h1 class="font-bold text-3xl text-white sm:text-4xl">Audible Backup</h1>
+        <span class="rounded-full border border-amber-600/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium uppercase tracking-wide text-amber-300">Beta</span>
+      </div>
+      <p class="mt-2 max-w-2xl text-gray-400">
+        Keep personal backups of purchased Audible audiobooks in Shelfarr using
+        <%= link_to "Libation", "https://github.com/rmcrackan/Libation", target: "_blank", rel: "noopener noreferrer", class: "text-blue-400 hover:text-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500" %>.
+        Shelfarr never receives your Audible password.
+      </p>
+      <p class="mt-1 text-xs text-gray-500">Powered by Libation, an independent GPL-3.0 open-source project.</p>
+      <div class="mt-3 max-w-2xl rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-sm text-amber-200" role="note">
+        Imported backups join Shelfarr's shared Library and may be available to other Shelfarr users.
+        Only give library access to people authorized to use the connected account holder's purchases.
+      </div>
+    </div>
+  </div>
+
+  <% if @connection.errors.any? %>
+    <div class="mb-6 rounded-lg border border-red-800 bg-red-950/40 p-4 text-red-300" role="alert">
+      <p class="font-medium">Could not save Audible Backup:</p>
+      <ul class="mt-2 list-disc pl-5 text-sm">
+        <% @connection.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <% if @companion_error.present? %>
+    <div class="mb-6 rounded-lg border border-amber-800 bg-amber-950/30 p-4 text-amber-300" role="status">
+      The companion is configured but unavailable: <%= @companion_error %>
+    </div>
+  <% end %>
+
+  <noscript>
+    <style>#audible-backup-tabs [role="tablist"] { display: none; }</style>
+    <div class="mb-6 rounded-lg border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-200" role="status">
+      JavaScript is disabled, so all settings sections are shown below. Background sign-in, sync, and backup jobs still run; refresh this page manually to see progress and completion.
+    </div>
+  </noscript>
+
+  <div class="mb-6 border-b border-gray-800">
+    <nav class="-mb-px flex gap-1 overflow-x-auto" role="tablist" aria-label="Audible Backup settings">
+      <% audible_tabs.each do |tab_key, label| %>
+        <button
+          type="button"
+          data-settings-tabs-target="tab"
+          data-tab="<%= tab_key %>"
+          data-action="click->settings-tabs#switch"
+          role="tab"
+          class="whitespace-nowrap border-b-2 px-2 py-3 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500 sm:px-4 <%= tab_key == default_tab ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:border-gray-600 hover:text-gray-300' %>"
+        >
+          <%= label %>
+        </button>
+      <% end %>
+    </nav>
+  </div>
+
+  <div data-settings-tabs-target="panel" data-tab="overview" role="tabpanel" class="space-y-6">
+    <%= render "overview" %>
+  </div>
+
+  <div data-settings-tabs-target="panel" data-tab="connection" role="tabpanel" class="space-y-6">
+    <%= render "connection" %>
+  </div>
+
+  <div data-settings-tabs-target="panel" data-tab="automation" role="tabpanel" class="space-y-6">
+    <%= render "automation" %>
+  </div>
+
+  <div data-settings-tabs-target="panel" data-tab="catalog" role="tabpanel" class="space-y-6">
+    <%= render "catalog" %>
+  </div>
+</div>

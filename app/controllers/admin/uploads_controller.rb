@@ -34,13 +34,32 @@ module Admin
     end
 
     def destroy
-      # Clean up file if still exists and not completed
-      if @upload.file_path.present? && File.exist?(@upload.file_path) && !@upload.completed?
-        FileUtils.rm_f(@upload.file_path)
+      protected_owned_import = false
+      Upload.transaction do
+        @upload.lock!
+        @upload.reload
+        media_import = OwnedMediaImport.lock.find_by(upload_id: @upload.id)
+
+        if @upload.destruction_blocked?
+          protected_owned_import = true
+        else
+          # Upload's before_destroy callback removes an unprocessed source.
+          @upload.destroy!
+        end
       end
 
-      @upload.destroy
+      if protected_owned_import
+        redirect_to admin_uploads_path,
+          alert: "This upload has a reserved library file and cannot be deleted safely. " \
+            "Retry the upload so Shelfarr can reconcile it first."
+        return
+      end
+
       redirect_to admin_uploads_path, notice: "Upload deleted."
+    rescue ActiveRecord::RecordNotDestroyed
+      redirect_to admin_uploads_path,
+        alert: "This upload has a reserved library file and cannot be deleted safely. " \
+          "Retry the upload so Shelfarr can reconcile it first."
     end
 
     def retry
@@ -49,10 +68,49 @@ module Admin
         return
       end
 
-      @upload.update!(status: :pending, error_message: nil)
-      UploadProcessingJob.perform_later(@upload.id)
+      media_import = OwnedMediaImport.find_by(upload_id: @upload.id)
+      Upload.transaction do
+        @upload.lock!
+        @upload.reload
+        unless @upload.failed?
+          @upload.errors.add(:base, "Can only retry failed uploads")
+          raise ActiveRecord::RecordInvalid.new(@upload)
+        end
+
+        if media_import
+          media_import.lock!
+          media_import.reload
+          unless media_import.failed? && media_import.upload_id == @upload.id
+            media_import.errors.add(:base, "Audible import is not retryable")
+            raise ActiveRecord::RecordInvalid.new(media_import)
+          end
+          media_import.update!(
+            status: "processing",
+            completed_at: nil,
+            error_message: nil,
+            started_at: Time.current,
+            upload_recovery_attempts: 0,
+            poll_token: OwnedMediaImport.generate_poll_token
+          )
+        end
+        @upload.update!(status: :pending, error_message: nil)
+      end
+
+      unless enqueue_retry(media_import)
+        if media_import
+          redirect_to admin_uploads_path,
+            alert: "Immediate retry could not be queued. Shelfarr will recover this Audible import automatically."
+        else
+          @upload.update!(status: :failed, error_message: "Shelfarr could not queue the upload retry")
+          redirect_to admin_uploads_path, alert: "Upload retry could not be queued. Try again."
+        end
+        return
+      end
 
       redirect_to admin_uploads_path, notice: "Upload queued for retry."
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique => e
+      message = e.respond_to?(:record) ? e.record.errors.full_messages.to_sentence : e.message
+      redirect_to admin_uploads_path, alert: message.presence || "This upload cannot be retried right now."
     end
 
     private
@@ -65,7 +123,14 @@ module Admin
       return if params[:request_id].blank?
 
       @request = Request.includes(:book).find(params[:request_id])
-      redirect_to @request, alert: "This request is already completed." if @request.completed?
+      return if @request.upload_fulfillable?
+
+      message = if @request.completed?
+        "This request is already completed."
+      else
+        "This request is no longer open for file fulfillment. Retry it before uploading a file."
+      end
+      redirect_to @request, alert: message
     end
 
     def upload_success_location
@@ -82,6 +147,21 @@ module Admin
 
     def folder_upload?
       params[:upload_mode] == "folder"
+    end
+
+    def enqueue_retry(media_import)
+      job = if media_import
+        OwnedMediaBackupJob.perform_later(media_import.id, media_import.poll_token)
+      else
+        UploadProcessingJob.perform_later(@upload.id)
+      end
+
+      job.respond_to?(:successfully_enqueued?) && job.successfully_enqueued?
+    rescue ActiveJob::EnqueueError => error
+      Rails.logger.error(
+        "[UploadsController] Could not enqueue retry for upload ##{@upload.id}: #{error.class}"
+      )
+      false
     end
   end
 end

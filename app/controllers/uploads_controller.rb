@@ -58,7 +58,14 @@ class UploadsController < ApplicationController
       return
     end
 
-    redirect_to @request, alert: "This request is already completed." if @request.completed?
+    return if @request.upload_fulfillable?
+
+    message = if @request.completed?
+      "This request is already completed."
+    else
+      "This request is no longer open for file fulfillment. Retry it before uploading a file."
+    end
+    redirect_to @request, alert: message
   end
 
   def upload_success_location

@@ -14,7 +14,10 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
   test "creates a request for an existing Shelfarr user" do
     assert_difference [ "Book.count", "Request.count" ], 1 do
       post api_v1_requests_path,
-        headers: { "Authorization" => "Bearer apitoken" },
+        headers: {
+          "Authorization" => "Bearer apitoken",
+          "HTTP_REFERER" => "https://attacker.example/phishing"
+        },
         params: {
           username: @user.username,
           work_id: "openlibrary:OL_API_REQUEST_123W",
@@ -297,6 +300,38 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "api", body.dig("requests", 0, "request", "created_via")
   end
 
+  test "serializes and filters the additive awaiting purchase status" do
+    book = Book.create!(
+      title: "API Store Offer",
+      book_type: :ebook,
+      open_library_work_id: "OL_API_AWAITING_PURCHASE"
+    )
+    request = Request.create!(
+      book: book,
+      user: @user,
+      status: :awaiting_purchase,
+      created_via: "api"
+    )
+
+    get api_v1_requests_path(status: "awaiting_purchase", limit: 100),
+      headers: { "Authorization" => "Bearer apitoken" }
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_includes body["requests"].pluck("id"), request.id
+    assert body["requests"].all? { |payload| payload["status"] == "awaiting_purchase" }
+    payload = body["requests"].find { |candidate| candidate["id"] == request.id }
+    assert_equal "awaiting_purchase", payload.dig("request", "status")
+
+    get api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer apitoken" }
+
+    assert_response :success
+    payload = JSON.parse(response.body)
+    assert_equal "awaiting_purchase", payload["status"]
+    assert_equal "awaiting_purchase", payload.dig("request", "status")
+  end
+
   test "legacy admin token can create request by user id with multiple book types" do
     assert_difference "Request.count", 2 do
       post api_v1_requests_path,
@@ -316,10 +351,32 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     request = requests(:pending_request)
 
     delete api_v1_request_path(request),
-      headers: { "Authorization" => "Bearer apitoken" }
+      headers: {
+        "Authorization" => "Bearer apitoken",
+        "HTTP_REFERER" => "http://[malformed"
+      }
 
     assert_response :success
     assert_equal "failed", request.reload.status
+  end
+
+  test "rejects cancellation while a request upload is pending" do
+    request = requests(:pending_request)
+    upload = Upload.create!(
+      user: @user,
+      request: request,
+      original_filename: "api-pending.epub",
+      file_path: "/tmp/api-pending.epub",
+      status: :pending
+    )
+
+    delete api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer apitoken" }
+
+    assert_response :unprocessable_entity
+    assert_match(/upload.*in progress/i, JSON.parse(response.body).fetch("errors").join)
+    assert request.reload.pending?
+    assert upload.reload.pending?
   end
 
   test "rejects cancel for completed request" do
@@ -336,7 +393,10 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     request = requests(:not_found_waiting)
 
     post retry_api_v1_request_path(request),
-      headers: { "Authorization" => "Bearer apitoken" }
+      headers: {
+        "Authorization" => "Bearer apitoken",
+        "HTTP_REFERER" => "https://attacker.example/phishing"
+      }
 
     assert_response :success
     assert_equal "pending", request.reload.status
@@ -372,6 +432,74 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert payload.key?("downloadable")
   end
 
+  test "lists normalized DRM-free store offers separately from acquisition results" do
+    SettingsService.set(:ebooks_com_enabled, true)
+    SettingsService.set(:ebooks_com_country_code, "PT")
+    _token, raw = APIToken.issue!(
+      name: "Reader",
+      user: @user,
+      scopes: %w[requests:read]
+    )
+    request = requests(:pending_request)
+    offer = request.store_offers.create!(
+      provider: "ebooks_com",
+      external_id: "347175270",
+      title: "The Pending Ebook",
+      author: "Another Author",
+      isbns: [ "9781480484160" ],
+      language: "en",
+      formats: [ "epub" ],
+      market: "PT",
+      drm_free: true,
+      drm_type: "Watermarked",
+      price_amount: BigDecimal("7.41"),
+      price_currency: "EUR",
+      localized_price: "7,41 €",
+      storefront_url: "https://www.ebooks.com/en-pt/book/347175270/the-pending-ebook/another-author/",
+      quoted_at: Time.current
+    )
+
+    get search_results_api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer #{raw}" }
+
+    assert_response :success
+    payload = JSON.parse(response.body)["store_offers"].sole
+    assert_equal offer.id, payload["id"]
+    assert_equal "eBooks.com", payload["provider_name"]
+    assert_equal [ "epub" ], payload["formats"]
+    assert_equal "PT", payload["market"]
+    assert_equal true, payload["drm_free"]
+    assert_equal "Watermarked", payload["drm_type"]
+    assert_equal "7.41", payload.dig("price", "amount")
+    assert_equal "EUR", payload.dig("price", "currency")
+    assert_equal offer.storefront_url, payload["storefront_url"]
+  end
+
+  test "search results API hides persisted offers from a disabled store" do
+    _token, raw = APIToken.issue!(
+      name: "Reader",
+      user: @user,
+      scopes: %w[requests:read]
+    )
+    request = requests(:pending_request)
+    request.store_offers.create!(
+      provider: "ebooks_com",
+      external_id: "disabled-offer",
+      title: "The Pending Ebook",
+      market: "PT",
+      drm_free: true,
+      formats: [ "epub" ],
+      storefront_url: "https://www.ebooks.com/en-pt/book/disabled-offer/the-pending-ebook/"
+    )
+    SettingsService.set(:ebooks_com_enabled, false)
+
+    get search_results_api_v1_request_path(request),
+      headers: { "Authorization" => "Bearer #{raw}" }
+
+    assert_response :success
+    assert_empty JSON.parse(response.body)["store_offers"]
+  end
+
   test "search results endpoint requires read scope" do
     _token, raw = APIToken.issue!(
       name: "Writer",
@@ -404,7 +532,10 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
 
     assert_enqueued_with(job: DownloadJob) do
       post blocklist_and_next_api_v1_request_path(request),
-        headers: { "Authorization" => "Bearer #{raw}" }
+        headers: {
+          "Authorization" => "Bearer #{raw}",
+          "HTTP_REFERER" => "http://[malformed"
+        }
     end
 
     assert_response :success

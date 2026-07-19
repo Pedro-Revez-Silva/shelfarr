@@ -1,0 +1,216 @@
+<% form_url = @connection.persisted? ? admin_owned_library_connection_path(@connection) : admin_owned_library_connections_path %>
+<% token_file_managed = @connection.client.token_file_managed? %>
+
+<%= form_with model: @connection, url: form_url do |form| %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900" aria-labelledby="libation-companion-heading">
+    <div class="flex flex-col gap-3 border-b border-gray-800 px-6 py-4 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <h2 id="libation-companion-heading" class="text-xl font-bold text-white">Libation companion</h2>
+        <p class="mt-1 text-sm text-gray-400">Connection changes are saved explicitly and never replace an existing encrypted token unless you enter a new one.</p>
+      </div>
+      <span class="shrink-0 rounded px-2.5 py-1 text-xs font-medium <%= @companion_error.present? ? 'bg-red-500/20 text-red-300' : (@connection.enabled? ? 'bg-green-500/20 text-green-400' : 'bg-gray-800 text-gray-400') %>">
+        <%= @companion_error.present? ? "Unavailable" : (@connection.enabled? ? (@companion_busy ? "Ready · Busy" : "Ready") : "Needs setup") %>
+      </span>
+    </div>
+
+    <div class="space-y-6 p-6">
+      <div class="flex flex-col gap-4 md:flex-row md:items-start">
+        <div class="md:w-1/3">
+          <%= form.label :url, "Companion URL", class: "font-medium text-gray-300" %>
+          <p class="text-sm text-gray-500">Use the bundled Docker service URL or an explicitly trusted custom companion.</p>
+        </div>
+        <div class="md:w-2/3">
+          <%= form.url_field :url,
+            required: true,
+            autocomplete: "off",
+            class: "w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-4 md:flex-row md:items-start">
+        <div class="md:w-1/3">
+          <% if token_file_managed %>
+            <span id="bridge-token-label" class="font-medium text-gray-300">Bridge token</span>
+          <% else %>
+            <%= form.label :bridge_token, "Bridge token", class: "font-medium text-gray-300" %>
+          <% end %>
+          <p class="text-sm text-gray-500">Authenticates Shelfarr to the companion. Custom-URL tokens are encrypted at rest.</p>
+        </div>
+        <div class="md:w-2/3">
+          <% if token_file_managed %>
+            <div class="rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-gray-300" role="status" aria-labelledby="bridge-token-label">Managed by mounted token file</div>
+            <p class="mt-1 text-xs text-gray-500">The token stays outside Shelfarr's database and is loaded from the shared secret mount.</p>
+          <% else %>
+            <%= form.password_field :bridge_token,
+              value: "",
+              placeholder: @connection.bridge_token.present? ? "Stored securely — leave blank to keep it" : "Required for an enabled custom companion",
+              autocomplete: "new-password",
+              class: "w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-4 md:flex-row md:items-start">
+        <div class="md:w-1/3">
+          <span class="font-medium text-gray-300">Enable integration</span>
+          <p id="audible-enabled-help" class="text-sm text-gray-500">Makes Audible sync and personal backup actions available to administrators.</p>
+        </div>
+        <div class="md:w-2/3">
+          <label class="inline-flex cursor-pointer items-center gap-3 text-sm text-gray-300">
+            <%= form.check_box :enabled,
+              aria: { describedby: "audible-enabled-help" },
+              class: "h-5 w-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500" %>
+            Enable Audible Backup beta
+          </label>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-4 md:flex-row md:items-start">
+        <div class="md:w-1/3">
+          <span class="font-medium text-gray-300">Private network access</span>
+          <p id="audible-private-network-help" class="text-sm text-gray-500">Required for the bundled companion and other local-only addresses.</p>
+        </div>
+        <div class="md:w-2/3">
+          <label class="inline-flex cursor-pointer items-center gap-3 text-sm text-gray-300">
+            <%= form.check_box :allow_private_network,
+              aria: { describedby: "audible-private-network-help" },
+              class: "h-5 w-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500" %>
+            Allow local/private companion address
+          </label>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-4 md:flex-row md:items-start">
+        <div class="md:w-1/3">
+          <%= form.label :timeout_seconds, "Request timeout", class: "font-medium text-gray-300" %>
+          <p class="text-sm text-gray-500">How long Shelfarr waits for a companion API response.</p>
+        </div>
+        <div class="md:w-2/3">
+          <%= form.number_field :timeout_seconds,
+            min: 1,
+            max: 120,
+            class: "w-full max-w-xs rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+          <p class="mt-1 text-xs text-gray-500">Seconds, from 1 to 120.</p>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-4 border-t border-gray-800 pt-4 md:flex-row md:items-start">
+        <div class="md:w-1/3">
+          <span class="font-medium text-gray-300">Connection check</span>
+          <p class="text-sm text-gray-500">
+            Verify health and version information without changing your Audible account.
+            <% if @connection.persisted? && (@connection.companion_version.present? || @connection.provider_version.present?) %>
+              Current: companion <%= @connection.companion_version.presence || "unknown" %>, Libation <%= @connection.provider_version.presence || "unknown" %>.
+            <% end %>
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-3 md:w-2/3">
+          <%= form.submit "Save connection",
+            disabled: @connection.persisted? && (@auth_active || @connection.sync_active? || @active_backup_total.to_i.positive?),
+            data: { turbo_submits_with: "Saving connection…" },
+            class: "rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50" %>
+          <% if @connection.persisted? %>
+            <% test_connection_disabled = @auth_active || @connection.sync_active? || @active_backup_total.to_i.positive? %>
+            <% if test_connection_disabled %>
+              <span class="cursor-not-allowed rounded-md bg-gray-700 px-4 py-2 text-gray-400 opacity-50" aria-disabled="true">Test connection</span>
+            <% else %>
+              <%= button_tag "Test connection",
+                type: "submit",
+                formaction: test_admin_owned_library_connection_path(@connection),
+                formmethod: "post",
+                formnovalidate: true,
+                name: "_method",
+                value: "post",
+                data: { turbo_submits_with: "Testing connection…" },
+                class: "rounded-md bg-gray-700 px-4 py-2 text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+    </div>
+  </section>
+<% end %>
+
+<% if @connection.persisted? && @connection.enabled? %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900" aria-labelledby="audible-account-heading">
+    <div class="flex flex-col gap-3 border-b border-gray-800 px-6 py-4 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <h2 id="audible-account-heading" class="text-xl font-bold text-white">Audible account</h2>
+        <p class="mt-1 text-sm text-gray-400">Authentication opens Amazon/Audible directly through Libation. Shelfarr never sees your password.</p>
+      </div>
+      <span class="shrink-0 rounded px-2.5 py-1 text-xs font-medium <%= @auth_active ? 'bg-blue-500/20 text-blue-300' : (@audible_connected ? 'bg-green-500/20 text-green-400' : 'bg-amber-500/20 text-amber-300') %>">
+        <%= @auth_starting ? "Starting sign-in" : (@auth_pending ? "Finish sign-in" : (@audible_connected ? "Connected" : "Needs sign-in")) %>
+      </span>
+    </div>
+
+    <div class="space-y-6 p-6">
+      <% if @accounts.any? %>
+        <div class="flex flex-col gap-4 md:flex-row md:items-start">
+          <div class="md:w-1/3">
+            <span class="font-medium text-gray-300">Connected accounts</span>
+            <p class="text-sm text-gray-500">Each marketplace account remains managed by Libation.</p>
+          </div>
+          <div class="flex flex-wrap gap-2 md:w-2/3">
+            <% @accounts.each do |account| %>
+              <span class="rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-300">
+                <%= account.name.presence || account.account %> (<%= account.locale %>)
+                &middot; <%= account.authenticated ? "connected" : "sign-in required" %>
+              </span>
+            <% end %>
+          </div>
+        </div>
+      <% elsif @companion_busy && @audible_connected %>
+        <p class="text-sm text-blue-300">Account details are temporarily paused while Libation works. Your connection is retained.</p>
+      <% end %>
+
+      <% if @auth_starting %>
+        <div class="rounded-md border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-300" role="status">
+          Libation is preparing the secure Audible sign-in. This page will update when the request finishes.
+        </div>
+      <% elsif @login_url.present? %>
+        <div class="rounded-md border border-blue-800 bg-blue-950/30 p-4">
+          <p class="font-medium text-blue-200">1. Sign in to Audible</p>
+          <%= link_to "Open secure Audible sign-in",
+            @login_url,
+            target: "_blank",
+            rel: "noopener noreferrer",
+            class: "mt-3 inline-block rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+        </div>
+      <% end %>
+
+      <% if @auth_pending %>
+        <%= form_with url: auth_complete_admin_owned_library_connection_path(@connection), method: :post, class: "flex flex-col gap-4 md:flex-row md:items-start" do |form| %>
+          <%= form.hidden_field :auth_session_id, value: @connection.auth_session_id %>
+          <div class="md:w-1/3">
+            <%= form.label :response_url, "2. Complete sign-in", class: "font-medium text-gray-300" %>
+            <p class="text-sm text-gray-500">Paste the final URL from the Audible browser tab after authentication.</p>
+          </div>
+          <div class="md:w-2/3">
+            <%= form.url_field :response_url,
+              required: true,
+              autocomplete: "off",
+              class: "w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+            <%= form.submit "Complete sign-in",
+              class: "mt-3 rounded-md bg-green-700 px-4 py-2 text-white hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500" %>
+          </div>
+        <% end %>
+      <% elsif @connection.sync_active? || @active_backup_total.to_i.positive? %>
+        <p class="text-sm text-gray-400">Account changes become available after the current Libation operation finishes.</p>
+      <% elsif @audible_connected %>
+        <details class="rounded-md border border-gray-800 bg-gray-950/30">
+          <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-gray-300 hover:text-white focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500">Connect another Audible account</summary>
+          <div class="border-t border-gray-800 p-4">
+            <%= render "account_sign_in_form" %>
+          </div>
+        </details>
+      <% else %>
+        <%= render "account_sign_in_form" %>
+      <% end %>
+    </div>
+  </section>
+<% else %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6" aria-labelledby="audible-account-prerequisite-heading">
+    <h2 id="audible-account-prerequisite-heading" class="text-xl font-bold text-white">Audible account</h2>
+    <p class="mt-2 text-sm text-gray-400">Save and enable the Libation companion before connecting an Audible account.</p>
+  </section>
+<% end %>

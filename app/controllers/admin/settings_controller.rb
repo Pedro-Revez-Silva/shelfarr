@@ -278,6 +278,19 @@ module Admin
       end
     end
 
+    def test_ebooks_com
+      unless EbooksComClient.configured?
+        respond_with_flash(alert: "Enable eBooks.com and enter a valid two-letter buyer country code first.")
+        return
+      end
+
+      if EbooksComClient.test_connection
+        respond_with_flash(notice: "eBooks.com catalog connection successful!")
+      else
+        respond_with_flash(alert: "eBooks.com catalog connection failed.")
+      end
+    end
+
     def test_oidc
       unless SettingsService.get(:oidc_enabled, default: false)
         respond_with_flash(alert: "OIDC is not enabled. Enable it first.")
@@ -496,7 +509,9 @@ module Admin
     end
 
     def validate_setting_value(key, value)
-      validate_path_template(key, value) || validate_indexer_url(key, value)
+      validate_path_template(key, value) ||
+        validate_indexer_url(key, value) ||
+        validate_ebooks_com_setting(key, value)
     end
 
     def validate_path_template(key, value)
@@ -524,6 +539,38 @@ module Admin
       indexer_url_validation_message(e)
     end
 
+    def validate_ebooks_com_setting(key, value)
+      case key.to_s
+      when "ebooks_com_enabled"
+        return nil unless ActiveModel::Type::Boolean.new.cast(value)
+        return nil if EbooksComClient.valid_country_code?(ebooks_com_country_for_validation)
+
+        "requires a valid ISO 3166-1 Buyer Country Code"
+      when "ebooks_com_country_code"
+        country_code = value.to_s.strip
+        return nil if country_code.blank? && !ebooks_com_enabled_for_validation?
+        return nil if EbooksComClient.valid_country_code?(country_code)
+
+        "must be a valid ISO 3166-1 country code (for example US, GB, or PT)"
+      when "ebooks_com_search_limit"
+        parsed_value = Integer(value.to_s, 10, exception: false)
+        return nil if parsed_value&.between?(1, EbooksComClient::MAX_RESULTS)
+
+        "must be between 1 and #{EbooksComClient::MAX_RESULTS}"
+      end
+    end
+
+    def ebooks_com_enabled_for_validation?
+      submitted = params[:settings]&.[](:ebooks_com_enabled) || params[:settings]&.[]("ebooks_com_enabled")
+      value = submitted.nil? ? SettingsService.get(:ebooks_com_enabled) : submitted
+      ActiveModel::Type::Boolean.new.cast(value)
+    end
+
+    def ebooks_com_country_for_validation
+      submitted = params[:settings]&.[](:ebooks_com_country_code) || params[:settings]&.[]("ebooks_com_country_code")
+      (submitted.nil? ? SettingsService.get(:ebooks_com_country_code) : submitted).to_s.strip
+    end
+
     def indexer_url_validation_message(error)
       detail = error.message.to_s
       if (match = detail.match(/\AInvalid .+ URL: (.+)\z/))
@@ -534,7 +581,12 @@ module Admin
     end
 
     def normalize_setting_value(key, value)
-      INDEXER_URL_PROVIDERS.key?(key.to_s) ? value.to_s.strip : value
+      case key.to_s
+      when "ebooks_com_country_code"
+        value.to_s.strip.upcase
+      else
+        INDEXER_URL_PROVIDERS.key?(key.to_s) ? value.to_s.strip : value
+      end
     end
 
     def fetch_audiobookshelf_libraries

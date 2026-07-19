@@ -23,10 +23,28 @@ class Upload < ApplicationRecord
   validates :original_filename, presence: true
   validates :status, presence: true
 
+  before_destroy :prevent_unsafe_destruction
   before_destroy :remove_unprocessed_file
 
   scope :recent, -> { order(created_at: :desc) }
-  scope :pending_or_processing, -> { where(status: [:pending, :processing]) }
+  scope :pending_or_processing, -> { where(status: [ :pending, :processing ]) }
+  scope :blocking_reservations, -> {
+    where.not(status: :completed)
+      .where("destination_path IS NOT NULL OR library_path IS NOT NULL")
+  }
+  scope :cancellation_blocking, -> {
+    active = where(status: [ :pending, :processing ])
+    recovery_state = where.not(status: :completed).where(
+      "COALESCE(destination_path, '') != '' OR " \
+        "COALESCE(destination_root, '') != '' OR " \
+        "COALESCE(destination_configured_root, '') != '' OR " \
+        "COALESCE(library_path, '') != '' OR " \
+        "COALESCE(content_sha256, '') != '' OR " \
+        "COALESCE(cleanup_source_path, '') != '' OR " \
+        "COALESCE(book_reservation_token, '') != ''"
+    )
+    active.or(recovery_state)
+  }
 
   def file_extension
     File.extname(original_filename).delete(".").downcase
@@ -63,12 +81,42 @@ class Upload < ApplicationRecord
     end
   end
 
+  def recovery_state?
+    %i[
+      destination_path
+      destination_root
+      destination_configured_root
+      library_path
+      content_sha256
+      cleanup_source_path
+      book_reservation_token
+    ].any? { |attribute| public_send(attribute).present? }
+  end
+
+  def destruction_blocked?
+    return false if completed?
+    return true if processing? || recovery_state?
+    return false unless persisted?
+
+    OwnedMediaImport.cancellation_blocking.where(upload_id: id).exists?
+  end
+
   private
+
+  def prevent_unsafe_destruction
+    return unless destruction_blocked?
+
+    errors.add(
+      :base,
+      "This upload is processing or owns recovery state and cannot be deleted safely"
+    )
+    throw :abort
+  end
 
   def remove_unprocessed_file
     return if completed?
     return if file_path.blank?
 
-    FileUtils.rm_f(file_path)
+    UploadImportFileService.discard_ingress!(file_path)
   end
 end

@@ -4,6 +4,7 @@ module RequestsHelper
   REQUEST_STATUS_COLORS = {
     "pending" => "bg-yellow-500/20 text-yellow-400",
     "searching" => "bg-blue-500/20 text-blue-400",
+    "awaiting_purchase" => "bg-emerald-500/20 text-emerald-300",
     "not_found" => "bg-orange-500/20 text-orange-400",
     "downloading" => "bg-indigo-500/20 text-indigo-400",
     "processing" => "bg-cyan-500/20 text-cyan-400",

@@ -15,6 +15,7 @@ class AnnaArchiveClient
   class IncompatibleSiteError < Error; end
   class BotProtectionError < Error; end
   class RetryableError < Error; end
+  class SearchCancelled < StandardError; end
 
   # Data structure for search results
   Result = Data.define(
@@ -48,13 +49,18 @@ class AnnaArchiveClient
     # Search for books via HTML scraping
     # Returns array of Result
     # @param language [String] ISO 639-1 language code (e.g., "en", "fr", "de")
-    def search(query, file_types: %w[epub pdf], limit: 50, language: nil)
+    def search(query, file_types: %w[epub pdf], limit: 50, language: nil, after_attempt: nil)
       ensure_configured!
 
       url = build_search_url(query, file_types, language: language)
       Rails.logger.info "[AnnaArchiveClient] Searching: #{url}"
 
-      html = fetch_with_rotation(url, context: "search", validator: method(:validate_search_page!))
+      html = fetch_with_rotation(
+        url,
+        context: "search",
+        validator: method(:validate_search_page!),
+        after_attempt: after_attempt
+      )
       parse_search_results(html, limit)
     end
 
@@ -112,20 +118,21 @@ class AnnaArchiveClient
 
     private
 
-    def fetch_with_rotation(path, context:, validator: nil)
-      with_base_url_rotation(context: context) do |base_url|
+    def fetch_with_rotation(path, context:, validator: nil, after_attempt: nil)
+      with_base_url_rotation(context: context, after_attempt: after_attempt) do |base_url|
         html = fetch_with_protection_bypass(path, base_url: base_url)
         validator&.call(html)
         html
       end
     end
 
-    def with_base_url_rotation(context:)
+    def with_base_url_rotation(context:, after_attempt: nil)
       last_error = nil
       bot_protection_error = nil
 
       ordered_base_urls.each do |base_url|
-        return yield(base_url).tap { remember_working_base_url(base_url) }
+        result = observe_search_attempt(after_attempt) { yield(base_url) }
+        return result.tap { remember_working_base_url(base_url) }
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError,
              ConnectionError, IncompatibleSiteError, BotProtectionError, RetryableError => e
         last_error = e
@@ -134,6 +141,18 @@ class AnnaArchiveClient
       end
 
       raise_rotation_error(bot_protection_error || last_error, context: context)
+    end
+
+    def observe_search_attempt(after_attempt)
+      yield
+    ensure
+      ensure_search_continues!(after_attempt)
+    end
+
+    def ensure_search_continues!(after_attempt)
+      return if after_attempt.nil? || after_attempt.call
+
+      raise SearchCancelled, "Search ownership changed"
     end
 
     def fetch_with_protection_bypass(path, base_url:)
@@ -374,7 +393,7 @@ class AnnaArchiveClient
       return heading.text.strip if heading && heading.text.present?
 
       # Look for data-content attribute which holds fallback title
-      fallback = container.at_css('[data-content]')
+      fallback = container.at_css("[data-content]")
       if fallback && fallback["data-content"].present?
         return fallback["data-content"]
       end
@@ -395,7 +414,7 @@ class AnnaArchiveClient
       return author_el.text.strip if author_el && author_el.text.present?
 
       # Look for data-content with author info
-      author_fallback = container.css('[data-content]')[1]  # Second data-content is usually author
+      author_fallback = container.css("[data-content]")[1]  # Second data-content is usually author
       if author_fallback && author_fallback["data-content"].present?
         return author_fallback["data-content"]
       end

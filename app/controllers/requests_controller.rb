@@ -1,6 +1,10 @@
 # frozen_string_literal: true
 
 class RequestsController < ApplicationController
+  class UnsafeDownloadPathError < StandardError; end
+  DownloadBoundary = Data.define(:target, :root, :device, :inode, :kind)
+  MAX_ARCHIVE_DOWNLOAD_FILENAME_BYTES = 120
+
   before_action :set_request, only: [ :show, :destroy, :retry, :manual_magnet, :manual_nzb ]
   before_action :set_request_for_download, only: [ :download ]
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
@@ -36,6 +40,7 @@ class RequestsController < ApplicationController
 
   def show
     @request_events = Current.user.admin? ? @request.request_events.recent.limit(10) : RequestEvent.none
+    @store_offers = StoreProviderRegistry.visible_offers_for(@request).best_first.to_a
   end
 
   def new
@@ -111,10 +116,24 @@ class RequestsController < ApplicationController
       return
     end
 
-    unless @request.can_be_cancelled?
-      redirect_to @request, alert: "Cannot cancel request in #{@request.status} status"
+    # A direct acquisition may have a complete atomic publication which has
+    # not yet been committed to Book/Request state. Keep its recovery owner
+    # durable instead of cascading the Download row away. Recovery either
+    # finalizes those bytes or safely removes stale private staging later.
+    if @request.direct_acquisition_recovery_pending?
+      @request.cancel!(allow_direct_recovery: true)
+      DirectDownloadRecoveryJob.perform_later
+      redirect_to @request,
+        notice: "Request cancellation recorded. Direct download cleanup will finish in the background.",
+        status: :see_other
       return
     end
+
+    # This durable, idempotent claim is the authoritative cancellation guard.
+    # It makes the request non-fulfillable and stops active Download rows under
+    # the same lock used by upload/Audible admission before any external or
+    # activity-log side effect is attempted.
+    @request.claim_destructive_cancellation!
 
     # Optionally remove torrent from download client
     if params[:remove_torrent] == "1"
@@ -122,15 +141,20 @@ class RequestsController < ApplicationController
     end
 
     book = @request.book
-    ActivityTracker.track("request.cancelled", trackable: @request)
     @request.destroy!
+    ActivityTracker.track("request.cancelled", trackable: @request)
 
     # Clean up orphaned books with no requests and no file
-    if book.requests.empty? && !book.acquired?
+    if book.requests.empty? && !book.acquisition_blocked?
       book.destroy
     end
 
     redirect_to destroy_redirect_location, notice: "Request cancelled", status: :see_other
+  rescue ActiveRecord::RecordNotDestroyed, Request::CancellationBlockedError => error
+    message = error.respond_to?(:record) ? error.record.errors.full_messages.to_sentence : error.message
+    redirect_to @request,
+      alert: message.presence || @request.upload_cancellation_blocked_message,
+      status: :see_other
   end
 
   def retry
@@ -139,8 +163,20 @@ class RequestsController < ApplicationController
       return
     end
 
-    @request.retry_now!
-    redirect_back fallback_location: @request, notice: "Request has been queued for retry."
+    outcome = @request.retry_now!
+    case outcome
+    when :post_processing_recovery_pending
+      redirect_back fallback_location: @request,
+        alert: "The immediate post-processing retry could not be queued. " \
+          "Its durable recovery claim was kept and the watchdog will retry it automatically."
+    when :active
+      redirect_back fallback_location: @request, notice: "Post-processing recovery is already active."
+    when :superseded
+      redirect_back fallback_location: @request,
+        notice: "Another post-processing recovery attempt took ownership."
+    else
+      redirect_back fallback_location: @request, notice: "Request has been queued for retry."
+    end
   end
 
   def manual_magnet
@@ -179,132 +215,178 @@ class RequestsController < ApplicationController
       return
     end
 
-    path = book.file_path
-
-    # Security: Validate path is within allowed directories
-    unless path_within_allowed_directories?(path)
-      Rails.logger.warn "[Security] Attempted path traversal: #{path}"
+    begin
+      boundary = canonical_download_boundary(book.file_path)
+    rescue Errno::ENOENT
+      redirect_to @request, alert: "File not found on server"
+      return
+    rescue UnsafeDownloadPathError, SystemCallError, ArgumentError
+      Rails.logger.warn(
+        "[Security] Rejected unsafe library download path for request ##{@request.id}, book ##{book.id}"
+      )
       redirect_to @request, alert: "Invalid file path"
       return
     end
 
-    unless File.exist?(path)
-      redirect_to @request, alert: "File not found on server"
-      return
-    end
-
-    if File.directory?(path)
+    if boundary.kind == :directory
       # Books imported with a blank path template share the output root as
       # their file_path; zipping it would bundle the entire library
-      if output_root_path?(path)
+      if boundary.target == boundary.root
         redirect_to @request, alert: "This book was imported directly into the library folder and cannot be downloaded as a bundle"
         return
       end
 
-      send_zipped_directory(path, book)
+      send_zipped_directory(boundary.target, book, output_root: boundary.root)
     else
-      send_single_file(path, book)
+      send_single_file(boundary, book)
     end
   end
 
   private
 
-  def send_single_file(path, book)
+  def send_single_file(boundary, book)
+    path = boundary.target
     filename = File.basename(path)
-    content_type = Marcel::MimeType.for(name: filename) || "application/octet-stream"
-
-    send_file path,
-              filename: filename,
-              type: content_type,
-              disposition: "attachment"
+    file = FileCopyService.open_pinned_regular_file(
+      path,
+      root: boundary.root,
+      expected_device: boundary.device,
+      expected_inode: boundary.inode
+    )
+    send_pinned_file(
+      file,
+      filename: filename,
+      type: Marcel::MimeType.for(name: filename) || "application/octet-stream"
+    )
+  rescue Errno::ENOENT, ActionController::MissingFile
+    file&.close unless file&.closed?
+    redirect_to @request, alert: "File not found on server"
+  rescue UnsafeDownloadPathError, FileCopyService::UnsafePathError, SystemCallError, ArgumentError
+    file&.close unless file&.closed?
+    Rails.logger.warn(
+      "[Security] Rejected changed library download target for request ##{@request.id}, book ##{book.id}"
+    )
+    redirect_to @request, alert: "Invalid file path"
   end
 
-  def send_zipped_directory(path, book)
-    zip_filename = "#{book.author} - #{book.title}.zip".gsub(/[\/\\:*?"<>|]/, "_")
-    safe_filename = zip_filename.gsub(/\s+/, "_")
+  def send_zipped_directory(path, book, output_root:)
+    zip_filename = archive_download_filename(book)
+    cached_zip_path = LibraryDownloadArchiveService.call(
+      book: book,
+      source_path: path,
+      output_root: output_root
+    )
 
-    # Use a stable path based on book ID so we can cache the zip
-    downloads_dir = Rails.root.join("tmp", "downloads")
-    FileUtils.mkdir_p(downloads_dir)
-    cached_zip_path = downloads_dir.join("book_#{book.id}_#{safe_filename}")
+    cache_stat = File.lstat(cached_zip_path)
+    cache_file = FileCopyService.open_pinned_regular_file(
+      cached_zip_path,
+      root: LibraryDownloadArchiveService::CACHE_DIRECTORY.to_s,
+      expected_device: cache_stat.dev,
+      expected_inode: cache_stat.ino
+    )
+    send_pinned_file(cache_file, filename: zip_filename, type: "application/zip")
+  rescue LibraryDownloadArchiveService::ResourceLimitError => e
+    cache_file&.close unless cache_file&.closed?
+    Rails.logger.warn "[Download] Archive resource limit for book ##{book.id}: #{e.class}"
+    redirect_to @request, alert: "This library item exceeds the safe archive limits and cannot be bundled."
+  rescue LibraryDownloadArchiveService::BusyError => e
+    cache_file&.close unless cache_file&.closed?
+    Rails.logger.warn "[Download] Archive capacity unavailable for book ##{book.id}: #{e.class}"
+    redirect_to @request, alert: "Archive preparation is busy. Please try again shortly."
+  rescue LibraryDownloadArchiveService::Error, FileCopyService::UnsafePathError,
+    ActionController::MissingFile, SystemCallError => e
+    cache_file&.close unless cache_file&.closed?
+    Rails.logger.error "[Download] Error creating zip for book ##{book.id}: #{e.class}"
+    redirect_to @request, alert: "Library files changed while preparing the download. Please try again."
+  end
 
-    # Check if cached zip exists and is newer than source directory
-    source_mtime = Dir.glob("#{path}/*").map { |f| File.mtime(f) }.max
-    if File.exist?(cached_zip_path) && File.mtime(cached_zip_path) >= source_mtime
-      Rails.logger.info "[Download] Serving cached zip: #{cached_zip_path}"
+  def send_pinned_file(file, filename:, type:)
+    body = PinnedFileResponseBody.new(file)
+    send_file_headers!(filename: filename, type: type, disposition: "attachment")
+    headers["Content-Length"] = file.stat.size.to_s
+    self.status = :ok
+    self.response_body = body
+    body = nil
+  ensure
+    body&.close
+  end
+
+  def archive_download_filename(book)
+    extension = ".zip"
+    byte_budget = MAX_ARCHIVE_DOWNLOAD_FILENAME_BYTES - extension.bytesize
+    value = "#{book.author} - #{book.title}".encode(
+      Encoding::UTF_8,
+      invalid: :replace,
+      undef: :replace,
+      replace: "_"
+    ).unicode_normalize(:nfc)
+    value = value.gsub(/[\/\\:*?"<>|\x00-\x1f\x7f]/, "_").strip
+    value = "library-download" if value.blank?
+    value = value.byteslice(0, byte_budget).to_s.force_encoding(Encoding::UTF_8).scrub("_")
+    value = value.sub(/[ .]+\z/, "")
+    value = "library-download" if value.blank?
+    "#{value}#{extension}"
+  end
+
+  def canonical_download_boundary(path)
+    raise UnsafeDownloadPathError, "library path is blank" if path.blank?
+
+    canonical_target = Pathname(path).expand_path.realpath
+    target_stat = File.lstat(canonical_target)
+    kind = if target_stat.file?
+      :file
+    elsif target_stat.directory?
+      :directory
     else
-      Rails.logger.info "[Download] Creating zip for #{book.title} (this may take a while for large files)..."
-      create_zip_file(path, cached_zip_path.to_s)
-      Rails.logger.info "[Download] Zip created: #{cached_zip_path}"
+      raise UnsafeDownloadPathError, "library target is not a regular file or directory"
     end
 
-    send_file cached_zip_path,
-              filename: zip_filename,
-              type: "application/zip",
-              disposition: "attachment"
-  rescue => e
-    Rails.logger.error "[Download] Error creating zip: #{e.message}"
-    raise
+    canonical_root = canonical_output_roots.select do |root|
+      canonical_path_contained?(canonical_target.to_s, root.to_s)
+    end.max_by { |root| root.to_s.length }
+    raise UnsafeDownloadPathError, "library path resolves outside configured roots" unless canonical_root
+
+    DownloadBoundary.new(
+      target: canonical_target.to_s,
+      root: canonical_root.to_s,
+      device: target_stat.dev,
+      inode: target_stat.ino,
+      kind: kind
+    )
   end
 
-  def create_zip_file(source_dir, zip_path)
-    require "zip"
-
-    # Delete existing zip to avoid "Entry already exists" errors
-    File.delete(zip_path) if File.exist?(zip_path)
-
-    source_dir_real = File.realpath(source_dir)
-
-    Zip::File.open(zip_path, create: true) do |zipfile|
-      Dir[File.join(source_dir, "**", "*")].each do |file|
-        next if File.directory?(file)
-        next if File.symlink?(file) # Skip symlinks for security
-
-        # Verify file is within source directory (prevent symlink attacks)
-        file_real = File.realpath(file) rescue next
-        next unless file_real.start_with?(source_dir_real)
-
-        relative_path = file.sub("#{source_dir}/", "")
-        zipfile.add(relative_path, file)
-      end
-    end
-  end
-
-  def path_within_allowed_directories?(path)
-    return false if path.blank?
-
-    # Resolve to absolute path
-    expanded_path = File.expand_path(path)
-
-    # Get allowed base directories from settings
-    allowed_paths = [
-      SettingsService.get(:audiobook_output_path),
-      SettingsService.get(:ebook_output_path),
-      SettingsService.get(:comicbook_output_path)
-    ].compact.reject(&:blank?)
-
-    # Check if path is within any allowed directory
-    allowed_paths.any? do |allowed|
-      expanded_allowed = File.expand_path(allowed)
-      expanded_path.start_with?(expanded_allowed + "/") || expanded_path == expanded_allowed
-    end
-  end
-
-  def output_root_path?(path)
-    expanded_path = File.expand_path(path)
-
+  def allowed_output_paths
     [
       SettingsService.get(:audiobook_output_path),
       SettingsService.get(:ebook_output_path),
       SettingsService.get(:comicbook_output_path)
-    ].compact.reject(&:blank?).any? { |root| File.expand_path(root) == expanded_path }
+    ].compact.reject(&:blank?)
+  end
+
+  def canonical_path_contained?(path, root)
+    return true if path == root
+
+    root_prefix = root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}"
+    path.start_with?(root_prefix)
+  end
+
+  def canonical_output_roots
+    allowed_output_paths.filter_map do |configured_root|
+      candidate = Pathname(configured_root).expand_path.realpath
+      next if candidate.root?
+      next unless candidate.lstat.directory?
+
+      candidate
+    rescue SystemCallError, ArgumentError
+      nil
+    end.uniq
   end
 
   def set_request
     @request = if Current.user.admin?
-      Request.includes(:search_results).find(params[:id])
+      Request.includes(:search_results, :store_offers).find(params[:id])
     else
-      Request.for_user(Current.user).includes(:search_results).find(params[:id])
+      Request.for_user(Current.user).includes(:search_results, :store_offers).find(params[:id])
     end
   end
 
@@ -324,10 +406,14 @@ class RequestsController < ApplicationController
   def destroy_redirect_location
     return requests_path if request.referer.blank?
 
-    referer_path = URI.parse(request.referer).path
+    referer = URI.parse(request.referer)
+    referer_path = referer.path.to_s
+    return requests_path if referer.host.present? && referer.host != request.host
+    return requests_path unless referer_path.start_with?("/")
+    return requests_path if referer_path.start_with?("//") || referer_path.include?("\\")
     return requests_path if referer_path == request_path(@request)
 
-    request.referer
+    referer.query.present? ? "#{referer_path}?#{referer.query}" : referer_path
   rescue URI::InvalidURIError
     requests_path
   end
@@ -352,9 +438,11 @@ class RequestsController < ApplicationController
       begin
         client = download.download_client.adapter
         client.remove_torrent(download.external_id, delete_files: false)
-        Rails.logger.info "[RequestsController] Removed torrent #{download.external_id} for download ##{download.id}"
+        Rails.logger.info "[RequestsController] Removed torrent for download ##{download.id}"
       rescue DownloadClients::Base::Error => e
-        Rails.logger.warn "[RequestsController] Failed to remove torrent: #{e.message}"
+        Rails.logger.warn(
+          "[RequestsController] Failed to remove torrent for download ##{download.id}: #{e.class}"
+        )
       end
     end
   end

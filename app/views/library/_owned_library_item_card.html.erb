@@ -1,0 +1,124 @@
+<% latest_import = item.latest_import %>
+<% pending_import = latest_import&.pending? %>
+<% active_import = latest_import&.active? %>
+<% automatic_import = latest_import&.automatic? %>
+<% backlog_import = pending_import || latest_import&.dispatched_at.present? %>
+<% recoverable_import = active_import && latest_import.recoverable? %>
+<% sync_active = item.owned_library_connection.sync_active? %>
+<% local_resolution = @owned_library_resolutions&.fetch(item.id, nil) %>
+<% local_match = local_resolution&.matched? %>
+<% local_conflict = local_resolution&.conflict? %>
+<% action_label = if sync_active
+  "Library syncing…"
+elsif local_match
+  "Already in Shelfarr"
+elsif local_conflict
+  "Back up separately"
+elsif pending_import
+  "Waiting in batch…"
+elsif recoverable_import
+  "Check status"
+elsif active_import
+  case latest_import.status
+  when "processing" then "Importing…"
+  when "downloading" then "Backing up…"
+  else "Queued…"
+  end
+elsif latest_import&.failed?
+  "Retry backup"
+elsif item.downloaded?
+  "Import into Shelfarr"
+else
+  "Back up"
+end %>
+
+<article
+  class="group flex h-full flex-col overflow-hidden rounded-xl bg-gray-900 shadow-lg ring-1 ring-gray-800 transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl motion-reduce:transition-none motion-reduce:hover:scale-100"
+  data-library-card
+  data-library-source="audible"
+  data-owned-library-item-id="<%= item.id %>"
+  data-backup-status="<%= latest_import&.status || (item.downloaded? ? 'available_to_import' : 'available') %>"
+  data-backup-origin="<%= latest_import ? (backlog_import ? 'backlog' : (automatic_import ? 'automatic' : 'manual')) : 'none' %>"
+>
+  <div class="relative aspect-[2/3]">
+    <% if item.cover_image_url.present? %>
+      <img
+        src="<%= item.cover_image_url %>"
+        alt="Cover of <%= item.display_title %>"
+        class="h-full w-full object-cover"
+        loading="lazy"
+        referrerpolicy="no-referrer"
+        onerror="this.onerror=null; this.src='<%= public_asset_path('images/no-cover.svg') %>';"
+      >
+    <% else %>
+      <div class="flex h-full w-full items-center justify-center bg-gradient-to-br from-gray-700 to-gray-900">
+        <svg class="h-12 w-12 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+        </svg>
+      </div>
+    <% end %>
+
+    <span class="absolute left-2 top-2 rounded bg-orange-600/90 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm" title="Owned on Audible">Audible</span>
+    <span class="absolute right-2 top-2 rounded bg-purple-500/90 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm">Audio</span>
+  </div>
+
+  <div class="flex flex-1 flex-col p-3">
+    <div>
+      <h3 class="line-clamp-2 text-sm font-semibold leading-tight text-white"><%= item.display_title %></h3>
+      <p class="mt-1 truncate text-xs text-gray-400"><%= item.author.presence || item.external_id %></p>
+    </div>
+
+    <div class="mt-3 flex-1 text-xs" role="status" aria-live="polite" aria-atomic="true">
+      <% if local_match %>
+        <p class="text-emerald-300">Already on this server</p>
+      <% elsif local_conflict %>
+        <p class="text-amber-300">Possible local-library match</p>
+        <p class="mt-1 line-clamp-2 text-gray-500">Back up separately to preserve the existing edition.</p>
+      <% elsif pending_import %>
+        <p class="text-blue-300">Waiting in existing-library batch</p>
+        <p class="mt-1 line-clamp-2 text-gray-500">Shelfarr will recheck this title before admitting it to Libation.</p>
+      <% elsif active_import %>
+        <% if recoverable_import %>
+          <p class="text-amber-300">No recent update</p>
+        <% elsif backlog_import %>
+          <p class="text-blue-300">
+            <%= case latest_import.status
+            when "processing" then "Importing existing-library backup"
+            when "downloading" then "Existing-library backup running"
+            else "Existing-library backup queued"
+            end %>
+          </p>
+        <% elsif automatic_import %>
+          <p class="text-blue-300">
+            <%= case latest_import.status
+            when "processing" then "Importing automatic backup"
+            when "downloading" then "Automatic backup running"
+            else "Automatically queued"
+            end %>
+          </p>
+        <% else %>
+          <p class="text-blue-300"><%= action_label %></p>
+        <% end %>
+      <% elsif latest_import&.failed? %>
+        <p class="text-red-300"><%= backlog_import ? "Existing-library backup failed" : (automatic_import ? "Automatic backup failed" : "Backup failed") %></p>
+        <p class="mt-1 line-clamp-2 text-gray-500"><%= latest_import.error_message.presence || "No error detail was reported." %></p>
+      <% elsif item.downloaded? %>
+        <p class="text-emerald-300">Ready to import</p>
+      <% else %>
+        <p class="text-gray-400">Not on this server</p>
+      <% end %>
+    </div>
+
+    <%= button_to action_label,
+      backup_item_admin_owned_library_connection_path(
+        item.owned_library_connection,
+        item_id: item.id,
+        separate_edition: ("1" if local_conflict)
+      ),
+      method: :post,
+      disabled: pending_import || (active_import && !recoverable_import) || sync_active || local_match,
+      aria: { label: "#{action_label} #{item.display_title}" },
+      data: { turbo_submits_with: "Queueing…" },
+      class: "mt-3 w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400" %>
+  </div>
+</article>
