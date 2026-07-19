@@ -592,6 +592,8 @@ module Admin
       case key.to_s
       when "ebooks_com_country_code"
         value.to_s.strip.upcase
+      when /\Aaudiobookshelf_.*_scan_library_ids\z/
+        Array(value).flat_map { |v| v.to_s.split(",").map(&:strip) }.reject(&:blank?).join(",")
       else
         INDEXER_URL_PROVIDERS.key?(key.to_s) ? value.to_s.strip : value
       end

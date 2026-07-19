@@ -36,6 +36,16 @@ class RequestsController < ApplicationController
     base_requests = Current.user.admin? ? Request : Request.for_user(Current.user)
     @attention_count = base_requests.needs_attention.count
     @active_count = base_requests.active.where(attention_needed: false).count
+
+    # Preload library matches for admin (used for "In Library" pill on each card)
+    @library_matches_by_book = if Current.user&.admin? && LibraryItem.available_for_matching.exists?
+      matcher = AudiobookshelfLibraryMatcherService.new
+      @requests.each_with_object({}) do |req, hash|
+        hash[req.book_id] = matcher.matches_for(title: req.book.title, author: req.book.author, limit: 1)
+      end
+    else
+      {}
+    end
   end
 
   def show

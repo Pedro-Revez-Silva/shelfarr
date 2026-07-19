@@ -295,4 +295,74 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
   ensure
     LibraryPlatformClient.reset_connections!
   end
+
+  test "syncs items from additional scan library ids alongside delivery libraries" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-scifi, lib-fantasy")
+
+    VCR.turned_off do
+      [ "lib-audio", "lib-scifi", "lib-fantasy" ].each_with_index do |lib_id, idx|
+        stub_request(:get, %r{localhost:13378/api/libraries/#{lib_id}/items})
+          .with(query: hash_including("limit" => "500", "page" => "0"))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: {
+              "results" => [
+                {
+                  "id" => "item-#{idx}",
+                  "title" => "Title #{lib_id}",
+                  "author" => "Author #{lib_id}"
+                }
+              ],
+              "total" => 1
+            }.to_json
+          )
+      end
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 3, result.items_synced
+      assert_equal 3, result.libraries_synced
+      assert_equal 3, LibraryItem.count
+      assert LibraryItem.exists?(library_id: "lib-audio", audiobookshelf_id: "item-0")
+      assert LibraryItem.exists?(library_id: "lib-scifi", audiobookshelf_id: "item-1")
+      assert LibraryItem.exists?(library_id: "lib-fantasy", audiobookshelf_id: "item-2")
+    end
+  ensure
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
+  end
+
+  test "scan library ids are deduplicated against delivery library ids" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-audio, lib-extra")
+
+    VCR.turned_off do
+      [ "lib-audio", "lib-extra" ].each_with_index do |lib_id, idx|
+        stub_request(:get, %r{localhost:13378/api/libraries/#{lib_id}/items})
+          .with(query: hash_including("limit" => "500", "page" => "0"))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: {
+              "results" => [ { "id" => "item-#{idx}", "title" => "Title #{lib_id}", "author" => "Author" } ],
+              "total" => 1
+            }.to_json
+          )
+      end
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 2, result.libraries_synced
+      assert_equal 2, LibraryItem.count
+    end
+  ensure
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
+  end
 end

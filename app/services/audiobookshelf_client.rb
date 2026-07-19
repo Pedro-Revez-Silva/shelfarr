@@ -80,8 +80,11 @@ class AudiobookshelfClient
       library_ids = [
         SettingsService.get(:audiobookshelf_audiobook_library_id),
         SettingsService.get(:audiobookshelf_ebook_library_id),
-        SettingsService.get(:audiobookshelf_comicbook_library_id)
-      ].compact.uniq
+        SettingsService.get(:audiobookshelf_comicbook_library_id),
+        SettingsService.get(:audiobookshelf_audiobook_scan_library_ids),
+        SettingsService.get(:audiobookshelf_ebook_scan_library_ids),
+        SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
+      ].flat_map { |id| id.to_s.split(",").map(&:strip) }.compact.uniq
 
       library_ids.each do |lib_id|
         next if lib_id.blank?

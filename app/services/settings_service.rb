@@ -85,6 +85,9 @@ class SettingsService
     audiobookshelf_audiobook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for audiobooks on the active library platform" },
     audiobookshelf_ebook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for ebooks on the active library platform" },
     audiobookshelf_comicbook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for Comics & Manga on the active library platform" },
+    audiobookshelf_audiobook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for audiobook duplicate detection (comma-separated). Delivery still goes to the Audiobook Library above." },
+    audiobookshelf_ebook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for ebook duplicate detection (comma-separated). Delivery still goes to the Ebook Library above." },
+    audiobookshelf_comicbook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for Comics & Manga duplicate detection (comma-separated). Delivery still goes to the Comics & Manga Library above." },
     audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
 
     # Output Paths
@@ -274,6 +277,9 @@ class SettingsService
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
     audiobookshelf_comicbook_library_id: "Comics & Manga Library",
+    audiobookshelf_audiobook_scan_library_ids: "Additional Audiobook Libraries to Scan",
+    audiobookshelf_ebook_scan_library_ids: "Additional Ebook Libraries to Scan",
+    audiobookshelf_comicbook_scan_library_ids: "Additional Comics & Manga Libraries to Scan",
     audiobookshelf_library_sync_interval: "Library Sync Interval"
   }.freeze
 

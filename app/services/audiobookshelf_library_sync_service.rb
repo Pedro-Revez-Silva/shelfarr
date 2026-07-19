@@ -52,8 +52,11 @@ class AudiobookshelfLibrarySyncService
       configured_ids = [
         SettingsService.get(:audiobookshelf_audiobook_library_id),
         SettingsService.get(:audiobookshelf_ebook_library_id),
-        SettingsService.get(:audiobookshelf_comicbook_library_id)
-      ].filter_map(&:presence).uniq
+        SettingsService.get(:audiobookshelf_comicbook_library_id),
+        SettingsService.get(:audiobookshelf_audiobook_scan_library_ids),
+        SettingsService.get(:audiobookshelf_ebook_scan_library_ids),
+        SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
+      ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence).uniq
 
       if configured_ids.any?
         configured_ids

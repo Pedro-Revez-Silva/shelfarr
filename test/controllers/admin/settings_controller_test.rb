@@ -378,6 +378,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "label[for='settings_audiobookshelf_audiobook_library_id']", text: "Audiobook Library"
     assert_select "label[for='settings_audiobookshelf_ebook_library_id']", text: "Ebook Library"
     assert_select "label[for='settings_audiobookshelf_comicbook_library_id']", text: "Comics & Manga Library"
+    assert_select "label[for='settings_audiobookshelf_audiobook_scan_library_ids']", text: "Additional Audiobook Libraries to Scan"
+    assert_select "label[for='settings_audiobookshelf_ebook_scan_library_ids']", text: "Additional Ebook Libraries to Scan"
+    assert_select "label[for='settings_audiobookshelf_comicbook_scan_library_ids']", text: "Additional Comics & Manga Libraries to Scan"
     assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval"
     assert_no_match /Bookorbit/, @response.body
     assert_no_match /Audiobookshelf Audiobook Library/, @response.body
@@ -532,6 +535,28 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to admin_settings_path
     assert_equal "Setting updated.", flash[:notice]
     assert_equal 7, SettingsService.get(:max_retries)
+  end
+
+  test "bulk update joins scan library ids array into comma-separated string" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        audiobookshelf_audiobook_scan_library_ids: [ "lib-scifi", "lib-fantasy", "" ]
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "lib-scifi,lib-fantasy", SettingsService.get(:audiobookshelf_audiobook_scan_library_ids)
+  end
+
+  test "bulk update accepts comma-separated string for scan library ids" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        audiobookshelf_ebook_scan_library_ids: "lib-a, lib-b ,lib-c"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "lib-a,lib-b,lib-c", SettingsService.get(:audiobookshelf_ebook_scan_library_ids)
   end
 
   test "update preserves existing secret when blank secret value submitted" do
