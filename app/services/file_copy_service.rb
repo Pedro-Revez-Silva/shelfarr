@@ -1304,12 +1304,22 @@ class FileCopyService
           raise UnsafePathError, "source tree contains too many entries"
         end
 
-        children << entry
+        children << utf8_directory_entry(entry)
       end
       children.sort
     ensure
       listing&.close
       duplicate&.close unless duplicate&.closed?
+    end
+
+    def utf8_directory_entry(entry)
+      # Dir.for_fd has no path or encoding argument, so Ruby returns raw
+      # filename bytes as ASCII-8BIT. Shelfarr paths and metadata are UTF-8;
+      # retag valid bytes without transcoding or changing syscall identity.
+      name = entry.dup.force_encoding(Encoding::UTF_8)
+      return name if name.valid_encoding?
+
+      raise UnsafePathError, "source tree contains a filename that is not valid UTF-8"
     end
 
     def directory_manifest_entry(stat)
