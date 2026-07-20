@@ -239,6 +239,39 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "copies audiobook files with UTF-8 names into UTF-8 destination paths" do
+    SettingsService.set(:audiobookshelf_url, "")
+    title = "The Reverse Centaur’s Guide to Life After AI"
+    filename = "Cory Doctorow - #{title}.mp3"
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, filename), "unicode audio")
+    @book.update!(title: title, author: "Cory Doctorow")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, title)
+    assert @request.reload.completed?
+    assert_equal "unicode audio", File.read(File.join(expected_dest, filename))
+  end
+
+  test "copies UTF-8 nested audiobook directories into UTF-8 destination paths" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:move_completed_downloads, true)
+    title = "The Reverse Centaur’s Guide to Life After AI"
+    nested_directory = "Doctorow’s Extras"
+    nested_source = File.join(@temp_source, nested_directory)
+    FileUtils.mkdir_p(nested_source)
+    FileUtils.mv(File.join(@temp_source, "audiobook.mp3"), File.join(nested_source, "afterword.mp3"))
+    @book.update!(title: title, author: "Cory Doctorow")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_file = File.join(@temp_dest_base, @book.author, title, nested_directory, "afterword.mp3")
+    assert @request.reload.completed?
+    assert_equal "test audio content", File.read(expected_file)
+    assert_not File.exist?(@temp_source)
+  end
+
   test "keeps multi-file audiobook directory imports flat when bundle splitting is disabled" do
     SettingsService.set(:audiobookshelf_url, "")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
@@ -1336,6 +1369,26 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(expected_dest, "Michael Crichton - Jurassic Park (1990).epub"))
     assert File.exist?(File.join(expected_dest, "cover.jpg"))
     assert_not File.exist?(File.join(expected_dest, "Calibre Export"))
+  end
+
+  test "copies UTF-8 ebook sidecar names into UTF-8 destination paths" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    title = "The Reverse Centaur’s Guide to Life After AI"
+    sidecar = "Doctorow’s Notes.nfo"
+    write_valid_ebook_file(File.join(@temp_source, "book.epub"))
+    File.write(File.join(@temp_source, sidecar), "release notes")
+
+    @book.update!(title: title, author: "Cory Doctorow", book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, title)
+    assert @request.reload.completed?
+    assert_equal "release notes", File.read(File.join(expected_dest, sidecar))
+    assert File.exist?(File.join(expected_dest, "Cory Doctorow - #{title}.epub"))
   end
 
   test "imports bundled DjVu ebooks" do

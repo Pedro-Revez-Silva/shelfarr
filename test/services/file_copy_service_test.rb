@@ -249,6 +249,33 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "source snapshots retain UTF-8 encoding for UTF-8 entry names" do
+    source_root_path = File.join(@tmp_dir, "unicode-download")
+    filename = "The Reverse Centaur’s Guide.mp3"
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(File.join(source_root_path, filename), "chapter")
+
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    snapshotted_name = snapshot.entries.keys.fetch(0)
+
+    assert_equal filename, snapshotted_name
+    assert_equal Encoding::UTF_8, snapshotted_name.encoding
+  end
+
+  test "source snapshots reject invalid UTF-8 names in nested directories" do
+    source_root_path = File.join(@tmp_dir, "invalid-name-download")
+    nested = File.join(source_root_path, "nested")
+    invalid_filename = "chapter-\xFF.mp3".b
+    FileUtils.mkdir_p(nested)
+    File.binwrite(File.join(nested, invalid_filename), "chapter")
+
+    error = assert_raises(FileCopyService::UnsafePathError) do
+      FileCopyService.snapshot_source_root(source_root_path)
+    end
+
+    assert_match(/not valid UTF-8/, error.message)
+  end
+
   test "snapshotted source root rejects a same-path file replacement" do
     source_root_path = File.join(@tmp_dir, "download")
     FileUtils.mkdir_p(source_root_path)
