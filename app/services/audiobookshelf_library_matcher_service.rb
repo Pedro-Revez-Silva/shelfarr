@@ -31,14 +31,14 @@ class AudiobookshelfLibraryMatcherService
     end
   end
 
-  def matches_for(title:, author:, limit: 3)
-    return [] if library_items.empty?
+  def matches_for(title:, author:, limit: 3, library_ids: nil)
+    return [] if library_items(library_ids).empty?
     return [] if title.blank? && author.blank?
 
     query_title = normalize_text(title)
     query_author = normalize_text(author)
 
-    matches = library_items.each_with_object([]) do |item, acc|
+    matches = library_items(library_ids).each_with_object([]) do |item, acc|
       item_title = normalize_text(item.title)
       item_display_title = normalize_text(item.display_title)
       item_author = normalize_text(item.author)
@@ -61,8 +61,14 @@ class AudiobookshelfLibraryMatcherService
 
   private
 
-  def library_items
-    @library_items ||= LibraryItem.available_for_matching.by_synced_at_desc.to_a
+  def library_ids_for_scope(library_ids)
+    @library_items_by_ids ||= {}
+    @library_items_by_ids[library_ids] ||= LibraryItem.available_for_matching.for_libraries(library_ids).by_synced_at_desc.to_a
+  end
+
+  def library_items(library_ids = nil)
+    return @all_library_items ||= LibraryItem.available_for_matching.by_synced_at_desc.to_a if library_ids.nil?
+    library_ids_for_scope(library_ids)
   end
 
   def match_score(query_title:, query_author:, item_titles:, item_author:)

@@ -64,7 +64,7 @@ class BookOrbitClient
             collapseSeries: false
           })
         end
-        break unless response.status == 200
+        raise Error, "BookOrbit library #{id} returned status #{response.status}" unless response.status == 200
 
         page_items = extract_library_items(response.body)
         items.concat(page_items)

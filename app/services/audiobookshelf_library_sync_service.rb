@@ -36,6 +36,9 @@ class AudiobookshelfLibrarySyncService
       end
     end
 
+    # Prune cached rows for libraries that are no longer configured.
+    LibraryItem.for_platform(library_platform).where.not(library_id: library_ids).delete_all
+
     synced = errors.empty? || items_synced.positive?
     Result.new(
       success: synced,

@@ -58,7 +58,7 @@ class AudiobookshelfClient
 
       loop do
         response = request { connection.get("/api/libraries/#{id}/items", { limit: page_size, page: page }) }
-        break unless response.status == 200
+        raise Error, "Audiobookshelf library #{id} returned status #{response.status}" unless response.status == 200
 
         page_items = extract_library_items(response.body)
         items.concat(page_items)
@@ -84,7 +84,7 @@ class AudiobookshelfClient
         SettingsService.get(:audiobookshelf_audiobook_scan_library_ids),
         SettingsService.get(:audiobookshelf_ebook_scan_library_ids),
         SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
-      ].flat_map { |id| id.to_s.split(",").map(&:strip) }.compact.uniq
+      ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence).uniq
 
       library_ids.each do |lib_id|
         next if lib_id.blank?

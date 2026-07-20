@@ -138,6 +138,43 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a", text: /Active/
   end
 
+  test "index paginates requests" do
+    sign_out
+    sign_in_as(@admin)
+
+    # Delete existing requests to have a clean count
+    Request.destroy_all
+
+    # Create 30 requests
+    30.times do |i|
+      book = Book.create!(
+        title: "Book #{i}",
+        book_type: :ebook,
+        open_library_work_id: "OL_PAGINATE_TEST_#{i}"
+      )
+      Request.create!(
+        book: book,
+        user: @user,
+        status: :pending
+      )
+    end
+
+    # First page should show 25 requests (descending order, so Book 29 to Book 5)
+    get requests_path(page: 1)
+    assert_response :success
+    assert_select "h3", count: 25
+    assert_select "h3", text: "Book 29"
+    assert_select "h3", text: "Book 5"
+    assert_select "h3", text: "Book 4", count: 0
+
+    # Second page should show the remaining 5 requests (Book 4 to Book 0)
+    get requests_path(page: 2)
+    assert_response :success
+    assert_select "h3", count: 5
+    assert_select "h3", text: "Book 4"
+    assert_select "h3", text: "Book 0"
+  end
+
   test "show displays request details" do
     get request_path(@pending_request)
     assert_response :success

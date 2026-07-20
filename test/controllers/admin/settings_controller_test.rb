@@ -362,6 +362,36 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "index renders additional scan libraries as a multi-select when audiobookshelf configured" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-audio")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [
+              { "id" => "lib-audio", "name" => "Audiobooks", "mediaType" => "book", "folders" => [] },
+              { "id" => "lib-ebook", "name" => "Ebooks", "mediaType" => "book", "folders" => [] }
+            ]
+          }.to_json
+        )
+
+      get admin_settings_url
+      assert_response :success
+
+      # Check that library options appear in the page as a multi-select
+      assert_select "select[name='settings[audiobookshelf_audiobook_scan_library_ids][]'][multiple]" do
+        assert_select "option[value='lib-audio'][selected]", text: "Audiobooks (book)"
+        assert_select "option[value='lib-ebook']", text: "Ebooks (book)"
+      end
+    end
+  end
+
   test "index shows neutral and brand-correct library platform labels" do
     get admin_settings_url
 
