@@ -74,6 +74,48 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "result navigation only encodes bounded identity metadata in URLs" do
+    long_value = "Long provider metadata " * 1_000
+    result = MetadataSearch::Candidate.new(
+      canonical_key: "google_books:gb-long-metadata",
+      title: long_value,
+      author: long_value,
+      year: 2026,
+      description: long_value,
+      cover_url: "https://example.com/#{long_value}",
+      series_name: long_value,
+      series_position: long_value,
+      has_audiobook: nil,
+      has_ebook: true,
+      sources: [
+        {
+          source: "google_books",
+          source_id: "gb-long-metadata",
+          source_name: "Google Books",
+          source_url: nil,
+          work_id: "google_books:gb-long-metadata"
+        }
+      ],
+      editions: [],
+      confidence: 100,
+      collection_source: "hardcover",
+      collection_id: "series-123",
+      collection_title: long_value
+    )
+
+    MetadataService.stub(:search, [ result ]) do
+      get search_results_path, params: { q: "long description" }
+    end
+
+    assert_response :success
+    assert_select "a[href^='#{new_request_path}']", text: "Request" do |links|
+      assert_compact_metadata_url links.first["href"]
+    end
+    assert_select "a[data-turbo-frame='modal']" do |links|
+      links.each { |link| assert_compact_metadata_url(link["href"]) }
+    end
+  end
+
   test "results keep an awaiting purchase work marked as requested" do
     source_id = "OL_SEARCH_AWAITING_PURCHASE"
     ebook = Book.create!(
@@ -571,6 +613,34 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_match "Bella must choose between friendship and love.", response.body
   end
 
+  test "details does not forward descriptions to the request URL" do
+    original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+
+    GoogleBooksClient.stub(:configured?, false) do
+      get search_details_path, params: {
+        modal: "1",
+        work_id: "google_books:gb-long-description",
+        title: "Long title " * 1_000,
+        author: "Long author " * 1_000,
+        cover_url: "https://example.com/#{'long-cover-' * 1_000}",
+        description: "Long description " * 1_000,
+        series: "Long series " * 1_000,
+        collection_title: "Long collection " * 1_000
+      }
+
+      assert_response :redirect
+      assert_compact_metadata_url response.location
+      follow_redirect!
+      assert_response :success
+      assert_select "a[href^='#{new_request_path}']", text: "Request" do |links|
+        assert_compact_metadata_url links.first["href"]
+      end
+    end
+  ensure
+    Rails.cache = original_cache
+  end
+
   test "close_modal returns an empty modal frame" do
     get search_modal_close_path
 
@@ -580,6 +650,18 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   end
 
   private
+
+  def assert_compact_metadata_url(href)
+    decoded_href = CGI.unescapeHTML(href)
+    query = Rack::Utils.parse_nested_query(URI.parse(decoded_href).query)
+    allowed_keys = %w[
+      metadata_token work_id source_work_ids content_kind request_scope
+      collection_source collection_id modal
+    ]
+
+    assert_empty query.keys - allowed_keys
+    assert_operator decoded_href.bytesize, :<, 1.kilobyte
+  end
 
   def metadata_result(source_id:, title:, author:, year:)
     MetadataService::SearchResult.new(

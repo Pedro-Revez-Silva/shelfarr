@@ -26,7 +26,8 @@ class RequestCreationService
   def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil, collection_item_ids: nil, expand_collection: false)
     @user = user
     @work_id = work_id.to_s.strip
-    @source_work_ids = [ @work_id, *Array(source_work_ids) ].compact_blank.map(&:to_s).uniq
+    @source_work_ids = BookMetadataLookupService.normalize_work_ids([ @work_id, *Array(source_work_ids) ])
+    @source_work_ids = [ @work_id ] if @source_work_ids.empty? && @work_id.present?
     @book_types = normalize_book_types(book_types)
     @metadata_attrs = normalize_metadata_attrs(metadata_attrs)
     @notes = notes
@@ -190,6 +191,7 @@ class RequestCreationService
     BookMetadataBackfillService.apply!(
       book,
       work_id: input.work_id,
+      source_work_ids: input.source_work_ids,
       fallback_attrs: fallback_attrs(input.metadata_attrs),
       lookup_details: !collection_request?
     )

@@ -208,6 +208,73 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal "gb-multi-source", book.google_books_id
   end
 
+  test "backfills description from an alternate candidate source" do
+    primary = MetadataService::SearchResult.new(
+      source: "openlibrary",
+      source_id: "OL_AGGREGATED_W",
+      title: "Aggregated Book",
+      author: nil,
+      description: nil,
+      year: 2026,
+      cover_url: nil,
+      has_audiobook: nil,
+      has_ebook: nil,
+      series_name: nil,
+      series_position: nil
+    )
+    alternate = primary.with(
+      source: "google_books",
+      source_id: "gb-aggregated",
+      description: "Description supplied by the alternate provider"
+    )
+    lookup = lambda do |work_id|
+      work_id == "openlibrary:OL_AGGREGATED_W" ? primary : alternate
+    end
+
+    result = MetadataService.stub(:book_details, lookup) do
+      RequestCreationService.call(
+        user: @user,
+        work_id: "openlibrary:OL_AGGREGATED_W",
+        source_work_ids: [ "google_books:gb-aggregated" ],
+        book_types: [ "ebook" ],
+        metadata_attrs: { title: "Aggregated Book" }
+      )
+    end
+
+    assert result.success?
+    assert_equal "Description supplied by the alternate provider", result.created_requests.first.book.description
+  end
+
+  test "keeps at most one identifier per supported metadata provider" do
+    result = MetadataService.stub(:book_details, nil) do
+      RequestCreationService.call(
+        user: @user,
+        work_id: "openlibrary:OL_BOUNDED_W",
+        source_work_ids: [
+          "openlibrary:OL_IGNORED_W",
+          "google_books:gb-first",
+          "google_books:gb-ignored",
+          "hardcover:123",
+          "comic_vine:4000-123",
+          "unsupported:ignored"
+        ],
+        book_types: [ "comicbook" ],
+        metadata_attrs: {
+          title: "Bounded Sources",
+          author: "Bounded Author",
+          description: "Bounded description"
+        }
+      )
+    end
+
+    assert result.success?
+    book = result.created_requests.first.book
+    assert_equal "OL_BOUNDED_W", book.open_library_work_id
+    assert_equal "gb-first", book.google_books_id
+    assert_equal "123", book.hardcover_id
+    assert_equal "4000-123", book.comic_vine_id
+  end
+
   test "persists newly assigned source ids on reused book with complete metadata" do
     book = Book.create!(
       title: "Existing Google Book",

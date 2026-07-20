@@ -378,6 +378,59 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "Test Book"
   end
 
+  test "compact metadata handoff preserves long descriptions through creation" do
+    original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    description = "Long description " * 1_000
+    metadata = {
+      work_id: "openlibrary:OL_HANDOFF_W",
+      source_work_ids: [ "openlibrary:OL_HANDOFF_W", "google_books:gb-handoff" ],
+      title: "Handoff Book",
+      author: "Handoff Author",
+      description: description,
+      content_kind: "book"
+    }
+    navigation_params = RequestMetadataHandoff.params_for(user: @user, metadata: metadata)
+
+    get new_request_path(navigation_params)
+
+    assert_response :success
+    assert_select "input[name='description']" do |inputs|
+      assert_equal description, inputs.first["value"]
+    end
+
+    MetadataService.stub(:book_details, ->(*) { raise OpenLibraryClient::ConnectionError, "timeout" }) do
+      post requests_path, params: {
+        work_id: metadata[:work_id],
+        source_work_ids: metadata[:source_work_ids],
+        title: metadata[:title],
+        author: metadata[:author],
+        description: description,
+        book_type: "ebook"
+      }
+    end
+
+    assert_redirected_to request_path(Request.last)
+    assert_equal description, Request.last.book.description
+  ensure
+    Rails.cache = original_cache
+  end
+
+  test "legacy request URLs with descriptions redirect to a compact handoff" do
+    get new_request_path, params: {
+      work_id: "openlibrary:OL_LEGACY_HANDOFF_W",
+      title: "Legacy Handoff Book",
+      description: "Long legacy description " * 1_000
+    }
+
+    assert_response :redirect
+    location = CGI.unescapeHTML(response.location)
+    query = Rack::Utils.parse_nested_query(URI.parse(location).query)
+    assert_empty query.keys & %w[title description]
+    assert_equal "openlibrary:OL_LEGACY_HANDOFF_W", query["work_id"]
+    assert_operator location.bytesize, :<, 1.kilobyte
+  end
+
   test "new uses server-authoritative book formats" do
     get new_request_path, params: {
       work_id: "google_books:gb-ebook-only",

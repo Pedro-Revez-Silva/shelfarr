@@ -44,28 +44,32 @@ class RequestsController < ApplicationController
   end
 
   def new
-    @work_id = params[:work_id]
-    @title = params[:title]
-    @author = params[:author]
-    @cover_url = params[:cover_url]
-    @first_publish_year = params[:first_publish_year]
-    @source_work_ids = Array(params[:source_work_ids]).compact_blank
+    return if redirect_legacy_description_handoff?
+
+    cached_metadata = request_handoff_metadata
+    @work_id = params[:work_id].presence || cached_metadata[:work_id]
+    @source_work_ids = [ *Array(params[:source_work_ids]), *Array(cached_metadata[:source_work_ids]) ].compact_blank.uniq
+    metadata = resolved_new_request_metadata(cached_metadata)
+    @title = metadata[:title]
+    @author = metadata[:author]
+    @cover_url = metadata[:cover_url]
+    @first_publish_year = metadata[:first_publish_year]
     @content_kind = ContentKinds.resolve(
-      params[:content_kind],
+      metadata[:content_kind],
       source_work_ids: [ @work_id, *@source_work_ids ],
-      collection_source: params[:collection_source],
+      collection_source: metadata[:collection_source],
       default: ContentKinds::BOOK
     )
-    @description = params[:description]
-    @publisher = params[:publisher]
-    @issue_number = params[:issue_number]
-    @release_date = params[:release_date]
-    @series = params[:series]
-    @series_position = params[:series_position]
-    @request_scope = params[:request_scope].presence || "single"
-    @collection_source = params[:collection_source]
-    @collection_id = params[:collection_id]
-    @collection_title = params[:collection_title]
+    @description = metadata[:description]
+    @publisher = metadata[:publisher]
+    @issue_number = metadata[:issue_number]
+    @release_date = metadata[:release_date]
+    @series = metadata[:series]
+    @series_position = metadata[:series_position]
+    @request_scope = metadata[:request_scope].presence || "single"
+    @collection_source = metadata[:collection_source]
+    @collection_id = metadata[:collection_id]
+    @collection_title = metadata[:collection_title]
     @available_book_types = RequestOptionPolicy.book_types_for(@content_kind)
 
     if @work_id.blank? || @title.blank?
@@ -429,6 +433,39 @@ class RequestsController < ApplicationController
 
       [ info[:name], code ]
     end.sort_by(&:first)
+  end
+
+  def request_handoff_metadata
+    metadata = RequestMetadataHandoff.fetch(user: Current.user, token: params[:metadata_token])
+    return metadata if params[:work_id].blank? || metadata[:work_id] == params[:work_id]
+
+    {}
+  end
+
+  def redirect_legacy_description_handoff?
+    return false if params[:metadata_token].present? || params[:description].blank?
+
+    metadata = request_metadata_attrs.merge(
+      work_id: params[:work_id],
+      source_work_ids: params[:source_work_ids]
+    )
+    redirect_to new_request_path(RequestMetadataHandoff.params_for(user: Current.user, metadata: metadata))
+    true
+  end
+
+  def resolved_new_request_metadata(cached_metadata)
+    lookup_metadata = if cached_metadata.empty?
+      BookMetadataLookupService.call(
+        [ @work_id, *@source_work_ids ],
+        fallback: request_metadata_attrs
+      ).tap do |metadata|
+        metadata[:first_publish_year] ||= metadata.delete(:year)
+      end
+    else
+      {}
+    end
+
+    lookup_metadata.merge(request_metadata_attrs.compact).merge(cached_metadata)
   end
 
   def remove_associated_torrents(request)

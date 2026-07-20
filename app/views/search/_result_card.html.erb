@@ -36,6 +36,7 @@
     collection_title: (result.collection_title if result.respond_to?(:collection_title)),
     source_work_ids: source_work_ids
   }.compact
+  navigation_params = RequestMetadataHandoff.params_for(user: Current.user, metadata: metadata_params)
   format_statuses = available_book_types.to_h do |book_type|
     existing_book = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: book_type)
     status = if existing_book&.acquired?
@@ -58,7 +59,7 @@
 
 <div class="group relative overflow-hidden rounded-xl bg-gray-900 shadow-lg ring-1 ring-gray-800 transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl">
   <div class="relative aspect-[2/3]">
-    <%= link_to search_details_path(metadata_params.merge(modal: 1)), class: "block h-full w-full", title: "View details for #{result.title}", data: { turbo_frame: "modal" } do %>
+    <%= link_to search_details_path(navigation_params.merge(modal: 1)), class: "block h-full w-full", title: "View details for #{result.title}", data: { turbo_frame: "modal" } do %>
       <% if result.cover_url.present? %>
         <img src="<%= result.cover_url %>" alt="Cover of <%= result.title %>" class="h-full w-full object-cover" loading="lazy">
       <% else %>
@@ -79,7 +80,7 @@
 
     <div class="absolute inset-x-0 bottom-0 flex flex-col gap-2 bg-gradient-to-t from-black via-black/80 to-transparent p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
       <% if requestable_book_types.any? %>
-        <%= link_to request_label, new_request_path(metadata_params), class: "w-full rounded-md bg-blue-600 px-3 py-2 text-center text-sm font-medium text-white transition-colors hover:bg-blue-500" %>
+        <%= link_to request_label, new_request_path(navigation_params), class: "w-full rounded-md bg-blue-600 px-3 py-2 text-center text-sm font-medium text-white transition-colors hover:bg-blue-500" %>
       <% elsif blocked_status.present? %>
         <span class="w-full rounded-md bg-gray-800/90 px-3 py-2 text-center text-sm font-medium text-gray-300">
           <%= blocked_status == :acquired ? "In library" : "Requested" %>
@@ -102,7 +103,7 @@
         <% end %>
       <% end %>
     </div>
-    <%= link_to search_details_path(metadata_params.merge(modal: 1)), class: "block", data: { turbo_frame: "modal" } do %>
+    <%= link_to search_details_path(navigation_params.merge(modal: 1)), class: "block", data: { turbo_frame: "modal" } do %>
       <h3 class="line-clamp-2 text-sm font-semibold leading-tight text-white hover:text-blue-300"><%= result.title %></h3>
     <% end %>
     <% if result.author.present? %>

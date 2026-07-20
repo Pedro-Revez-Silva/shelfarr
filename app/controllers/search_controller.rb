@@ -107,25 +107,28 @@ class SearchController < ApplicationController
   end
 
   def details
-    @work_id = params[:work_id]
-    @source_work_ids = Array(params[:source_work_ids]).compact_blank
-    @title = params[:title]
-    @author = params[:author]
-    @cover_url = params[:cover_url]
-    @first_publish_year = params[:first_publish_year]
-    @description = params[:description]
-    @content_kind = normalized_content_kind(params[:content_kind])
-    @publisher = params[:publisher]
+    return if redirect_legacy_details_handoff?
+
+    cached_metadata = details_handoff_metadata
+    @work_id = params[:work_id].presence || cached_metadata[:work_id]
+    @source_work_ids = [ *Array(params[:source_work_ids]), *Array(cached_metadata[:source_work_ids]) ].compact_blank.uniq
+    @title = cached_metadata[:title].presence || params[:title]
+    @author = cached_metadata[:author].presence || params[:author]
+    @cover_url = cached_metadata[:cover_url].presence || params[:cover_url]
+    @first_publish_year = cached_metadata[:first_publish_year].presence || params[:first_publish_year]
+    @description = cached_metadata[:description].presence || params[:description]
+    @content_kind = normalized_content_kind(cached_metadata[:content_kind].presence || params[:content_kind])
+    @publisher = cached_metadata[:publisher].presence || params[:publisher]
     @page_count = params[:page_count]
     @language = params[:language]
     @genres = params[:genres]
-    @issue_number = params[:issue_number]
-    @release_date = params[:release_date]
-    @series = params[:series]
-    @series_position = params[:series_position]
-    @collection_source = params[:collection_source]
-    @collection_id = params[:collection_id]
-    @collection_title = params[:collection_title]
+    @issue_number = cached_metadata[:issue_number].presence || params[:issue_number]
+    @release_date = cached_metadata[:release_date].presence || params[:release_date]
+    @series = cached_metadata[:series].presence || params[:series]
+    @series_position = cached_metadata[:series_position].presence || params[:series_position]
+    @collection_source = cached_metadata[:collection_source].presence || params[:collection_source]
+    @collection_id = cached_metadata[:collection_id].presence || params[:collection_id]
+    @collection_title = cached_metadata[:collection_title].presence || params[:collection_title]
     @modal = params[:modal] == "1"
     @metadata_source_name, @metadata_source_url = metadata_source_for(@work_id)
     @details_enrichment_attempted = false
@@ -156,6 +159,29 @@ class SearchController < ApplicationController
   end
 
   private
+
+  def details_handoff_metadata
+    metadata = RequestMetadataHandoff.fetch(user: Current.user, token: params[:metadata_token])
+    return metadata if params[:work_id].blank? || metadata[:work_id] == params[:work_id]
+
+    {}
+  end
+
+  def redirect_legacy_details_handoff?
+    return false if params[:metadata_token].present? || params[:description].blank?
+
+    metadata = params.permit(
+      :work_id, :title, :author, :cover_url, :first_publish_year,
+      :description, :publisher, :content_kind, :issue_number,
+      :release_date, :series, :series_position, :request_scope,
+      :collection_source, :collection_id, :collection_title,
+      source_work_ids: []
+    ).to_h.symbolize_keys
+    navigation_params = RequestMetadataHandoff.params_for(user: Current.user, metadata: metadata)
+    navigation_params[:modal] = params[:modal] if params[:modal].present?
+    redirect_to search_details_path(navigation_params)
+    true
+  end
 
   def write_search_results_stream(results:, loading:, pending_providers: [], completed_providers: [], error: nil)
     response.stream.write(
@@ -241,19 +267,74 @@ class SearchController < ApplicationController
   def enrich_details_from_source
     return if @work_id.blank?
 
-    source, source_id = Book.parse_work_id(@work_id)
+    @details_enrichment_loaded = enrich_details_for_source(@work_id) || @details_enrichment_loaded
+    return if essential_details_present?
+
+    alternate_work_ids = @source_work_ids.reject do |work_id|
+      Book.parse_work_id(work_id).first == Book.parse_work_id(@work_id).first
+    end
+    metadata = BookMetadataLookupService.call(alternate_work_ids, fallback: details_lookup_fallback)
+    apply_lookup_metadata(metadata)
+    @details_enrichment_loaded ||= metadata.present?
+  end
+
+  def essential_details_present?
+    @title.present? && @author.present? && @description.present?
+  end
+
+  def details_lookup_fallback
+    {
+      title: @title,
+      author: @author,
+      cover_url: @cover_url,
+      year: @first_publish_year,
+      description: @description,
+      publisher: @publisher,
+      content_kind: @content_kind,
+      issue_number: @issue_number,
+      release_date: @release_date,
+      series: @series,
+      series_position: @series_position,
+      collection_source: @collection_source,
+      collection_id: @collection_id,
+      collection_title: @collection_title
+    }
+  end
+
+  def apply_lookup_metadata(metadata)
+    @title = @title.presence || metadata[:title]
+    @author = @author.presence || metadata[:author]
+    @cover_url = @cover_url.presence || metadata[:cover_url]
+    @first_publish_year = @first_publish_year.presence || metadata[:year]
+    @description = @description.presence || metadata[:description]
+    @publisher = @publisher.presence || metadata[:publisher]
+    @content_kind = @content_kind.presence || metadata[:content_kind]
+    @issue_number = @issue_number.presence || metadata[:issue_number]
+    @release_date = @release_date.presence || metadata[:release_date]
+    @series = @series.presence || metadata[:series]
+    @series_position = @series_position.presence || metadata[:series_position]
+    @collection_source = @collection_source.presence || metadata[:collection_source]
+    @collection_id = @collection_id.presence || metadata[:collection_id]
+    @collection_title = @collection_title.presence || metadata[:collection_title]
+  end
+
+  def enrich_details_for_source(work_id)
+    source, source_id = Book.parse_work_id(work_id)
     case source
     when "hardcover"
-      @details_enrichment_loaded = enrich_hardcover_details(source_id)
+      enrich_hardcover_details(source_id)
     when "comic_vine"
-      @details_enrichment_loaded = enrich_comic_vine_details(source_id)
+      enrich_comic_vine_details(source_id)
     when "google_books"
-      @details_enrichment_loaded = enrich_google_books_details(source_id)
+      enrich_google_books_details(source_id)
     when "openlibrary"
-      @details_enrichment_loaded = enrich_openlibrary_details(source_id)
+      enrich_openlibrary_details(source_id)
+    else
+      false
     end
   rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, ComicVineClient::Error, MetadataService::Error => e
-    Rails.logger.warn("[SearchController] Details enrichment failed for #{@work_id}: #{e.message}")
+    Rails.logger.warn("[SearchController] Details enrichment failed for #{work_id}: #{e.message}")
+    false
   end
 
   def enrich_hardcover_details(source_id)
