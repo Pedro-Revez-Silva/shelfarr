@@ -58,6 +58,9 @@ class AudiobookshelfClient
 
       loop do
         response = request { connection.get("/api/libraries/#{id}/items", { limit: page_size, page: page }) }
+        if (response.status == 404 || response.status == 410) && page == 0
+          return []
+        end
         raise Error, "Audiobookshelf library #{id} returned status #{response.status}" unless response.status == 200
 
         page_items = extract_library_items(response.body)

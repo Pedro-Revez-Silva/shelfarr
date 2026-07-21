@@ -2136,4 +2136,56 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     SettingsService.set(:flaresolverr_url, "")
   end
+
+  test "index merges unavailable persisted library IDs into select options and preserves them on bulk_update" do
+    # Configure API details
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    # Set persisted values containing library IDs that are NOT in the stubbed api response
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-unavailable-delivery")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-audio,lib-unavailable-scan")
+
+    VCR.turned_off do
+      # Mock the API response to return only "lib-audio"
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [
+              { "id" => "lib-audio", "name" => "Audiobooks", "mediaType" => "book", "folders" => [] }
+            ]
+          }.to_json
+        )
+
+      get admin_settings_url
+      assert_response :success
+
+      # Verify both unavailable and available options are present and selected in the rendered HTML
+      assert_select "select[name='settings[audiobookshelf_audiobook_library_id]']" do
+        assert_select "option[value='lib-audio']", text: "Audiobooks (book)"
+        assert_select "option[value='lib-unavailable-delivery'][selected]", text: "lib-unavailable-delivery (Unavailable)"
+      end
+
+      assert_select "select[name='settings[audiobookshelf_audiobook_scan_library_ids][]'][multiple]" do
+        assert_select "option[value='lib-audio'][selected]", text: "Audiobooks (book)"
+        assert_select "option[value='lib-unavailable-scan'][selected]", text: "lib-unavailable-scan (Unavailable)"
+      end
+
+      # Now simulate the autosave/bulk_update submission of the form.
+      # If we submit the values rendered in the select fields, they should be correctly saved back.
+      patch bulk_update_admin_settings_url, params: {
+        settings: {
+          audiobookshelf_audiobook_library_id: "lib-unavailable-delivery",
+          audiobookshelf_audiobook_scan_library_ids: ["lib-audio", "lib-unavailable-scan"]
+        }
+      }
+
+      assert_redirected_to admin_settings_path
+      assert_equal "lib-unavailable-delivery", SettingsService.get(:audiobookshelf_audiobook_library_id)
+      assert_equal "lib-audio,lib-unavailable-scan", SettingsService.get(:audiobookshelf_audiobook_scan_library_ids)
+    end
+  end
 end

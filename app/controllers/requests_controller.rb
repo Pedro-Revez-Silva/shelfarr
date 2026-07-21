@@ -42,6 +42,7 @@ class RequestsController < ApplicationController
     @requests_per_page = 25
     @requests_total_count = @requests.count
     @requests_total_pages = [ (@requests_total_count.to_f / @requests_per_page).ceil, 1 ].max
+    @requests_page = @requests_page.clamp(1, @requests_total_pages)
     @requests = @requests.limit(@requests_per_page).offset((@requests_page - 1) * @requests_per_page)
 
     # Preload library matches for admin (used for "In Library" pill on each card).
@@ -64,17 +65,36 @@ class RequestsController < ApplicationController
   end
 
   def library_ids_for_book_type(book_type)
-    delivery_key, scan_key = case book_type.to_s
-    when "audiobook"  then [ :audiobookshelf_audiobook_library_id, :audiobookshelf_audiobook_scan_library_ids ]
-    when "ebook"      then [ :audiobookshelf_ebook_library_id, :audiobookshelf_ebook_scan_library_ids ]
-    when "comicbook"  then [ :audiobookshelf_comicbook_library_id, :audiobookshelf_comicbook_scan_library_ids ]
+    all_configured_ids = [
+      SettingsService.get(:audiobookshelf_audiobook_library_id),
+      SettingsService.get(:audiobookshelf_ebook_library_id),
+      SettingsService.get(:audiobookshelf_comicbook_library_id),
+      SettingsService.get(:audiobookshelf_audiobook_scan_library_ids),
+      SettingsService.get(:audiobookshelf_ebook_scan_library_ids),
+      SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
+    ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence)
+
+    if all_configured_ids.empty?
+      return nil # Preserve all-library matching when synchronization used discovery
     end
-    return [] unless delivery_key
+
+    delivery_key, scan_key = case book_type.to_s
+    when "audiobook"
+      [ :audiobookshelf_audiobook_library_id, :audiobookshelf_audiobook_scan_library_ids ]
+    when "comicbook"
+      if SettingsService.get(:audiobookshelf_comicbook_library_id).present?
+        [ :audiobookshelf_comicbook_library_id, :audiobookshelf_comicbook_scan_library_ids ]
+      else
+        [ :audiobookshelf_ebook_library_id, :audiobookshelf_ebook_scan_library_ids ]
+      end
+    else # ebook
+      [ :audiobookshelf_ebook_library_id, :audiobookshelf_ebook_scan_library_ids ]
+    end
 
     [
       SettingsService.get(delivery_key),
       SettingsService.get(scan_key)
-    ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence)
+    ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence).uniq
   end
   private :library_ids_for_book_type
 

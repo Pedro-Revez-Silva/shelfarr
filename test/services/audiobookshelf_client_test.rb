@@ -404,4 +404,29 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
 
     assert_not AudiobookshelfClient.test_connection
   end
+
+  test "library_items returns empty array on page 0 404 or 410 response" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries/nonexistent/items?limit=500&page=0")
+        .to_return(status: 404)
+      assert_equal [], AudiobookshelfClient.library_items("nonexistent")
+
+      stub_request(:get, "http://localhost:13378/api/libraries/nonexistent/items?limit=500&page=0")
+        .to_return(status: 410)
+      assert_equal [], AudiobookshelfClient.library_items("nonexistent")
+    end
+  end
+
+  test "library_items raises Error on later-page 404 response" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries/my-lib/items?limit=500&page=0")
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { results: Array.new(500) { { "id" => "1" } }, total: 1000 }.to_json)
+      stub_request(:get, "http://localhost:13378/api/libraries/my-lib/items?limit=500&page=1")
+        .to_return(status: 404)
+
+      assert_raises AudiobookshelfClient::Error do
+        AudiobookshelfClient.library_items("my-lib")
+      end
+    end
+  end
 end

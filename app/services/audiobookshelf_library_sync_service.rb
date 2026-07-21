@@ -7,7 +7,17 @@ class AudiobookshelfLibrarySyncService
     end
   end
 
+  SYNC_MUTEX = Mutex.new
+
   def sync!
+    SYNC_MUTEX.synchronize do
+      sync_internal!
+    end
+  end
+
+  private
+
+  def sync_internal!
     errors = []
     items_synced = 0
     libraries_synced = 0
@@ -37,7 +47,15 @@ class AudiobookshelfLibrarySyncService
     end
 
     # Prune cached rows for libraries that are no longer configured.
-    LibraryItem.for_platform(library_platform).where.not(library_id: library_ids).delete_all
+    # Revalidate active platform and configured IDs snapshot, and protect rows written after this run started.
+    remove_instance_variable(:@configured_library_ids) if defined?(@configured_library_ids)
+    current_library_ids = configured_library_ids
+    current_platform = LibraryPlatformClient.active_platform
+
+    LibraryItem.for_platform(current_platform)
+               .where.not(library_id: current_library_ids)
+               .where("synced_at < ?", now)
+               .delete_all
 
     synced = errors.empty? || items_synced.positive?
     Result.new(

@@ -64,6 +64,9 @@ class BookOrbitClient
             collapseSeries: false
           })
         end
+        if (response.status == 404 || response.status == 410) && page == 0
+          return []
+        end
         raise Error, "BookOrbit library #{id} returned status #{response.status}" unless response.status == 200
 
         page_items = extract_library_items(response.body)

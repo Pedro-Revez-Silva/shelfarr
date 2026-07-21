@@ -456,5 +456,46 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       assert LibraryItem.exists?(audiobookshelf_id: "ab-existing")
     end
   end
+
+  test "does not prune cached items written after this run started" do
+    # Create library items for a library that is not configured, but synced_at is in the future (written after this run started)
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-newly-added",
+      audiobookshelf_id: "ab-new",
+      title: "New Library Item",
+      author: "Author",
+      synced_at: Time.current + 1.minute
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [],
+            "total" => 0
+          }.to_json
+        )
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [],
+            "total" => 0
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+      assert result.success?
+
+      # ab-new should NOT be pruned because it was written after this run started
+      assert LibraryItem.exists?(audiobookshelf_id: "ab-new")
+    end
+  end
 end
 
