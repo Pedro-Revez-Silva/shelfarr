@@ -98,6 +98,7 @@ module Quality
     success &&= run("RuboCop", "bin/rubocop", "--force-exclusion", "--format", "quiet", "--fail-level", "warning")
     success &&= run_brakeman
     success &&= run("Tests", "bin/rails", "test")
+    success &&= run("System tests", "bin/rails", "test:system")
     success &&= run_coverage
     success ? 0 : 1
   end

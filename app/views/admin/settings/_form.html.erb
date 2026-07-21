@@ -35,14 +35,13 @@
     </div>
 
     <noscript>
-      <style>#settings-tabs [role="tablist"] { display: none; }</style>
       <div class="mb-6 rounded-lg border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-200" role="status">
         JavaScript is disabled, so all settings sections are shown below. Use Save All to apply your changes.
       </div>
     </noscript>
 
     <%# Tab navigation %>
-    <div class="border-b border-gray-800 mb-6">
+    <div class="hidden border-b border-gray-800 mb-6" data-settings-tabs-target="tablist">
       <nav class="flex gap-1 -mb-px overflow-x-auto" role="tablist">
         <% tab_groups.each do |tab_key, tab_config| %>
           <button type="button"
