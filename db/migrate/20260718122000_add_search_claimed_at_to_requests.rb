@@ -13,13 +13,19 @@ class AddSearchClaimedAtToRequests < ActiveRecord::Migration[8.1]
     # later search claim advances updated_at beyond the old event. Use that
     # durable ordering to distinguish the ambiguous legacy states so a worker
     # killed by deployment is recoverable without re-running finished reviews.
+    attention_condition = if connection.adapter_name == "PostgreSQL"
+      "COALESCE(attention_needed, FALSE) = FALSE"
+    else
+      "COALESCE(attention_needed, 0) = 0"
+    end
+
     execute <<~SQL.squish
       UPDATE requests
       SET search_claimed_at = updated_at
       WHERE status = #{SEARCHING_STATUS}
         AND search_claimed_at IS NULL
         AND (
-          COALESCE(attention_needed, 0) = 0
+          #{attention_condition}
           OR NOT EXISTS (
             SELECT 1
             FROM request_events

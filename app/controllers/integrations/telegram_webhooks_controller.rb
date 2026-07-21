@@ -28,6 +28,5 @@ module Integrations
     def bad_request
       render json: { ok: false, error: "JSON invalid" }, status: :bad_request
     end
-
   end
 end

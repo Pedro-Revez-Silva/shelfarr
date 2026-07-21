@@ -84,5 +84,4 @@ class RegistrationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_select "form[action='#{sign_up_path}']"
   end
-
 end

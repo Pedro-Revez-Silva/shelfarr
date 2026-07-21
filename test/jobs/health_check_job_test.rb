@@ -406,7 +406,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: { "libraries" => [{ "id" => "lib-1", "name" => "Audiobooks" }] }.to_json
+          body: { "libraries" => [ { "id" => "lib-1", "name" => "Audiobooks" } ] }.to_json
         )
 
       HealthCheckJob.perform_now

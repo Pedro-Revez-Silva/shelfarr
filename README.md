@@ -100,6 +100,12 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
 | `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vX.Y.Z`, use `X.Y.Z`) |
 | `LIBATION_BOOKS_PATH` | Docker named volume | Optional host path for retained Audible backup copies; useful for large libraries |
+| `DB_ADAPTER` | `sqlite3` | Choose the database adapter. Options: `sqlite3` or `postgresql`. Default is `sqlite3`. |
+| `DB_HOST` | | Required when `DB_ADAPTER=postgresql`: The PostgreSQL server hostname. |
+| `DB_PORT` | `5432` | Optional when `DB_ADAPTER=postgresql`: The PostgreSQL server port. |
+| `DB_USERNAME` | | Required when `DB_ADAPTER=postgresql`: The PostgreSQL username. |
+| `DB_PASSWORD` | | Required when `DB_ADAPTER=postgresql`: The PostgreSQL password. |
+| `DB_DATABASE` | `shelfarr_production` | Optional when `DB_ADAPTER=postgresql`: The primary database name. |
 
 Audible Backup additionally requires the audiobook output filesystem to support advisory locks, hard links within that same mount, and Unix mode changes. Keep Shelfarr's `.shelfarr-staging` directory on the audiobook output filesystem and run the documented preflight before connecting Audible. mergerfs/libfuse mounts with a `umask=` mode override need a compatible underlying bind or a coordinated mount correction; do not bypass the check. See the [Audible Backup storage requirements and filesystem preflight](docs/audible-backup.md#preflight-the-audiobook-filesystem).
 
@@ -126,6 +132,56 @@ OIDC and webhook settings can be managed by environment variables. Use `SHELFARR
 Supported setting keys:
 
 `oidc_enabled`, `oidc_auto_redirect`, `oidc_provider_name`, `oidc_issuer`, `oidc_client_id`, `oidc_client_secret`, `oidc_scopes`, `oidc_link_existing_users`, `oidc_auto_create_users`, `oidc_default_role`, `webhook_enabled`, `webhook_url`, `webhook_token`, `webhook_events`, `webhook_topic`.
+
+### PostgreSQL Support
+
+By default, Shelfarr uses SQLite, which requires zero configuration and is highly portable. If you want to use PostgreSQL instead (e.g. for high availability or to scale out), you can pass the database environment variables:
+
+```yaml
+services:
+  shelfarr:
+    environment:
+      - DB_ADAPTER=postgresql
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USERNAME=shelfarr
+      - DB_PASSWORD=my_secure_password
+      - DB_DATABASE=shelfarr_production
+
+  db:
+    image: postgres:16
+    environment:
+      - POSTGRES_USER=shelfarr
+      - POSTGRES_PASSWORD=my_secure_password
+      - POSTGRES_DB=shelfarr_production
+```
+
+#### Migrating from SQLite to PostgreSQL
+If you already use SQLite and want to switch to PostgreSQL, you can migrate your existing data once the empty PostgreSQL schema is initialized.
+
+##### Phase 1: Initialize the PostgreSQL Schema
+1. Start Shelfarr configured with `DB_ADAPTER=postgresql` and your PostgreSQL connection credentials.
+2. Shelfarr will automatically run the standard Rails migrations on boot, creating the empty tables and indexes in PostgreSQL.
+
+##### Phase 2: Run the Migration using `pgloader`
+Because `pgloader` uses an SBCL Lisp runtime that can conflict with Docker emulation or preloaded allocators (like `jemalloc`), running the migration directly on your host machine (or Mac) is the most reliable way:
+
+1. Expose the PostgreSQL port `5432` to your host in your database compose setup (e.g., `ports: - "5432:5432"`).
+2. Install `pgloader` on your host machine (e.g., `brew install pgloader` on macOS).
+3. Run `pgloader` from your project directory, pointing to the volume-mounted SQLite file:
+   ```bash
+   pgloader \
+     --with "data only" \
+     --with "truncate" \
+     --with "disable triggers" \
+     --with "workers = 4" \
+     --with "concurrency = 2" \
+     --cast "type integer when (= 1 precision) to boolean drop typemod keep default keep not null" \
+     sqlite://./data/production.sqlite3 \
+     postgresql://shelfarr:my_secure_password@localhost:5432/shelfarr_production
+   ```
+
+Always verify your data in the Shelfarr web UI before deleting the old `.sqlite3` file!
 
 Example with the client secret supplied by your deployment secret store:
 ```yaml

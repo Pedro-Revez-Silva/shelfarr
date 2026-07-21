@@ -17,6 +17,6 @@ class CreateRequests < ActiveRecord::Migration[8.1]
     add_index :requests, :status
     add_index :requests, :next_retry_at
     add_index :requests, :attention_needed
-    add_index :requests, [:user_id, :status]
+    add_index :requests, [ :user_id, :status ]
   end
 end

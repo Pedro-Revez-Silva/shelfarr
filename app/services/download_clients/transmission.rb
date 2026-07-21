@@ -62,7 +62,7 @@ module DownloadClients
     def torrent_info(hash)
       ensure_authenticated!
 
-      response = rpc_request("torrent-get", ids: [hash], fields: torrent_fields)
+      response = rpc_request("torrent-get", ids: [ hash ], fields: torrent_fields)
       return nil unless response && response["torrents"].is_a?(Array)
 
       info = response["torrents"].find { |torrent| transmission_value(torrent, "hash_string", "hashString") == hash.to_s }
@@ -94,7 +94,7 @@ module DownloadClients
     def remove_torrent(hash, delete_files: false)
       ensure_authenticated!
 
-      response = rpc_request("torrent-remove", ids: [hash], delete_local_data: delete_files)
+      response = rpc_request("torrent-remove", ids: [ hash ], delete_local_data: delete_files)
       !response.nil?
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Transmission: #{e.message}"
@@ -229,7 +229,7 @@ module DownloadClients
         error = body["error"]
         message = error["message"].presence || "Unknown error"
         details = error["data"].is_a?(Hash) ? error["data"]["error_string"].presence : nil
-        raise Base::Error, "Transmission API error for #{method.tr('-', '_')}: #{[message, details].compact.join(': ')}"
+        raise Base::Error, "Transmission API error for #{method.tr('-', '_')}: #{[ message, details ].compact.join(': ')}"
       end
 
       result = body["result"]

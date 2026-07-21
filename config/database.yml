@@ -5,21 +5,25 @@
 #   gem "sqlite3"
 #
 default: &default
-  adapter: sqlite3
+  adapter: <%= ENV.fetch("DB_ADAPTER", "sqlite3") %>
   max_connections: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
   timeout: 5000
+  host: <%= ENV.fetch("DB_HOST", nil) %>
+  port: <%= ENV.fetch("DB_PORT", nil) %>
+  username: <%= ENV.fetch("DB_USERNAME", nil) %>
+  password: <%= ENV.fetch("DB_PASSWORD", nil) %>
 
 development:
   primary:
     <<: *default
-    database: storage/development.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? "shelfarr_development" : "storage/development.sqlite3" %>
   queue:
     <<: *default
-    database: storage/development_queue.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? "shelfarr_development_queue" : "storage/development_queue.sqlite3" %>
     migrations_paths: db/queue_migrate
   cable:
     <<: *default
-    database: storage/development_cable.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? "shelfarr_development_cable" : "storage/development_cable.sqlite3" %>
     migrations_paths: db/cable_migrate
 
 # Warning: The database defined as "test" will be erased and
@@ -28,14 +32,14 @@ development:
 test:
   primary:
     <<: *default
-    database: storage/test.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? "shelfarr_test" : "storage/test.sqlite3" %>
   queue:
     <<: *default
-    database: storage/test_queue.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? "shelfarr_test_queue" : "storage/test_queue.sqlite3" %>
     migrations_paths: db/queue_migrate
   cable:
     <<: *default
-    database: storage/test_cable.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? "shelfarr_test_cable" : "storage/test_cable.sqlite3" %>
     migrations_paths: db/cable_migrate
 
 
@@ -44,16 +48,16 @@ test:
 production:
   primary:
     <<: *default
-    database: storage/production.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? ENV.fetch("DB_DATABASE", "shelfarr_production") : "storage/production.sqlite3" %>
   cache:
     <<: *default
-    database: storage/production_cache.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? ENV.fetch("DB_CACHE_DATABASE", "shelfarr_production_cache") : "storage/production_cache.sqlite3" %>
     migrations_paths: db/cache_migrate
   queue:
     <<: *default
-    database: storage/production_queue.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? ENV.fetch("DB_QUEUE_DATABASE", "shelfarr_production_queue") : "storage/production_queue.sqlite3" %>
     migrations_paths: db/queue_migrate
   cable:
     <<: *default
-    database: storage/production_cable.sqlite3
+    database: <%= ENV.fetch("DB_ADAPTER", "sqlite3") == "postgresql" ? ENV.fetch("DB_CABLE_DATABASE", "shelfarr_production_cable") : "storage/production_cable.sqlite3" %>
     migrations_paths: db/cable_migrate

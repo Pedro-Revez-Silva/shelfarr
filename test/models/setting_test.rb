@@ -10,9 +10,9 @@ class SettingTest < ActiveSupport::TestCase
   end
 
   test "typed_value parses json and recovers corrupted json" do
-    assert_equal ["a", "b"], Setting.new(value_type: "json", value: "[\"a\",\"b\"]").typed_value
-    assert_equal ["a", "b"], Setting.new(key: "broken", value_type: "json", value: "a,b").typed_value
-    assert_equal ["a"], Setting.new(key: "broken", value_type: "json", value: "a").typed_value
+    assert_equal [ "a", "b" ], Setting.new(value_type: "json", value: "[\"a\",\"b\"]").typed_value
+    assert_equal [ "a", "b" ], Setting.new(key: "broken", value_type: "json", value: "a,b").typed_value
+    assert_equal [ "a" ], Setting.new(key: "broken", value_type: "json", value: "a").typed_value
   end
 
   test "typed_value writer preserves valid json and normalizes invalid json" do
@@ -22,13 +22,13 @@ class SettingTest < ActiveSupport::TestCase
     assert_equal "[\"a\"]", setting.value
 
     setting.typed_value = "a,b"
-    assert_equal ["a", "b"], JSON.parse(setting.value)
+    assert_equal [ "a", "b" ], JSON.parse(setting.value)
 
     setting.typed_value = "single"
-    assert_equal ["single"], JSON.parse(setting.value)
+    assert_equal [ "single" ], JSON.parse(setting.value)
 
-    setting.typed_value = ["x"]
-    assert_equal ["x"], JSON.parse(setting.value)
+    setting.typed_value = [ "x" ]
+    assert_equal [ "x" ], JSON.parse(setting.value)
   end
 
   test "typed_value writer stringifies non json values" do

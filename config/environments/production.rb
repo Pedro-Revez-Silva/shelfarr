@@ -79,7 +79,7 @@ Rails.application.configure do
   # Only use :id for inspections in production.
   config.active_record.attributes_for_inspect = [ :id ]
 
-  # Active Record Encryption - keys are loaded by initializers/active_record_encryption.rb
+  # Active Record Encryption - keys are loaded by config/application.rb
   # Skip during asset precompilation (dummy keys used during Docker build)
   unless ENV["SECRET_KEY_BASE_DUMMY"]
     config.active_record.encryption.primary_key = ENV.fetch("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY")

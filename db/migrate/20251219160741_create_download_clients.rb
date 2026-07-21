@@ -15,7 +15,7 @@ class CreateDownloadClients < ActiveRecord::Migration[8.1]
     end
 
     add_index :download_clients, :name, unique: true
-    add_index :download_clients, [:client_type, :priority]
+    add_index :download_clients, [ :client_type, :priority ]
     add_index :download_clients, :enabled
   end
 end

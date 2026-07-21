@@ -16,7 +16,7 @@ class CreateSearchResults < ActiveRecord::Migration[8.1]
 
       t.timestamps
 
-      t.index [:request_id, :guid], unique: true
+      t.index [ :request_id, :guid ], unique: true
     end
   end
 end

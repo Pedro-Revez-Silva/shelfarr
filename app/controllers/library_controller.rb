@@ -29,7 +29,7 @@ class LibraryController < ApplicationController
     end
 
     def call
-      register_sqlite_functions!
+      register_sqlite_functions! if connection.adapter_name == "SQLite"
       rows = connection.select_all(catalog_sql).to_a
       metadata = rows.shift
       Result.new(
@@ -87,8 +87,8 @@ class LibraryController < ApplicationController
             record_id,
             audible_tag,
             ROW_NUMBER() OVER (
-              ORDER BY shelfarr_catalog_lower(title),
-                shelfarr_catalog_lower(author), kind, record_id
+              ORDER BY #{catalog_lower_sql('title')},
+                #{catalog_lower_sql('author')}, kind, record_id
             ) AS catalog_row
           FROM catalog_entries
         ),
@@ -133,7 +133,11 @@ class LibraryController < ApplicationController
     end
 
     def dynamic_identifier_matches_sql
-      return "SELECT NULL AS owned_item_id, NULL AS matched_book_id WHERE 0" unless audible_catalog?
+      if connection.adapter_name == "PostgreSQL"
+        return "SELECT NULL::bigint AS owned_item_id, NULL::bigint AS matched_book_id WHERE 1=0" unless audible_catalog?
+      else
+        return "SELECT NULL AS owned_item_id, NULL AS matched_book_id WHERE 1=0" unless audible_catalog?
+      end
 
       <<~SQL.squish
         SELECT
@@ -151,51 +155,57 @@ class LibraryController < ApplicationController
     end
 
     def normalized_library_identifiers_sql
-      return empty_identifier_sql("asin_key", "isbn_key") unless audible_catalog?
+      return empty_identifier_sql("asin_key", "isbn_key", "text", "text") unless audible_catalog?
+
+      missing_condition = connection.adapter_name == "PostgreSQL" ? "library_items.missing = FALSE" : "library_items.missing = 0"
 
       <<~SQL.squish
         SELECT
-          shelfarr_catalog_asin(library_items.asin) AS asin_key,
-          shelfarr_catalog_isbn(library_items.isbn) AS isbn_key
+          #{catalog_asin_sql('library_items.asin')} AS asin_key,
+          #{catalog_isbn_sql('library_items.isbn')} AS isbn_key
         FROM library_items
         WHERE library_items.library_platform = #{quote(SettingsService.active_library_platform)}
-          AND library_items.missing = 0
-          AND shelfarr_catalog_asin(library_items.asin) <> ''
-          AND shelfarr_catalog_isbn(library_items.isbn) <> ''
+          AND #{missing_condition}
+          AND #{catalog_asin_sql('library_items.asin')} <> ''
+          AND #{catalog_isbn_sql('library_items.isbn')} <> ''
       SQL
     end
 
     def normalized_book_identifiers_sql
-      return empty_identifier_sql("book_id", "isbn_key") unless audible_catalog?
+      return empty_identifier_sql("book_id", "isbn_key", "bigint", "text") unless audible_catalog?
 
       <<~SQL.squish
         SELECT
           books.id AS book_id,
-          shelfarr_catalog_isbn(books.isbn) AS isbn_key
+          #{catalog_isbn_sql('books.isbn')} AS isbn_key
         FROM books
         WHERE books.book_type = #{Book.book_types.fetch("audiobook")}
           AND books.file_path IS NOT NULL
           AND TRIM(books.file_path) <> ''
-          AND shelfarr_catalog_isbn(books.isbn) <> ''
+          AND #{catalog_isbn_sql('books.isbn')} <> ''
       SQL
     end
 
     def normalized_owned_identifiers_sql
-      return empty_identifier_sql("owned_item_id", "asin_key") unless audible_catalog?
+      return empty_identifier_sql("owned_item_id", "asin_key", "bigint", "text") unless audible_catalog?
 
       <<~SQL.squish
         SELECT
           owned_library_items.id AS owned_item_id,
-          shelfarr_catalog_asin(owned_library_items.external_id) AS asin_key
+          #{catalog_asin_sql('owned_library_items.external_id')} AS asin_key
         FROM owned_library_items
         LEFT JOIN books AS linked_books ON linked_books.id = owned_library_items.book_id
         WHERE #{visible_owned_item_sql}
-          AND shelfarr_catalog_asin(owned_library_items.external_id) <> ''
+          AND #{catalog_asin_sql('owned_library_items.external_id')} <> ''
       SQL
     end
 
-    def empty_identifier_sql(first_column, second_column)
-      "SELECT NULL AS #{first_column}, NULL AS #{second_column} WHERE 0"
+    def empty_identifier_sql(first_column, second_column, type1 = "bigint", type2 = "bigint")
+      if connection.adapter_name == "PostgreSQL"
+        "SELECT NULL::#{type1} AS #{first_column}, NULL::#{type2} AS #{second_column} WHERE 1=0"
+      else
+        "SELECT NULL AS #{first_column}, NULL AS #{second_column} WHERE 1=0"
+      end
     end
 
     def raw_book_entries_sql
@@ -224,8 +234,8 @@ class LibraryController < ApplicationController
       if query.present?
         filters << <<~SQL.squish
           (
-            shelfarr_catalog_lower(title) LIKE #{query_pattern} ESCAPE '\\'
-            OR shelfarr_catalog_lower(author) LIKE #{query_pattern} ESCAPE '\\'
+            #{catalog_lower_sql('title')} LIKE #{query_pattern} ESCAPE '\\'
+            OR #{catalog_lower_sql('author')} LIKE #{query_pattern} ESCAPE '\\'
             OR dynamic_search_match = 1
           )
         SQL
@@ -234,13 +244,14 @@ class LibraryController < ApplicationController
     end
 
     def audible_book_tags_sql
+      active_condition = connection.adapter_name == "PostgreSQL" ? "tagged_items.active = TRUE" : "tagged_items.active = 1"
       <<~SQL.squish
         SELECT tagged_items.book_id
         FROM owned_library_items AS tagged_items
         INNER JOIN owned_library_connections
           ON owned_library_connections.id = tagged_items.owned_library_connection_id
         WHERE tagged_items.book_id IS NOT NULL
-          AND tagged_items.active = 1
+          AND #{active_condition}
           AND tagged_items.ownership_type = 'purchased'
           AND tagged_items.media_type = 'audiobook'
           AND owned_library_connections.provider = 'libation'
@@ -252,7 +263,11 @@ class LibraryController < ApplicationController
     end
 
     def dynamic_book_search_matches_sql
-      return "SELECT NULL AS book_id WHERE 0" unless audible_catalog? && query.present?
+      if connection.adapter_name == "PostgreSQL"
+        return "SELECT NULL::bigint AS book_id WHERE 1=0" unless audible_catalog? && query.present?
+      else
+        return "SELECT NULL AS book_id WHERE 1=0" unless audible_catalog? && query.present?
+      end
 
       <<~SQL.squish
         SELECT DISTINCT dynamic_identifier_matches.matched_book_id AS book_id
@@ -261,19 +276,28 @@ class LibraryController < ApplicationController
           ON matched_items.id = dynamic_identifier_matches.owned_item_id
         WHERE dynamic_identifier_matches.matched_book_id IS NOT NULL
           AND (
-            shelfarr_catalog_lower(#{owned_display_title_sql("matched_items")})
+            #{catalog_lower_sql(owned_display_title_sql("matched_items"))}
               LIKE #{query_pattern} ESCAPE '\\'
-            OR shelfarr_catalog_lower(#{owned_author_sql("matched_items")})
+            OR #{catalog_lower_sql(owned_author_sql("matched_items"))}
               LIKE #{query_pattern} ESCAPE '\\'
           )
       SQL
     end
 
     def owned_entries_sql
-      return <<~SQL.squish unless audible_catalog?
-        SELECT NULL AS kind, NULL AS record_id, NULL AS title, NULL AS author,
-          NULL AS audible_tag WHERE 0
-      SQL
+      unless audible_catalog?
+        if connection.adapter_name == "PostgreSQL"
+          return <<~SQL.squish
+            SELECT NULL::integer AS kind, NULL::bigint AS record_id, NULL::text AS title, NULL::text AS author,
+              NULL::integer AS audible_tag WHERE 1=0
+          SQL
+        else
+          return <<~SQL.squish
+            SELECT NULL AS kind, NULL AS record_id, NULL AS title, NULL AS author,
+              NULL AS audible_tag WHERE 1=0
+          SQL
+        end
+      end
 
       filters = [
         visible_owned_item_sql,
@@ -282,9 +306,9 @@ class LibraryController < ApplicationController
       if query.present?
         filters << <<~SQL.squish
           (
-            shelfarr_catalog_lower(#{owned_display_title_sql})
+            #{catalog_lower_sql(owned_display_title_sql)}
               LIKE #{query_pattern} ESCAPE '\\'
-            OR shelfarr_catalog_lower(#{owned_author_sql})
+            OR #{catalog_lower_sql(owned_author_sql)}
               LIKE #{query_pattern} ESCAPE '\\'
           )
         SQL
@@ -306,9 +330,10 @@ class LibraryController < ApplicationController
     end
 
     def visible_owned_item_sql
+      active_condition = connection.adapter_name == "PostgreSQL" ? "owned_library_items.active = TRUE" : "owned_library_items.active = 1"
       <<~SQL.squish
         owned_library_items.owned_library_connection_id = #{owned_library_connection.id.to_i}
-          AND owned_library_items.active = 1
+          AND #{active_condition}
           AND owned_library_items.ownership_type = 'purchased'
           AND owned_library_items.media_type = 'audiobook'
           AND (
@@ -330,16 +355,55 @@ class LibraryController < ApplicationController
     end
 
     def owned_author_sql(table = "owned_library_items")
-      <<~SQL.squish
-        COALESCE(
-          (
-            SELECT GROUP_CONCAT(CAST(author.value AS TEXT), ', ')
-            FROM JSON_EACH(#{table}.authors) AS author
-            WHERE TRIM(CAST(author.value AS TEXT)) <> ''
-          ),
-          ''
-        )
-      SQL
+      if connection.adapter_name == "PostgreSQL"
+        <<~SQL.squish
+          COALESCE(
+            (
+              SELECT STRING_AGG(author, ', ')
+              FROM (
+                SELECT json_array_elements_text(#{table}.authors::json) AS author
+              ) AS subquery
+              WHERE TRIM(author) <> ''
+            ),
+            ''
+          )
+        SQL
+      else
+        <<~SQL.squish
+          COALESCE(
+            (
+              SELECT GROUP_CONCAT(CAST(author.value AS TEXT), ', ')
+              FROM JSON_EACH(#{table}.authors) AS author
+              WHERE TRIM(CAST(author.value AS TEXT)) <> ''
+            ),
+            ''
+          )
+        SQL
+      end
+    end
+
+    def catalog_lower_sql(column)
+      if connection.adapter_name == "PostgreSQL"
+        "LOWER(CAST(#{column} AS TEXT))"
+      else
+        "shelfarr_catalog_lower(#{column})"
+      end
+    end
+
+    def catalog_asin_sql(column)
+      if connection.adapter_name == "PostgreSQL"
+        "REGEXP_REPLACE(UPPER(CAST(#{column} AS TEXT)), '[^A-Z0-9]', '', 'g')"
+      else
+        "shelfarr_catalog_asin(#{column})"
+      end
+    end
+
+    def catalog_isbn_sql(column)
+      if connection.adapter_name == "PostgreSQL"
+        "REGEXP_REPLACE(UPPER(CAST(#{column} AS TEXT)), '[^0-9X]', '', 'g')"
+      else
+        "shelfarr_catalog_isbn(#{column})"
+      end
     end
 
     def book_type_sql
@@ -582,18 +646,39 @@ class LibraryController < ApplicationController
       .filter_map { |title| normalize_catalog_text(title).presence }
       .uniq
     asin_keys = items.filter_map { |item| normalize_catalog_asin(item.external_id).presence }.uniq
+
+    asin_sql = if LibraryItem.connection.adapter_name == "PostgreSQL"
+      "REGEXP_REPLACE(UPPER(CAST(asin AS TEXT)), '[^A-Z0-9]', '', 'g')"
+    else
+      "shelfarr_catalog_asin(asin)"
+    end
+
     library_items = LibraryItem.available_for_matching.where(
-      "shelfarr_catalog_asin(asin) IN (?)",
+      "#{asin_sql} IN (?)",
       asin_keys
     ).select(:asin, :isbn).to_a
     isbn_keys = library_items.filter_map { |item| normalize_catalog_isbn(item.isbn).presence }.uniq
     book_filters = []
+
+    text_sql = if Book.connection.adapter_name == "PostgreSQL"
+      "REGEXP_REPLACE(LOWER(CAST(title AS TEXT)), '[^a-z0-9\\s]', ' ', 'g')"
+    else
+      "shelfarr_catalog_text(title)"
+    end
+
     book_filters << Book.acquired.audiobooks.where(
-      "shelfarr_catalog_text(title) IN (?)",
+      "#{text_sql} IN (?)",
       title_keys
     ) if title_keys.any?
+
+    isbn_sql = if Book.connection.adapter_name == "PostgreSQL"
+      "REGEXP_REPLACE(UPPER(CAST(isbn AS TEXT)), '[^0-9X]', '', 'g')"
+    else
+      "shelfarr_catalog_isbn(isbn)"
+    end
+
     book_filters << Book.acquired.audiobooks.where(
-      "shelfarr_catalog_isbn(isbn) IN (?)",
+      "#{isbn_sql} IN (?)",
       isbn_keys
     ) if isbn_keys.any?
     books = book_filters.reduce(Book.none) { |scope, filter| scope.or(filter) }

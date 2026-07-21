@@ -9,8 +9,19 @@ class AddSearchClaimedAtToRequestsTest < ActiveSupport::TestCase
   end
 
   setup do
-    IsolatedMigrationRecord.establish_connection(adapter: "sqlite3", database: ":memory:")
+    adapter = ENV.fetch("DB_ADAPTER", "sqlite3")
+    database = adapter == "postgresql" ? "shelfarr_test" : ":memory:"
+    IsolatedMigrationRecord.establish_connection(adapter: adapter, database: database)
     @connection = IsolatedMigrationRecord.connection
+
+    if @connection.adapter_name == "PostgreSQL"
+      @connection.execute("DROP TABLE IF EXISTS request_events CASCADE")
+      @connection.execute("DROP TABLE IF EXISTS requests CASCADE")
+    else
+      @connection.execute("DROP TABLE IF EXISTS request_events")
+      @connection.execute("DROP TABLE IF EXISTS requests")
+    end
+
     @connection.create_table(:requests) do |table|
       table.integer :status, null: false
       table.boolean :attention_needed, default: false
@@ -61,9 +72,15 @@ class AddSearchClaimedAtToRequestsTest < ActiveSupport::TestCase
 
   def insert_request(status:, attention_needed:, updated_at:)
     quoted_time = @connection.quote(updated_at)
+    attention_val = if @connection.adapter_name == "PostgreSQL"
+      attention_needed ? "TRUE" : "FALSE"
+    else
+      attention_needed ? 1 : 0
+    end
+
     @connection.execute(<<~SQL.squish)
       INSERT INTO requests (status, attention_needed, updated_at)
-      VALUES (#{Integer(status)}, #{attention_needed ? 1 : 0}, #{quoted_time})
+      VALUES (#{Integer(status)}, #{attention_val}, #{quoted_time})
     SQL
     @connection.select_value("SELECT MAX(id) FROM requests").to_i
   end

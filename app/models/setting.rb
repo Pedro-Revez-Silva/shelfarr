@@ -21,8 +21,8 @@ class Setting < ApplicationRecord
         # Handle corrupted JSON data by attempting to fix it
         Rails.logger.warn("Invalid JSON in setting '#{key}': #{value}")
         # Try to wrap single values in an array for consistency
-        if value.include?(',')
-          value.split(',').map(&:strip)
+        if value.include?(",")
+          value.split(",").map(&:strip)
         else
           [ value ]
         end
@@ -43,8 +43,8 @@ class Setting < ApplicationRecord
         rescue JSON::ParserError
           # Not valid JSON - try to convert intelligently
           # If it looks like a comma-separated list, convert to array
-          if new_value.include?(',')
-            new_value.split(',').map(&:strip).to_json
+          if new_value.include?(",")
+            new_value.split(",").map(&:strip).to_json
           else
             # Single value - wrap in array for consistency with JSON array fields
             [ new_value ].to_json

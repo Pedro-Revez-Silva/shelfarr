@@ -140,7 +140,7 @@ class DownloadClientTest < ActiveSupport::TestCase
     mid = DownloadClient.create!(name: "Mid", client_type: "qbittorrent", url: "http://localhost:7070", priority: 5)
 
     clients = DownloadClient.by_priority.to_a
-    assert_equal [high, mid, low], clients
+    assert_equal [ high, mid, low ], clients
   end
 
   test "torrent_clients scope returns torrent clients" do

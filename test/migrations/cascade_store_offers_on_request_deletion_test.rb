@@ -9,8 +9,20 @@ class CascadeStoreOffersOnRequestDeletionTest < ActiveSupport::TestCase
   end
 
   setup do
-    IsolatedMigrationRecord.establish_connection(adapter: "sqlite3", database: ":memory:")
+    adapter = ENV.fetch("DB_ADAPTER", "sqlite3")
+    database = adapter == "postgresql" ? "shelfarr_test" : ":memory:"
+    IsolatedMigrationRecord.establish_connection(adapter: adapter, database: database)
     @connection = IsolatedMigrationRecord.connection
+
+    # Clean up potentially existing tables for postgresql since it doesn't use :memory:
+    if @connection.adapter_name == "PostgreSQL"
+      @connection.execute("DROP TABLE IF EXISTS store_offers CASCADE")
+      @connection.execute("DROP TABLE IF EXISTS requests CASCADE")
+    else
+      @connection.execute("DROP TABLE IF EXISTS store_offers")
+      @connection.execute("DROP TABLE IF EXISTS requests")
+    end
+
     @connection.create_table(:requests)
     @connection.create_table(:store_offers) do |table|
       table.references :request, null: false

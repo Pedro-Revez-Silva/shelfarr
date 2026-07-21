@@ -5,7 +5,7 @@ require "test_helper"
 class DownloadRoutingRuleTest < ActiveSupport::TestCase
   Result = Struct.new(:source, :indexer, :download_type, keyword_init: true) do
     def from_indexer?
-      source.in?([SearchResult::SOURCE_PROWLARR, SearchResult::SOURCE_JACKETT, SearchResult::SOURCE_NEWZNAB]) || source.blank?
+      source.in?([ SearchResult::SOURCE_PROWLARR, SearchResult::SOURCE_JACKETT, SearchResult::SOURCE_NEWZNAB ]) || source.blank?
     end
 
     def from_jackett?

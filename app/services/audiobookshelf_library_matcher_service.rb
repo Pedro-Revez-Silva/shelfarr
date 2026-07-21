@@ -56,7 +56,7 @@ class AudiobookshelfLibraryMatcherService
       acc << Match.new(item: item, score: score, match_type: match_type)
     end
 
-    matches.sort_by { |match| [-match.score, match.item.title.to_s.downcase] }.take(limit)
+    matches.sort_by { |match| [ -match.score, match.item.title.to_s.downcase ] }.take(limit)
   end
 
   private

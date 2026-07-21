@@ -14,13 +14,13 @@ class Admin::BulkOperationsControllerTest < ActionDispatch::IntegrationTest
     sign_out
     sign_in_as(users(:one))
 
-    post retry_selected_admin_bulk_operations_path, params: { request_ids: [@failed_request.id] }
+    post retry_selected_admin_bulk_operations_path, params: { request_ids: [ @failed_request.id ] }
     assert_response :redirect
     assert_redirected_to root_path
   end
 
   test "retry_selected retries selected requests" do
-    post retry_selected_admin_bulk_operations_path, params: { request_ids: [@failed_request.id, @max_retries_request.id] }
+    post retry_selected_admin_bulk_operations_path, params: { request_ids: [ @failed_request.id, @max_retries_request.id ] }
 
     assert_redirected_to requests_path(attention: "true")
     assert_includes flash[:notice], "2 requests queued for retry"
@@ -42,7 +42,7 @@ class Admin::BulkOperationsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:webhook_events, "request_failed")
 
     assert_enqueued_with(job: OutboundWebhookDeliveryJob) do
-      post cancel_selected_admin_bulk_operations_path, params: { request_ids: [@failed_request.id] }
+      post cancel_selected_admin_bulk_operations_path, params: { request_ids: [ @failed_request.id ] }
     end
 
     assert_redirected_to requests_path(attention: "true")

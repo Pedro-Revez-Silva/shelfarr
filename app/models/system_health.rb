@@ -15,7 +15,7 @@ class SystemHealth < ApplicationRecord
   validates :service, presence: true, uniqueness: true
   validates :status, presence: true
 
-  scope :unhealthy, -> { where(status: [:degraded, :down]) }
+  scope :unhealthy, -> { where(status: [ :degraded, :down ]) }
 
   def self.for_service(service_name)
     canonical_name = SERVICE_ALIASES.fetch(service_name.to_s, service_name.to_s)

@@ -87,7 +87,7 @@ module DownloadClients
       ensure_authenticated!
 
       # Deluge accepts arrays of torrent IDs
-      result = rpc_call("core.remove_torrents", [Array(hash), delete_files])
+      result = rpc_call("core.remove_torrents", [ Array(hash), delete_files ])
       result == true || (result.is_a?(Array) && result.empty?)
 
     rescue Faraday::Error => e
@@ -105,7 +105,7 @@ module DownloadClients
         req.headers["Content-Type"] = "application/json"
         req.body = {
           method: "auth.login",
-          params: [config.password.to_s],
+          params: [ config.password.to_s ],
           id: 1
         }.to_json
       end
@@ -181,7 +181,7 @@ module DownloadClients
 
     def torrent_statuses(filter = {})
       normalized_filter = filter.to_h.with_indifferent_access
-      rpc_call("core.get_torrents_status", [normalized_filter, TORRENT_FIELDS]) || {}
+      rpc_call("core.get_torrents_status", [ normalized_filter, TORRENT_FIELDS ]) || {}
     rescue Base::Error
       {}
     end

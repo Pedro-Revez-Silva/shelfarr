@@ -2,7 +2,7 @@
 
 module Admin
   class DownloadClientsController < BaseController
-    before_action :set_download_client, only: [:show, :edit, :update, :destroy, :test, :move_up, :move_down]
+    before_action :set_download_client, only: [ :show, :edit, :update, :destroy, :test, :move_up, :move_down ]
 
     def index
       @download_clients = DownloadClient.order(client_type: :asc, priority: :asc)

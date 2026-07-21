@@ -109,5 +109,4 @@ class UserTest < ActiveSupport::TestCase
 
     assert replacement.save
   end
-
 end
