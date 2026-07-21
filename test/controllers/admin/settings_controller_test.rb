@@ -203,6 +203,24 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /MP3, FLAC, and other chapter-based releases stay together/
   end
 
+  test "index shows completed download import mode options and hardlink guidance" do
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label[for='settings_completed_download_import_mode']", text: "Completed Download Import Mode"
+    assert_select "select[name='settings[completed_download_import_mode]']" do
+      assert_select "option[value='copy']", text: "Copy"
+      assert_select "option[value='move']", text: "Move"
+      assert_select "option[value='hardlink'][selected='selected']", text: "Hardlink"
+    end
+    assert_select "p", text: /Copy: Retains the source and uses extra disk space/
+    assert_select "p", text: /Move: Removes the source and can stop torrent seeding/
+    assert_select "p", text: /Hardlink: Retains the source without duplicate data; unsupported or cross-filesystem links fall back to copy/
+    assert_select "p", text: /Hardlinked names share content, ownership, and permissions; edits through either name affect both/
+  end
+
   test "index shows OIDC auto redirect setting" do
     get admin_settings_url
 
@@ -263,6 +281,53 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal true, SettingsService.get(:split_audiobook_bundle_imports)
+  end
+
+  test "bulk_update stores a valid completed download import mode" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        completed_download_import_mode: "hardlink"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "hardlink", SettingsService.get(:completed_download_import_mode)
+  end
+
+  test "bulk_update rejects an invalid completed download import mode" do
+    SettingsService.set(:completed_download_import_mode, "move")
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        completed_download_import_mode: "rename"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match /must be one of: copy, move, hardlink/, flash[:alert]
+    assert_equal "move", SettingsService.get(:completed_download_import_mode)
+  end
+
+  test "bulk_update collects an invalid import mode while saving valid settings and running side effects" do
+    reset_called = false
+
+    FlaresolverrClient.stub(:reset_connection!, -> { reset_called = true }) do
+      patch bulk_update_admin_settings_url,
+        params: {
+          settings: {
+            completed_download_import_mode: "rename",
+            flaresolverr_url: "http://localhost:8191"
+          }
+        },
+        headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    end
+
+    assert_response :success
+    assert_match "turbo-stream", response.body
+    assert_match "Completed Download Import Mode: must be one of: copy, move, hardlink", response.body
+    assert_equal "copy", SettingsService.get(:completed_download_import_mode)
+    assert_equal "http://localhost:8191", SettingsService.get(:flaresolverr_url)
+    assert reset_called
   end
 
   test "index shows library picker dropdown when audiobookshelf configured" do
