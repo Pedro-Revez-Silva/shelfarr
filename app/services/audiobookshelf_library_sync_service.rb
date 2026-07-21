@@ -7,23 +7,22 @@ class AudiobookshelfLibrarySyncService
     end
   end
 
-  SYNC_MUTEX = Mutex.new
-
   def sync!
-    SYNC_MUTEX.synchronize do
-      sync_internal!
-    end
-  end
-
-  private
-
-  def sync_internal!
     errors = []
     items_synced = 0
     libraries_synced = 0
     now = Time.current
 
-    library_ids = configured_library_ids
+    initial_platform = LibraryPlatformClient.active_platform
+    initial_explicit_ids = explicit_configured_library_ids
+    using_auto_discovery = initial_explicit_ids.empty?
+
+    library_ids = if using_auto_discovery
+      load_library_ids_from_configured_client
+    else
+      initial_explicit_ids
+    end
+
     if library_ids.empty?
       return Result.new(
         success: false,
@@ -33,7 +32,7 @@ class AudiobookshelfLibrarySyncService
       )
     end
 
-    library_platform = LibraryPlatformClient.active_platform
+    library_platform = initial_platform
     library_ids.each do |library_id|
       begin
         items = LibraryPlatformClient.library_items(library_id)
@@ -46,16 +45,18 @@ class AudiobookshelfLibrarySyncService
       end
     end
 
-    # Prune cached rows for libraries that are no longer configured.
-    # Revalidate active platform and configured IDs snapshot, and protect rows written after this run started.
-    remove_instance_variable(:@configured_library_ids) if defined?(@configured_library_ids)
-    current_library_ids = configured_library_ids
+    # Prune cached rows for libraries that are no longer configured, unless settings changed during the run.
     current_platform = LibraryPlatformClient.active_platform
+    current_explicit_ids = explicit_configured_library_ids
+    settings_changed = (current_platform != initial_platform) ||
+      (using_auto_discovery ? current_explicit_ids.any? : (current_explicit_ids.sort != initial_explicit_ids.sort))
 
-    LibraryItem.for_platform(current_platform)
-               .where.not(library_id: current_library_ids)
-               .where("synced_at < ?", now)
-               .delete_all
+    unless settings_changed
+      LibraryItem.for_platform(library_platform)
+                 .where.not(library_id: library_ids)
+                 .where("synced_at <= ? OR synced_at IS NULL", now)
+                 .delete_all
+    end
 
     synced = errors.empty? || items_synced.positive?
     Result.new(
@@ -66,28 +67,18 @@ class AudiobookshelfLibrarySyncService
     )
   end
 
-  def configured_library_ids
-    return @configured_library_ids if defined?(@configured_library_ids)
-
-    @configured_library_ids = begin
-      configured_ids = [
-        SettingsService.get(:audiobookshelf_audiobook_library_id),
-        SettingsService.get(:audiobookshelf_ebook_library_id),
-        SettingsService.get(:audiobookshelf_comicbook_library_id),
-        SettingsService.get(:audiobookshelf_audiobook_scan_library_ids),
-        SettingsService.get(:audiobookshelf_ebook_scan_library_ids),
-        SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
-      ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence).uniq
-
-      if configured_ids.any?
-        configured_ids
-      else
-        load_library_ids_from_configured_client
-      end
-    end
-  end
-
   private
+
+  def explicit_configured_library_ids
+    [
+      SettingsService.get(:audiobookshelf_audiobook_library_id),
+      SettingsService.get(:audiobookshelf_ebook_library_id),
+      SettingsService.get(:audiobookshelf_comicbook_library_id),
+      SettingsService.get(:audiobookshelf_audiobook_scan_library_ids),
+      SettingsService.get(:audiobookshelf_ebook_scan_library_ids),
+      SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
+    ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence).uniq
+  end
 
   def sync_library_items(library_platform, library_id, items, synced_at:)
     item_ids = []
@@ -102,6 +93,12 @@ class AudiobookshelfLibrarySyncService
         library_id: library_id,
         audiobookshelf_id: audiobookshelf_id
       )
+
+      if cached.persisted? && cached.synced_at.present? && cached.synced_at > now
+        item_ids << audiobookshelf_id
+        next
+      end
+
       cached.title = item["title"]
       cached.subtitle = item["subtitle"]
       cached.author = item["author"]
@@ -120,7 +117,10 @@ class AudiobookshelfLibrarySyncService
       item_ids << audiobookshelf_id
     end
 
-    LibraryItem.where(library_platform: library_platform, library_id: library_id).where.not(audiobookshelf_id: item_ids).delete_all
+    LibraryItem.where(library_platform: library_platform, library_id: library_id)
+               .where.not(audiobookshelf_id: item_ids)
+               .where("synced_at <= ? OR synced_at IS NULL", now)
+               .delete_all
   end
 
   def load_library_ids_from_configured_client

@@ -2123,6 +2123,63 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(temp_dir)
   end
 
+  test "index preloads library matches utilizing comic fallback and auto-discovery" do
+    sign_out
+    sign_in_as(@admin)
+
+    # 1. Test auto-discovery (all settings blank)
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
+    SettingsService.set(:audiobookshelf_ebook_scan_library_ids, "")
+    SettingsService.set(:audiobookshelf_comicbook_scan_library_ids, "")
+
+    book = Book.create!(title: "Discovery Book", author: "Discovery Author", book_type: :ebook)
+    Request.create!(book: book, user: @user)
+
+    # Create a library item that matches
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "discovered-lib-id",
+      audiobookshelf_id: "ab-discovery-1",
+      title: "Discovery Book",
+      author: "Discovery Author",
+      synced_at: Time.current
+    )
+
+    get requests_path
+    assert_response :success
+    matches = @controller.instance_variable_get(:@library_matches_by_book)
+    assert_not_nil matches
+    assert_equal 1, matches[book.id].size
+    assert_equal "Discovery Book", matches[book.id].first.item.title
+
+    # 2. Test comic fallback to ebook library when no comic library configured
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "lib-ebook")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+
+    comic_book = Book.create!(title: "Comic Title", author: "Comic Author", book_type: :comicbook)
+    Request.create!(book: comic_book, user: @user)
+
+    # Create matching library item in lib-ebook library
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-ebook",
+      audiobookshelf_id: "ab-comic-1",
+      title: "Comic Title",
+      author: "Comic Author",
+      synced_at: Time.current
+    )
+
+    get requests_path
+    assert_response :success
+    matches = @controller.instance_variable_get(:@library_matches_by_book)
+    assert_equal 1, matches[comic_book.id].size
+    assert_equal "Comic Title", matches[comic_book.id].first.item.title
+  end
+
   private
 
   def create_directory_download_request(suffix)
@@ -2183,62 +2240,5 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       storefront_url: "https://www.ebooks.com/en-pt/book/347175270/the-pending-ebook/another-author/",
       quoted_at: Time.current
     )
-  end
-
-  test "index preloads library matches utilizing comic fallback and auto-discovery" do
-    sign_out
-    sign_in_as(@admin)
-
-    # 1. Test auto-discovery (all settings blank)
-    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
-    SettingsService.set(:audiobookshelf_ebook_library_id, "")
-    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
-    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
-    SettingsService.set(:audiobookshelf_ebook_scan_library_ids, "")
-    SettingsService.set(:audiobookshelf_comicbook_scan_library_ids, "")
-
-    book = Book.create!(title: "Discovery Book", author: "Discovery Author", book_type: :ebook)
-    Request.create!(book: book, user: @user)
-
-    # Create a library item that matches
-    LibraryItem.create!(
-      library_platform: "audiobookshelf",
-      library_id: "discovered-lib-id",
-      audiobookshelf_id: "ab-discovery-1",
-      title: "Discovery Book",
-      author: "Discovery Author",
-      synced_at: Time.current
-    )
-
-    get requests_path
-    assert_response :success
-    matches = @controller.instance_variable_get(:@library_matches_by_book)
-    assert_not_nil matches
-    assert_equal 1, matches[book.id].size
-    assert_equal "Discovery Book", matches[book.id].first.item.title
-
-    # 2. Test comic fallback to ebook library when no comic library configured
-    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
-    SettingsService.set(:audiobookshelf_ebook_library_id, "lib-ebook")
-    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
-    
-    comic_book = Book.create!(title: "Comic Title", author: "Comic Author", book_type: :comicbook)
-    Request.create!(book: comic_book, user: @user)
-
-    # Create matching library item in lib-ebook library
-    LibraryItem.create!(
-      library_platform: "audiobookshelf",
-      library_id: "lib-ebook",
-      audiobookshelf_id: "ab-comic-1",
-      title: "Comic Title",
-      author: "Comic Author",
-      synced_at: Time.current
-    )
-
-    get requests_path
-    assert_response :success
-    matches = @controller.instance_variable_get(:@library_matches_by_book)
-    assert_equal 1, matches[comic_book.id].size
-    assert_equal "Comic Title", matches[comic_book.id].first.item.title
   end
 end

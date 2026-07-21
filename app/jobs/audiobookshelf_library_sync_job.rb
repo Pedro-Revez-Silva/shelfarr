@@ -2,6 +2,9 @@
 
 class AudiobookshelfLibrarySyncJob < ApplicationJob
   queue_as :default
+  limits_concurrency to: 1,
+    key: "audiobookshelf-library-sync",
+    duration: 10.minutes
 
   def perform
     return unless LibraryPlatformClient.configured?

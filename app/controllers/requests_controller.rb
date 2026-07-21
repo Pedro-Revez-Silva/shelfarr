@@ -82,11 +82,10 @@ class RequestsController < ApplicationController
     when "audiobook"
       [ :audiobookshelf_audiobook_library_id, :audiobookshelf_audiobook_scan_library_ids ]
     when "comicbook"
-      if SettingsService.get(:audiobookshelf_comicbook_library_id).present?
-        [ :audiobookshelf_comicbook_library_id, :audiobookshelf_comicbook_scan_library_ids ]
-      else
-        [ :audiobookshelf_ebook_library_id, :audiobookshelf_ebook_scan_library_ids ]
-      end
+      delivery_id = SettingsService.get(:audiobookshelf_comicbook_library_id).presence ||
+                    SettingsService.get(:audiobookshelf_ebook_library_id)
+      scan_ids = SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
+      return [ delivery_id, scan_ids ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence).uniq
     else # ebook
       [ :audiobookshelf_ebook_library_id, :audiobookshelf_ebook_scan_library_ids ]
     end
