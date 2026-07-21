@@ -10,7 +10,8 @@ class SettingsServiceTest < ActiveSupport::TestCase
     Setting.where(key: %w[
       indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories
       prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key
-      preferred_download_type preferred_download_types move_completed_downloads split_audiobook_bundle_imports audiobook_path_template api_token
+      preferred_download_type preferred_download_types completed_download_import_mode move_completed_downloads
+      split_audiobook_bundle_imports audiobook_path_template api_token
       zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url
       ebooks_com_enabled ebooks_com_country_code ebooks_com_search_limit
       metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled
@@ -122,8 +123,40 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal 10, SettingsService.get(:post_processing_source_path_retries)
   end
 
-  test "move completed downloads defaults to disabled" do
-    assert_equal false, SettingsService.get(:move_completed_downloads)
+  test "completed download import mode defaults to copy" do
+    assert_equal "copy", SettingsService.get(:completed_download_import_mode)
+  end
+
+  test "completed download import mode accepts every supported mode" do
+    SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.each do |mode|
+      assert_equal mode, SettingsService.set(:completed_download_import_mode, mode)
+
+      setting = Setting.find_by!(key: "completed_download_import_mode")
+      assert_equal mode, setting.value
+      assert_equal "string", setting.value_type
+    end
+  end
+
+  test "completed download import mode rejects invalid writes" do
+    SettingsService.set(:completed_download_import_mode, "move")
+
+    error = assert_raises(ArgumentError) do
+      SettingsService.set(:completed_download_import_mode, "rename")
+    end
+
+    assert_equal "Completed Download Import Mode must be one of: copy, move, hardlink", error.message
+    assert_equal "move", SettingsService.get(:completed_download_import_mode)
+  end
+
+  test "completed download import mode safely resolves corrupt persisted values to copy" do
+    Setting.create!(
+      key: "completed_download_import_mode",
+      value: "rename",
+      value_type: "string",
+      category: "download"
+    )
+
+    assert_equal "copy", SettingsService.get(:completed_download_import_mode)
   end
 
   test "split audiobook bundle imports defaults to disabled" do
