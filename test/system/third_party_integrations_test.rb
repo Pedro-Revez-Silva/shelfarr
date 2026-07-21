@@ -12,6 +12,36 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     SettingsService.set(:telegram_notification_events, "request_completed,request_failed,request_attention")
   end
 
+  test "admin opens integration settings after Turbo navigation" do
+    sign_in_as(@admin)
+
+    visit admin_root_path
+    click_link "Settings"
+
+    assert_selector "#settings-tabs [role='tablist']"
+    click_button "Integrations"
+    assert_field "Audiobookshelf URL"
+
+    click_link "Admin", match: :first
+    assert_current_path admin_root_path
+    page.go_back
+
+    assert_current_path admin_settings_path
+    assert_field "Audiobookshelf URL"
+  end
+
+  test "admin opens Audible Backup tabs after Turbo navigation" do
+    sign_in_as(@admin)
+
+    visit admin_root_path
+    click_link "Audible Backup (Beta)"
+
+    assert_selector "#audible-backup-tabs [role='tablist']"
+    click_button "Automation"
+    assert_text "Audible automation"
+    assert_no_field "Companion URL"
+  end
+
   test "admin configures Telegram settings and verifies the bot" do
     sign_in_as(@admin)
 
@@ -61,12 +91,14 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     sign_in_as(@admin)
 
     visit admin_settings_path
+    click_button "Integrations"
 
     assert_text "Telegram Group Authorization"
     fill_in "telegram_group_code", with: code
     click_button "Authorize Group"
 
     assert_text "Telegram group authorized: Book Club"
+    click_button "Integrations"
     assert_text "Authorized"
     assert TelegramChatAuthorization.find_by!(chat_id: "-100999").approved?
   end
@@ -81,22 +113,26 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     sign_in_as(@admin)
 
     visit admin_settings_path
+    click_button "Integrations"
 
     assert_text "Book Club"
     assert_text "Authorized"
 
     click_button "Pause Book Club"
     assert_text "Telegram group paused: Book Club"
+    click_button "Integrations"
     assert_text "Paused"
     assert authorization.reload.paused?
 
     click_button "Resume Book Club"
     assert_text "Telegram group resumed: Book Club"
+    click_button "Integrations"
     assert_text "Authorized"
     assert_not authorization.reload.paused?
 
     click_button "Delete Book Club"
     assert_text "Telegram group removed: Book Club"
+    click_button "Integrations"
     assert_no_text "-100999"
     assert_not TelegramChatAuthorization.exists?(authorization.id)
   end

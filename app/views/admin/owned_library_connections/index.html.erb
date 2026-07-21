@@ -63,13 +63,12 @@
   <% end %>
 
   <noscript>
-    <style>#audible-backup-tabs [role="tablist"] { display: none; }</style>
     <div class="mb-6 rounded-lg border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-200" role="status">
       JavaScript is disabled, so all settings sections are shown below. Background sign-in, sync, and backup jobs still run; refresh this page manually to see progress and completion.
     </div>
   </noscript>
 
-  <div class="mb-6 border-b border-gray-800">
+  <div class="hidden mb-6 border-b border-gray-800" data-settings-tabs-target="tablist">
     <nav class="-mb-px flex gap-1 overflow-x-auto" role="tablist" aria-label="Audible Backup settings">
       <% audible_tabs.each do |tab_key, label| %>
         <button
