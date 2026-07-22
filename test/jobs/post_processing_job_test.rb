@@ -981,7 +981,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal "long-name audio", File.read(File.join(long_title_destination, duplicate_filename))
   end
 
-  test "publishes split imports when the destination filesystem rejects hard links" do
+  test "publishes split imports when the destination filesystem rejects atomic publication" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
     @book.update!(title: "Book Two")
@@ -990,7 +990,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
     File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
 
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP, "hard links unavailable" }) do
-      PostProcessingJob.perform_now(@download.id)
+      FileCopyService.stub(:native_rename_noreplace, false) do
+        PostProcessingJob.perform_now(@download.id)
+      end
     end
 
     book_one_destination = File.join(@temp_dest_base, @book.author, "Book One", "Book One.m4b")
@@ -1926,6 +1928,57 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert duplicate.job_id.present?
     assert @download.claim_post_processing!(duplicate.job_id, expected_owner_job_id: owner.job_id)
     assert_equal duplicate.job_id, @download.reload.post_processing_job_id
+  end
+
+  test "duplicate delivery of one job cannot import concurrently" do
+    SettingsService.set(:audiobookshelf_url, "")
+    original_job = PostProcessingJob.new(@download.id)
+    duplicate_job = PostProcessingJob.deserialize(original_job.serialize)
+    real_copy = FileCopyService.method(:copy_source_io)
+    entered_copy = Queue.new
+    release_copy = Queue.new
+    paused = false
+    errors = Queue.new
+    first = nil
+    duplicate = nil
+
+    pausing_copy = lambda do |source, target, heartbeat: nil|
+      unless paused
+        paused = true
+        entered_copy << true
+        release_copy.pop
+      end
+      real_copy.call(source, target, heartbeat: heartbeat)
+    end
+
+    FileCopyService.stub(:copy_source_io, pausing_copy) do
+      first = Thread.new do
+        original_job.perform_now
+      rescue => error
+        errors << error
+      end
+      entered_copy.pop
+      duplicate = Thread.new do
+        duplicate_job.perform_now
+      rescue => error
+        errors << error
+      end
+
+      sleep 0.05
+      assert duplicate.alive?
+      release_copy << true
+      first.join
+      duplicate.join
+    end
+
+    expected_directory = File.join(@temp_dest_base, @book.author, @book.title)
+    flunk errors.pop.full_message unless errors.empty?
+    assert @request.reload.completed?
+    assert_equal [ "audiobook.mp3" ], Dir.children(expected_directory)
+  ensure
+    release_copy << true if release_copy && first&.alive?
+    first&.join
+    duplicate&.join
   end
 
   test "scheduled retry owns durable recovery and blocks cancellation" do

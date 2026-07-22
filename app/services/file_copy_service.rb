@@ -23,6 +23,8 @@ class FileCopyService
   COPY_LOCK_LEGACY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_LEGACY_MAGIC)}:([0-9a-f]{32})\z/
   COPY_LOCK_PENDING_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):pending\z/
   COPY_LOCK_RECORD_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):full:([0-9]+):([0-9]+)\z/
+  COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:prepared:([0-9]+):([0-9]+):([0-9a-f]+)\z/
+  COPY_LOCK_COMPATIBILITY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:(copying|complete):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9a-f]+)\z/
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   COPY_QUARANTINE_ENTRY = "entry"
   COPY_QUARANTINE_STALE_AGE = 24 * 60 * 60
@@ -70,15 +72,29 @@ class FileCopyService
       buffered_copy(src, dest)
     end
 
-    # Copy a regular file without ever exposing partially-copied bytes at the
-    # final pathname. Bytes are written and fsynced to a private file in the
-    # destination directory, then published with an atomic no-replace link (or
-    # platform no-replace rename). Every destination component is opened from
-    # a pinned root descriptor with O_NOFOLLOW.
-    def cp_noreplace(src, dest, root: nil, source_root: nil, heartbeat: nil, hardlink_mode: false)
+    # Copy a regular file through a complete private file in the destination
+    # directory. Publication uses an atomic no-replace operation when the
+    # filesystem supports one, or an exclusive descriptor-backed copy with
+    # crash recovery on compatibility filesystems. Every destination component
+    # is opened from a pinned root descriptor with O_NOFOLLOW.
+    def cp_noreplace(
+      src,
+      dest,
+      root: nil,
+      source_root: nil,
+      heartbeat: nil,
+      hardlink_mode: false,
+      allow_compatibility_fallback: false
+    )
       source_opener = hardlink_mode ? :with_pinned_hardlink_source : :with_pinned_source
       send(source_opener, src, source_root: source_root) do |source, *_source_path|
-        publish_source_io_noreplace(source, dest, root: root, heartbeat: heartbeat)
+        publish_source_io_noreplace(
+          source,
+          dest,
+          root: root,
+          heartbeat: heartbeat,
+          allow_compatibility_fallback: allow_compatibility_fallback
+        )
       end
       dest
     end
@@ -114,10 +130,23 @@ class FileCopyService
     # Move with the same crash-safe publication as cp_noreplace. The source is
     # removed through its pinned parent descriptor only after its pathname,
     # descriptor identity, and parent identity have all been revalidated.
-    def mv_noreplace(src, dest, root: nil, source_root: nil, heartbeat: nil)
+    def mv_noreplace(
+      src,
+      dest,
+      root: nil,
+      source_root: nil,
+      heartbeat: nil,
+      allow_compatibility_fallback: false
+    )
       with_pinned_source(src, source_root: source_root) do |source, source_parent, source_basename, source_parent_path|
         source_identity = file_identity(source.stat)
-        publish_source_io_noreplace(source, dest, root: root, heartbeat: heartbeat)
+        publish_source_io_noreplace(
+          source,
+          dest,
+          root: root,
+          heartbeat: heartbeat,
+          allow_compatibility_fallback: allow_compatibility_fallback
+        )
         remove_pinned_source_after_publication!(
           source,
           source_parent,
@@ -991,7 +1020,13 @@ class FileCopyService
       relative
     end
 
-    def publish_source_io_noreplace(source, destination, root:, heartbeat: nil)
+    def publish_source_io_noreplace(
+      source,
+      destination,
+      root:,
+      heartbeat: nil,
+      allow_compatibility_fallback: false
+    )
       raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
@@ -1023,13 +1058,30 @@ class FileCopyService
               native_fchmod(temporary.fileno, LIBRARY_FILE_MODE)
               flush_and_sync(temporary)
 
-              publish_private_child_noreplace!(
-                parent,
-                temporary_basename,
-                basename,
-                temporary_identity
-              )
-              published_identity = temporary_identity
+              begin
+                publish_private_child_noreplace!(
+                  parent,
+                  temporary_basename,
+                  basename,
+                  temporary_identity
+                )
+                published_identity = temporary_identity
+              rescue AtomicPublicationUnsupportedError
+                raise unless allow_compatibility_fallback
+
+                Rails.logger.warn(
+                  "[FileCopyService] Atomic publication unsupported; using exclusive-copy compatibility mode"
+                )
+                published_identity = publish_private_child_by_copy_noreplace!(
+                  parent,
+                  temporary_basename,
+                  basename,
+                  temporary_identity,
+                  lock: lock,
+                  token: token,
+                  heartbeat: heartbeat
+                )
+              end
               validate_published_child!(parent, basename, published_identity)
               validate_current_directory_identity!(parent_path, parent)
               sync_io(parent)
@@ -1228,6 +1280,88 @@ class FileCopyService
       validate_published_child!(parent, destination_basename, identity, expected_mode: mode)
     end
 
+    def publish_private_child_by_copy_noreplace!(
+      parent,
+      temporary_basename,
+      destination_basename,
+      temporary_identity,
+      lock:,
+      token:,
+      heartbeat:,
+      mode: LIBRARY_FILE_MODE
+    )
+      destination_identity = nil
+      source_size = nil
+
+      begin
+        with_pinned_regular_child(parent, temporary_basename) do |source|
+          source_stat = source.stat
+          unless file_identity(source_stat) == temporary_identity
+            raise Errno::ESTALE, "private publication source changed"
+          end
+          source_size = source_stat.size
+
+          persist_copy_lock_compatibility!(
+            lock,
+            token,
+            :prepared,
+            temporary_identity,
+            destination_basename
+          )
+          with_created_regular_child(parent, destination_basename, 0o600) do |destination|
+            destination_identity = file_identity(destination.stat)
+            persist_copy_lock_compatibility!(
+              lock,
+              token,
+              :copying,
+              temporary_identity,
+              destination_basename,
+              destination_identity
+            )
+            sync_io(parent)
+
+            if heartbeat
+              copy_source_io(source, destination, heartbeat: heartbeat)
+            else
+              copy_source_io(source, destination)
+            end
+            native_fchmod(destination.fileno, mode)
+            flush_and_sync(destination)
+            unless file_identity(source.stat) == temporary_identity &&
+                source.stat.size == source_size && destination.stat.size == source_size
+              raise Errno::ESTALE, "file changed during compatibility publication"
+            end
+          end
+        end
+
+        with_pinned_regular_child(parent, temporary_basename) do |source|
+          unless file_identity(source.stat) == temporary_identity && source.stat.size == source_size
+            raise Errno::ESTALE, "private publication source changed"
+          end
+        end
+        validate_published_child!(
+          parent,
+          destination_basename,
+          destination_identity,
+          expected_mode: mode
+        )
+        sync_io(parent)
+        persist_copy_lock_compatibility!(
+          lock,
+          token,
+          :complete,
+          temporary_identity,
+          destination_basename,
+          destination_identity
+        )
+        destination_identity
+      rescue
+        remove_pinned_child_if_identity(parent, destination_basename, destination_identity)
+        sync_io(parent)
+        raise
+      end
+    end
+
     def validate_published_child!(
       parent,
       basename,
@@ -1275,10 +1409,12 @@ class FileCopyService
 
       with_pinned_regular_child(parent, lock_basename) do |lock|
         return unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+        return unless lock.stat.uid == Process.euid
 
         lock_identity = file_identity(lock.stat)
         lock.rewind
-        state, expected_temporary_identity = copy_lock_cleanup_state(lock.read, token)
+        state, expected_temporary_identity, destination_basename,
+          expected_destination_identity = copy_lock_cleanup_state(lock.read, token)
         cleanup_result = case state
         when :full
           remove_pinned_child_if_identity(
@@ -1286,6 +1422,51 @@ class FileCopyService
             temporary_basename,
             expected_temporary_identity
           )
+        when :compatibility_copying
+          destination_cleanup = remove_pinned_child_if_identity(
+            parent,
+            destination_basename,
+            expected_destination_identity
+          )
+          if destination_cleanup.in?([ :removed, :missing ])
+            remove_pinned_child_if_identity(
+              parent,
+              temporary_basename,
+              expected_temporary_identity
+            )
+          else
+            destination_cleanup
+          end
+        when :compatibility_prepared
+          # The process exited before recording the final inode. Never remove
+          # an occupied path that cannot be proven to belong to this attempt.
+          if pinned_child_missing?(parent, destination_basename)
+            remove_pinned_child_if_identity(
+              parent,
+              temporary_basename,
+              expected_temporary_identity
+            )
+          else
+            :retained
+          end
+        when :compatibility_complete
+          destination_status = begin
+            pinned_child_identity(parent, destination_basename) == expected_destination_identity ?
+              :complete : :retained
+          rescue Errno::ENOENT
+            :missing
+          rescue Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+            :retained
+          end
+          if destination_status.in?([ :complete, :missing ])
+            remove_pinned_child_if_identity(
+              parent,
+              temporary_basename,
+              expected_temporary_identity
+            )
+          else
+            destination_status
+          end
         when :pending, :legacy
           remove_pinned_regular_child(parent, temporary_basename)
         else
@@ -1352,6 +1533,28 @@ class FileCopyService
       )
     end
 
+    def persist_copy_lock_compatibility!(
+      lock,
+      token,
+      state,
+      temporary_identity,
+      destination_basename,
+      destination_identity = nil
+    )
+      encoded_basename = destination_basename.b.unpack1("H*")
+      record = "#{COPY_LOCK_MAGIC}:#{token}:compatibility:#{state}:" \
+        "#{temporary_identity.first}:#{temporary_identity.last}:"
+      if destination_identity
+        record << "#{destination_identity.first}:#{destination_identity.last}:"
+      end
+      record << encoded_basename
+
+      checksum = Digest::SHA256.hexdigest(record)
+      lock.seek(0, IO::SEEK_END)
+      lock.write("\n#{record}:#{checksum}\n")
+      flush_and_sync(lock)
+    end
+
     def persist_copy_lock_record!(lock, record)
       lock.rewind
       lock.truncate(0)
@@ -1360,7 +1563,57 @@ class FileCopyService
     end
 
     def copy_lock_cleanup_state(contents, token)
-      if (record = COPY_LOCK_RECORD_PATTERN.match(contents)) && record[1] == token
+      contents.lines(chomp: true).reverse_each do |record|
+        if record.start_with?("#{COPY_LOCK_MAGIC}:#{token}:compatibility:")
+          journal_record, separator, checksum = record.rpartition(":")
+          next if separator.empty? || checksum.length != 64 ||
+            Digest::SHA256.hexdigest(journal_record) != checksum
+
+          record = journal_record
+        end
+
+        state = copy_lock_record_cleanup_state(record, token)
+        return state unless state.first == :malformed
+      end
+      [ :malformed, nil ]
+    end
+
+    def copy_lock_record_cleanup_state(contents, token)
+      if (record = COPY_LOCK_COMPATIBILITY_PATTERN.match(contents)) && record[1] == token
+        encoded_basename = record[7]
+        return [ :malformed, nil, nil, nil ] unless encoded_basename.length.even? &&
+          encoded_basename.length <= 510
+
+        destination_basename = [ encoded_basename ].pack("H*")
+        return [ :malformed, nil, nil, nil ] if destination_basename.empty? ||
+          destination_basename.include?(File::SEPARATOR) ||
+          destination_basename.include?("\0") ||
+          destination_basename.in?([ ".", ".." ])
+
+        [
+          record[2] == "complete" ? :compatibility_complete : :compatibility_copying,
+          [ record[3].to_i, record[4].to_i ],
+          destination_basename,
+          [ record[5].to_i, record[6].to_i ]
+        ]
+      elsif (record = COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN.match(contents)) && record[1] == token
+        encoded_basename = record[4]
+        return [ :malformed, nil, nil, nil ] unless encoded_basename.length.even? &&
+          encoded_basename.length <= 510
+
+        destination_basename = [ encoded_basename ].pack("H*")
+        return [ :malformed, nil, nil, nil ] if destination_basename.empty? ||
+          destination_basename.include?(File::SEPARATOR) ||
+          destination_basename.include?("\0") ||
+          destination_basename.in?([ ".", ".." ])
+
+        [
+          :compatibility_prepared,
+          [ record[2].to_i, record[3].to_i ],
+          destination_basename,
+          nil
+        ]
+      elsif (record = COPY_LOCK_RECORD_PATTERN.match(contents)) && record[1] == token
         [ :full, [ record[2].to_i, record[3].to_i ] ]
       elsif (record = COPY_LOCK_PENDING_PATTERN.match(contents)) && record[1] == token
         [ :pending, nil ]

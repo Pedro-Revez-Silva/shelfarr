@@ -77,6 +77,118 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal 0o777, File.stat(@src_file).mode & 0o777
   end
 
+  test "cp_noreplace uses exclusive copy when atomic publication is unsupported" do
+    destination = File.join(@dest_dir, "compatible.txt")
+
+    without_atomic_file_publication do
+      FileCopyService.cp_noreplace(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        allow_compatibility_fallback: true
+      )
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal 0o640, File.stat(destination).mode & 0o777
+    assert_empty Dir.children(@dest_dir) - [ "compatible.txt" ]
+  end
+
+  test "cp_noreplace remains strict unless compatibility publication is enabled" do
+    destination = File.join(@dest_dir, "strict.txt")
+
+    without_atomic_file_publication do
+      assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_not File.exist?(destination)
+    assert_equal "test content", File.binread(@src_file)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "compatibility publication never overwrites an occupied destination" do
+    destination = File.join(@dest_dir, "occupied.txt")
+    raced = false
+
+    unsupported_link = lambda do |*|
+      unless raced
+        raced = true
+        File.binwrite(destination, "concurrent library bytes")
+      end
+      raise Errno::EOPNOTSUPP
+    end
+
+    FileCopyService.stub(:native_linkat, unsupported_link) do
+      FileCopyService.stub(:native_rename_noreplace, false) do
+        assert_raises(Errno::EEXIST) do
+          FileCopyService.cp_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            allow_compatibility_fallback: true
+          )
+        end
+      end
+    end
+
+    assert_equal "concurrent library bytes", File.binread(destination)
+    assert_equal "test content", File.binread(@src_file)
+    assert_equal [ "occupied.txt" ], Dir.children(@dest_dir)
+  end
+
+  test "compatibility publication removes an interrupted partial destination" do
+    destination = File.join(@dest_dir, "partial.txt")
+    real_copy = FileCopyService.method(:copy_source_io)
+    copy_calls = 0
+    interrupted_copy = lambda do |source, target, heartbeat: nil|
+      copy_calls += 1
+      if copy_calls == 2
+        target.write("partial")
+        target.flush
+        raise IOError, "interrupted compatibility copy"
+      end
+
+      real_copy.call(source, target, heartbeat: heartbeat)
+    end
+
+    FileCopyService.stub(:copy_source_io, interrupted_copy) do
+      without_atomic_file_publication do
+        assert_raises(IOError) do
+          FileCopyService.cp_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            allow_compatibility_fallback: true
+          )
+        end
+      end
+    end
+
+    assert_equal 2, copy_calls
+    assert_not File.exist?(destination)
+    assert_equal "test content", File.binread(@src_file)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "mv_noreplace removes its source after compatibility publication" do
+    destination = File.join(@dest_dir, "moved-compatible.txt")
+
+    without_atomic_file_publication do
+      FileCopyService.mv_noreplace(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        allow_compatibility_fallback: true
+      )
+    end
+
+    assert_not File.exist?(@src_file)
+    assert_equal "test content", File.binread(destination)
+    assert_empty Dir.children(@dest_dir) - [ "moved-compatible.txt" ]
+  end
+
   test "hardlink_noreplace publishes the source inode without removing or chmodding it" do
     destination = File.join(@dest_dir, "hardlinked.txt")
     File.chmod(0o754, @src_file)
@@ -542,6 +654,145 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
 
+    assert_not File.exist?(lock)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "interrupted cleanup removes a compatibility partial by recorded identity" do
+    token = "9" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    destination = File.join(@dest_dir, "partial-compatible.txt")
+    File.binwrite(temporary, "complete private bytes")
+    File.binwrite(destination, "partial")
+    lock = write_compatibility_copy_lock(
+      token,
+      File.stat(temporary),
+      destination,
+      File.stat(destination)
+    )
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_not File.exist?(temporary)
+    assert_not File.exist?(destination)
+    assert_not File.exist?(lock)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "interrupted cleanup retains an unverified prepared compatibility destination" do
+    token = "7" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    destination = File.join(@dest_dir, "prepared-compatible.txt")
+    File.binwrite(temporary, "complete private bytes")
+    File.binwrite(destination, "")
+    File.chmod(0o600, destination)
+    lock = write_compatibility_copy_lock(
+      token,
+      File.stat(temporary),
+      destination,
+      File.stat(destination),
+      state: :prepared
+    )
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_equal "", File.binread(destination)
+    assert File.exist?(temporary)
+    assert File.exist?(lock)
+  end
+
+  test "prepared compatibility cleanup retains a nonempty destination" do
+    token = "5" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    destination = File.join(@dest_dir, "prepared-nonempty.txt")
+    File.binwrite(temporary, "complete private bytes")
+    File.binwrite(destination, "legitimate bytes")
+    File.chmod(0o600, destination)
+    lock = write_compatibility_copy_lock(
+      token,
+      File.stat(temporary),
+      destination,
+      File.stat(destination),
+      state: :prepared
+    )
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_equal "legitimate bytes", File.binread(destination)
+    assert File.exist?(temporary)
+    assert File.exist?(lock)
+  end
+
+  test "interrupted compatibility cleanup retains a destination replacement" do
+    token = "0" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    destination = File.join(@dest_dir, "replaced-compatible.txt")
+    displaced = File.join(@dest_dir, "original-partial")
+    File.binwrite(temporary, "complete private bytes")
+    File.binwrite(destination, "owned partial")
+    destination_stat = File.stat(destination)
+    lock = write_compatibility_copy_lock(
+      token,
+      File.stat(temporary),
+      destination,
+      destination_stat
+    )
+    File.rename(destination, displaced)
+    File.binwrite(destination, "replacement bytes")
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_equal "replacement bytes", File.binread(destination)
+    assert_equal "owned partial", File.binread(displaced)
+    assert File.exist?(temporary)
+    assert File.exist?(lock)
+  end
+
+  test "interrupted compatibility cleanup retains a completed destination" do
+    token = "8" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    destination = File.join(@dest_dir, "complete-compatible.txt")
+    File.binwrite(temporary, "complete bytes")
+    File.binwrite(destination, "complete bytes")
+    lock = write_compatibility_copy_lock(
+      token,
+      File.stat(temporary),
+      destination,
+      File.stat(destination),
+      state: :complete
+    )
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_equal "complete bytes", File.binread(destination)
+    assert_not File.exist?(temporary)
+    assert_not File.exist?(lock)
+    assert_equal [ "complete-compatible.txt" ], Dir.children(@dest_dir)
+  end
+
+  test "interrupted compatibility cleanup uses the last valid journal record" do
+    token = "6" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    destination = File.join(@dest_dir, "torn-compatible.txt")
+    File.binwrite(temporary, "complete private bytes")
+    File.binwrite(destination, "complete private bytes")
+    lock = write_compatibility_copy_lock(
+      token,
+      File.stat(temporary),
+      destination,
+      File.stat(destination)
+    )
+    File.open(lock, "ab") do |file|
+      file.write(
+        "\n#{FileCopyService::COPY_LOCK_MAGIC}:#{token}:compatibility:complete:" \
+          "1:2:3:4:746f726e"
+      )
+    end
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_not File.exist?(temporary)
+    assert_not File.exist?(destination)
     assert_not File.exist?(lock)
     assert_empty Dir.children(@dest_dir)
   end
@@ -1947,6 +2198,29 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       "#{FileCopyService::COPY_LOCK_MAGIC}:#{token}:full:#{temporary_stat.dev}:#{temporary_stat.ino}"
     )
     lock
+  end
+
+  def write_compatibility_copy_lock(token, temporary_stat, destination, destination_stat, state: :copying)
+    lock = File.join(@dest_dir, ".shelfarr-copy-#{token}.lock")
+    encoded_basename = File.basename(destination).b.unpack1("H*")
+    record = "#{FileCopyService::COPY_LOCK_MAGIC}:#{token}:compatibility:#{state}:" \
+      "#{temporary_stat.dev}:#{temporary_stat.ino}:"
+    unless state == :prepared
+      record << "#{destination_stat.dev}:#{destination_stat.ino}:"
+    end
+    record << encoded_basename
+    checksum = Digest::SHA256.hexdigest(record)
+    File.binwrite(
+      lock,
+      "#{record}:#{checksum}\n"
+    )
+    lock
+  end
+
+  def without_atomic_file_publication(&operation)
+    FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
+      FileCopyService.stub(:native_rename_noreplace, false, &operation)
+    end
   end
 
   def copy_quarantine_path(expected_stat, token)

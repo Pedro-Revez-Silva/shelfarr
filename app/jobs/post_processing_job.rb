@@ -11,6 +11,7 @@ class PostProcessingJob < ApplicationJob
   EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
   EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
   MAX_FILENAME_BYTES = 255
+  POST_PROCESSING_LOCK_SLOTS = 256
   class BookAcquisitionConflictError < StandardError; end
 
   queue_as :default
@@ -36,6 +37,15 @@ class PostProcessingJob < ApplicationJob
     @reused_file_count = 0
     download = Download.find_by(id: download_id)
     return unless download&.completed?
+
+    with_post_processing_lock(download.id) do
+      perform_locked(download, source_path_retry_count, expected_owner_job_id)
+    end
+  end
+
+  def perform_locked(download, source_path_retry_count, expected_owner_job_id)
+    download.reload
+    return unless download.completed?
 
     request = download.request
     return unless claim_request_for_post_processing(download, request, expected_owner_job_id)
@@ -101,6 +111,16 @@ class PostProcessingJob < ApplicationJob
       Rails.logger.error "[PostProcessingJob] Download ##{download.id} failed: #{e.class}"
       mark_post_processing_failure!(download, request, e) unless acquisition_finalized
     end
+  end
+
+  def with_post_processing_lock(download_id, &operation)
+    tmp_root = Rails.root.join("tmp")
+    lock_root = tmp_root.join("post-processing-locks")
+    FileCopyService.ensure_directory(lock_root.to_s, root: tmp_root.to_s, mode: 0o700)
+    FileCopyService.secure_private_directory!(lock_root.to_s, root: tmp_root.to_s)
+    lock_slot = download_id % POST_PROCESSING_LOCK_SLOTS
+    lock_path = lock_root.join("#{lock_slot}.lock")
+    FileCopyService.with_private_lock(lock_path.to_s, root: lock_root.to_s, &operation)
   end
 
   def claim_request_for_post_processing(download, request, expected_owner_job_id)
@@ -653,7 +673,8 @@ class PostProcessingJob < ApplicationJob
         source,
         destination,
         root: @import_base_path,
-        source_root: @import_source_root
+        source_root: @import_source_root,
+        allow_compatibility_fallback: true
       )
     elsif hardlink_completed_downloads?
       begin
@@ -673,7 +694,8 @@ class PostProcessingJob < ApplicationJob
           destination,
           root: @import_base_path,
           source_root: @import_source_root,
-          hardlink_mode: true
+          hardlink_mode: true,
+          allow_compatibility_fallback: true
         )
         @hardlink_fallback_copied_count += 1
       end
@@ -682,7 +704,8 @@ class PostProcessingJob < ApplicationJob
         source,
         destination,
         root: @import_base_path,
-        source_root: @import_source_root
+        source_root: @import_source_root,
+        allow_compatibility_fallback: true
       )
     end
     destination
