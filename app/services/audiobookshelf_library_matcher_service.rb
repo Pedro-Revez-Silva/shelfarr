@@ -16,6 +16,11 @@ class AudiobookshelfLibraryMatcherService
   end
 
   FuzzyThreshold = 85
+  MaxMatchTextLength = 500
+
+  def initialize(cache_library_items: true)
+    @cache_library_items = cache_library_items
+  end
 
   def self.matches_for_many(results, limit_per_result: 3)
     results = Array(results)
@@ -32,43 +37,72 @@ class AudiobookshelfLibraryMatcherService
   end
 
   def matches_for(title:, author:, limit: 3, library_ids: nil)
-    return [] if library_items(library_ids).empty?
-    return [] if title.blank? && author.blank?
-
     query_title = normalize_text(title)
     query_author = normalize_text(author)
+    limit = limit.to_i
+    return [] if query_title.blank? || limit <= 0
 
-    matches = library_items(library_ids).each_with_object([]) do |item, acc|
+    matches = []
+    each_library_item(library_ids) do |item|
+      next if oversized_match_text?(item.title)
+
       item_title = normalize_text(item.title)
-      item_display_title = normalize_text(item.display_title)
-      item_author = normalize_text(item.author)
+      item_subtitle = oversized_match_text?(item.subtitle) ? "" : normalize_text(item.subtitle)
+      item_display_title = [ item_title, item_subtitle ].compact_blank.join(" ")
+      item_author = oversized_match_text?(item.author) ? "" : normalize_text(item.author)
       next if item_title.blank? && item_display_title.blank? && item_author.blank?
+      item_titles = [ item_title, item_display_title ].uniq
 
       score = match_score(
         query_title: query_title,
         query_author: query_author,
-        item_titles: [ item_title, item_display_title ].uniq,
+        item_titles: item_titles,
         item_author: item_author
       )
       next if score < FuzzyThreshold
 
-      match_type = score == 100 ? :likely : :possible
-      acc << Match.new(item: item, score: score, match_type: match_type)
+      exact_author = query_author.present? && item_author == query_author
+      match_type = item_titles.include?(query_title) && exact_author ? :likely : :possible
+      matches << Match.new(item: item, score: score, match_type: match_type)
+      matches.sort_by! { |match| match_sort_key(match) }
+      matches.pop if matches.size > limit
     end
 
-    matches.sort_by { |match| [-match.score, match.item.title.to_s.downcase] }.take(limit)
+    matches
   end
 
   private
 
   def library_ids_for_scope(library_ids)
     @library_items_by_ids ||= {}
-    @library_items_by_ids[library_ids] ||= LibraryItem.available_for_matching.for_libraries(library_ids).by_synced_at_desc.to_a
+    @library_items_by_ids[library_ids] ||= library_scope(library_ids).by_synced_at_desc.to_a
   end
 
   def library_items(library_ids = nil)
-    return @all_library_items ||= LibraryItem.available_for_matching.by_synced_at_desc.to_a if library_ids.nil?
+    return @all_library_items ||= library_scope.by_synced_at_desc.to_a if library_ids.nil?
     library_ids_for_scope(library_ids)
+  end
+
+  def each_library_item(library_ids, &block)
+    if @cache_library_items
+      library_items(library_ids).each(&block)
+    else
+      library_scope(library_ids).find_each(batch_size: 500, &block)
+    end
+  end
+
+  def library_scope(library_ids = nil)
+    scope = LibraryItem.available_for_matching
+    library_ids.nil? ? scope : scope.for_libraries(library_ids)
+  end
+
+  def match_sort_key(match)
+    synced_at = match.item.effective_synced_at || Time.at(0)
+    [ -match.score, match.likely? ? 0 : 1, -synced_at.to_f, normalize_text(match.item.title), match.item.id || 0 ]
+  end
+
+  def oversized_match_text?(text)
+    text.is_a?(String) && text.length > MaxMatchTextLength
   end
 
   def match_score(query_title:, query_author:, item_titles:, item_author:)
@@ -83,11 +117,15 @@ class AudiobookshelfLibraryMatcherService
   end
 
   def normalize_text(text)
-    return "" if text.blank?
+    return "" unless text.is_a?(String)
+    return "" if text.length > MaxMatchTextLength
 
     text
-      .downcase
-      .gsub(/[^a-z0-9\s]/, " ")
+      .encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "")
+      .unicode_normalize(:nfkd)
+      .gsub(/\p{Mn}/, "")
+      .downcase(:fold)
+      .gsub(/[^\p{Alnum}\s]/, " ")
       .gsub(/\s+/, " ")
       .strip
   end

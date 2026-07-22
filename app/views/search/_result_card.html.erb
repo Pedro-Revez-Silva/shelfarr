@@ -121,8 +121,8 @@
           <li class="flex items-start justify-between gap-2 text-[11px]">
             <span class="min-w-0">
               <span class="block truncate text-amber-100"><%= match.item.display_title %></span>
-              <% if match.item.author.present? %>
-                <span class="block truncate text-amber-200/80"><%= match.item.author %></span>
+              <% if match.item.display_author.present? %>
+                <span class="block truncate text-amber-200/80"><%= match.item.display_author %></span>
               <% end %>
               <% detail_badges = match.item.detail_badges.first(3) %>
               <% if detail_badges.any? || match.item.identifier_label.present? %>

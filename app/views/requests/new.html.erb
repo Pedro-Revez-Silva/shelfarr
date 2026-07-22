@@ -1,6 +1,9 @@
 <div class="mx-auto max-w-2xl">
   <% content_kind = ContentKinds.normalize(@content_kind, default: "book") %>
   <% requestable_book_types = RequestOptionPolicy.book_types_for(content_kind) %>
+  <% format_checks = requestable_book_types.index_with do |book_type| %>
+    <% DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @source_work_ids, book_type: book_type) %>
+  <% end %>
   <h1 class="font-bold text-4xl mb-8 text-white">Request</h1>
 
   <div class="bg-gray-900 rounded-lg shadow p-6 border border-gray-800">
@@ -42,6 +45,29 @@
       </div>
     <% end %>
 
+    <%
+      unscoped_match_entry = @unscoped_synced_library_match_entries
+        .select { |entry| entry.book_types.any? { |book_type| !format_checks.fetch(book_type).block? } }
+        .max_by do |entry|
+          match = entry.match
+          [ match.likely? ? 1 : 0, match.score, match.item.effective_synced_at&.to_f || 0 ]
+        end
+    %>
+    <% if unscoped_match_entry %>
+      <% library_match = unscoped_match_entry.match %>
+      <% library_sync_time = library_match.item.effective_synced_at %>
+      <div class="mb-6 break-words rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200"
+           data-synced-library-warning
+           data-library-format="unknown"
+           data-match-type="<%= library_match.match_type %>">
+        <span class="font-medium"><%= library_match.confidence_label %> in cached library inventory:</span>
+        <%= truncate(library_match.item.display_title, length: 80) %><% if library_match.item.display_author.present? %> by <%= truncate(library_match.item.display_author, length: 60) %><% end %>.
+        The format could not be determined. Inventory was synced <%= library_sync_time ? time_ago_in_words(library_sync_time) + " ago" : "at an unknown time" %>.
+        Search for this title in your library before requesting.
+        This inventory advisory does not block requests.
+      </div>
+    <% end %>
+
     <%= form_with url: requests_path, method: :post, class: "space-y-6" do |form| %>
       <%= hidden_field_tag :work_id, @work_id %>
       <%= hidden_field_tag :title, @title %>
@@ -63,9 +89,9 @@
         <%= hidden_field_tag "source_work_ids[]", source_work_id %>
       <% end %>
 
-      <div>
-        <label class="block text-sm font-medium text-gray-300 mb-3">Select format(s):</label>
-        <div class="grid gap-4 <%= requestable_book_types.one? ? 'grid-cols-1' : 'grid-cols-2' %>">
+      <fieldset>
+        <legend class="block text-sm font-medium text-gray-300 mb-3">Select format(s):</legend>
+        <div class="grid grid-cols-1 gap-4 <%= 'sm:grid-cols-2' unless requestable_book_types.one? %>">
           <%
             format_labels = {
               "audiobook" => [ "Audiobook", "Audio format for listening", "border-purple-500", "text-purple-400" ],
@@ -76,11 +102,12 @@
 
           <% requestable_book_types.each do |book_type| %>
             <%
-              check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @source_work_ids, book_type: book_type)
+              check = format_checks.fetch(book_type)
+              library_match = Array(@synced_library_matches_by_book_type[book_type]).first
               label, description, border_class, text_class = format_labels.fetch(book_type)
               selected = params[:book_type] == book_type || params[:book_types]&.include?(book_type) || requestable_book_types.one?
             %>
-            <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none <%= check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:' + border_class %>" data-format="<%= book_type %>" data-border-class="<%= border_class %>">
+            <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-2 focus-within:ring-offset-gray-900 <%= check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:' + border_class %>" data-format="<%= book_type %>" data-border-class="<%= border_class %>">
               <input
                 type="checkbox"
                 name="book_types[]"
@@ -90,14 +117,29 @@
                 <%= 'checked' if selected && !check.block? %>
               >
               <span class="flex flex-1">
-                <span class="flex flex-col">
+                <span class="flex min-w-0 flex-col">
                   <span class="text-sm font-medium text-gray-200 <%= text_class %>"><%= label %></span>
                   <% if check.block? %>
                     <span class="mt-1 text-xs text-red-400"><%= check.message %></span>
-                  <% elsif check.warn? %>
-                    <span class="mt-1 text-xs text-yellow-400"><%= check.message %></span>
                   <% else %>
-                    <span class="mt-1 text-xs text-gray-500"><%= description %></span>
+                    <% if check.warn? %>
+                      <span class="mt-1 text-xs text-yellow-400"><%= check.message %></span>
+                    <% end %>
+                    <% if library_match %>
+                      <% library_sync_time = library_match.item.effective_synced_at %>
+                      <span class="mt-1 break-words text-xs text-amber-300"
+                            data-synced-library-warning
+                            data-library-format="<%= book_type %>"
+                            data-match-type="<%= library_match.match_type %>">
+                        <%= library_match.confidence_label %> in cached <%= label.downcase %> inventory:
+                        <%= truncate(library_match.item.display_title, length: 80) %><% if library_match.item.display_author.present? %> by <%= truncate(library_match.item.display_author, length: 60) %><% end %>.
+                        Synced <%= library_sync_time ? time_ago_in_words(library_sync_time) + " ago" : "at an unknown time" %>.
+                        You can still request this format.
+                      </span>
+                    <% end %>
+                    <% unless check.warn? || library_match %>
+                      <span class="mt-1 text-xs text-gray-500"><%= description %></span>
+                    <% end %>
                   <% end %>
                 </span>
               </span>
@@ -107,7 +149,7 @@
             </label>
           <% end %>
         </div>
-      </div>
+      </fieldset>
 
       <div>
         <label for="language" class="block text-sm font-medium text-gray-300 mb-1">Language</label>

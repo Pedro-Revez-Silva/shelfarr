@@ -443,6 +443,399 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "Test Book"
   end
 
+  test "new shows a nonblocking BookOrbit warning only for the matching format" do
+    original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "audio-primary")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "audio-scifi")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-primary")
+    SettingsService.set(:audiobookshelf_ebook_scan_library_ids, "")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "audio-scifi",
+      audiobookshelf_id: "bookorbit-audio-warning",
+      title: "Scoped Inventory Match",
+      author: "Format & Author",
+      synced_at: Time.current
+    )
+    Book.create!(
+      title: "Scoped Inventory Match",
+      book_type: :ebook,
+      open_library_work_id: "OL_SCOPED_INVENTORY_MATCH"
+    )
+    navigation_params = RequestMetadataHandoff.params_for(
+      user: @user,
+      metadata: {
+        work_id: "OL_SCOPED_INVENTORY_MATCH",
+        title: "Scoped Inventory Match",
+        author: "Format & Author"
+      }
+    )
+
+    get new_request_path(navigation_params.merge(book_type: "audiobook"))
+
+    assert_response :success
+    assert_select "label[data-format='audiobook']" do
+      assert_select "[data-synced-library-warning][data-library-format='audiobook'][data-match-type='likely']",
+        text: /You can still request this format/
+      assert_select "span", text: /This title exists as an ebook/
+      assert_select "[data-synced-library-warning]", text: /by Format & Author/
+      assert_select "input[name='book_types[]'][value='audiobook'][checked]:not([disabled])"
+    end
+    assert_select "label[data-format='ebook'] [data-synced-library-warning]", count: 0
+  ensure
+    Rails.cache = original_cache
+  end
+
+  test "new shows one format-unknown warning for auto-discovered libraries" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
+    SettingsService.set(:audiobookshelf_ebook_scan_library_ids, "")
+    SettingsService.set(:audiobookshelf_comicbook_scan_library_ids, "")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "auto-discovered-library",
+      audiobookshelf_id: "bookorbit-unscoped-warning",
+      title: "Unscoped Inventory Match",
+      author: "Discovery Author",
+      synced_at: Time.current
+    )
+
+    get new_request_path, params: {
+      work_id: "OL_UNSCOPED_INVENTORY_MATCH",
+      title: "Unscoped Inventory Match",
+      author: "Discovery Author"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning][data-library-format='unknown']", count: 1,
+      text: /format could not be determined/i
+    assert_select "label[data-format] [data-synced-library-warning]", count: 0
+  end
+
+  test "new suppresses synced inventory warnings for collection requests" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-primary")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "ebook-primary",
+      audiobookshelf_id: "bookorbit-collection-warning",
+      title: "Inventory Collection",
+      author: "Collection Author",
+      synced_at: Time.current
+    )
+
+    get new_request_path, params: {
+      work_id: "OL_INVENTORY_COLLECTION",
+      title: "Inventory Collection",
+      author: "Collection Author",
+      request_scope: "collection",
+      collection_source: "hardcover",
+      collection_id: "inventory-collection",
+      collection_title: "Inventory Collection"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning]", count: 0
+  end
+
+  test "create allows a request that matches synced inventory" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "audio-primary")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "audio-primary",
+      audiobookshelf_id: "bookorbit-allowed-request",
+      title: "Allowed Inventory Match",
+      author: "Request Author",
+      synced_at: Time.current
+    )
+
+    assert_difference [ "Book.count", "Request.count" ], 1 do
+      post requests_path, params: {
+        work_id: "OL_ALLOWED_INVENTORY_MATCH",
+        title: "Allowed Inventory Match",
+        author: "Request Author",
+        book_types: [ "audiobook" ]
+      }
+    end
+
+    assert_redirected_to request_path(Request.last)
+  end
+
+  test "new treats a library configured for multiple formats as format-unknown" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "shared-library")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "shared-library")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "shared-library",
+      audiobookshelf_id: "bookorbit-shared-format",
+      title: "Ambiguous Format Match",
+      author: "Shared Author",
+      synced_at: Time.current
+    )
+
+    get new_request_path, params: {
+      work_id: "OL_AMBIGUOUS_FORMAT_MATCH",
+      title: "Ambiguous Format Match",
+      author: "Shared Author"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning][data-library-format='unknown']", count: 1
+    assert_select "label[data-format] [data-synced-library-warning]", count: 0
+  end
+
+  test "new detects shared libraries across different content kinds" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "cross-kind-library")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "cross-kind-library")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "cross-kind-library",
+      audiobookshelf_id: "bookorbit-cross-kind-format",
+      title: "Cross Kind Match",
+      author: "Shared Creator",
+      synced_at: Time.current
+    )
+
+    get new_request_path, params: {
+      work_id: "comic_vine:4000-cross-kind-match",
+      title: "Cross Kind Match",
+      author: "Shared Creator",
+      content_kind: "graphic"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning][data-library-format='unknown']", count: 1
+    assert_select "label[data-format='comicbook'] [data-synced-library-warning]", count: 0
+  end
+
+  test "new renders malformed cached match metadata safely" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "malformed-library")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "malformed-library",
+      audiobookshelf_id: "bookorbit-malformed-metadata",
+      title: "Malformed Match\xFF".dup.force_encoding(Encoding::UTF_8),
+      author: "Malformed Author\xFF".dup.force_encoding(Encoding::UTF_8),
+      synced_at: Time.current
+    )
+
+    get new_request_path, params: {
+      work_id: "OL_MALFORMED_INVENTORY_MATCH",
+      title: "Malformed Match",
+      author: "Malformed Author"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning][data-library-format='audiobook']", count: 1,
+      text: /Malformed Match/
+  end
+
+  test "new hides an unscoped inventory advisory when every format is blocked" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
+    SettingsService.set(:audiobookshelf_ebook_scan_library_ids, "")
+    SettingsService.set(:audiobookshelf_comicbook_scan_library_ids, "")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "blocked-auto-discovery",
+      audiobookshelf_id: "bookorbit-blocked-unscoped",
+      title: "Blocked Inventory Match",
+      author: "Blocked Author",
+      synced_at: Time.current
+    )
+    %i[audiobook ebook].each do |book_type|
+      Book.create!(
+        title: "Blocked Inventory Match",
+        book_type: book_type,
+        open_library_work_id: "OL_BLOCKED_INVENTORY_MATCH",
+        file_path: "/library/#{book_type}/blocked"
+      )
+    end
+
+    get new_request_path, params: {
+      work_id: "OL_BLOCKED_INVENTORY_MATCH",
+      title: "Blocked Inventory Match",
+      author: "Blocked Author"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning]", count: 0
+    assert_select "input[name='book_types[]'][disabled]", count: 2
+  end
+
+  test "new hides an unscoped advisory when only unrelated formats are requestable" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "audio-primary")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-comic-fallback")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "ebook-comic-fallback",
+      audiobookshelf_id: "bookorbit-partially-blocked-unscoped",
+      title: "Partially Blocked Match",
+      author: "Blocked Format Author",
+      synced_at: Time.current
+    )
+    Book.create!(
+      title: "Partially Blocked Match",
+      book_type: :ebook,
+      open_library_work_id: "OL_PARTIALLY_BLOCKED_MATCH",
+      file_path: "/library/ebook/partially-blocked"
+    )
+
+    get new_request_path, params: {
+      work_id: "OL_PARTIALLY_BLOCKED_MATCH",
+      title: "Partially Blocked Match",
+      author: "Blocked Format Author"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning]", count: 0
+    assert_select "input[name='book_types[]'][value='ebook'][disabled]"
+    assert_select "input[name='book_types[]'][value='audiobook']:not([disabled])"
+  end
+
+  test "new derives unscoped applicability from the library that matched" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "overlap-audio")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "overlap-ebook")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "comic-primary")
+    SettingsService.set(:audiobookshelf_comicbook_scan_library_ids, "overlap-audio,overlap-ebook")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "overlap-audio",
+      audiobookshelf_id: "bookorbit-specific-overlap",
+      title: "Specific Overlap Match",
+      author: "Overlap Author",
+      synced_at: Time.current
+    )
+    Book.create!(
+      title: "Specific Overlap Match",
+      book_type: :audiobook,
+      open_library_work_id: "OL_SPECIFIC_OVERLAP_MATCH",
+      file_path: "/library/audiobook/specific-overlap"
+    )
+
+    get new_request_path, params: {
+      work_id: "OL_SPECIFIC_OVERLAP_MATCH",
+      title: "Specific Overlap Match",
+      author: "Overlap Author"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning]", count: 0
+    assert_select "input[name='book_types[]'][value='audiobook'][disabled]"
+    assert_select "input[name='book_types[]'][value='ebook']:not([disabled])"
+  end
+
+  test "new keeps overlap warnings for requestable formats when a stronger match is blocked" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "overlap-blocked-audio")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "overlap-requestable-ebook")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "comic-primary")
+    SettingsService.set(
+      :audiobookshelf_comicbook_scan_library_ids,
+      "overlap-blocked-audio,overlap-requestable-ebook"
+    )
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "overlap-blocked-audio",
+      audiobookshelf_id: "bookorbit-blocked-overlap-copy",
+      title: "Multi Overlap Match",
+      subtitle: "Blocked Audio Copy",
+      author: "Overlap Author",
+      synced_at: Time.current
+    )
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "overlap-requestable-ebook",
+      audiobookshelf_id: "bookorbit-requestable-overlap-copy",
+      title: "Multi Overlap Match",
+      subtitle: "Requestable Ebook Copy",
+      author: "Overlap Author",
+      synced_at: 1.day.ago
+    )
+    Book.create!(
+      title: "Multi Overlap Match",
+      book_type: :audiobook,
+      open_library_work_id: "OL_MULTI_OVERLAP_MATCH",
+      file_path: "/library/audiobook/multi-overlap"
+    )
+
+    get new_request_path, params: {
+      work_id: "OL_MULTI_OVERLAP_MATCH",
+      title: "Multi Overlap Match",
+      author: "Overlap Author"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning][data-library-format='unknown']", count: 1,
+      text: /Requestable Ebook Copy/
+    assert_select "input[name='book_types[]'][value='ebook']:not([disabled])"
+  end
+
+  test "new applies the ebook delivery fallback to comic inventory warnings" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-primary")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_scan_library_ids, "")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "ebook-primary",
+      audiobookshelf_id: "bookorbit-comic-fallback",
+      title: "Fallback Comic",
+      author: "Comic Creator",
+      synced_at: Time.current
+    )
+
+    get new_request_path, params: {
+      work_id: "comic_vine:4000-inventory-fallback",
+      title: "Fallback Comic",
+      author: "Comic Creator",
+      content_kind: "graphic"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning][data-library-format='unknown'][data-match-type='likely']", count: 1
+    assert_select "label[data-format='comicbook'] [data-synced-library-warning]", count: 0
+  end
+
+  test "new treats the comic fallback library as format-unknown for ebook requests" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "ebook-comic-fallback")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "ebook-comic-fallback",
+      audiobookshelf_id: "bookorbit-ebook-fallback-ambiguity",
+      title: "Fallback Ebook",
+      author: "Fallback Author",
+      synced_at: Time.current
+    )
+
+    get new_request_path, params: {
+      work_id: "OL_EBOOK_FALLBACK_AMBIGUITY",
+      title: "Fallback Ebook",
+      author: "Fallback Author"
+    }
+
+    assert_response :success
+    assert_select "[data-synced-library-warning][data-library-format='unknown']", count: 1
+    assert_select "label[data-format='ebook'] [data-synced-library-warning]", count: 0
+  end
+
   test "compact metadata handoff preserves long descriptions through creation" do
     original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new

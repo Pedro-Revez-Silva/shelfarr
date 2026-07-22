@@ -269,8 +269,8 @@
                                   <span class="shrink-0 rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-300">Missing</span>
                                 <% end %>
                               </div>
-                              <% if item.author.present? %>
-                                <p class="mt-1 text-[11px] text-gray-400"><%= item.author %></p>
+                              <% if item.display_author.present? %>
+                                <p class="mt-1 text-[11px] text-gray-400"><%= item.display_author %></p>
                               <% end %>
                               <% cache_details = [item.library_id, *item.detail_badges.first(4), item.identifier_label].compact %>
                               <% if cache_details.any? %>

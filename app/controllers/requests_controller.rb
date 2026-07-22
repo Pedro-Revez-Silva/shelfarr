@@ -3,7 +3,16 @@
 class RequestsController < ApplicationController
   class UnsafeDownloadPathError < StandardError; end
   DownloadBoundary = Data.define(:target, :root, :device, :inode, :kind)
+  UnscopedLibraryMatch = Data.define(:match, :book_types)
   MAX_ARCHIVE_DOWNLOAD_FILENAME_BYTES = 120
+  LIBRARY_ID_SETTING_KEYS = %i[
+    audiobookshelf_audiobook_library_id
+    audiobookshelf_ebook_library_id
+    audiobookshelf_comicbook_library_id
+    audiobookshelf_audiobook_scan_library_ids
+    audiobookshelf_ebook_scan_library_ids
+    audiobookshelf_comicbook_scan_library_ids
+  ].freeze
 
   before_action :set_request, only: [ :show, :destroy, :retry, :manual_magnet, :manual_nzb ]
   before_action :set_request_for_download, only: [ :download ]
@@ -65,37 +74,38 @@ class RequestsController < ApplicationController
   end
 
   def library_ids_for_book_type(book_type)
-    all_configured_ids = [
-      SettingsService.get(:audiobookshelf_audiobook_library_id),
-      SettingsService.get(:audiobookshelf_ebook_library_id),
-      SettingsService.get(:audiobookshelf_comicbook_library_id),
-      SettingsService.get(:audiobookshelf_audiobook_scan_library_ids),
-      SettingsService.get(:audiobookshelf_ebook_scan_library_ids),
-      SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
-    ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence)
+    settings = library_id_settings
+    return nil if settings.values.all?(&:empty?) # Preserve all-library matching after auto-discovery.
 
-    if all_configured_ids.empty?
-      return nil # Preserve all-library matching when synchronization used discovery
-    end
-
-    delivery_key, scan_key = case book_type.to_s
+    library_ids = case book_type.to_s
     when "audiobook"
-      [ :audiobookshelf_audiobook_library_id, :audiobookshelf_audiobook_scan_library_ids ]
+      settings[:audiobookshelf_audiobook_library_id] + settings[:audiobookshelf_audiobook_scan_library_ids]
     when "comicbook"
-      delivery_id = SettingsService.get(:audiobookshelf_comicbook_library_id).presence ||
-                    SettingsService.get(:audiobookshelf_ebook_library_id)
-      scan_ids = SettingsService.get(:audiobookshelf_comicbook_scan_library_ids)
-      return [ delivery_id, scan_ids ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence).uniq
+      delivery_ids = settings[:audiobookshelf_comicbook_library_id].presence ||
+                     settings[:audiobookshelf_ebook_library_id]
+      delivery_ids + settings[:audiobookshelf_comicbook_scan_library_ids]
     else # ebook
-      [ :audiobookshelf_ebook_library_id, :audiobookshelf_ebook_scan_library_ids ]
+      settings[:audiobookshelf_ebook_library_id] + settings[:audiobookshelf_ebook_scan_library_ids]
     end
 
-    [
-      SettingsService.get(delivery_key),
-      SettingsService.get(scan_key)
-    ].flat_map { |id| id.to_s.split(",").map(&:strip) }.filter_map(&:presence).uniq
+    library_ids.uniq.sort
   end
-  private :library_ids_for_book_type
+
+  def library_id_settings
+    @library_id_settings ||= LIBRARY_ID_SETTING_KEYS.index_with do |key|
+      SettingsService.get(key).to_s.split(",").map(&:strip).filter_map(&:presence).uniq
+    end
+  end
+
+  def explicitly_assigned_library_ids_by_book_type
+    settings = library_id_settings
+    {
+      "audiobook" => settings[:audiobookshelf_audiobook_library_id] + settings[:audiobookshelf_audiobook_scan_library_ids],
+      "ebook" => settings[:audiobookshelf_ebook_library_id] + settings[:audiobookshelf_ebook_scan_library_ids],
+      "comicbook" => settings[:audiobookshelf_comicbook_library_id] + settings[:audiobookshelf_comicbook_scan_library_ids]
+    }.transform_values { |ids| ids.uniq.sort }
+  end
+  private :library_ids_for_book_type, :library_id_settings, :explicitly_assigned_library_ids_by_book_type
 
   def show
     @request_events = Current.user.admin? ? @request.request_events.recent.limit(10) : RequestEvent.none
@@ -136,6 +146,7 @@ class RequestsController < ApplicationController
       return
     end
 
+    load_synced_library_matches
     @default_language = SettingsService.get(:default_language)
     @enabled_languages = enabled_language_options
   end
@@ -492,6 +503,54 @@ class RequestsController < ApplicationController
 
       [ info[:name], code ]
     end.sort_by(&:first)
+  end
+
+  def load_synced_library_matches
+    @synced_library_matches_by_book_type = {}
+    @unscoped_synced_library_match_entries = []
+    return if @request_scope == "collection" || @available_book_types.empty?
+
+    matcher = AudiobookshelfLibraryMatcherService.new(cache_library_items: false)
+    all_library_scopes = %w[audiobook ebook comicbook].index_with do |book_type|
+      library_ids_for_book_type(book_type)
+    end
+
+    if all_library_scopes.values.all?(&:nil?)
+      match = matcher.matches_for(title: @title, author: @author, limit: 1).first
+      @unscoped_synced_library_match_entries << UnscopedLibraryMatch.new(
+        match: match,
+        book_types: @available_book_types
+      ) if match
+      return
+    end
+
+    library_scopes = all_library_scopes.slice(*@available_book_types)
+    overlapping_ids = explicitly_assigned_library_ids_by_book_type.values.flatten.tally.filter_map do |id, count|
+      id if count > 1
+    end
+    if library_id_settings[:audiobookshelf_comicbook_library_id].empty?
+      overlapping_ids |= library_id_settings[:audiobookshelf_ebook_library_id]
+    end
+    overlapping_ids &= library_scopes.values.compact.flatten
+    overlapping_ids.each do |library_id|
+      match = matcher.matches_for(
+        title: @title,
+        author: @author,
+        limit: 1,
+        library_ids: [ library_id ]
+      ).first
+      next unless match
+
+      book_types = library_scopes.filter_map do |book_type, library_ids|
+        book_type if Array(library_ids).include?(library_id)
+      end
+      @unscoped_synced_library_match_entries << UnscopedLibraryMatch.new(match: match, book_types: book_types)
+    end
+
+    @synced_library_matches_by_book_type = library_scopes.transform_values do |library_ids|
+      scoped_ids = Array(library_ids) - overlapping_ids
+      matcher.matches_for(title: @title, author: @author, limit: 1, library_ids: scoped_ids)
+    end
   end
 
   def request_handoff_metadata

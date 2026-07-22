@@ -38,4 +38,41 @@ class LibraryItemTest < ActiveSupport::TestCase
 
     assert_equal "http://grimmory.example/book/book-1", item.audiobookshelf_url
   end
+
+  test "display metadata is bounded and strips unsafe controls" do
+    item = LibraryItem.new(
+      title: "t" * LibraryItem::MAX_DISPLAY_TEXT_CHARACTERS,
+      subtitle: "\u202ESubtitle only#{"x" * 1_000}",
+      author: "Author\nName",
+      narrator: "Narrator\xFF".dup.force_encoding(Encoding::UTF_8),
+      publisher: "Publisher\u202EName",
+      isbn: "978\n123"
+    )
+
+    assert_not item.display_title.start_with?(":")
+    assert_not_includes item.display_title, "\u202E"
+    assert_operator item.display_title.length, :<=, LibraryItem::MAX_DISPLAY_TEXT_CHARACTERS
+    assert_equal "Author Name", item.display_author
+    assert_equal "Narrated by Narrator�", item.detail_badges.last(2).first
+    assert_equal "PublisherName", item.detail_badges.last
+    assert_equal "ISBN 978 123", item.identifier_label
+  end
+
+  test "display title omits an empty title separator" do
+    item = LibraryItem.new(title: nil, subtitle: "Subtitle only")
+
+    assert_equal "Subtitle only", item.display_title
+  end
+
+  test "future sync times are treated as unknown" do
+    item = LibraryItem.new(synced_at: 1.hour.from_now)
+
+    assert_nil item.effective_synced_at
+  end
+
+  test "display badges remain bounded after Unicode case expansion" do
+    item = LibraryItem.new(language: "ß" * LibraryItem::MAX_DISPLAY_TEXT_CHARACTERS)
+
+    assert_operator item.detail_badges.first.length, :<=, LibraryItem::MAX_DISPLAY_TEXT_CHARACTERS
+  end
 end
