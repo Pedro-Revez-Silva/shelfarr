@@ -53,6 +53,12 @@ class Book < ApplicationRecord
   def post_processing_recovery_pending?
     return false unless persisted?
 
+    cleanup_pending = requests
+      .joins(:downloads)
+      .merge(Download.completed.where.not(post_processing_cleanup_state: [ nil, "" ]))
+      .exists?
+    return true if cleanup_pending
+
     requests
       .where.not(status: Request.statuses[:completed])
       .joins(:downloads)

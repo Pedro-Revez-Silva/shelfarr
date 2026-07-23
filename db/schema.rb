@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_21_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_23_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -158,6 +158,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_21_120000) do
     t.string "external_id"
     t.string "name"
     t.integer "not_found_count", default: 0, null: false
+    t.text "post_processing_cleanup_state"
     t.string "post_processing_job_id"
     t.integer "progress", default: 0
     t.integer "request_id", null: false
