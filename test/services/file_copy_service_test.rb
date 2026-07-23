@@ -129,6 +129,16 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       File.stat(directory).mode & 0o777
   end
 
+  test "ensure_directory does not chmod the caller-provided root" do
+    File.chmod(0o1777, @dest_dir)
+
+    FileCopyService.stub(:native_fchmod, ->(*) { raise Errno::EPERM }) do
+      FileCopyService.ensure_directory(@dest_dir, root: @dest_dir)
+    end
+
+    assert_equal 0o1777, File.stat(@dest_dir).mode & 0o7777
+  end
+
   test "cp_noreplace rejects unsafe effective mode when chmod is ignored" do
     destination = File.join(@dest_dir, "unsafe-mode.txt")
     real_fchmod = FileCopyService.method(:native_fchmod)

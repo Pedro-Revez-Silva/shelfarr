@@ -287,8 +287,10 @@ class FileCopyService
     # Create a destination directory relative to a trusted output root while
     # rejecting symlinks and non-directories in every path component.
     def ensure_directory(path, root:, mode: DIRECTORY_MODE)
+      expanded_path = Pathname(path).expand_path
+      expanded_root = Pathname(root).expand_path
       with_pinned_directory(path, root: root, create: true, mode: mode) do |directory|
-        apply_directory_mode!(directory, mode)
+        apply_directory_mode!(directory, mode) unless expanded_path == expanded_root
         sync_io(directory)
       end
       path
