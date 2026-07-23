@@ -27,10 +27,10 @@ module Shelfarr
     # Set RAILS_RELATIVE_URL_ROOT environment variable to configure
     config.relative_url_root = ENV.fetch("RAILS_RELATIVE_URL_ROOT", "/")
 
-    # Covers and store links are supplied by external catalog providers. Never
-    # disclose a self-hosted Shelfarr URL (which may contain a private hostname
-    # or path prefix) when a browser fetches one of those resources.
-    config.action_dispatch.default_headers["Referrer-Policy"] = "no-referrer"
+    # Covers and store links are supplied by external catalog providers. Avoid
+    # disclosing a self-hosted Shelfarr URL while retaining the origin for
+    # same-origin form submissions such as the OIDC handoff.
+    config.action_dispatch.default_headers["Referrer-Policy"] = "same-origin"
 
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.

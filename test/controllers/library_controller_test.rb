@@ -21,7 +21,7 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
 
     get library_index_path
     assert_response :success
-    assert_equal "no-referrer", response.headers["Referrer-Policy"]
+    assert_equal "same-origin", response.headers["Referrer-Policy"]
     assert_select "h1", "Library"
     assert_select "a[href='#{library_path(@acquired_audiobook)}']"
     assert_select "[data-library-card][data-library-source='shelfarr'][class~='motion-reduce:transition-none'][class~='motion-reduce:hover:scale-100']"
