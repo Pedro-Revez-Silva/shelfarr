@@ -3,18 +3,63 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Shelfarr - Book Request System for the *arr Ecosystem</title>
+        <!-- Primary Meta Tags -->
+        <title>Shelfarr — Automated Self-Hosted Ebook &amp; Audiobook Sanctuary</title>
+        <meta name="title" content="Shelfarr — Automated Self-Hosted Ebook &amp; Audiobook Sanctuary" />
         <meta
             name="description"
             content="Self-hosted ebook and audiobook request and download system for the *arr ecosystem. Search indexers, automate downloads, deliver to Audiobookshelf."
         />
-        <meta property="og:title" content="Shelfarr - Book Request System" />
+        <meta name="keywords" content="shelfarr, ebook request, audiobook request, self-hosted library, audiobookshelf, readarr alternative, prowlarr, qbittorrent, arr ecosystem, book discovery, open library, hardcover" />
+        <meta name="robots" content="index, follow" />
+        <meta name="theme-color" content="#030712" />
+        <link rel="canonical" href="https://pedro-revez-silva.github.io/shelfarr/" />
+
+        <!-- Open Graph / Facebook -->
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content="https://pedro-revez-silva.github.io/shelfarr/" />
+        <meta property="og:title" content="Shelfarr — Automated Self-Hosted Ebook &amp; Audiobook Sanctuary" />
         <meta
             property="og:description"
-            content="Self-hosted ebook and audiobook request and download system for the *arr ecosystem."
+            content="Self-hosted ebook and audiobook request and download system for the *arr ecosystem. Search indexers, automate downloads, and deliver to Audiobookshelf."
         />
-        <meta property="og:type" content="website" />
-        <link rel="icon" href="logo.png" type="image/png" />
+        <meta property="og:image" content="https://pedro-revez-silva.github.io/shelfarr/og-banner.png" />
+        <meta property="og:site_name" content="Shelfarr" />
+
+        <!-- Twitter Card -->
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:url" content="https://pedro-revez-silva.github.io/shelfarr/" />
+        <meta name="twitter:title" content="Shelfarr — Automated Self-Hosted Ebook &amp; Audiobook Sanctuary" />
+        <meta name="twitter:description" content="Self-hosted ebook and audiobook request and download system for the *arr ecosystem. Search indexers, automate downloads, and deliver to Audiobookshelf." />
+        <meta name="twitter:image" content="https://pedro-revez-silva.github.io/shelfarr/og-banner.png" />
+
+        <!-- Favicons -->
+        <link rel="icon" type="image/png" href="logo.png" />
+        <link rel="apple-touch-icon" href="logo.png" />
+
+        <!-- Schema.org JSON-LD Structured Data for Search Engines -->
+        <script type="application/ld+json">
+        {
+          "@context": "https://schema.org",
+          "@type": "SoftwareApplication",
+          "name": "Shelfarr",
+          "operatingSystem": "Linux, Windows, macOS, Docker",
+          "applicationCategory": "MultimediaApplication",
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+          },
+          "description": "Self-hosted ebook and audiobook request and download system for the *arr ecosystem. Search indexers, automate downloads, deliver to Audiobookshelf.",
+          "url": "https://pedro-revez-silva.github.io/shelfarr/",
+          "license": "https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/LICENSE"
+        }
+        </script>
+
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&display=swap" rel="stylesheet" />
+        <script src="https://unpkg.com/lucide@latest"></script>
         <style>
             :root {
                 --bg-primary: #030712; /* gray-950 */
@@ -25,16 +70,27 @@
                 --text-muted: #6b7280; /* gray-500 */
                 --accent: #1d4ed8; /* blue-700 - darker, less bright */
                 --accent-hover: #2563eb; /* blue-600 */
+                --accent-light: #60a5fa; /* blue-400 */
+                --font-serif: Georgia, "Times New Roman", "Playfair Display", serif;
+                --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                --font-mono: "SF Mono", "Fira Code", "Cascadia Code", Monaco, monospace;
                 --accent-glow: rgba(29, 78, 216, 0.15);
                 --border: #374151; /* gray-700 */
                 --gradient-start: #1d4ed8; /* blue-700 */
                 --gradient-end: #2563eb; /* blue-600 */
+                --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+                --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
             }
 
             * {
                 margin: 0;
                 padding: 0;
                 box-sizing: border-box;
+                -webkit-tap-highlight-color: transparent;
+            }
+
+            a, button, .btn, .journal-tab, .hs-book, .int-book, .feature-book {
+                touch-action: manipulation;
             }
 
             html {
@@ -42,12 +98,10 @@
             }
 
             body {
-                font-family:
-                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                    "Helvetica Neue", sans-serif;
+                font-family: var(--font-sans);
                 background: var(--bg-primary);
                 color: var(--text-primary);
-                line-height: 1.6;
+                line-height: 1.7;
                 overflow-x: hidden;
             }
 
@@ -57,85 +111,162 @@
                 padding: 0 24px;
             }
 
-            /* Navigation */
+            /* Navigation Header — 100% Color-Harmonized Modern Header */
             nav {
                 position: fixed;
                 top: 0;
                 left: 0;
                 right: 0;
-                z-index: 100;
-                padding: 16px 0;
-                background: rgba(3, 7, 18, 0.8);
-                backdrop-filter: blur(12px);
-                border-bottom: 1px solid transparent;
-                transition: border-color 0.3s;
+                width: 100%;
+                height: 72px;
+                z-index: 1000;
+                background: rgba(3, 7, 18, 0.85);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+                transition: background-color 0.3s var(--ease-out), border-color 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out);
+                display: flex;
+                align-items: center;
             }
 
             nav.scrolled {
-                border-bottom-color: var(--border);
+                background: rgba(8, 12, 24, 0.94);
+                border-bottom-color: rgba(96, 165, 250, 0.25);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8), 0 0 20px rgba(37, 99, 235, 0.2);
             }
 
             nav .container {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
+                width: 100%;
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 0 24px;
             }
 
             .logo {
                 display: flex;
                 align-items: center;
-                gap: 10px;
-                font-size: 1.5rem;
+                gap: 12px;
+                font-size: 1.35rem;
                 font-weight: 700;
                 color: var(--text-primary);
                 text-decoration: none;
             }
 
             .logo span {
-                background: linear-gradient(
-                    135deg,
-                    var(--gradient-start),
-                    var(--gradient-end)
-                );
+                font-family: var(--font-serif);
+                background: linear-gradient(135deg, #ffffff 30%, #60a5fa 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
+                letter-spacing: -0.01em;
             }
 
             .logo-icon {
                 width: 32px;
                 height: 32px;
-                border-radius: 6px;
+                border-radius: 8px;
+                box-shadow: 0 0 14px rgba(96, 165, 250, 0.3);
+                transition: transform 0.25s var(--ease-out);
+            }
+
+            .logo:hover .logo-icon {
+                transform: rotate(-6deg) scale(1.05);
+            }
+
+            @keyframes navActivePulse {
+                0% { transform: scale(0.95); opacity: 0.7; }
+                50% { transform: scale(1.04); opacity: 1; }
+                100% { transform: scale(1); opacity: 1; }
             }
 
             .nav-links {
                 display: flex;
-                gap: 32px;
+                gap: 8px;
                 align-items: center;
             }
 
             .nav-links a {
                 color: var(--text-secondary);
                 text-decoration: none;
-                font-size: 0.95rem;
-                transition: color 0.2s;
+                font-size: 0.9rem;
+                font-weight: 500;
+                padding: 8px 16px;
+                border-radius: 100px;
+                border: 1px solid transparent;
+                position: relative;
+                transition: color 0.2s var(--ease-out), background-color 0.2s var(--ease-out), border-color 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+            }
+
+            .nav-links a::after {
+                content: "";
+                position: absolute;
+                bottom: 3px;
+                left: 50%;
+                transform: translateX(-50%) scaleX(0);
+                width: 14px;
+                height: 2px;
+                background: #60a5fa;
+                border-radius: 2px;
+                box-shadow: 0 0 8px #60a5fa;
+                transition: transform 0.25s var(--ease-out), opacity 0.25s var(--ease-out);
+                opacity: 0;
             }
 
             .nav-links a:hover {
                 color: var(--text-primary);
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.12);
+                transform: translateY(-1px);
+            }
+
+            .nav-links a:hover::after {
+                transform: translateX(-50%) scaleX(1);
+                opacity: 0.7;
+            }
+
+            .nav-links a:active {
+                transform: scale(0.96);
+            }
+
+            .nav-links a.active {
+                color: #ffffff !important;
+                background: linear-gradient(135deg, rgba(96, 165, 250, 0.28), rgba(37, 99, 235, 0.24)) !important;
+                border: 1px solid rgba(96, 165, 250, 0.45) !important;
+                box-shadow: 0 0 16px rgba(96, 165, 250, 0.35);
+                animation: navActivePulse 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            }
+
+            .nav-links a.active::after {
+                transform: translateX(-50%) scaleX(1.4);
+                opacity: 1;
             }
 
             .nav-links .btn-nav {
-                background: var(--accent);
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
                 color: #fff;
-                padding: 10px 20px;
-                border-radius: 8px;
-                font-weight: 500;
+                padding: 9px 20px;
+                border-radius: 100px;
+                font-weight: 600;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                box-shadow: 0 4px 16px var(--accent-glow);
+                border: 1px solid rgba(255, 255, 255, 0.15);
             }
 
             .nav-links .btn-nav:hover {
-                background: var(--accent-hover);
+                background: linear-gradient(135deg, var(--gradient-end), #3b82f6);
+                transform: translateY(-1px);
+                box-shadow: 0 6px 24px rgba(29, 78, 216, 0.4);
                 color: #fff;
+            }
+
+            .nav-links .btn-nav:active {
+                transform: scale(0.97);
             }
 
             /* Hero Section */
@@ -164,10 +295,26 @@
                 pointer-events: none;
             }
 
+            .hero::after {
+                content: "";
+                position: absolute;
+                bottom: 0; left: 0; right: 0;
+                height: 200px;
+                background: linear-gradient(180deg, transparent, var(--bg-primary));
+                pointer-events: none;
+            }
+
             .hero-content {
-                text-align: center;
+                display: grid;
+                grid-template-columns: 1.1fr 1fr;
+                gap: 60px;
+                align-items: center;
                 position: relative;
                 z-index: 1;
+            }
+
+            .hero-text {
+                text-align: left;
             }
 
             .hero-badge {
@@ -202,50 +349,128 @@
             }
 
             .hero h1 {
-                font-size: clamp(2.5rem, 6vw, 4.5rem);
-                font-weight: 800;
-                line-height: 1.1;
-                margin-bottom: 24px;
-                letter-spacing: -0.03em;
+                font-family: var(--font-serif);
+                font-size: clamp(2.5rem, 5vw, 3.75rem);
+                font-weight: 700;
+                line-height: 1.15;
+                margin-bottom: 20px;
+                letter-spacing: -0.02em;
             }
 
             .hero h1 .gradient {
-                background: linear-gradient(
-                    135deg,
-                    var(--gradient-start),
-                    var(--gradient-end)
-                );
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
+                color: var(--accent-light);
+                font-style: italic;
+                background: none;
+                -webkit-text-fill-color: var(--accent-light);
             }
 
             .hero .subtitle {
                 font-size: clamp(1.1rem, 2vw, 1.35rem);
                 color: var(--text-secondary);
-                max-width: 600px;
-                margin: 0 auto 40px;
+                max-width: 520px;
+                margin: 0 0 40px;
             }
 
             .hero-buttons {
                 display: flex;
                 gap: 16px;
-                justify-content: center;
                 flex-wrap: wrap;
+            }
+
+            /* Hero Visual — Book Stack on Shelf */
+            .hero-visual {
+                position: relative;
+                height: 420px;
+                display: flex;
+                align-items: flex-end;
+                justify-content: center;
+            }
+
+            .book-stack {
+                position: relative;
+                height: 380px;
+                display: flex;
+                align-items: flex-end;
+                justify-content: center;
+                gap: 10px;
+            }
+
+            .hs-book {
+                width: 64px;
+                height: var(--h);
+                background: var(--c);
+                border-radius: 3px 3px 0 0;
+                box-shadow: 4px 4px 16px rgba(0,0,0,0.5), inset -6px 0 10px rgba(0,0,0,0.25), inset 2px 0 2px rgba(255,255,255,0.08);
+                position: relative;
+                transition: transform 0.3s var(--ease-spring);
+                cursor: pointer;
+            }
+            .hs-book:hover { transform: translateY(-16px); }
+            .hs-book:active { transform: translateY(-8px) scale(0.97); }
+
+            .hs-book::before {
+                content: ""; position: absolute;
+                left: 6px; right: 6px; top: 16px; bottom: 16px;
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 2px;
+            }
+
+            .hs-book::after {
+                content: ""; position: absolute;
+                left: 50%; top: 50%; transform: translate(-50%, -50%);
+                width: 3px; height: 60%; border-radius: 2px;
+                background: rgba(255,255,255,0.06);
+            }
+
+            .hs-book .hs-pages {
+                position: absolute; right: -3px; top: 4px; bottom: 0; width: 4px;
+                background: repeating-linear-gradient(0deg, #f0e8d8, #f0e8d8 1px, #d0c8b8 1px, #d0c8b8 2px);
+                border-radius: 0 2px 0 0;
+                box-shadow: 1px 0 2px rgba(0,0,0,0.3);
+            }
+
+            .hs-shelf {
+                position: absolute;
+                bottom: -8px;
+                left: 50%;
+                transform: translateX(-50%);
+                width: calc(100% + 40px);
+                height: 10px;
+                background: linear-gradient(180deg, #3d2a1a, #2a1a0d);
+                border-radius: 2px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            }
+
+            .hs-shelf::after {
+                content: ""; position: absolute;
+                left: 0; right: 0; bottom: -6px;
+                height: 6px;
+                background: linear-gradient(180deg, rgba(61,42,26,0.4), transparent);
+            }
+
+            .hero-glow {
+                position: absolute; width: 280px; height: 280px;
+                border-radius: 50%; filter: blur(70px); opacity: 0.12;
+                pointer-events: none;
+                top: 50%; left: 50%; transform: translate(-50%, -50%);
             }
 
             .btn {
                 display: inline-flex;
                 align-items: center;
                 gap: 8px;
-                padding: 14px 28px;
-                border-radius: 10px;
-                font-size: 1rem;
+                padding: 12px 26px;
+                border-radius: 100px;
+                font-size: 0.95rem;
                 font-weight: 600;
                 text-decoration: none;
-                transition: all 0.2s;
+                transition: transform 0.15s var(--ease-out), background 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), border-color 0.2s var(--ease-out);
                 border: none;
                 cursor: pointer;
+            }
+
+            .btn:active {
+                transform: scale(0.97);
             }
 
             .btn-primary {
@@ -263,6 +488,10 @@
                 box-shadow: 0 6px 30px var(--accent-glow);
             }
 
+            .btn-primary:active {
+                transform: scale(0.97);
+            }
+
             .btn-secondary {
                 background: var(--bg-card);
                 color: var(--text-primary);
@@ -272,6 +501,10 @@
             .btn-secondary:hover {
                 background: var(--bg-secondary);
                 border-color: var(--text-muted);
+            }
+
+            .btn-secondary:active {
+                transform: scale(0.97);
             }
 
             /* Feature Sections */
@@ -300,10 +533,19 @@
             }
 
             .feature-content h2 {
+                font-family: var(--font-serif);
                 font-size: clamp(1.75rem, 3vw, 2.5rem);
                 font-weight: 700;
                 margin-bottom: 20px;
                 letter-spacing: -0.02em;
+            }
+
+            .feature-content h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                padding-bottom: 0.1em;
             }
 
             .feature-content p {
@@ -312,49 +554,176 @@
                 margin-bottom: 24px;
             }
 
+            .feature-tag-pills {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 16px;
+                flex-wrap: wrap;
+            }
+
+            .feature-tag-pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 5px 12px;
+                background: rgba(96, 165, 250, 0.1);
+                border: 1px solid rgba(96, 165, 250, 0.22);
+                border-radius: 100px;
+                font-size: 0.78rem;
+                font-weight: 600;
+                color: #93c5fd;
+            }
+
             .feature-list {
                 list-style: none;
             }
 
             .feature-list li {
                 display: flex;
-                align-items: flex-start;
-                gap: 12px;
+                align-items: center;
+                gap: 14px;
                 margin-bottom: 12px;
                 color: var(--text-secondary);
+                padding: 10px 16px;
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 12px;
+                transition: background-color 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+            }
+
+            .feature-list li:hover {
+                background: rgba(96, 165, 250, 0.08);
+                border-color: rgba(96, 165, 250, 0.25);
+                color: var(--text-primary);
+                transform: translateX(4px);
             }
 
             .feature-list .check {
-                color: var(--accent);
-                font-weight: bold;
+                color: #60a5fa;
+                width: 34px; height: 34px;
+                border-radius: 50%;
+                background: rgba(96, 165, 250, 0.12);
+                border: 1px solid rgba(96, 165, 250, 0.25);
                 flex-shrink: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .feature-list .check svg {
+                width: 16px;
+                height: 16px;
+                stroke: #60a5fa;
             }
 
             .feature-visual {
                 background: var(--bg-card);
-                border: 1px solid var(--border);
-                border-radius: 16px;
-                padding: 24px;
+                border: 1px solid rgba(96, 165, 250, 0.25);
+                border-radius: 18px;
+                padding: 0;
                 position: relative;
                 overflow: hidden;
+                box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 30px rgba(37, 99, 235, 0.15);
+                transition: transform 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out), border-color 0.3s var(--ease-out);
+            }
+
+            .feature-visual:hover {
+                transform: translateY(-6px) scale(1.01);
+                border-color: rgba(96, 165, 250, 0.45);
+                box-shadow: 0 25px 60px rgba(0, 0, 0, 0.75), 0 0 45px rgba(96, 165, 250, 0.25);
+            }
+
+            .browser-mockup-bar {
+                background: rgba(15, 23, 42, 0.95);
+                padding: 10px 16px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            }
+
+            .browser-url-pill {
+                flex: 1;
+                background: rgba(3, 7, 18, 0.7);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 100px;
+                padding: 4px 14px;
+                font-family: ui-monospace, SFMono-Regular, Monaco, monospace;
+                font-size: 0.76rem;
+                color: var(--text-muted);
+                display: flex;
+                align-items: center;
+                gap: 6px;
             }
 
             .feature-visual img {
                 width: 100%;
-                border-radius: 8px;
+                border-radius: 0 0 16px 16px;
                 display: block;
             }
 
-            /* Integrations */
+            /* Integrations — Book Flow */
             .integrations {
                 padding: 100px 0;
                 text-align: center;
+                position: relative;
+                overflow: hidden;
+            }
+
+            .integrations::before {
+                content: ""; position: absolute; inset: 0;
+                background-image: repeating-linear-gradient(
+                    0deg,
+                    transparent,
+                    transparent 60px,
+                    rgba(120,90,60,0.07) 60px,
+                    rgba(120,90,60,0.07) 64px
+                );
+                pointer-events: none;
+            }
+
+            .integrations::after {
+                content: ""; position: absolute; inset: 0;
+                background-image: repeating-linear-gradient(
+                    90deg,
+                    transparent 8px,
+                    rgba(37,99,235,0.04) 8px,
+                    rgba(37,99,235,0.04) 12px,
+                    transparent 12px,
+                    transparent 28px,
+                    rgba(29,78,216,0.04) 28px,
+                    rgba(29,78,216,0.04) 32px,
+                    transparent 32px,
+                    transparent 50px,
+                    rgba(147,51,234,0.04) 50px,
+                    rgba(147,51,234,0.04) 55px,
+                    transparent 55px,
+                    transparent 72px,
+                    rgba(22,163,74,0.04) 72px,
+                    rgba(22,163,74,0.04) 76px,
+                    transparent 76px,
+                    transparent 95px,
+                    rgba(234,88,12,0.04) 95px,
+                    rgba(234,88,12,0.04) 99px,
+                    transparent 99px,
+                    transparent 120px
+                );
+                pointer-events: none;
             }
 
             .integrations h2 {
+                font-family: var(--font-serif);
                 font-size: clamp(1.75rem, 3vw, 2.5rem);
                 font-weight: 700;
                 margin-bottom: 16px;
+            }
+
+            .integrations h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                padding-bottom: 0.1em;
             }
 
             .integrations .subtitle {
@@ -362,188 +731,577 @@
                 font-size: 1.1rem;
                 max-width: 600px;
                 margin: 0 auto 60px;
+                position: relative; z-index: 1;
             }
+
+            .integrations h2 { position: relative; z-index: 1; }
 
             .integration-flow {
                 display: flex;
                 justify-content: center;
                 align-items: center;
-                gap: 24px;
+                gap: 16px;
                 flex-wrap: wrap;
-                margin-bottom: 60px;
+                margin-bottom: 20px;
+                position: relative; z-index: 1;
             }
 
             .integration-item {
                 display: flex;
                 flex-direction: column;
                 align-items: center;
-                gap: 12px;
+                gap: 14px;
+                position: relative;
             }
 
-            .integration-icon {
-                width: 80px;
-                height: 80px;
-                background: var(--bg-card);
-                border: 1px solid var(--border);
-                border-radius: 16px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 2rem;
-                transition: all 0.3s;
+            .int-book {
+                width: 120px; height: 200px; position: relative;
+                cursor: pointer;
+                transition: transform 0.3s var(--ease-spring);
+            }
+            .int-book:hover { transform: translateY(-10px) rotateZ(-1.5deg); }
+            .int-book:active { transform: translateY(-4px) scale(0.97); }
+
+            .int-book .pages {
+                position: absolute; right: -3px; top: 4px; bottom: 4px; width: 4px;
+                background: repeating-linear-gradient(0deg, #f0e8d8, #f0e8d8 1px, #d0c8b8 1px, #d0c8b8 2px);
+                border-radius: 0 2px 2px 0;
+                box-shadow: 1px 0 3px rgba(0,0,0,0.4);
+            }
+            .int-book .cover {
+                width: 100%; height: 100%; border-radius: 2px 8px 8px 2px;
+                display: flex; flex-direction: column; align-items: center; justify-content: center;
+                padding: 20px 12px 16px 18px; position: relative; overflow: hidden;
+                box-shadow: 4px 4px 14px rgba(0,0,0,0.45), inset -3px 0 6px rgba(0,0,0,0.3);
+            }
+            .int-book .cover::before {
+                content: ""; position: absolute; inset: 0;
+                background: radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.08), transparent 60%);
+                pointer-events: none;
+            }
+            .int-book .spine {
+                position: absolute; left: 0; top: 0; bottom: 0; width: 12px;
+                background: linear-gradient(90deg, rgba(0,0,0,0.6), rgba(0,0,0,0.1) 70%, transparent);
+                border-right: 1px solid rgba(255,255,255,0.06);
+            }
+            .int-book .spine-orn {
+                position: absolute; left: 2px; width: 8px; height: 8px;
+                border: 1px solid rgba(255,255,255,0.12); border-radius: 50%;
+            }
+            .int-book .cover-frame {
+                position: absolute; left: 18px; right: 8px; top: 12px; bottom: 12px;
+                border: 1px solid rgba(255,255,255,0.06); border-radius: 3px;
+                pointer-events: none;
+            }
+            .int-book .icon-circle {
+                width: 44px; height: 44px; border-radius: 50%;
+                display: flex; align-items: center; justify-content: center;
+                background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+                margin-bottom: 12px; position: relative; z-index: 1;
+                backdrop-filter: blur(4px);
+            }
+            .int-book .icon-circle svg { width: 20px; height: 20px; stroke: rgba(255,255,255,0.85); }
+            .int-book .int-label {
+                font-size: 0.68rem; font-weight: 700; text-align: center;
+                position: relative; z-index: 1; line-height: 1.3;
+                text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+            }
+            .int-book .int-step {
+                font-size: 0.55rem; font-family: monospace; color: rgba(255,255,255,0.4);
+                position: relative; z-index: 1; margin-top: 6px; letter-spacing: 0.1em;
             }
 
-            .integration-icon:hover {
-                border-color: var(--accent);
-                transform: translateY(-4px);
+            .int-book.shelfarr .cover {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
             }
-
-            .integration-icon.shelfarr {
-                background: linear-gradient(
-                    135deg,
-                    var(--gradient-start),
-                    var(--gradient-end)
-                );
-                border: none;
+            .int-book.shelfarr .icon-circle {
+                background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.2);
+            }
+            .int-book.shelfarr .icon-circle img {
+                width: 28px; height: 28px; border-radius: 6px;
             }
 
             .integration-name {
-                font-size: 0.9rem;
-                color: var(--text-secondary);
+                font-size: 0.82rem; color: var(--text-secondary);
+                max-width: 130px; text-align: center; line-height: 1.4;
             }
 
             .integration-arrow {
-                color: var(--text-muted);
-                font-size: 1.5rem;
+                display: flex; align-items: center; align-self: center;
+                margin-top: -30px;
             }
+            .integration-arrow svg { width: 28px; height: 28px; stroke: var(--text-muted); }
 
-            /* Features Grid */
+            /* Features Grid — Book Cards */
             .features-grid-section {
-                padding: 100px 0;
+                padding: 80px 0 0;
                 background: var(--bg-secondary);
             }
 
             .features-grid-section h2 {
+                font-family: var(--font-serif);
                 font-size: clamp(1.75rem, 3vw, 2.5rem);
                 font-weight: 700;
                 text-align: center;
                 margin-bottom: 60px;
+            }
+
+            .features-grid-section h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                padding-bottom: 0.1em;
             }
 
             .features-grid {
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                gap: 24px;
+                grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+                gap: 28px 20px;
             }
 
-            .feature-card {
-                background: var(--bg-card);
-                border: 1px solid var(--border);
-                border-radius: 16px;
-                padding: 28px;
-                transition: all 0.3s;
+            .feature-book {
+                position: relative;
+                height: 300px;
+                cursor: pointer;
+                transition: transform 0.3s var(--ease-spring);
             }
-
-            .feature-card:hover {
-                border-color: var(--accent);
-                transform: translateY(-4px);
+            .feature-book:hover { transform: translateY(-12px) rotateZ(-1deg); }
+            .feature-book:active { transform: translateY(-4px) scale(0.97); }
+            .feature-book .pages {
+                position: absolute; right: -4px; top: 6px; bottom: 6px; width: 5px;
+                background: repeating-linear-gradient(0deg, #f0e8d8, #f0e8d8 1px, #d0c8b8 1px, #d0c8b8 2px);
+                border-radius: 0 3px 3px 0;
+                box-shadow: 1px 0 3px rgba(0,0,0,0.4), inset -1px 0 1px rgba(0,0,0,0.15);
             }
-
-            .feature-card-icon {
-                font-size: 2rem;
-                margin-bottom: 16px;
+            .feature-book .cover {
+                width: 100%; height: 100%; border-radius: 2px 10px 10px 2px;
+                display: flex; flex-direction: column; padding: 28px 18px 18px 24px;
+                position: relative; overflow: hidden;
+                box-shadow: 6px 6px 20px rgba(0,0,0,0.5), inset -4px 0 8px rgba(0,0,0,0.35), inset 1px 0 0 rgba(255,255,255,0.06);
             }
-
-            .feature-card h3 {
-                font-size: 1.15rem;
-                font-weight: 600;
-                margin-bottom: 8px;
+            .feature-book .cover::before {
+                content: ""; position: absolute; inset: 0;
+                background: radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.08), transparent 60%);
+                pointer-events: none;
             }
-
-            .feature-card p {
-                color: var(--text-secondary);
-                font-size: 0.95rem;
+            .feature-book .cover::after {
+                content: ""; position: absolute; inset: 0;
+                background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0.05 0 0 0 0 0.05 0 0 0 0.15 0'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23n)'/%3E%3C/svg%3E");
+                opacity: 0.4; pointer-events: none; mix-blend-mode: overlay;
             }
+            .feature-book .spine {
+                position: absolute; left: 0; top: 0; bottom: 0; width: 14px;
+                background: linear-gradient(90deg, rgba(0,0,0,0.6), rgba(0,0,0,0.15) 60%, transparent);
+                border-right: 1px solid rgba(255,255,255,0.06);
+            }
+            .feature-book .spine-ornament {
+                position: absolute; left: 3px; width: 8px; height: 8px;
+                border: 1px solid rgba(255,255,255,0.15); border-radius: 50%;
+            }
+            .feature-book .cover-frame {
+                position: absolute; left: 20px; right: 10px; top: 14px; bottom: 14px;
+                border: 1px solid rgba(255,255,255,0.08); border-radius: 4px;
+                pointer-events: none;
+            }
+            .feature-book .icon-wrap {
+                width: 48px; height: 48px; margin-bottom: 14px;
+                display: flex; align-items: center; justify-content: center;
+                border-radius: 50%; position: relative; z-index: 1;
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.1);
+                backdrop-filter: blur(4px);
+            }
+            .feature-book .icon-wrap svg { width: 22px; height: 22px; stroke: rgba(255,255,255,0.85); }
+            .feature-book h3 {
+                font-family: var(--font-serif);
+                font-size: 0.95rem; font-weight: 700; margin-bottom: 6px;
+                position: relative; z-index: 1;
+                text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+            }
+            .feature-book p {
+                font-size: 0.78rem; color: rgba(255,255,255,0.55); line-height: 1.5;
+                position: relative; z-index: 1;
+            }
+            .feature-book .beta-tag {
+                display: inline-block; font-size: 0.55rem; font-weight: 700; color: #fcd34d;
+                background: rgba(252,211,77,0.12); padding: 2px 7px; border-radius: 3px;
+                margin-left: 4px; vertical-align: middle; letter-spacing: 0.05em; text-transform: uppercase;
+            }
+            .feature-book .ribbon {
+                position: absolute; right: 14px; top: 0; width: 8px; height: 32px;
+                background: linear-gradient(180deg, #d4a574, #a07840);
+                clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 80%, 0 100%);
+                z-index: 2; opacity: 0; transition: opacity 0.25s var(--ease-out);
+            }
+            .feature-book:hover .ribbon { opacity: 1; }
+            .feature-book .glow {
+                position: absolute; inset: -2px; border-radius: 2px 10px 10px 2px;
+                opacity: 0; transition: opacity 0.3s var(--ease-out); pointer-events: none; z-index: 0;
+                filter: blur(12px);
+            }
+            .feature-book:hover .glow { opacity: 0.4; }
 
-            /* FAQ */
+            /* Feature book color schemes — cycled via nth-child */
+            .feature-book:nth-child(4n+1) .cover { background: linear-gradient(135deg,#1e3a5f,#0f1f30); border: 1px solid #2a4a6f; }
+            .feature-book:nth-child(4n+1) .glow  { background: #1e3a5f; }
+            .feature-book:nth-child(4n+2) .cover { background: linear-gradient(135deg,#3a1a5f,#1f0d35); border: 1px solid #5a2a8f; }
+            .feature-book:nth-child(4n+2) .glow  { background: #3a1a5f; }
+            .feature-book:nth-child(4n+3) .cover { background: linear-gradient(135deg,#1a3a2a,#0d1a12); border: 1px solid #2a5a3a; }
+            .feature-book:nth-child(4n+3) .glow  { background: #1a3a2a; }
+            .feature-book:nth-child(4n+4) .cover { background: linear-gradient(135deg,#4a2a1a,#2a160c); border: 1px solid #6a3a2a; }
+            .feature-book:nth-child(4n+4) .glow  { background: #4a2a1a; }
+
+            /* Integration book color schemes */
+            .int-book.c-blue   .cover { background: linear-gradient(135deg,#1e3a5f,#0f1f30); border: 1px solid #2a4a6f; }
+            .int-book.c-purple .cover { background: linear-gradient(135deg,#3a1a5f,#1f0d35); border: 1px solid #5a2a8f; }
+            .int-book.c-brown  .cover { background: linear-gradient(135deg,#4a2a1a,#2a160c); border: 1px solid #6a3a2a; }
+            .int-book.c-green  .cover { background: linear-gradient(135deg,#1a3a2a,#0d1a12); border: 1px solid #2a5a3a; }
+
+            /* FAQ — Leather-bound Books */
             .faq {
-                padding: 100px 0;
+                padding: 50px 0 80px;
             }
 
             .faq h2 {
+                font-family: var(--font-serif);
                 font-size: clamp(1.75rem, 3vw, 2.5rem);
                 font-weight: 700;
                 text-align: center;
-                margin-bottom: 60px;
+                margin-bottom: 16px;
             }
 
-            .faq-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-                gap: 24px;
-                max-width: 900px;
-                margin: 0 auto;
+            .faq h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                padding-bottom: 0.1em;
             }
 
-            .faq-item {
-                padding: 24px;
-                background: var(--bg-secondary);
-                border: 1px solid var(--border);
-                border-radius: 12px;
-            }
-
-            .faq-item h3 {
-                font-size: 1.05rem;
-                font-weight: 600;
-                margin-bottom: 8px;
-                color: var(--text-primary);
-            }
-
-            .faq-item p {
-                color: var(--text-secondary);
-                font-size: 0.95rem;
-            }
-
-            /* CTA */
-            .cta {
-                padding: 100px 0;
+            .faq .subtitle {
                 text-align: center;
-                background: var(--bg-secondary);
+                color: var(--text-secondary);
+                font-size: 1.1rem;
+                margin-bottom: 48px;
+            }
+
+            /* Tom Riddle's Journal Paper Component — Vintage Parchment Page */
+            .riddle-journal-paper {
+                background: #f7ebd0;
+                background-image:
+                    radial-gradient(ellipse at 50% 50%, rgba(253, 248, 235, 0.95) 0%, rgba(240, 225, 190, 0.92) 70%, rgba(210, 180, 125, 0.98) 100%),
+                    radial-gradient(circle, rgba(140, 95, 30, 0.05) 1px, transparent 1px);
+                background-size: 100% 100%, 14px 14px;
+                border: 1px solid rgba(160, 120, 60, 0.3);
+                border-radius: 0;
+                padding: 32px 40px;
+                box-shadow:
+                    inset 0 0 50px rgba(130, 90, 30, 0.28),
+                    0 18px 45px rgba(0, 0, 0, 0.65);
+                position: relative;
+                min-height: 260px;
+                color: #1a1e2e;
+            }
+
+            /* Integrated Book Index Tabs Track */
+            .journal-tabs-track {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                padding-bottom: 18px;
+                padding-left: 0;
+                margin-bottom: 20px;
+            }
+
+            .journal-tab {
+                background: rgba(140, 100, 40, 0.1);
+                border: 1px solid rgba(140, 100, 40, 0.25);
+                color: #5c4328;
+                padding: 6px 14px;
+                border-radius: 100px;
+                font-family: ui-monospace, SFMono-Regular, Monaco, monospace;
+                font-size: 0.78rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: background-color 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .journal-tab span {
+                color: #8c6034;
+                font-weight: 700;
+            }
+
+            .journal-tab:hover {
+                background: rgba(140, 100, 40, 0.18);
+                border-color: rgba(140, 100, 40, 0.45);
+                color: #1a1e2e;
+                transform: translateY(-1px);
+            }
+
+            .journal-tab:active {
+                transform: scale(0.96);
+            }
+
+            .journal-tab.active {
+                background: #8c6034;
+                border-color: #8c6034;
+                color: #fff8eb;
+                box-shadow: 0 4px 12px rgba(140, 100, 40, 0.35);
+            }
+
+            .journal-tab.active span {
+                color: #fcd34d;
+            }
+
+            .journal-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 18px;
+                padding-left: 0;
+            }
+
+            .journal-badge {
+                font-family: ui-monospace, SFMono-Regular, Monaco, monospace;
+                font-size: 0.76rem;
+                font-weight: 700;
+                color: #8c6034;
+                letter-spacing: 0.08em;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .journal-body {
+                display: flex;
+                flex-direction: column;
+                gap: 22px;
+                padding-left: 0;
+            }
+
+            .riddle-question-slot {
+                min-height: 38px;
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+
+            .riddle-ink-prefix {
+                font-size: 0.75rem;
+                font-family: ui-monospace, SFMono-Regular, Monaco, monospace;
+                color: #7a6850;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                font-weight: 600;
+            }
+
+            .riddle-riddle-prefix {
+                font-size: 0.75rem;
+                font-family: ui-monospace, SFMono-Regular, Monaco, monospace;
+                color: #8c6034;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                font-weight: 700;
+                margin-bottom: 2px;
+                display: block;
+            }
+
+            /* Cursive Handwritten Ink Fonts — Smooth Magic Ink Canvas */
+            .riddle-paper-canvas {
+                min-height: 130px;
+                display: flex;
+                align-items: flex-start;
+            }
+
+            .riddle-ink-text {
+                font-family: 'Caveat', cursive, Georgia, serif;
+                font-size: 1.85rem;
+                line-height: 1.55;
+                color: #1a2238;
+                font-weight: 600;
+                opacity: 0;
+                filter: blur(8px);
+                transform: translateY(4px);
+                transition: opacity 0.9s var(--ease-out),
+                            filter 0.9s var(--ease-out),
+                            transform 0.9s var(--ease-out);
+            }
+
+            .riddle-ink-text.fade-in {
+                opacity: 1;
+                filter: blur(0px);
+                transform: translateY(0px);
+            }
+
+            .riddle-ink-text.fade-out {
+                opacity: 0;
+                filter: blur(10px);
+                transform: translateY(-4px);
+            }
+
+            /* Install — Apple Terminal */
+            .install {
+                padding: 80px 0;
+            }
+
+            .install h2 {
+                font-family: var(--font-serif);
+                font-size: 1.5rem;
+                font-weight: 600;
+                text-align: center;
+                margin-bottom: 24px;
+            }
+
+            .install h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                padding-bottom: 0.1em;
+            }
+
+            .terminal {
+                max-width: 900px; margin: 0 auto;
+                background: #0a0e1a; border: 1px solid var(--border);
+                border-radius: 12px; overflow: hidden;
+                font-family: var(--font-mono);
+                box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            }
+
+            .terminal-bar {
+                background: var(--bg-secondary); padding: 10px 16px;
+                display: flex; align-items: center; gap: 8px;
+                border-bottom: 1px solid var(--border);
+            }
+
+            .terminal-dot {
+                width: 12px; height: 12px; border-radius: 50%;
+            }
+            .terminal-dot.red { background: #ef4444; }
+            .terminal-dot.yellow { background: #eab308; }
+            .terminal-dot.green { background: #22c55e; }
+
+            .terminal-title {
+                font-size: 0.8rem; color: var(--text-muted);
+                margin-left: 8px;
+            }
+
+            .terminal-body {
+                padding: 24px 28px; font-size: 0.85rem; line-height: 1.9;
+                overflow-x: auto;
+            }
+
+            .terminal-body pre { margin: 0; font-family: inherit; white-space: pre-wrap; word-break: break-all; }
+
+            .t-comment { color: #6b7280; }
+            .t-prompt { color: #93c5fd; }
+            .t-cmd { color: #f472b6; }
+            .t-arg { color: #fde68a; }
+            .t-flag { color: #6ee7b7; }
+            .t-url { color: #67e8f9; }
+            .t-success { color: #34d399; }
+            .t-cursor {
+                display: inline-block; width: 8px; height: 16px;
+                background: var(--text-primary);
+                animation: blink 1s step-end infinite;
+                vertical-align: text-bottom;
+            }
+
+            @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+            /* Combined Creative CTA + Footer */
+            footer {
+                padding: 60px 0 0;
+                background: linear-gradient(180deg, var(--bg-primary) 0%, #02040a 100%);
+                border-top: 1px solid rgba(255, 255, 255, 0.08);
                 position: relative;
                 overflow: hidden;
             }
 
-            .cta::before {
+            footer::before {
                 content: "";
                 position: absolute;
-                bottom: 0;
-                left: 50%;
-                transform: translateX(-50%);
-                width: 150%;
-                height: 100%;
-                background: radial-gradient(
-                    ellipse at center bottom,
-                    var(--accent-glow) 0%,
-                    transparent 60%
-                );
-                pointer-events: none;
+                top: 0; left: 50%; transform: translateX(-50%);
+                width: 80%; height: 1px;
+                background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.35), transparent);
             }
 
-            .cta-content {
+            /* Interactive Floating Books CTA Stage */
+            .cta-card {
+                background: radial-gradient(ellipse at 50% -20%, rgba(37, 99, 235, 0.35), rgba(15, 23, 42, 0.95) 75%);
+                backdrop-filter: blur(24px);
+                -webkit-backdrop-filter: blur(24px);
+                border: 1px solid rgba(96, 165, 250, 0.35);
+                border-radius: 28px;
+                padding: 72px 40px;
+                text-align: center;
+                margin-bottom: 60px;
                 position: relative;
+                box-shadow: 0 25px 70px rgba(0, 0, 0, 0.8), 0 0 50px rgba(37, 99, 235, 0.25);
+                overflow: hidden;
+            }
+
+            .cta-card::before {
+                content: "";
+                position: absolute;
+                top: 0; left: 50%; transform: translateX(-50%);
+                width: 80%; height: 1px;
+                background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.5), transparent);
+            }
+
+            /* Physics Bouncing Book Particles Stage */
+            #bouncingBooksCanvas {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: auto;
                 z-index: 1;
             }
 
-            .cta h2 {
-                font-size: clamp(2rem, 4vw, 3rem);
+            .cta-card h2 {
+                font-family: var(--font-serif);
+                font-size: clamp(2.2rem, 4.5vw, 3.4rem);
                 font-weight: 700;
                 margin-bottom: 16px;
+                letter-spacing: -0.02em;
+                color: #ffffff;
+                position: relative; z-index: 2;
             }
 
-            .cta p {
+            .cta-card p {
                 color: var(--text-secondary);
                 font-size: 1.15rem;
-                margin-bottom: 32px;
+                max-width: 580px;
+                margin: 0 auto 36px;
+                line-height: 1.65;
+                position: relative; z-index: 2;
+            }
+
+            .btn-cta-glow {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end)) !important;
+                color: #ffffff !important;
+                font-weight: 600 !important;
+                font-size: 1.05rem !important;
+                padding: 14px 28px !important;
+                border-radius: 100px !important;
+                border: 1px solid rgba(255, 255, 255, 0.2) !important;
+                box-shadow: 0 0 24px rgba(37, 99, 235, 0.5), 0 4px 16px rgba(0, 0, 0, 0.4) !important;
+                transition: transform 0.15s var(--ease-out), background 0.25s var(--ease-out), box-shadow 0.25s var(--ease-out) !important;
+            }
+
+            .btn-cta-glow:hover {
+                background: linear-gradient(135deg, var(--gradient-end), #3b82f6) !important;
+                transform: translateY(-2px) scale(1.03) !important;
+                box-shadow: 0 0 38px rgba(96, 165, 250, 0.7), 0 6px 20px rgba(0, 0, 0, 0.5) !important;
+            }
+
+            .btn-cta-glow:active {
+                transform: scale(0.97) !important;
             }
 
             .cta-buttons {
@@ -553,56 +1311,15 @@
                 flex-wrap: wrap;
             }
 
-            /* Install */
-            .install {
-                padding: 80px 0;
-            }
-
-            .install h2 {
-                font-size: 1.5rem;
-                font-weight: 600;
-                text-align: center;
-                margin-bottom: 24px;
-            }
-
-            .code-block {
-                background: var(--bg-card);
-                border: 1px solid var(--border);
-                border-radius: 12px;
-                padding: 24px;
-                overflow-x: auto;
-                max-width: 700px;
-                margin: 0 auto;
-            }
-
-            .code-block pre {
-                font-family:
-                    "SF Mono", Monaco, "Fira Code", "Courier New", monospace;
-                font-size: 0.9rem;
-                line-height: 1.8;
-                color: var(--text-secondary);
-            }
-
-            .code-block .comment {
-                color: var(--text-muted);
-            }
-
-            .code-block .cmd {
-                color: var(--accent);
-            }
-
-            /* Footer */
-            footer {
-                padding: 40px 0;
-                border-top: 1px solid var(--border);
-            }
-
-            footer .container {
+            .footer-row {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
                 flex-wrap: wrap;
                 gap: 20px;
+                padding-top: 24px;
+                padding-bottom: 28px;
+                border-top: 1px solid rgba(255, 255, 255, 0.06);
             }
 
             .footer-left {
@@ -619,10 +1336,10 @@
                 display: inline-flex;
                 align-items: center;
                 gap: 6px;
-                padding: 6px 12px;
-                background: var(--bg-card);
-                border: 1px solid var(--border);
-                border-radius: 6px;
+                padding: 6px 14px;
+                background: rgba(31, 41, 55, 0.6);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 100px;
                 font-size: 0.8rem;
                 color: var(--text-secondary);
             }
@@ -636,11 +1353,11 @@
                 color: var(--text-secondary);
                 text-decoration: none;
                 font-size: 0.9rem;
-                transition: color 0.2s;
+                transition: color 0.2s var(--ease-out);
             }
 
             .footer-links a:hover {
-                color: var(--text-primary);
+                color: #60a5fa;
             }
 
             /* Mobile */
@@ -658,8 +1375,43 @@
                     display: none;
                 }
 
-                .faq-grid {
+                .hero-content {
                     grid-template-columns: 1fr;
+                    gap: 40px;
+                }
+
+                .hero-text {
+                    text-align: center;
+                }
+
+                .hero .subtitle {
+                    margin: 0 auto 40px;
+                }
+
+                .hero-buttons {
+                    justify-content: center;
+                }
+
+                .hero-visual {
+                    height: 320px;
+                }
+
+                .book-stack {
+                    height: 300px;
+                    gap: 6px;
+                }
+
+                .hs-book {
+                    width: 48px;
+                }
+
+                .features-grid {
+                    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+                    gap: 20px 14px;
+                }
+
+                .feature-book {
+                    height: 260px;
                 }
 
                 .integration-flow {
@@ -677,6 +1429,15 @@
 
                 .footer-left {
                     flex-direction: column;
+                }
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                *, *::before, *::after {
+                    animation-duration: 0.01ms !important;
+                    animation-iteration-count: 1 !important;
+                    transition-duration: 0.01ms !important;
+                    scroll-behavior: auto !important;
                 }
             }
         </style>
@@ -702,34 +1463,50 @@
             </div>
         </nav>
 
-        <section class="hero">
+        <main id="main-content">
+            <section class="hero">
             <div class="container">
                 <div class="hero-content">
-                    <div class="hero-badge">
-                        <span class="dot"></span>
-                        Open Source & Self-Hosted
+                    <div class="hero-text">
+                        <div class="hero-badge">
+                            <span class="dot"></span>
+                            Open Source &amp; Self-Hosted
+                        </div>
+                        <h1>
+                            Your personal<br />
+                            <span class="gradient">library</span>, automated.
+                        </h1>
+                        <p class="subtitle">
+                            A self-hosted request and download system for ebooks and
+                            audiobooks. Search, request, and let your library grow
+                            itself.
+                        </p>
+                        <div class="hero-buttons">
+                            <a
+                                href="getting-started.html"
+                                class="btn btn-primary"
+                            >
+                                Get Started →
+                            </a>
+                            <a
+                                href="https://github.com/Pedro-Revez-Silva/shelfarr"
+                                class="btn btn-secondary"
+                            >
+                                View on GitHub
+                            </a>
+                        </div>
                     </div>
-                    <h1>
-                        Your Personal<br />
-                        <span class="gradient">Book Request System</span>
-                    </h1>
-                    <p class="subtitle">
-                        A self-hosted request and download system for ebooks and
-                        audiobooks. Search, request, enjoy.
-                    </p>
-                    <div class="hero-buttons">
-                        <a
-                            href="getting-started.html"
-                            class="btn btn-primary"
-                        >
-                            Get Started
-                        </a>
-                        <a
-                            href="https://github.com/Pedro-Revez-Silva/shelfarr"
-                            class="btn btn-secondary"
-                        >
-                            View on GitHub
-                        </a>
+                    <div class="hero-visual">
+                        <div class="hero-glow" style="background: var(--accent);"></div>
+                        <div class="book-stack">
+                            <div class="hs-book" style="--h: 320px; --c: #8b4513;"><div class="hs-pages"></div></div>
+                            <div class="hs-book" style="--h: 280px; --c: #2d5016;"><div class="hs-pages"></div></div>
+                            <div class="hs-book" style="--h: 340px; --c: #4a1a2e;"><div class="hs-pages"></div></div>
+                            <div class="hs-book" style="--h: 300px; --c: #1a3a5c;"><div class="hs-pages"></div></div>
+                            <div class="hs-book" style="--h: 260px; --c: #5c3a1a;"><div class="hs-pages"></div></div>
+                            <div class="hs-book" style="--h: 310px; --c: #3a2a4a;"><div class="hs-pages"></div></div>
+                            <div class="hs-shelf"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -739,32 +1516,47 @@
             <div class="container">
                 <div class="feature-grid">
                     <div class="feature-content">
-                        <h2>Beautiful Book Discovery</h2>
+                        <h2>Beautiful <span class="gradient">Book Discovery</span></h2>
                         <p>
-                            Browse millions of books through Open Library and
-                            Hardcover. See covers, descriptions, series and
-                            edition details at a glance.
+                            Browse millions of books through Open Library and Hardcover. See high-res covers, detailed descriptions, series numbers, and edition details at a glance.
                         </p>
                         <ul class="feature-list">
                             <li>
-                                <span class="check">✓</span> Search by title,
-                                author, or ISBN
+                                <span class="check"><i data-lucide="search"></i></span>
+                                <div>
+                                    <strong>Instant Search:</strong> Query by title, author, or ISBN with auto-suggestions
+                                </div>
                             </li>
                             <li>
-                                <span class="check">✓</span> Rich metadata with
-                                series and narrator details
+                                <span class="check"><i data-lucide="sparkles"></i></span>
+                                <div>
+                                    <strong>Rich Metadata:</strong> Full series order, narrators, publishers, and release dates
+                                </div>
                             </li>
                             <li>
-                                <span class="check">✓</span> Choose between
-                                audiobook or ebook formats
+                                <span class="check"><i data-lucide="headphones"></i></span>
+                                <div>
+                                    <strong>Format Toggles:</strong> Seamlessly switch between audiobook and ebook editions
+                                </div>
                             </li>
                             <li>
-                                <span class="check">✓</span> One-click request,
-                                or upload your own files
+                                <span class="check"><i data-lucide="download-cloud"></i></span>
+                                <div>
+                                    <strong>One-Click Request:</strong> Automated fulfillment or manual file uploads
+                                </div>
                             </li>
                         </ul>
                     </div>
                     <div class="feature-visual">
+                        <div class="browser-mockup-bar">
+                            <div class="terminal-dot red"></div>
+                            <div class="terminal-dot yellow"></div>
+                            <div class="terminal-dot green"></div>
+                            <div class="browser-url-pill">
+                                <i data-lucide="lock" style="width:12px;height:12px;color:#22c55e;"></i>
+                                shelfarr.local/search?q=harry+potter
+                            </div>
+                        </div>
                         <img
                             src="screenshot-search.png"
                             alt="Shelfarr Search Interface"
@@ -774,40 +1566,54 @@
             </div>
         </section>
 
-        <section class="feature-section">
+        <section class="feature-section" id="acquisition">
             <div class="container">
                 <div class="feature-grid reverse">
                     <div class="feature-content">
-                        <h2>Automated Acquisition</h2>
+                        <h2>Automated <span class="gradient">Acquisition</span></h2>
                         <p>
-                            Let Shelfarr handle the heavy lifting. It searches
-                            your sources, scores results against your format
-                            preferences and manages downloads automatically.
+                            Let Shelfarr handle the heavy lifting. It queries your indexers, scores results against your custom format preferences, and manages downloads automatically.
                         </p>
                         <ul class="feature-list">
                             <li>
-                                <span class="check">✓</span> Prowlarr,
-                                Jackett &amp; NZBHydra2 indexer search
+                                <span class="check"><i data-lucide="search"></i></span>
+                                <div>
+                                    <strong>Indexer Search:</strong> Seamless Prowlarr, Jackett &amp; NZBHydra2 integration
+                                </div>
                             </li>
                             <li>
-                                <span class="check">✓</span> Direct ebook &amp;
-                                audiobook downloads from selected sources
+                                <span class="check"><i data-lucide="download-cloud"></i></span>
+                                <div>
+                                    <strong>Direct Sources:</strong> Direct ebook &amp; audiobook downloads without torrent clients
+                                </div>
                             </li>
                             <li>
-                                <span class="check">✓</span> qBittorrent,
-                                Decypharr, SABnzbd, NZBGet, Deluge &amp;
-                                Transmission
+                                <span class="check"><i data-lucide="server"></i></span>
+                                <div>
+                                    <strong>Download Clients:</strong> qBittorrent, Decypharr, SABnzbd, NZBGet, Deluge &amp; Transmission
+                                </div>
                             </li>
                             <li>
-                                <span class="check">✓</span> Auto-selection and
-                                per-indexer download routing
+                                <span class="check"><i data-lucide="git-branch"></i></span>
+                                <div>
+                                    <strong>Smart Priority Routing:</strong> Auto-selection rules per indexer and download client
+                                </div>
                             </li>
                         </ul>
                     </div>
                     <div class="feature-visual">
+                        <div class="browser-mockup-bar">
+                            <div class="terminal-dot red"></div>
+                            <div class="terminal-dot yellow"></div>
+                            <div class="terminal-dot green"></div>
+                            <div class="browser-url-pill">
+                                <i data-lucide="activity" style="width:12px;height:12px;color:#60a5fa;"></i>
+                                shelfarr.local/acquisition/engine
+                            </div>
+                        </div>
                         <img
                             src="screenshot-dashboard.png"
-                            alt="Shelfarr Dashboard"
+                            alt="Shelfarr Dashboard & Acquisition Engine"
                         />
                     </div>
                 </div>
@@ -816,47 +1622,90 @@
 
         <section class="integrations" id="integrations">
             <div class="container">
-                <h2>Fits Right Into Your Stack</h2>
+                <h2>Fits Right Into Your <span class="gradient">Stack</span></h2>
                 <p class="subtitle">
                     Shelfarr connects seamlessly with the tools you already use
                     in your *arr ecosystem.
                 </p>
                 <div class="integration-flow">
                     <div class="integration-item">
-                        <div class="integration-icon">🔍</div>
-                        <span class="integration-name"
-                            >Open Library / Hardcover</span
-                        >
-                    </div>
-                    <span class="integration-arrow">→</span>
-                    <div class="integration-item">
-                        <div class="integration-icon shelfarr">
-                            <img
-                                src="logo.png"
-                                alt="Shelfarr"
-                                style="
-                                    width: 48px;
-                                    height: 48px;
-                                    border-radius: 8px;
-                                "
-                            />
+                        <div class="int-book c-blue">
+                            <div class="pages"></div>
+                            <div class="cover">
+                                <div class="spine"></div>
+                                <div class="spine-orn" style="top: 20px;"></div>
+                                <div class="spine-orn" style="bottom: 20px;"></div>
+                                <div class="cover-frame"></div>
+                                <div class="icon-circle"><i data-lucide="search"></i></div>
+                                <div class="int-label">Open Library / Hardcover</div>
+                                <div class="int-step">STEP 01</div>
+                            </div>
                         </div>
-                        <span class="integration-name">Shelfarr</span>
+                        <span class="integration-name">Search &amp; Discover</span>
                     </div>
-                    <span class="integration-arrow">→</span>
+                    <span class="integration-arrow"><i data-lucide="arrow-right"></i></span>
                     <div class="integration-item">
-                        <div class="integration-icon">🔎</div>
-                        <span class="integration-name">Prowlarr / Jackett / NZBHydra2</span>
+                        <div class="int-book shelfarr">
+                            <div class="pages"></div>
+                            <div class="cover">
+                                <div class="spine"></div>
+                                <div class="spine-orn" style="top: 20px;"></div>
+                                <div class="spine-orn" style="bottom: 20px;"></div>
+                                <div class="cover-frame"></div>
+                                <div class="icon-circle"><img src="logo.png" alt="Shelfarr" /></div>
+                                <div class="int-label">Shelfarr</div>
+                                <div class="int-step">STEP 02</div>
+                            </div>
+                        </div>
+                        <span class="integration-name">Request &amp; Manage</span>
                     </div>
-                    <span class="integration-arrow">→</span>
+                    <span class="integration-arrow"><i data-lucide="arrow-right"></i></span>
                     <div class="integration-item">
-                        <div class="integration-icon">⬇️</div>
-                        <span class="integration-name">Download Clients</span>
+                        <div class="int-book c-purple">
+                            <div class="pages"></div>
+                            <div class="cover">
+                                <div class="spine"></div>
+                                <div class="spine-orn" style="top: 20px;"></div>
+                                <div class="spine-orn" style="bottom: 20px;"></div>
+                                <div class="cover-frame"></div>
+                                <div class="icon-circle"><i data-lucide="radar"></i></div>
+                                <div class="int-label">Prowlarr / Jackett / NZBHydra2</div>
+                                <div class="int-step">STEP 03</div>
+                            </div>
+                        </div>
+                        <span class="integration-name">Index &amp; Search</span>
                     </div>
-                    <span class="integration-arrow">→</span>
+                    <span class="integration-arrow"><i data-lucide="arrow-right"></i></span>
                     <div class="integration-item">
-                        <div class="integration-icon">🎧</div>
-                        <span class="integration-name">Audiobookshelf</span>
+                        <div class="int-book c-brown">
+                            <div class="pages"></div>
+                            <div class="cover">
+                                <div class="spine"></div>
+                                <div class="spine-orn" style="top: 20px;"></div>
+                                <div class="spine-orn" style="bottom: 20px;"></div>
+                                <div class="cover-frame"></div>
+                                <div class="icon-circle"><i data-lucide="download"></i></div>
+                                <div class="int-label">Download Clients</div>
+                                <div class="int-step">STEP 04</div>
+                            </div>
+                        </div>
+                        <span class="integration-name">Fetch &amp; Organize</span>
+                    </div>
+                    <span class="integration-arrow"><i data-lucide="arrow-right"></i></span>
+                    <div class="integration-item">
+                        <div class="int-book c-green">
+                            <div class="pages"></div>
+                            <div class="cover">
+                                <div class="spine"></div>
+                                <div class="spine-orn" style="top: 20px;"></div>
+                                <div class="spine-orn" style="bottom: 20px;"></div>
+                                <div class="cover-frame"></div>
+                                <div class="icon-circle"><i data-lucide="headphones"></i></div>
+                                <div class="int-label">Audiobookshelf</div>
+                                <div class="int-step">STEP 05</div>
+                            </div>
+                        </div>
+                        <span class="integration-name">Listen &amp; Enjoy</span>
                     </div>
                 </div>
             </div>
@@ -864,124 +1713,203 @@
 
         <section class="features-grid-section">
             <div class="container">
-                <h2>Everything You Need</h2>
+                <h2>Everything You <span class="gradient">Need</span></h2>
                 <div class="features-grid">
-                    <div class="feature-card">
-                        <div class="feature-card-icon">👥</div>
-                        <h3>Multi-User &amp; Roles</h3>
-                        <p>
-                            Users request books, admins approve and manage.
-                            Role-based access keeps things organized.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="users"></i></div>
+                            <h3>Multi-User &amp; Roles</h3>
+                            <p>Users request books, admins approve and manage. Role-based access keeps things organized.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔐</div>
-                        <h3>Two-Factor Auth</h3>
-                        <p>
-                            Secure your instance with TOTP-based 2FA and backup
-                            codes for all user accounts.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="shield-check"></i></div>
+                            <h3>Two-Factor Auth</h3>
+                            <p>Secure your instance with TOTP-based 2FA and backup codes for all user accounts.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔑</div>
-                        <h3>OIDC/SSO</h3>
-                        <p>
-                            Single sign-on via OpenID Connect. Works with
-                            Authentik, Authelia, Keycloak, and more.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="key-round"></i></div>
+                            <h3>OIDC/SSO</h3>
+                            <p>Single sign-on via OpenID Connect. Works with Authentik, Authelia, Keycloak, and more.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔔</div>
-                        <h3>Notifications</h3>
-                        <p>
-                            In-app, Discord, Telegram and generic webhook
-                            notifications for every request event.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="bell"></i></div>
+                            <h3>Notifications</h3>
+                            <p>In-app, Discord, Telegram and generic webhook notifications for every request event.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">📖</div>
-                        <h3>Direct Downloads</h3>
-                        <p>
-                            Ebooks from Anna's Archive and Z-Library, plus free
-                            public-domain audiobooks from LibriVox &mdash; no
-                            torrent client needed.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="book-open"></i></div>
+                            <h3>Direct Downloads</h3>
+                            <p>Ebooks from Anna's Archive and Z-Library, plus free public-domain audiobooks from LibriVox &mdash; no torrent client needed.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🏪</div>
-                        <h3>Third-Party Stores (Beta)</h3>
-                        <p>
-                            See legitimate DRM-free ebook offers from supported
-                            sellers in a separate section. Checkout and payment
-                            always stay with the store.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="store"></i></div>
+                            <h3>Third-Party Stores<span class="beta-tag">Beta</span></h3>
+                            <p>See legitimate DRM-free ebook offers from supported sellers in a separate section. Checkout and payment always stay with the store.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🎧</div>
-                        <h3>Audible Backup (Beta)</h3>
-                        <p>
-                            Browse and preserve audiobooks you already own,
-                            confirm a safe one-time backup of eligible existing
-                            purchases, schedule hourly or longer library
-                            refreshes, and optionally back up future purchases
-                            using the Libation companion.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="headphones"></i></div>
+                            <h3>Audible Backup<span class="beta-tag">Beta</span></h3>
+                            <p>Browse and preserve audiobooks you already own, confirm a safe one-time backup of eligible existing purchases, schedule hourly or longer library refreshes, and optionally back up future purchases using the Libation companion.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">⬆️</div>
-                        <h3>Manual Uploads</h3>
-                        <p>
-                            Upload your own ebook or audiobook files to fulfill
-                            a request when automation can't find it.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="upload"></i></div>
+                            <h3>Manual Uploads</h3>
+                            <p>Upload your own ebook or audiobook files to fulfill a request when automation can't find it.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🎚️</div>
-                        <h3>Format Preferences</h3>
-                        <p>
-                            Preferred, approved and rejected formats, plus
-                            bitrate and single-file rules for auto-selection.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="sliders-horizontal"></i></div>
+                            <h3>Format Preferences</h3>
+                            <p>Preferred, approved and rejected formats, plus bitrate and single-file rules for auto-selection.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🧭</div>
-                        <h3>Download Routing</h3>
-                        <p>
-                            Route specific indexers to specific download clients
-                            per torrent or usenet result.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="route"></i></div>
+                            <h3>Download Routing</h3>
+                            <p>Route specific indexers to specific download clients per torrent or usenet result.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">📂</div>
-                        <h3>Smart Organization</h3>
-                        <p>
-                            Path and filename templates organize files by
-                            author, series and title, ready for Audiobookshelf.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="folder-tree"></i></div>
+                            <h3>Smart Organization</h3>
+                            <p>Path and filename templates organize files by author, series and title, ready for Audiobookshelf.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔄</div>
-                        <h3>Library Sync</h3>
-                        <p>
-                            Automatic Audiobookshelf scans after downloads
-                            complete. Your books appear instantly.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="refresh-cw"></i></div>
+                            <h3>Library Sync</h3>
+                            <p>Automatic Audiobookshelf scans after downloads complete. Your books appear instantly.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔌</div>
-                        <h3>REST API</h3>
-                        <p>
-                            Scoped, user-owned API tokens for search and request
-                            automation under <code>/api/v1</code>.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="terminal"></i></div>
+                            <h3>REST API</h3>
+                            <p>Scoped, user-owned API tokens for search and request automation under <code>/api/v1</code>.</p>
+                        </div>
                     </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🐳</div>
-                        <h3>Docker Ready</h3>
-                        <p>
-                            Deploy in minutes with Docker. Works perfectly with
-                            your existing container setup.
-                        </p>
+                    <div class="feature-book">
+                        <div class="glow"></div>
+                        <div class="pages"></div>
+                        <div class="cover">
+                            <div class="spine"></div>
+                            <div class="spine-ornament" style="top: 28px;"></div>
+                            <div class="spine-ornament" style="bottom: 28px;"></div>
+                            <div class="cover-frame"></div>
+                            <div class="ribbon"></div>
+                            <div class="icon-wrap"><i data-lucide="container"></i></div>
+                            <h3>Docker Ready</h3>
+                            <p>Deploy in minutes with Docker. Works perfectly with your existing container setup.</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -989,94 +1917,49 @@
 
         <section class="faq" id="faq">
             <div class="container">
-                <h2>Frequently Asked Questions</h2>
-                <div class="faq-grid">
-                    <div class="faq-item">
-                        <h3>Do I need Prowlarr?</h3>
-                        <p>
-                            Not necessarily. You can use Anna's Archive or
-                            Z-Library for ebooks, or LibriVox for public-domain
-                            audiobooks, without any indexer. For the widest
-                            selection, Prowlarr, Jackett or NZBHydra2 is recommended.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>What download clients are supported?</h3>
-                        <p>
-                            qBittorrent, Decypharr, Deluge and Transmission for
-                            torrents, plus SABnzbd and NZBGet for usenet.
-                            Configure multiple clients with priority ordering
-                            and per-indexer routing.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Does it work without Audiobookshelf?</h3>
-                        <p>
-                            Yes! Shelfarr organizes files to your specified
-                            output paths. Audiobookshelf integration is optional
-                            but recommended.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Can users request books themselves?</h3>
-                        <p>
-                            Users can search and request books. Admins can
-                            review requests and manage the download queue.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Does Shelfarr sell books or handle payment?</h3>
-                        <p>
-                            No. Beta store integrations only show eligible
-                            offers and send you to the seller. Shelfarr never
-                            receives card details, store passwords or order
-                            information.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Can Shelfarr back up new Audible purchases automatically?</h3>
-                        <p>
-                            Yes, as an explicit beta opt-in. Run one manual sync
-                            first, enable scheduled sync, then enable automatic
-                            backup. The next successful manual or scheduled sync
-                            refreshes a no-download baseline. Only purchased
-                            audiobooks first discovered by later syncs are queued.
-                            The existing library is separate: after the first sync,
-                            Shelfarr asks whether to queue a confirmed, conservatively
-                            filtered background batch. Subscriptions, local matches,
-                            identity conflicts and prior attempts are excluded, and
-                            progress is managed from Library while Libation processes
-                            one title at a time.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Is Audible Backup built by Shelfarr?</h3>
-                        <p>
-                            Shelfarr provides the management and import
-                            integration around a separate, pinned Libation
-                            companion. Libation remains an independent GPL-3.0
-                            project and is credited throughout the feature.
-                        </p>
-                    </div>
-                </div>
-            </div>
-        </section>
+                <h2>Enchanted <span class="gradient">Journal FAQ</span></h2>
+                <p class="subtitle">Select an index entry to write onto the parchment. Watch the ink seep into the paper before the journal responds in cursive script.</p>
 
-        <section class="cta">
-            <div class="container">
-                <div class="cta-content">
-                    <h2>Ready to Build Your Library?</h2>
-                    <p>
-                        Get started with Shelfarr in minutes. Free, open source
-                        and self-hosted.
-                    </p>
-                    <div class="cta-buttons">
-                        <a href="getting-started.html" class="btn btn-primary"
-                            >Get Started</a
-                        >
-                        <a href="configuration.html" class="btn btn-secondary"
-                            >Settings Reference</a
-                        >
+                <div class="riddle-diary-wrapper">
+                    <!-- Open Parchment Journal Paper -->
+                    <div class="riddle-journal-paper">
+                        <!-- Book Index Tabs Track (Integrated Table of Contents) -->
+                        <div class="journal-tabs-track">
+                            <button class="journal-tab active" onclick="askRiddleDiary(0, this)">
+                                <span>VOL.01</span> Indexer
+                            </button>
+                            <button class="journal-tab" onclick="askRiddleDiary(1, this)">
+                                <span>VOL.02</span> Clients
+                            </button>
+                            <button class="journal-tab" onclick="askRiddleDiary(2, this)">
+                                <span>VOL.03</span> Audiobookshelf
+                            </button>
+                            <button class="journal-tab" onclick="askRiddleDiary(3, this)">
+                                <span>VOL.04</span> Requests
+                            </button>
+                            <button class="journal-tab" onclick="askRiddleDiary(4, this)">
+                                <span>VOL.05</span> Stores
+                            </button>
+                            <button class="journal-tab" onclick="askRiddleDiary(5, this)">
+                                <span>VOL.06</span> Audible Backup
+                            </button>
+                            <button class="journal-tab" onclick="askRiddleDiary(6, this)">
+                                <span>VOL.07</span> Libation
+                            </button>
+                        </div>
+
+                        <div class="journal-header">
+                            <div class="journal-badge">
+                                <i data-lucide="scroll" style="width:14px;height:14px;"></i> THE ENCHANTED DIARY — PARCHMENT
+                            </div>
+                        </div>
+
+                        <div class="journal-body">
+                            <!-- Single Parchment Ink Canvas (Exact Same Line & Spot) -->
+                            <div class="riddle-paper-canvas">
+                                <div id="riddleInkCanvas" class="riddle-ink-text"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1084,71 +1967,345 @@
 
         <section class="install" id="install">
             <div class="container">
-                <h2>Quick Start with Docker</h2>
-                <div class="code-block">
-                    <pre><span class="comment"># Create directory and get compose file</span>
-<span class="cmd">mkdir</span> shelfarr && <span class="cmd">cd</span> shelfarr
-<span class="cmd">curl</span> -O https://raw.githubusercontent.com/Pedro-Revez-Silva/shelfarr/main/docker-compose.example.yml
-<span class="cmd">mv</span> docker-compose.example.yml docker-compose.yml
+                <h2>Quick Start with <span class="gradient">Docker</span></h2>
+                <div class="terminal">
+                    <div class="terminal-bar">
+                        <div class="terminal-dot red"></div>
+                        <div class="terminal-dot yellow"></div>
+                        <div class="terminal-dot green"></div>
+                        <span class="terminal-title">terminal — shelfarr setup</span>
+                    </div>
+                    <div class="terminal-body">
+                        <pre><span class="t-comment"># Create directory and get compose file</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mkdir</span> <span class="t-arg">shelfarr</span> <span class="t-prompt">&amp;&amp;</span> <span class="t-cmd">cd</span> <span class="t-arg">shelfarr</span>
+<span class="t-prompt">$</span> <span class="t-cmd">curl</span> <span class="t-flag">-O</span> <span class="t-url">https://raw.githubusercontent.com/Pedro-Revez-Silva/shelfarr/main/docker-compose.example.yml</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mv</span> <span class="t-arg">docker-compose.example.yml</span> <span class="t-arg">docker-compose.yml</span>
 
-<span class="comment"># Edit paths in docker-compose.yml, then start</span>
-<span class="cmd">docker-compose</span> up -d
+<span class="t-comment"># Edit paths in docker-compose.yml, then start</span>
+<span class="t-prompt">$</span> <span class="t-cmd">docker-compose</span> <span class="t-flag">up</span> <span class="t-flag">-d</span>
 
-<span class="comment"># Access at http://localhost:5056 — the first user to register becomes admin</span></pre>
+<span class="t-success">✓ Container started · listening on :5056</span>
+
+<span class="t-comment"># Access at http://localhost:5056 — the first user to register becomes admin</span>
+<span class="t-prompt">$</span> <span class="t-cursor"></span></pre>
+                    </div>
                 </div>
             </div>
         </section>
 
-        <footer>
+        </main>
+
+        <footer id="footer">
             <div class="container">
-                <div class="footer-left">
-                    <a href="#" class="logo"
-                        ><img src="logo.png" alt="Shelfarr" class="logo-icon" />
-                        <span>Shelfarr</span></a
-                    >
-                    <span class="footer-badge">
-                        <svg
-                            width="12"
-                            height="12"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                        >
-                            <path
-                                d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"
-                            />
-                        </svg>
-                        Free & Open Source
-                    </span>
+                <div class="cta-card">
+                    <!-- Physics Interactive Bouncing Book Particles Canvas -->
+                    <canvas id="bouncingBooksCanvas"></canvas>
+
+                    <h2>Ready to Build Your <span class="gradient">Digital Library</span>?</h2>
+                    <p>
+                        Get started with Shelfarr in minutes. Entirely free, open source, and self-hosted.
+                    </p>
+                    <div class="cta-buttons" style="position:relative; z-index:2;">
+                        <a href="getting-started.html" class="btn btn-primary btn-cta-glow">
+                            Get Started Now →
+                        </a>
+                        <a href="https://github.com/Pedro-Revez-Silva/shelfarr" class="btn btn-secondary" target="_blank" rel="noopener">
+                            <i data-lucide="star" style="width:16px;height:16px;color:#fcd34d;"></i> Star on GitHub
+                        </a>
+                    </div>
                 </div>
-                <div class="footer-links">
-                    <a href="getting-started.html">Docs</a>
-                    <a href="https://github.com/Pedro-Revez-Silva/shelfarr"
-                        >GitHub</a
-                    >
-                    <a
-                        href="https://github.com/Pedro-Revez-Silva/shelfarr/issues"
-                        >Issues</a
-                    >
-                    <a
-                        href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/LICENSE"
-                        >GPL-3.0 License</a
-                    >
+
+                <div class="footer-row">
+                    <div class="footer-left">
+                        <a href="#" class="logo">
+                            <img src="logo.png" alt="Shelfarr" class="logo-icon" />
+                            <span>Shelfarr</span>
+                        </a>
+                        <span class="footer-badge">
+                            <i data-lucide="layers" style="width:12px;height:12px;"></i>
+                            Free &amp; Open Source
+                        </span>
+                    </div>
+                    <div class="footer-links">
+                        <a href="getting-started.html">Docs</a>
+                        <a href="https://github.com/Pedro-Revez-Silva/shelfarr">GitHub</a>
+                        <a href="https://github.com/Pedro-Revez-Silva/shelfarr/issues">Issues</a>
+                        <a href="https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/LICENSE">License</a>
+                    </div>
                 </div>
             </div>
         </footer>
 
         <script>
-            // Navbar scroll effect
+            // Navbar scroll effect & Scroll-Spy Active Highlight
             const navbar = document.getElementById("navbar");
-            window.addEventListener("scroll", () => {
+            const spySections = document.querySelectorAll("section[id]");
+            const spyNavLinks = document.querySelectorAll(".nav-links a[href^='#']");
+
+            function updateNavScrollSpy() {
                 if (window.scrollY > 50) {
                     navbar.classList.add("scrolled");
                 } else {
                     navbar.classList.remove("scrolled");
                 }
+
+                let currentSectionId = "";
+                spySections.forEach(section => {
+                    const sectionTop = section.offsetTop - 180;
+                    const sectionHeight = section.offsetHeight;
+                    if (window.scrollY >= sectionTop && window.scrollY < sectionTop + sectionHeight) {
+                        currentSectionId = section.getAttribute("id");
+                    }
+                });
+
+                spyNavLinks.forEach(link => {
+                    link.classList.remove("active");
+                    if (currentSectionId && link.getAttribute("href") === `#${currentSectionId}`) {
+                        link.classList.add("active");
+                    }
+                });
+            }
+
+            window.addEventListener("scroll", updateNavScrollSpy);
+            window.addEventListener("DOMContentLoaded", updateNavScrollSpy);
+
+            // Tom Riddle's Diary Interactive Magic Ink Logic
+            const riddleFaqData = [
+                {
+                    q: "Do I need Prowlarr?",
+                    a: "Not necessarily. You can use Anna's Archive or Z-Library for ebooks, or LibriVox for public-domain audiobooks, without any indexer. For the widest selection, Prowlarr, Jackett or NZBHydra2 is recommended."
+                },
+                {
+                    q: "What download clients are supported?",
+                    a: "qBittorrent, Decypharr, Deluge and Transmission for torrents, plus SABnzbd and NZBGet for usenet. Configure multiple clients with priority ordering and per-indexer routing."
+                },
+                {
+                    q: "Does it work without Audiobookshelf?",
+                    a: "Yes! Shelfarr organizes files to your specified output paths. Audiobookshelf integration is optional but recommended."
+                },
+                {
+                    q: "Can users request books themselves?",
+                    a: "Users can search and request books. Admins can review requests and manage the download queue."
+                },
+                {
+                    q: "Does Shelfarr sell books or handle payment?",
+                    a: "No. Beta store integrations only show eligible offers and send you to the seller. Shelfarr never receives card details, store passwords or order information."
+                },
+                {
+                    q: "Can Shelfarr back up new Audible purchases automatically?",
+                    a: "Yes, as an explicit beta opt-in. Run one manual sync first, enable scheduled sync, then enable automatic backup. Only purchased audiobooks first discovered by later syncs are queued. Libation processes one title at a time."
+                },
+                {
+                    q: "Is Audible Backup built by Shelfarr?",
+                    a: "Shelfarr provides the management and import integration around a separate, pinned Libation companion. Libation remains an independent GPL-3.0 project."
+                }
+            ];
+
+            let riddleTimers = [];
+
+            function clearRiddleTimers() {
+                riddleTimers.forEach(t => clearTimeout(t));
+                riddleTimers = [];
+            }
+
+            function askRiddleDiary(index, btn) {
+                clearRiddleTimers();
+
+                document.querySelectorAll('.journal-tab').forEach(c => c.classList.remove('active'));
+                if (btn) btn.classList.add('active');
+
+                const canvas = document.getElementById('riddleInkCanvas');
+                const nextQuestion = riddleFaqData[index].q;
+                const nextAnswer = riddleFaqData[index].a;
+
+                const runQuestionFlow = () => {
+                    // Step 1: Question seeps smoothly onto blank paper (0.9s fade-in)
+                    canvas.textContent = nextQuestion;
+                    canvas.className = 'riddle-ink-text fade-in';
+
+                    // Step 2: Lingers 1.5s, then seeps out into blank paper (0.9s fade-out)
+                    const t1 = setTimeout(() => {
+                        canvas.className = 'riddle-ink-text fade-out';
+
+                        // Step 3: Once question seeps out (900ms), set answer text & seep in (0.9s)
+                        const t2 = setTimeout(() => {
+                            canvas.textContent = nextAnswer;
+                            canvas.className = 'riddle-ink-text fade-in';
+                        }, 850);
+                        riddleTimers.push(t2);
+                    }, 1500);
+                    riddleTimers.push(t1);
+                };
+
+                // If text is currently visible on parchment, fade it OUT first before loading new question!
+                if (canvas.classList.contains('fade-in') && canvas.textContent.trim() !== '') {
+                    canvas.className = 'riddle-ink-text fade-out';
+                    const t0 = setTimeout(runQuestionFlow, 750);
+                    riddleTimers.push(t0);
+                } else {
+                    runQuestionFlow();
+                }
+            }
+
+            // Automatic initial load / scroll trigger
+            let hasTriggeredRiddleInit = false;
+            function initRiddleOnScroll() {
+                const faqSection = document.getElementById('faq');
+                if (!faqSection || hasTriggeredRiddleInit) return;
+
+                const rect = faqSection.getBoundingClientRect();
+                if (rect.top <= window.innerHeight * 0.82) {
+                    hasTriggeredRiddleInit = true;
+                    const firstTab = document.querySelector('.journal-tab');
+                    askRiddleDiary(0, firstTab);
+                }
+            }
+
+            window.addEventListener('scroll', initRiddleOnScroll);
+            window.addEventListener('DOMContentLoaded', () => {
+                setTimeout(initRiddleOnScroll, 300);
             });
+
+            // Physics Bouncing Book Particles Engine inside CTA Card
+            (function initBouncingBooksCanvas() {
+                const canvas = document.getElementById('bouncingBooksCanvas');
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const card = canvas.parentElement;
+
+                let W, H;
+                function resize() {
+                    W = canvas.width = card.clientWidth;
+                    H = canvas.height = card.clientHeight;
+                }
+                resize();
+                window.addEventListener('resize', resize);
+
+                const bookColors = [
+                    { cover: '#1e3a5f', spine: '#2a4a6f', edge: '#fcd34d' },
+                    { cover: '#3a1a5f', spine: '#5a2a8f', edge: '#fcd34d' },
+                    { cover: '#1a3a2a', spine: '#2a5a3a', edge: '#fcd34d' },
+                    { cover: '#4a2a1a', spine: '#6a3a2a', edge: '#fcd34d' },
+                    { cover: '#0f172a', spine: '#3b82f6', edge: '#60a5fa' }
+                ];
+
+                const numBooks = 12;
+                const books = [];
+
+                for (let i = 0; i < numBooks; i++) {
+                    const bw = 32 + Math.random() * 10;
+                    const bh = 42 + Math.random() * 12;
+                    books.push({
+                        x: Math.random() * (W - 60) + 10,
+                        y: Math.random() * (H - 60) + 10,
+                        vx: (Math.random() - 0.5) * 2.2,
+                        vy: (Math.random() - 0.5) * 2.2,
+                        w: bw,
+                        h: bh,
+                        angle: (Math.random() - 0.5) * 0.5,
+                        vAngle: (Math.random() - 0.5) * 0.03,
+                        color: bookColors[i % bookColors.length]
+                    });
+                }
+
+                let mouseX = -1000, mouseY = -1000;
+                card.addEventListener('mousemove', (e) => {
+                    const r = card.getBoundingClientRect();
+                    mouseX = e.clientX - r.left;
+                    mouseY = e.clientY - r.top;
+                });
+                card.addEventListener('mouseleave', () => {
+                    mouseX = -1000; mouseY = -1000;
+                });
+
+                card.addEventListener('touchmove', (e) => {
+                    if (e.touches.length > 0) {
+                        const r = card.getBoundingClientRect();
+                        mouseX = e.touches[0].clientX - r.left;
+                        mouseY = e.touches[0].clientY - r.top;
+                    }
+                });
+                card.addEventListener('touchend', () => {
+                    mouseX = -1000; mouseY = -1000;
+                });
+
+                function drawBook(b) {
+                    ctx.save();
+                    ctx.translate(b.x + b.w / 2, b.y + b.h / 2);
+                    ctx.rotate(b.angle);
+
+                    ctx.shadowColor = 'rgba(96, 165, 250, 0.45)';
+                    ctx.shadowBlur = 10;
+
+                    ctx.fillStyle = b.color.cover;
+                    ctx.beginPath();
+                    if (ctx.roundRect) {
+                        ctx.roundRect(-b.w / 2, -b.h / 2, b.w, b.h, 4);
+                    } else {
+                        ctx.rect(-b.w / 2, -b.h / 2, b.w, b.h);
+                    }
+                    ctx.fill();
+
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+
+                    ctx.fillStyle = b.color.spine;
+                    ctx.fillRect(-b.w / 2, -b.h / 2, 5, b.h);
+
+                    ctx.fillStyle = b.color.edge;
+                    ctx.fillRect(b.w / 2 - 3, -b.h / 2 + 3, 2, b.h - 6);
+
+                    ctx.restore();
+                }
+
+                function loop() {
+                    ctx.clearRect(0, 0, W, H);
+
+                    books.forEach(b => {
+                        b.x += b.vx;
+                        b.y += b.vy;
+                        b.angle += b.vAngle;
+
+                        if (b.x <= 0) { b.x = 0; b.vx = Math.abs(b.vx); b.vAngle = (Math.random() - 0.5) * 0.06; }
+                        if (b.x + b.w >= W) { b.x = W - b.w; b.vx = -Math.abs(b.vx); b.vAngle = (Math.random() - 0.5) * 0.06; }
+                        if (b.y <= 0) { b.y = 0; b.vy = Math.abs(b.vy); b.vAngle = (Math.random() - 0.5) * 0.06; }
+                        if (b.y + b.h >= H) { b.y = H - b.h; b.vy = -Math.abs(b.vy); b.vAngle = (Math.random() - 0.5) * 0.06; }
+
+                        const dx = (b.x + b.w / 2) - mouseX;
+                        const dy = (b.y + b.h / 2) - mouseY;
+                        const dist = Math.hypot(dx, dy);
+                        if (dist < 85 && dist > 0) {
+                            const force = (85 - dist) / 85;
+                            b.vx += (dx / dist) * force * 3.8;
+                            b.vy += (dy / dist) * force * 3.8;
+                            b.vAngle += (Math.random() - 0.5) * 0.14;
+
+                            const maxSpd = 7;
+                            const currentSpd = Math.hypot(b.vx, b.vy);
+                            if (currentSpd > maxSpd) {
+                                b.vx = (b.vx / currentSpd) * maxSpd;
+                                b.vy = (b.vy / currentSpd) * maxSpd;
+                            }
+                        }
+
+                        b.vx *= 0.992;
+                        b.vy *= 0.992;
+
+                        if (Math.abs(b.vx) < 0.4) b.vx += (Math.random() - 0.5) * 0.4;
+                        if (Math.abs(b.vy) < 0.4) b.vy += (Math.random() - 0.5) * 0.4;
+
+                        drawBook(b);
+                    });
+
+                    requestAnimationFrame(loop);
+                }
+
+                requestAnimationFrame(loop);
+            })();
+
+            // Initialize Lucide icons
+            lucide.createIcons();
         </script>
     </body>
 </html>
