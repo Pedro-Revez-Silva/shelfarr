@@ -72,6 +72,11 @@ class SettingsService
     split_audiobook_bundle_imports: { type: "boolean", default: false, category: "download", description: "Split releases containing multiple self-contained M4B/AAX books into per-book folders. MP3, FLAC, and other chapter-based releases stay together." },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 
+    # Watched Folder Import
+    library_import_enabled: { type: "boolean", default: false, category: "import", description: "Scan a watched folder for pre-existing book files that were not acquired through a Shelfarr request and queue them for review before importing into the library." },
+    library_import_path: { type: "string", default: "", category: "import", description: "Absolute path (Shelfarr container perspective) to scan for un-imported book files, e.g. /data/torrents/shelfarr. Must be readable by Shelfarr and outside the configured output paths." },
+    library_import_scan_interval: { type: "integer", default: 300, category: "import", description: "Seconds between watched-folder scans" },
+
     # Library Platform Integration
     library_platform: { type: "string", default: "audiobookshelf", category: "audiobookshelf", description: "Library platform to sync and scan: audiobookshelf, bookorbit, or grimmory" },
     audiobookshelf_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for Audiobookshelf (e.g., http://localhost:13378)" },
@@ -234,6 +239,7 @@ class SettingsService
   CATEGORIES = {
     "indexer" => "Indexer",
     "download" => "Download Settings",
+    "import" => "Watched Folder Import",
     "audiobookshelf" => "Library Platform",
     "anna_archive" => "Anna's Archive",
     "zlibrary" => "Z-Library",

@@ -59,6 +59,34 @@ class NotificationService
       )
     end
 
+    # Batched notification that new watched-folder files were detected and are
+    # waiting for review. Import is an admin action, so only admins are notified
+    # in-app; outbound channels fire if the "import_detected" event is enabled.
+    def import_detected(count:)
+      return if count.to_i <= 0
+
+      noun = count == 1 ? "book file" : "book files"
+      title = "New #{count == 1 ? 'file' : 'files'} detected"
+      message = "#{count} new #{noun} detected in your watched folder and #{count == 1 ? 'is' : 'are'} waiting for review."
+
+      User.active.where(role: :admin).find_each do |admin|
+        create_for_user(
+          user: admin,
+          notifiable: nil,
+          type: "import_detected",
+          title: title,
+          message: message
+        )
+      end
+
+      dispatch_outbound_event(
+        event: "import_detected",
+        request: nil,
+        title: title,
+        message: message
+      )
+    end
+
     private
 
     def create_for_user(user:, notifiable:, type:, title:, message:)
