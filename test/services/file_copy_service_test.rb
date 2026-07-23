@@ -1992,7 +1992,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_empty Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*"))
   end
 
-  test "remove_source_file recovers a source quarantined by a hard interruption" do
+  test "remove_source_file recovers a root-squashed source quarantine after a hard interruption" do
     snapshot = FileCopyService.snapshot_source_file(@src_file)
     real_unlink = FileCopyService.method(:native_unlinkat)
     interrupted = false
@@ -2010,9 +2010,12 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       assert_raises(Interrupt) { FileCopyService.remove_source_file(snapshot) }
     end
     assert_not File.exist?(@src_file)
-    assert_equal 1, Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*")).size
+    quarantine = Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*")).sole
+    chown_for_root_squash(quarantine)
 
-    assert FileCopyService.remove_source_file(snapshot)
+    with_root_squashed_creation(@tmp_dir) do
+      assert FileCopyService.remove_source_file(snapshot)
+    end
     assert_empty Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*"))
   end
 
@@ -2050,12 +2053,16 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     File.binwrite(replacement, "replacement source")
     File.symlink(replacement, @src_file)
     File.binwrite(destination, "changed destination")
+    quarantine = Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*")).sole
+    chown_for_root_squash(quarantine)
 
-    assert_not FileCopyService.remove_source_file(
-      source_snapshot,
-      destination_snapshot: destination_snapshot
-    )
-    assert FileCopyService.source_file_quarantined?(source_snapshot)
+    with_root_squashed_creation(@tmp_dir) do
+      assert_not FileCopyService.remove_source_file(
+        source_snapshot,
+        destination_snapshot: destination_snapshot
+      )
+      assert FileCopyService.source_file_quarantined?(source_snapshot)
+    end
     assert_equal "replacement source", File.binread(@src_file)
   end
 
