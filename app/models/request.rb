@@ -487,6 +487,7 @@ class Request < ApplicationRecord
   # already-acquired books after upgrading.
   def post_processing_recovery_pending?
     return false unless persisted?
+    return true if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
     return false if completed?
 
     downloads.completed.where.not(post_processing_job_id: [ nil, "" ]).exists?

@@ -1121,6 +1121,181 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(source_file), "Source file should no longer exist after move import"
   end
 
+  test "single-file move retains its source until database finalization" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.binwrite(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_filename_template, "{author} - {title}")
+    SettingsService.set(:completed_download_import_mode, "move")
+    first_job = PostProcessingJob.new(@download.id)
+
+    first_job.stub(:finalize_acquisition!, ->(*) { raise Interrupt, "simulated hard kill" }) do
+      assert_raises(Interrupt) { first_job.perform_now }
+    end
+
+    destination = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      "Test Author - Test Audiobook.m4b"
+    )
+    assert File.exist?(source_file)
+    assert_equal "single file audio content", File.binread(destination)
+    assert @request.reload.processing?
+
+    retry_job = PostProcessingJob.new(@download.id, 0, first_job.job_id)
+    retry_job.perform_now
+
+    assert @request.reload.completed?
+    assert_not File.exist?(source_file)
+    assert_equal [ "Test Author - Test Audiobook.m4b" ], Dir.children(File.dirname(destination))
+  end
+
+  test "single-file move removes its source after reusing an identical destination" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.binwrite(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_filename_template, "{author} - {title}")
+    SettingsService.set(:completed_download_import_mode, "move")
+    destination_directory = File.join(@temp_dest_base, @book.author, @book.title)
+    destination = File.join(destination_directory, "Test Author - Test Audiobook.m4b")
+    FileUtils.mkdir_p(destination_directory)
+    File.binwrite(destination, "single file audio content")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?
+    assert_not File.exist?(source_file)
+    assert_equal [ "Test Author - Test Audiobook.m4b" ], Dir.children(destination_directory)
+  end
+
+  test "single-file move retains its source when a reused destination is replaced" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.binwrite(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_filename_template, "{author} - {title}")
+    SettingsService.set(:completed_download_import_mode, "move")
+    destination_directory = File.join(@temp_dest_base, @book.author, @book.title)
+    destination = File.join(destination_directory, "Test Author - Test Audiobook.m4b")
+    displaced = File.join(destination_directory, "displaced.m4b")
+    FileUtils.mkdir_p(destination_directory)
+    File.binwrite(destination, "single file audio content")
+    real_comparison = FileCopyService.method(:same_file_content?)
+    replaced = false
+
+    comparison = lambda do |*args, **kwargs|
+      identical = real_comparison.call(*args, **kwargs)
+      if identical && !replaced
+        replaced = true
+        File.rename(destination, displaced)
+        File.binwrite(destination, "unrelated replacement")
+      end
+      identical
+    end
+
+    FileCopyService.stub(:same_file_content?, comparison) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert replaced
+    assert @request.reload.attention_needed?
+    assert_equal "single file audio content", File.binread(source_file)
+    assert_equal "unrelated replacement", File.binread(destination)
+  end
+
+  test "single-file move recovery completes cleanup after a post-commit interruption" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.binwrite(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    job = PostProcessingJob.new(@download.id)
+
+    job.stub(:remove_import_source, ->(*) { raise Interrupt, "simulated post-commit interruption" }) do
+      assert_raises(Interrupt) { job.perform_now }
+    end
+
+    assert @request.reload.completed?
+    assert File.exist?(source_file)
+    assert @download.reload.post_processing_cleanup_state.present?
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert_not File.exist?(source_file)
+    assert_nil @download.reload.post_processing_cleanup_state
+  end
+
+  test "single-file move retains its source when the destination changes after finalization" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.binwrite(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_filename_template, "{author} - {title}")
+    SettingsService.set(:completed_download_import_mode, "move")
+    destination = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      "Test Author - Test Audiobook.m4b"
+    )
+    job = PostProcessingJob.new(@download.id)
+    real_finalize = job.method(:finalize_acquisition!)
+
+    finalizing = lambda do |*args|
+      finalized = real_finalize.call(*args)
+      File.binwrite(destination, "replacement after finalization") if finalized
+      finalized
+    end
+
+    job.stub(:finalize_acquisition!, finalizing) { job.perform_now }
+
+    assert @request.reload.completed?
+    assert_equal "single file audio content", File.binread(source_file)
+    assert_equal "replacement after finalization", File.binread(destination)
+    assert_nil @download.reload.post_processing_cleanup_state
+  end
+
+  test "single-file move retains its source when destination fsync is unsupported" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.binwrite(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+
+    FileCopyService.stub(:sync_io, false) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.attention_needed?
+    assert_match(/fsync is unsupported/i, @request.issue_description)
+    assert File.exist?(source_file)
+  end
+
+  test "single-file copy accepts safe mode when chmod is ignored" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.binwrite(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    FileCopyService.stub(:native_fchmod, ->(*) { }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    destination = Dir.glob(File.join(@temp_dest_base, @book.author, @book.title, "*.m4b")).sole
+    assert @request.reload.completed?
+    assert_equal 0o600, File.stat(destination).mode & 0o777
+  end
+
   test "falls back to buffered move when NFS copy_file_range fails for single files" do
     source_file = File.join(@temp_source, "Original Name.m4b")
     File.write(source_file, "single file audio content")
@@ -1131,7 +1306,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobook_filename_template, "{author} - {title}")
     SettingsService.set(:completed_download_import_mode, "move")
 
-    FileUtils.stub(:mv, ->(*) { raise Errno::EACCES, "copy_file_range" }) do
+    IO.stub(:copy_stream, ->(*) { raise Errno::EACCES, "copy_file_range" }) do
       PostProcessingJob.perform_now(@download.id)
     end
 
@@ -1149,7 +1324,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "move")
 
-    FileCopyService.stub(:mv_noreplace, ->(*) { raise Errno::EACCES, "permission denied" }) do
+    FileCopyService.stub(:cp_noreplace, ->(*) { raise Errno::EACCES, "permission denied" }) do
       PostProcessingJob.perform_now(@download.id)
     end
 
@@ -1222,15 +1397,17 @@ class PostProcessingJobTest < ActiveJob::TestCase
     original_file = File.join(@temp_source, "audiobook.mp3")
 
     real_copy = FileCopyService.method(:cp_noreplace)
-    FileCopyService.stub(:cp_noreplace, ->(source, destination) {
+    FileCopyService.stub(:cp_noreplace, ->(source, destination, **options) {
       raise "import failed" if File.basename(source) == "second.mp3"
 
-      real_copy.call(source, destination)
+      real_copy.call(source, destination, **options)
     }) do
       PostProcessingJob.perform_now(@download.id)
     end
 
     assert @request.reload.attention_needed?
+    imported_file = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    assert_equal "test audio content", File.binread(imported_file)
     assert File.exist?(original_file), "First source file should remain when a later import fails"
     assert File.exist?(File.join(@temp_source, "second.mp3")), "Failing source file should remain after partial import"
     assert File.exist?(@temp_source), "Source download folder should remain after failed import"
@@ -1315,6 +1492,40 @@ class PostProcessingJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(outside) if outside
   end
 
+  test "rejects a source swapped outside its authorized root before snapshot" do
+    SettingsService.set(:audiobookshelf_url, "")
+    displaced_source = "#{@temp_source}-authorized"
+    outside = Dir.mktmpdir("outside-authorized-source")
+    File.binwrite(File.join(outside, "audiobook.mp3"), "outside audiobook bytes")
+    real_snapshot = FileCopyService.method(:snapshot_source_root)
+    swapped = false
+
+    snapshotting = lambda do |path, **options|
+      unless swapped
+        swapped = true
+        File.rename(@temp_source, displaced_source)
+        File.symlink(outside, @temp_source)
+      end
+      real_snapshot.call(path, **options)
+    end
+
+    FileCopyService.stub(:snapshot_source_root, snapshotting) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert swapped
+    assert @request.reload.attention_needed?
+    assert_match(/outside configured download roots/i, @request.issue_description)
+    imported = Dir.glob(File.join(@temp_dest_base, "**", "*"))
+      .select { |path| File.file?(path) }
+    assert_empty imported
+    assert_equal "outside audiobook bytes", File.binread(File.join(outside, "audiobook.mp3"))
+  ensure
+    FileUtils.rm_f(@temp_source) if @temp_source && File.symlink?(@temp_source)
+    FileUtils.rm_rf(displaced_source) if displaced_source
+    FileUtils.rm_rf(outside) if outside
+  end
+
   test "preserves both files and asks for review when another acquisition wins the book claim" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "move")
@@ -1325,9 +1536,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
     job = PostProcessingJob.new(@download.id)
     real_finalize = job.method(:finalize_acquisition!)
 
-    job.stub(:finalize_acquisition!, ->(download, request, book, path) {
+    job.stub(:finalize_acquisition!, ->(download, request, book, path, cleanup_state = nil) {
       Book.where(id: book.id).update_all(file_path: existing_path, updated_at: Time.current)
-      real_finalize.call(download, request, book, path)
+      real_finalize.call(download, request, book, path, cleanup_state)
     }) do
       job.perform_now
     end
@@ -1532,6 +1743,80 @@ class PostProcessingJobTest < ActiveJob::TestCase
       assert_requested remove_stub
       assert @request.reload.completed?
     end
+  end
+
+  test "retains a usenet download when destination fsync is unsupported" do
+    client = DownloadClient.create!(
+      name: "SABnzbd durability test",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_durable")
+    SettingsService.set(:audiobookshelf_url, "")
+
+    VCR.turned_off do
+      remove_stub = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete"))
+        .to_return(status: 200, body: { "status" => true }.to_json)
+
+      FileCopyService.stub(:sync_io, false) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+
+      assert_not_requested remove_stub
+    end
+
+    assert @request.reload.attention_needed?
+    assert_match(/fsync is unsupported/i, @request.issue_description)
+    assert File.exist?(File.join(@temp_source, "audiobook.mp3"))
+  end
+
+  test "retains a usenet download when its destination changes after finalization" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.binwrite(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    client = DownloadClient.create!(
+      name: "SABnzbd destination validation",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(
+      download_path: source_file,
+      download_client: client,
+      external_id: "SABnzbd_nzo_replaced"
+    )
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_filename_template, "{author} - {title}")
+    destination = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      "Test Author - Test Audiobook.m4b"
+    )
+    job = PostProcessingJob.new(@download.id)
+    real_finalize = job.method(:finalize_acquisition!)
+
+    finalizing = lambda do |*args|
+      finalized = real_finalize.call(*args)
+      File.binwrite(destination, "replacement after finalization") if finalized
+      finalized
+    end
+
+    VCR.turned_off do
+      remove_stub = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete"))
+        .to_return(status: 200, body: { "status" => true }.to_json)
+
+      job.stub(:finalize_acquisition!, finalizing) { job.perform_now }
+
+      assert_not_requested remove_stub
+    end
+
+    assert @request.reload.completed?
+    assert_equal "single file audio content", File.binread(source_file)
+    assert_equal "replacement after finalization", File.binread(destination)
   end
 
   test "does not remove torrent download after import" do

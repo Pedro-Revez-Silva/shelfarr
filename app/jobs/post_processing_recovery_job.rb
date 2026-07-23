@@ -51,6 +51,7 @@ class PostProcessingRecoveryJob < ApplicationJob
   end
 
   def perform
+    cleanup_downloads.each { |download| recover_source_cleanup(download) }
     stale_downloads.each { |download| recover(download) }
   end
 
@@ -66,8 +67,53 @@ class PostProcessingRecoveryJob < ApplicationJob
       .limit(BATCH_SIZE)
   end
 
+  def cleanup_downloads
+    Download.completed
+      .joins(:request)
+      .where(requests: { status: Request.statuses[:completed] })
+      .where.not(post_processing_cleanup_state: [ nil, "" ])
+      .order(:updated_at, :id)
+      .limit(BATCH_SIZE)
+  end
+
+  def recover_source_cleanup(download)
+    cleanup_state = download.post_processing_cleanup_state
+    payload = JSON.parse(cleanup_state)
+    source_snapshot = FileCopyService.deserialize_file_snapshot(payload.fetch("source"))
+    destination_snapshot = FileCopyService.deserialize_file_snapshot(payload.fetch("destination"))
+    removed = FileCopyService.remove_source_file(
+      source_snapshot,
+      destination_snapshot: destination_snapshot
+    )
+    unless removed
+      Rails.logger.warn(
+        "[PostProcessingRecoveryJob] Source cleanup was no longer safe for download ##{download.id}; it was retained"
+      )
+    end
+    if !removed && FileCopyService.source_file_quarantined?(source_snapshot)
+      Download.where(
+        id: download.id,
+        post_processing_cleanup_state: cleanup_state
+      ).update_all(updated_at: Time.current)
+      return
+    end
+
+    Download.where(
+      id: download.id,
+      post_processing_cleanup_state: cleanup_state
+    ).update_all(post_processing_cleanup_state: nil, updated_at: Time.current)
+  rescue StandardError => error
+    Rails.logger.error(
+      "[PostProcessingRecoveryJob] Source cleanup recovery failed for download ##{download.id}: #{error.class}"
+    )
+    Download.where(id: download.id).update_all(updated_at: Time.current)
+  end
+
   def recover(download)
-    return if self.class.processing_job_pending?(download.id)
+    if self.class.processing_job_pending?(download.id)
+      download.touch
+      return
+    end
 
     expected_owner = download.post_processing_job_id.presence
     replacement = PostProcessingJob.new(download.id, 0, expected_owner)

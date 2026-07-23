@@ -47,6 +47,7 @@ class PostProcessingRecoveryJobTest < ActiveJob::TestCase
   end
 
   test "does not supersede a live or scheduled post-processing job" do
+    previous_updated_at = @download.updated_at
     PostProcessingRecoveryJob.stub(:processing_job_pending?, true) do
       assert_no_enqueued_jobs only: PostProcessingJob do
         PostProcessingRecoveryJob.perform_now
@@ -54,6 +55,7 @@ class PostProcessingRecoveryJobTest < ActiveJob::TestCase
     end
 
     assert_equal "stale-owner", @download.reload.post_processing_job_id
+    assert @download.updated_at > previous_updated_at
   end
 
   test "queue inspection recognizes a scheduled Solid Queue delivery" do

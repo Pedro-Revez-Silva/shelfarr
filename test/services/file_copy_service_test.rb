@@ -77,6 +77,108 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal 0o777, File.stat(@src_file).mode & 0o777
   end
 
+  test "cp_noreplace accepts safe effective mode when chmod is ignored" do
+    destination = File.join(@dest_dir, "safe-mode.txt")
+
+    FileCopyService.stub(:native_fchmod, ->(*) { }) do
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal 0o600, File.stat(destination).mode & 0o777
+  end
+
+  test "cp_noreplace accepts safe effective modes when fchmod is unsupported" do
+    destination = File.join(@dest_dir, "unsupported-fchmod.txt")
+
+    FileCopyService.stub(:native_fchmod, ->(*) { raise Errno::EOPNOTSUPP }) do
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal 0o600, File.stat(destination).mode & 0o777
+    assert_empty Dir.children(@dest_dir) - [ "unsupported-fchmod.txt" ]
+  end
+
+  test "hardlink fallback copy accepts owner-only mode when fchmod is unsupported" do
+    destination = File.join(@dest_dir, "hardlink-fallback-mode.txt")
+
+    FileCopyService.stub(:native_fchmod, ->(*) { raise Errno::EOPNOTSUPP }) do
+      FileCopyService.cp_noreplace(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        hardlink_mode: true
+      )
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal 0o600, File.stat(destination).mode & 0o777
+    assert FileCopyService.secure_library_file_mode?(destination, root: @dest_dir)
+  end
+
+  test "ensure_directory accepts a safe effective mode when fchmod is unsupported" do
+    directory = File.join(@dest_dir, "safe-directory")
+
+    FileCopyService.stub(:native_fchmod, ->(*) { raise Errno::EOPNOTSUPP }) do
+      FileCopyService.ensure_directory(directory, root: @dest_dir)
+    end
+
+    assert File.directory?(directory)
+    assert_includes FileCopyService::SAFE_LIBRARY_DIRECTORY_MODES,
+      File.stat(directory).mode & 0o777
+  end
+
+  test "ensure_directory does not chmod the caller-provided root" do
+    File.chmod(0o1777, @dest_dir)
+
+    FileCopyService.stub(:native_fchmod, ->(*) { raise Errno::EPERM }) do
+      FileCopyService.ensure_directory(@dest_dir, root: @dest_dir)
+    end
+
+    assert_equal 0o1777, File.stat(@dest_dir).mode & 0o7777
+  end
+
+  test "cp_noreplace rejects unsafe effective mode when chmod is ignored" do
+    destination = File.join(@dest_dir, "unsafe-mode.txt")
+    real_fchmod = FileCopyService.method(:native_fchmod)
+    unsafe_fchmod = lambda do |descriptor, mode|
+      handle = File.for_fd(descriptor, "rb", autoclose: false)
+      if handle.stat.file? && mode == FileCopyService::LIBRARY_FILE_MODE
+        handle.chmod(0o644)
+      else
+        real_fchmod.call(descriptor, mode)
+      end
+    end
+
+    FileCopyService.stub(:native_fchmod, unsafe_fchmod) do
+      assert_raises(FileCopyService::UnsafeFilePermissionsError) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_not File.exist?(destination)
+    assert_equal "test content", File.binread(@src_file)
+  end
+
+  test "cp_noreplace rejects a source modified while its private copy is written" do
+    destination = File.join(@dest_dir, "changed-source.txt")
+    real_copy = FileCopyService.method(:copy_source_io)
+    mutating_copy = lambda do |source, target, heartbeat: nil|
+      real_copy.call(source, target, heartbeat: heartbeat)
+      File.binwrite(@src_file, "other bytes!")
+    end
+
+    FileCopyService.stub(:copy_source_io, mutating_copy) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_not File.exist?(destination)
+    assert_equal "other bytes!", File.binread(@src_file)
+  end
+
   test "cp_noreplace uses exclusive copy when atomic publication is unsupported" do
     destination = File.join(@dest_dir, "compatible.txt")
 
@@ -187,6 +289,57 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(@src_file)
     assert_equal "test content", File.binread(destination)
     assert_empty Dir.children(@dest_dir) - [ "moved-compatible.txt" ]
+  end
+
+  test "mv_noreplace retains its source when file fsync is unsupported" do
+    destination = File.join(@dest_dir, "unsynced-file.txt")
+
+    FileCopyService.stub(:flush_and_sync, false) do
+      assert_raises(FileCopyService::DurabilityUnsupportedError) do
+        FileCopyService.mv_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert File.exist?(@src_file)
+    assert_not File.exist?(destination)
+  end
+
+  test "mv_noreplace retains its source when parent fsync is unsupported" do
+    destination = File.join(@dest_dir, "unsynced-parent.txt")
+
+    FileCopyService.stub(:sync_io, false) do
+      assert_raises(FileCopyService::DurabilityUnsupportedError) do
+        FileCopyService.mv_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_equal "test content", File.binread(@src_file)
+    assert_equal "test content", File.binread(destination)
+  end
+
+  test "mv_noreplace honors a supplied source root snapshot" do
+    source_root_path = File.join(@tmp_dir, "authorized-source")
+    FileUtils.mkdir_p(source_root_path)
+    source = File.join(source_root_path, "book.epub")
+    File.binwrite(source, "authorized bytes")
+    source_root = FileCopyService.snapshot_source_root(source_root_path)
+    displaced = File.join(@tmp_dir, "displaced-source")
+    File.rename(source_root_path, displaced)
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(source, "replacement bytes")
+    destination = File.join(@dest_dir, "book.epub")
+
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.mv_noreplace(
+        source,
+        destination,
+        root: @dest_dir,
+        source_root: source_root
+      )
+    end
+
+    assert_equal "replacement bytes", File.binread(source)
+    assert_not File.exist?(destination)
   end
 
   test "hardlink_noreplace publishes the source inode without removing or chmodding it" do
@@ -1728,6 +1881,217 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(destination)
   end
 
+  test "remove_source_file retains an in-place mutation after snapshot" do
+    snapshot = FileCopyService.snapshot_source_file(@src_file)
+    File.binwrite(@src_file, "other bytes!")
+
+    assert_not FileCopyService.remove_source_file(snapshot)
+    assert_equal "other bytes!", File.binread(@src_file)
+  end
+
+  test "remove_source_file restores a replacement that wins before quarantine" do
+    snapshot = FileCopyService.snapshot_source_file(@src_file)
+    displaced = File.join(@tmp_dir, "original-source")
+    real_rename = FileCopyService.method(:native_renameat)
+    swapped = false
+
+    racing_rename = lambda do |source_fd, source_name, destination_fd, destination_name|
+      if !swapped && source_name == File.basename(@src_file) &&
+          destination_name == FileCopyService::COPY_QUARANTINE_ENTRY
+        swapped = true
+        File.rename(@src_file, displaced)
+        File.binwrite(@src_file, "replacement bytes")
+      end
+      real_rename.call(source_fd, source_name, destination_fd, destination_name)
+    end
+
+    FileCopyService.stub(:native_renameat, racing_rename) do
+      assert_not FileCopyService.remove_source_file(snapshot)
+    end
+
+    assert_equal "replacement bytes", File.binread(@src_file)
+    assert_equal "test content", File.binread(displaced)
+  end
+
+  test "remove_source_file restores its source when quarantine unlink fails" do
+    snapshot = FileCopyService.snapshot_source_file(@src_file)
+    real_unlink = FileCopyService.method(:native_unlinkat)
+
+    unlinking = lambda do |directory_fd, basename, flags = 0|
+      raise Errno::EIO if basename == FileCopyService::COPY_QUARANTINE_ENTRY
+
+      real_unlink.call(directory_fd, basename, flags)
+    end
+
+    FileCopyService.stub(:native_unlinkat, unlinking) do
+      assert_raises(Errno::EIO) { FileCopyService.remove_source_file(snapshot) }
+    end
+
+    assert_equal "test content", File.binread(@src_file)
+    assert_empty Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*"))
+  end
+
+  test "remove_source_file recovers a source quarantined by a hard interruption" do
+    snapshot = FileCopyService.snapshot_source_file(@src_file)
+    real_unlink = FileCopyService.method(:native_unlinkat)
+    interrupted = false
+
+    unlinking = lambda do |directory_fd, basename, flags = 0|
+      if !interrupted && basename == FileCopyService::COPY_QUARANTINE_ENTRY
+        interrupted = true
+        raise Interrupt, "simulated hard interruption"
+      end
+
+      real_unlink.call(directory_fd, basename, flags)
+    end
+
+    FileCopyService.stub(:native_unlinkat, unlinking) do
+      assert_raises(Interrupt) { FileCopyService.remove_source_file(snapshot) }
+    end
+    assert_not File.exist?(@src_file)
+    assert_equal 1, Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*")).size
+
+    assert FileCopyService.remove_source_file(snapshot)
+    assert_empty Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*"))
+  end
+
+  test "remove_source_file reports a source retained in quarantine behind a replacement" do
+    destination = File.join(@dest_dir, "verified-quarantine.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    destination_snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      require_durable: true
+    )
+    source_snapshot = FileCopyService.snapshot_source_file(@src_file)
+    real_unlink = FileCopyService.method(:native_unlinkat)
+    interrupted = false
+
+    unlinking = lambda do |directory_fd, basename, flags = 0|
+      if !interrupted && basename == FileCopyService::COPY_QUARANTINE_ENTRY
+        interrupted = true
+        raise Interrupt, "simulated hard interruption"
+      end
+
+      real_unlink.call(directory_fd, basename, flags)
+    end
+    FileCopyService.stub(:native_unlinkat, unlinking) do
+      assert_raises(Interrupt) do
+        FileCopyService.remove_source_file(
+          source_snapshot,
+          destination_snapshot: destination_snapshot
+        )
+      end
+    end
+
+    replacement = File.join(@tmp_dir, "replacement.txt")
+    File.binwrite(replacement, "replacement source")
+    File.symlink(replacement, @src_file)
+    File.binwrite(destination, "changed destination")
+
+    assert_not FileCopyService.remove_source_file(
+      source_snapshot,
+      destination_snapshot: destination_snapshot
+    )
+    assert FileCopyService.source_file_quarantined?(source_snapshot)
+    assert_equal "replacement source", File.binread(@src_file)
+  end
+
+  test "remove_source_file does not report success when its snapshotted parent moved" do
+    parent = File.join(@tmp_dir, "source-parent")
+    displaced = File.join(@tmp_dir, "displaced-source-parent")
+    FileUtils.mkdir_p(parent)
+    source = File.join(parent, "book.epub")
+    File.binwrite(source, "source bytes")
+    snapshot = FileCopyService.snapshot_source_file(source)
+    File.rename(parent, displaced)
+
+    assert_not FileCopyService.remove_source_file(snapshot)
+    assert_equal "source bytes", File.binread(File.join(displaced, "book.epub"))
+  end
+
+  test "remove_source_file restores a quarantined source when its destination changed" do
+    destination = File.join(@dest_dir, "verified.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    destination_snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      require_durable: true
+    )
+    source_snapshot = FileCopyService.snapshot_source_file(@src_file)
+    File.binwrite(destination, "changed bytes")
+
+    assert_not FileCopyService.remove_source_file(
+      source_snapshot,
+      destination_snapshot: destination_snapshot
+    )
+
+    assert_equal "test content", File.binread(@src_file)
+    assert_equal "changed bytes", File.binread(destination)
+  end
+
+  test "remove_source_file validates the destination when the source is already missing" do
+    destination = File.join(@dest_dir, "missing-source-destination.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    destination_snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      require_durable: true
+    )
+    source_snapshot = FileCopyService.snapshot_source_file(@src_file)
+    File.unlink(@src_file)
+    File.binwrite(destination, "changed destination")
+
+    assert_not FileCopyService.remove_source_file(
+      source_snapshot,
+      destination_snapshot: destination_snapshot
+    )
+  end
+
+  test "file snapshot validation rejects a destination replaced during fsync" do
+    destination = File.join(@dest_dir, "sync-replaced-destination.txt")
+    displaced = File.join(@dest_dir, "sync-displaced-destination.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      require_durable: true
+    )
+    destination_identity = [ File.stat(destination).dev, File.stat(destination).ino ]
+    real_sync = FileCopyService.method(:sync_io)
+    replaced = false
+
+    syncing = lambda do |io|
+      result = real_sync.call(io)
+      if !replaced && io.stat.file? && [ io.stat.dev, io.stat.ino ] == destination_identity
+        replaced = true
+        File.rename(destination, displaced)
+        File.binwrite(destination, "replacement during fsync")
+      end
+      result
+    end
+
+    result = FileCopyService.stub(:sync_io, syncing) do
+      FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+    end
+
+    assert replaced
+    assert_not result
+    assert_equal "replacement during fsync", File.binread(destination)
+    assert_equal "test content", File.binread(displaced)
+  end
+
+  test "remove_source_file is idempotent when the source is already missing" do
+    snapshot = FileCopyService.snapshot_source_file(@src_file)
+    File.unlink(@src_file)
+
+    assert FileCopyService.remove_source_file(snapshot)
+  end
+
   test "remove_source_tree only deletes the exact snapshotted directory" do
     source_root_path = File.join(@tmp_dir, "download")
     FileUtils.mkdir_p(source_root_path)
@@ -1986,14 +2350,14 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "test content", File.read(@src_file)
   end
 
-  test "mv_noreplace preserves a destination replacement before source removal" do
+  test "mv_noreplace preserves a source replacement before source removal" do
     dest_file = File.join(@dest_dir, "output.txt")
-    real_remove = FileCopyService.method(:remove_pinned_source_after_publication!)
+    real_remove = FileCopyService.method(:remove_source_file)
 
-    FileCopyService.stub(:remove_pinned_source_after_publication!, ->(source, parent, basename, parent_path, identity) {
+    FileCopyService.stub(:remove_source_file, ->(source_snapshot, destination_snapshot:) {
       File.unlink(@src_file)
       File.binwrite(@src_file, "concurrent source replacement")
-      real_remove.call(source, parent, basename, parent_path, identity)
+      real_remove.call(source_snapshot, destination_snapshot: destination_snapshot)
     }) do
       assert_raises(Errno::ESTALE) do
         FileCopyService.mv_noreplace(@src_file, dest_file)
@@ -2002,6 +2366,26 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     assert_equal "test content", File.binread(dest_file)
     assert_equal "concurrent source replacement", File.binread(@src_file)
+  end
+
+  test "mv_noreplace retains its source when the destination changes before removal" do
+    destination = File.join(@dest_dir, "replaced-output.txt")
+    displaced = File.join(@dest_dir, "original-output.txt")
+    real_remove = FileCopyService.method(:remove_source_file)
+
+    FileCopyService.stub(:remove_source_file, ->(source_snapshot, destination_snapshot:) {
+      File.rename(destination, displaced)
+      File.binwrite(destination, "concurrent destination replacement")
+      real_remove.call(source_snapshot, destination_snapshot: destination_snapshot)
+    }) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.mv_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_equal "test content", File.binread(@src_file)
+    assert_equal "concurrent destination replacement", File.binread(destination)
+    assert_equal "test content", File.binread(displaced)
   end
 
   test "mv_noreplace uses private copy publication before removing the source" do

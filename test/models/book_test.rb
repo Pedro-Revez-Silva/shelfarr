@@ -69,6 +69,25 @@ class BookTest < ActiveSupport::TestCase
     assert Request.exists?(request.id)
   end
 
+  test "model destruction preserves completed source cleanup state" do
+    book = Book.create!(title: "Completed cleanup book", book_type: :ebook)
+    request = Request.create!(
+      book: book,
+      user: users(:one),
+      status: :completed
+    )
+    request.downloads.create!(
+      name: book.title,
+      status: :completed,
+      post_processing_cleanup_state: '{"version":1}'
+    )
+
+    assert book.post_processing_recovery_pending?
+    assert_raises(ActiveRecord::RecordNotDestroyed) { book.destroy! }
+    assert Book.exists?(book.id)
+    assert Request.exists?(request.id)
+  end
+
   test "uses consolidated content kind values" do
     assert_equal({ "book" => 0, "graphic" => 1 }, Book.content_kinds)
 

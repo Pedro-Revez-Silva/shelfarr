@@ -13,6 +13,7 @@ class PostProcessingJob < ApplicationJob
   MAX_FILENAME_BYTES = 255
   POST_PROCESSING_LOCK_SLOTS = 256
   class BookAcquisitionConflictError < StandardError; end
+  class DestructiveImportOverlapError < StandardError; end
 
   queue_as :default
 
@@ -92,19 +93,35 @@ class PostProcessingJob < ApplicationJob
       if source_path_unavailable?(source_path)
         return retry_source_path_later(download, request, source_path, source_path_retry_count)
       end
-      validate_download_specific_source_path!(source_path, source_resolution[:authorized_roots], download)
+      source_authorization = validate_download_specific_source_path!(
+        source_path,
+        source_resolution[:authorized_roots],
+        download
+      )
 
-      source_cleanup = import_files(source_path, destination, book: book, base_path: base_path)
+      remove_usenet_download = usenet_cleanup_requested?(download)
+      source_cleanup = import_files(
+        source_path,
+        destination,
+        book: book,
+        base_path: base_path,
+        require_durable: move_completed_downloads? || remove_usenet_download,
+        source_authorization: source_authorization
+      )
 
       book_path = imported_book_path(book, destination)
-      acquisition_finalized = finalize_acquisition!(download, request, book, book_path)
+      cleanup_state = source_cleanup&.fetch(:state)
+      acquisition_finalized = finalize_acquisition!(download, request, book, book_path, cleanup_state)
       return unless acquisition_finalized
 
       # Destructive source/client cleanup happens only after Book, Request, and
       # Download ownership commit together. A hard kill before that commit can
       # therefore retry the idempotent import without losing its source.
-      remove_import_source(source_cleanup)
-      cleanup_usenet_download(download)
+      cleanup_outcome = remove_import_source(source_cleanup)
+      if cleanup_state && cleanup_outcome != :retry
+        clear_source_cleanup_state(download, cleanup_state)
+      end
+      cleanup_usenet_download(download) if remove_usenet_download && cleanup_outcome == :complete
 
       run_completion_side_effects(request, download, book, book_path)
     rescue => e
@@ -145,7 +162,7 @@ class PostProcessingJob < ApplicationJob
     false
   end
 
-  def finalize_acquisition!(download, request, book, imported_path)
+  def finalize_acquisition!(download, request, book, imported_path, cleanup_state = nil)
     finalized = request.with_acquisition_transition_lock do
       download.reload
       book.reload
@@ -178,7 +195,10 @@ class PostProcessingJob < ApplicationJob
       # both crash windows: recovery never sees a completed Request with an
       # outstanding owner, nor a processing Request whose Book path was already
       # committed by this job.
-      download.update!(post_processing_job_id: nil)
+      download.update!(
+        post_processing_job_id: nil,
+        post_processing_cleanup_state: cleanup_state
+      )
       request.complete!
       true
     end
@@ -236,10 +256,16 @@ class PostProcessingJob < ApplicationJob
     detail = case error
     when BookAcquisitionConflictError
       error.message
+    when FileCopyService::UnsafeFilePermissionsError
+      "The library filesystem cannot enforce safe file permissions; it must support mode 0600 or 0640"
+    when FileCopyService::DurabilityUnsupportedError
+      "The library filesystem cannot safely complete destructive imports because fsync is unsupported; use another filesystem or retain the download source"
     when FileCopyService::UnsafePathError
       "The download contains a symbolic link or non-regular path, or changed during its safety checks"
     when AudiobookBundleImportPlanner::UnsafeDestinationError
       "The configured audiobook bundle destination overlaps the download source"
+    when DestructiveImportOverlapError
+      "The configured library destination overlaps the download source"
     when Errno::ENOSPC
       "The library filesystem ran out of space"
     when Errno::EACCES, Errno::EPERM
@@ -295,9 +321,32 @@ class PostProcessingJob < ApplicationJob
         "The download client must report a download-specific file or directory."
     end
 
-    return if roots.any? { |root| path_inside_root?(source, root) }
+    unless roots.any? { |root| path_inside_root?(source, root) }
+      raise "Refusing to import source outside a configured download root."
+    end
 
-    raise "Refusing to import source outside a configured download root."
+    source_stat = File.lstat(source_path)
+    snapshot = if source_stat.directory?
+      FileCopyService.snapshot_source_root(source_path)
+    elsif source_stat.file?
+      FileCopyService.snapshot_source_file(source_path)
+    else
+      raise "Refusing to import non-regular path"
+    end
+    snapshotted_path = if source_stat.directory?
+      snapshot.canonical_path.to_s
+    else
+      snapshot.canonical_parent_path.join(snapshot.path.basename).to_s
+    end
+    if shared_roots.include?(snapshotted_path)
+      raise "Refusing to import shared download root. " \
+        "The download client must report a download-specific file or directory."
+    end
+    unless roots.any? { |root| path_inside_root?(snapshotted_path, root) }
+      raise "Refusing to import source outside a configured download root."
+    end
+
+    { directory: source_stat.directory?, snapshot: snapshot }
   end
 
   def shared_download_roots(download)
@@ -372,15 +421,17 @@ class PostProcessingJob < ApplicationJob
   end
 
   def cleanup_usenet_download(download)
-    return unless SettingsService.get(:remove_completed_usenet_downloads, default: true)
-    return unless download.download_client&.usenet_client?
-    return unless download.external_id.present?
-
     Rails.logger.info "[PostProcessingJob] Removing usenet download ##{download.id}"
     download.download_client.adapter.remove_torrent(download.external_id, delete_files: true)
     Rails.logger.info "[PostProcessingJob] Usenet download removed successfully"
   rescue => e
     Rails.logger.warn "[PostProcessingJob] Usenet cleanup failed for download ##{download.id}: #{e.class}"
+  end
+
+  def usenet_cleanup_requested?(download)
+    SettingsService.get(:remove_completed_usenet_downloads, default: true) &&
+      download.download_client&.usenet_client? &&
+      download.external_id.present?
   end
 
   def build_destination_path(book, base_path: nil)
@@ -416,7 +467,14 @@ class PostProcessingJob < ApplicationJob
     SettingsService.library_id_for_book(book)
   end
 
-  def import_files(source, destination, book: nil, base_path: nil)
+  def import_files(
+    source,
+    destination,
+    book: nil,
+    base_path: nil,
+    require_durable: false,
+    source_authorization: nil
+  )
     unless source.present?
       Rails.logger.error "[PostProcessingJob] Source path is blank - download client may not have reported the path"
       raise "Source path is blank. Check download client configuration and ensure the download completed successfully."
@@ -427,17 +485,19 @@ class PostProcessingJob < ApplicationJob
       raise source_path_not_found_message(source)
     end
 
-    source_stat = File.lstat(source)
-    unless source_stat.directory? || source_stat.file?
-      raise "Refusing to import non-regular path: #{source}"
-    end
-    directory_source = source_stat.directory?
-    @import_source_root = FileCopyService.snapshot_source_root(source) if directory_source
+    source_authorization ||= authorize_import_source(source)
+    directory_source = source_authorization.fetch(:directory)
+    source_snapshot = source_authorization.fetch(:snapshot)
+    @import_source_root = source_snapshot if directory_source
+    @import_source_file_snapshot = source_snapshot unless directory_source
     @imported_renamed_files = []
     @imported_source_files = Set.new
+    @verified_library_snapshots = Hash.new { |snapshots, path| snapshots[path] = [] }
     @imported_book_path_override = nil
     @import_base_path = Pathname(base_path || get_base_path(book)).expand_path
-    @defer_source_removal = directory_source && move_completed_downloads?
+    @defer_source_removal = move_completed_downloads?
+    @require_durable_import = require_durable
+    validate_destructive_import_paths!(source_snapshot, destination) if require_durable
     action = {
       "copy" => "Copying",
       "move" => "Moving",
@@ -451,13 +511,46 @@ class PostProcessingJob < ApplicationJob
       import_directory(source, destination, book: book, base_path: base_path)
       source_root = @import_source_root
       imported_source_files = @imported_source_files.dup.freeze
-      source_cleanup = lambda do
-        remove_import_source_tree(source_root, imported_source_files)
-      end if move_completed_downloads?
+      destination_snapshots = @verified_library_snapshots.values.flatten.freeze
+      if move_completed_downloads?
+        source_cleanup = {
+          operation: lambda do
+            remove_import_source_tree(source_root, imported_source_files, destination_snapshots)
+          end,
+          state: nil,
+          source_snapshot: nil
+        }
+      elsif require_durable
+        source_cleanup = {
+          operation: -> { destination_snapshots_current?(destination_snapshots) },
+          state: nil,
+          source_snapshot: nil
+        }
+      end
     else
       # Import single file with renamed filename based on template
       ensure_real_import_directory!(destination)
       import_renamed_file(source, destination, book)
+      source_snapshot = @import_source_file_snapshot
+      if source_snapshot && move_completed_downloads?
+        destination_snapshot = @verified_library_snapshots.fetch(Pathname(source).expand_path.to_s).sole
+        cleanup_state = JSON.generate(
+          "source" => FileCopyService.serialize_file_snapshot(source_snapshot),
+          "destination" => FileCopyService.serialize_file_snapshot(destination_snapshot)
+        )
+        source_cleanup = {
+          operation: -> { remove_import_source_file(source_snapshot, destination_snapshot) },
+          state: cleanup_state,
+          source_snapshot: source_snapshot
+        }
+      elsif require_durable
+        destination_snapshot = @verified_library_snapshots.fetch(Pathname(source).expand_path.to_s).sole
+        source_cleanup = {
+          operation: -> { destination_snapshots_current?([ destination_snapshot ]) },
+          state: nil,
+          source_snapshot: nil
+        }
+      end
     end
 
     if hardlink_completed_downloads?
@@ -475,6 +568,46 @@ class PostProcessingJob < ApplicationJob
     remove_instance_variable(:@defer_source_removal) if instance_variable_defined?(:@defer_source_removal)
     remove_instance_variable(:@import_base_path) if instance_variable_defined?(:@import_base_path)
     remove_instance_variable(:@import_source_root) if instance_variable_defined?(:@import_source_root)
+    remove_instance_variable(:@import_source_file_snapshot) if instance_variable_defined?(:@import_source_file_snapshot)
+    remove_instance_variable(:@verified_library_snapshots) if instance_variable_defined?(:@verified_library_snapshots)
+    remove_instance_variable(:@require_durable_import) if instance_variable_defined?(:@require_durable_import)
+  end
+
+  def authorize_import_source(source)
+    stat = File.lstat(source)
+    if stat.directory?
+      { directory: true, snapshot: FileCopyService.snapshot_source_root(source) }
+    elsif stat.file?
+      { directory: false, snapshot: FileCopyService.snapshot_source_file(source) }
+    else
+      raise "Refusing to import non-regular path: #{source}"
+    end
+  end
+
+  def validate_destructive_import_paths!(source_snapshot, destination)
+    source_path = if source_snapshot.is_a?(FileCopyService::SourceRoot)
+      source_snapshot.canonical_path
+    else
+      source_snapshot.canonical_parent_path.join(source_snapshot.path.basename)
+    end
+    expanded_destination = Pathname(destination).expand_path
+    relative_destination = expanded_destination.relative_path_from(@import_base_path)
+    canonical_destination = @import_base_path.realpath.join(relative_destination)
+
+    if paths_overlap?(source_path, canonical_destination)
+      raise DestructiveImportOverlapError,
+        "destructive import destination overlaps the download source"
+    end
+  rescue ArgumentError
+    raise FileCopyService::UnsafePathError,
+      "destructive import destination is outside the configured library root"
+  end
+
+  def paths_overlap?(left, right)
+    left = Pathname(left).expand_path.to_s
+    right = Pathname(right).expand_path.to_s
+    left == right || left.start_with?("#{right}#{File::SEPARATOR}") ||
+      right.start_with?("#{left}#{File::SEPARATOR}")
   end
 
   def import_directory(source, destination, book:, base_path:)
@@ -665,24 +798,18 @@ class PostProcessingJob < ApplicationJob
     Rails.logger.info "[PostProcessingJob] Applying the configured library filename template"
     destination_file = import_file_without_duplicate_content(source, destination_file)
     @imported_renamed_files << destination_file
+    destination_file
   end
 
   def import_file(source, destination)
-    if move_completed_downloads? && !@defer_source_removal
-      FileCopyService.mv_noreplace(
-        source,
-        destination,
-        root: @import_base_path,
-        source_root: @import_source_root,
-        allow_compatibility_fallback: true
-      )
-    elsif hardlink_completed_downloads?
+    if hardlink_completed_downloads?
       begin
         FileCopyService.hardlink_noreplace(
           source,
           destination,
           root: @import_base_path,
-          source_root: @import_source_root
+          source_root: @import_source_root,
+          require_durable: @require_durable_import
         )
         @hardlinked_file_count += 1
       rescue FileCopyService::HardlinkUnsupportedError
@@ -695,7 +822,8 @@ class PostProcessingJob < ApplicationJob
           root: @import_base_path,
           source_root: @import_source_root,
           hardlink_mode: true,
-          allow_compatibility_fallback: true
+          allow_compatibility_fallback: true,
+          require_durable: @require_durable_import
         )
         @hardlink_fallback_copied_count += 1
       end
@@ -705,7 +833,9 @@ class PostProcessingJob < ApplicationJob
         destination,
         root: @import_base_path,
         source_root: @import_source_root,
-        allow_compatibility_fallback: true
+        source_snapshot: @import_source_file_snapshot,
+        allow_compatibility_fallback: true,
+        require_durable: @require_durable_import
       )
     end
     destination
@@ -723,15 +853,19 @@ class PostProcessingJob < ApplicationJob
       if already_imported
         if hardlink_completed_downloads?
           @reused_file_count += 1
-        else
-          FileCopyService.secure_library_file!(destination, root: @import_base_path)
         end
+        verify_imported_destination!(
+          source,
+          destination,
+          require_durable: @require_durable_import
+        )
         record_imported_source!(source)
         Rails.logger.info "[PostProcessingJob] Reusing one identical previously imported file"
         return destination
       end
 
       imported = import_file(source, destination)
+      verify_imported_destination!(source, imported, require_durable: true) if @require_durable_import
       record_imported_source!(source)
       return imported
     rescue Errno::EEXIST
@@ -782,8 +916,24 @@ class PostProcessingJob < ApplicationJob
       destination,
       root: @import_base_path,
       source_root: @import_source_root,
+      source_snapshot: @import_source_file_snapshot,
       hardlink_mode: hardlink_completed_downloads?
     )
+  end
+
+  def verify_imported_destination!(source, destination, require_durable:)
+    snapshot = FileCopyService.verified_library_file_snapshot(
+      source,
+      destination,
+      root: @import_base_path,
+      source_root: @import_source_root,
+      source_snapshot: @import_source_file_snapshot,
+      hardlink_mode: hardlink_completed_downloads?,
+      require_durable: require_durable
+    )
+    raise Errno::ESTALE, "library file changed after import" unless snapshot
+
+    @verified_library_snapshots[Pathname(source).expand_path.to_s] << snapshot
   end
 
   def import_directory_entry(source, destination)
@@ -829,12 +979,32 @@ class PostProcessingJob < ApplicationJob
   end
 
   def remove_import_source(source_cleanup)
-    source_cleanup&.call
+    return :complete unless source_cleanup
+
+    removed = source_cleanup.fetch(:operation).call
+    return :complete unless removed == false
+
+    source_snapshot = source_cleanup.fetch(:source_snapshot)
+    if source_snapshot && FileCopyService.source_file_quarantined?(source_snapshot)
+      :retry
+    else
+      :retained
+    end
   rescue => e
     Rails.logger.warn "[PostProcessingJob] Import-source cleanup failed: #{e.class}"
+    :retry
   end
 
-  def remove_import_source_tree(source_root, imported_source_files)
+  def remove_import_source_file(source_snapshot, destination_snapshot)
+    removed = FileCopyService.remove_source_file(
+      source_snapshot,
+      destination_snapshot: destination_snapshot
+    )
+    Rails.logger.warn "[PostProcessingJob] Source file changed; it was retained" unless removed
+    removed
+  end
+
+  def remove_import_source_tree(source_root, imported_source_files, destination_snapshots)
     expected_files = source_root.entries.filter_map do |relative, manifest|
       relative if manifest[2] == :file
     end.sort
@@ -845,9 +1015,29 @@ class PostProcessingJob < ApplicationJob
       return false
     end
 
+    unless destination_snapshots_current?(destination_snapshots)
+      Rails.logger.warn(
+        "[PostProcessingJob] An imported library file changed; the source directory was retained"
+      )
+      return false
+    end
+
     removed = FileCopyService.remove_source_tree(source_root)
     Rails.logger.warn "[PostProcessingJob] Source directory changed; it was retained" unless removed
     removed
+  end
+
+  def destination_snapshots_current?(snapshots)
+    snapshots.all? do |snapshot|
+      FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+    end
+  end
+
+  def clear_source_cleanup_state(download, cleanup_state)
+    Download.where(
+      id: download.id,
+      post_processing_cleanup_state: cleanup_state
+    ).update_all(post_processing_cleanup_state: nil, updated_at: Time.current)
   end
 
   def source_manifest_children(directory)

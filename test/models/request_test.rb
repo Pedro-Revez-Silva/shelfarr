@@ -338,6 +338,24 @@ class RequestTest < ActiveSupport::TestCase
     assert_nothing_raised { request.destroy! }
   end
 
+  test "completed source cleanup state blocks request destruction" do
+    request = Request.create!(
+      book: Book.create!(title: "Completed cleanup", book_type: :ebook),
+      user: users(:one),
+      status: :completed
+    )
+    download = request.downloads.create!(
+      name: "Completed cleanup",
+      status: :completed,
+      post_processing_cleanup_state: '{"version":1}'
+    )
+
+    assert request.post_processing_recovery_pending?
+    assert_raises(ActiveRecord::RecordNotDestroyed) { request.destroy! }
+    assert Request.exists?(request.id)
+    assert Download.exists?(download.id)
+  end
+
   test "cancel rechecks upload blockers after taking the transition lock" do
     request = Request.create!(
       book: Book.create!(title: "Cancel interleaving", book_type: :ebook),
