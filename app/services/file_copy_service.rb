@@ -26,6 +26,7 @@ class FileCopyService
   COPY_LOCK_LEGACY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_LEGACY_MAGIC)}:([0-9a-f]{32})\z/
   COPY_LOCK_PENDING_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):pending\z/
   COPY_LOCK_RECORD_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):full:([0-9]+):([0-9]+)\z/
+  OWNER_PROBE_PATTERN = /\A\.shelfarr-owner-probe-[0-9a-f]{32}\.tmp\z/
   COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:prepared:([0-9]+):([0-9]+):([0-9a-f]+)\z/
   COPY_LOCK_COMPATIBILITY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:(copying|complete):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9a-f]+)\z/
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
@@ -298,7 +299,7 @@ class FileCopyService
 
     def secure_private_directory!(path, root:)
       with_pinned_directory(path, root: root, create: true, mode: 0o700) do |directory|
-        unless directory.stat.uid == Process.euid
+        unless private_entry_owned_by_process?(directory.stat, directory)
           raise UnsafePathError, "private staging directory is owned by another user"
         end
         apply_directory_mode!(directory, 0o700)
@@ -313,7 +314,7 @@ class FileCopyService
       end
 
       with_pinned_directory(parent_path, root: root, create: true, mode: 0o700) do |parent|
-        unless parent.stat.uid == Process.euid
+        unless private_entry_owned_by_process?(parent.stat, parent)
           raise UnsafePathError, "private staging parent is owned by another user"
         end
         apply_directory_mode!(parent, 0o700)
@@ -359,7 +360,7 @@ class FileCopyService
       end
 
       with_pinned_directory(parent_path, root: root, create: false, mode: 0o700) do |parent|
-        unless parent.stat.uid == Process.euid
+        unless private_entry_owned_by_process?(parent.stat, parent)
           raise UnsafePathError, "private staging directory is owned by another user"
         end
 
@@ -429,7 +430,7 @@ class FileCopyService
         lock = File.for_fd(descriptor, "r+b", autoclose: true)
         begin
           stat = lock.stat
-          unless stat.file? && stat.uid == Process.euid
+          unless stat.file? && private_entry_owned_by_process?(stat, parent)
             raise UnsafePathError, "private lock is not an application-owned regular file"
           end
 
@@ -1284,6 +1285,8 @@ class FileCopyService
               entry,
               [ match[1].to_i(16), match[2].to_i(16) ]
             )
+          elsif OWNER_PROBE_PATTERN.match?(entry)
+            cleanup_interrupted_owner_probe(parent, entry)
           end
         end
         validate_current_directory_identity!(parent_path, parent)
@@ -1336,6 +1339,39 @@ class FileCopyService
     end
 
     private
+
+    # root_squash changes the UID reported for root-created entries. Discover
+    # that mapping from an exclusive entry on the same filesystem.
+    def private_entry_owned_by_process?(stat, parent)
+      effective_uid = Process.euid
+      return true if stat.uid == effective_uid
+      return false unless effective_uid.zero?
+
+      probe_basename = ".shelfarr-owner-probe-#{SecureRandom.hex(16)}.tmp"
+      probe_identity = nil
+      probe_uid = nil
+      trusted = false
+      begin
+        with_created_regular_child(parent, probe_basename, 0o600) do |probe|
+          probe_stat = probe.stat
+          probe_identity = file_identity(probe_stat)
+          probe_uid = probe_stat.uid
+          trusted = probe_stat.dev == stat.dev && probe_uid == stat.uid
+        end
+      ensure
+        if probe_identity
+          cleanup = remove_pinned_child_if_identity(
+            parent,
+            probe_basename,
+            probe_identity,
+            expected_owner_uid: probe_uid
+          )
+          trusted = false unless cleanup.in?([ :removed, :missing ])
+          cleanup_interrupted_owner_probes(parent, probe_uid)
+        end
+      end
+      trusted
+    end
 
     def safe_relative_path(path)
       relative = Pathname(path.to_s)
@@ -1807,7 +1843,7 @@ class FileCopyService
 
       with_pinned_regular_child(parent, lock_basename) do |lock|
         return unless lock.flock(File::LOCK_EX | File::LOCK_NB)
-        return unless lock.stat.uid == Process.euid
+        return unless private_entry_owned_by_process?(lock.stat, parent)
 
         lock_identity = file_identity(lock.stat)
         lock.rewind
@@ -1879,11 +1915,44 @@ class FileCopyService
       nil
     end
 
+    def cleanup_interrupted_owner_probes(parent, expected_owner_uid)
+      pinned_directory_children(parent).each do |entry|
+        next unless OWNER_PROBE_PATTERN.match?(entry)
+
+        cleanup_interrupted_owner_probe(parent, entry, expected_owner_uid: expected_owner_uid)
+      end
+    rescue Errno::ENOENT, Errno::EACCES, IOError
+      nil
+    end
+
+    def cleanup_interrupted_owner_probe(parent, basename, expected_owner_uid: nil)
+      identity = nil
+      with_pinned_regular_child(parent, basename) do |probe|
+        stat = probe.stat
+        owner_trusted = if expected_owner_uid
+          stat.uid == expected_owner_uid
+        else
+          private_entry_owned_by_process?(stat, parent)
+        end
+        return unless owner_trusted
+
+        identity = file_identity(stat)
+      end
+      remove_pinned_child_if_identity(
+        parent,
+        basename,
+        identity,
+        expected_owner_uid: expected_owner_uid
+      )
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, IOError, UnsafePathError
+      nil
+    end
+
     def cleanup_interrupted_quarantine(parent, basename, expected_identity)
       quarantine = open_pinned_directory_child(parent, basename)
       begin
         stat = quarantine.stat
-        return unless stat.uid == Process.euid && (stat.mode & 0o777) == 0o700
+        return unless private_entry_owned_by_process?(stat, parent) && (stat.mode & 0o777) == 0o700
 
         quarantine_identity = file_identity(stat)
         children = pinned_directory_children(quarantine)
@@ -2634,7 +2703,8 @@ class FileCopyService
       expected_identity,
       expected_manifest: nil,
       before_remove: nil,
-      quarantine_kind: :copy
+      quarantine_kind: :copy,
+      expected_owner_uid: nil
     )
       return :mismatch unless expected_identity
 
@@ -2652,7 +2722,8 @@ class FileCopyService
       quarantine, quarantine_basename, quarantine_identity = create_cleanup_quarantine(
         parent,
         expected_identity,
-        kind: quarantine_kind
+        kind: quarantine_kind,
+        expected_owner_uid: expected_owner_uid
       )
       moved = false
       begin
@@ -2737,7 +2808,7 @@ class FileCopyService
       :retained
     end
 
-    def create_cleanup_quarantine(parent, expected_identity, kind: :copy)
+    def create_cleanup_quarantine(parent, expected_identity, kind: :copy, expected_owner_uid: nil)
       prefix = kind == :source ? ".shelfarr-source-quarantine" : ".shelfarr-copy-quarantine"
       loop do
         basename = "#{prefix}-#{expected_identity.first.to_s(16)}-" \
@@ -2751,7 +2822,12 @@ class FileCopyService
         quarantine = open_pinned_directory_child(parent, basename)
         begin
           stat = quarantine.stat
-          unless stat.uid == Process.euid
+          owner_trusted = if expected_owner_uid
+            stat.uid == expected_owner_uid
+          else
+            private_entry_owned_by_process?(stat, parent)
+          end
+          unless owner_trusted
             raise UnsafePathError, "cleanup quarantine is owned by another user"
           end
 
@@ -2808,7 +2884,7 @@ class FileCopyService
 
         quarantine = open_pinned_directory_child(parent, basename)
         begin
-          next unless quarantine.stat.uid == Process.euid
+          next unless private_entry_owned_by_process?(quarantine.stat, parent)
           next unless pinned_directory_children(quarantine) == [ COPY_QUARANTINE_ENTRY ]
 
           matches = false
@@ -2857,7 +2933,7 @@ class FileCopyService
 
         quarantine = open_pinned_directory_child(parent, basename)
         begin
-          next false unless quarantine.stat.uid == Process.euid
+          next false unless private_entry_owned_by_process?(quarantine.stat, parent)
           next false unless pinned_directory_children(quarantine) == [ COPY_QUARANTINE_ENTRY ]
 
           matches = false

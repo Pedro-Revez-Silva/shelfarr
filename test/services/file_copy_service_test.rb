@@ -363,6 +363,26 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@dest_dir) - [ "hardlinked.txt" ]
   end
 
+  test "copy and hardlink publication allow root-squashed cleanup ownership" do
+    copied = File.join(@dest_dir, "copied.txt")
+    hardlinked = File.join(@dest_dir, "hardlinked.txt")
+
+    with_root_squashed_creation(@dest_dir) do
+      FileCopyService.cp_noreplace(@src_file, copied, root: @dest_dir)
+      FileCopyService.hardlink_noreplace(
+        @src_file,
+        hardlinked,
+        root: @dest_dir,
+        source_root: nil
+      )
+    end
+
+    assert_equal "test content", File.binread(copied)
+    assert_equal [ File.stat(@src_file).dev, File.stat(@src_file).ino ],
+      [ File.stat(hardlinked).dev, File.stat(hardlinked).ino ]
+    assert_equal [ "copied.txt", "hardlinked.txt" ], Dir.children(@dest_dir).sort
+  end
+
   test "hardlink_noreplace never overwrites an occupied destination" do
     destination = File.join(@dest_dir, "hardlinked.txt")
     File.binwrite(destination, "existing library bytes")
@@ -808,6 +828,47 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
 
     assert_not File.exist?(lock)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "private locks and interrupted cleanup allow root-squashed ownership" do
+    private_lock = File.join(@dest_dir, ".archive-build-slot-00")
+    File.binwrite(private_lock, "")
+    chown_for_root_squash(private_lock)
+    acquired = false
+
+    with_root_squashed_creation(@dest_dir) do
+      FileCopyService.with_private_lock(private_lock, root: @dest_dir) do
+        acquired = true
+      end
+    end
+    assert acquired
+
+    FileUtils.rm_f(private_lock)
+    token = "a" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    File.binwrite(temporary, "interrupted bytes")
+    lock = write_copy_lock(token, File.stat(temporary))
+    chown_for_root_squash(temporary)
+    chown_for_root_squash(lock)
+
+    with_root_squashed_creation(@dest_dir) do
+      FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+    end
+
+    assert_not File.exist?(temporary)
+    assert_not File.exist?(lock)
+    assert_empty Dir.children(@dest_dir)
+
+    abandoned_probe = File.join(@dest_dir, ".shelfarr-owner-probe-#{'b' * 32}.tmp")
+    File.binwrite(abandoned_probe, "")
+    chown_for_root_squash(abandoned_probe)
+
+    with_root_squashed_creation(@dest_dir) do
+      FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+    end
+
+    assert_not File.exist?(abandoned_probe)
     assert_empty Dir.children(@dest_dir)
   end
 
@@ -2184,6 +2245,60 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal 0o700, File.stat(created.name).mode & 0o777
   end
 
+  test "private staging allows a root-squashed directory owner" do
+    parent = File.join(@dest_dir, "private-staging")
+    abandoned_probe = File.join(parent, ".shelfarr-owner-probe-#{'c' * 32}.tmp")
+    FileUtils.mkdir_p(parent)
+    chown_for_root_squash(parent)
+    File.binwrite(abandoned_probe, "")
+    chown_for_root_squash(abandoned_probe)
+
+    with_root_squashed_creation(parent) do
+      FileCopyService.secure_private_directory!(parent, root: @dest_dir)
+      created = FileCopyService.create_private_directory(
+        parent,
+        root: @dest_dir,
+        prefix: "download-42-"
+      )
+      private_file = FileCopyService.create_private_file(
+        parent,
+        root: @dest_dir,
+        prefix: "archive-",
+        suffix: ".zip"
+      )
+
+      private_file.io.close
+      assert File.directory?(created.name)
+      assert File.file?(private_file.name)
+      assert_not File.exist?(abandoned_probe)
+    end
+  end
+
+  test "private staging rejects an unrelated owner when running as local root" do
+    skip "requires root to create an unrelated owner" unless Process.uid.zero?
+
+    parent = File.join(@dest_dir, "private-staging")
+    FileUtils.mkdir_p(parent)
+    chown_for_root_squash(parent)
+
+    Process.stub(:euid, 0) do
+      assert_raises(FileCopyService::UnsafePathError) do
+        FileCopyService.secure_private_directory!(parent, root: @dest_dir)
+      end
+    end
+  end
+
+  test "private staging rejects a different owner for a non-root process" do
+    parent = File.join(@dest_dir, "private-staging")
+    FileUtils.mkdir_p(parent)
+
+    Process.stub(:euid, File.stat(parent).uid + 1) do
+      assert_raises(FileCopyService::UnsafePathError) do
+        FileCopyService.secure_private_directory!(parent, root: @dest_dir)
+      end
+    end
+  end
+
   test "create_private_directory detects a swapped staging parent" do
     parent = File.join(@dest_dir, "private-staging")
     moved = File.join(@dest_dir, "pinned-private-staging")
@@ -2612,5 +2727,36 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       @dest_dir,
       ".shelfarr-copy-quarantine-#{expected_stat.dev.to_s(16)}-#{expected_stat.ino.to_s(16)}-#{token}"
     )
+  end
+
+  def with_root_squashed_creation(directory, &operation)
+    real_mkdir = FileCopyService.method(:native_mkdirat)
+    real_open = FileCopyService.method(:native_openat)
+    squashed_mkdir = lambda do |directory_fd, basename, mode|
+      result = real_mkdir.call(directory_fd, basename, mode)
+      chown_for_root_squash(File.join(directory, basename))
+      result
+    end
+    squashed_open = lambda do |directory_fd, basename, flags, mode|
+      descriptor = real_open.call(directory_fd, basename, flags, mode)
+      chown_descriptor_for_root_squash(descriptor) if (flags & File::CREAT).positive?
+      descriptor
+    end
+
+    FileCopyService.stub(:native_mkdirat, squashed_mkdir) do
+      FileCopyService.stub(:native_openat, squashed_open) do
+        Process.stub(:euid, 0, &operation)
+      end
+    end
+  end
+
+  def chown_for_root_squash(path)
+    File.chown(65_534, -1, path) if Process.uid.zero?
+  end
+
+  def chown_descriptor_for_root_squash(descriptor)
+    return unless Process.uid.zero?
+
+    File.for_fd(descriptor, "r+b", autoclose: false).chown(65_534, -1)
   end
 end
