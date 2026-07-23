@@ -38,6 +38,32 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert SettingsService.active_indexer_configured?
   end
 
+  test "manual save settings include secrets and account identities" do
+    grouped_keys = %w[
+      anna_archive_api_key anna_archive_enabled anna_archive_url audiobookshelf_api_key
+      audiobookshelf_audiobook_library_id audiobookshelf_audiobook_scan_library_ids
+      audiobookshelf_comicbook_library_id audiobookshelf_comicbook_scan_library_ids
+      audiobookshelf_ebook_library_id audiobookshelf_ebook_scan_library_ids audiobookshelf_url
+      bookorbit_password bookorbit_url bookorbit_username grimmory_password grimmory_url
+      grimmory_username indexer_provider jackett_api_key jackett_indexer_filter jackett_url library_platform
+      newznab_api_key newznab_url oidc_auto_create_users oidc_auto_redirect oidc_client_id
+      oidc_client_secret oidc_default_role oidc_enabled oidc_issuer oidc_link_existing_users
+      oidc_provider_name oidc_scopes prowlarr_api_key prowlarr_tags prowlarr_url telegram_bot_token telegram_bot_username telegram_enabled
+      telegram_request_username telegram_update_mode telegram_webhook_secret webhook_enabled
+      webhook_token webhook_url zlibrary_email zlibrary_enabled zlibrary_password zlibrary_url
+      hardcover_api_token hardcover_enabled google_books_api_key google_books_enabled
+      comic_vine_api_key comic_vine_enabled discord_enabled discord_webhook_url
+    ]
+
+    assert_equal grouped_keys.sort, SettingsService::MANUAL_SAVE_SETTING_KEYS.sort
+    (grouped_keys + [ "discord_webhook_url" ]).each do |key|
+      assert SettingsService.manual_save_setting_key?(key), "expected #{key} to require an explicit save"
+    end
+
+    assert_not SettingsService.manual_save_setting_key?(:max_retries)
+    assert_not SettingsService.manual_save_setting_key?(:rate_limit_delay)
+  end
+
   test "active_indexer_provider respects explicit jackett selection" do
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "legacy-key")

@@ -25,11 +25,13 @@
 %>
 
 <div id="settings-tabs" data-controller="settings-tabs" data-settings-tabs-active-value="search">
-  <%= form_with url: bulk_update_admin_settings_path, method: :patch, html: { novalidate: true }, data: { settings_form_target: "form" } do |form| %>
+  <%= form_with url: bulk_update_admin_settings_path, method: :patch, html: { novalidate: true, autocomplete: "off", aria: { busy: "false" } }, data: { settings_form_target: "form", action: "submit->settings-form#handleSubmit" } do |form| %>
+    <%= hidden_field_tag :autosave_keys, "", data: { settings_form_target: "autosaveKeys" } %>
+    <%= tag.input type: "hidden", value: "", data: { settings_form_target: "manualKeys" } %>
     <div class="flex justify-between items-center mb-6">
       <h1 class="font-bold text-4xl text-white">Settings</h1>
       <div class="flex items-center gap-4">
-        <span data-settings-form-target="status" class="text-sm text-gray-500 hidden">Saving...</span>
+        <span data-settings-form-target="status" role="status" aria-live="polite" class="text-sm text-gray-500 hidden">Saving...</span>
         <%= form.submit "Save All", class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
       </div>
     </div>
@@ -99,7 +101,8 @@
                           <p class="mt-2 text-sm text-yellow-500">Warning: This removes password and 2FA authentication. Confirm carefully.</p>
                         <% else %>
                         <label class="inline-flex items-center cursor-pointer">
-                          <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: { action: "change->settings-form#autoSave" } }, "true", "false" %>
+                          <% boolean_data = SettingsService.manual_save_setting_key?(key) ? { settings_form_manual_save: true } : { action: "change->settings-form#autoSave" } %>
+                          <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: boolean_data }, "true", "false" %>
                         </label>
                         <% end %>
                       <% when "integer" %>
@@ -119,7 +122,7 @@
                             <p>Hardlinked names share content, ownership, and permissions; edits through either name affect both.</p>
                           </div>
                         <% elsif key.to_s == "library_platform" %>
-                          <%= form.select "settings[#{key}]", options_for_select([["Audiobookshelf", "audiobookshelf"], ["BookOrbit", "bookorbit"], ["Grimmory", "grimmory"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.select "settings[#{key}]", options_for_select([["Audiobookshelf", "audiobookshelf"], ["BookOrbit", "bookorbit"], ["Grimmory", "grimmory"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                         <% elsif key.to_s.end_with?("_scan_library_ids") && @audiobookshelf_libraries.any? %>
                           <% selected_ids = data[:value].to_s.split(",").map(&:strip).reject(&:blank?) %>
                           <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
@@ -127,28 +130,28 @@
                           <% missing_selected_ids.each do |missing_id| %>
                             <% library_options << ["#{missing_id} (Unavailable)", missing_id] %>
                           <% end %>
-                          <%= form.select "settings[#{key}]", options_for_select(library_options, selected_ids), { include_blank: "Select libraries to scan for duplicates..." }, { id: "settings_#{key}", multiple: true, class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2 min-h-[80px]", data: { action: "change->settings-form#autoSave" } } %>
+                          <%= form.select "settings[#{key}]", options_for_select(library_options, selected_ids), { include_blank: "Select libraries to scan for duplicates..." }, { id: "settings_#{key}", multiple: true, class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2 min-h-[80px]", data: { settings_form_manual_save: true } } %>
                           <p class="mt-1 text-xs text-gray-500">Additional libraries scanned for duplicate detection. Delivery still goes to the single library selected above.</p>
                         <% elsif key.to_s.end_with?("_scan_library_ids") %>
-                          <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure library platform connection details first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure library platform connection details first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                           <p class="mt-1 text-xs text-yellow-500">Enter active platform connection details above to select from available libraries</p>
                         <% elsif key.to_s.end_with?("_library_id") && @audiobookshelf_libraries.any? %>
                           <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
                           <% if data[:value].present? && !@audiobookshelf_libraries.any? { |lib| lib.id == data[:value] } %>
                             <% library_options << ["#{data[:value]} (Unavailable)", data[:value]] %>
                           <% end %>
-                          <%= form.select "settings[#{key}]", options_for_select([["Select a library...", ""]] + library_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.select "settings[#{key}]", options_for_select([["Select a library...", ""]] + library_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                         <% elsif key.to_s.end_with?("_library_id") %>
-                          <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure library platform connection details first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure library platform connection details first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                           <p class="mt-1 text-xs text-yellow-500">Enter active platform connection details above to select from available libraries</p>
                         <% elsif key.to_s == "oidc_default_role" %>
-                          <%= form.select "settings[#{key}]", options_for_select([["User", "user"], ["Admin", "admin"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.select "settings[#{key}]", options_for_select([["User", "user"], ["Admin", "admin"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                         <% elsif key.to_s == "metadata_source" %>
                           <%= form.select "settings[#{key}]", options_for_select([["Auto", "auto"], ["Hardcover", "hardcover"], ["Google Books", "google_books"], ["Open Library", "openlibrary"], ["Comic Vine", "comic_vine"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% elsif key.to_s == "telegram_update_mode" %>
-                          <%= form.select "settings[#{key}]", options_for_select([["Polling", "polling"], ["Webhook", "webhook"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.select "settings[#{key}]", options_for_select([["Polling", "polling"], ["Webhook", "webhook"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                         <% elsif key.to_s == "discord_webhook_url" %>
-                          <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "https://discord.com/api/webhooks/...", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "https://discord.com/api/webhooks/...", id: "settings_#{key}", autocomplete: "new-password", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                         <% elsif %w[anna_archive_url zlibrary_url].include?(key.to_s) %>
                           <% url_list_urls = data[:value].to_s.split(/[,\s]+/).map(&:strip).reject(&:blank?).uniq %>
                           <% url_list_name = key.to_s == "zlibrary_url" ? "Z-Library" : "Anna's Archive" %>
@@ -161,7 +164,7 @@
                                 id: "settings_#{key}",
                                 data: {
                                   url_list_field: true,
-                                  action: "change->settings-form#autoSave"
+                                  settings_form_manual_save: true
                                 } %>
                             <div class="flex flex-wrap gap-2" data-url-list-list>
                               <% url_list_urls.each do |url| %>
@@ -207,8 +210,10 @@
                               spellcheck: false,
                               class: "w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 uppercase text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500",
                               data: { action: "change->settings-form#autoSave" } %>
+                        <% elsif SettingsService.manual_save_setting_key?(key) && !SettingsService.secret_setting_key?(key) %>
+                          <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", autocomplete: "off", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                         <% elsif SettingsService.secret_setting_key?(key) %>
-                          <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", autocomplete: "new-password", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
                         <% else %>
                           <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% end %>
@@ -414,6 +419,7 @@
         <% end %>
       </div>
     <% end %>
+    <%= form.button "", type: "submit", name: "autosave", value: "true", hidden: true, tabindex: -1, aria: { hidden: true }, data: { settings_form_target: "autosaveSubmit" } %>
   <% end %>
 
   <div data-settings-tabs-target="panel"

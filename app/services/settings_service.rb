@@ -1,4 +1,35 @@
 class SettingsService
+  MANUAL_SAVE_SETTING_GROUPS = {
+    indexer: %w[
+      indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key
+      newznab_url newznab_api_key prowlarr_tags jackett_indexer_filter
+    ],
+    library_platform: %w[
+      library_platform audiobookshelf_url audiobookshelf_api_key
+      bookorbit_url bookorbit_username bookorbit_password
+      grimmory_url grimmory_username grimmory_password
+      audiobookshelf_audiobook_library_id audiobookshelf_ebook_library_id
+      audiobookshelf_comicbook_library_id audiobookshelf_audiobook_scan_library_ids
+      audiobookshelf_ebook_scan_library_ids audiobookshelf_comicbook_scan_library_ids
+    ],
+    anna_archive: %w[anna_archive_enabled anna_archive_url anna_archive_api_key],
+    zlibrary: %w[zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password],
+    hardcover: %w[hardcover_enabled hardcover_api_token],
+    google_books: %w[google_books_enabled google_books_api_key],
+    comic_vine: %w[comic_vine_enabled comic_vine_api_key],
+    discord: %w[discord_enabled discord_webhook_url],
+    oidc: %w[
+      oidc_enabled oidc_auto_redirect oidc_provider_name oidc_issuer oidc_client_id
+      oidc_client_secret oidc_scopes oidc_link_existing_users oidc_auto_create_users
+      oidc_default_role
+    ],
+    webhook: %w[webhook_enabled webhook_url webhook_token],
+    telegram: %w[
+      telegram_enabled telegram_update_mode telegram_bot_token telegram_bot_username
+      telegram_webhook_secret telegram_request_username
+    ]
+  }.freeze
+  MANUAL_SAVE_SETTING_KEYS = MANUAL_SAVE_SETTING_GROUPS.values.flatten.uniq.freeze
   DEFAULT_ANNA_ARCHIVE_URL = "https://annas-archive.gl"
   DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
   ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
@@ -316,6 +347,10 @@ class SettingsService
     def secret_setting_key?(key)
       key = key.to_s
       key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret")
+    end
+
+    def manual_save_setting_key?(key)
+      secret_setting_key?(key) || MANUAL_SAVE_SETTING_KEYS.include?(key.to_s)
     end
 
     # Primary getter with default fallback
