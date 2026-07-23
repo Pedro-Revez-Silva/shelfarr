@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_21_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_22_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -101,6 +101,30 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_21_120000) do
     t.index ["open_library_edition_id"], name: "index_books_on_open_library_edition_id"
     t.index ["open_library_work_id"], name: "index_books_on_open_library_work_id"
     t.index ["series_position"], name: "index_books_on_series_position"
+  end
+
+  create_table "detected_imports", force: :cascade do |t|
+    t.string "book_type"
+    t.json "candidate_books", default: [], null: false
+    t.string "content_fingerprint"
+    t.datetime "created_at", null: false
+    t.datetime "detected_at"
+    t.text "error_message"
+    t.integer "imported_book_id"
+    t.integer "match_confidence"
+    t.string "parsed_author"
+    t.string "parsed_title"
+    t.bigint "source_device"
+    t.bigint "source_inode"
+    t.string "source_path", null: false
+    t.string "status", default: "detected", null: false
+    t.integer "suggested_book_id"
+    t.datetime "updated_at", null: false
+    t.index ["detected_at"], name: "index_detected_imports_on_detected_at"
+    t.index ["imported_book_id"], name: "index_detected_imports_on_imported_book_id"
+    t.index ["source_device", "source_inode"], name: "index_detected_imports_on_source_identity", unique: true, where: "source_device IS NOT NULL AND source_inode IS NOT NULL"
+    t.index ["status"], name: "index_detected_imports_on_status"
+    t.index ["suggested_book_id"], name: "index_detected_imports_on_suggested_book_id"
   end
 
   create_table "download_clients", force: :cascade do |t|
@@ -574,6 +598,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_21_120000) do
 
   add_foreign_key "activity_logs", "users"
   add_foreign_key "api_tokens", "users"
+  add_foreign_key "detected_imports", "books", column: "imported_book_id", on_delete: :nullify
+  add_foreign_key "detected_imports", "books", column: "suggested_book_id", on_delete: :nullify
   add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
   add_foreign_key "downloads", "search_results", on_delete: :nullify
