@@ -509,9 +509,17 @@ module Admin
     end
 
     def validate_setting_value(key, value)
-      validate_path_template(key, value) ||
+      validate_completed_download_import_mode(key, value) ||
+        validate_path_template(key, value) ||
         validate_indexer_url(key, value) ||
         validate_ebooks_com_setting(key, value)
+    end
+
+    def validate_completed_download_import_mode(key, value)
+      return nil unless key.to_s == "completed_download_import_mode"
+      return nil if SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value.to_s)
+
+      "must be one of: #{SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.join(', ')}"
     end
 
     def validate_path_template(key, value)
@@ -584,6 +592,8 @@ module Admin
       case key.to_s
       when "ebooks_com_country_code"
         value.to_s.strip.upcase
+      when /\Aaudiobookshelf_.*_scan_library_ids\z/
+        Array(value).flat_map { |v| v.to_s.split(",").map(&:strip) }.reject(&:blank?).join(",")
       else
         INDEXER_URL_PROVIDERS.key?(key.to_s) ? value.to_s.strip : value
       end

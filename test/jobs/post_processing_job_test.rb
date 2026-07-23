@@ -44,7 +44,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     # Set output path to temp destination (Shelfarr always uses its own settings)
     SettingsService.set(:audiobook_output_path, @temp_dest_base)
     SettingsService.set(:download_local_path, @temp_download_base)
-    SettingsService.set(:move_completed_downloads, false)
+    SettingsService.set(:completed_download_import_mode, "copy")
 
     # Update download path to temp source
     @download.update!(download_path: @temp_source)
@@ -239,6 +239,39 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "copies audiobook files with UTF-8 names into UTF-8 destination paths" do
+    SettingsService.set(:audiobookshelf_url, "")
+    title = "The Reverse Centaur’s Guide to Life After AI"
+    filename = "Cory Doctorow - #{title}.mp3"
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, filename), "unicode audio")
+    @book.update!(title: title, author: "Cory Doctorow")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, title)
+    assert @request.reload.completed?
+    assert_equal "unicode audio", File.read(File.join(expected_dest, filename))
+  end
+
+  test "copies UTF-8 nested audiobook directories into UTF-8 destination paths" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    title = "The Reverse Centaur’s Guide to Life After AI"
+    nested_directory = "Doctorow’s Extras"
+    nested_source = File.join(@temp_source, nested_directory)
+    FileUtils.mkdir_p(nested_source)
+    FileUtils.mv(File.join(@temp_source, "audiobook.mp3"), File.join(nested_source, "afterword.mp3"))
+    @book.update!(title: title, author: "Cory Doctorow")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_file = File.join(@temp_dest_base, @book.author, title, nested_directory, "afterword.mp3")
+    assert @request.reload.completed?
+    assert_equal "test audio content", File.read(expected_file)
+    assert_not File.exist?(@temp_source)
+  end
+
   test "keeps multi-file audiobook directory imports flat when bundle splitting is disabled" do
     SettingsService.set(:audiobookshelf_url, "")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
@@ -365,13 +398,370 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
       # Destination file should also exist
       expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
-      assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "Destination file should exist"
+      destination_file = File.join(expected_dest, "audiobook.mp3")
+      assert File.exist?(destination_file), "Destination file should exist"
+      refute_equal [ File.stat(original_file).dev, File.stat(original_file).ino ],
+        [ File.stat(destination_file).dev, File.stat(destination_file).ino ]
     end
+  end
+
+  test "hardlinks directory imports and retains the source without scheduling cleanup" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    second_source = File.join(@temp_source, "second.mp3")
+    File.write(second_source, "second audio content")
+
+    output = FileCopyService.stub(:remove_source_tree, ->(*) { flunk "Hardlink imports must not schedule source cleanup" }) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    first_source = File.join(@temp_source, "audiobook.mp3")
+    first_destination = File.join(destination, "audiobook.mp3")
+    second_destination = File.join(destination, "second.mp3")
+
+    assert @request.reload.completed?
+    assert File.exist?(first_source)
+    assert File.exist?(second_source)
+    assert_equal [ File.stat(first_source).dev, File.stat(first_source).ino ],
+      [ File.stat(first_destination).dev, File.stat(first_destination).ino ]
+    assert_equal [ File.stat(second_source).dev, File.stat(second_source).ino ],
+      [ File.stat(second_destination).dev, File.stat(second_destination).ino ]
+    assert_includes output, "2 hardlinked, 0 copied after unsupported fallback, 0 reused"
+  end
+
+  test "hardlinks source aliases that share one inode" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    source_file = File.join(@temp_source, "audiobook.mp3")
+    alias_source = File.join(@temp_source, "alternate-name.mp3")
+    File.link(source_file, alias_source)
+
+    output = capture_private_post_processing_logs do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    destination_file = File.join(destination, "audiobook.mp3")
+    alias_destination = File.join(destination, "alternate-name.mp3")
+    identity = [ File.stat(source_file).dev, File.stat(source_file).ino ]
+
+    assert @request.reload.completed?
+    assert File.exist?(source_file)
+    assert File.exist?(alias_source)
+    assert_equal identity, [ File.stat(destination_file).dev, File.stat(destination_file).ino ]
+    assert_equal identity, [ File.stat(alias_destination).dev, File.stat(alias_destination).ino ]
+    assert_includes output, "2 hardlinked, 0 copied after unsupported fallback, 0 reused"
+  end
+
+  test "hardlinks and renames a single file while retaining its source" do
+    source_file = File.join(@temp_source, "Original Name.m4b")
+    File.write(source_file, "single file audio content")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @download.update!(download_path: source_file)
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_filename_template, "{author} - {title}")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination_file = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      "Test Author - Test Audiobook.m4b"
+    )
+    assert @request.reload.completed?
+    assert File.exist?(source_file)
+    assert_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(destination_file).dev, File.stat(destination_file).ino ]
+  end
+
+  test "falls back only for unsupported hardlinks and logs private aggregate counts" do
+    secret_title = "PRIVATE HARDLINK TITLE #{SecureRandom.hex(8)}"
+    secret_filename = "private-hardlink-file-#{SecureRandom.hex(8)}.mp3"
+    source_file = File.join(@temp_source, secret_filename)
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(source_file, "fallback audio content")
+    @book.update!(title: secret_title)
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+
+    output = FileCopyService.stub(:hardlink_noreplace, ->(*) {
+      raise FileCopyService::HardlinkUnsupportedError, "unsupported at #{source_file}"
+    }) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    destination_file = File.join(@temp_dest_base, @book.author, secret_title, secret_filename)
+    assert @request.reload.completed?
+    assert_equal "fallback audio content", File.binread(destination_file)
+    assert File.exist?(source_file)
+    refute_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(destination_file).dev, File.stat(destination_file).ino ]
+    assert_includes output, "Hardlink unavailable for one file; falling back to a retained-source copy"
+    assert_includes output, "0 hardlinked, 1 copied after unsupported fallback, 0 reused"
+    refute_includes output, secret_title
+    refute_includes output, secret_filename
+    refute_includes output, @temp_source
+    refute_includes output, @temp_dest_base
+  end
+
+  test "does not copy when hardlinking fails for a reason other than unsupported" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+
+    FileCopyService.stub(:hardlink_noreplace, ->(*) { raise Errno::EACCES, "permission denied" }) do
+      FileCopyService.stub(:cp_noreplace, ->(*) { flunk "Only unsupported hardlinks may fall back to copying" }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.attention_needed?
+    assert File.exist?(File.join(@temp_source, "audiobook.mp3"))
+  end
+
+  test "hardlink collisions use a suffix without replacing library content" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    FileUtils.mkdir_p(destination)
+    existing = File.join(destination, "audiobook.mp3")
+    File.write(existing, "existing library content")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    source_file = File.join(@temp_source, "audiobook.mp3")
+    imported_file = File.join(destination, "audiobook (2).mp3")
+    assert @request.reload.completed?
+    assert_equal "existing library content", File.binread(existing)
+    assert_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(imported_file).dev, File.stat(imported_file).ino ]
+    assert File.exist?(source_file)
+  end
+
+  test "suffixes an identical independent destination won after private hardlink creation" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    source_file = File.join(@temp_source, "audiobook.mp3")
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    destination_file = File.join(destination, "audiobook.mp3")
+    real_publish = FileCopyService.method(:publish_private_child_noreplace!)
+    raced = false
+
+    output = FileCopyService.stub(
+      :publish_private_child_noreplace!,
+      ->(parent, temporary, basename, identity, mode: FileCopyService::LIBRARY_FILE_MODE) {
+        unless raced
+          raced = true
+          File.binwrite(File.join(destination, basename), "test audio content")
+          raise Errno::EEXIST, basename
+        end
+
+        real_publish.call(parent, temporary, basename, identity, mode: mode)
+      }
+    ) do
+      FileCopyService.stub(:secure_library_file!, ->(*) { flunk "Hardlink-mode reuse must never chmod the destination" }) do
+        capture_private_post_processing_logs do
+          PostProcessingJob.perform_now(@download.id)
+        end
+      end
+    end
+
+    assert raced
+    assert @request.reload.completed?
+    assert_equal "test audio content", File.binread(destination_file)
+    assert File.exist?(source_file)
+    refute_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(destination_file).dev, File.stat(destination_file).ino ]
+    suffixed_file = File.join(destination, "audiobook (2).mp3")
+    assert_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(suffixed_file).dev, File.stat(suffixed_file).ino ]
+    assert_empty Dir.children(destination).grep(/\A\.shelfarr-copy-/)
+    assert_includes output, "1 hardlinked, 0 copied after unsupported fallback, 0 reused"
+  end
+
+  test "hardlink retries reuse the existing source inode" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    source_file = File.join(@temp_source, "audiobook.mp3")
+    File.chmod(0o744, source_file)
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    FileUtils.mkdir_p(destination)
+    destination_file = File.join(destination, "audiobook.mp3")
+    File.link(source_file, destination_file)
+
+    output = FileCopyService.stub(:secure_library_file!, ->(*) { flunk "Hardlink-mode reuse must never chmod" }) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.completed?
+    assert_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(destination_file).dev, File.stat(destination_file).ino ]
+    assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
+    assert_equal 0o744, File.stat(source_file).mode & 0o777
+    assert_includes output, "0 hardlinked, 0 copied after unsupported fallback, 1 reused"
+  end
+
+  test "hardlink retries suffix an independent identical destination without chmod" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    source_file = File.join(@temp_source, "audiobook.mp3")
+    File.chmod(0o744, source_file)
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    FileUtils.mkdir_p(destination)
+    destination_file = File.join(destination, "audiobook.mp3")
+    File.binwrite(destination_file, "test audio content")
+    File.chmod(0o777, destination_file)
+
+    output = FileCopyService.stub(:secure_library_file!, ->(*) { flunk "Hardlink-mode reuse must never chmod the destination" }) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.completed?
+    refute_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(destination_file).dev, File.stat(destination_file).ino ]
+    suffixed_file = File.join(destination, "audiobook (2).mp3")
+    assert_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(suffixed_file).dev, File.stat(suffixed_file).ino ]
+    assert_equal 0o744, File.stat(source_file).mode & 0o777
+    assert_equal 0o777, File.stat(destination_file).mode & 0o777
+    assert_includes output, "1 hardlinked, 0 copied after unsupported fallback, 0 reused"
+  end
+
+  test "hardlink retry reuses a secure fallback copy after interruption" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    source_file = File.join(@temp_source, "audiobook.mp3")
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    destination_file = File.join(destination, "audiobook.mp3")
+    hardlink_attempts = 0
+    first_job = PostProcessingJob.new(@download.id)
+
+    output = FileCopyService.stub(:hardlink_noreplace, ->(*) {
+      hardlink_attempts += 1
+      raise FileCopyService::HardlinkUnsupportedError, "simulated unsupported hardlink"
+    }) do
+      first_job.stub(:finalize_acquisition!, ->(*) { raise Interrupt, "simulated interruption" }) do
+        assert_raises(Interrupt) { first_job.perform_now }
+      end
+
+      assert @request.reload.processing?
+      assert_equal first_job.job_id, @download.reload.post_processing_job_id
+      assert_equal 0o640, File.stat(destination_file).mode & 0o777
+
+      retry_job = PostProcessingJob.new(@download.id, 0, first_job.job_id)
+      FileCopyService.stub(:secure_library_file!, ->(*) { flunk "Hardlink-mode retry must never chmod" }) do
+        capture_private_post_processing_logs do
+          retry_job.perform_now
+        end
+      end
+    end
+
+    assert_equal 1, hardlink_attempts
+    assert @request.reload.completed?
+    assert File.exist?(source_file)
+    assert_equal "test audio content", File.binread(destination_file)
+    assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
+    assert_includes output, "0 hardlinked, 0 copied after unsupported fallback, 1 reused"
+  end
+
+  test "hardlinks a shared sidecar into each split bundle destination" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    book_one_source = File.join(@temp_source, "Book One.m4b")
+    book_two_source = File.join(@temp_source, "Book Two.m4b")
+    cover_source = File.join(@temp_source, "cover.png")
+    File.write(book_one_source, "book one audio")
+    File.write(book_two_source, "book two audio")
+    File.write(cover_source, "shared cover")
+
+    output = capture_private_post_processing_logs do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
+    book_two_destination = File.join(@temp_dest_base, @book.author, "Book Two")
+    book_one_file = File.join(book_one_destination, "Book One.m4b")
+    book_two_file = File.join(book_two_destination, "Book Two.m4b")
+    book_one_cover = File.join(book_one_destination, "cover.png")
+    book_two_cover = File.join(book_two_destination, "cover.png")
+
+    assert @request.reload.completed?
+    assert_equal [ File.stat(book_one_source).dev, File.stat(book_one_source).ino ],
+      [ File.stat(book_one_file).dev, File.stat(book_one_file).ino ]
+    assert_equal [ File.stat(book_two_source).dev, File.stat(book_two_source).ino ],
+      [ File.stat(book_two_file).dev, File.stat(book_two_file).ino ]
+    cover_identity = [ File.stat(cover_source).dev, File.stat(cover_source).ino ]
+    assert_equal cover_identity, [ File.stat(book_one_cover).dev, File.stat(book_one_cover).ino ]
+    assert_equal cover_identity, [ File.stat(book_two_cover).dev, File.stat(book_two_cover).ino ]
+    assert File.exist?(book_one_source)
+    assert File.exist?(book_two_source)
+    assert File.exist?(cover_source)
+    assert_includes output, "4 hardlinked, 0 copied after unsupported fallback, 0 reused"
+  end
+
+  test "copies a repeated shared sidecar after its second hardlink is unsupported" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    book_one_source = File.join(@temp_source, "Book One.m4b")
+    book_two_source = File.join(@temp_source, "Book Two.m4b")
+    cover_source = File.join(@temp_source, "cover.png")
+    File.write(book_one_source, "book one audio")
+    File.write(book_two_source, "book two audio")
+    File.write(cover_source, "shared cover")
+    real_hardlink = FileCopyService.method(:hardlink_noreplace)
+    cover_attempts = 0
+
+    output = FileCopyService.stub(:hardlink_noreplace, ->(source, destination, **options) {
+      if source == cover_source
+        cover_attempts += 1
+        if cover_attempts == 2
+          raise FileCopyService::HardlinkUnsupportedError, "simulated unsupported second link"
+        end
+      end
+
+      real_hardlink.call(source, destination, **options)
+    }) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
+    book_two_destination = File.join(@temp_dest_base, @book.author, "Book Two")
+    book_one_cover = File.join(book_one_destination, "cover.png")
+    book_two_cover = File.join(book_two_destination, "cover.png")
+    cover_identity = [ File.stat(cover_source).dev, File.stat(cover_source).ino ]
+
+    assert @request.reload.completed?
+    assert_equal 2, cover_attempts
+    assert_equal cover_identity, [ File.stat(book_one_cover).dev, File.stat(book_one_cover).ino ]
+    refute_equal cover_identity, [ File.stat(book_two_cover).dev, File.stat(book_two_cover).ino ]
+    assert_equal "shared cover", File.binread(book_two_cover)
+    assert File.exist?(cover_source)
+    assert_includes output, "3 hardlinked, 1 copied after unsupported fallback, 0 reused"
   end
 
   test "moves directory imports when enabled" do
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
 
     original_file = File.join(@temp_source, "audiobook.mp3")
     assert File.exist?(original_file), "Source file should exist before processing"
@@ -389,7 +779,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
   test "removes source directory after split audiobook bundle move import" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
     @book.update!(title: "Book Two")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
@@ -408,7 +798,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
   test "preserves hidden directories when bundle splitting falls back" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
     @book.update!(title: "Book Two")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
@@ -431,7 +821,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobook_output_path, @temp_source)
     SettingsService.set(:audiobook_path_template, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
     @book.update!(title: "Book Two")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     book_one_source = File.join(@temp_source, "Book One.m4b")
@@ -523,7 +913,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
   test "does not follow a destination symlink during split move imports" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
     @book.update!(title: "Book Two")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     book_one_source = File.join(@temp_source, "Book One.m4b")
@@ -591,7 +981,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal "long-name audio", File.read(File.join(long_title_destination, duplicate_filename))
   end
 
-  test "publishes split imports when the destination filesystem rejects hard links" do
+  test "publishes split imports when the destination filesystem rejects atomic publication" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
     @book.update!(title: "Book Two")
@@ -600,7 +990,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
     File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
 
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP, "hard links unavailable" }) do
-      PostProcessingJob.perform_now(@download.id)
+      FileCopyService.stub(:native_rename_noreplace, false) do
+        PostProcessingJob.perform_now(@download.id)
+      end
     end
 
     book_one_destination = File.join(@temp_dest_base, @book.author, "Book One", "Book One.m4b")
@@ -650,7 +1042,11 @@ class PostProcessingJobTest < ActiveJob::TestCase
     temporary_path = File.join(book_one_directory, ".shelfarr-copy-#{token}.tmp")
     lock_path = File.join(book_one_directory, ".shelfarr-copy-#{token}.lock")
     File.write(temporary_path, "partial")
-    File.write(lock_path, "#{FileCopyService::COPY_LOCK_MAGIC}:#{token}")
+    temporary_stat = File.stat(temporary_path)
+    File.write(
+      lock_path,
+      "#{FileCopyService::COPY_LOCK_MAGIC}:#{token}:full:#{temporary_stat.dev}:#{temporary_stat.ino}"
+    )
 
     PostProcessingJob.perform_now(@download.id)
 
@@ -669,7 +1065,10 @@ class PostProcessingJobTest < ActiveJob::TestCase
     File.write(temporary_path, "active copy")
 
     File.open(lock_path, "w+") do |lock|
-      lock.write("#{FileCopyService::COPY_LOCK_MAGIC}:#{token}")
+      temporary_stat = File.stat(temporary_path)
+      lock.write(
+        "#{FileCopyService::COPY_LOCK_MAGIC}:#{token}:full:#{temporary_stat.dev}:#{temporary_stat.ino}"
+      )
       lock.flush
       lock.flock(File::LOCK_EX)
 
@@ -683,7 +1082,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
   test "keeps exact-stem companions with each split book during move import" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
     @book.update!(title: "Book Two")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     File.write(File.join(@temp_source, "Book One.aax"), "book one audio")
@@ -711,7 +1110,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobook_filename_template, "{author} - {title}")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
 
     FileCopyService.stub(:cp, ->(*) { flunk "Single-file move imports should not copy files" }) do
       PostProcessingJob.perform_now(@download.id)
@@ -730,7 +1129,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobook_filename_template, "{author} - {title}")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
 
     FileUtils.stub(:mv, ->(*) { raise Errno::EACCES, "copy_file_range" }) do
       PostProcessingJob.perform_now(@download.id)
@@ -748,7 +1147,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     @download.update!(download_path: failing_file)
 
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
 
     FileCopyService.stub(:mv_noreplace, ->(*) { raise Errno::EACCES, "permission denied" }) do
       PostProcessingJob.perform_now(@download.id)
@@ -776,7 +1175,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:ebook_path_template, "{author}/{title}")
     SettingsService.set(:ebook_filename_template, "{author} - {title} ({year})")
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
 
     FileCopyService.stub(:mv, ->(*) { flunk "Ebook directory imports should copy files, not move them individually" }) do
       PostProcessingJob.perform_now(@download.id)
@@ -792,7 +1191,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
   test "imports every snapshotted file even when a later live directory listing omits one" do
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
     File.binwrite(File.join(@temp_source, "second.mp3"), "second expected chapter")
     real_children = Dir.method(:children)
 
@@ -817,7 +1216,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
   test "keeps source directory intact when directory import fails with move enabled" do
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
 
     File.write(File.join(@temp_source, "second.mp3"), "second file")
     original_file = File.join(@temp_source, "audiobook.mp3")
@@ -918,7 +1317,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
   test "preserves both files and asks for review when another acquisition wins the book claim" do
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
     existing_path = File.join(@temp_dest_base, "already-owned", "existing.m4b")
     FileUtils.mkdir_p(File.dirname(existing_path))
     File.binwrite(existing_path, "existing acquisition")
@@ -943,7 +1342,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
   test "completes request when import source removal fails non-fatally" do
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:move_completed_downloads, true)
+    SettingsService.set(:completed_download_import_mode, "move")
 
     FileCopyService.stub(:remove_source_tree, ->(*) { raise Errno::EACCES, "permission denied" }) do
       PostProcessingJob.perform_now(@download.id)
@@ -1338,6 +1737,26 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(File.join(expected_dest, "Calibre Export"))
   end
 
+  test "copies UTF-8 ebook sidecar names into UTF-8 destination paths" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    title = "The Reverse Centaur’s Guide to Life After AI"
+    sidecar = "Doctorow’s Notes.nfo"
+    write_valid_ebook_file(File.join(@temp_source, "book.epub"))
+    File.write(File.join(@temp_source, sidecar), "release notes")
+
+    @book.update!(title: title, author: "Cory Doctorow", book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, title)
+    assert @request.reload.completed?
+    assert_equal "release notes", File.read(File.join(expected_dest, sidecar))
+    assert File.exist?(File.join(expected_dest, "Cory Doctorow - #{title}.epub"))
+  end
+
   test "imports bundled DjVu ebooks" do
     FileUtils.rm_rf(@temp_source)
     FileUtils.mkdir_p(@temp_source)
@@ -1509,6 +1928,57 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert duplicate.job_id.present?
     assert @download.claim_post_processing!(duplicate.job_id, expected_owner_job_id: owner.job_id)
     assert_equal duplicate.job_id, @download.reload.post_processing_job_id
+  end
+
+  test "duplicate delivery of one job cannot import concurrently" do
+    SettingsService.set(:audiobookshelf_url, "")
+    original_job = PostProcessingJob.new(@download.id)
+    duplicate_job = PostProcessingJob.deserialize(original_job.serialize)
+    real_copy = FileCopyService.method(:copy_source_io)
+    entered_copy = Queue.new
+    release_copy = Queue.new
+    paused = false
+    errors = Queue.new
+    first = nil
+    duplicate = nil
+
+    pausing_copy = lambda do |source, target, heartbeat: nil|
+      unless paused
+        paused = true
+        entered_copy << true
+        release_copy.pop
+      end
+      real_copy.call(source, target, heartbeat: heartbeat)
+    end
+
+    FileCopyService.stub(:copy_source_io, pausing_copy) do
+      first = Thread.new do
+        original_job.perform_now
+      rescue => error
+        errors << error
+      end
+      entered_copy.pop
+      duplicate = Thread.new do
+        duplicate_job.perform_now
+      rescue => error
+        errors << error
+      end
+
+      sleep 0.05
+      assert duplicate.alive?
+      release_copy << true
+      first.join
+      duplicate.join
+    end
+
+    expected_directory = File.join(@temp_dest_base, @book.author, @book.title)
+    flunk errors.pop.full_message unless errors.empty?
+    assert @request.reload.completed?
+    assert_equal [ "audiobook.mp3" ], Dir.children(expected_directory)
+  ensure
+    release_copy << true if release_copy && first&.alive?
+    first&.join
+    duplicate&.join
   end
 
   test "scheduled retry owns durable recovery and blocks cancellation" do

@@ -109,6 +109,24 @@
                     <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request_status_color(request.status) %>">
                       <%= request.status.humanize %>
                     </span>
+                    <% if @library_matches_by_book&.dig(request.book_id)&.any? %>
+                      <% match = @library_matches_by_book[request.book_id].first %>
+                      <% if match.likely? %>
+                        <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-amber-500/20 text-amber-400" title="Found in: <%= match.item.library_id %>">
+                          <svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                          </svg>
+                          In Library
+                        </span>
+                      <% else %>
+                        <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-amber-500/10 text-amber-400/70" title="Possible match in: <%= match.item.library_id %>">
+                          <svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          Possibly in Library
+                        </span>
+                      <% end %>
+                    <% end %>
                     <% if request.attention_needed? %>
                       <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-500/20 text-red-400">
                         <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
@@ -205,5 +223,23 @@
         </div>
       <% end %>
     </div>
+
+    <% if @requests_total_pages > 1 %>
+      <div class="mt-6 flex flex-wrap items-center justify-between gap-3 text-sm text-gray-400">
+        <p><%= @requests_total_count %> <%= "request".pluralize(@requests_total_count) %> &middot; Page <%= @requests_page %> of <%= @requests_total_pages %></p>
+        <div class="flex gap-2">
+          <% if @requests_page > 1 %>
+            <%= link_to "Previous",
+              requests_path(status: params[:status], attention: params[:attention], page: @requests_page - 1),
+              class: "rounded-md bg-gray-800 px-3 py-2 text-white hover:bg-gray-700" %>
+          <% end %>
+          <% if @requests_page < @requests_total_pages %>
+            <%= link_to "Next",
+              requests_path(status: params[:status], attention: params[:attention], page: @requests_page + 1),
+              class: "rounded-md bg-gray-800 px-3 py-2 text-white hover:bg-gray-700" %>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
   <% end %>
 </div>

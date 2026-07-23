@@ -252,6 +252,44 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "library_items returns empty array on page 0 404 or 410 response" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(status: 404)
+      assert_equal [], BookOrbitClient.library_items("42")
+
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(status: 410)
+      assert_equal [], BookOrbitClient.library_items("42")
+    end
+  end
+
+  test "library_items raises Error on later-page 404 response" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 0, "size" => 200 }))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "items" => Array.new(200) { { "id" => 101, "title" => "a" } },
+            "total" => 400,
+            "page" => 0,
+            "size" => 200
+          }.to_json
+        )
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 1, "size" => 200 }))
+        .to_return(status: 404)
+
+      assert_raises BookOrbitClient::Error do
+        BookOrbitClient.library_items("42")
+      end
+    end
+  end
+
   private
 
   def stub_login

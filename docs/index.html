@@ -1115,6 +1115,7 @@
                 min-height: 130px;
                 display: flex;
                 align-items: flex-start;
+                overflow: hidden;
             }
 
             .riddle-ink-text {
@@ -1123,24 +1124,32 @@
                 line-height: 1.55;
                 color: #1a2238;
                 font-weight: 600;
-                opacity: 0;
-                filter: blur(8px);
-                transform: translateY(4px);
-                transition: opacity 0.9s var(--ease-out),
-                            filter 0.9s var(--ease-out),
-                            transform 0.9s var(--ease-out);
+                white-space: pre-wrap;
+                word-wrap: break-word;
+                overflow-wrap: anywhere;
             }
 
-            .riddle-ink-text.fade-in {
-                opacity: 1;
-                filter: blur(0px);
-                transform: translateY(0px);
+            .riddle-char {
+                display: inline;
+                opacity: 0;
+                animation: riseChar 0.7s ease forwards;
+                animation-delay: calc(var(--i) * 20ms);
             }
 
-            .riddle-ink-text.fade-out {
-                opacity: 0;
-                filter: blur(10px);
-                transform: translateY(-4px);
+            @keyframes riseChar {
+                0% { opacity: 0; transform: translateY(7px) scale(0.9); filter: blur(2px); }
+                45% { opacity: 0.5; }
+                100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+            }
+
+            .riddle-char.fade-out {
+                animation: fadeAway 0.45s ease forwards !important;
+                animation-delay: calc(var(--i) * 8ms) !important;
+            }
+
+            @keyframes fadeAway {
+                0% { opacity: 1; filter: blur(0); }
+                100% { opacity: 0; filter: blur(3px); transform: translateY(-6px); }
             }
 
             /* Install — Apple Terminal */
@@ -2118,30 +2127,50 @@
                 const nextQuestion = riddleFaqData[index].q;
                 const nextAnswer = riddleFaqData[index].a;
 
+                const RISE_DUR = 700;
+                const RISE_STAGGER = 20;
+                const FADE_DUR = 450;
+                const FADE_STAGGER = 8;
+
+                const wrapChars = (text) => {
+                    canvas.innerHTML = '';
+                    const frag = document.createDocumentFragment();
+                    [...text].forEach((ch, i) => {
+                        const span = document.createElement('span');
+                        span.className = 'riddle-char';
+                        span.textContent = ch === ' ' ? '\u00A0' : ch;
+                        span.style.setProperty('--i', i);
+                        frag.appendChild(span);
+                    });
+                    canvas.appendChild(frag);
+                };
+
+                const fadeOutCanvas = (cb) => {
+                    const spans = canvas.querySelectorAll('.riddle-char');
+                    if (spans.length === 0) { cb(); return; }
+                    spans.forEach(s => s.classList.add('fade-out'));
+                    const t = setTimeout(cb, FADE_DUR + spans.length * FADE_STAGGER);
+                    riddleTimers.push(t);
+                };
+
                 const runQuestionFlow = () => {
-                    // Step 1: Question seeps smoothly onto blank paper (0.9s fade-in)
-                    canvas.textContent = nextQuestion;
-                    canvas.className = 'riddle-ink-text fade-in';
+                    // Step 1: Question seeps in char by char
+                    wrapChars(nextQuestion);
 
-                    // Step 2: Lingers 1.5s, then seeps out into blank paper (0.9s fade-out)
+                    // Step 2: Linger 1.5s after last char rises, then seep out
+                    const qDur = RISE_DUR + nextQuestion.length * RISE_STAGGER;
                     const t1 = setTimeout(() => {
-                        canvas.className = 'riddle-ink-text fade-out';
-
-                        // Step 3: Once question seeps out (900ms), set answer text & seep in (0.9s)
-                        const t2 = setTimeout(() => {
-                            canvas.textContent = nextAnswer;
-                            canvas.className = 'riddle-ink-text fade-in';
-                        }, 850);
-                        riddleTimers.push(t2);
-                    }, 1500);
+                        fadeOutCanvas(() => {
+                            // Step 3: Answer seeps in char by char
+                            wrapChars(nextAnswer);
+                        });
+                    }, qDur + 1500);
                     riddleTimers.push(t1);
                 };
 
-                // If text is currently visible on parchment, fade it OUT first before loading new question!
-                if (canvas.classList.contains('fade-in') && canvas.textContent.trim() !== '') {
-                    canvas.className = 'riddle-ink-text fade-out';
-                    const t0 = setTimeout(runQuestionFlow, 750);
-                    riddleTimers.push(t0);
+                // If text is currently visible on parchment, fade it OUT first before loading new question
+                if (canvas.querySelectorAll('.riddle-char').length > 0) {
+                    fadeOutCanvas(runQuestionFlow);
                 } else {
                     runQuestionFlow();
                 }

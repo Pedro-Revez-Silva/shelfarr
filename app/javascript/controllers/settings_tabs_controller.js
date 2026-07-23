@@ -1,9 +1,9 @@
 import { Controller } from "@hotwired/stimulus"
 
 // Progressive enhancement for settings tabs.
-// Panels render visible by default so the page remains usable if JS fails.
+// Panels render visible and tab lists hidden by default so the page remains usable if JS fails.
 export default class extends Controller {
-  static targets = ["tab", "panel"]
+  static targets = ["tablist", "tab", "panel"]
   static values = {
     active: { type: String, default: "search" }
   }
@@ -31,7 +31,7 @@ export default class extends Controller {
     if (queryTab && this.panelTargets.some((panel) => panel.dataset.tab === queryTab)) {
       url.searchParams.delete("tab")
       url.hash = requestedTab
-      history.replaceState(null, "", url)
+      history.replaceState(history.state, "", url)
     }
 
     this.showTab()
@@ -62,7 +62,7 @@ export default class extends Controller {
 
     this.activeValue = tab
     this.showTab()
-    history.replaceState(null, "", `#${tab}`)
+    history.replaceState(history.state, "", `#${tab}`)
   }
 
   navigate(event) {
@@ -86,7 +86,7 @@ export default class extends Controller {
     const nextTab = this.tabTargets[nextIndex]
     this.activeValue = nextTab.dataset.tab
     this.showTab()
-    history.replaceState(null, "", `#${this.activeValue}`)
+    history.replaceState(history.state, "", `#${this.activeValue}`)
     nextTab.focus()
   }
 
@@ -121,6 +121,8 @@ export default class extends Controller {
 
   showTab() {
     const active = this.activeValue
+
+    this.tablistTargets.forEach((tablist) => tablist.classList.remove("hidden"))
 
     this.tabTargets.forEach((tab) => {
       const isActive = tab.dataset.tab === active

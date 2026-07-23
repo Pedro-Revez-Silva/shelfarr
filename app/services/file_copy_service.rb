@@ -17,14 +17,24 @@ class FileCopyService
   BUFFER_SIZE = 1024 * 1024 # 1 MB
   LIBRARY_FILE_MODE = 0o640
   DIRECTORY_MODE = 0o750
-  COPY_LOCK_MAGIC = "shelfarr-copy-v1"
+  COPY_LOCK_LEGACY_MAGIC = "shelfarr-copy-v1"
+  COPY_LOCK_MAGIC = "shelfarr-copy-v2"
   COPY_LOCK_PATTERN = /\A\.shelfarr-copy-([0-9a-f]{32})\.lock\z/
+  COPY_LOCK_LEGACY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_LEGACY_MAGIC)}:([0-9a-f]{32})\z/
+  COPY_LOCK_PENDING_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):pending\z/
+  COPY_LOCK_RECORD_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):full:([0-9]+):([0-9]+)\z/
+  COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:prepared:([0-9]+):([0-9]+):([0-9a-f]+)\z/
+  COPY_LOCK_COMPATIBILITY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:(copying|complete):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9a-f]+)\z/
+  COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
+  COPY_QUARANTINE_ENTRY = "entry"
+  COPY_QUARANTINE_STALE_AGE = 24 * 60 * 60
   LINUX_RENAME_NOREPLACE = 0x1
   DARWIN_RENAME_EXCL = 0x4
   AT_REMOVEDIR = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
 
   class UnsafePathError < StandardError; end
   class AtomicPublicationUnsupportedError < StandardError; end
+  class HardlinkUnsupportedError < StandardError; end
   SourceRoot = Struct.new(
     :path,
     :canonical_path,
@@ -62,14 +72,48 @@ class FileCopyService
       buffered_copy(src, dest)
     end
 
-    # Copy a regular file without ever exposing partially-copied bytes at the
-    # final pathname. Bytes are written and fsynced to a private file in the
-    # destination directory, then published with an atomic no-replace link (or
-    # platform no-replace rename). Every destination component is opened from
-    # a pinned root descriptor with O_NOFOLLOW.
-    def cp_noreplace(src, dest, root: nil, source_root: nil, heartbeat: nil)
-      with_pinned_source(src, source_root: source_root) do |source, _source_parent, _source_basename, _source_parent_path|
-        publish_source_io_noreplace(source, dest, root: root, heartbeat: heartbeat)
+    # Copy a regular file through a complete private file in the destination
+    # directory. Publication uses an atomic no-replace operation when the
+    # filesystem supports one, or an exclusive descriptor-backed copy with
+    # crash recovery on compatibility filesystems. Every destination component
+    # is opened from a pinned root descriptor with O_NOFOLLOW.
+    def cp_noreplace(
+      src,
+      dest,
+      root: nil,
+      source_root: nil,
+      heartbeat: nil,
+      hardlink_mode: false,
+      allow_compatibility_fallback: false
+    )
+      source_opener = hardlink_mode ? :with_pinned_hardlink_source : :with_pinned_source
+      send(source_opener, src, source_root: source_root) do |source, *_source_path|
+        publish_source_io_noreplace(
+          source,
+          dest,
+          root: root,
+          heartbeat: heartbeat,
+          allow_compatibility_fallback: allow_compatibility_fallback
+        )
+      end
+      dest
+    end
+
+    # Hardlink a regular source without exposing a pathname selected by a
+    # source race. The source name is first linked to a private destination
+    # entry, which must match the already-open source descriptor before the
+    # existing no-replace publication protocol can make it final.
+    def hardlink_noreplace(src, dest, root:, source_root:)
+      with_pinned_hardlink_source(src, source_root: source_root) do |source, source_parent, source_basename, source_parent_path, source_manifest|
+        publish_hardlink_noreplace(
+          source,
+          source_parent,
+          source_basename,
+          source_parent_path,
+          source_manifest,
+          dest,
+          root: root
+        )
       end
       dest
     end
@@ -86,10 +130,23 @@ class FileCopyService
     # Move with the same crash-safe publication as cp_noreplace. The source is
     # removed through its pinned parent descriptor only after its pathname,
     # descriptor identity, and parent identity have all been revalidated.
-    def mv_noreplace(src, dest, root: nil, source_root: nil, heartbeat: nil)
+    def mv_noreplace(
+      src,
+      dest,
+      root: nil,
+      source_root: nil,
+      heartbeat: nil,
+      allow_compatibility_fallback: false
+    )
       with_pinned_source(src, source_root: source_root) do |source, source_parent, source_basename, source_parent_path|
         source_identity = file_identity(source.stat)
-        publish_source_io_noreplace(source, dest, root: root, heartbeat: heartbeat)
+        publish_source_io_noreplace(
+          source,
+          dest,
+          root: root,
+          heartbeat: heartbeat,
+          allow_compatibility_fallback: allow_compatibility_fallback
+        )
         remove_pinned_source_after_publication!(
           source,
           source_parent,
@@ -681,10 +738,67 @@ class FileCopyService
     # Compare regular files through pinned descriptors. This is used by retry
     # reconciliation so a path swap cannot trick an import into reusing an
     # unrelated library file.
-    def same_file_content?(source_path, destination_path, root: nil, source_root: nil)
-      with_pinned_source(source_path, source_root: source_root) do |source, _source_parent, _source_basename, _source_parent_path|
-        return same_io_content?(source, destination_path, root: root)
+    def same_file_content?(source_path, destination_path, root: nil, source_root: nil, hardlink_mode: false)
+      source_opener = hardlink_mode ? :with_pinned_hardlink_source : :with_pinned_source
+      result = nil
+      send(source_opener, source_path, source_root: source_root) do |source, *_source_path|
+        result = same_io_content?(source, destination_path, root: root)
       end
+      result
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+      false
+    end
+
+    # Compare regular-file identities through pinned source and destination
+    # descriptors. This distinguishes a reused hardlink from an independent
+    # file with identical content without trusting either pathname alone.
+    def same_file_identity?(source_path, destination_path, root:, source_root:, hardlink_mode: false)
+      source_opener = hardlink_mode ? :with_pinned_hardlink_source : :with_pinned_source
+      result = nil
+      send(source_opener, source_path, source_root: source_root) do |source, *_source_path|
+        source_identity = file_identity(source.stat)
+        with_pinned_destination_parent(destination_path, root: root) do |parent, basename, parent_path|
+          destination_identity = nil
+          with_pinned_regular_child(parent, basename) do |destination|
+            destination_identity = file_identity(destination.stat)
+          end
+          with_pinned_regular_child(parent, basename) do |current|
+            unless file_identity(current.stat) == destination_identity
+              raise Errno::ESTALE, "destination changed during identity validation"
+            end
+          end
+          validate_current_directory_identity!(parent_path, parent)
+          result = source_identity == destination_identity
+        end
+      end
+      result
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+      false
+    end
+
+    # Check retry eligibility without chmodding a path that may be a hardlink
+    # to retained download data. The pathname is reopened before returning so
+    # a replacement cannot inherit the first descriptor's result.
+    def secure_library_file_mode?(path, root:)
+      result = false
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        expected_identity = nil
+        expected_mode = nil
+        with_pinned_regular_child(parent, basename) do |file|
+          stat = file.stat
+          expected_identity = file_identity(stat)
+          expected_mode = stat.mode & 0o7777
+          result = expected_mode == LIBRARY_FILE_MODE
+        end
+        with_pinned_regular_child(parent, basename) do |current|
+          stat = current.stat
+          unless file_identity(stat) == expected_identity && (stat.mode & 0o7777) == expected_mode
+            raise Errno::ESTALE, "library file changed during mode validation"
+          end
+        end
+        validate_current_directory_identity!(parent_path, parent)
+      end
+      result
     rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
       false
     end
@@ -837,10 +951,15 @@ class FileCopyService
       with_pinned_destination_parent(destination, root: root) do |parent, _basename, parent_path|
         validate_current_directory_identity!(parent_path, parent)
         Dir.children(parent_path).each do |entry|
-          match = COPY_LOCK_PATTERN.match(entry)
-          next unless match
-
-          cleanup_interrupted_copy(parent, match[1])
+          if (match = COPY_LOCK_PATTERN.match(entry))
+            cleanup_interrupted_copy(parent, match[1])
+          elsif (match = COPY_QUARANTINE_PATTERN.match(entry))
+            cleanup_interrupted_quarantine(
+              parent,
+              entry,
+              [ match[1].to_i(16), match[2].to_i(16) ]
+            )
+          end
         end
         validate_current_directory_identity!(parent_path, parent)
       end
@@ -901,7 +1020,13 @@ class FileCopyService
       relative
     end
 
-    def publish_source_io_noreplace(source, destination, root:, heartbeat: nil)
+    def publish_source_io_noreplace(
+      source,
+      destination,
+      root:,
+      heartbeat: nil,
+      allow_compatibility_fallback: false
+    )
       raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
@@ -918,12 +1043,13 @@ class FileCopyService
             lock_identity = file_identity(lock.stat)
             raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
 
-            lock.write("#{COPY_LOCK_MAGIC}:#{token}")
-            flush_and_sync(lock)
             sync_io(parent)
+            persist_copy_lock_pending!(lock, token)
 
             with_created_regular_child(parent, temporary_basename, 0o600) do |temporary|
               temporary_identity = file_identity(temporary.stat)
+              persist_copy_lock_identity!(lock, token, temporary_identity)
+              sync_io(parent)
               if heartbeat
                 copy_source_io(source, temporary, heartbeat: heartbeat)
               else
@@ -932,13 +1058,30 @@ class FileCopyService
               native_fchmod(temporary.fileno, LIBRARY_FILE_MODE)
               flush_and_sync(temporary)
 
-              publish_private_child_noreplace!(
-                parent,
-                temporary_basename,
-                basename,
-                temporary_identity
-              )
-              published_identity = temporary_identity
+              begin
+                publish_private_child_noreplace!(
+                  parent,
+                  temporary_basename,
+                  basename,
+                  temporary_identity
+                )
+                published_identity = temporary_identity
+              rescue AtomicPublicationUnsupportedError
+                raise unless allow_compatibility_fallback
+
+                Rails.logger.warn(
+                  "[FileCopyService] Atomic publication unsupported; using exclusive-copy compatibility mode"
+                )
+                published_identity = publish_private_child_by_copy_noreplace!(
+                  parent,
+                  temporary_basename,
+                  basename,
+                  temporary_identity,
+                  lock: lock,
+                  token: token,
+                  heartbeat: heartbeat
+                )
+              end
               validate_published_child!(parent, basename, published_identity)
               validate_current_directory_identity!(parent_path, parent)
               sync_io(parent)
@@ -950,9 +1093,142 @@ class FileCopyService
           # otherwise delete a replacement installed by another worker.
           raise
         ensure
-          remove_pinned_child_if_identity(parent, temporary_basename, temporary_identity)
-          remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
+          temporary_cleanup = remove_pinned_child_if_identity(
+            parent,
+            temporary_basename,
+            temporary_identity
+          )
+          if temporary_cleanup.in?([ :removed, :missing ])
+            remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
+          end
           sync_io(parent)
+        end
+      end
+    end
+
+    def publish_hardlink_noreplace(
+      source,
+      source_parent,
+      source_basename,
+      source_parent_path,
+      source_manifest,
+      destination,
+      root:
+    )
+      source_identity = source_manifest.first(2)
+      expected_stable_manifest = stable_hardlink_snapshot_entry(source_manifest)
+      source_mode = expected_stable_manifest.last
+
+      cleanup_interrupted_copies(File.dirname(destination), root: root)
+      with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
+        token = SecureRandom.hex(16)
+        temporary_basename = ".shelfarr-copy-#{token}.tmp"
+        lock_basename = ".shelfarr-copy-#{token}.lock"
+        temporary_identity = nil
+        lock_identity = nil
+
+        begin
+          with_created_regular_child(parent, lock_basename, 0o600) do |lock|
+            lock_identity = file_identity(lock.stat)
+            raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
+
+            sync_io(parent)
+
+            validate_hardlink_source!(
+              source,
+              source_parent,
+              source_basename,
+              source_parent_path,
+              source_manifest
+            )
+            persist_copy_lock_identity!(lock, token, source_identity)
+            begin
+              native_linkat(
+                source_parent.fileno,
+                source_basename,
+                parent.fileno,
+                temporary_basename
+              )
+              temporary_identity = source_identity
+            rescue Errno::EXDEV, Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP,
+                Errno::ENOSYS, Errno::EMLINK, Fiddle::DLError, NotImplementedError => error
+              raise HardlinkUnsupportedError,
+                "The source and destination filesystems cannot create the requested hardlink",
+                cause: error
+            end
+
+            with_pinned_regular_child(parent, temporary_basename) do |temporary|
+              temporary_stat = temporary.stat
+              unless file_identity(temporary_stat) == temporary_identity &&
+                  stable_hardlink_manifest_entry(temporary_stat) == expected_stable_manifest
+                raise Errno::ESTALE, "private hardlink does not match the pinned source"
+              end
+            end
+            sync_io(parent)
+
+            validate_hardlink_source!(
+              source,
+              source_parent,
+              source_basename,
+              source_parent_path,
+              source_manifest
+            )
+            validate_current_directory_identity!(parent_path, parent)
+
+            publish_private_child_noreplace!(
+              parent,
+              temporary_basename,
+              basename,
+              temporary_identity,
+              mode: source_mode
+            )
+            validate_published_child!(
+              parent,
+              basename,
+              source_identity,
+              expected_mode: source_mode,
+              expected_manifest: source_manifest
+            )
+            validate_hardlink_source!(
+              source,
+              source_parent,
+              source_basename,
+              source_parent_path,
+              source_manifest
+            )
+            validate_current_directory_identity!(parent_path, parent)
+            sync_io(parent)
+          end
+        ensure
+          temporary_cleanup = remove_pinned_child_if_identity(
+            parent,
+            temporary_basename,
+            temporary_identity
+          )
+          if temporary_cleanup.in?([ :removed, :missing ])
+            remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
+          end
+          sync_io(parent)
+        end
+      end
+    end
+
+    def validate_hardlink_source!(
+      source,
+      parent,
+      basename,
+      parent_path,
+      expected_manifest
+    )
+      expected = stable_hardlink_snapshot_entry(expected_manifest)
+      unless stable_hardlink_manifest_entry(source.stat) == expected
+        raise Errno::ESTALE, "source file changed during hardlink publication"
+      end
+
+      validate_current_directory_identity!(parent_path, parent)
+      with_pinned_regular_child(parent, basename) do |current|
+        unless stable_hardlink_manifest_entry(current.stat) == expected
+          raise Errno::ESTALE, "source path changed during hardlink publication"
         end
       end
     end
@@ -988,7 +1264,8 @@ class FileCopyService
         parent.fileno,
         destination_basename
       )
-    rescue Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS
+    rescue Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS, Errno::EMLINK,
+        Fiddle::DLError, NotImplementedError
       result = native_rename_noreplace(
         parent.fileno,
         temporary_basename,
@@ -1003,13 +1280,106 @@ class FileCopyService
       validate_published_child!(parent, destination_basename, identity, expected_mode: mode)
     end
 
-    def validate_published_child!(parent, basename, expected_identity, expected_mode: LIBRARY_FILE_MODE)
+    def publish_private_child_by_copy_noreplace!(
+      parent,
+      temporary_basename,
+      destination_basename,
+      temporary_identity,
+      lock:,
+      token:,
+      heartbeat:,
+      mode: LIBRARY_FILE_MODE
+    )
+      destination_identity = nil
+      source_size = nil
+
+      begin
+        with_pinned_regular_child(parent, temporary_basename) do |source|
+          source_stat = source.stat
+          unless file_identity(source_stat) == temporary_identity
+            raise Errno::ESTALE, "private publication source changed"
+          end
+          source_size = source_stat.size
+
+          persist_copy_lock_compatibility!(
+            lock,
+            token,
+            :prepared,
+            temporary_identity,
+            destination_basename
+          )
+          with_created_regular_child(parent, destination_basename, 0o600) do |destination|
+            destination_identity = file_identity(destination.stat)
+            persist_copy_lock_compatibility!(
+              lock,
+              token,
+              :copying,
+              temporary_identity,
+              destination_basename,
+              destination_identity
+            )
+            sync_io(parent)
+
+            if heartbeat
+              copy_source_io(source, destination, heartbeat: heartbeat)
+            else
+              copy_source_io(source, destination)
+            end
+            native_fchmod(destination.fileno, mode)
+            flush_and_sync(destination)
+            unless file_identity(source.stat) == temporary_identity &&
+                source.stat.size == source_size && destination.stat.size == source_size
+              raise Errno::ESTALE, "file changed during compatibility publication"
+            end
+          end
+        end
+
+        with_pinned_regular_child(parent, temporary_basename) do |source|
+          unless file_identity(source.stat) == temporary_identity && source.stat.size == source_size
+            raise Errno::ESTALE, "private publication source changed"
+          end
+        end
+        validate_published_child!(
+          parent,
+          destination_basename,
+          destination_identity,
+          expected_mode: mode
+        )
+        sync_io(parent)
+        persist_copy_lock_compatibility!(
+          lock,
+          token,
+          :complete,
+          temporary_identity,
+          destination_basename,
+          destination_identity
+        )
+        destination_identity
+      rescue
+        remove_pinned_child_if_identity(parent, destination_basename, destination_identity)
+        sync_io(parent)
+        raise
+      end
+    end
+
+    def validate_published_child!(
+      parent,
+      basename,
+      expected_identity,
+      expected_mode: LIBRARY_FILE_MODE,
+      expected_manifest: nil
+    )
       with_pinned_regular_child(parent, basename) do |published|
-        unless file_identity(published.stat) == expected_identity
+        stat = published.stat
+        unless file_identity(stat) == expected_identity
           raise Errno::ESTALE, "destination changed during no-clobber publication"
         end
-        unless (published.stat.mode & 0o777) == expected_mode
+        unless (stat.mode & 0o7777) == expected_mode
           raise UnsafePathError, "published library file permissions changed"
+        end
+        if expected_manifest &&
+            stable_hardlink_manifest_entry(stat) != stable_hardlink_snapshot_entry(expected_manifest)
+          raise Errno::ESTALE, "published hardlink changed during no-clobber publication"
         end
       end
     end
@@ -1039,17 +1409,235 @@ class FileCopyService
 
       with_pinned_regular_child(parent, lock_basename) do |lock|
         return unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+        return unless lock.stat.uid == Process.euid
 
         lock_identity = file_identity(lock.stat)
         lock.rewind
-        return unless lock.read == "#{COPY_LOCK_MAGIC}:#{token}"
+        state, expected_temporary_identity, destination_basename,
+          expected_destination_identity = copy_lock_cleanup_state(lock.read, token)
+        cleanup_result = case state
+        when :full
+          remove_pinned_child_if_identity(
+            parent,
+            temporary_basename,
+            expected_temporary_identity
+          )
+        when :compatibility_copying
+          destination_cleanup = remove_pinned_child_if_identity(
+            parent,
+            destination_basename,
+            expected_destination_identity
+          )
+          if destination_cleanup.in?([ :removed, :missing ])
+            remove_pinned_child_if_identity(
+              parent,
+              temporary_basename,
+              expected_temporary_identity
+            )
+          else
+            destination_cleanup
+          end
+        when :compatibility_prepared
+          # The process exited before recording the final inode. Never remove
+          # an occupied path that cannot be proven to belong to this attempt.
+          if pinned_child_missing?(parent, destination_basename)
+            remove_pinned_child_if_identity(
+              parent,
+              temporary_basename,
+              expected_temporary_identity
+            )
+          else
+            :retained
+          end
+        when :compatibility_complete
+          destination_status = begin
+            pinned_child_identity(parent, destination_basename) == expected_destination_identity ?
+              :complete : :retained
+          rescue Errno::ENOENT
+            :missing
+          rescue Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+            :retained
+          end
+          if destination_status.in?([ :complete, :missing ])
+            remove_pinned_child_if_identity(
+              parent,
+              temporary_basename,
+              expected_temporary_identity
+            )
+          else
+            destination_status
+          end
+        when :pending, :legacy
+          remove_pinned_regular_child(parent, temporary_basename)
+        else
+          pinned_child_missing?(parent, temporary_basename) ? :missing : :retained
+        end
+        return unless cleanup_result.in?([ :removed, :missing ])
 
-        remove_pinned_regular_child(parent, temporary_basename)
         remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
         sync_io(parent)
       end
     rescue Errno::ENOENT, Errno::EACCES, Errno::EWOULDBLOCK, IOError
       nil
+    end
+
+    def cleanup_interrupted_quarantine(parent, basename, expected_identity)
+      quarantine = open_pinned_directory_child(parent, basename)
+      begin
+        stat = quarantine.stat
+        return unless stat.uid == Process.euid && (stat.mode & 0o777) == 0o700
+
+        quarantine_identity = file_identity(stat)
+        children = pinned_directory_children(quarantine)
+        if children.empty?
+          return if stat.mtime > Time.now - COPY_QUARANTINE_STALE_AGE
+
+          remove_empty_cleanup_quarantine!(
+            parent,
+            basename,
+            quarantine,
+            quarantine_identity
+          )
+          return
+        end
+        return unless children == [ COPY_QUARANTINE_ENTRY ]
+
+        with_pinned_regular_child(quarantine, COPY_QUARANTINE_ENTRY) do |entry|
+          return unless file_identity(entry.stat) == expected_identity
+
+          native_unlinkat(quarantine.fileno, COPY_QUARANTINE_ENTRY)
+        end
+        sync_io(quarantine)
+
+        remove_empty_cleanup_quarantine!(
+          parent,
+          basename,
+          quarantine,
+          quarantine_identity
+        )
+      ensure
+        quarantine.close unless quarantine.closed?
+      end
+    rescue Errno::ENOENT, Errno::ELOOP, UnsafePathError
+      nil
+    end
+
+    def persist_copy_lock_pending!(lock, token)
+      persist_copy_lock_record!(lock, "#{COPY_LOCK_MAGIC}:#{token}:pending")
+    end
+
+    def persist_copy_lock_identity!(lock, token, identity)
+      persist_copy_lock_record!(
+        lock,
+        "#{COPY_LOCK_MAGIC}:#{token}:full:#{identity.first}:#{identity.last}"
+      )
+    end
+
+    def persist_copy_lock_compatibility!(
+      lock,
+      token,
+      state,
+      temporary_identity,
+      destination_basename,
+      destination_identity = nil
+    )
+      encoded_basename = destination_basename.b.unpack1("H*")
+      record = "#{COPY_LOCK_MAGIC}:#{token}:compatibility:#{state}:" \
+        "#{temporary_identity.first}:#{temporary_identity.last}:"
+      if destination_identity
+        record << "#{destination_identity.first}:#{destination_identity.last}:"
+      end
+      record << encoded_basename
+
+      checksum = Digest::SHA256.hexdigest(record)
+      lock.seek(0, IO::SEEK_END)
+      lock.write("\n#{record}:#{checksum}\n")
+      flush_and_sync(lock)
+    end
+
+    def persist_copy_lock_record!(lock, record)
+      lock.rewind
+      lock.truncate(0)
+      lock.write(record)
+      flush_and_sync(lock)
+    end
+
+    def copy_lock_cleanup_state(contents, token)
+      contents.lines(chomp: true).reverse_each do |record|
+        if record.start_with?("#{COPY_LOCK_MAGIC}:#{token}:compatibility:")
+          journal_record, separator, checksum = record.rpartition(":")
+          next if separator.empty? || checksum.length != 64 ||
+            Digest::SHA256.hexdigest(journal_record) != checksum
+
+          record = journal_record
+        end
+
+        state = copy_lock_record_cleanup_state(record, token)
+        return state unless state.first == :malformed
+      end
+      [ :malformed, nil ]
+    end
+
+    def copy_lock_record_cleanup_state(contents, token)
+      if (record = COPY_LOCK_COMPATIBILITY_PATTERN.match(contents)) && record[1] == token
+        encoded_basename = record[7]
+        return [ :malformed, nil, nil, nil ] unless encoded_basename.length.even? &&
+          encoded_basename.length <= 510
+
+        destination_basename = [ encoded_basename ].pack("H*")
+        return [ :malformed, nil, nil, nil ] if destination_basename.empty? ||
+          destination_basename.include?(File::SEPARATOR) ||
+          destination_basename.include?("\0") ||
+          destination_basename.in?([ ".", ".." ])
+
+        [
+          record[2] == "complete" ? :compatibility_complete : :compatibility_copying,
+          [ record[3].to_i, record[4].to_i ],
+          destination_basename,
+          [ record[5].to_i, record[6].to_i ]
+        ]
+      elsif (record = COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN.match(contents)) && record[1] == token
+        encoded_basename = record[4]
+        return [ :malformed, nil, nil, nil ] unless encoded_basename.length.even? &&
+          encoded_basename.length <= 510
+
+        destination_basename = [ encoded_basename ].pack("H*")
+        return [ :malformed, nil, nil, nil ] if destination_basename.empty? ||
+          destination_basename.include?(File::SEPARATOR) ||
+          destination_basename.include?("\0") ||
+          destination_basename.in?([ ".", ".." ])
+
+        [
+          :compatibility_prepared,
+          [ record[2].to_i, record[3].to_i ],
+          destination_basename,
+          nil
+        ]
+      elsif (record = COPY_LOCK_RECORD_PATTERN.match(contents)) && record[1] == token
+        [ :full, [ record[2].to_i, record[3].to_i ] ]
+      elsif (record = COPY_LOCK_PENDING_PATTERN.match(contents)) && record[1] == token
+        [ :pending, nil ]
+      elsif (record = COPY_LOCK_LEGACY_PATTERN.match(contents)) && record[1] == token
+        [ :legacy, nil ]
+      else
+        [ :malformed, nil ]
+      end
+    end
+
+    def pinned_child_missing?(parent, basename)
+      descriptor = native_openat(
+        parent.fileno,
+        basename,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+        0
+      )
+      child = IO.new(descriptor, "rb", autoclose: true)
+      child.close
+      false
+    rescue Errno::ENOENT
+      true
+    rescue Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
+      false
     end
 
     def compare_io(left, right)
@@ -1075,6 +1663,71 @@ class FileCopyService
         end
       end
     rescue Errno::ELOOP, Errno::ENOTDIR => error
+      raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
+    end
+
+    def with_pinned_hardlink_source(path, source_root:)
+      expanded = Pathname(path).expand_path
+      if source_root
+        return with_pinned_hardlink_source_root(expanded, source_root) { |*values| yield(*values) }
+      end
+
+      canonical_parent = expanded.parent.realpath
+      with_pinned_absolute_directory(canonical_parent) do |parent|
+        validate_current_directory_identity!(expanded.parent, parent)
+        with_pinned_regular_child(parent, expanded.basename.to_s) do |source|
+          manifest = file_manifest_entry(source.stat)
+          result = yield source, parent, expanded.basename.to_s, expanded.parent, manifest
+          unless stable_hardlink_manifest_entry(source.stat) == stable_hardlink_snapshot_entry(manifest)
+            raise Errno::ESTALE, "source file changed while it was being hardlinked"
+          end
+          result
+        end
+      end
+    rescue Errno::ELOOP, Errno::ENOTDIR => error
+      raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
+    end
+
+    def with_pinned_hardlink_source_root(expanded, source_root)
+      relative = expanded.relative_path_from(source_root.path)
+      if relative.to_s == ".." || relative.to_s.start_with?("..#{File::SEPARATOR}") || relative.to_s == "."
+        raise UnsafePathError, "source file is outside the snapshotted download tree"
+      end
+
+      with_pinned_absolute_directory(source_root.canonical_path) do |root|
+        unless file_identity(root.stat) == [ source_root.device, source_root.inode ]
+          raise Errno::ESTALE, "source root identity changed during import"
+        end
+        validate_current_directory_identity!(source_root.path, root)
+
+        with_pinned_relative_directory(root, relative.dirname, create: false) do |parent|
+          parent_path = source_root.path.join(relative.dirname)
+          validate_current_directory_identity!(parent_path, parent)
+          expected_parent = if relative.dirname.to_s == "."
+            [ source_root.device, source_root.inode, :directory ]
+          else
+            source_root.entries[relative.dirname.to_s]
+          end
+          unless expected_parent && expected_parent.first(2) == file_identity(parent.stat) &&
+              expected_parent[2] == :directory
+            raise Errno::ESTALE, "source directory changed after it was snapshotted"
+          end
+
+          with_pinned_regular_child(parent, relative.basename.to_s) do |source|
+            expected_source = source_root.entries[relative.to_s]
+            unless expected_source &&
+                stable_hardlink_snapshot_entry(expected_source) == stable_hardlink_manifest_entry(source.stat)
+              raise Errno::ESTALE, "source file changed after it was snapshotted"
+            end
+            result = yield source, parent, relative.basename.to_s, parent_path, expected_source
+            unless stable_hardlink_manifest_entry(source.stat) == stable_hardlink_snapshot_entry(expected_source)
+              raise Errno::ESTALE, "source file changed while it was being hardlinked"
+            end
+            result
+          end
+        end
+      end
+    rescue ArgumentError, Errno::ELOOP, Errno::ENOTDIR => error
       raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
     end
 
@@ -1304,7 +1957,7 @@ class FileCopyService
           raise UnsafePathError, "source tree contains too many entries"
         end
 
-        children << entry
+        children << utf8_directory_entry(entry)
       end
       children.sort
     ensure
@@ -1312,12 +1965,30 @@ class FileCopyService
       duplicate&.close unless duplicate&.closed?
     end
 
+    def utf8_directory_entry(entry)
+      # Dir.for_fd has no path or encoding argument, so Ruby returns raw
+      # filename bytes as ASCII-8BIT. Shelfarr paths and metadata are UTF-8;
+      # retag valid bytes without transcoding or changing syscall identity.
+      name = entry.dup.force_encoding(Encoding::UTF_8)
+      return name if name.valid_encoding?
+
+      raise UnsafePathError, "source tree contains a filename that is not valid UTF-8"
+    end
+
     def directory_manifest_entry(stat)
       [ stat.dev, stat.ino, :directory, stat.size, stat.mtime.to_r, stat.ctime.to_r ]
     end
 
     def file_manifest_entry(stat)
-      [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.ctime.to_r ]
+      [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.ctime.to_r, stat.mode & 0o7777 ]
+    end
+
+    def stable_hardlink_manifest_entry(stat)
+      [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.mode & 0o7777 ]
+    end
+
+    def stable_hardlink_snapshot_entry(manifest)
+      [ *manifest.first(5), manifest.fetch(6) ]
     end
 
     def pinned_child_identity(parent, basename, directory: false)
@@ -1492,7 +2163,7 @@ class FileCopyService
 
     def validate_current_directory_identity!(path, pinned_directory)
       current = File.lstat(Pathname(path).realpath)
-      unless current.directory? && same_file_identity?(current, pinned_directory.stat)
+      unless current.directory? && same_stat_identity?(current, pinned_directory.stat)
         raise Errno::ESTALE, "destination directory changed during publication"
       end
       true
@@ -1501,21 +2172,139 @@ class FileCopyService
     end
 
     def remove_pinned_child_if_identity(parent, basename, expected_identity)
-      return unless expected_identity
+      return :mismatch unless expected_identity
 
-      with_pinned_regular_child(parent, basename) do |child|
-        return unless file_identity(child.stat) == expected_identity
+      begin
+        with_pinned_regular_child(parent, basename) do |child|
+          return :mismatch unless file_identity(child.stat) == expected_identity
+        end
+      rescue Errno::ENOENT
+        return :missing
+      rescue Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+        return :retained
       end
-      native_unlinkat(parent.fileno, basename)
-    rescue Errno::ENOENT, UnsafePathError
-      nil
+
+      quarantine, quarantine_basename, quarantine_identity = create_cleanup_quarantine(
+        parent,
+        expected_identity
+      )
+      moved = false
+      begin
+        native_renameat(
+          parent.fileno,
+          basename,
+          quarantine.fileno,
+          COPY_QUARANTINE_ENTRY
+        )
+        moved = true
+        sync_io(quarantine)
+        sync_io(parent)
+
+        quarantined_identity = nil
+        result = begin
+          removal_result = with_pinned_regular_child(quarantine, COPY_QUARANTINE_ENTRY) do |child|
+            quarantined_identity = file_identity(child.stat)
+            if quarantined_identity == expected_identity
+              native_unlinkat(quarantine.fileno, COPY_QUARANTINE_ENTRY)
+              :removed
+            end
+          end
+          removal_result || :retained
+        rescue Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+          :retained
+        end
+        if quarantined_identity && quarantined_identity != expected_identity
+          restore_quarantined_child!(quarantine, parent, basename)
+          result = :mismatch
+        end
+        sync_io(quarantine)
+        remove_empty_cleanup_quarantine!(
+          parent,
+          quarantine_basename,
+          quarantine,
+          quarantine_identity
+        )
+        result
+      rescue Errno::ENOENT
+        moved ? :retained : :missing
+      ensure
+        unless moved
+          remove_empty_cleanup_quarantine!(
+            parent,
+            quarantine_basename,
+            quarantine,
+            quarantine_identity
+          )
+        end
+        quarantine.close unless quarantine.closed?
+      end
+    rescue Errno::ENOENT
+      :missing
     end
 
     def remove_pinned_regular_child(parent, basename)
-      with_pinned_regular_child(parent, basename) { |_child| nil }
-      native_unlinkat(parent.fileno, basename)
+      identity = nil
+      with_pinned_regular_child(parent, basename) do |child|
+        identity = file_identity(child.stat)
+      end
+      remove_pinned_child_if_identity(parent, basename, identity)
+    rescue Errno::ENOENT
+      :missing
+    rescue Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+      :retained
+    end
+
+    def create_cleanup_quarantine(parent, expected_identity)
+      loop do
+        basename = ".shelfarr-copy-quarantine-#{expected_identity.first.to_s(16)}-" \
+          "#{expected_identity.last.to_s(16)}-#{SecureRandom.hex(16)}"
+        begin
+          native_mkdirat(parent.fileno, basename, 0o700)
+        rescue Errno::EEXIST
+          next
+        end
+
+        quarantine = open_pinned_directory_child(parent, basename)
+        begin
+          stat = quarantine.stat
+          unless stat.uid == Process.euid
+            raise UnsafePathError, "cleanup quarantine is owned by another user"
+          end
+
+          native_fchmod(quarantine.fileno, 0o700)
+          sync_io(quarantine)
+          sync_io(parent)
+          return [ quarantine, basename, file_identity(stat) ]
+        rescue
+          quarantine.close unless quarantine.closed?
+          raise
+        end
+      end
+    end
+
+    def restore_quarantined_child!(quarantine, parent, basename)
+      restored = native_rename_noreplace(
+        quarantine.fileno,
+        COPY_QUARANTINE_ENTRY,
+        parent.fileno,
+        basename
+      )
+      return if restored
+
+      raise UnsafePathError, "mismatched cleanup entry was retained in quarantine"
+    rescue Errno::EEXIST
+      raise UnsafePathError, "mismatched cleanup entry was retained because its original path is occupied"
+    end
+
+    def remove_empty_cleanup_quarantine!(parent, basename, quarantine, expected_identity)
+      return false unless pinned_directory_children(quarantine).empty?
+      return false unless pinned_child_identity(parent, basename, directory: true) == expected_identity
+
+      native_unlinkat(parent.fileno, basename, AT_REMOVEDIR)
+      sync_io(parent)
+      true
     rescue Errno::ENOENT, UnsafePathError
-      nil
+      false
     end
 
     def native_openat(directory_fd, basename, flags, mode)
@@ -1589,6 +2378,19 @@ class FileCopyService
       )
     end
 
+    def native_renameat(source_fd, source_basename, destination_fd, destination_basename)
+      call_native_function(
+        native_function(
+          :renameat,
+          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP ]
+        ),
+        source_fd,
+        source_basename,
+        destination_fd,
+        destination_basename
+      )
+    end
+
     def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
       function, arguments = if RUBY_PLATFORM.include?("darwin")
         [
@@ -1645,7 +2447,7 @@ class FileCopyService
       nil
     end
 
-    def same_file_identity?(left, right)
+    def same_stat_identity?(left, right)
       left.dev == right.dev && left.ino == right.ino
     end
 

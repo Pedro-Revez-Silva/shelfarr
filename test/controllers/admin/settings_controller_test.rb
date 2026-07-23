@@ -42,6 +42,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "h1", "Settings"
     assert_select "#settings-tabs noscript", text: /Use Save All/
+    assert_select "#settings-tabs noscript style", count: 0
+    assert_select "#settings-tabs [data-settings-tabs-target='tablist'].hidden [role='tablist']", count: 1
   end
 
   test "index shows telegram group authorization only in integrations tab" do
@@ -203,6 +205,24 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /MP3, FLAC, and other chapter-based releases stay together/
   end
 
+  test "index shows completed download import mode options and hardlink guidance" do
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label[for='settings_completed_download_import_mode']", text: "Completed Download Import Mode"
+    assert_select "select[name='settings[completed_download_import_mode]']" do
+      assert_select "option[value='copy']", text: "Copy"
+      assert_select "option[value='move']", text: "Move"
+      assert_select "option[value='hardlink'][selected='selected']", text: "Hardlink"
+    end
+    assert_select "p", text: /Copy: Retains the source and uses extra disk space/
+    assert_select "p", text: /Move: Removes the source and can stop torrent seeding/
+    assert_select "p", text: /Hardlink: Retains the source without duplicate data; unsupported or cross-filesystem links fall back to copy/
+    assert_select "p", text: /Hardlinked names share content, ownership, and permissions; edits through either name affect both/
+  end
+
   test "index shows OIDC auto redirect setting" do
     get admin_settings_url
 
@@ -265,6 +285,53 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal true, SettingsService.get(:split_audiobook_bundle_imports)
   end
 
+  test "bulk_update stores a valid completed download import mode" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        completed_download_import_mode: "hardlink"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "hardlink", SettingsService.get(:completed_download_import_mode)
+  end
+
+  test "bulk_update rejects an invalid completed download import mode" do
+    SettingsService.set(:completed_download_import_mode, "move")
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        completed_download_import_mode: "rename"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match /must be one of: copy, move, hardlink/, flash[:alert]
+    assert_equal "move", SettingsService.get(:completed_download_import_mode)
+  end
+
+  test "bulk_update collects an invalid import mode while saving valid settings and running side effects" do
+    reset_called = false
+
+    FlaresolverrClient.stub(:reset_connection!, -> { reset_called = true }) do
+      patch bulk_update_admin_settings_url,
+        params: {
+          settings: {
+            completed_download_import_mode: "rename",
+            flaresolverr_url: "http://localhost:8191"
+          }
+        },
+        headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    end
+
+    assert_response :success
+    assert_match "turbo-stream", response.body
+    assert_match "Completed Download Import Mode: must be one of: copy, move, hardlink", response.body
+    assert_equal "copy", SettingsService.get(:completed_download_import_mode)
+    assert_equal "http://localhost:8191", SettingsService.get(:flaresolverr_url)
+    assert reset_called
+  end
+
   test "index shows library picker dropdown when audiobookshelf configured" do
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
@@ -295,6 +362,36 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "index renders additional scan libraries as a multi-select when audiobookshelf configured" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-audio")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [
+              { "id" => "lib-audio", "name" => "Audiobooks", "mediaType" => "book", "folders" => [] },
+              { "id" => "lib-ebook", "name" => "Ebooks", "mediaType" => "book", "folders" => [] }
+            ]
+          }.to_json
+        )
+
+      get admin_settings_url
+      assert_response :success
+
+      # Check that library options appear in the page as a multi-select
+      assert_select "select[name='settings[audiobookshelf_audiobook_scan_library_ids][]'][multiple]" do
+        assert_select "option[value='lib-audio'][selected]", text: "Audiobooks (book)"
+        assert_select "option[value='lib-ebook']", text: "Ebooks (book)"
+      end
+    end
+  end
+
   test "index shows neutral and brand-correct library platform labels" do
     get admin_settings_url
 
@@ -311,6 +408,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "label[for='settings_audiobookshelf_audiobook_library_id']", text: "Audiobook Library"
     assert_select "label[for='settings_audiobookshelf_ebook_library_id']", text: "Ebook Library"
     assert_select "label[for='settings_audiobookshelf_comicbook_library_id']", text: "Comics & Manga Library"
+    assert_select "label[for='settings_audiobookshelf_audiobook_scan_library_ids']", text: "Additional Audiobook Libraries to Scan"
+    assert_select "label[for='settings_audiobookshelf_ebook_scan_library_ids']", text: "Additional Ebook Libraries to Scan"
+    assert_select "label[for='settings_audiobookshelf_comicbook_scan_library_ids']", text: "Additional Comics & Manga Libraries to Scan"
     assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval"
     assert_no_match /Bookorbit/, @response.body
     assert_no_match /Audiobookshelf Audiobook Library/, @response.body
@@ -465,6 +565,28 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to admin_settings_path
     assert_equal "Setting updated.", flash[:notice]
     assert_equal 7, SettingsService.get(:max_retries)
+  end
+
+  test "bulk update joins scan library ids array into comma-separated string" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        audiobookshelf_audiobook_scan_library_ids: [ "lib-scifi", "lib-fantasy", "" ]
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "lib-scifi,lib-fantasy", SettingsService.get(:audiobookshelf_audiobook_scan_library_ids)
+  end
+
+  test "bulk update accepts comma-separated string for scan library ids" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        audiobookshelf_ebook_scan_library_ids: "lib-a, lib-b ,lib-c"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "lib-a,lib-b,lib-c", SettingsService.get(:audiobookshelf_ebook_scan_library_ids)
   end
 
   test "update preserves existing secret when blank secret value submitted" do
@@ -2013,5 +2135,57 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_nil new_connection, "Connection should be reset after flaresolverr settings change"
 
     SettingsService.set(:flaresolverr_url, "")
+  end
+
+  test "index merges unavailable persisted library IDs into select options and preserves them on bulk_update" do
+    # Configure API details
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    # Set persisted values containing library IDs that are NOT in the stubbed api response
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-unavailable-delivery")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-audio,lib-unavailable-scan")
+
+    VCR.turned_off do
+      # Mock the API response to return only "lib-audio"
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [
+              { "id" => "lib-audio", "name" => "Audiobooks", "mediaType" => "book", "folders" => [] }
+            ]
+          }.to_json
+        )
+
+      get admin_settings_url
+      assert_response :success
+
+      # Verify both unavailable and available options are present and selected in the rendered HTML
+      assert_select "select[name='settings[audiobookshelf_audiobook_library_id]']" do
+        assert_select "option[value='lib-audio']", text: "Audiobooks (book)"
+        assert_select "option[value='lib-unavailable-delivery'][selected]", text: "lib-unavailable-delivery (Unavailable)"
+      end
+
+      assert_select "select[name='settings[audiobookshelf_audiobook_scan_library_ids][]'][multiple]" do
+        assert_select "option[value='lib-audio'][selected]", text: "Audiobooks (book)"
+        assert_select "option[value='lib-unavailable-scan'][selected]", text: "lib-unavailable-scan (Unavailable)"
+      end
+
+      # Now simulate the autosave/bulk_update submission of the form.
+      # If we submit the values rendered in the select fields, they should be correctly saved back.
+      patch bulk_update_admin_settings_url, params: {
+        settings: {
+          audiobookshelf_audiobook_library_id: "lib-unavailable-delivery",
+          audiobookshelf_audiobook_scan_library_ids: ["lib-audio", "lib-unavailable-scan"]
+        }
+      }
+
+      assert_redirected_to admin_settings_path
+      assert_equal "lib-unavailable-delivery", SettingsService.get(:audiobookshelf_audiobook_library_id)
+      assert_equal "lib-audio,lib-unavailable-scan", SettingsService.get(:audiobookshelf_audiobook_scan_library_ids)
+    end
   end
 end

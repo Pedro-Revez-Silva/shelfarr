@@ -4,6 +4,7 @@ class SettingsService
   ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
+  COMPLETED_DOWNLOAD_IMPORT_MODES = %w[copy move hardlink].freeze
   LIBRARY_PLATFORMS = %w[audiobookshelf bookorbit grimmory].freeze
   INDEXER_SEARCH_SCOPES = %w[broad strict unrestricted custom].freeze
   INDEXER_SEARCH_SCOPE_OPTIONS = {
@@ -67,7 +68,7 @@ class SettingsService
     download_check_interval: { type: "integer", default: 60, category: "download", description: "Seconds between download status checks" },
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
     post_processing_source_path_retries: { type: "integer", default: 10, category: "download", description: "Number of post-processing retries while waiting for completed download files to appear" },
-    move_completed_downloads: { type: "boolean", default: false, category: "download", description: "Move completed download files into the library instead of copying them. Disable to preserve torrent seeding." },
+    completed_download_import_mode: { type: "string", default: "copy", category: "download", description: "Choose Copy, Move, or Hardlink. Hardlink requires one container-visible filesystem; unsupported or cross-filesystem links fall back to copy." },
     split_audiobook_bundle_imports: { type: "boolean", default: false, category: "download", description: "Split releases containing multiple self-contained M4B/AAX books into per-book folders. MP3, FLAC, and other chapter-based releases stay together." },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 
@@ -84,6 +85,9 @@ class SettingsService
     audiobookshelf_audiobook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for audiobooks on the active library platform" },
     audiobookshelf_ebook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for ebooks on the active library platform" },
     audiobookshelf_comicbook_library_id: { type: "string", default: "", category: "audiobookshelf", description: "Library ID for Comics & Manga on the active library platform" },
+    audiobookshelf_audiobook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for audiobook duplicate detection (comma-separated). Delivery still goes to the Audiobook Library above." },
+    audiobookshelf_ebook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for ebook duplicate detection (comma-separated). Delivery still goes to the Ebook Library above." },
+    audiobookshelf_comicbook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for Comics & Manga duplicate detection (comma-separated). Delivery still goes to the Comics & Manga Library above." },
     audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
 
     # Output Paths
@@ -273,6 +277,9 @@ class SettingsService
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
     audiobookshelf_comicbook_library_id: "Comics & Manga Library",
+    audiobookshelf_audiobook_scan_library_ids: "Additional Audiobook Libraries to Scan",
+    audiobookshelf_ebook_scan_library_ids: "Additional Ebook Libraries to Scan",
+    audiobookshelf_comicbook_scan_library_ids: "Additional Comics & Manga Libraries to Scan",
     audiobookshelf_library_sync_interval: "Library Sync Interval"
   }.freeze
 
@@ -318,6 +325,9 @@ class SettingsService
       return preferred_download_types if key == :preferred_download_types
 
       value = raw_setting_value(key)
+      if key == :completed_download_import_mode
+        return COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value) ? value : "copy"
+      end
       return value unless value.nil?
 
       definition = DEFINITIONS[key]
@@ -330,6 +340,13 @@ class SettingsService
       definition = DEFINITIONS[key]
 
       raise ArgumentError, "Unknown setting: #{key}" unless definition
+
+      if key == :completed_download_import_mode
+        value = value.to_s
+        unless COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value)
+          raise ArgumentError, "#{label_for(key)} must be one of: #{COMPLETED_DOWNLOAD_IMPORT_MODES.join(', ')}"
+        end
+      end
 
       Setting.transaction do
         setting = Setting.find_or_initialize_by(key: key.to_s)

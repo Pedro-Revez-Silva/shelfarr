@@ -730,11 +730,17 @@
               <tr><td class="key"><code>download_check_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>60</code></td><td class="desc">Seconds between download status checks.</td></tr>
               <tr><td class="key"><code>download_enqueue_timeout_minutes</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>5</code></td><td class="desc">Minutes a download may stay queued before being flagged as never dispatched.</td></tr>
               <tr><td class="key"><code>post_processing_source_path_retries</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>10</code></td><td class="desc">Retries while waiting for completed download files to appear.</td></tr>
-              <tr><td class="key"><code>move_completed_downloads</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Move completed download files into the library instead of copying them. Keep disabled to preserve torrent seeding.</td></tr>
+              <tr><td class="key"><code>completed_download_import_mode</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>copy</code></td><td class="desc"><code>copy</code> retains the source but uses extra disk space; <code>move</code> removes the source and can stop torrent seeding; <code>hardlink</code> retains the source without duplicating data. Unsupported or cross-filesystem hardlinks fall back to copying.</td></tr>
               <tr><td class="key"><code>split_audiobook_bundle_imports</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Split releases containing multiple self-contained M4B/AAX books into per-book folders. MP3, FLAC, and other chapter-based releases stay together.</td></tr>
               <tr><td class="key"><code>remove_completed_usenet_downloads</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>true</code></td><td class="desc">Remove completed usenet jobs from the client after import.</td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="callout">
+          <span class="ico">i</span>
+          <div>
+            <strong>Hardlink storage layout.</strong> The download source and library destination must be on one container-visible filesystem. With Docker, mount a shared parent such as <code>/srv/media:/data</code> into Shelfarr and the download client, then use paths such as <code>/data/downloads</code>, <code>/data/audiobooks</code>, and <code>/data/ebooks</code>. Separate mounts such as <code>/downloads</code> and <code>/audiobooks</code> can cross filesystem boundaries and prevent hardlinking. Unsupported or cross-filesystem hardlink attempts fall back to copying. Hardlinked source and library names reference the same content and share ownership and permissions, so content, ownership, or permission changes through either name affect both. The example Compose mounts remain suitable for the default <code>copy</code> mode; change the layout only when enabling <code>hardlink</code>.
+          </div>
         </div>
 
         <h2 id="queue">Queue &amp; Retry <a class="anchor" href="#queue" aria-label="Link to Queue and Retry">#</a></h2>

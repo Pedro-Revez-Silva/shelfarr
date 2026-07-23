@@ -35,14 +35,13 @@
     </div>
 
     <noscript>
-      <style>#settings-tabs [role="tablist"] { display: none; }</style>
       <div class="mb-6 rounded-lg border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-200" role="status">
         JavaScript is disabled, so all settings sections are shown below. Use Save All to apply your changes.
       </div>
     </noscript>
 
     <%# Tab navigation %>
-    <div class="border-b border-gray-800 mb-6">
+    <div class="hidden border-b border-gray-800 mb-6" data-settings-tabs-target="tablist">
       <nav class="flex gap-1 -mb-px overflow-x-auto" role="tablist">
         <% tab_groups.each do |tab_key, tab_config| %>
           <button type="button"
@@ -110,10 +109,34 @@
                         <%= form.text_field "settings[#{key}]", value: data[:value].is_a?(Array) ? data[:value].join(', ') : data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <p class="mt-1 text-xs text-gray-500">For multiple values, use comma-separated format (e.g., en, fr, de)</p>
                       <% else %>
-                        <% if key.to_s == "library_platform" %>
+                        <% if key.to_s == "completed_download_import_mode" %>
+                          <% import_mode_options = SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.map { |mode| [mode.titleize, mode] } %>
+                          <%= form.select "settings[#{key}]", options_for_select(import_mode_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <div class="mt-2 space-y-1 text-xs text-gray-500">
+                            <p><strong class="text-gray-400">Copy:</strong> Retains the source and uses extra disk space.</p>
+                            <p><strong class="text-gray-400">Move:</strong> Removes the source and can stop torrent seeding.</p>
+                            <p><strong class="text-gray-400">Hardlink:</strong> Retains the source without duplicate data; unsupported or cross-filesystem links fall back to copy.</p>
+                            <p>Hardlinked names share content, ownership, and permissions; edits through either name affect both.</p>
+                          </div>
+                        <% elsif key.to_s == "library_platform" %>
                           <%= form.select "settings[#{key}]", options_for_select([["Audiobookshelf", "audiobookshelf"], ["BookOrbit", "bookorbit"], ["Grimmory", "grimmory"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                        <% elsif key.to_s.end_with?("_scan_library_ids") && @audiobookshelf_libraries.any? %>
+                          <% selected_ids = data[:value].to_s.split(",").map(&:strip).reject(&:blank?) %>
+                          <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
+                          <% missing_selected_ids = selected_ids - @audiobookshelf_libraries.map(&:id) %>
+                          <% missing_selected_ids.each do |missing_id| %>
+                            <% library_options << ["#{missing_id} (Unavailable)", missing_id] %>
+                          <% end %>
+                          <%= form.select "settings[#{key}]", options_for_select(library_options, selected_ids), { include_blank: "Select libraries to scan for duplicates..." }, { id: "settings_#{key}", multiple: true, class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2 min-h-[80px]", data: { action: "change->settings-form#autoSave" } } %>
+                          <p class="mt-1 text-xs text-gray-500">Additional libraries scanned for duplicate detection. Delivery still goes to the single library selected above.</p>
+                        <% elsif key.to_s.end_with?("_scan_library_ids") %>
+                          <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure library platform connection details first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+                          <p class="mt-1 text-xs text-yellow-500">Enter active platform connection details above to select from available libraries</p>
                         <% elsif key.to_s.end_with?("_library_id") && @audiobookshelf_libraries.any? %>
                           <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
+                          <% if data[:value].present? && !@audiobookshelf_libraries.any? { |lib| lib.id == data[:value] } %>
+                            <% library_options << ["#{data[:value]} (Unavailable)", data[:value]] %>
+                          <% end %>
                           <%= form.select "settings[#{key}]", options_for_select([["Select a library...", ""]] + library_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
                         <% elsif key.to_s.end_with?("_library_id") %>
                           <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure library platform connection details first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>

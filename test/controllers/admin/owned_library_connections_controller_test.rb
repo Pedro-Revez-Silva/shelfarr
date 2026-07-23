@@ -44,6 +44,8 @@ class Admin::OwnedLibraryConnectionsControllerTest < ActionDispatch::Integration
 
     assert_response :success
     assert_select "noscript", text: /refresh this page manually/
+    assert_select "#audible-backup-tabs noscript style", count: 0
+    assert_select "#audible-backup-tabs [data-settings-tabs-target='tablist'].hidden [role='tablist']", count: 1
     assert_select "[role='tablist'] [role='tab'][class~='px-2'][class~='sm:px-4']", count: 4
     assert_select "label input#owned_library_connection_enabled[aria-describedby='audible-enabled-help']", count: 1
     assert_select "label[for='owned_library_connection_enabled']", count: 0

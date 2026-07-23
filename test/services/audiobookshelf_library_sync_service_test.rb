@@ -295,4 +295,247 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
   ensure
     LibraryPlatformClient.reset_connections!
   end
+
+  test "syncs items from additional scan library ids alongside delivery libraries" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-scifi, lib-fantasy")
+
+    VCR.turned_off do
+      [ "lib-audio", "lib-scifi", "lib-fantasy" ].each_with_index do |lib_id, idx|
+        stub_request(:get, %r{localhost:13378/api/libraries/#{lib_id}/items})
+          .with(query: hash_including("limit" => "500", "page" => "0"))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: {
+              "results" => [
+                {
+                  "id" => "item-#{idx}",
+                  "title" => "Title #{lib_id}",
+                  "author" => "Author #{lib_id}"
+                }
+              ],
+              "total" => 1
+            }.to_json
+          )
+      end
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 3, result.items_synced
+      assert_equal 3, result.libraries_synced
+      assert_equal 3, LibraryItem.count
+      assert LibraryItem.exists?(library_id: "lib-audio", audiobookshelf_id: "item-0")
+      assert LibraryItem.exists?(library_id: "lib-scifi", audiobookshelf_id: "item-1")
+      assert LibraryItem.exists?(library_id: "lib-fantasy", audiobookshelf_id: "item-2")
+    end
+  ensure
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
+  end
+
+  test "scan library ids are deduplicated against delivery library ids" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-audio, lib-extra")
+
+    VCR.turned_off do
+      [ "lib-audio", "lib-extra" ].each_with_index do |lib_id, idx|
+        stub_request(:get, %r{localhost:13378/api/libraries/#{lib_id}/items})
+          .with(query: hash_including("limit" => "500", "page" => "0"))
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: {
+              "results" => [ { "id" => "item-#{idx}", "title" => "Title #{lib_id}", "author" => "Author" } ],
+              "total" => 1
+            }.to_json
+          )
+      end
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 2, result.libraries_synced
+      assert_equal 2, LibraryItem.count
+    end
+  end
+
+  test "does not prune cached items when library sync fails with a transient API failure" do
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-existing",
+      title: "Existing Title",
+      author: "Author",
+      synced_at: 1.day.ago
+    )
+
+    VCR.turned_off do
+      # lib-audio fails (non-200)
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .to_return(status: 500)
+
+      # lib-ebook succeeds
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [ { "id" => "ab-2", "title" => "Good Omens", "author" => "Neil Gaiman" } ],
+            "total" => 1
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      # It should capture the failure for lib-audio in result.errors
+      assert_includes result.errors.first, "returned status 500"
+
+      # The existing item in lib-audio should NOT be pruned because the sync failed!
+      assert LibraryItem.exists?(audiobookshelf_id: "ab-existing")
+
+      # The item in lib-ebook should be successfully synced
+      assert LibraryItem.exists?(audiobookshelf_id: "ab-2")
+    end
+  end
+
+  test "prunes cached items for libraries no longer in the configured set" do
+    # Create library items for a library that is not configured (e.g. lib-old)
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-old",
+      audiobookshelf_id: "ab-old",
+      title: "Old Library Item",
+      author: "Author",
+      synced_at: 1.day.ago
+    )
+    # Also create one for a configured library to ensure it's not deleted if it's synced
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-existing",
+      title: "Existing Title",
+      author: "Author",
+      synced_at: 1.day.ago
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [ { "id" => "ab-existing", "title" => "Existing Title", "author" => "Author" } ],
+            "total" => 1
+          }.to_json
+        )
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [],
+            "total" => 0
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+      assert result.success?
+
+      # ab-old should be pruned since lib-old is no longer configured
+      assert_not LibraryItem.exists?(audiobookshelf_id: "ab-old")
+
+      # ab-existing should be kept
+      assert LibraryItem.exists?(audiobookshelf_id: "ab-existing")
+    end
+  end
+
+  test "does not prune cached items written after this run started" do
+    # Create library items for a library that is not configured, but synced_at is in the future (written after this run started)
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-newly-added",
+      audiobookshelf_id: "ab-new",
+      title: "New Library Item",
+      author: "Author",
+      synced_at: Time.current + 1.minute
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [],
+            "total" => 0
+          }.to_json
+        )
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [],
+            "total" => 0
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+      assert result.success?
+
+      # ab-new should NOT be pruned because it was written after this run started
+      assert LibraryItem.exists?(audiobookshelf_id: "ab-new")
+    end
+  end
+
+  test "skips destructive pruning if library settings change during sync run" do
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-old",
+      audiobookshelf_id: "ab-old",
+      title: "Old Library Item",
+      author: "Author",
+      synced_at: 1.day.ago
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return do
+          # Simulate settings changing mid-run (e.g. user adds a scan library while sync is running)
+          SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-new-scan")
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "results" => [], "total" => 0 }.to_json
+          }
+        end
+
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "results" => [], "total" => 0 }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+      assert result.success?
+
+      # Because settings changed mid-run, destructive pruning of lib-old should be skipped
+      assert LibraryItem.exists?(audiobookshelf_id: "ab-old")
+    end
+  ensure
+    SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
+  end
 end

@@ -11,6 +11,7 @@ class PostProcessingJob < ApplicationJob
   EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
   EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
   MAX_FILENAME_BYTES = 255
+  POST_PROCESSING_LOCK_SLOTS = 256
   class BookAcquisitionConflictError < StandardError; end
 
   queue_as :default
@@ -31,8 +32,20 @@ class PostProcessingJob < ApplicationJob
   private
 
   def perform_privately(download_id, source_path_retry_count, expected_owner_job_id)
+    @hardlinked_file_count = 0
+    @hardlink_fallback_copied_count = 0
+    @reused_file_count = 0
     download = Download.find_by(id: download_id)
     return unless download&.completed?
+
+    with_post_processing_lock(download.id) do
+      perform_locked(download, source_path_retry_count, expected_owner_job_id)
+    end
+  end
+
+  def perform_locked(download, source_path_retry_count, expected_owner_job_id)
+    download.reload
+    return unless download.completed?
 
     request = download.request
     return unless claim_request_for_post_processing(download, request, expected_owner_job_id)
@@ -98,6 +111,16 @@ class PostProcessingJob < ApplicationJob
       Rails.logger.error "[PostProcessingJob] Download ##{download.id} failed: #{e.class}"
       mark_post_processing_failure!(download, request, e) unless acquisition_finalized
     end
+  end
+
+  def with_post_processing_lock(download_id, &operation)
+    tmp_root = Rails.root.join("tmp")
+    lock_root = tmp_root.join("post-processing-locks")
+    FileCopyService.ensure_directory(lock_root.to_s, root: tmp_root.to_s, mode: 0o700)
+    FileCopyService.secure_private_directory!(lock_root.to_s, root: tmp_root.to_s)
+    lock_slot = download_id % POST_PROCESSING_LOCK_SLOTS
+    lock_path = lock_root.join("#{lock_slot}.lock")
+    FileCopyService.with_private_lock(lock_path.to_s, root: lock_root.to_s, &operation)
   end
 
   def claim_request_for_post_processing(download, request, expected_owner_job_id)
@@ -415,7 +438,11 @@ class PostProcessingJob < ApplicationJob
     @imported_book_path_override = nil
     @import_base_path = Pathname(base_path || get_base_path(book)).expand_path
     @defer_source_removal = directory_source && move_completed_downloads?
-    action = move_completed_downloads? ? "Moving" : "Copying"
+    action = {
+      "copy" => "Copying",
+      "move" => "Moving",
+      "hardlink" => "Hardlinking"
+    }.fetch(completed_download_import_mode, "Copying")
     Rails.logger.info "[PostProcessingJob] #{action} library content"
     validate_ebook_source!(source) if readable_file_import?(book)
     source_cleanup = nil
@@ -433,7 +460,16 @@ class PostProcessingJob < ApplicationJob
       import_renamed_file(source, destination, book)
     end
 
-    Rails.logger.info "[PostProcessingJob] #{action} completed successfully"
+    if hardlink_completed_downloads?
+      Rails.logger.info(
+        "[PostProcessingJob] Hardlink import completed successfully: " \
+          "#{@hardlinked_file_count} hardlinked, " \
+          "#{@hardlink_fallback_copied_count} copied after unsupported fallback, " \
+          "#{@reused_file_count} reused"
+      )
+    else
+      Rails.logger.info "[PostProcessingJob] #{action} completed successfully"
+    end
     source_cleanup
   ensure
     remove_instance_variable(:@defer_source_removal) if instance_variable_defined?(:@defer_source_removal)
@@ -637,14 +673,39 @@ class PostProcessingJob < ApplicationJob
         source,
         destination,
         root: @import_base_path,
-        source_root: @import_source_root
+        source_root: @import_source_root,
+        allow_compatibility_fallback: true
       )
+    elsif hardlink_completed_downloads?
+      begin
+        FileCopyService.hardlink_noreplace(
+          source,
+          destination,
+          root: @import_base_path,
+          source_root: @import_source_root
+        )
+        @hardlinked_file_count += 1
+      rescue FileCopyService::HardlinkUnsupportedError
+        Rails.logger.warn(
+          "[PostProcessingJob] Hardlink unavailable for one file; falling back to a retained-source copy"
+        )
+        FileCopyService.cp_noreplace(
+          source,
+          destination,
+          root: @import_base_path,
+          source_root: @import_source_root,
+          hardlink_mode: true,
+          allow_compatibility_fallback: true
+        )
+        @hardlink_fallback_copied_count += 1
+      end
     else
       FileCopyService.cp_noreplace(
         source,
         destination,
         root: @import_base_path,
-        source_root: @import_source_root
+        source_root: @import_source_root,
+        allow_compatibility_fallback: true
       )
     end
     destination
@@ -660,7 +721,11 @@ class PostProcessingJob < ApplicationJob
     loop do
       destination, already_imported = retry_safe_destination(source, original_destination)
       if already_imported
-        FileCopyService.secure_library_file!(destination, root: @import_base_path)
+        if hardlink_completed_downloads?
+          @reused_file_count += 1
+        else
+          FileCopyService.secure_library_file!(destination, root: @import_base_path)
+        end
         record_imported_source!(source)
         Rails.logger.info "[PostProcessingJob] Reusing one identical previously imported file"
         return destination
@@ -684,7 +749,24 @@ class PostProcessingJob < ApplicationJob
       break unless path_occupied?(candidate)
 
       if !File.symlink?(candidate) && same_file_content?(source, candidate)
-        return [ candidate, true ]
+        unless hardlink_completed_downloads?
+          return [ candidate, true ]
+        end
+
+        same_source_inode = FileCopyService.same_file_identity?(
+          source,
+          candidate,
+          root: @import_base_path,
+          source_root: @import_source_root,
+          hardlink_mode: true
+        )
+        prior_fallback_copy = FileCopyService.secure_library_file_mode?(
+          candidate,
+          root: @import_base_path
+        )
+        if same_source_inode || prior_fallback_copy
+          return [ candidate, true ]
+        end
       end
 
       counter += 1
@@ -699,7 +781,8 @@ class PostProcessingJob < ApplicationJob
       source,
       destination,
       root: @import_base_path,
-      source_root: @import_source_root
+      source_root: @import_source_root,
+      hardlink_mode: hardlink_completed_downloads?
     )
   end
 
@@ -729,9 +812,20 @@ class PostProcessingJob < ApplicationJob
   end
 
   def move_completed_downloads?
-    return @move_completed_downloads if defined?(@move_completed_downloads)
+    completed_download_import_mode == "move"
+  end
 
-    @move_completed_downloads = SettingsService.get(:move_completed_downloads, default: false)
+  def hardlink_completed_downloads?
+    completed_download_import_mode == "hardlink"
+  end
+
+  def completed_download_import_mode
+    return @completed_download_import_mode if defined?(@completed_download_import_mode)
+
+    @completed_download_import_mode = SettingsService.get(
+      :completed_download_import_mode,
+      default: "copy"
+    ).to_s
   end
 
   def remove_import_source(source_cleanup)
