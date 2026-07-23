@@ -36,63 +36,72 @@ module Admin
     def bulk_update
       errors = []
       changed_keys = []
+      validate_submitted_setting_keys!
+      validate_autosave_setting_keys!
+      validate_manual_setting_keys!
 
+      entries = []
       params[:settings]&.each do |key, value|
         next if SettingsService.env_managed?(key)
+        next if autosave? && !autosave_setting_keys.include?(key.to_s)
+        next if autosave? && SettingsService.manual_save_setting_key?(key)
+        next if manual_setting_manifest? && SettingsService.manual_save_setting_key?(key) && !manual_setting_keys.include?(key.to_s)
         next if preserve_blank_secret?(key, value)
 
         value = normalize_setting_value(key, value)
         error = validate_setting_value(key, value)
-        if error
-          errors << "#{SettingsService.label_for(key)}: #{error}"
-        else
-          SettingsService.set(key, value)
-          changed_keys << key.to_s
+        errors << "#{SettingsService.label_for(key)}: #{error}" if error
+        entries << {
+          key: key,
+          value: value,
+          error: error
+        }
+      end
+
+      unless errors.any?
+        Setting.transaction do
+          entries.each do |entry|
+            key = entry[:key]
+            SettingsService.set(key, entry[:value])
+            changed_keys << key.to_s
+          end
         end
       end
 
-      handle_settings_side_effects(changed_keys)
-
-      @settings_by_category = SettingsService.all_by_category
-      @audiobookshelf_libraries = fetch_audiobookshelf_libraries
-      load_telegram_chat_authorizations
-      load_audiobookshelf_cache_summary
+      side_effect_error = handle_settings_side_effects(changed_keys)
 
       respond_to do |format|
         if errors.any?
           format.html { redirect_to admin_settings_path, alert: errors.join(". ") }
           format.turbo_stream do
             flash.now[:alert] = errors.join(". ")
-            render turbo_stream: [
-              turbo_stream.update("settings-form", partial: "admin/settings/form"),
-              turbo_stream.update("flash", partial: "shared/flash")
-            ]
+            render turbo_stream: turbo_stream.update("flash", partial: "shared/flash"), status: :unprocessable_entity
+          end
+        elsif side_effect_error
+          message = "Settings saved, but a follow-up action failed: #{side_effect_error.message}"
+          format.html { redirect_to admin_settings_path, alert: message }
+          format.turbo_stream do
+            flash.now[:alert] = message
+            render turbo_stream: turbo_stream.update("flash", partial: "shared/flash")
           end
         else
           format.html { redirect_to admin_settings_path, notice: "Settings updated successfully." }
           format.turbo_stream do
-            flash.now[:notice] = "Settings updated successfully."
-            render turbo_stream: [
-              turbo_stream.update("settings-form", partial: "admin/settings/form"),
-              turbo_stream.update("flash", partial: "shared/flash")
-            ]
+            if autosave?
+              head :no_content
+            else
+              flash.now[:notice] = "Settings updated successfully."
+              render turbo_stream: turbo_stream.update("flash", partial: "shared/flash")
+            end
           end
         end
       end
     rescue ArgumentError => e
-      @settings_by_category = SettingsService.all_by_category
-      @audiobookshelf_libraries = fetch_audiobookshelf_libraries
-      load_telegram_chat_authorizations
-      load_audiobookshelf_cache_summary
-
       respond_to do |format|
         format.html { redirect_to admin_settings_path, alert: e.message }
         format.turbo_stream do
           flash.now[:alert] = e.message
-          render turbo_stream: [
-            turbo_stream.update("settings-form", partial: "admin/settings/form"),
-            turbo_stream.update("flash", partial: "shared/flash")
-          ]
+          render turbo_stream: turbo_stream.update("flash", partial: "shared/flash"), status: :unprocessable_entity
         end
       end
     end
@@ -416,6 +425,55 @@ module Admin
 
     private
 
+    def autosave?
+      params[:autosave] == "true"
+    end
+
+    def autosave_setting_keys
+      @autosave_setting_keys ||= params[:autosave_keys].to_s.split(",")
+    end
+
+    def manual_setting_manifest?
+      params.key?(:manual_keys)
+    end
+
+    def manual_setting_keys
+      @manual_setting_keys ||= params[:manual_keys].to_s.split(",").reject(&:blank?)
+    end
+
+    def validate_submitted_setting_keys!
+      settings = params[:settings]
+      return if settings.nil?
+      raise ArgumentError, "Settings must be submitted as key-value pairs" unless settings.is_a?(ActionController::Parameters)
+
+      unknown_key = settings.keys.find do |key|
+        !SettingsService::DEFINITIONS.key?(key.to_sym)
+      end
+      raise ArgumentError, "Unknown setting: #{unknown_key}" if unknown_key
+    end
+
+    def validate_autosave_setting_keys!
+      return unless autosave?
+
+      settings = params[:settings]
+      invalid = settings.nil? || autosave_setting_keys.empty? || autosave_setting_keys.any? do |key|
+        !SettingsService::DEFINITIONS.key?(key.to_sym) ||
+          SettingsService.manual_save_setting_key?(key) ||
+          !settings.key?(key)
+      end
+      raise ArgumentError, "Invalid autosave setting manifest" if invalid
+    end
+
+    def validate_manual_setting_keys!
+      return unless manual_setting_manifest?
+
+      settings = params[:settings] || ActionController::Parameters.new
+      invalid = manual_setting_keys.any? do |key|
+        !SettingsService.manual_save_setting_key?(key) || !settings.key?(key)
+      end
+      raise ArgumentError, "Invalid manual setting manifest" if invalid
+    end
+
     def telegram_chat_label(authorization)
       authorization.chat_title.presence || authorization.chat_id
     end
@@ -493,6 +551,10 @@ module Admin
       if changed_keys.any? { |k| k.start_with?("audiobook_output_path") || k.start_with?("ebook_output_path") }
         run_service_health_check_now("output_paths")
       end
+      nil
+    rescue StandardError => e
+      Rails.logger.error("[SettingsController] Settings saved but a follow-up action failed: #{e.class}: #{e.message}")
+      e
     end
 
     PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze
@@ -509,10 +571,27 @@ module Admin
     end
 
     def validate_setting_value(key, value)
-      validate_completed_download_import_mode(key, value) ||
+      validate_setting_type(key, value) ||
+        validate_completed_download_import_mode(key, value) ||
         validate_path_template(key, value) ||
         validate_indexer_url(key, value) ||
         validate_ebooks_com_setting(key, value)
+    end
+
+    def validate_setting_type(key, value)
+      type = SettingsService::DEFINITIONS.dig(key.to_sym, :type)
+      case type
+      when "boolean"
+        return nil if [ true, false, 1, 0, "1", "0", "true", "false" ].include?(value)
+
+        "must be true or false"
+      when "integer"
+        "must be an integer" unless Integer(value.to_s, 10, exception: false)
+      when "string"
+        "must be a scalar value" if value.is_a?(Array) || value.is_a?(Hash) || value.is_a?(ActionController::Parameters)
+      when "json"
+        "must be a scalar or list" if value.is_a?(Hash) || value.is_a?(ActionController::Parameters)
+      end
     end
 
     def validate_completed_download_import_mode(key, value)
@@ -569,14 +648,17 @@ module Admin
     end
 
     def ebooks_com_enabled_for_validation?
-      submitted = params[:settings]&.[](:ebooks_com_enabled) || params[:settings]&.[]("ebooks_com_enabled")
-      value = submitted.nil? ? SettingsService.get(:ebooks_com_enabled) : submitted
-      ActiveModel::Type::Boolean.new.cast(value)
+      ActiveModel::Type::Boolean.new.cast(setting_value_for_validation(:ebooks_com_enabled))
     end
 
     def ebooks_com_country_for_validation
-      submitted = params[:settings]&.[](:ebooks_com_country_code) || params[:settings]&.[]("ebooks_com_country_code")
-      (submitted.nil? ? SettingsService.get(:ebooks_com_country_code) : submitted).to_s.strip
+      setting_value_for_validation(:ebooks_com_country_code).to_s.strip
+    end
+
+    def setting_value_for_validation(key)
+      settings = params[:settings]
+      submitted = settings&.key?(key.to_s) && (!autosave? || autosave_setting_keys.include?(key.to_s))
+      submitted ? settings[key.to_s] : SettingsService.get(key)
     end
 
     def indexer_url_validation_message(error)

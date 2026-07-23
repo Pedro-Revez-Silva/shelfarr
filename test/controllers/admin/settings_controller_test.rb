@@ -67,15 +67,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     get admin_settings_url
 
     assert_response :success
-    assert_select "select[name='settings[indexer_provider]']"
+    assert_select "select[name='settings[indexer_provider]'][data-action='change->settings-form#toggleIndexerProvider']"
     assert_select "option[value='prowlarr']", text: "Prowlarr"
     assert_select "option[value='jackett']", text: "Jackett"
     assert_select "option[value='newznab']", text: "NZBHydra2 / Newznab"
-    assert_select "input[type='url'][name='settings[prowlarr_url]']:not([disabled])"
-    assert_select "input[type='url'][name='settings[jackett_url]'][disabled]"
-    assert_select "input[type='url'][name='settings[newznab_url]'][disabled]"
+    assert_select "input[type='url'][name='settings[prowlarr_url]'][autocomplete='off']:not([disabled]):not([data-action])"
+    assert_select "input[type='url'][name='settings[jackett_url]'][autocomplete='off'][disabled]:not([data-action])"
+    assert_select "input[type='url'][name='settings[newznab_url]'][autocomplete='off'][disabled]:not([data-action])"
     assert_select "input[name='settings[newznab_api_key]']"
-    assert_select "input[type='password'][name='settings[prowlarr_api_key]'][value='']"
+    assert_select "input[type='password'][name='settings[prowlarr_api_key]'][value=''][autocomplete='new-password']:not([data-action])"
+    assert_select "input[type='password'][name='settings[jackett_api_key]'][value=''][autocomplete='new-password']:not([data-action])"
+    assert_select "input[type='password'][name='settings[newznab_api_key]'][value=''][autocomplete='new-password']:not([data-action])"
     assert_no_match /stored-prowlarr-secret/, @response.body
   end
 
@@ -127,6 +129,39 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_not SettingsService.get(:ebooks_com_enabled)
   end
 
+  test "autosave validates only values authorized by its dirty keys" do
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "ebooks_com_enabled",
+        settings: {
+          ebooks_com_enabled: "true",
+          ebooks_com_country_code: "US"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :unprocessable_entity
+    assert_match "requires a valid ISO 3166-1 Buyer Country Code", response.body
+    assert_not SettingsService.get(:ebooks_com_enabled)
+    assert_equal "", SettingsService.get(:ebooks_com_country_code)
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "ebooks_com_enabled,ebooks_com_country_code",
+        settings: {
+          ebooks_com_enabled: "true",
+          ebooks_com_country_code: "US"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert SettingsService.get(:ebooks_com_enabled)
+    assert_equal "US", SettingsService.get(:ebooks_com_country_code)
+  end
+
   test "bulk_update normalizes a valid eBooks.com country and validates the offer limit" do
     patch bulk_update_admin_settings_url, params: {
       settings: {
@@ -147,7 +182,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     }
 
     assert_redirected_to admin_settings_path
-    assert_match(/between 1 and #{EbooksComClient::MAX_RESULTS}/, flash[:alert])
+    assert_match(/must be an integer/, flash[:alert])
     assert_equal 3, SettingsService.get(:ebooks_com_search_limit)
 
     patch bulk_update_admin_settings_url, params: {
@@ -310,7 +345,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "move", SettingsService.get(:completed_download_import_mode)
   end
 
-  test "bulk_update collects an invalid import mode while saving valid settings and running side effects" do
+  test "bulk_update persists nothing and skips side effects when one setting is invalid" do
+    SettingsService.set(:flaresolverr_url, "http://old.example.com:8191")
     reset_called = false
 
     FlaresolverrClient.stub(:reset_connection!, -> { reset_called = true }) do
@@ -324,12 +360,12 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
         headers: { "Accept" => "text/vnd.turbo-stream.html" }
     end
 
-    assert_response :success
+    assert_response :unprocessable_entity
     assert_match "turbo-stream", response.body
     assert_match "Completed Download Import Mode: must be one of: copy, move, hardlink", response.body
     assert_equal "copy", SettingsService.get(:completed_download_import_mode)
-    assert_equal "http://localhost:8191", SettingsService.get(:flaresolverr_url)
-    assert reset_called
+    assert_equal "http://old.example.com:8191", SettingsService.get(:flaresolverr_url)
+    assert_not reset_called
   end
 
   test "index shows library picker dropdown when audiobookshelf configured" do
@@ -397,6 +433,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "label[for='settings_library_platform']", text: "Active Library Platform"
+    assert_select "select[name='settings[library_platform]']:not([data-action])"
     assert_select "label[for='settings_audiobookshelf_url']", text: "Audiobookshelf URL"
     assert_select "label[for='settings_audiobookshelf_api_key']", text: "Audiobookshelf API Key"
     assert_select "label[for='settings_bookorbit_url']", text: "BookOrbit URL"
@@ -535,10 +572,130 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     get admin_settings_url
 
     assert_response :success
-    assert_select "input[type='password'][name='settings[grimmory_password]'][value='']"
-    assert_select "input[type='password'][name='settings[discord_webhook_url]'][value='']"
+    assert_select "form[autocomplete='off'][data-action='submit->settings-form#handleSubmit']"
+    assert_select "input[type='hidden'][name='autosave_keys'][data-settings-form-target='autosaveKeys']"
+    assert_select "input[type='hidden'][data-settings-form-target='manualKeys']:not([name])"
+    assert_select "button[type='submit'][name='autosave'][value='true'][hidden][data-settings-form-target='autosaveSubmit']"
+    submit_controls = css_select("form[data-settings-form-target='form'] [type='submit']")
+    assert_equal "commit", submit_controls.first["name"]
+    assert_equal "autosave", submit_controls.last["name"]
+    assert_select "input[type='password'][name='settings[grimmory_password]'][value=''][autocomplete='new-password']:not([data-action])"
+    assert_select "input[type='password'][name='settings[discord_webhook_url]'][value=''][autocomplete='new-password']:not([data-action])"
+    assert_select "input[name='settings[bookorbit_username]'][autocomplete='off']:not([data-action])"
+    assert_select "input[name='settings[zlibrary_email]'][autocomplete='off']:not([data-action])"
+    assert_select "input[name='settings[oidc_client_id]'][autocomplete='off']:not([data-action])"
+    assert_select "select[name='settings[oidc_default_role]'][data-settings-form-manual-save]:not([data-action])"
+    assert_select "input[name='settings[telegram_bot_username]'][autocomplete='off']:not([data-action])"
+    assert_select "input[name='settings[telegram_request_username]'][autocomplete='off']:not([data-action])"
+    assert_select "[data-settings-form-manual-save][data-action*='autoSave']", count: 0
     assert_no_match "existing-secret", response.body
     assert_no_match "https://discord.com/api/webhooks/existing", response.body
+  end
+
+  test "autosave rejects manual settings in its dirty manifest" do
+    SettingsService.set(:library_platform, "audiobookshelf")
+    SettingsService.set(:bookorbit_username, "existing-user")
+    SettingsService.set(:bookorbit_password, "existing-password")
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "max_retries,library_platform,bookorbit_username,bookorbit_password",
+        settings: {
+          max_retries: "23",
+          library_platform: "bookorbit",
+          bookorbit_username: "autofilled-user",
+          bookorbit_password: "autofilled-password"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :unprocessable_entity
+    assert_match "Invalid autosave setting manifest", response.body
+    assert_equal 10, SettingsService.get(:max_retries)
+    assert_equal "audiobookshelf", SettingsService.get(:library_platform)
+    assert_equal "existing-user", SettingsService.get(:bookorbit_username)
+    assert_equal "existing-password", SettingsService.get(:bookorbit_password)
+    assert_select "turbo-stream[target='flash']", count: 1
+    assert_select "turbo-stream[target='settings-form']", count: 0
+  end
+
+  test "manual manifest excludes untouched password manager values from explicit save" do
+    SettingsService.set(:bookorbit_username, "existing-user")
+    SettingsService.set(:bookorbit_password, "existing-password")
+
+    patch bulk_update_admin_settings_url, params: {
+      manual_keys: "bookorbit_username",
+      settings: {
+        max_retries: "23",
+        bookorbit_username: "deliberate-user",
+        bookorbit_password: "autofilled-password"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal 23, SettingsService.get(:max_retries)
+    assert_equal "deliberate-user", SettingsService.get(:bookorbit_username)
+    assert_equal "existing-password", SettingsService.get(:bookorbit_password)
+  end
+
+  test "explicit save persists manual-save credentials" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        bookorbit_url: "https://bookorbit.example.com",
+        bookorbit_username: "book-admin",
+        bookorbit_password: "new-password"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "https://bookorbit.example.com", SettingsService.get(:bookorbit_url)
+    assert_equal "book-admin", SettingsService.get(:bookorbit_username)
+    assert_equal "new-password", SettingsService.get(:bookorbit_password)
+  end
+
+  test "bulk update rejects unknown settings before persisting known values" do
+    SettingsService.set(:max_retries, 10)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { max_retries: "24", unknown_setting: "value" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match "Unknown setting: unknown_setting", flash[:alert]
+    assert_equal 10, SettingsService.get(:max_retries)
+  end
+
+  test "bulk update rejects a malformed settings container" do
+    patch bulk_update_admin_settings_url, params: { settings: "not-a-key-value-map" }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "Settings must be submitted as key-value pairs", flash[:alert]
+  end
+
+  test "bulk update rejects malformed typed values" do
+    SettingsService.set(:auth_disabled, false)
+    SettingsService.set(:max_retries, 10)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { auth_disabled: "invalid", max_retries: "not-a-number" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match "Auth Disabled: must be true or false", flash[:alert]
+    assert_match "Max Retries: must be an integer", flash[:alert]
+    assert_not SettingsService.get(:auth_disabled)
+    assert_equal 10, SettingsService.get(:max_retries)
+  end
+
+  test "autosave requires a valid nonempty dirty manifest" do
+    patch bulk_update_admin_settings_url,
+      params: { autosave: "true", autosave_keys: "", settings: { max_retries: "24" } },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :unprocessable_entity
+    assert_match "Invalid autosave setting manifest", response.body
+    assert_equal 10, SettingsService.get(:max_retries)
   end
 
   test "index renders env managed settings as read-only and masks secret values" do
@@ -789,6 +946,41 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "bulk_update is atomic when any submitted setting is invalid" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:bookorbit_username, "old-bookorbit-user")
+    {
+      prowlarr: "https://prowlarr.example.com",
+      jackett: "https://jackett.example.com",
+      newznab: "https://newznab.example.com"
+    }.each do |provider, url|
+      SettingsService.set("#{provider}_url", url)
+      SettingsService.set("#{provider}_api_key", "old-#{provider}-key")
+    end
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        indexer_provider: "jackett",
+        prowlarr_url: "prowlarr.example.com:9696",
+        prowlarr_api_key: "new-prowlarr-key",
+        jackett_url: "https://new-jackett.example.com",
+        jackett_api_key: "new-jackett-key",
+        newznab_url: "https://new-newznab.example.com",
+        newznab_api_key: "new-newznab-key",
+        bookorbit_username: "new-bookorbit-user"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match "must be a valid HTTP or HTTPS URL", flash[:alert]
+    assert_equal "prowlarr", SettingsService.get(:indexer_provider)
+    %i[prowlarr jackett newznab].each do |provider|
+      assert_equal "https://#{provider}.example.com", SettingsService.get("#{provider}_url")
+      assert_equal "old-#{provider}-key", SettingsService.get("#{provider}_api_key")
+    end
+    assert_equal "old-bookorbit-user", SettingsService.get(:bookorbit_username)
+  end
+
   test "bulk_update reports malformed indexer URL in turbo response" do
     SettingsService.set(:jackett_url, "https://jackett.example.com")
 
@@ -796,7 +988,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       params: { settings: { jackett_url: "jackett.example.com:9117" } },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
-    assert_response :success
+    assert_response :unprocessable_entity
     assert_match "turbo-stream", response.body
     assert_match "Jackett URL: must be a valid HTTP or HTTPS URL (include http:// or https://)", response.body
     assert_equal "https://jackett.example.com", SettingsService.get(:jackett_url)
@@ -1627,18 +1819,77 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_match "turbo-stream", response.body
-    assert_match "settings-form", response.body
+    assert_select "turbo-stream[target='flash']", count: 1
+    assert_select "turbo-stream[target='settings-form']", count: 0
     assert_equal 25, SettingsService.get(:max_retries)
   end
 
-  test "bulk_update turbo stream shows error on validation failure" do
+  test "successful autosave does not replace the settings form" do
+    SettingsService.set(:rate_limit_delay, 5)
+
     patch bulk_update_admin_settings_url,
-      params: { settings: { audiobook_path_template: "{invalid_var}" } },
+      params: {
+        autosave: "true",
+        autosave_keys: "max_retries",
+        settings: { max_retries: "24", rate_limit_delay: "2" }
+      },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
-    assert_match "turbo-stream", response.body
-    assert_match "flash", response.body
+    assert_response :no_content
+    assert_empty response.body
+    assert_equal 24, SettingsService.get(:max_retries)
+    assert_equal 5, SettingsService.get(:rate_limit_delay)
+  end
+
+  test "side effect failure reports a warning without retrying persisted settings" do
+    FlaresolverrClient.stub(:reset_connection!, -> { raise "reset failed" }) do
+      patch bulk_update_admin_settings_url,
+        params: { settings: { flaresolverr_url: "http://new.example.com:8191" } },
+        headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    end
+
+    assert_response :success
+    assert_match "Settings saved, but a follow-up action failed: reset failed", response.body
+    assert_equal "http://new.example.com:8191", SettingsService.get(:flaresolverr_url)
+  end
+
+  test "bulk_update turbo stream shows error on validation failure" do
+    original_template = SettingsService.get(:audiobook_path_template)
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "audiobook_path_template",
+        settings: { audiobook_path_template: "{invalid_var}" }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :unprocessable_entity
+    assert_select "turbo-stream[target='flash']", count: 1
+    assert_select "turbo-stream[target='settings-form']", count: 0
+    assert_match "Audiobook Path Template", response.body
+    assert_equal original_template, SettingsService.get(:audiobook_path_template)
+  end
+
+  test "explicit turbo save preserves the live form and persists nothing on validation failure" do
+    original_template = SettingsService.get(:audiobook_path_template)
+    SettingsService.set(:bookorbit_username, "old-bookorbit-user")
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        settings: {
+          audiobook_path_template: "{invalid_var}",
+          bookorbit_username: "new-bookorbit-user"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :unprocessable_entity
+    assert_select "turbo-stream[target='flash']", count: 1
+    assert_select "turbo-stream[target='settings-form']", count: 0
+    assert_equal original_template, SettingsService.get(:audiobook_path_template)
+    assert_equal "old-bookorbit-user", SettingsService.get(:bookorbit_username)
   end
 
   test "bulk_update accepts optional template syntax for filename templates" do
@@ -1770,6 +2021,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
       assert_response :redirect
       assert_equal "http://new.example.com", SettingsService.get(:audiobookshelf_url)
+      LibraryPlatformClient.libraries
       # If reset didn't work, it would have tried old.example.com and failed
       assert_requested(:get, "http://new.example.com/api/libraries")
     end
@@ -2179,7 +2431,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       patch bulk_update_admin_settings_url, params: {
         settings: {
           audiobookshelf_audiobook_library_id: "lib-unavailable-delivery",
-          audiobookshelf_audiobook_scan_library_ids: ["lib-audio", "lib-unavailable-scan"]
+          audiobookshelf_audiobook_scan_library_ids: [ "lib-audio", "lib-unavailable-scan" ]
         }
       }
 

@@ -1,6 +1,7 @@
 # Pin npm packages by running ./bin/importmap
 
 pin "application"
+pin "settings_navigation_guard"
 pin "@hotwired/turbo-rails", to: "turbo.min.js"
 pin "@rails/actioncable", to: "actioncable.esm.js"
 pin "@rails/actioncable/src", to: "actioncable.esm.js"

@@ -17,7 +17,7 @@
           {},
           id: "settings_indexer_provider",
           class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2",
-          data: { settings_form_target: "indexerProvider", action: "change->settings-form#handleIndexerProviderChange" } %>
+          data: { settings_form_target: "indexerProvider", settings_form_manual_save: true, action: "change->settings-form#toggleIndexerProvider" } %>
         <p class="mt-1 text-xs text-gray-500">Existing installs fall back to Prowlarr automatically until this is explicitly changed.</p>
       </div>
     </div>
@@ -65,7 +65,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:prowlarr_url, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.url_field "settings[prowlarr_url]", value: settings.dig(:prowlarr_url, :value), id: "settings_prowlarr_url", disabled: selected_provider != "prowlarr", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.url_field "settings[prowlarr_url]", value: settings.dig(:prowlarr_url, :value), id: "settings_prowlarr_url", disabled: selected_provider != "prowlarr", autocomplete: "off", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
         </div>
       </div>
 
@@ -75,7 +75,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:prowlarr_api_key, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.password_field "settings[prowlarr_api_key]", value: "", placeholder: settings.dig(:prowlarr_api_key, :value).present? ? "********" : "", id: "settings_prowlarr_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.password_field "settings[prowlarr_api_key]", value: "", placeholder: settings.dig(:prowlarr_api_key, :value).present? ? "********" : "", id: "settings_prowlarr_api_key", autocomplete: "new-password", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
         </div>
       </div>
 
@@ -85,7 +85,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:prowlarr_tags, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.text_field "settings[prowlarr_tags]", value: settings.dig(:prowlarr_tags, :value), id: "settings_prowlarr_tags", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.text_field "settings[prowlarr_tags]", value: settings.dig(:prowlarr_tags, :value), id: "settings_prowlarr_tags", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
         </div>
       </div>
     </div>
@@ -97,7 +97,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:jackett_url, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.url_field "settings[jackett_url]", value: settings.dig(:jackett_url, :value), id: "settings_jackett_url", disabled: selected_provider != "jackett", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.url_field "settings[jackett_url]", value: settings.dig(:jackett_url, :value), id: "settings_jackett_url", disabled: selected_provider != "jackett", autocomplete: "off", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
         </div>
       </div>
 
@@ -107,7 +107,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:jackett_api_key, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.password_field "settings[jackett_api_key]", value: "", placeholder: settings.dig(:jackett_api_key, :value).present? ? "********" : "", id: "settings_jackett_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.password_field "settings[jackett_api_key]", value: "", placeholder: settings.dig(:jackett_api_key, :value).present? ? "********" : "", id: "settings_jackett_api_key", autocomplete: "new-password", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
         </div>
       </div>
 
@@ -117,7 +117,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:jackett_indexer_filter, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.text_field "settings[jackett_indexer_filter]", value: settings.dig(:jackett_indexer_filter, :value), id: "settings_jackett_indexer_filter", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.text_field "settings[jackett_indexer_filter]", value: settings.dig(:jackett_indexer_filter, :value), id: "settings_jackett_indexer_filter", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
         </div>
       </div>
     </div>
@@ -129,7 +129,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:newznab_url, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.url_field "settings[newznab_url]", value: settings.dig(:newznab_url, :value), id: "settings_newznab_url", disabled: selected_provider != "newznab", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.url_field "settings[newznab_url]", value: settings.dig(:newznab_url, :value), id: "settings_newznab_url", disabled: selected_provider != "newznab", autocomplete: "off", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
         </div>
       </div>
 
@@ -139,7 +139,7 @@
           <p class="text-sm text-gray-500"><%= settings.dig(:newznab_api_key, :definition, :description) %></p>
         </div>
         <div class="md:w-2/3">
-          <%= form.password_field "settings[newznab_api_key]", value: "", placeholder: settings.dig(:newznab_api_key, :value).present? ? "********" : "", id: "settings_newznab_api_key", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+          <%= form.password_field "settings[newznab_api_key]", value: "", placeholder: settings.dig(:newznab_api_key, :value).present? ? "********" : "", id: "settings_newznab_api_key", autocomplete: "new-password", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
         </div>
       </div>
     </div>

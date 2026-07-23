@@ -1,3 +1,7 @@
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+<% end %>
+
 <div class="mx-auto max-w-4xl" data-controller="settings-form">
   <div id="settings-form">
     <%= render "admin/settings/form" %>
