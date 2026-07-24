@@ -16,6 +16,8 @@ class ZipArchivePreflightServiceTest < ActiveSupport::TestCase
 
         assert_equal 2, result.entries
         assert_operator result.central_directory_bytes, :>, 0
+        assert_operator result.compressed_bytes, :>, 0
+        assert_equal 6, result.uncompressed_bytes
         assert_equal 3, file.pos
       end
     end
@@ -74,6 +76,28 @@ class ZipArchivePreflightServiceTest < ActiveSupport::TestCase
           validate(file, max_central_directory_bytes: central_bytes - 1)
         end
         assert_includes error.message, "too large"
+      end
+    end
+  end
+
+  test "rejects declared extracted bytes above the configured cap" do
+    with_zip("first.txt" => "12345", "second.txt" => "67890") do |path|
+      File.open(path, "rb") do |file|
+        error = assert_raises(ZipArchivePreflightService::Error) do
+          validate(file, max_uncompressed_bytes: 9)
+        end
+        assert_includes error.message, "declared extracted size"
+      end
+    end
+  end
+
+  test "rejects entries above the configured compression ratio" do
+    with_zip("bomb.txt" => ("0" * 1.megabyte)) do |path|
+      File.open(path, "rb") do |file|
+        error = assert_raises(ZipArchivePreflightService::Error) do
+          validate(file, max_compression_ratio: 10)
+        end
+        assert_includes error.message, "compression ratio"
       end
     end
   end
@@ -290,11 +314,19 @@ class ZipArchivePreflightServiceTest < ActiveSupport::TestCase
     end
   end
 
-  def validate(file, max_entries: DEFAULT_MAX_ENTRIES, max_central_directory_bytes: DEFAULT_MAX_CENTRAL_BYTES)
+  def validate(
+    file,
+    max_entries: DEFAULT_MAX_ENTRIES,
+    max_central_directory_bytes: DEFAULT_MAX_CENTRAL_BYTES,
+    max_uncompressed_bytes: nil,
+    max_compression_ratio: nil
+  )
     ZipArchivePreflightService.validate!(
       file,
       max_entries: max_entries,
-      max_central_directory_bytes: max_central_directory_bytes
+      max_central_directory_bytes: max_central_directory_bytes,
+      max_uncompressed_bytes: max_uncompressed_bytes,
+      max_compression_ratio: max_compression_ratio
     )
   end
 

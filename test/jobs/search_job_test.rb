@@ -1925,7 +1925,7 @@ class SearchJobTest < ActiveJob::TestCase
   test "still appends author to Anna's Archive search query" do
     SettingsService.set(:prowlarr_api_key, "")
     result = AnnaArchiveClient::Result.new(
-      md5: "abc123def456",
+      md5: "0123456789abcdef0123456789abcdef",
       title: @request.book.title,
       author: @request.book.author,
       year: 2019,
@@ -1935,9 +1935,11 @@ class SearchJobTest < ActiveJob::TestCase
     )
 
     AnnaArchiveClient.stub :configured?, true do
-      AnnaArchiveClient.stub :search, ->(query, **_) {
+      AnnaArchiveClient.stub :search, ->(query, file_types:, content_types:, **) {
         assert_includes query, @request.book.title
         assert_includes query, @request.book.author
+        assert_equal AnnaArchiveClient::EBOOK_FILE_TYPES, file_types
+        assert_equal AnnaArchiveClient::BOOK_CONTENT_TYPES, content_types
         [ result ]
       } do
         SearchJob.perform_now(@request.id)
@@ -1946,6 +1948,46 @@ class SearchJobTest < ActiveJob::TestCase
         assert_equal SearchResult::SOURCE_ANNA_ARCHIVE, @request.search_results.first.source
       end
     end
+  end
+
+  test "searches Anna's Archive for audiobooks using audio file types" do
+    SettingsService.set(:prowlarr_api_key, "")
+    book = Book.create!(
+      title: "Anna's Audiobook",
+      author: "Audio Author",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+    result = AnnaArchiveClient::Result.new(
+      md5: "11111111111111111111111111111111",
+      title: book.title,
+      author: book.author,
+      year: 2024,
+      file_type: "zip",
+      file_size: "120 MB",
+      language: "en"
+    )
+
+    AnnaArchiveClient.stub :configured?, true do
+      AnnaArchiveClient.stub :search, ->(query, file_types:, content_types:, language:, **) {
+        assert_includes query, book.title
+        assert_includes query, book.author
+        assert_includes query, "audiobook"
+        assert_equal AnnaArchiveClient::AUDIOBOOK_FILE_TYPES, file_types
+        assert_empty content_types
+        assert_equal "en", language
+        [ result ]
+      } do
+        SearchJob.perform_now(request.id)
+      end
+    end
+
+    saved_result = request.reload.search_results.first
+    assert_equal SearchResult::SOURCE_ANNA_ARCHIVE, saved_result.source
+    assert_equal result.md5, saved_result.guid
+    assert_includes saved_result.title, "[AUDIOBOOK ZIP]"
+    assert_equal "en", saved_result.detected_language
+    assert_operator saved_result.confidence_score, :>=, 90
   end
 
   test "handles unknown language code gracefully" do
@@ -2074,7 +2116,7 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_password, "secret")
 
     anna_result = AnnaArchiveClient::Result.new(
-      md5: "abc123def456",
+      md5: "22222222222222222222222222222222",
       title: @request.book.title,
       author: @request.book.author,
       year: 2019,

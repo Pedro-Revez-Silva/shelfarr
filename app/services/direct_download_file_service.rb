@@ -14,6 +14,7 @@ class DirectDownloadFileService
   ORPHAN_MAX_AGE = 24.hours
   ACTIVE_TIMEOUT = 30.minutes
   HEARTBEAT_INTERVAL = 10.seconds
+  MANIFEST_MAX_BYTES = 10.megabytes
 
   class Error < StandardError; end
   class ConflictError < Error; end
@@ -404,12 +405,17 @@ class DirectDownloadFileService
   end
 
   def persist_manifest!(manifest)
+    payload = JSON.generate(manifest)
+    if payload.bytesize > MANIFEST_MAX_BYTES
+      raise Error, "Direct-download publication manifest is too large"
+    end
+
     updated = Download.where(
       id: download.id,
       status: Download.statuses[:downloading],
       download_type: "direct",
       direct_staging_path: staging_path
-    ).update_all(direct_content_manifest: JSON.generate(manifest), updated_at: Time.current)
+    ).update_all(direct_content_manifest: payload, updated_at: Time.current)
     raise Error, "Direct download is no longer active" unless updated == 1
 
     download.reload

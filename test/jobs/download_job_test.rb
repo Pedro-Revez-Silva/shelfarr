@@ -9,6 +9,7 @@ require "tempfile"
 
 class DownloadJobTest < ActiveJob::TestCase
   setup do
+    AudiobookProbeService.probe = ->(_path) { true }
     DownloadClient.destroy_all
     @request = requests(:pending_request)
     @selected_result = search_results(:selected_result)
@@ -46,6 +47,7 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   teardown do
+    AudiobookProbeService.reset_probe!
     SettingsService.set(:zlibrary_enabled, false)
     SettingsService.set(:zlibrary_url, "https://z-library.sk")
     SettingsService.set(:zlibrary_email, "")
@@ -232,6 +234,26 @@ class DownloadJobTest < ActiveJob::TestCase
     assert @download.reload.failed?
     assert @request.reload.attention_needed?
     assert_not @selected_result.reload.blocklisted?
+  end
+
+  test "does not blocklist on Anna's Archive direct audiobook transient download error" do
+    Dir.mktmpdir do |dir|
+      setup_anna_archive_audiobook_download(output_path: dir)
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, "https://files.test/anna-audiobook.zip" do
+          stub_request(:get, "https://files.test/anna-audiobook.zip")
+            .to_return(status: 503, body: "Unavailable")
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert @anna_archive_audiobook_request.reload.attention_needed?
+      assert_includes @anna_archive_audiobook_request.issue_description, "Anna's Archive download failed"
+      assert_not @anna_archive_audiobook_download.search_result.reload.blocklisted?
+    end
   end
 
   test "marks for attention on z-library error" do
@@ -1139,7 +1161,7 @@ class DownloadJobTest < ActiveJob::TestCase
           )
 
         stub_request(:get, "https://files.test/custom-audiobook.m4b")
-          .to_return(status: 200, body: "M4B audio data", headers: { "Content-Type" => "audio/mp4" })
+          .to_return(status: 200, body: valid_m4b_audio, headers: { "Content-Type" => "audio/mp4" })
 
         DownloadJob.perform_now(@custom_provider_audiobook_download.id)
       end
@@ -1152,6 +1174,291 @@ class DownloadJobTest < ActiveJob::TestCase
       assert File.exist?(@custom_provider_audiobook_download.download_path)
       assert_equal "custom-audiobook.m4b", File.basename(@custom_provider_audiobook_download.download_path)
       assert_equal File.dirname(@custom_provider_audiobook_download.download_path), @custom_provider_audiobook_request.book.file_path
+    end
+  end
+
+  test "Anna's Archive audiobook archive downloads into audiobook output path" do
+    Dir.mktmpdir do |dir|
+      audio_data = valid_mp3_audio
+      zip_body = build_zip_archive(
+        "chapter_01.mp3" => audio_data,
+        "cover.png" => valid_png_image,
+        "README.txt" => "Narrated by Example Reader\n"
+      )
+      setup_anna_archive_audiobook_download(output_path: dir, guid: Digest::MD5.hexdigest(zip_body))
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, "https://files.test/anna-audiobook.zip" do
+          stub_request(:get, "https://files.test/anna-audiobook.zip")
+            .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+        end
+      end
+
+      @anna_archive_audiobook_download.reload
+      @anna_archive_audiobook_request.reload
+      assert @anna_archive_audiobook_download.completed?
+      assert_equal "direct", @anna_archive_audiobook_download.download_type
+      assert @anna_archive_audiobook_request.completed?
+      assert_equal @anna_archive_audiobook_request.book.file_path, @anna_archive_audiobook_download.download_path
+      assert File.exist?(File.join(@anna_archive_audiobook_download.download_path, "chapter_01.mp3"))
+      assert File.exist?(File.join(@anna_archive_audiobook_download.download_path, "cover.png"))
+      assert_equal "Narrated by Example Reader\n",
+        File.read(File.join(@anna_archive_audiobook_download.download_path, "README.txt"))
+    end
+  end
+
+  test "Anna's Archive ZIP cannot bypass archive extraction with an audio URL suffix" do
+    Dir.mktmpdir do |dir|
+      zip_body = build_zip_archive("chapter_01.mp3" => valid_mp3_audio)
+      setup_anna_archive_audiobook_download(output_path: dir, guid: Digest::MD5.hexdigest(zip_body))
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, "https://files.test/disguised.mp3" do
+          stub_request(:get, "https://files.test/disguised.mp3")
+            .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/octet-stream" })
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.completed?
+      assert File.exist?(File.join(@anna_archive_audiobook_download.download_path, "chapter_01.mp3"))
+    end
+  end
+
+  test "Anna's Archive rejects unsafe archive entries before publication" do
+    Dir.mktmpdir do |dir|
+      zip_body = build_zip_archive(
+        "chapter_01.mp3" => valid_mp3_audio,
+        "payload.html" => "<script>malicious()</script>",
+        "nested/payload.zip" => "PK\x03\x04nested"
+      )
+      setup_anna_archive_audiobook_download(output_path: dir, guid: Digest::MD5.hexdigest(zip_body))
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, "https://files.test/anna-audiobook.zip" do
+          stub_request(:get, "https://files.test/anna-audiobook.zip")
+            .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "unsupported file type"
+      assert_nil @anna_archive_audiobook_request.book.reload.file_path
+    end
+  end
+
+  test "Anna's Archive rejects companion files whose contents do not match their extension" do
+    Dir.mktmpdir do |dir|
+      zip_body = build_zip_archive(
+        "chapter_01.mp3" => valid_mp3_audio,
+        "cover.jpg" => "<html><script>malicious()</script></html>"
+      )
+      setup_anna_archive_audiobook_download(output_path: dir, guid: Digest::MD5.hexdigest(zip_body))
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, "https://files.test/anna-audiobook.zip" do
+          stub_request(:get, "https://files.test/anna-audiobook.zip")
+            .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "invalid companion file"
+      assert_nil @anna_archive_audiobook_request.book.reload.file_path
+    end
+  end
+
+  test "Anna's Archive rejects a direct archive that does not match its advertised MD5" do
+    Dir.mktmpdir do |dir|
+      zip_body = build_zip_archive("chapter_01.mp3" => valid_mp3_audio)
+      setup_anna_archive_audiobook_download(output_path: dir, guid: "00000000000000000000000000000000")
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, "https://files.test/substituted.zip" do
+          stub_request(:get, "https://files.test/substituted.zip")
+            .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+        end
+      end
+
+      download = @anna_archive_audiobook_download.reload
+      assert download.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "did not match the selected file"
+      assert_nil download.direct_staging_path
+      assert_nil @anna_archive_audiobook_request.book.reload.file_path
+    end
+  end
+
+  test "Anna's Archive rejects insecure direct download URLs" do
+    Dir.mktmpdir do |dir|
+      setup_anna_archive_audiobook_download(output_path: dir)
+      insecure_url = "http://files.test/anna-audiobook.zip"
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, insecure_url do
+          insecure_request = stub_request(:get, insecure_url)
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+
+          assert_not_requested insecure_request
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "insecure download URL"
+    end
+  end
+
+  test "Anna's Archive rejects audiobook archives with invalid audio files" do
+    Dir.mktmpdir do |dir|
+      zip_body = build_zip_archive("chapter.mp3" => "not-audio-data")
+      setup_anna_archive_audiobook_download(output_path: dir, guid: Digest::MD5.hexdigest(zip_body))
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, "https://files.test/not-an-audiobook.zip" do
+          stub_request(:get, "https://files.test/not-an-audiobook.zip")
+            .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "does not contain valid supported audio files"
+    end
+  end
+
+  test "Anna's Archive rejects audiobook torrents that would bypass archive validation" do
+    Dir.mktmpdir do |dir|
+      setup_anna_archive_audiobook_download(output_path: dir)
+      magnet = "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+      AnnaArchiveClient.stub :get_download_url, magnet do
+        DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "verified post-download archive processing"
+      assert_nil @anna_archive_audiobook_request.book.reload.file_path
+    end
+  end
+
+  test "Anna's Archive dispatches signed torrent URLs to the torrent client" do
+    Dir.mktmpdir do |dir|
+      setup_anna_archive_audiobook_download(output_path: dir, book_type: :ebook)
+      torrent_url = "https://example.com/download/audiobook.torrent?token=secret"
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, torrent_url do
+          stub_qbittorrent_success(torrent_url: torrent_url)
+
+          with_outbound_resolver(->(_host) { [ "203.0.113.10" ] }) do
+            DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+          end
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.downloading?
+      assert_equal "torrent", @anna_archive_audiobook_download.download_type
+    end
+  end
+
+  test "Anna's Archive rejects torrent redirects to private addresses" do
+    Dir.mktmpdir do |dir|
+      setup_anna_archive_audiobook_download(output_path: dir, book_type: :ebook)
+      torrent_url = "https://files.test/audiobook.torrent"
+      private_url = "http://private.test/internal.torrent"
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, torrent_url do
+          stub_qbittorrent_connection("http://localhost:8080")
+          stub_request(:get, torrent_url).to_return(status: 302, headers: { "Location" => private_url })
+          private_request = stub_request(:get, private_url)
+          resolver = ->(host) { host == "private.test" ? [ "10.0.0.5" ] : [ "203.0.113.10" ] }
+
+          with_outbound_resolver(resolver) do
+            DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+          end
+
+          assert_not_requested private_request
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "Refused unsafe torrent source URL"
+    end
+  end
+
+  test "Anna's Archive does not blocklist transient torrent source failures" do
+    Dir.mktmpdir do |dir|
+      setup_anna_archive_audiobook_download(output_path: dir, book_type: :ebook)
+      torrent_url = "https://files.test/audiobook.torrent"
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, torrent_url do
+          stub_qbittorrent_connection("http://localhost:8080")
+          stub_request(:get, torrent_url).to_return(status: 503, body: "Unavailable")
+
+          with_outbound_resolver(->(_host) { [ "203.0.113.10" ] }) do
+            DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+          end
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert @anna_archive_audiobook_request.reload.attention_needed?
+      assert_not @anna_archive_audiobook_download.search_result.reload.blocklisted?
+    end
+  end
+
+  test "Anna's Archive does not blocklist torrent source connection failures" do
+    Dir.mktmpdir do |dir|
+      setup_anna_archive_audiobook_download(output_path: dir, book_type: :ebook)
+      torrent_url = "https://files.test/audiobook.torrent"
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, torrent_url do
+          stub_qbittorrent_connection("http://localhost:8080")
+          stub_request(:get, torrent_url).to_raise(Errno::ECONNREFUSED.new)
+
+          with_outbound_resolver(->(_host) { [ "203.0.113.10" ] }) do
+            DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+          end
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert @anna_archive_audiobook_request.reload.attention_needed?
+      assert_not @anna_archive_audiobook_download.search_result.reload.blocklisted?
+    end
+  end
+
+  test "Anna's Archive rejects malformed torrent redirects through the download lifecycle" do
+    Dir.mktmpdir do |dir|
+      setup_anna_archive_audiobook_download(output_path: dir, book_type: :ebook)
+      torrent_url = "https://files.test/audiobook.torrent"
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, torrent_url do
+          stub_qbittorrent_connection("http://localhost:8080")
+          stub_request(:get, torrent_url).to_return(status: 302, headers: { "Location" => "http://[" })
+
+          with_outbound_resolver(->(_host) { [ "203.0.113.10" ] }) do
+            DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+          end
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "Invalid torrent source redirect"
     end
   end
 
@@ -1366,10 +1673,84 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title MP3 64kbps"))
   end
 
+  test "rejects shallow ADIF AAC signatures as audiobook content" do
+    Tempfile.create([ "audiobook", ".aac" ]) do |file|
+      file.binmode
+      file.write("ADIF" + SecureRandom.random_bytes(2.kilobytes))
+      file.flush
+
+      assert_not DownloadJob.new.send(:valid_audiobook_signature?, file.path)
+    end
+  end
+
+  test "rejects audiobook archives with excessive audio file counts before probing" do
+    Dir.mktmpdir do |directory|
+      (DownloadJob::MAX_AUDIOBOOK_ARCHIVE_AUDIO_FILES + 1).times do |index|
+        File.write(File.join(directory, "chapter-#{index}.mp3"), "")
+      end
+
+      error = assert_raises(RuntimeError) do
+        DownloadJob.new.send(:verify_extracted_audiobook!, directory)
+      end
+      assert_includes error.message, "too many audio files"
+    end
+  end
+
+  test "rejects Anna's Archive audiobook archives with excessive companion file counts" do
+    Dir.mktmpdir do |directory|
+      File.binwrite(File.join(directory, "chapter.mp3"), valid_mp3_audio)
+      (DownloadJob::MAX_AUDIOBOOK_COMPANION_FILES + 1).times do |index|
+        File.write(File.join(directory, "note-#{index}.txt"), "metadata")
+      end
+
+      error = assert_raises(RuntimeError) do
+        DownloadJob.new.send(:verify_extracted_audiobook!, directory, verify_companions: true)
+      end
+      assert_includes error.message, "too many companion files"
+    end
+  end
+
+  test "accepts printable UTF-8 text companions and rejects binary text" do
+    Tempfile.create([ "notes", ".txt" ]) do |file|
+      file.binmode
+      file.write("Narrator: José\n")
+      file.flush
+      assert DownloadJob.new.send(:valid_audiobook_text?, file.path)
+
+      file.rewind
+      file.truncate(0)
+      file.write("metadata\x00payload".b)
+      file.flush
+      assert_not DownloadJob.new.send(:valid_audiobook_text?, file.path)
+    end
+  end
+
+  test "enforces the companion size limit after image sanitization" do
+    Dir.mktmpdir do |directory|
+      paths = 2.times.map do |index|
+        File.join(directory, "cover-#{index}.png").tap { |path| File.binwrite(path, valid_png_image) }
+      end
+      sanitizer = lambda do |path, max_duration:|
+        assert max_duration.positive?
+        File.truncate(path, 60.megabytes)
+        true
+      end
+
+      job = DownloadJob.new
+      error = job.stub(:valid_audiobook_companion?, sanitizer) do
+        assert_raises(RuntimeError) do
+          job.send(:verify_audiobook_companions!, paths)
+        end
+      end
+      assert_includes error.message, "companion files are too large"
+    end
+  end
+
   test "librivox download extracts audiobook zip into audiobook output path" do
     Dir.mktmpdir do |dir|
       setup_librivox_download(output_path: dir)
-      zip_body = build_zip_archive("chapter_01.mp3" => "audio-data")
+      audio_data = valid_mp3_audio
+      zip_body = build_zip_archive("chapter_01.mp3" => audio_data)
 
       VCR.turned_off do
         stub_request(:get, "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3")
@@ -1402,7 +1783,8 @@ class DownloadJobTest < ActiveJob::TestCase
       original_template = SettingsService.get(:audiobook_path_template)
       SettingsService.set(:audiobook_path_template, "")
       setup_librivox_download(output_path: dir)
-      zip_body = build_zip_archive("chapter_01.mp3" => "audio-data")
+      audio_data = valid_mp3_audio
+      zip_body = build_zip_archive("chapter_01.mp3" => audio_data)
 
       VCR.turned_off do
         stub_request(:get, "https://archive.org/compress/test_librivox/formats=64KBPS%20MP3")
@@ -1415,7 +1797,7 @@ class DownloadJobTest < ActiveJob::TestCase
       assert @librivox_download.completed?
       assert_not_equal dir, destination
       assert_equal "Jane Austen - Test LibriVox Book", File.basename(destination)
-      assert_equal "audio-data", File.binread(File.join(destination, "chapter_01.mp3"))
+      assert_equal audio_data, File.binread(File.join(destination, "chapter_01.mp3"))
     ensure
       SettingsService.set(:audiobook_path_template, original_template)
     end
@@ -1701,6 +2083,33 @@ class DownloadJobTest < ActiveJob::TestCase
     )
   end
 
+  def setup_anna_archive_audiobook_download(
+    output_path:,
+    guid: "11111111111111111111111111111111",
+    book_type: :audiobook
+  )
+    SettingsService.set(book_type == :audiobook ? :audiobook_output_path : :ebook_output_path, output_path)
+
+    book = Book.create!(
+      title: "Anna's Archive Audiobook",
+      author: "Audio Author",
+      book_type: book_type
+    )
+    @anna_archive_audiobook_request = Request.create!(book: book, user: users(:one), status: :downloading)
+    result = @anna_archive_audiobook_request.search_results.create!(
+      guid: guid,
+      title: "Anna's Archive Audiobook - Audio Author [#{book_type == :audiobook ? 'AUDIOBOOK ZIP' : 'EPUB'}]",
+      indexer: "Anna's Archive",
+      source: SearchResult::SOURCE_ANNA_ARCHIVE,
+      status: :selected
+    )
+    @anna_archive_audiobook_download = @anna_archive_audiobook_request.downloads.create!(
+      name: result.title,
+      search_result: result,
+      status: :queued
+    )
+  end
+
   def setup_gutenberg_download(output_path:)
     SettingsService.set(:gutenberg_enabled, true)
     SettingsService.set(:ebook_output_path, output_path)
@@ -1811,7 +2220,26 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
-  def stub_qbittorrent_success
+  def valid_mp3_audio
+    id3_header = "ID3\x04\x00\x00\x00\x00\x00\x00".b
+    mpeg_frame_header = "\xFF\xFB\x90\x64".b
+    frames = 3.times.map { mpeg_frame_header + SecureRandom.random_bytes(413) }.join
+    id3_header + frames
+  end
+
+  def valid_png_image
+    Base64.decode64(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+  end
+
+  def valid_m4b_audio
+    ftyp = [ 24 ].pack("N") + "ftyp" + "M4B \x00\x00\x00\x00M4B mp42".b
+    payload = SecureRandom.random_bytes(2.kilobytes)
+    ftyp + [ payload.bytesize + 8 ].pack("N") + "mdat" + payload
+  end
+
+  def stub_qbittorrent_success(torrent_url: "http://example.com/download/test.torrent")
     # Create a valid torrent file for hash extraction
     info_dict = {
       "name" => "Test Torrent",
@@ -1825,7 +2253,7 @@ class DownloadJobTest < ActiveJob::TestCase
     expected_hash = Digest::SHA1.hexdigest(info_dict.bencode).downcase
 
     # Stub torrent file download (used for hash extraction)
-    stub_request(:get, "http://example.com/download/test.torrent")
+    stub_request(:get, torrent_url)
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/x-bittorrent" },
@@ -1847,6 +2275,14 @@ class DownloadJobTest < ActiveJob::TestCase
         headers: { "Content-Type" => "application/json" },
         body: [ { "hash" => expected_hash, "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" } ].to_json
       )
+  end
+
+  def with_outbound_resolver(resolver)
+    previous = OutboundUrlGuard.resolver
+    OutboundUrlGuard.resolver = resolver
+    yield
+  ensure
+    OutboundUrlGuard.resolver = previous
   end
 
   def build_test_logger

@@ -38,7 +38,7 @@ module DownloadClients
       ensure_configured_label!
 
       params = build_add_params(options)
-      prepared = prepare_torrent_submission(url)
+      prepared = prepare_torrent_submission(url, validate_source_url: options[:validate_source_url])
       result = submit_torrent(prepared, params)
       torrent_id = result if result.is_a?(String) && result.present?
 
@@ -386,18 +386,32 @@ module DownloadClients
       session.delete(:cookie)
     end
 
-    def prepare_torrent_submission(url)
+    def prepare_torrent_submission(url, validate_source_url: false)
       return { url: url } if url.blank?
-      return { url: url } if url.start_with?("magnet:")
+      if url.start_with?("magnet:")
+        return { url: validate_source_url ? sanitize_untrusted_magnet!(url) : url }
+      end
 
-      source = resolve_torrent_source(url)
-      return { url: url } if source.blank?
+      source = if validate_source_url
+        resolve_guarded_torrent_source(url)
+      else
+        resolve_torrent_source(url)
+      end
+      if source.blank?
+        raise Base::Error, "Could not safely fetch torrent source" if validate_source_url
+
+        return { url: url }
+      end
 
       resolved_url = source[:url].presence || url
       return { url: resolved_url } if resolved_url.start_with?("magnet:")
 
       torrent_data = source[:torrent_data]
-      return { url: resolved_url } unless valid_torrent_data?(torrent_data)
+      unless valid_torrent_data?(torrent_data)
+        raise Base::Error, "Torrent source did not return a valid torrent file" if validate_source_url
+
+        return { url: resolved_url }
+      end
 
       {
         url: resolved_url,

@@ -30,7 +30,12 @@ class ZipArchivePreflightService
   SUPPORTED_COMPRESSION_METHODS = [ 0, 8 ].freeze
   SUPPORTED_GENERAL_PURPOSE_FLAGS = 0x0002 | 0x0004 | 0x0008 | 0x0800
 
-  Result = Data.define(:entries, :central_directory_bytes)
+  Result = Data.define(
+    :entries,
+    :central_directory_bytes,
+    :compressed_bytes,
+    :uncompressed_bytes
+  )
   EndRecord = Data.define(
     :offset,
     :entries,
@@ -39,10 +44,18 @@ class ZipArchivePreflightService
   )
 
   class << self
-    def validate!(io, max_entries:, max_central_directory_bytes:)
+    def validate!(
+      io,
+      max_entries:,
+      max_central_directory_bytes:,
+      max_uncompressed_bytes: nil,
+      max_compression_ratio: nil
+    )
       original_position = io.pos
       entry_limit = positive_limit(max_entries)
       central_directory_limit = positive_limit(max_central_directory_bytes)
+      uncompressed_limit = optional_positive_limit(max_uncompressed_bytes)
+      compression_ratio_limit = optional_positive_ratio(max_compression_ratio)
       size = io.stat.size
       if size < END_OF_CENTRAL_DIRECTORY_BYTES
         raise Error, "ZIP archive is missing its central directory"
@@ -56,15 +69,19 @@ class ZipArchivePreflightService
         raise Error, "ZIP archive central directory is too large"
       end
 
-      validate_central_directory!(
+      compressed_bytes, uncompressed_bytes = validate_central_directory!(
         io,
         end_record,
-        max_entries: entry_limit
+        max_entries: entry_limit,
+        max_uncompressed_bytes: uncompressed_limit,
+        max_compression_ratio: compression_ratio_limit
       )
 
       Result.new(
         entries: end_record.entries,
-        central_directory_bytes: end_record.central_directory_bytes
+        central_directory_bytes: end_record.central_directory_bytes,
+        compressed_bytes: compressed_bytes,
+        uncompressed_bytes: uncompressed_bytes
       )
     rescue RangeError, TypeError, ArgumentError
       raise Error, "ZIP archive central directory is malformed"
@@ -77,6 +94,19 @@ class ZipArchivePreflightService
     def positive_limit(value)
       value = Integer(value)
       raise ArgumentError unless value.positive?
+
+      value
+    end
+
+    def optional_positive_limit(value)
+      value.nil? ? nil : positive_limit(value)
+    end
+
+    def optional_positive_ratio(value)
+      return nil if value.nil?
+
+      value = Float(value)
+      raise ArgumentError unless value.positive? && value.finite?
 
       value
     end
@@ -204,10 +234,18 @@ class ZipArchivePreflightService
       end
     end
 
-    def validate_central_directory!(io, end_record, max_entries:)
+    def validate_central_directory!(
+      io,
+      end_record,
+      max_entries:,
+      max_uncompressed_bytes:,
+      max_compression_ratio:
+    )
       cursor = end_record.central_directory_offset
       directory_end = cursor + end_record.central_directory_bytes
       entries = 0
+      total_compressed_bytes = 0
+      total_uncompressed_bytes = 0
       local_ranges = []
       name_digests = {}
 
@@ -258,6 +296,14 @@ class ZipArchivePreflightService
           compressed_size,
           local_offset
         )
+        total_compressed_bytes += compressed_size
+        total_uncompressed_bytes += uncompressed_size
+        if max_uncompressed_bytes && total_uncompressed_bytes > max_uncompressed_bytes
+          raise Error, "ZIP archive exceeds its declared extracted size limit"
+        end
+        if max_compression_ratio && uncompressed_size > [ compressed_size, 1 ].max * max_compression_ratio
+          raise Error, "ZIP archive entry exceeds its compression ratio limit"
+        end
 
         local_ranges << validate_local_header!(
           io,
@@ -280,6 +326,11 @@ class ZipArchivePreflightService
       end
 
       validate_nonoverlapping_local_ranges!(local_ranges)
+      if max_compression_ratio && total_uncompressed_bytes > [ total_compressed_bytes, 1 ].max * max_compression_ratio
+        raise Error, "ZIP archive exceeds its aggregate compression ratio limit"
+      end
+
+      [ total_compressed_bytes, total_uncompressed_bytes ]
     end
 
     def validate_entry_features!(flags, compression_method, disk_start)

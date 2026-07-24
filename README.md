@@ -38,7 +38,7 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 
 - **Book Discovery** — Search millions of titles via Hardcover, Google Books and Open Library
 - **Smart Acquisition** — Search Prowlarr, Jackett or Newznab/NZBHydra2 indexers; download via qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet
-- **Direct Downloads** — Ebooks from Anna's Archive and Z-Library, public-domain audiobooks from LibriVox — no torrent client needed
+- **Direct Downloads** — Ebooks and audiobooks from Anna's Archive, ebooks from Z-Library, and public-domain audiobooks from LibriVox — no torrent client needed
 - **Auto-Selection & Format Preferences** — Pick the best release automatically, scored by your preferred formats, bitrate and language
 - **Auto-Processing** — Rename and organize files with path/filename templates, then deliver to Audiobookshelf, BookOrbit or Grimmory watched folders
 - **Library Sync** — Automatic Audiobookshelf, BookOrbit or Grimmory scans after downloads complete
@@ -104,6 +104,8 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 Audible Backup additionally requires the audiobook output filesystem to support advisory locks, hard links within that same mount, and Unix mode changes. Keep Shelfarr's `.shelfarr-staging` directory on the audiobook output filesystem and run the documented preflight before connecting Audible. mergerfs/libfuse mounts with a `umask=` mode override need a compatible underlying bind or a coordinated mount correction; do not bypass the check. See the [Audible Backup storage requirements and filesystem preflight](docs/audible-backup.md#preflight-the-audiobook-filesystem).
 
 Filesystem race defenses assume every process running as Shelfarr's `PUID` is trusted. A malicious process with the same UID can modify any library file that Shelfarr itself can modify; isolate untrusted download tools under a different UID and grant only the narrow shared-directory access they need.
+
+FlareSolverr runs a browser against remote pages. If you enable it for Anna's Archive, isolate its container with egress rules that deny private, loopback, link-local, and cloud metadata networks; Shelfarr cannot validate browser subrequests made inside FlareSolverr.
 
 Example with custom port:
 ```yaml
@@ -185,7 +187,8 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 | **Prowlarr** / **Jackett** / **NZBHydra2** | Indexer management |
 | **qBittorrent**, **Decypharr**, **Deluge**, **Transmission** | Torrent downloads |
 | **SABnzbd**, **NZBGet** | Usenet downloads |
-| **Anna's Archive** / **Z-Library** | Direct ebook downloads |
+| **Anna's Archive** | Direct ebook and audiobook downloads |
+| **Z-Library** | Direct ebook downloads |
 | **LibriVox** | Public-domain audiobook downloads |
 | **eBooks.com** *(Beta)* | External DRM-free ebook offers; checkout remains with the seller |
 | **Libation** *(Beta)* | Optional Audible owned-library backup companion |
@@ -197,7 +200,7 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 - Docker
 - At least one way to find books:
   - An indexer — Prowlarr, Jackett or Newznab/NZBHydra2 — plus a download client (qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet), **and/or**
-  - A direct source — Anna's Archive or Z-Library (ebooks), LibriVox (audiobooks), **and/or**
+  - A direct source — Anna's Archive (ebooks and audiobooks), Z-Library (ebooks), or LibriVox (audiobooks), **and/or**
   - The beta eBooks.com store integration for external purchase and manual import of DRM-free ebooks
 - Audiobookshelf, BookOrbit or Grimmory (optional, for library integration)
 
@@ -210,8 +213,8 @@ Grimmory support uses Grimmory's `/api/v1` endpoints for library listing, invent
 ## Development
 
 ```bash
-# Install Ruby 3.3.6 via rbenv
-brew install rbenv ruby-build
+# Install Ruby 3.3.6 via rbenv and the image validation dependency
+brew install rbenv ruby-build vips
 rbenv install 3.3.6
 
 # Clone and setup

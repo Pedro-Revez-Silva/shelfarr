@@ -57,7 +57,7 @@ class SearchJob < ApplicationJob
 
     # Check if any search sources are configured
     indexer_available = IndexerClient.configured?
-    anna_available = AnnaArchiveClient.configured? && request.book.ebook?
+    anna_available = AnnaArchiveClient.configured? && (request.book.ebook? || request.book.audiobook?)
     zlibrary_available = ZLibraryClient.configured? && request.book.ebook?
     gutenberg_available = GutenbergClient.configured? && request.book.ebook?
     librivox_available = LibrivoxClient.configured? && request.book.audiobook?
@@ -82,7 +82,7 @@ class SearchJob < ApplicationJob
       Rails.logger.info "[SearchJob] Found #{indexer_results.count} #{IndexerClient.display_name} results"
     end
 
-    # Search Anna's Archive for ebooks if configured
+    # Search Anna's Archive for ebooks and audiobooks if configured
     if anna_available
       anna_results = search_anna_archive(request, search_generation)
       return unless heartbeat_search!(request, search_generation)
@@ -355,6 +355,7 @@ class SearchJob < ApplicationJob
 
     query_parts = [ book.title ]
     query_parts << book.author if book.author.present?
+    query_parts << "audiobook" if book.audiobook?
     query = query_parts.join(" ")
 
     # Pass language to Anna's Archive for better filtering
@@ -363,6 +364,8 @@ class SearchJob < ApplicationJob
 
     results = AnnaArchiveClient.search(
       query,
+      file_types: book.audiobook? ? AnnaArchiveClient::AUDIOBOOK_FILE_TYPES : AnnaArchiveClient::EBOOK_FILE_TYPES,
+      content_types: book.audiobook? ? [] : AnnaArchiveClient::BOOK_CONTENT_TYPES,
       language: language,
       after_attempt: -> { heartbeat_search!(request, search_generation) }
     )
@@ -576,7 +579,7 @@ class SearchJob < ApplicationJob
 
     # Use find_or_create_by to handle duplicate MD5s in Anna's Archive results
     request.search_results.find_or_create_by!(guid: result.md5) do |sr|
-      sr.title = build_direct_source_title(result)
+      sr.title = build_direct_source_title(result, audiobook: request.book.audiobook?)
       sr.indexer = "Anna's Archive"
       sr.size_bytes = size_bytes
       sr.seeders = nil  # N/A for Anna's Archive
@@ -678,11 +681,15 @@ class SearchJob < ApplicationJob
     parts.join(" ")
   end
 
-  def build_direct_source_title(result)
+  def build_direct_source_title(result, audiobook: false)
     parts = []
     parts << result.title if result.title.present?
     parts << "- #{result.author}" if result.author.present?
-    parts << "[#{result.file_type.upcase}]" if result.file_type.present?
+    if audiobook && result.file_type == "zip"
+      parts << "[AUDIOBOOK ZIP]"
+    elsif result.file_type.present?
+      parts << "[#{result.file_type.upcase}]"
+    end
     parts << "[#{result.language_display_name}]" if result.respond_to?(:language_display_name) && result.language_display_name.present?
     parts << "(#{result.year})" if result.year.present?
     parts.join(" ")
