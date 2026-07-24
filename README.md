@@ -213,8 +213,8 @@ Grimmory support uses Grimmory's `/api/v1` endpoints for library listing, invent
 ## Development
 
 ```bash
-# Install Ruby 3.3.6 via rbenv
-brew install rbenv ruby-build
+# Install Ruby 3.3.6 via rbenv and the image validation dependency
+brew install rbenv ruby-build vips
 rbenv install 3.3.6
 
 # Clone and setup

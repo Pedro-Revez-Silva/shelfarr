@@ -22,11 +22,20 @@ class DownloadJob < ApplicationJob
   MAX_DIRECT_ARCHIVE_ENTRIES = 2_000
   MAX_AUDIOBOOK_ARCHIVE_AUDIO_FILES = 500
   MAX_AUDIOBOOK_ARCHIVE_PROBE_DURATION = 5.minutes
+  MAX_AUDIOBOOK_COMPANION_FILES = 50
+  MAX_AUDIOBOOK_COMPANION_BYTES = 100.megabytes
+  MAX_AUDIOBOOK_TEXT_BYTES = 1.megabyte
+  MAX_AUDIOBOOK_COMPANION_PROBE_DURATION = 1.minute
   MIN_AUDIOBOOK_FILE_BYTES = 1.kilobyte
   DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL = 30.seconds
   DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
   DIRECT_AUDIOBOOK_FILE_EXTENSIONS = %w[m4b mp3 m4a aac flac ogg opus].freeze
+  DIRECT_AUDIOBOOK_IMAGE_EXTENSIONS = %w[jpg jpeg png webp].freeze
+  DIRECT_AUDIOBOOK_TEXT_EXTENSIONS = %w[txt].freeze
+  DIRECT_AUDIOBOOK_ARCHIVE_FILE_EXTENSIONS = (
+    DIRECT_AUDIOBOOK_FILE_EXTENSIONS + DIRECT_AUDIOBOOK_IMAGE_EXTENSIONS + DIRECT_AUDIOBOOK_TEXT_EXTENSIONS
+  ).freeze
   DIRECT_AUDIOBOOK_EXTENSIONS = (DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS + DIRECT_AUDIOBOOK_FILE_EXTENSIONS).freeze
   # Extensions that are also ordinary words ("Live at the Opus") and need
   # format-style context (".opus", "[opus]", "(opus)") in a title to count.
@@ -363,9 +372,13 @@ class DownloadJob < ApplicationJob
           staging_dir,
           output_root: base_path,
           download: download,
-          allowed_file_extensions: search_result.from_anna_archive? ? DIRECT_AUDIOBOOK_FILE_EXTENSIONS : nil
+          allowed_file_extensions: search_result.from_anna_archive? ? DIRECT_AUDIOBOOK_ARCHIVE_FILE_EXTENSIONS : nil
         )
-        verify_extracted_audiobook!(staging_dir, download: download)
+        verify_extracted_audiobook!(
+          staging_dir,
+          download: download,
+          verify_companions: search_result.from_anna_archive?
+        )
       ensure
         staged_archive.io.close unless staged_archive.io.closed?
       end
@@ -950,13 +963,15 @@ class DownloadJob < ApplicationJob
     ).extract!
   end
 
-  def verify_extracted_audiobook!(destination_dir, download: nil)
-    audio_files = Dir.glob(File.join(destination_dir, "**", "*"), File::FNM_DOTMATCH).select do |path|
-      File.file?(path) && DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete(".").downcase)
+  def verify_extracted_audiobook!(destination_dir, download: nil, verify_companions: false)
+    files = Dir.glob(File.join(destination_dir, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }
+    audio_files, companion_files = files.partition do |path|
+      DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete(".").downcase)
     end
     if audio_files.size > MAX_AUDIOBOOK_ARCHIVE_AUDIO_FILES
       raise "Downloaded audiobook archive contains too many audio files"
     end
+    verify_audiobook_companions!(companion_files, download: download) if verify_companions
 
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + MAX_AUDIOBOOK_ARCHIVE_PROBE_DURATION
     last_heartbeat_at = nil
@@ -970,9 +985,82 @@ class DownloadJob < ApplicationJob
 
       valid_audiobook_signature?(path)
     end
-    return if valid
+    raise "Downloaded audiobook archive does not contain valid supported audio files" unless valid
+  end
 
-    raise "Downloaded audiobook archive does not contain valid supported audio files"
+  def verify_audiobook_companions!(companion_files, download: nil)
+    if companion_files.size > MAX_AUDIOBOOK_COMPANION_FILES
+      raise "Downloaded audiobook archive contains too many companion files"
+    end
+    if companion_files.sum { |path| File.size(path) } > MAX_AUDIOBOOK_COMPANION_BYTES
+      raise "Downloaded audiobook archive companion files are too large"
+    end
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + MAX_AUDIOBOOK_COMPANION_PROBE_DURATION
+    last_heartbeat_at = nil
+    sanitized_bytes = 0
+    valid = companion_files.all? do |path|
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        raise "Downloaded audiobook archive companion validation exceeded its time limit"
+      end
+      if download && (!last_heartbeat_at || last_heartbeat_at < DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL.ago)
+        last_heartbeat_at = refresh_direct_download_heartbeat!(download)
+      end
+
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      valid_companion = valid_audiobook_companion?(path, max_duration: remaining)
+      if valid_companion
+        sanitized_bytes += File.size(path)
+        if sanitized_bytes > MAX_AUDIOBOOK_COMPANION_BYTES
+          raise "Downloaded audiobook archive companion files are too large"
+        end
+      end
+      valid_companion
+    end
+    if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      raise "Downloaded audiobook archive companion validation exceeded its time limit"
+    end
+    unless valid
+      raise "Downloaded audiobook archive contains an invalid companion file"
+    end
+  end
+
+  def valid_audiobook_companion?(path, max_duration: AudiobookImageProbeService::MAX_DURATION)
+    extension = File.extname(path).delete(".").downcase
+    if DIRECT_AUDIOBOOK_IMAGE_EXTENSIONS.include?(extension)
+      valid_audiobook_image?(path, extension, max_duration: max_duration)
+    elsif DIRECT_AUDIOBOOK_TEXT_EXTENSIONS.include?(extension)
+      valid_audiobook_text?(path)
+    else
+      false
+    end
+  end
+
+  def valid_audiobook_image?(path, extension, max_duration:)
+    with_regular_download_io(path) do |file|
+      mime_type = Marcel::MimeType.for(file, name: File.basename(path))
+      expected_format = extension.in?([ "jpg", "jpeg" ]) ? "jpeg" : extension
+      return false unless mime_type == "image/#{expected_format}"
+
+      AudiobookImageProbeService.sanitize!(
+        path,
+        expected_format: expected_format,
+        max_duration: max_duration
+      )
+    end
+  rescue EOFError, Errno::ENOENT, Errno::EACCES
+    false
+  end
+
+  def valid_audiobook_text?(path)
+    with_regular_download_io(path) do |file|
+      size = file.stat.size
+      return false unless size.between?(1, MAX_AUDIOBOOK_TEXT_BYTES)
+
+      content = file.read(size).to_s.force_encoding(Encoding::UTF_8)
+      content.valid_encoding? && !content.include?("\0") && !content.match?(/[^\t\n\r[:print:]]/)
+    end
+  rescue EOFError, Errno::ENOENT, Errno::EACCES
+    false
   end
 
   def valid_audiobook_signature?(path)

@@ -1180,7 +1180,11 @@ class DownloadJobTest < ActiveJob::TestCase
   test "Anna's Archive audiobook archive downloads into audiobook output path" do
     Dir.mktmpdir do |dir|
       audio_data = valid_mp3_audio
-      zip_body = build_zip_archive("chapter_01.mp3" => audio_data)
+      zip_body = build_zip_archive(
+        "chapter_01.mp3" => audio_data,
+        "cover.png" => valid_png_image,
+        "README.txt" => "Narrated by Example Reader\n"
+      )
       setup_anna_archive_audiobook_download(output_path: dir, guid: Digest::MD5.hexdigest(zip_body))
 
       VCR.turned_off do
@@ -1199,6 +1203,9 @@ class DownloadJobTest < ActiveJob::TestCase
       assert @anna_archive_audiobook_request.completed?
       assert_equal @anna_archive_audiobook_request.book.file_path, @anna_archive_audiobook_download.download_path
       assert File.exist?(File.join(@anna_archive_audiobook_download.download_path, "chapter_01.mp3"))
+      assert File.exist?(File.join(@anna_archive_audiobook_download.download_path, "cover.png"))
+      assert_equal "Narrated by Example Reader\n",
+        File.read(File.join(@anna_archive_audiobook_download.download_path, "README.txt"))
     end
   end
 
@@ -1221,7 +1228,7 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
-  test "Anna's Archive rejects non-audio archive entries before publication" do
+  test "Anna's Archive rejects unsafe archive entries before publication" do
     Dir.mktmpdir do |dir|
       zip_body = build_zip_archive(
         "chapter_01.mp3" => valid_mp3_audio,
@@ -1241,6 +1248,29 @@ class DownloadJobTest < ActiveJob::TestCase
 
       assert @anna_archive_audiobook_download.reload.failed?
       assert_includes @anna_archive_audiobook_request.reload.issue_description, "unsupported file type"
+      assert_nil @anna_archive_audiobook_request.book.reload.file_path
+    end
+  end
+
+  test "Anna's Archive rejects companion files whose contents do not match their extension" do
+    Dir.mktmpdir do |dir|
+      zip_body = build_zip_archive(
+        "chapter_01.mp3" => valid_mp3_audio,
+        "cover.jpg" => "<html><script>malicious()</script></html>"
+      )
+      setup_anna_archive_audiobook_download(output_path: dir, guid: Digest::MD5.hexdigest(zip_body))
+
+      VCR.turned_off do
+        AnnaArchiveClient.stub :get_download_url, "https://files.test/anna-audiobook.zip" do
+          stub_request(:get, "https://files.test/anna-audiobook.zip")
+            .to_return(status: 200, body: zip_body, headers: { "Content-Type" => "application/zip" })
+
+          DownloadJob.perform_now(@anna_archive_audiobook_download.id)
+        end
+      end
+
+      assert @anna_archive_audiobook_download.reload.failed?
+      assert_includes @anna_archive_audiobook_request.reload.issue_description, "invalid companion file"
       assert_nil @anna_archive_audiobook_request.book.reload.file_path
     end
   end
@@ -1663,6 +1693,56 @@ class DownloadJobTest < ActiveJob::TestCase
         DownloadJob.new.send(:verify_extracted_audiobook!, directory)
       end
       assert_includes error.message, "too many audio files"
+    end
+  end
+
+  test "rejects Anna's Archive audiobook archives with excessive companion file counts" do
+    Dir.mktmpdir do |directory|
+      File.binwrite(File.join(directory, "chapter.mp3"), valid_mp3_audio)
+      (DownloadJob::MAX_AUDIOBOOK_COMPANION_FILES + 1).times do |index|
+        File.write(File.join(directory, "note-#{index}.txt"), "metadata")
+      end
+
+      error = assert_raises(RuntimeError) do
+        DownloadJob.new.send(:verify_extracted_audiobook!, directory, verify_companions: true)
+      end
+      assert_includes error.message, "too many companion files"
+    end
+  end
+
+  test "accepts printable UTF-8 text companions and rejects binary text" do
+    Tempfile.create([ "notes", ".txt" ]) do |file|
+      file.binmode
+      file.write("Narrator: José\n")
+      file.flush
+      assert DownloadJob.new.send(:valid_audiobook_text?, file.path)
+
+      file.rewind
+      file.truncate(0)
+      file.write("metadata\x00payload".b)
+      file.flush
+      assert_not DownloadJob.new.send(:valid_audiobook_text?, file.path)
+    end
+  end
+
+  test "enforces the companion size limit after image sanitization" do
+    Dir.mktmpdir do |directory|
+      paths = 2.times.map do |index|
+        File.join(directory, "cover-#{index}.png").tap { |path| File.binwrite(path, valid_png_image) }
+      end
+      sanitizer = lambda do |path, max_duration:|
+        assert max_duration.positive?
+        File.truncate(path, 60.megabytes)
+        true
+      end
+
+      job = DownloadJob.new
+      error = job.stub(:valid_audiobook_companion?, sanitizer) do
+        assert_raises(RuntimeError) do
+          job.send(:verify_audiobook_companions!, paths)
+        end
+      end
+      assert_includes error.message, "companion files are too large"
     end
   end
 
@@ -2145,6 +2225,12 @@ class DownloadJobTest < ActiveJob::TestCase
     mpeg_frame_header = "\xFF\xFB\x90\x64".b
     frames = 3.times.map { mpeg_frame_header + SecureRandom.random_bytes(413) }.join
     id3_header + frames
+  end
+
+  def valid_png_image
+    Base64.decode64(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
   end
 
   def valid_m4b_audio
