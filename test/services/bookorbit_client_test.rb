@@ -252,6 +252,142 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "malformed BookOrbit URLs raise a connection error" do
+    SettingsService.set(:bookorbit_url, "not a url")
+
+    assert_raises BookOrbitClient::ConnectionError do
+      BookOrbitClient.libraries
+    end
+  end
+
+  test "relogs in once when cached BookOrbit token is rejected" do
+    VCR.turned_off do
+      login = stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "expired-token" }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "fresh-token" }.to_json
+          }
+        )
+      expired_request = stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer expired-token" })
+        .to_return(status: 401, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+      fresh_request = stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer fresh-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 42, name: "Kobo Books", folders: [] } ].to_json
+        )
+
+      libraries = BookOrbitClient.libraries
+
+      assert_equal [ "42" ], libraries.map(&:id)
+      assert_requested login, times: 2
+      assert_requested expired_request, times: 1
+      assert_requested fresh_request, times: 1
+    end
+  end
+
+  test "raises after a refreshed BookOrbit token is also rejected" do
+    VCR.turned_off do
+      login = stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "expired-token" }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "fresh-token" }.to_json
+          }
+        )
+      libraries_request = stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .to_return(status: 401, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+      assert_raises BookOrbitClient::AuthenticationError do
+        BookOrbitClient.libraries
+      end
+      assert_requested login, times: 2
+      assert_requested libraries_request, times: 2
+    end
+  end
+
+  test "concurrent rejections share one BookOrbit token refresh" do
+    VCR.turned_off do
+      old_requests = Queue.new
+      release_old_requests = Queue.new
+      fresh_requests = Queue.new
+      requests = []
+
+      login = stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "expired-token" }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "fresh-token" }.to_json
+          }
+        )
+      expired_request = stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer expired-token" })
+        .to_return do
+          old_requests << true
+          release_old_requests.pop
+          { status: 401, headers: { "Content-Type" => "application/json" }, body: {}.to_json }
+        end
+      fresh_request = stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer fresh-token" })
+        .to_return do
+          fresh_requests << true
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [ { id: 42, name: "Kobo Books", folders: [] } ].to_json
+          }
+        end
+
+      begin
+        requests = 2.times.map { Thread.new { BookOrbitClient.libraries } }
+        2.times { Timeout.timeout(2) { old_requests.pop } }
+
+        release_old_requests << true
+        Timeout.timeout(2) { fresh_requests.pop }
+        release_old_requests << true
+
+        results = requests.map { |thread| Timeout.timeout(2) { thread.value } }
+        assert results.all? { |libraries| libraries.map(&:id) == [ "42" ] }
+      ensure
+        2.times { release_old_requests << true }
+        requests.each do |thread|
+          next if thread.join(2)
+
+          thread.kill
+          thread.join
+        end
+      end
+
+      assert_requested login, times: 2
+      assert_requested expired_request, times: 2
+      assert_requested fresh_request, times: 2
+    end
+  end
+
   test "library_items returns empty array on page 0 404 or 410 response" do
     VCR.turned_off do
       stub_login
