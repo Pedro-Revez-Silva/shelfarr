@@ -28,7 +28,7 @@ class BookOrbitClient
     def libraries
       ensure_configured!
 
-      response = request { connection.get("/api/v1/libraries") }
+      response = authenticated_request { |client| client.get("/api/v1/libraries") }
       handle_response(response) do |data|
         Array(data).map { |library| parse_library(library) }
       end
@@ -37,14 +37,14 @@ class BookOrbitClient
     def library(id)
       ensure_configured!
 
-      response = request { connection.get("/api/v1/libraries/#{id}") }
+      response = authenticated_request { |client| client.get("/api/v1/libraries/#{id}") }
       handle_response(response) { |data| parse_library(data) }
     end
 
     def scan_library(id)
       ensure_configured!
 
-      response = request { connection.post("/api/v1/scanner/libraries/#{id}/scan") }
+      response = authenticated_request { |client| client.post("/api/v1/scanner/libraries/#{id}/scan") }
       response.status.in?([ 200, 201, 202, 204 ])
     end
 
@@ -57,8 +57,8 @@ class BookOrbitClient
       query_page_size = 200 if query_page_size <= 0
 
       loop do
-        response = request do
-          connection.post("/api/v1/libraries/#{id}/books", {
+        response = authenticated_request do |client|
+          client.post("/api/v1/libraries/#{id}/books", {
             sort: [],
             pagination: { page: page, size: query_page_size },
             collapseSeries: false
@@ -107,6 +107,17 @@ class BookOrbitClient
       yield
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError, URI::Error => e
       raise ConnectionError, "Failed to connect to BookOrbit: #{e.message}"
+    end
+
+    def authenticated_request
+      request_connection = connection
+      response = request { yield(request_connection) }
+      return response unless response.status.in?([ 401, 403 ])
+
+      CONNECTION_MUTEX.synchronize do
+        clear_connection_cache! if @connection.equal?(request_connection)
+      end
+      request { yield(connection) }
     end
 
     def connection
