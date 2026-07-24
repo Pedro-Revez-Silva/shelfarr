@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "net/http"
+require "uri"
+
 module DownloadClients
   # Base class for download client implementations
   # Subclasses should implement: add_torrent, torrent_info, list_torrents, test_connection
@@ -65,6 +68,54 @@ module DownloadClients
 
     def base_url
       config.url
+    end
+
+    def resolve_guarded_torrent_source(raw_url)
+      current_url = raw_url.to_s.strip.gsub(" ", "%20")
+
+      10.times do
+        endpoint = OutboundUrlGuard.validate!(current_url)
+        response = Net::HTTP.start(
+          endpoint.host,
+          endpoint.port,
+          use_ssl: endpoint.use_ssl?,
+          ipaddr: endpoint.ipaddr,
+          open_timeout: 30,
+          read_timeout: 30
+        ) do |http|
+          request = Net::HTTP::Get.new(endpoint.uri)
+          request["User-Agent"] = "Shelfarr/1.0"
+          http.request(request)
+        end
+
+        if response.is_a?(Net::HTTPRedirection)
+          location = response["Location"]
+          raise Error, "Torrent source redirect missing Location" if location.blank?
+
+          current_url = URI.join(endpoint.uri, location).to_s
+          return { url: current_url } if current_url.start_with?("magnet:")
+
+          next
+        end
+
+        if response.code.to_i == 429 || response.code.to_i >= 500
+          raise ConnectionError, "Torrent source returned HTTP #{response.code}"
+        end
+
+        magnet = extract_magnet_from_body(response.body.to_s)
+        return { url: magnet } if magnet.present?
+        return { url: current_url, torrent_data: response.body } if response.is_a?(Net::HTTPSuccess) && response.body.present?
+
+        return { url: current_url }
+      end
+
+      raise Error, "Torrent source exceeded redirect limit"
+    rescue OutboundUrlGuard::BlockedUrlError => e
+      raise Error, "Refused torrent source URL: #{e.message}"
+    rescue URI::Error => e
+      raise Error, "Invalid torrent source redirect: #{e.message}"
+    rescue SocketError, IOError, EOFError, Timeout::Error, Net::ProtocolError, OpenSSL::SSL::SSLError, SystemCallError => e
+      raise ConnectionError, "Failed to fetch torrent source: #{e.message}"
     end
   end
 end

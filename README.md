@@ -38,7 +38,7 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 
 - **Book Discovery** — Search millions of titles via Hardcover, Google Books and Open Library
 - **Smart Acquisition** — Search Prowlarr, Jackett or Newznab/NZBHydra2 indexers; download via qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet
-- **Direct Downloads** — Ebooks from Anna's Archive and Z-Library, public-domain audiobooks from LibriVox — no torrent client needed
+- **Direct Downloads** — Ebooks and audiobooks from Anna's Archive, ebooks from Z-Library, and public-domain audiobooks from LibriVox — no torrent client needed
 - **Auto-Selection & Format Preferences** — Pick the best release automatically, scored by your preferred formats, bitrate and language
 - **Auto-Processing** — Rename and organize files with path/filename templates, then deliver to Audiobookshelf, BookOrbit or Grimmory watched folders
 - **Library Sync** — Automatic Audiobookshelf, BookOrbit or Grimmory scans after downloads complete
@@ -185,7 +185,8 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 | **Prowlarr** / **Jackett** / **NZBHydra2** | Indexer management |
 | **qBittorrent**, **Decypharr**, **Deluge**, **Transmission** | Torrent downloads |
 | **SABnzbd**, **NZBGet** | Usenet downloads |
-| **Anna's Archive** / **Z-Library** | Direct ebook downloads |
+| **Anna's Archive** | Direct ebook and audiobook downloads |
+| **Z-Library** | Direct ebook downloads |
 | **LibriVox** | Public-domain audiobook downloads |
 | **eBooks.com** *(Beta)* | External DRM-free ebook offers; checkout remains with the seller |
 | **Libation** *(Beta)* | Optional Audible owned-library backup companion |
@@ -197,7 +198,7 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 - Docker
 - At least one way to find books:
   - An indexer — Prowlarr, Jackett or Newznab/NZBHydra2 — plus a download client (qBittorrent, Decypharr, Deluge, Transmission, SABnzbd or NZBGet), **and/or**
-  - A direct source — Anna's Archive or Z-Library (ebooks), LibriVox (audiobooks), **and/or**
+  - A direct source — Anna's Archive (ebooks and audiobooks), Z-Library (ebooks), or LibriVox (audiobooks), **and/or**
   - The beta eBooks.com store integration for external purchase and manual import of DRM-free ebooks
 - Audiobookshelf, BookOrbit or Grimmory (optional, for library integration)
 

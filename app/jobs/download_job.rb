@@ -217,13 +217,21 @@ class DownloadJob < ApplicationJob
     Rails.logger.info "[DownloadJob] Got download URL: #{UrlRedactor.redact(download_url).truncate(100)}"
 
     # Check if it's a torrent/magnet link or direct download
-    if download_url.start_with?("magnet:") || download_url.end_with?(".torrent")
+    if torrent_download_url?(download_url)
       # Send to torrent client
       send_to_torrent_client(download, search_result, download_url)
     else
       # Direct HTTP download - download file directly
       Rails.logger.info "[DownloadJob] Anna's Archive returned direct link, downloading via HTTP"
-      handle_direct_http_download(download, search_result, download_url)
+      if download.request.book.audiobook?
+        begin
+          handle_direct_audiobook_download(download, search_result, download_url, source_name: "Anna's Archive")
+        rescue => e
+          fail_direct_dispatch!(download, e, message: "Anna's Archive download failed: #{e.message}")
+        end
+      else
+        handle_direct_http_download(download, search_result, download_url)
+      end
     end
   end
 
@@ -344,6 +352,7 @@ class DownloadJob < ApplicationJob
           output_root: base_path,
           download: download
         )
+        verify_extracted_audiobook!(staging_dir)
       ensure
         staged_archive.io.close unless staged_archive.io.closed?
       end
@@ -585,6 +594,14 @@ class DownloadJob < ApplicationJob
     nil
   end
 
+  def torrent_download_url?(url)
+    return true if url.to_s.start_with?("magnet:")
+
+    File.extname(URI.parse(url.to_s).path).casecmp?(".torrent")
+  rescue URI::InvalidURIError
+    false
+  end
+
   def filename_from_url(url)
     uri = URI.parse(normalize_direct_download_url(url))
     filename = File.basename(uri.path)
@@ -682,7 +699,12 @@ class DownloadJob < ApplicationJob
             next
           end
 
-          raise "Direct download failed with status #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+          unless response.is_a?(Net::HTTPSuccess)
+            message = "Direct download failed with status #{response.code}"
+            raise DirectDownloadError, message if response.code.to_i == 429 || response.code.to_i >= 500
+
+            raise message
+          end
 
           validate_direct_download_response_headers!(
             content_type: response["Content-Type"],
@@ -890,6 +912,37 @@ class DownloadJob < ApplicationJob
     ).extract!
   end
 
+  def verify_extracted_audiobook!(destination_dir)
+    audio_files = Dir.glob(File.join(destination_dir, "**", "*"), File::FNM_DOTMATCH).select do |path|
+      File.file?(path) && DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete(".").downcase)
+    end
+    return if audio_files.any? && audio_files.all? { |path| valid_audiobook_signature?(path) }
+
+    raise "Downloaded audiobook archive does not contain valid supported audio files"
+  end
+
+  def valid_audiobook_signature?(path)
+    head = File.binread(path, 12)
+    extension = File.extname(path).delete(".").downcase
+
+    case extension
+    when "mp3"
+      head.start_with?("ID3") || (head.getbyte(0) == 0xff && (head.getbyte(1).to_i & 0xe0) == 0xe0)
+    when "m4b", "m4a"
+      head.byteslice(4, 4) == "ftyp"
+    when "aac"
+      head.start_with?("ADIF") || (head.getbyte(0) == 0xff && (head.getbyte(1).to_i & 0xf0) == 0xf0)
+    when "flac"
+      head.start_with?("fLaC")
+    when "ogg", "opus"
+      head.start_with?("OggS")
+    else
+      false
+    end
+  rescue EOFError, Errno::ENOENT
+    false
+  end
+
   def ensure_book_available_for_direct_download!(book)
     return unless book.reload.acquisition_blocked?
 
@@ -930,7 +983,11 @@ class DownloadJob < ApplicationJob
     Rails.logger.info "[DownloadJob] Using client '#{client_record.name}' for download ##{download.id}"
 
     # add_torrent now returns the hash directly (or nil on failure)
-    torrent_hash = client.add_torrent(download_url)
+    torrent_hash = if search_result.from_anna_archive?
+      client.add_torrent(download_url, validate_source_url: true)
+    else
+      client.add_torrent(download_url)
+    end
 
     if torrent_hash.present?
       finalize_standard_dispatch!(

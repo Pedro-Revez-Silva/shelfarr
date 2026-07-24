@@ -17,7 +17,7 @@ module DownloadClients
     def add_torrent(url, options = {})
       ensure_authenticated!
 
-      prepared = prepare_torrent_submission(url)
+      prepared = prepare_torrent_submission(url, validate_source_url: options[:validate_source_url])
       submit_url = prepared[:url]
       precomputed_hash = prepared[:hash]
       torrent_data = prepared[:torrent_data]
@@ -223,13 +223,21 @@ module DownloadClients
     # - url: String URL/magnet to submit when we don't have a torrent file payload
     # - hash: String precomputed info hash when available
     # - torrent_data: String bencoded torrent payload for direct multipart upload
-    def prepare_torrent_submission(url)
+    def prepare_torrent_submission(url, validate_source_url: false)
       return { url: url } if url.blank?
       return { url: url, hash: extract_hash_from_magnet(url) } if url.start_with?("magnet:")
       return { url: url } unless torrent_file_url?(url)
 
-      source = resolve_torrent_source(url)
-      return { url: url } if source.blank?
+      source = if validate_source_url
+        resolve_guarded_torrent_source(url)
+      else
+        resolve_torrent_source(url)
+      end
+      if source.blank?
+        raise Base::Error, "Could not safely fetch torrent source" if validate_source_url
+
+        return { url: url }
+      end
 
       resolved_url = source[:url].presence || url
       if resolved_url.start_with?("magnet:")
@@ -237,12 +245,18 @@ module DownloadClients
       end
 
       torrent_data = source[:torrent_data]
-      return { url: resolved_url } if torrent_data.blank?
+      if torrent_data.blank?
+        raise Base::Error, "Torrent source did not return a valid torrent file" if validate_source_url
+
+        return { url: resolved_url }
+      end
 
       hash = extract_hash_from_torrent_data(torrent_data)
       if hash.present?
         { url: resolved_url, hash: hash, torrent_data: torrent_data }
       else
+        raise Base::Error, "Torrent source did not return a valid torrent file" if validate_source_url
+
         { url: resolved_url }
       end
     end

@@ -29,10 +29,19 @@ class AnnaArchiveClient
     def size_human
       file_size
     end
+
+    def language_display_name
+      return nil if language.blank?
+
+      ReleaseParserService.language_info(language)&.dig(:name) || language
+    end
   end
 
   DEFAULT_BASE_URL = SettingsService::DEFAULT_ANNA_ARCHIVE_URL
   ALLOWED_BASE_URL_SCHEMES = %w[http https].freeze
+  EBOOK_FILE_TYPES = %w[epub pdf].freeze
+  AUDIOBOOK_FILE_TYPES = %w[zip].freeze
+  BOOK_CONTENT_TYPES = %w[book_nonfiction book_fiction book_unknown].freeze
 
   class << self
     # Check if Anna's Archive is configured (has API key)
@@ -49,10 +58,10 @@ class AnnaArchiveClient
     # Search for books via HTML scraping
     # Returns array of Result
     # @param language [String] ISO 639-1 language code (e.g., "en", "fr", "de")
-    def search(query, file_types: %w[epub pdf], limit: 50, language: nil, after_attempt: nil)
+    def search(query, file_types: EBOOK_FILE_TYPES, content_types: BOOK_CONTENT_TYPES, limit: 50, language: nil, after_attempt: nil)
       ensure_configured!
 
-      url = build_search_url(query, file_types, language: language)
+      url = build_search_url(query, file_types, content_types: content_types, language: language)
       Rails.logger.info "[AnnaArchiveClient] Searching: #{url}"
 
       html = fetch_with_rotation(
@@ -61,7 +70,7 @@ class AnnaArchiveClient
         validator: method(:validate_search_page!),
         after_attempt: after_attempt
       )
-      parse_search_results(html, limit)
+      parse_search_results(html, limit, file_types: file_types, preferred_language: language)
     end
 
     # Get download URL (torrent) via fast_download API
@@ -284,34 +293,33 @@ class AnnaArchiveClient
       SettingsService.get(:anna_archive_api_key)
     end
 
-    def build_search_url(query, file_types, language: nil)
-      encoded_query = URI.encode_www_form_component(query)
-      ext_param = Array(file_types).join(",")
+    def build_search_url(query, file_types, content_types:, language: nil)
+      params = [ [ "q", query ] ]
+      Array(file_types).each { |file_type| params << [ "ext", file_type ] }
+      params << [ "sort", "" ]
+      Array(content_types).each { |content_type| params << [ "content", content_type ] }
+      params << [ "lang", language ] if language.present?
 
-      # Anna's Archive search URL pattern
-      # Sort by "most_relevant" for best matches
-      url = "/search?q=#{encoded_query}&ext=#{ext_param}&sort=&content=book_nonfiction,book_fiction,book_unknown"
-
-      # Add language filter if specified
-      # Anna's Archive uses ISO 639-1 codes (e.g., en, fr, de)
-      url += "&lang=#{language}" if language.present?
-
-      url
+      "/search?#{URI.encode_www_form(params)}"
     end
 
-    def parse_search_results(html, limit)
+    def parse_search_results(html, limit, file_types:, preferred_language: nil)
       require "nokogiri"
 
       doc = Nokogiri::HTML(html)
       results = []
+      requested_file_types = Array(file_types).map { |file_type| file_type.to_s.downcase }
+      seen_md5s = {}
 
-      # Anna's Archive uses a specific structure for search results
-      # Each result is typically in a div/article with a link to /md5/{hash}
-      doc.css("a[href*='/md5/']").each do |link|
+      primary_result_links(doc).each do |link|
         break if results.size >= limit
 
-        result = parse_result_element(link)
-        results << result if result
+        result = parse_result_element(link, preferred_language: preferred_language)
+        next unless result && requested_file_types.include?(result.file_type)
+        next if seen_md5s[result.md5]
+
+        seen_md5s[result.md5] = true
+        results << result
       end
 
       Rails.logger.info "[AnnaArchiveClient] Parsed #{results.size} results"
@@ -321,7 +329,18 @@ class AnnaArchiveClient
       raise ScrapingError, "Failed to parse search results: #{e.message}"
     end
 
-    def parse_result_element(link)
+    def primary_result_links(doc)
+      search_form = doc.at_css("form.js-search-form")
+      return doc.css("a[href*='/md5/']") unless search_form
+
+      search_form.css(".js-aarecord-list-outer").reject do |list|
+        list.ancestors(".js-partial-matches-show").any?
+      end.flat_map do |list|
+        list.css("a[href*='/md5/']").to_a
+      end
+    end
+
+    def parse_result_element(link, preferred_language: nil)
       href = link["href"]
       return nil unless href
 
@@ -343,7 +362,7 @@ class AnnaArchiveClient
       author = extract_author(container, text)
       file_type = extract_file_type(container, text)
       file_size = extract_file_size(text)
-      language = extract_language(text)
+      language = extract_language(container, preferred_language: preferred_language)
       year = extract_year(text)
 
       return nil if title.blank?
@@ -432,11 +451,11 @@ class AnnaArchiveClient
       badge = container.at_css("[class*='badge'], [class*='ext'], [class*='format']")
       if badge
         ext = badge.text.strip.downcase
-        return ext if %w[epub pdf mobi azw3 djvu mp3 m4b].include?(ext)
+        return ext if %w[epub pdf mobi azw3 djvu zip].include?(ext)
       end
 
       # Match from text
-      if text =~ /\b(epub|pdf|mobi|azw3|djvu|mp3|m4b)\b/i
+      if text =~ /\b(epub|pdf|mobi|azw3|djvu|zip)\b/i
         return $1.downcase
       end
 
@@ -450,26 +469,70 @@ class AnnaArchiveClient
       end
     end
 
-    def extract_language(text)
-      # Common language patterns
-      languages = {
-        "english" => "en", "en" => "en",
-        "spanish" => "es", "español" => "es", "es" => "es",
-        "french" => "fr", "français" => "fr", "fr" => "fr",
-        "german" => "de", "deutsch" => "de", "de" => "de",
-        "portuguese" => "pt", "português" => "pt", "pt" => "pt",
-        "italian" => "it", "italiano" => "it", "it" => "it",
-        "russian" => "ru", "ru" => "ru",
-        "chinese" => "zh", "zh" => "zh",
-        "japanese" => "ja", "ja" => "ja"
-      }
+    def extract_language(container, preferred_language: nil)
+      metadata = container.css("div.text-gray-800.font-semibold.text-sm").find do |node|
+        node["class"].to_s.split.include?("mt-2")
+      end
+      if metadata
+        direct_text = metadata.children.select(&:text?).map(&:text).join(" ").squish
+        return language_from_metadata_text(direct_text, preferred_language: preferred_language)
+      end
 
-      text_lower = text.downcase
-      languages.each do |pattern, code|
-        return code if text_lower.include?(pattern)
+      container.css("span").each do |span|
+        classes = span["class"].to_s
+        next if classes.match?(/author|badge|ext|format/i)
+
+        value = span.text.to_s.squish
+        next unless exact_language_label?(value) || value.match?(/\b\d+(?:\.\d+)?\s*(?:KB|MB|GB)\b|\b(?:19|20)\d{2}\b/i)
+
+        language = language_from_metadata_text(value, preferred_language: preferred_language)
+        return language if language
       end
 
       nil
+    end
+
+    def language_from_metadata_text(text, preferred_language: nil)
+      supported_languages = ReleaseParserService::LANGUAGES
+      canonical_codes = supported_languages.keys.index_by(&:downcase)
+      detected_codes = text.to_s.scan(/\[([a-z]{2,3}(?:[-‑][a-z0-9]+)?)\]/i).flatten.filter_map do |code|
+        canonical_codes[code.tr("‑", "-").downcase]
+      end
+
+      if detected_codes.empty?
+        text_lower = text.to_s.downcase
+        supported_languages
+          .sort_by { |_code, info| -info[:name].length }
+          .each do |code, info|
+            detected_codes << code if text_lower.include?(info[:name].downcase)
+          end
+      end
+
+      if detected_codes.empty?
+        aliases = {
+          "español" => "es", "français" => "fr", "deutsch" => "de",
+          "português" => "pt", "italiano" => "it"
+        }
+        text_lower = text.to_s.downcase
+        aliases.each { |name, code| detected_codes << code if text_lower.include?(name) }
+      end
+
+      if detected_codes.empty?
+        detected_codes = canonical_codes.filter_map do |normalized, code|
+          code if text.to_s.match?(/\b#{Regexp.escape(normalized)}\b/i)
+        end
+      end
+
+      preferred_code = canonical_codes[preferred_language.to_s.downcase]
+      return preferred_code if preferred_code && detected_codes.include?(preferred_code)
+
+      detected_codes.first
+    end
+
+    def exact_language_label?(value)
+      labels = ReleaseParserService::LANGUAGES.flat_map { |code, info| [ code, info[:name] ] }
+      labels.concat(%w[español français deutsch português italiano])
+      labels.any? { |label| value.casecmp?(label) }
     end
 
     def extract_year(text)

@@ -36,7 +36,7 @@ module DownloadClients
       ensure_authenticated!
 
       existing_ids = torrent_ids
-      prepared = prepare_torrent_submission(url)
+      prepared = prepare_torrent_submission(url, validate_source_url: options[:validate_source_url])
       args = {}
       args[:metainfo] = prepared[:metainfo] if prepared[:metainfo].present?
       args[:filename] = prepared[:url] if prepared[:metainfo].blank?
@@ -301,17 +301,29 @@ module DownloadClients
       protocol_mode.to_sym == :legacy ? "hashString" : "hash_string"
     end
 
-    def prepare_torrent_submission(url)
+    def prepare_torrent_submission(url, validate_source_url: false)
       return { url: url } if url.blank? || url.start_with?("magnet:")
 
-      source = resolve_torrent_source(url)
-      return { url: url } if source.blank?
+      source = if validate_source_url
+        resolve_guarded_torrent_source(url)
+      else
+        resolve_torrent_source(url)
+      end
+      if source.blank?
+        raise Base::Error, "Could not safely fetch torrent source" if validate_source_url
+
+        return { url: url }
+      end
 
       resolved_url = source[:url].presence || url
       return { url: resolved_url } if resolved_url.start_with?("magnet:")
 
       torrent_data = source[:torrent_data]
-      return { url: resolved_url } unless valid_torrent_data?(torrent_data)
+      unless valid_torrent_data?(torrent_data)
+        raise Base::Error, "Torrent source did not return a valid torrent file" if validate_source_url
+
+        return { url: resolved_url }
+      end
 
       { metainfo: Base64.strict_encode64(torrent_data) }
     end

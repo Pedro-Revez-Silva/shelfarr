@@ -62,6 +62,113 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search uses repeated filters and keeps only requested audiobook archives" do
+    html = <<~HTML
+      <html>
+        <body>
+          <form class="js-search-form">
+            <div class="js-aarecord-list-outer">
+              <div><h3>Ebook Result With A Descriptive Title</h3><a href="/md5/eb00123">Details</a><span class="badge">epub</span><span>5 MB English 2024</span></div>
+              <div><h3>Audiobook Result With A Descriptive Title</h3><a href="/md5/a0d10123">Details</a><span class="badge">zip</span><span>500 MB English 2024</span></div>
+            </div>
+          </form>
+        </body>
+      </html>
+    HTML
+
+    VCR.turned_off do
+      search_request = stub_request(:get, /annas-archive\.org\/search/)
+        .with do |request|
+          pairs = URI.decode_www_form(request.uri.query.to_s)
+          pairs.select { |key, _| key == "ext" }.map(&:last) == [ "zip" ] &&
+            pairs.none? { |key, _| key == "content" }
+        end
+        .to_return(status: 200, body: html)
+
+      results = AnnaArchiveClient.search(
+        "test audiobook",
+        file_types: AnnaArchiveClient::AUDIOBOOK_FILE_TYPES,
+        content_types: []
+      )
+
+      assert_requested search_request
+      assert_equal 1, results.size
+      assert_equal "a0d10123", results.first.md5
+      assert_equal "zip", results.first.file_type
+    end
+  end
+
+  test "search excludes Anna's Archive partial matches when primary results are empty" do
+    html = <<~HTML
+      <html>
+        <body>
+          <form class="js-search-form">
+            <div class="js-aarecord-list-outer"></div>
+            <div class="js-partial-matches-show hidden">
+              <div class="js-aarecord-list-outer">
+                <div><h3>Related Audiobook With A Descriptive Title</h3><a href="/md5/fa111123">Details</a><span class="badge">zip</span><span>500 MB English 2024</span></div>
+              </div>
+            </div>
+          </form>
+        </body>
+      </html>
+    HTML
+
+    VCR.turned_off do
+      stub_request(:get, /annas-archive\.org\/search/).to_return(status: 200, body: html)
+
+      results = AnnaArchiveClient.search(
+        "missing audiobook",
+        file_types: AnnaArchiveClient::AUDIOBOOK_FILE_TYPES,
+        content_types: []
+      )
+
+      assert_empty results
+    end
+  end
+
+  test "search serializes multiple ebook and content filters as repeated parameters" do
+    url = AnnaArchiveClient.send(
+      :build_search_url,
+      "test book",
+      AnnaArchiveClient::EBOOK_FILE_TYPES,
+      content_types: AnnaArchiveClient::BOOK_CONTENT_TYPES,
+      language: "en"
+    )
+    pairs = URI.decode_www_form(URI.parse(url).query)
+
+    assert_equal %w[epub pdf], pairs.select { |key, _| key == "ext" }.map(&:last)
+    assert_equal AnnaArchiveClient::BOOK_CONTENT_TYPES, pairs.select { |key, _| key == "content" }.map(&:last)
+    assert_includes pairs, [ "lang", "en" ]
+  end
+
+  test "language extraction does not treat embedded two-letter codes as languages" do
+    french = Nokogiri::HTML.fragment(<<~HTML).at_css("div")
+      <div>
+        <h3>The English Patient Audiobook</h3>
+        <span>500 MB French 2024</span>
+      </div>
+    HTML
+    multilingual = Nokogiri::HTML.fragment(<<~HTML).at_css("div")
+      <div>
+        <h3>English Lessons</h3>
+        <div class="text-gray-800 font-semibold text-sm mt-2">Portuguese [pt] · English [en] · ZIP · 500 MB</div>
+      </div>
+    HTML
+    dutch = Nokogiri::HTML.fragment(<<~HTML).at_css("div")
+      <div><div class="text-gray-800 font-semibold text-sm mt-2">Dutch [nl] · ZIP · 500 MB</div></div>
+    HTML
+    brazilian_portuguese = Nokogiri::HTML.fragment(<<~HTML).at_css("div")
+      <div><div class="text-gray-800 font-semibold text-sm mt-2">Portuguese (Brazil) [pt-BR] · ZIP · 500 MB</div></div>
+    HTML
+
+    assert_equal "fr", AnnaArchiveClient.send(:extract_language, french)
+    assert_equal "pt", AnnaArchiveClient.send(:extract_language, multilingual)
+    assert_equal "en", AnnaArchiveClient.send(:extract_language, multilingual, preferred_language: "en")
+    assert_equal "nl", AnnaArchiveClient.send(:extract_language, dutch)
+    assert_equal "pt-BR", AnnaArchiveClient.send(:extract_language, brazilian_portuguese)
+  end
+
   test "search tries next configured URL when first URL fails" do
     VCR.turned_off do
       SettingsService.set(:anna_archive_url, "https://offline.example\nhttps://annas-archive.org")
