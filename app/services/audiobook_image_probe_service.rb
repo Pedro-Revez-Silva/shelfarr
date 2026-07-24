@@ -11,7 +11,7 @@ class AudiobookImageProbeService
   MAX_DIMENSION = 12_000
   MAX_PIXELS = 40_000_000
   MAX_DURATION = 10.seconds
-  MAX_ADDRESS_SPACE_BYTES = 768.megabytes
+  MAX_ADDRESS_SPACE_BYTES = 1_536.megabytes
   SUPPORTED_FORMATS = %w[jpeg png webp].freeze
   PROBE_SCRIPT = <<~'RUBY'.freeze
     Vips.concurrency_set(1)
@@ -19,6 +19,8 @@ class AudiobookImageProbeService
     Vips.cache_set_max_mem(32 * 1024 * 1024)
     input_path = ARGV.fetch(0)
     format = ARGV.fetch(1)
+    max_dimension = Integer(ARGV.fetch(2))
+    max_pixels = Integer(ARGV.fetch(3))
     image = case format
     when "jpeg" then Vips::Image.jpegload(input_path, access: :sequential, fail_on: :error)
     when "png" then Vips::Image.pngload(input_path, access: :sequential, fail_on: :error)
@@ -27,6 +29,10 @@ class AudiobookImageProbeService
     end
     pages = image.get_typeof("n-pages").zero? ? 1 : image.get("n-pages")
     abort "animated images are not supported" unless pages == 1
+    abort "image dimensions are too large" unless
+      image.width.between?(1, max_dimension) &&
+        image.height.between?(1, max_dimension) &&
+        image.width * image.height <= max_pixels
     encoded = case format
     when "jpeg" then image.jpegsave_buffer(Q: 90, strip: true)
     when "png" then image.pngsave_buffer(strip: true)
@@ -87,6 +93,8 @@ class AudiobookImageProbeService
             "-e", PROBE_SCRIPT,
             descriptor_path(3),
             expected_format,
+            MAX_DIMENSION.to_s,
+            MAX_PIXELS.to_s,
             3 => file,
             4 => image_output,
             out: metadata_output.path,
