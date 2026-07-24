@@ -8,6 +8,8 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     SettingsService.set(:anna_archive_url, "https://annas-archive.org")
     SettingsService.set(:anna_archive_api_key, "test-api-key")
     SettingsService.set(:flaresolverr_url, "")
+    @previous_outbound_resolver = OutboundUrlGuard.resolver
+    OutboundUrlGuard.resolver = ->(_host) { [ "203.0.113.10" ] }
     AnnaArchiveClient.reset_connection!
   end
 
@@ -15,6 +17,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     SettingsService.set(:anna_archive_enabled, false)
     SettingsService.set(:anna_archive_api_key, "")
     SettingsService.set(:flaresolverr_url, "")
+    OutboundUrlGuard.resolver = @previous_outbound_resolver
     AnnaArchiveClient.reset_connection!
   end
 
@@ -57,7 +60,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
       assert results.is_a?(Array)
       assert results.any?
-      assert_equal "abc123def456", results.first.md5
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
       assert_equal "Test Book Title", results.first.title
     end
   end
@@ -68,8 +71,8 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
         <body>
           <form class="js-search-form">
             <div class="js-aarecord-list-outer">
-              <div><h3>Ebook Result With A Descriptive Title</h3><a href="/md5/eb00123">Details</a><span class="badge">epub</span><span>5 MB English 2024</span></div>
-              <div><h3>Audiobook Result With A Descriptive Title</h3><a href="/md5/a0d10123">Details</a><span class="badge">zip</span><span>500 MB English 2024</span></div>
+              <div><h3>Ebook Result With A Descriptive Title</h3><a href="/md5/11111111111111111111111111111111">Details</a><span class="badge">epub</span><span>5 MB English 2024</span></div>
+              <div><h3>Audiobook Result With A Descriptive Title</h3><a href="/md5/22222222222222222222222222222222">Details</a><span class="badge">zip</span><span>500 MB English 2024</span></div>
             </div>
           </form>
         </body>
@@ -93,7 +96,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
       assert_requested search_request
       assert_equal 1, results.size
-      assert_equal "a0d10123", results.first.md5
+      assert_equal "22222222222222222222222222222222", results.first.md5
       assert_equal "zip", results.first.file_type
     end
   end
@@ -106,7 +109,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
             <div class="js-aarecord-list-outer"></div>
             <div class="js-partial-matches-show hidden">
               <div class="js-aarecord-list-outer">
-                <div><h3>Related Audiobook With A Descriptive Title</h3><a href="/md5/fa111123">Details</a><span class="badge">zip</span><span>500 MB English 2024</span></div>
+                <div><h3>Related Audiobook With A Descriptive Title</h3><a href="/md5/33333333333333333333333333333333">Details</a><span class="badge">zip</span><span>500 MB English 2024</span></div>
               </div>
             </div>
           </form>
@@ -179,7 +182,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
       results = AnnaArchiveClient.search("test book")
 
-      assert_equal "abc123def456", results.first.md5
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
       assert_requested :get, /offline\.example\/search/
       assert_requested :get, /annas-archive\.org\/search/
     end
@@ -218,7 +221,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
       results = AnnaArchiveClient.search("test book")
 
-      assert_equal "abc123def456", results.first.md5
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
       assert_requested :get, /incompatible\.example\/search/
       assert_requested :get, /annas-archive\.org\/search/
     end
@@ -246,6 +249,17 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search rejects responses above its byte limit before parsing" do
+    VCR.turned_off do
+      stub_request(:get, /annas-archive\.org\/search/)
+        .to_return(status: 200, body: "x" * (AnnaArchiveClient::MAX_SEARCH_RESPONSE_BYTES + 1))
+
+      assert_raises AnnaArchiveClient::ResponseTooLargeError do
+        AnnaArchiveClient.search("oversized response")
+      end
+    end
+  end
+
   test "search returns empty array on connection error" do
     VCR.turned_off do
       stub_request(:get, /annas-archive\.org\/search/)
@@ -261,9 +275,9 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     VCR.turned_off do
       stub_anna_download_api
 
-      url = AnnaArchiveClient.get_download_url("abc123def456")
+      url = AnnaArchiveClient.get_download_url("0123456789abcdef0123456789abcdef")
 
-      assert_equal "magnet:?xt=urn:btih:abc123def456", url
+      assert_equal "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", url
     end
   end
 
@@ -275,9 +289,9 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
         .to_raise(Faraday::ConnectionFailed.new("Connection failed"))
       stub_anna_download_api
 
-      url = AnnaArchiveClient.get_download_url("abc123def456")
+      url = AnnaArchiveClient.get_download_url("0123456789abcdef0123456789abcdef")
 
-      assert_equal "magnet:?xt=urn:btih:abc123def456", url
+      assert_equal "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", url
       assert_requested :get, /offline\.example\/dyn\/api\/fast_download\.json/
       assert_requested :get, /annas-archive\.org\/dyn\/api\/fast_download\.json/
     end
@@ -293,6 +307,17 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
       assert_raises AnnaArchiveClient::Error do
         AnnaArchiveClient.get_download_url("invalid")
+      end
+    end
+  end
+
+  test "get_download_url rejects a non-object API response" do
+    VCR.turned_off do
+      stub_request(:get, /annas-archive\.org\/dyn\/api\/fast_download\.json/)
+        .to_return(status: 200, body: [].to_json)
+
+      assert_raises AnnaArchiveClient::RetryableError do
+        AnnaArchiveClient.get_download_url("0123456789abcdef0123456789abcdef")
       end
     end
   end
@@ -393,7 +418,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
       assert results.is_a?(Array)
       assert results.any?
-      assert_equal "abc123def456", results.first.md5
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
 
       SettingsService.set(:flaresolverr_url, "")
     end
@@ -409,7 +434,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
       AnnaArchiveClient.search("test book")
 
-      assert_equal "https://annas-archive.org/md5/abc123def456", AnnaArchiveClient.info_url("abc123def456")
+      assert_equal "https://annas-archive.org/md5/0123456789abcdef0123456789abcdef", AnnaArchiveClient.info_url("0123456789abcdef0123456789abcdef")
     end
   end
 
@@ -432,7 +457,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     html = <<~HTML
       <html>
         <body>
-          <a href="/md5/abc123def456">
+          <a href="/md5/0123456789abcdef0123456789abcdef">
             <div>
               <h3>Test Book Title</h3>
               <span class="author">by Test Author</span>
@@ -454,6 +479,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
           message: "",
           solution: {
             status: 200,
+            url: "https://annas-archive.org/search?q=test",
             response: html
           }
         }.to_json
@@ -464,7 +490,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     html = <<~HTML
       <html>
         <body>
-          <a href="/md5/abc123def456">
+          <a href="/md5/0123456789abcdef0123456789abcdef">
             <div>
               <h3>Test Book Title</h3>
               <span class="author">by Test Author</span>
@@ -484,10 +510,10 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
   def stub_anna_download_api
     stub_request(:get, /annas-archive\.org\/dyn\/api\/fast_download\.json/)
-      .with(query: hash_including({ "md5" => "abc123def456", "key" => "test-api-key" }))
+      .with(query: hash_including({ "md5" => "0123456789abcdef0123456789abcdef", "key" => "test-api-key" }))
       .to_return(
         status: 200,
-        body: { download_url: "magnet:?xt=urn:btih:abc123def456" }.to_json
+        body: { download_url: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }.to_json
       )
   end
 end

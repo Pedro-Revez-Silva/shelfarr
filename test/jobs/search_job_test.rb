@@ -1925,7 +1925,7 @@ class SearchJobTest < ActiveJob::TestCase
   test "still appends author to Anna's Archive search query" do
     SettingsService.set(:prowlarr_api_key, "")
     result = AnnaArchiveClient::Result.new(
-      md5: "abc123def456",
+      md5: "0123456789abcdef0123456789abcdef",
       title: @request.book.title,
       author: @request.book.author,
       year: 2019,
@@ -1959,7 +1959,7 @@ class SearchJobTest < ActiveJob::TestCase
     )
     request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
     result = AnnaArchiveClient::Result.new(
-      md5: "a0d10123def456",
+      md5: "11111111111111111111111111111111",
       title: book.title,
       author: book.author,
       year: 2024,
@@ -2116,7 +2116,7 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_password, "secret")
 
     anna_result = AnnaArchiveClient::Result.new(
-      md5: "abc123def456",
+      md5: "22222222222222222222222222222222",
       title: @request.book.title,
       author: @request.book.author,
       year: 2019,

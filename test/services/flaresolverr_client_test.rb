@@ -105,6 +105,7 @@ class FlaresolverrClientTest < ActiveSupport::TestCase
           message: "",
           solution: {
             status: 200,
+            url: "https://example.com",
             response: "<html>Test content</html>"
           }
         }.to_json

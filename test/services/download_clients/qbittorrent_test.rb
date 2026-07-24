@@ -47,6 +47,173 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "guarded magnet submission strips tracker and webseed endpoints" do
+    hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    magnet = "magnet:?xt=urn:btih:#{hash}&tr=http%3A%2F%2F169.254.169.254%2Ftracker&ws=http%3A%2F%2F10.0.0.5%2Fbook"
+
+    prepared = @client.send(:prepare_torrent_submission, magnet, validate_source_url: true)
+
+    assert_equal "magnet:?xt=urn:btih:#{hash}", prepared[:url]
+    assert_equal hash, prepared[:hash]
+  end
+
+  test "guarded magnet submission rejects a missing BTIH" do
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(
+        :prepare_torrent_submission,
+        "magnet:?tr=http%3A%2F%2F169.254.169.254%2Ftracker",
+        validate_source_url: true
+      )
+    end
+  end
+
+  test "guarded magnet submission rejects oversized parameter sets before parsing" do
+    magnet = "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=#{'x' * DownloadClients::Base::MAX_UNTRUSTED_MAGNET_BYTES}"
+
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:prepare_torrent_submission, magnet, validate_source_url: true)
+    end
+  end
+
+  test "guarded torrent data strips tracker and webseed endpoints" do
+    torrent = {
+      "announce" => "http://169.254.169.254/tracker",
+      "announce-list" => [ [ "http://10.0.0.5/tracker" ] ],
+      "url-list" => [ "http://127.0.0.1/book.zip" ],
+      "httpseeds" => [ "http://192.168.1.2/book.zip" ],
+      "nodes" => [ [ "10.0.0.6", 6881 ] ],
+      "info" => {
+        "name" => "book.zip",
+        "piece length" => 16_384,
+        "pieces" => "x" * 20,
+        "length" => 1_000
+      }
+    }.bencode
+
+    sanitized = BEncode.load(@client.send(:sanitize_untrusted_torrent_data!, torrent))
+
+    assert_equal [ "info" ], sanitized.keys
+    assert_equal 1_000, sanitized.dig("info", "length")
+  end
+
+  test "guarded torrent data rejects malformed file metadata with a typed error" do
+    malformed = { "info" => { "files" => [ "chapter.mp3" ] } }.bencode
+
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:sanitize_untrusted_torrent_data!, malformed)
+    end
+  end
+
+  test "guarded torrent data rejects incomplete v1 file and piece schemas" do
+    malformed = {
+      "info" => {
+        "name" => "book",
+        "piece length" => 16_384,
+        "pieces" => "x" * 20,
+        "files" => [ { "length" => 1_000 } ]
+      }
+    }.bencode
+
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:sanitize_untrusted_torrent_data!, malformed)
+    end
+  end
+
+  test "guarded torrent data rejects alternate and symlink path metadata" do
+    malformed = {
+      "info" => {
+        "name" => "book",
+        "piece length" => 16_384,
+        "pieces" => "x" * 20,
+        "files" => [
+          {
+            "length" => 1_000,
+            "path" => [ "chapter.mp3" ],
+            "path.utf-8" => [ "other.mp3" ],
+            "attr" => "l",
+            "symlink path" => [ "target" ]
+          }
+        ]
+      }
+    }.bencode
+
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:sanitize_untrusted_torrent_data!, malformed)
+    end
+  end
+
+  test "guarded torrent data rejects duplicate and ancestor-conflicting paths" do
+    malformed = {
+      "info" => {
+        "name" => "book",
+        "piece length" => 16_384,
+        "pieces" => "x" * 20,
+        "files" => [
+          { "length" => 500, "path" => [ "chapter" ] },
+          { "length" => 500, "path" => [ "chapter", "part.mp3" ] }
+        ]
+      }
+    }.bencode
+
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:sanitize_untrusted_torrent_data!, malformed)
+    end
+  end
+
+  test "guarded torrent data rejects excessive bencode nesting before decoding" do
+    nested = ("l" * (DownloadClients::Base::MAX_BENCODE_DEPTH + 1)) +
+      ("e" * (DownloadClients::Base::MAX_BENCODE_DEPTH + 1))
+
+    error = assert_raises(DownloadClients::Base::Error) do
+      @client.send(:sanitize_untrusted_torrent_data!, nested)
+    end
+    assert_includes error.message, "nested too deeply"
+  end
+
+  test "guarded torrent data rejects oversized integers before decoding" do
+    oversized = "d4:infod6:lengthi#{'9' * (DownloadClients::Base::MAX_BENCODE_INTEGER_DIGITS + 1)}eee"
+
+    error = assert_raises(DownloadClients::Base::Error) do
+      @client.send(:sanitize_untrusted_torrent_data!, oversized)
+    end
+    assert_includes error.message, "integer exceeds"
+  end
+
+  test "guarded torrent data rejects malformed private metadata with a typed error" do
+    malformed = {
+      "info" => {
+        "private" => {},
+        "name" => "book.zip",
+        "length" => 1_000
+      }
+    }.bencode
+
+    assert_raises(DownloadClients::Base::Error) do
+      @client.send(:sanitize_untrusted_torrent_data!, malformed)
+    end
+  end
+
+  test "guarded torrent fetch rejects an oversized response before buffering it" do
+    previous_resolver = OutboundUrlGuard.resolver
+    OutboundUrlGuard.resolver = ->(_host) { [ "203.0.113.10" ] }
+
+    VCR.turned_off do
+      stub_request(:get, "https://files.test/book.torrent")
+        .to_return(
+          status: 200,
+          headers: { "Content-Length" => (DownloadClients::Base::MAX_GUARDED_TORRENT_BYTES + 1).to_s },
+          body: ""
+        )
+
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.send(:resolve_guarded_torrent_source, "https://files.test/book.torrent")
+      end
+      assert_includes error.message, "size limit"
+    end
+  ensure
+    OutboundUrlGuard.resolver = previous_resolver
+  end
+
   test "add_torrent waits for delayed torrent registration using configured verification settings" do
     @client_record.update!(
       torrent_verification_max_attempts: 5,

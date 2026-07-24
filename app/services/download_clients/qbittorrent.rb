@@ -225,7 +225,10 @@ module DownloadClients
     # - torrent_data: String bencoded torrent payload for direct multipart upload
     def prepare_torrent_submission(url, validate_source_url: false)
       return { url: url } if url.blank?
-      return { url: url, hash: extract_hash_from_magnet(url) } if url.start_with?("magnet:")
+      if url.start_with?("magnet:")
+        url = sanitize_untrusted_magnet!(url) if validate_source_url
+        return { url: url, hash: extract_hash_from_magnet(url) }
+      end
       return { url: url } unless torrent_file_url?(url)
 
       source = if validate_source_url

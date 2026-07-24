@@ -2,38 +2,56 @@
 
 require "digest"
 require "pathname"
+require "zlib"
 
 # Descriptor-relative extraction for direct-download audiobook ZIP archives.
 # The source is an already-open private staging descriptor and every output is
 # created beneath a pinned staging root. Archive metadata can therefore never
 # create links/special files or redirect writes after an ancestor path swap.
 class DirectDownloadArchiveExtractor
-  MAX_ENTRY_PATH_BYTES = 4_096
+  MAX_ENTRY_PATH_BYTES = 1_024
   MAX_ENTRY_COMPONENT_BYTES = 255
-  MAX_ENTRY_DEPTH = 128
-  MAX_CENTRAL_DIRECTORY_BYTES = 32.megabytes
+  MAX_ENTRY_DEPTH = 32
+  MAX_CENTRAL_DIRECTORY_BYTES = 16.megabytes
+  MAX_TOTAL_PATH_BYTES = 8.megabytes
+  MAX_COMPRESSION_RATIO = 100
   MAX_TREE_ENTRY_FACTOR = 2
   HEARTBEAT_INTERVAL = 10.seconds
+  DEFAULT_MAX_DURATION = 10.minutes
 
   class Error < StandardError; end
 
-  def initialize(source:, destination:, output_root:, max_bytes:, max_entries:, heartbeat: nil)
+  def initialize(
+    source:,
+    destination:,
+    output_root:,
+    max_bytes:,
+    max_entries:,
+    heartbeat: nil,
+    allowed_file_extensions: nil,
+    max_duration: DEFAULT_MAX_DURATION
+  )
     @source = source
     @destination = Pathname(destination).expand_path
     @output_root = Pathname(output_root).expand_path
     @max_bytes = max_bytes.to_i
     @max_entries = max_entries.to_i
     @heartbeat = heartbeat
+    @allowed_file_extensions = Array(allowed_file_extensions).map { |extension| extension.to_s.downcase }.presence
+    @max_duration = max_duration.to_f
   end
 
   def extract!
     require "zip"
 
+    @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @max_duration
     validate_source!
     ZipArchivePreflightService.validate!(
       @source,
       max_entries: @max_entries,
-      max_central_directory_bytes: MAX_CENTRAL_DIRECTORY_BYTES
+      max_central_directory_bytes: MAX_CENTRAL_DIRECTORY_BYTES,
+      max_uncompressed_bytes: @max_bytes,
+      max_compression_ratio: MAX_COMPRESSION_RATIO
     )
     Zip::File.open(descriptor_path) do |archive|
       entries = validated_entries(archive.entries)
@@ -56,6 +74,8 @@ class DirectDownloadArchiveExtractor
           relative,
           root: @output_root
         ) do |output|
+          entry_bytes = 0
+          entry_crc = 0
           entry.get_input_stream do |input|
             buffer = +""
             while (chunk = input.read(FileCopyService::BUFFER_SIZE, buffer))
@@ -63,12 +83,21 @@ class DirectDownloadArchiveExtractor
 
               pulse!
               total_bytes += chunk.bytesize
+              entry_bytes += chunk.bytesize
               if total_bytes > @max_bytes
                 raise Error,
                   "ZIP archive exceeds extracted size limit of #{@max_bytes / 1.megabyte} MB"
               end
+              if entry_bytes > entry.size
+                raise Error, "ZIP archive entry exceeds its declared size: #{entry_label(entry.name)}"
+              end
+
+              entry_crc = Zlib.crc32(chunk, entry_crc)
               output.write(chunk)
             end
+          end
+          unless entry_bytes == entry.size && entry_crc == entry.crc
+            raise Error, "ZIP archive entry failed size or CRC validation: #{entry_label(entry.name)}"
           end
         end
         extracted_files += 1
@@ -128,19 +157,32 @@ class DirectDownloadArchiveExtractor
 
     paths = {}
     tree_paths = {}
-    entries.map do |entry|
+    total_path_bytes = 0
+    entries.filter_map do |entry|
       type = archive_entry_type(entry)
       relative = normalize_entry_name(entry.name, directory: type == :directory)
+      next if @allowed_file_extensions && type == :directory
+      if @allowed_file_extensions && !@allowed_file_extensions.include?(File.extname(relative).delete(".").downcase)
+        raise Error, "ZIP archive contains an unsupported file type: #{entry_label(entry.name)}"
+      end
       if paths.key?(relative)
         raise Error, "ZIP archive contains a duplicate path: #{entry_label(entry.name)}"
       end
       paths[relative] = type
       components = relative.split("/")
-      components.each_index do |index|
-        tree_path = components.first(index + 1).join("/")
+      tree_path = +""
+      components.each do |component|
+        tree_path << "/" unless tree_path.empty?
+        tree_path << component
+        next if tree_paths.key?(tree_path)
+
         tree_paths[tree_path] = true
+        total_path_bytes += tree_path.bytesize
         if tree_paths.size > @max_entries * MAX_TREE_ENTRY_FACTOR
           raise Error, "ZIP archive expands to too many files and directories"
+        end
+        if total_path_bytes > MAX_TOTAL_PATH_BYTES
+          raise Error, "ZIP archive paths exceed their aggregate size limit"
         end
       end
       [ entry, relative, type ]
@@ -166,7 +208,10 @@ class DirectDownloadArchiveExtractor
   end
 
   def normalize_entry_name(name, directory:)
-    value = name.to_s
+    value = name.to_s.dup
+    value.force_encoding(Encoding::UTF_8) if value.encoding == Encoding::ASCII_8BIT
+    raise Error, "ZIP archive contains an unsafe path: #{entry_label(name)}" unless value.valid_encoding?
+
     value = value.delete_suffix("/") if directory
     segments = value.split("/", -1)
     unsafe = !value.valid_encoding? || value.blank? || value.start_with?("/", "\\") ||
@@ -186,9 +231,9 @@ class DirectDownloadArchiveExtractor
   end
 
   def pulse!
-    return unless @heartbeat
-
     now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    raise Error, "ZIP archive extraction exceeded its time limit" if @deadline && now > @deadline
+    return unless @heartbeat
     return if @last_heartbeat_at && now - @last_heartbeat_at < HEARTBEAT_INTERVAL.to_f
 
     @heartbeat.call

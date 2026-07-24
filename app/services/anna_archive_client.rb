@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "uri"
+require "net/http"
 
 # Client for interacting with Anna's Archive
 # Search via HTML scraping, downloads via member API
@@ -13,6 +14,7 @@ class AnnaArchiveClient
   class ConfigurationError < Error; end
   class ScrapingError < Error; end
   class IncompatibleSiteError < Error; end
+  class ResponseTooLargeError < IncompatibleSiteError; end
   class BotProtectionError < Error; end
   class RetryableError < Error; end
   class SearchCancelled < StandardError; end
@@ -38,10 +40,20 @@ class AnnaArchiveClient
   end
 
   DEFAULT_BASE_URL = SettingsService::DEFAULT_ANNA_ARCHIVE_URL
-  ALLOWED_BASE_URL_SCHEMES = %w[http https].freeze
+  ALLOWED_BASE_URL_SCHEMES = %w[https].freeze
   EBOOK_FILE_TYPES = %w[epub pdf].freeze
   AUDIOBOOK_FILE_TYPES = %w[zip].freeze
   BOOK_CONTENT_TYPES = %w[book_nonfiction book_fiction book_unknown].freeze
+  MAX_SEARCH_RESPONSE_BYTES = 10.megabytes
+  MAX_API_RESPONSE_BYTES = 1.megabyte
+  MAX_DOWNLOAD_URL_BYTES = 8.kilobytes
+  MAX_RESPONSE_DURATION = 2.minutes
+  MAX_SEARCH_CANDIDATE_LINKS = 200
+  MAX_RESULT_TEXT_BYTES = 64.kilobytes
+  MAX_TITLE_BYTES = 1.kilobyte
+  MAX_AUTHOR_BYTES = 512
+  MAX_PARSE_DURATION = 2.seconds
+  HttpResponse = Data.define(:status, :body)
 
   class << self
     # Check if Anna's Archive is configured (has API key)
@@ -77,6 +89,9 @@ class AnnaArchiveClient
     # Requires member API key
     def get_download_url(md5, path_index: 0, domain_index: 0)
       ensure_configured!
+      unless md5.to_s.match?(/\A[0-9a-f]{32}\z/i)
+        raise Error, "Selected Anna's Archive result has an invalid MD5"
+      end
 
       params = {
         md5: md5,
@@ -86,17 +101,27 @@ class AnnaArchiveClient
       }
 
       with_base_url_rotation(context: "download API") do |base_url|
-        response = connection_for(base_url).get("/dyn/api/fast_download.json", params)
+        response = capped_get(
+          base_url,
+          "/dyn/api/fast_download.json",
+          params,
+          max_bytes: MAX_API_RESPONSE_BYTES
+        )
         raise RetryableError, "API request failed with status #{response.status}" unless response.status == 200
 
         data = JSON.parse(response.body)
+        unless data.is_a?(Hash)
+          raise RetryableError, "Anna's Archive API returned an invalid response"
+        end
 
         if data["error"]
           raise Error, "Anna's Archive API error: #{data['error']}"
         end
 
         download_url = data["download_url"]
-        raise Error, "No download URL returned" if download_url.blank?
+        unless download_url.is_a?(String) && download_url.present? && download_url.bytesize <= MAX_DOWNLOAD_URL_BYTES
+          raise Error, "No valid download URL returned"
+        end
 
         download_url
       rescue JSON::ParserError => e
@@ -169,9 +194,17 @@ class AnnaArchiveClient
 
       if FlaresolverrClient.configured?
         Rails.logger.info "[AnnaArchiveClient] Using FlareSolverr for request"
-        FlaresolverrClient.get(url)
+        endpoint = OutboundUrlGuard.validate!(url)
+        raise ConfigurationError, "Anna's Archive URL must use https" unless endpoint.use_ssl?
+
+        html = FlaresolverrClient.get(url)
+        if html.bytesize > MAX_SEARCH_RESPONSE_BYTES
+          raise ResponseTooLargeError, "Anna's Archive search response is too large"
+        end
+
+        html
       else
-        response = connection_for(base_url).get(path)
+        response = capped_get(base_url, path, max_bytes: MAX_SEARCH_RESPONSE_BYTES)
 
         # Detect bot protection
         if response.status == 403 || bot_protection_detected?(response.body)
@@ -182,6 +215,8 @@ class AnnaArchiveClient
         raise RetryableError, "Search failed with status #{response.status}" unless response.status == 200
         response.body
       end
+    rescue OutboundUrlGuard::BlockedUrlError => e
+      raise ConfigurationError, "Refused Anna's Archive URL: #{e.message}"
     rescue FlaresolverrClient::Error => e
       raise ConnectionError, "FlareSolverr error: #{e.message}"
     end
@@ -215,17 +250,6 @@ class AnnaArchiveClient
       configured_base_urls
     end
 
-    def connection_for(base_url)
-      @connections ||= {}
-      @connections[base_url] ||= Faraday.new(url: base_url) do |f|
-        f.request :url_encoded
-        f.adapter Faraday.default_adapter
-        f.headers["User-Agent"] = "Shelfarr/1.0"
-        f.options.timeout = 30
-        f.options.open_timeout = 10
-      end
-    end
-
     def configured_base_urls
       raw_url = SettingsService.get(:anna_archive_url, default: DEFAULT_BASE_URL).to_s
       raw_url = DEFAULT_BASE_URL if raw_url.blank?
@@ -242,7 +266,7 @@ class AnnaArchiveClient
 
       uri = URI.parse(url)
       unless ALLOWED_BASE_URL_SCHEMES.include?(uri.scheme) && uri.host.present?
-        raise ConfigurationError, "Anna's Archive URL must be a valid http or https URL"
+        raise ConfigurationError, "Anna's Archive URL must be a valid https URL"
       end
 
       if uri.path.present? && uri.path != "/"
@@ -251,6 +275,9 @@ class AnnaArchiveClient
 
       if uri.query.present? || uri.fragment.present? || uri.userinfo.present?
         raise ConfigurationError, "Anna's Archive URL must only include the site origin"
+      end
+      if OutboundUrlGuard.obviously_private_host?(uri.host)
+        raise ConfigurationError, "Anna's Archive URL must not use a private or blocked address"
       end
 
       uri.to_s.delete_suffix("/")
@@ -293,6 +320,53 @@ class AnnaArchiveClient
       SettingsService.get(:anna_archive_api_key)
     end
 
+    def capped_get(base_url, path, params = nil, max_bytes:)
+      body = +""
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + MAX_RESPONSE_DURATION
+      uri = URI.join("#{base_url}/", path)
+      query = URI.decode_www_form(uri.query.to_s)
+      params&.each { |key, value| query << [ key.to_s, value.to_s ] }
+      uri.query = URI.encode_www_form(query) if query.any?
+      endpoint = OutboundUrlGuard.validate!(uri.to_s)
+      raise ConfigurationError, "Anna's Archive URL must use https" unless endpoint.use_ssl?
+
+      response = nil
+      Net::HTTP.start(
+        endpoint.host,
+        endpoint.port,
+        use_ssl: true,
+        ipaddr: endpoint.ipaddr,
+        open_timeout: 10,
+        read_timeout: 30
+      ) do |http|
+        request = Net::HTTP::Get.new(endpoint.uri)
+        request["User-Agent"] = "Shelfarr/1.0"
+        http.request(request) do |incoming|
+          response = incoming
+          content_length = incoming["Content-Length"].to_i if incoming["Content-Length"].present?
+          if content_length && content_length > max_bytes
+            raise ResponseTooLargeError, "Anna's Archive response exceeds #{max_bytes} bytes"
+          end
+          incoming.read_body do |chunk|
+          if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+            raise RetryableError, "Anna's Archive response exceeded its time limit"
+          end
+          if body.bytesize + chunk.bytesize > max_bytes
+            raise ResponseTooLargeError, "Anna's Archive response exceeds #{max_bytes} bytes"
+          end
+
+          body << chunk
+        end
+        end
+      end
+
+      HttpResponse.new(status: response.code.to_i, body: body)
+    rescue OutboundUrlGuard::BlockedUrlError => e
+      raise ConfigurationError, "Refused Anna's Archive URL: #{e.message}"
+    rescue SocketError, IOError, EOFError, Timeout::Error, Net::ProtocolError, OpenSSL::SSL::SSLError, SystemCallError => e
+      raise ConnectionError, "Failed to connect to Anna's Archive: #{e.message}"
+    end
+
     def build_search_url(query, file_types, content_types:, language: nil)
       params = [ [ "q", query ] ]
       Array(file_types).each { |file_type| params << [ "ext", file_type ] }
@@ -310,8 +384,12 @@ class AnnaArchiveClient
       results = []
       requested_file_types = Array(file_types).map { |file_type| file_type.to_s.downcase }
       seen_md5s = {}
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + MAX_PARSE_DURATION
 
       primary_result_links(doc).each do |link|
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          raise ScrapingError, "Anna's Archive search response took too long to parse"
+        end
         break if results.size >= limit
 
         result = parse_result_element(link, preferred_language: preferred_language)
@@ -331,12 +409,16 @@ class AnnaArchiveClient
 
     def primary_result_links(doc)
       search_form = doc.at_css("form.js-search-form")
-      return doc.css("a[href*='/md5/']") unless search_form
+      return doc.css("a[href*='/md5/']").first(MAX_SEARCH_CANDIDATE_LINKS) unless search_form
 
-      search_form.css(".js-aarecord-list-outer").reject do |list|
+      primary_lists = search_form.css(".js-aarecord-list-outer").reject do |list|
         list.ancestors(".js-partial-matches-show").any?
-      end.flat_map do |list|
-        list.css("a[href*='/md5/']").to_a
+      end
+      primary_lists.each_with_object([]) do |list, links|
+        list.css("a[href*='/md5/']").each do |link|
+          links << link
+          return links if links.size >= MAX_SEARCH_CANDIDATE_LINKS
+        end
       end
     end
 
@@ -345,7 +427,7 @@ class AnnaArchiveClient
       return nil unless href
 
       # Extract MD5 from URL like /md5/abc123def456...
-      md5_match = href.match(/\/md5\/([a-f0-9]+)/i)
+      md5_match = href.match(%r{/md5/([a-f0-9]{32})(?:\z|[/?#])}i)
       return nil unless md5_match
 
       md5 = md5_match[1]
@@ -356,6 +438,7 @@ class AnnaArchiveClient
 
       # Extract text content
       text = container.text.to_s
+      return nil if text.bytesize > MAX_RESULT_TEXT_BYTES
 
       # Try to parse title, author, and metadata from the text
       title = extract_title(container, link)
@@ -365,7 +448,8 @@ class AnnaArchiveClient
       language = extract_language(container, preferred_language: preferred_language)
       year = extract_year(text)
 
-      return nil if title.blank?
+      return nil if title.blank? || title.bytesize > MAX_TITLE_BYTES
+      return nil if author.present? && author.bytesize > MAX_AUTHOR_BYTES
 
       Result.new(
         md5: md5,

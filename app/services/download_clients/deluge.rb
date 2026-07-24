@@ -388,7 +388,9 @@ module DownloadClients
 
     def prepare_torrent_submission(url, validate_source_url: false)
       return { url: url } if url.blank?
-      return { url: url } if url.start_with?("magnet:")
+      if url.start_with?("magnet:")
+        return { url: validate_source_url ? sanitize_untrusted_magnet!(url) : url }
+      end
 
       source = if validate_source_url
         resolve_guarded_torrent_source(url)

@@ -105,6 +105,8 @@ Audible Backup additionally requires the audiobook output filesystem to support 
 
 Filesystem race defenses assume every process running as Shelfarr's `PUID` is trusted. A malicious process with the same UID can modify any library file that Shelfarr itself can modify; isolate untrusted download tools under a different UID and grant only the narrow shared-directory access they need.
 
+FlareSolverr runs a browser against remote pages. If you enable it for Anna's Archive, isolate its container with egress rules that deny private, loopback, link-local, and cloud metadata networks; Shelfarr cannot validate browser subrequests made inside FlareSolverr.
+
 Example with custom port:
 ```yaml
 environment:

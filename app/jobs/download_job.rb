@@ -5,6 +5,7 @@ require "uri"
 require "tempfile"
 require "timeout"
 require "pathname"
+require "digest/md5"
 
 class DownloadJob < ApplicationJob
   # Wraps network-level failures during a direct HTTP download so failure
@@ -17,7 +18,11 @@ class DownloadJob < ApplicationJob
   MAX_DIRECT_DOWNLOAD_BYTES = 512.megabytes
   MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES = 2.gigabytes
   MAX_DIRECT_DOWNLOAD_REDIRECTS = 5
-  MAX_DIRECT_ARCHIVE_ENTRIES = 10_000
+  MAX_DIRECT_DOWNLOAD_DURATION = 30.minutes
+  MAX_DIRECT_ARCHIVE_ENTRIES = 2_000
+  MAX_AUDIOBOOK_ARCHIVE_AUDIO_FILES = 500
+  MAX_AUDIOBOOK_ARCHIVE_PROBE_DURATION = 5.minutes
+  MIN_AUDIOBOOK_FILE_BYTES = 1.kilobyte
   DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL = 30.seconds
   DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
@@ -187,6 +192,7 @@ class DownloadJob < ApplicationJob
          AnnaArchiveClient::NotConfiguredError,
          AnnaArchiveClient::ConfigurationError,
          AnnaArchiveClient::BotProtectionError,
+         AnnaArchiveClient::ResponseTooLargeError,
          AnnaArchiveClient::RetryableError,
          ZLibraryClient::ConnectionError,
          ZLibraryClient::AuthenticationError,
@@ -214,10 +220,15 @@ class DownloadJob < ApplicationJob
     Rails.logger.info "[DownloadJob] Fetching download URL from Anna's Archive for MD5: #{md5}"
 
     download_url = AnnaArchiveClient.get_download_url(md5)
-    Rails.logger.info "[DownloadJob] Got download URL: #{UrlRedactor.redact(download_url).truncate(100)}"
+    Rails.logger.info "[DownloadJob] Received Anna's Archive download artifact"
 
     # Check if it's a torrent/magnet link or direct download
     if torrent_download_url?(download_url)
+      if download.request.book.audiobook?
+        raise AnnaArchiveClient::Error,
+          "Anna's Archive audiobook torrents require verified post-download archive processing and are not supported"
+      end
+
       # Send to torrent client
       send_to_torrent_client(download, search_result, download_url)
     else
@@ -225,12 +236,12 @@ class DownloadJob < ApplicationJob
       Rails.logger.info "[DownloadJob] Anna's Archive returned direct link, downloading via HTTP"
       if download.request.book.audiobook?
         begin
-          handle_direct_audiobook_download(download, search_result, download_url, source_name: "Anna's Archive")
+          handle_direct_audiobook_archive_download(download, search_result, download_url, source_name: "Anna's Archive")
         rescue => e
           fail_direct_dispatch!(download, e, message: "Anna's Archive download failed: #{e.message}")
         end
       else
-        handle_direct_http_download(download, search_result, download_url)
+        handle_direct_http_download(download, search_result, download_url, expected_md5: search_result.guid)
       end
     end
   end
@@ -344,15 +355,17 @@ class DownloadJob < ApplicationJob
           max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
           download: download
         )
+        verify_anna_archive_digest!(archive, search_result.guid) if search_result.from_anna_archive?
         verify_downloaded_zip!(archive)
         refresh_direct_download_heartbeat!(download)
         extract_zip_to_directory(
           archive,
           staging_dir,
           output_root: base_path,
-          download: download
+          download: download,
+          allowed_file_extensions: search_result.from_anna_archive? ? DIRECT_AUDIOBOOK_FILE_EXTENSIONS : nil
         )
-        verify_extracted_audiobook!(staging_dir)
+        verify_extracted_audiobook!(staging_dir, download: download)
       ensure
         staged_archive.io.close unless staged_archive.io.closed?
       end
@@ -413,7 +426,7 @@ class DownloadJob < ApplicationJob
         max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
         download: download
       )
-      verify_downloaded_audiobook_file!(staged_file)
+      verify_downloaded_audiobook_file!(staged_file, extension: extension)
 
       refresh_direct_download_heartbeat!(download)
       finalized = file_service.publish_file_and_finalize!(staged_file)
@@ -437,7 +450,7 @@ class DownloadJob < ApplicationJob
     end
   end
 
-  def handle_direct_http_download(download, search_result, download_url)
+  def handle_direct_http_download(download, search_result, download_url, expected_md5: nil)
     finalized = false
     book = download.request.book
 
@@ -476,6 +489,7 @@ class DownloadJob < ApplicationJob
       staged_file = staged.io
       staged_file.binmode
       download_file_via_http(search_result, download_url, staged_file, download: download)
+      verify_anna_archive_digest!(staged_file, expected_md5) if expected_md5
       verify_downloaded_ebook!(staged_file, expected_extension: expected_extension)
 
       refresh_direct_download_heartbeat!(download)
@@ -669,9 +683,13 @@ class DownloadJob < ApplicationJob
     bytes_written = 0
     redirects_followed = 0
     download_complete = false
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + MAX_DIRECT_DOWNLOAD_DURATION
     last_heartbeat_at = refresh_direct_download_heartbeat!(download) if download
 
     loop do
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        raise DirectDownloadError, "Direct download exceeded its time limit"
+      end
       response_handled = false
 
       Net::HTTP.start(
@@ -701,7 +719,8 @@ class DownloadJob < ApplicationJob
 
           unless response.is_a?(Net::HTTPSuccess)
             message = "Direct download failed with status #{response.code}"
-            raise DirectDownloadError, message if response.code.to_i == 429 || response.code.to_i >= 500
+            status = response.code.to_i
+            raise DirectDownloadError, message if status.in?([ 408, 425, 429 ]) || status >= 500
 
             raise message
           end
@@ -716,6 +735,9 @@ class DownloadJob < ApplicationJob
           destination.truncate(0)
           bytes_written = 0
           response.read_body do |chunk|
+            if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+              raise DirectDownloadError, "Direct download exceeded its time limit"
+            end
             if download && last_heartbeat_at < DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL.ago
               last_heartbeat_at = refresh_direct_download_heartbeat!(download)
             end
@@ -741,7 +763,7 @@ class DownloadJob < ApplicationJob
 
     file_size = destination.stat.size
     Rails.logger.info "[DownloadJob] Downloaded #{(file_size / 1024.0 / 1024.0).round(2)} MB"
-  rescue SocketError, IOError, EOFError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError => e
+  rescue SocketError, IOError, EOFError, Timeout::Error, Net::ProtocolError, OpenSSL::SSL::SSLError, SystemCallError => e
     raise DirectDownloadError, "Direct download request failed: #{e.message}"
   end
 
@@ -768,12 +790,17 @@ class DownloadJob < ApplicationJob
   end
 
   def validate_direct_download_url!(url, search_result = nil)
-    OutboundUrlGuard.validate!(
+    endpoint = OutboundUrlGuard.validate!(
       normalize_direct_download_url(url),
       allow_private: allow_private_download?(search_result)
     )
-  rescue OutboundUrlGuard::BlockedUrlError => e
-    raise "Invalid direct download URL: #{e.message}"
+    if search_result&.from_anna_archive? && endpoint.scheme != "https"
+      raise "Anna's Archive returned an insecure download URL"
+    end
+
+    endpoint
+  rescue OutboundUrlGuard::BlockedUrlError
+    raise "Invalid direct download URL"
   end
 
   def allow_private_download?(search_result)
@@ -854,19 +881,29 @@ class DownloadJob < ApplicationJob
     raise "Downloaded file is missing: #{e.message}"
   end
 
-  def verify_downloaded_audiobook_file!(path)
+  def verify_downloaded_audiobook_file!(path, extension:)
     with_regular_download_io(path) do |file|
-      file_size = file.stat.size
-      raise "Downloaded file is empty" if file_size.zero?
-
-      head = read_download_head(file, [ 512, file_size ].min)
-      lowered = head.downcase
-      if lowered.include?("<html") || lowered.include?("<!doctype")
-        raise "Downloaded file is an HTML page, not an audiobook"
-      end
+      raise "Downloaded file is not a structurally valid audiobook" unless valid_audiobook_io?(file, extension)
     end
   rescue Errno::ENOENT => e
     raise "Downloaded file is missing: #{e.message}"
+  end
+
+  def verify_anna_archive_digest!(file, expected_md5)
+    unless expected_md5.to_s.match?(/\A[0-9a-f]{32}\z/i)
+      raise "Anna's Archive result has an invalid MD5"
+    end
+
+    position = file.pos
+    digest = Digest::MD5.new
+    file.rewind
+    buffer = +""
+    digest.update(buffer) while file.read(FileCopyService::BUFFER_SIZE, buffer)
+    unless digest.hexdigest.casecmp?(expected_md5)
+      raise "Anna's Archive download did not match the selected file"
+    end
+  ensure
+    file.seek(position, IO::SEEK_SET) if position
   end
 
   def with_regular_download_io(path_or_io)
@@ -896,7 +933,7 @@ class DownloadJob < ApplicationJob
     file.seek(position, IO::SEEK_SET) if position
   end
 
-  def extract_zip_to_directory(source, destination_dir, output_root:, download: nil)
+  def extract_zip_to_directory(source, destination_dir, output_root:, download: nil, allowed_file_extensions: nil)
     unless source.respond_to?(:stat) && source.respond_to?(:read)
       raise ArgumentError, "Direct ZIP extraction requires an already-open staging file"
     end
@@ -908,39 +945,230 @@ class DownloadJob < ApplicationJob
       output_root: output_root,
       max_bytes: MAX_DIRECT_AUDIOBOOK_DOWNLOAD_BYTES,
       max_entries: MAX_DIRECT_ARCHIVE_ENTRIES,
-      heartbeat: heartbeat
+      heartbeat: heartbeat,
+      allowed_file_extensions: allowed_file_extensions
     ).extract!
   end
 
-  def verify_extracted_audiobook!(destination_dir)
+  def verify_extracted_audiobook!(destination_dir, download: nil)
     audio_files = Dir.glob(File.join(destination_dir, "**", "*"), File::FNM_DOTMATCH).select do |path|
       File.file?(path) && DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete(".").downcase)
     end
-    return if audio_files.any? && audio_files.all? { |path| valid_audiobook_signature?(path) }
+    if audio_files.size > MAX_AUDIOBOOK_ARCHIVE_AUDIO_FILES
+      raise "Downloaded audiobook archive contains too many audio files"
+    end
+
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + MAX_AUDIOBOOK_ARCHIVE_PROBE_DURATION
+    last_heartbeat_at = nil
+    valid = audio_files.any? && audio_files.all? do |path|
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        raise "Downloaded audiobook archive validation exceeded its time limit"
+      end
+      if download && (!last_heartbeat_at || last_heartbeat_at < DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL.ago)
+        last_heartbeat_at = refresh_direct_download_heartbeat!(download)
+      end
+
+      valid_audiobook_signature?(path)
+    end
+    return if valid
 
     raise "Downloaded audiobook archive does not contain valid supported audio files"
   end
 
   def valid_audiobook_signature?(path)
-    head = File.binread(path, 12)
-    extension = File.extname(path).delete(".").downcase
+    with_regular_download_io(path) do |file|
+      valid_audiobook_io?(file, File.extname(path).delete(".").downcase)
+    end
+  rescue EOFError, Errno::ENOENT, Errno::EACCES
+    false
+  end
 
-    case extension
+  def valid_audiobook_io?(file, extension)
+    file_size = file.stat.size
+    return false if file_size < MIN_AUDIOBOOK_FILE_BYTES
+
+    head = read_download_head(file, [ 64.kilobytes, file_size ].min)
+    structurally_valid = case extension.to_s.downcase
     when "mp3"
-      head.start_with?("ID3") || (head.getbyte(0) == 0xff && (head.getbyte(1).to_i & 0xe0) == 0xe0)
+      valid_mp3_stream?(file, head, file_size)
     when "m4b", "m4a"
-      head.byteslice(4, 4) == "ftyp"
+      valid_mp4_audio_container?(file, file_size)
     when "aac"
-      head.start_with?("ADIF") || (head.getbyte(0) == 0xff && (head.getbyte(1).to_i & 0xf0) == 0xf0)
+      valid_aac_stream?(file, file_size)
     when "flac"
-      head.start_with?("fLaC")
+      valid_flac_stream?(file, file_size)
     when "ogg", "opus"
-      head.start_with?("OggS")
+      valid_ogg_stream?(file, file_size)
     else
       false
     end
-  rescue EOFError, Errno::ENOENT
-    false
+    structurally_valid && AudiobookProbeService.valid?(file.path)
+  end
+
+  def valid_mp3_stream?(file, head, file_size)
+    frame_offset = id3_payload_offset(head, file_size)
+    return false unless frame_offset
+
+    3.times do
+      return false if frame_offset + 4 > file_size
+
+      file.seek(frame_offset, IO::SEEK_SET)
+      frame_length = mpeg_audio_frame_length(file.read(4).to_s)
+      return false unless frame_length && frame_offset + frame_length <= file_size
+
+      frame_offset += frame_length
+    end
+    true
+  ensure
+    file.rewind
+  end
+
+  def id3_payload_offset(head, file_size)
+    return 0 unless head.start_with?("ID3")
+    return if head.bytesize < 10 || !head.getbyte(3).between?(2, 4)
+
+    size_bytes = head.byteslice(6, 4).bytes
+    return if size_bytes.any? { |byte| byte >= 0x80 }
+
+    offset = 10 + size_bytes.reduce(0) { |size, byte| (size << 7) | byte }
+    offset += 10 if head.getbyte(3) == 4 && (head.getbyte(5).to_i & 0x10).positive?
+    offset if offset <= file_size
+  end
+
+  def mpeg_audio_frame_length(header)
+    return unless header.bytesize == 4
+
+    first, second, third = header.bytes
+    return unless first == 0xff && (second & 0xe0) == 0xe0
+
+    version = (second >> 3) & 0x03
+    layer = (second >> 1) & 0x03
+    bitrate_index = (third >> 4) & 0x0f
+    sample_rate_index = (third >> 2) & 0x03
+    return if version == 1 || layer != 1 || bitrate_index.in?([ 0, 15 ]) || sample_rate_index == 3
+
+    bitrates = if version == 3
+      [ nil, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320 ]
+    else
+      [ nil, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 ]
+    end
+    sample_rates = {
+      3 => [ 44_100, 48_000, 32_000 ],
+      2 => [ 22_050, 24_000, 16_000 ],
+      0 => [ 11_025, 12_000, 8_000 ]
+    }
+    coefficient = version == 3 ? 144 : 72
+    ((coefficient * bitrates.fetch(bitrate_index) * 1_000) / sample_rates.fetch(version).fetch(sample_rate_index)) + ((third >> 1) & 1)
+  end
+
+  def valid_mp4_audio_container?(file, file_size)
+    offset = 0
+    boxes = 0
+    found_ftyp = false
+    found_mdat = false
+
+    while offset + 8 <= file_size && boxes < 4_096
+      file.seek(offset, IO::SEEK_SET)
+      header = file.read(16).to_s
+      size = header.byteslice(0, 4).unpack1("N")
+      type = header.byteslice(4, 4)
+      header_size = 8
+      if size == 1
+        return false if header.bytesize < 16
+
+        size = header.byteslice(8, 8).unpack1("Q>")
+        header_size = 16
+      elsif size.zero?
+        size = file_size - offset
+      end
+      return false if size < header_size || offset + size > file_size
+
+      found_ftyp = true if type == "ftyp"
+      found_mdat = true if type == "mdat" && size > header_size
+      offset += size
+      boxes += 1
+    end
+
+    offset == file_size && found_ftyp && found_mdat
+  ensure
+    file.rewind
+  end
+
+  def valid_aac_stream?(file, file_size)
+    file.rewind
+    offset = id3_payload_offset(file.read(10).to_s, file_size)
+    return false unless offset
+
+    3.times do
+      return false if offset + 7 > file_size
+
+      file.seek(offset, IO::SEEK_SET)
+      head = file.read(7).to_s
+      return false unless head.bytesize == 7
+
+      first, second = head.bytes
+      frame_length = ((head.getbyte(3) & 0x03) << 11) | (head.getbyte(4) << 3) | (head.getbyte(5) >> 5)
+      return false unless first == 0xff && (second & 0xf6) == 0xf0 && frame_length >= 7
+      return false if offset + frame_length > file_size
+
+      offset += frame_length
+    end
+    true
+  ensure
+    file.rewind
+  end
+
+  def valid_flac_stream?(file, file_size)
+    file.rewind
+    return false unless file.read(4) == "fLaC"
+
+    metadata_blocks = 0
+    loop do
+      header = file.read(4).to_s
+      return false unless header.bytesize == 4
+
+      last = (header.getbyte(0) & 0x80).positive?
+      type = header.getbyte(0) & 0x7f
+      length = header.byteslice(1, 3).bytes.reduce(0) { |value, byte| (value << 8) | byte }
+      return false if metadata_blocks.zero? && (type != 0 || length != 34)
+      return false if file.pos + length > file_size
+
+      file.seek(length, IO::SEEK_CUR)
+      metadata_blocks += 1
+      return false if metadata_blocks > 1_024
+      break if last
+    end
+    file.pos < file_size
+  ensure
+    file.rewind
+  end
+
+  def valid_ogg_stream?(file, file_size)
+    offset = 0
+    pages = 0
+    codec_found = false
+
+    while offset + 27 <= file_size && pages < 3
+      file.seek(offset, IO::SEEK_SET)
+      header = file.read(27).to_s
+      return false unless header.start_with?("OggS") && header.getbyte(4).zero?
+
+      segment_count = header.getbyte(26)
+      segment_table = file.read(segment_count).to_s
+      return false unless segment_table.bytesize == segment_count
+
+      body_bytes = segment_table.bytes.sum
+      return false if file.pos + body_bytes > file_size
+
+      body = file.read([ body_bytes, 64.kilobytes ].min).to_s
+      codec_found ||= body.include?("OpusHead") || body.include?("\x01vorbis".b) ||
+        body.include?("fLaC") || body.include?("Speex   ")
+      offset += 27 + segment_count + body_bytes
+      pages += 1
+    end
+    codec_found && pages >= 2
+  ensure
+    file.rewind
   end
 
   def ensure_book_available_for_direct_download!(book)

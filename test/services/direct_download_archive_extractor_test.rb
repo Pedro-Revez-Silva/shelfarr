@@ -150,16 +150,84 @@ class DirectDownloadArchiveExtractorTest < ActiveSupport::TestCase
     assert_empty Dir.children(@destination)
   end
 
+  test "rejects an entry whose streamed bytes do not match its declared CRC" do
+    with_archive("chapter.mp3" => "audio") do |source|
+      mutate_entry_fields(source.path) do |bytes, central, local|
+        bytes[central + 16, 4] = [ 0 ].pack("V")
+        bytes[local + 14, 4] = [ 0 ].pack("V")
+      end
+
+      error = assert_raises(DirectDownloadArchiveExtractor::Error) do
+        build_extractor(source).extract!
+      end
+      assert_includes error.message, "CRC validation"
+    end
+  end
+
+  test "stops when an entry inflates beyond its declared size" do
+    with_archive("chapter.mp3" => "audio") do |source|
+      mutate_entry_fields(source.path) do |bytes, central, local|
+        bytes[central + 24, 4] = [ 1 ].pack("V")
+        bytes[local + 22, 4] = [ 1 ].pack("V")
+      end
+
+      error = assert_raises(DirectDownloadArchiveExtractor::Error) do
+        build_extractor(source).extract!
+      end
+      assert_includes error.message, "declared size"
+    end
+  end
+
+  test "rejects files outside the explicitly allowed extensions" do
+    with_archive("chapter.mp3" => "audio", "cover.html" => "payload") do |source|
+      error = assert_raises(DirectDownloadArchiveExtractor::Error) do
+        build_extractor(source, allowed_file_extensions: %w[mp3]).extract!
+      end
+      assert_includes error.message, "unsupported file type"
+    end
+
+    assert_not File.exist?(File.join(@destination, "chapter.mp3"))
+    assert_not File.exist?(File.join(@destination, "cover.html"))
+  end
+
+  test "enforces a wall-clock extraction deadline" do
+    with_archive("chapter.mp3" => "audio") do |source|
+      error = assert_raises(DirectDownloadArchiveExtractor::Error) do
+        build_extractor(source, max_duration: -1).extract!
+      end
+      assert_includes error.message, "time limit"
+    end
+  end
+
+  test "rejects binary entry names that are not valid UTF-8 before creation" do
+    with_archive("chapter.mp3" => "audio") do |source|
+      error = assert_raises(DirectDownloadArchiveExtractor::Error) do
+        build_extractor(source).send(:normalize_entry_name, "\xFFchapter.mp3".b, directory: false)
+      end
+      assert_includes error.message, "unsafe path"
+    end
+  end
+
   private
 
-  def build_extractor(source, max_entries: 100)
+  def build_extractor(source, max_entries: 100, **options)
     DirectDownloadArchiveExtractor.new(
       source: source,
       destination: @destination,
       output_root: @root,
       max_bytes: 10.megabytes,
-      max_entries: max_entries
+      max_entries: max_entries,
+      **options
     )
+  end
+
+  def mutate_entry_fields(path)
+    bytes = File.binread(path)
+    end_record = bytes.rindex(ZipArchivePreflightService::END_OF_CENTRAL_DIRECTORY_SIGNATURE)
+    central = bytes.byteslice(end_record + 16, 4).unpack1("V")
+    local = bytes.byteslice(central + 42, 4).unpack1("V")
+    yield bytes, central, local
+    File.binwrite(path, bytes)
   end
 
   def with_archive(entries)
