@@ -110,7 +110,7 @@ class BookOrbitClient
     end
 
     def authenticated_request
-      request_connection = connection
+      request_connection = request { connection }
       response = request { yield(request_connection) }
       return response unless response.status.in?([ 401, 403 ])
 

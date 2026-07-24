@@ -252,6 +252,14 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "malformed BookOrbit URLs raise a connection error" do
+    SettingsService.set(:bookorbit_url, "not a url")
+
+    assert_raises BookOrbitClient::ConnectionError do
+      BookOrbitClient.libraries
+    end
+  end
+
   test "relogs in once when cached BookOrbit token is rejected" do
     VCR.turned_off do
       login = stub_request(:post, "http://localhost:3000/api/v1/auth/login")
