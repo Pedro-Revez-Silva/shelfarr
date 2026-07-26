@@ -169,7 +169,7 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "library_items maps BookOrbit book cards into Shelfarr library item attributes" do
+  test "library_items maps BookOrbit 201 BooksPage responses into Shelfarr attributes" do
     VCR.turned_off do
       stub_login
       stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
@@ -182,7 +182,7 @@ class BookOrbitClientTest < ActiveSupport::TestCase
           )
         )
         .to_return(
-          status: 200,
+          status: 201,
           headers: { "Content-Type" => "application/json" },
           body: {
             "items" => [
@@ -230,6 +230,193 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "library_items accepts 200 BooksPage responses for compatibility" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { items: [], total: 0, page: 0, size: 200 }.to_json
+        )
+
+      assert_empty BookOrbitClient.library_items("42")
+    end
+  end
+
+  test "library_items follows BookOrbit pagination and stops at total" do
+    VCR.turned_off do
+      stub_login
+      first_page = stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 0, "size" => 2 }))
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            items: [ { id: 101, title: "First" }, { id: 102, title: "Second" } ],
+            total: 3,
+            page: 0,
+            size: 2
+          }.to_json
+        )
+      second_page = stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 1, "size" => 2 }))
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            items: [ { id: 103, title: "Third" } ],
+            total: 3,
+            page: 1,
+            size: 2
+          }.to_json
+        )
+
+      items = BookOrbitClient.library_items("42", page_size: 2)
+
+      assert_equal %w[101 102 103], items.pluck("audiobookshelf_id")
+      assert_requested first_page, times: 2
+      assert_requested second_page, times: 2
+      assert_not_requested :post, "http://localhost:3000/api/v1/libraries/42/books",
+        body: hash_including("pagination" => { "page" => 2, "size" => 2 })
+    end
+  end
+
+  test "library_items rejects malformed successful inventory responses" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: { total: 0, page: 0, size: 200 }.to_json
+        )
+
+      error = assert_raises(BookOrbitClient::Error) { BookOrbitClient.library_items("42") }
+      assert_equal "BookOrbit returned an invalid library inventory response", error.message
+    end
+  end
+
+  test "library_items rejects incomplete inventory pages" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: { items: [ { id: 101 } ], total: 2, page: 0, size: 200 }.to_json
+        )
+
+      error = assert_raises(BookOrbitClient::Error) { BookOrbitClient.library_items("42") }
+      assert_equal "BookOrbit returned an incomplete library inventory", error.message
+    end
+  end
+
+  test "library_items rejects totals that change during pagination" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 0, "size" => 2 }))
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: { items: [ { id: 101 }, { id: 102 } ], total: 3, page: 0, size: 2 }.to_json
+        )
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 1, "size" => 2 }))
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: { items: [ { id: 103 }, { id: 104 } ], total: 4, page: 1, size: 2 }.to_json
+        )
+
+      error = assert_raises(BookOrbitClient::Error) { BookOrbitClient.library_items("42", page_size: 2) }
+      assert_equal "BookOrbit library inventory changed during synchronization", error.message
+    end
+  end
+
+  test "library_items rejects duplicate IDs across pages" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 0, "size" => 2 }))
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: { items: [ { id: 101 }, { id: 102 } ], total: 4, page: 0, size: 2 }.to_json
+        )
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 1, "size" => 2 }))
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: { items: [ { id: 102 }, { id: 103 } ], total: 4, page: 1, size: 2 }.to_json
+        )
+
+      error = assert_raises(BookOrbitClient::Error) { BookOrbitClient.library_items("42", page_size: 2) }
+      assert_equal "BookOrbit library inventory changed during synchronization", error.message
+    end
+  end
+
+  test "library_items rejects different ID sets across verification passes" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 0, "size" => 2 }))
+        .to_return(
+          {
+            status: 201,
+            headers: { "Content-Type" => "application/json" },
+            body: { items: [ { id: 101 }, { id: 102 } ], total: 4, page: 0, size: 2 }.to_json
+          },
+          {
+            status: 201,
+            headers: { "Content-Type" => "application/json" },
+            body: { items: [ { id: 102 }, { id: 103 } ], total: 4, page: 0, size: 2 }.to_json
+          }
+        )
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .with(body: hash_including("pagination" => { "page" => 1, "size" => 2 }))
+        .to_return(
+          {
+            status: 201,
+            headers: { "Content-Type" => "application/json" },
+            body: { items: [ { id: 103 }, { id: 104 } ], total: 4, page: 1, size: 2 }.to_json
+          },
+          {
+            status: 201,
+            headers: { "Content-Type" => "application/json" },
+            body: { items: [ { id: 104 }, { id: 105 } ], total: 4, page: 1, size: 2 }.to_json
+          }
+        )
+
+      error = assert_raises(BookOrbitClient::Error) { BookOrbitClient.library_items("42", page_size: 2) }
+      assert_equal "BookOrbit library inventory changed during synchronization", error.message
+    end
+  end
+
+  test "library_items translates invalid JSON responses" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(status: 201, headers: { "Content-Type" => "application/json" }, body: "{")
+
+      error = assert_raises(LibraryPlatformClient::Error) { LibraryPlatformClient.library_items("42") }
+      assert_equal "BookOrbit returned invalid JSON", error.message
+    end
+  end
+
+  test "library_items rejects unrelated successful statuses" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(status: 202, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+      error = assert_raises(BookOrbitClient::Error) { BookOrbitClient.library_items("42") }
+      assert_equal "BookOrbit API error: 202", error.message
+    end
+  end
+
   test "scan_library calls BookOrbit scanner endpoint" do
     VCR.turned_off do
       stub_login
@@ -238,6 +425,17 @@ class BookOrbitClientTest < ActiveSupport::TestCase
         .to_return(status: 202, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
 
       assert LibraryPlatformClient.scan_library("42")
+    end
+  end
+
+  test "scan_library raises when BookOrbit does not accept the scan" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/scanner/libraries/42/scan")
+        .to_return(status: 409, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+      error = assert_raises(LibraryPlatformClient::Error) { LibraryPlatformClient.scan_library("42") }
+      assert_equal "BookOrbit API error: 409", error.message
     end
   end
 
@@ -407,22 +605,24 @@ class BookOrbitClientTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
         .with(body: hash_including("pagination" => { "page" => 0, "size" => 200 }))
         .to_return(
-          status: 200,
+          status: 201,
           headers: { "Content-Type" => "application/json" },
           body: {
-            "items" => Array.new(200) { { "id" => 101, "title" => "a" } },
+            "items" => Array.new(200) { |index| { "id" => index + 1, "title" => "a" } },
             "total" => 400,
             "page" => 0,
             "size" => 200
           }.to_json
         )
-      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+      second_page = stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
         .with(body: hash_including("pagination" => { "page" => 1, "size" => 200 }))
         .to_return(status: 404)
 
-      assert_raises BookOrbitClient::Error do
+      error = assert_raises BookOrbitClient::Error do
         BookOrbitClient.library_items("42")
       end
+      assert_equal "BookOrbit resource not found", error.message
+      assert_requested second_page, times: 1
     end
   end
 

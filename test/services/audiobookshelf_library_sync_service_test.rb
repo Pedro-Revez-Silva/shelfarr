@@ -229,13 +229,15 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
         .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { accessToken: "bookorbit-token" }.to_json)
       stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
         .to_return(
-          status: 200,
+          status: 201,
           headers: { "Content-Type" => "application/json" },
           body: {
             items: [
               { id: 101, status: "present", title: "BookOrbit Copy", authors: [ "New Author" ] }
             ],
-            total: 1
+            total: 1,
+            page: 0,
+            size: 200
           }.to_json
         )
 
@@ -246,6 +248,42 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       assert_equal "Audiobookshelf Copy", LibraryItem.find_by!(library_platform: "audiobookshelf", library_id: "42", audiobookshelf_id: "101").title
       assert_equal "BookOrbit Copy", LibraryItem.find_by!(library_platform: "bookorbit", library_id: "42", audiobookshelf_id: "101").title
       assert_equal [ "BookOrbit Copy" ], LibraryItem.available_for_matching.pluck(:title)
+    end
+  ensure
+    LibraryPlatformClient.reset_connections!
+  end
+
+  test "keeps cached BookOrbit items when a successful response is malformed" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:bookorbit_url, "http://localhost:3000")
+    SettingsService.set(:bookorbit_username, "admin")
+    SettingsService.set(:bookorbit_password, "secret")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "42")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    LibraryPlatformClient.reset_connections!
+    existing = LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "42",
+      audiobookshelf_id: "101",
+      title: "Existing BookOrbit Item",
+      synced_at: 1.day.ago
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { accessToken: "bookorbit-token" }.to_json)
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: { total: 0, page: 0, size: 200 }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert_not result.success?
+      assert_includes result.errors.first, "invalid library inventory response"
+      assert_equal "Existing BookOrbit Item", existing.reload.title
     end
   ensure
     LibraryPlatformClient.reset_connections!

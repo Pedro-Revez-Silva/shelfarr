@@ -45,37 +45,23 @@ class BookOrbitClient
       ensure_configured!
 
       response = authenticated_request { |client| client.post("/api/v1/scanner/libraries/#{id}/scan") }
-      response.status.in?([ 200, 201, 202, 204 ])
+      handle_response(response, success_statuses: [ 202 ]) { true }
     end
 
     def library_items(id, page_size: 200)
       ensure_configured!
 
-      items = []
-      page = 0
       query_page_size = [ page_size.to_i, 200 ].min
       query_page_size = 200 if query_page_size <= 0
+      items = fetch_library_items(id, query_page_size)
+      return items if items.size <= query_page_size
 
-      loop do
-        response = authenticated_request do |client|
-          client.post("/api/v1/libraries/#{id}/books", {
-            sort: [],
-            pagination: { page: page, size: query_page_size },
-            collapseSeries: false
-          })
-        end
-        if (response.status == 404 || response.status == 410) && page == 0
-          return []
-        end
-        raise Error, "BookOrbit library #{id} returned status #{response.status}" unless response.status == 200
-
-        page_items = extract_library_items(response.body)
-        items.concat(page_items)
-        break if end_of_items?(page_items, response.body, query_page_size, page)
-        page += 1
+      verified_items = fetch_library_items(id, query_page_size)
+      if items.pluck("audiobookshelf_id").sort != verified_items.pluck("audiobookshelf_id").sort
+        raise Error, "BookOrbit library inventory changed during synchronization"
       end
 
-      items
+      verified_items
     end
 
     def delete_item_by_path(_path)
@@ -99,12 +85,56 @@ class BookOrbitClient
 
     private
 
+    def fetch_library_items(id, page_size)
+      items = []
+      item_ids = {}
+      expected_total = nil
+      page = 0
+
+      loop do
+        response = authenticated_request do |client|
+          client.post("/api/v1/libraries/#{id}/books", {
+            sort: [],
+            pagination: { page: page, size: page_size },
+            collapseSeries: false
+          })
+        end
+        if (response.status == 404 || response.status == 410) && page == 0
+          return []
+        end
+
+        data = handle_response(response, success_statuses: [ 200, 201 ]) { |body| body }
+        page_items, total = extract_library_items(data, page: page, page_size: page_size)
+        expected_total ||= total
+        if total != expected_total
+          raise Error, "BookOrbit library inventory changed during synchronization"
+        end
+
+        page_items.each do |item|
+          item_id = item["audiobookshelf_id"]
+          raise Error, "BookOrbit library inventory changed during synchronization" if item_ids.key?(item_id)
+
+          item_ids[item_id] = true
+        end
+        items.concat(page_items)
+        break if items.size >= expected_total
+        if page_items.size < page_size
+          raise Error, "BookOrbit returned an incomplete library inventory"
+        end
+        page += 1
+      end
+
+      items
+    end
+
     def ensure_configured!
       raise NotConfiguredError, "BookOrbit is not configured" unless configured?
     end
 
     def request
       yield
+    rescue Faraday::ParsingError
+      raise Error, "BookOrbit returned invalid JSON"
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError, URI::Error => e
       raise ConnectionError, "Failed to connect to BookOrbit: #{e.message}"
     end
@@ -200,10 +230,10 @@ class BookOrbitClient
       url
     end
 
-    def handle_response(response)
+    def handle_response(response, success_statuses: [ 200 ])
+      return yield(response.body.presence || {}) if response.status.in?(success_statuses)
+
       case response.status
-      when 200, 201, 202, 204
-        yield(response.body.presence || {})
       when 401, 403
         raise AuthenticationError, "Invalid BookOrbit credentials or permissions"
       when 404
@@ -222,10 +252,12 @@ class BookOrbitClient
       )
     end
 
-    def extract_library_items(data)
-      Array(data["items"]).filter_map do |raw_item|
-        next unless raw_item.is_a?(Hash)
+    def extract_library_items(data, page:, page_size:)
+      unless valid_library_items_page?(data, page: page, page_size: page_size)
+        raise Error, "BookOrbit returned an invalid library inventory response"
+      end
 
+      items = data["items"].map do |raw_item|
         {
           "audiobookshelf_id" => raw_item["id"].to_s,
           "title" => raw_item["title"],
@@ -243,14 +275,21 @@ class BookOrbitClient
           "missing" => raw_item["status"] == "missing"
         }
       end
+
+      [ items, data["total"] ]
     end
 
-    def end_of_items?(page_items, data, page_size, page)
-      return true if page_items.empty?
-      return true if page_items.length < page_size
+    def valid_library_items_page?(data, page:, page_size:)
+      return false unless data.is_a?(Hash)
 
+      items = data["items"]
       total = data["total"]
-      total.present? && total <= ((page + 1) * page_size)
+      items.is_a?(Array) &&
+        items.size <= page_size &&
+        items.all? { |item| item.is_a?(Hash) && item["id"].present? } &&
+        total.is_a?(Integer) && total >= (page * page_size) + items.size &&
+        data["page"] == page &&
+        data["size"] == page_size
     end
   end
 end
