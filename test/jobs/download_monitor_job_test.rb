@@ -3,6 +3,12 @@
 require "test_helper"
 
 class DownloadMonitorJobTest < ActiveJob::TestCase
+  CLIENT_THREAD_LOCALS = %i[qbittorrent_sessions transmission_sessions transmission_protocols].freeze
+
+  def run
+    Request.suppressing_turbo_broadcasts { super }
+  end
+
   setup do
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -22,9 +28,10 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     )
 
     # Clear qBittorrent sessions
-    Thread.current[:qbittorrent_sessions] = {}
-    Thread.current[:transmission_sessions] = {}
-    Thread.current[:transmission_protocols] = {}
+    @original_client_thread_locals = CLIENT_THREAD_LOCALS.to_h do |key|
+      [ key, Thread.current.key?(key) ? Thread.current[key] : :unset ]
+    end
+    CLIENT_THREAD_LOCALS.each { |key| Thread.current[key] = {} }
 
     # Create an active download associated with the client
     @download = @request.downloads.create!(
@@ -41,10 +48,15 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
   teardown do
     DownloadMonitorJob.clear_schedule!
     Rails.cache = @original_cache
+    @original_client_thread_locals&.each do |key, value|
+      value == :unset ? Thread.current[key] = nil : Thread.current[key] = value
+    end
   end
 
-  test "does nothing when no download client configured" do
+  test "does not reschedule when monitoring is not required" do
     DownloadClient.destroy_all
+
+    assert_not DownloadMonitorJob.monitoring_required?
 
     assert_no_enqueued_jobs do
       DownloadMonitorJob.perform_now

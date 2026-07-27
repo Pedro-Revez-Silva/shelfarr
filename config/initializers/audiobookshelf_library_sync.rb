@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-# Start the periodic Audiobookshelf library sync job when the server boots
+# Start the periodic library platform sync job when the server boots
 Rails.application.config.after_initialize do
-  if defined?(Rails::Server) && AudiobookshelfClient.configured?
+  if defined?(Rails::Server) && LibraryPlatformClient.configured?
     Rails.logger.info "[Shelfarr] Starting AudiobookshelfLibrarySyncJob"
     AudiobookshelfLibrarySyncJob.perform_later
   end
