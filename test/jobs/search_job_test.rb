@@ -3,9 +3,30 @@
 require "test_helper"
 
 class SearchJobTest < ActiveJob::TestCase
+  # Prowlarr book searches are now shaped by what each indexer advertises, so
+  # the client reads /api/v1/indexer before searching. Default to an indexer
+  # that accepts the structured {title:}/{author:} query; the tests that care
+  # about the free-text path stub their own capabilities.
+  STRUCTURED_INDEXERS = [
+    {
+      "id" => 1,
+      "name" => "StructuredIndexer",
+      "capabilities" => { "bookSearchParams" => [ "q", "author", "title" ] }
+    }
+  ].freeze
+
+  FREE_TEXT_INDEXERS = [
+    {
+      "id" => 2,
+      "name" => "FreeTextIndexer",
+      "capabilities" => { "bookSearchParams" => [ "q" ] }
+    }
+  ].freeze
+
   setup do
     @request = requests(:pending_request)
     @request.search_results.blocklisted.destroy_all
+    stub_prowlarr_indexers
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "test-key")
     SettingsService.set(:zlibrary_enabled, false)
@@ -891,6 +912,33 @@ class SearchJobTest < ActiveJob::TestCase
       assert_nothing_raised do
         SearchJob.perform_now(@request.id)
       end
+    end
+  end
+
+  test "sends the author to Prowlarr indexers that only accept free text" do
+    VCR.turned_off do
+      stub_prowlarr_indexers(FREE_TEXT_INDEXERS)
+
+      book_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values["query"]
+
+          req.uri.query_values["type"] == "book" &&
+            query.include?(@request.book.title) &&
+            query.include?(@request.book.author) &&
+            query.exclude?("{title:") &&
+            query.exclude?("{author:")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ prowlarr_result_payload ].to_json
+        )
+      stub_prowlarr_generic_search_empty
+
+      SearchJob.perform_now(@request.id)
+
+      assert_requested book_stub
     end
   end
 
@@ -2532,6 +2580,15 @@ class SearchJobTest < ActiveJob::TestCase
         published_at: Time.current
       )
     }
+  end
+
+  def stub_prowlarr_indexers(indexers = STRUCTURED_INDEXERS)
+    stub_request(:get, %r{localhost:9696/api/v1/indexer})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: indexers.to_json
+      )
   end
 
   def stub_prowlarr_search_with_results

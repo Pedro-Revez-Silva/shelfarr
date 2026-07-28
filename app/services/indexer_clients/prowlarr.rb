@@ -8,22 +8,14 @@ module IndexerClients
       def search(query, categories: nil, book_type: nil, limit: 100, title: nil, author: nil)
         ensure_configured!
 
-        params = {
-          query: build_query(query, title: title, author: author),
-          type: search_type_for(title: title, author: author),
-          limit: limit
-        }
-
         cats = categories || categories_for_type(book_type)
-        params[:categories] = Array(cats) if cats.present?
 
-        indexer_ids = filtered_indexer_ids
-        params[:indexerIds] = indexer_ids if indexer_ids.present?
+        if search_type_for(title: title, author: author) == "search"
+          return execute_search(query, type: "search", categories: cats, limit: limit, indexer_ids: filtered_indexer_ids)
+        end
 
-        response = request { connection.get("api/v1/search", params) }
-
-        handle_response(response) do |data|
-          Array(data).map { |item| parse_result(item) }
+        book_search_plans(query, title: title, author: author).flat_map do |plan|
+          execute_search(plan[:query], type: "book", categories: cats, limit: limit, indexer_ids: plan[:indexer_ids])
         end
       end
 
@@ -34,16 +26,25 @@ module IndexerClients
         handle_response(response) { |data| Array(data) }
       end
 
+      # Indexers Prowlarr would search on our behalf: every configured indexer,
+      # or only the tagged subset when prowlarr_tags is set. Returns nil when
+      # Prowlarr's indexer list cannot be read.
+      def scoped_indexers(tags: indexer_filter_tags)
+        normalized_tags = tags.map(&:to_s).map(&:downcase)
+        all = indexers
+        return all if normalized_tags.empty?
+
+        all.select { |indexer| (normalized_indexer_tags(indexer["tags"]) & normalized_tags).any? }
+      rescue IndexerClients::Base::Error => e
+        Rails.logger.warn "[IndexerClients::Prowlarr] Failed to fetch indexers: #{e.message}"
+        nil
+      end
+
       def filtered_indexer_ids
-        tags = indexer_filter_tags.map(&:to_s).map(&:downcase)
+        tags = indexer_filter_tags
         return nil if tags.empty?
 
-        indexers
-          .select { |indexer| (normalized_indexer_tags(indexer["tags"]) & tags).any? }
-          .map { |indexer| indexer["id"] }
-      rescue IndexerClients::Base::Error => e
-        Rails.logger.warn "[IndexerClients::Prowlarr] Failed to fetch indexers for tag filtering: #{e.message}"
-        nil
+        scoped_indexers(tags: tags)&.map { |indexer| indexer["id"] }
       end
 
       def configured_tags
@@ -202,6 +203,71 @@ module IndexerClients
         nil
       end
 
+      def execute_search(query, type:, categories:, limit:, indexer_ids:)
+        params = { query: query, type: type, limit: limit }
+        params[:categories] = Array(categories) if categories.present?
+        params[:indexerIds] = indexer_ids if indexer_ids.present?
+
+        response = request { connection.get("api/v1/search", params) }
+
+        handle_response(response) do |data|
+          Array(data).map { |item| parse_result(item) }
+        end
+      end
+
+      # Prowlarr does not degrade a book search gracefully: when the query
+      # carries a {title:} or {author:} token that an indexer does not
+      # advertise in its bookSearchParams, that indexer is skipped outright
+      # ("Book search skipped due to unsupported capabilities used") and
+      # contributes nothing, rather than being queried on the free text.
+      # Most torrent trackers advertise `q` only, so a structured query
+      # retrieves literally zero results there while looking healthy.
+      #
+      # Group the indexers we are about to search by what they can actually
+      # accept and give each group the richest query it supports. A token is
+      # only ever emitted when the indexer is known to support it; everything
+      # else falls back to free text, which every indexer accepts.
+      def book_search_plans(query, title:, author:)
+        structured, free_text = Array(scoped_indexers).partition do |indexer|
+          supports_structured_book_search?(indexer, title: title, author: author)
+        end
+
+        plans = []
+        plans << search_plan(build_query(query, title: title, author: author), structured) if structured.any?
+        plans << search_plan(build_free_text_query(query, title: title, author: author), free_text) if free_text.any?
+
+        return plans if plans.any?
+
+        # Indexer list unavailable (or nothing matched the configured tags):
+        # search everything with the query shape no indexer can reject.
+        [ search_plan(build_free_text_query(query, title: title, author: author), []) ]
+      end
+
+      def search_plan(query, indexers)
+        { query: query, indexer_ids: indexers.map { |indexer| indexer["id"] }.presence }
+      end
+
+      def supports_structured_book_search?(indexer, title:, author:)
+        params = book_search_params(indexer)
+        return false if params.nil?
+        return false if sanitized_book_value(title).present? && !params.include?("title")
+        return false if sanitized_book_value(author).present? && !params.include?("author")
+
+        true
+      end
+
+      def book_search_params(indexer)
+        return nil unless indexer.is_a?(Hash)
+
+        capabilities = indexer["capabilities"]
+        return nil unless capabilities.is_a?(Hash)
+
+        params = capabilities["bookSearchParams"]
+        return nil unless params.is_a?(Array)
+
+        params.map { |param| param.to_s.downcase }
+      end
+
       def search_type_for(title:, author:)
         sanitized_book_value(title).present? || sanitized_book_value(author).present? ? "book" : "search"
       end
@@ -217,6 +283,13 @@ module IndexerClients
         parts << "{author:#{sanitized_author}}" if sanitized_author.present?
         parts << query if query.present?
         parts.join(" ")
+      end
+
+      def build_free_text_query(query, title:, author:)
+        [ sanitized_book_value(title), sanitized_book_value(author), query ]
+          .compact_blank
+          .join(" ")
+          .squish
       end
 
       def sanitized_book_value(value)
