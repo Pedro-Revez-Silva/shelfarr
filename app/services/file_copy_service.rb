@@ -16,10 +16,14 @@ require "digest"
 class FileCopyService
   BUFFER_SIZE = 1024 * 1024 # 1 MB
   LIBRARY_FILE_MODE = 0o640
-  SAFE_LIBRARY_FILE_MODES = [ 0o600, LIBRARY_FILE_MODE ].freeze
-  HARDLINK_FALLBACK_FILE_MODES = SAFE_LIBRARY_FILE_MODES
   DIRECTORY_MODE = 0o750
-  SAFE_LIBRARY_DIRECTORY_MODES = [ 0o700, DIRECTORY_MODE ].freeze
+  # Windows ACL-backed mounts can ignore chmod and synthesize broad Unix mode
+  # bits. Ordinary media and descriptor-pinned recovery artifacts remain usable
+  # when the process retains owner control and no special bits are present;
+  # application-private state still requires exact modes.
+  LIBRARY_FILE_MODES = (0o600..0o777).select { |mode| (mode & 0o600) == 0o600 }.freeze
+  LIBRARY_DIRECTORY_MODES = (0o700..0o777).freeze
+  HARDLINK_FALLBACK_FILE_MODES = [ 0o600, LIBRARY_FILE_MODE ].freeze
   COPY_LOCK_LEGACY_MAGIC = "shelfarr-copy-v1"
   COPY_LOCK_MAGIC = "shelfarr-copy-v2"
   COPY_LOCK_PATTERN = /\A\.shelfarr-copy-([0-9a-f]{32})\.lock\z/
@@ -114,7 +118,7 @@ class FileCopyService
             heartbeat: heartbeat,
             allow_compatibility_fallback: allow_compatibility_fallback,
             source_validator: validator,
-            accepted_modes: HARDLINK_FALLBACK_FILE_MODES,
+            accepted_modes: LIBRARY_FILE_MODES,
             require_durable: require_durable
           )
         end
@@ -132,7 +136,7 @@ class FileCopyService
             heartbeat: heartbeat,
             allow_compatibility_fallback: allow_compatibility_fallback,
             source_validator: validator,
-            accepted_modes: SAFE_LIBRARY_FILE_MODES,
+            accepted_modes: LIBRARY_FILE_MODES,
             require_durable: require_durable
           )
         end
@@ -852,7 +856,8 @@ class FileCopyService
           stat = file.stat
           expected_identity = file_identity(stat)
           expected_mode = stat.mode & 0o7777
-          result = expected_mode.in?(HARDLINK_FALLBACK_FILE_MODES)
+          result = expected_mode.in?(HARDLINK_FALLBACK_FILE_MODES) ||
+            (expected_mode.in?(LIBRARY_FILE_MODES) && synthetic_library_file_mode?(parent, expected_mode))
         end
         with_pinned_regular_child(parent, basename) do |current|
           stat = current.stat
@@ -1092,7 +1097,7 @@ class FileCopyService
           expected_mode = apply_file_mode!(
             file,
             LIBRARY_FILE_MODE,
-            accepted_modes: SAFE_LIBRARY_FILE_MODES
+            accepted_modes: LIBRARY_FILE_MODES
           )
           file_durable = sync_io(file)
           expected_identity = file_identity(file.stat)
@@ -1147,10 +1152,12 @@ class FileCopyService
             source_stat = source.stat
             destination_stat = destination.stat
             next unless source_stat.size == destination_stat.size
-            if hardlink_mode &&
-                file_identity(source_stat) != file_identity(destination_stat) &&
-                !(destination_stat.mode & 0o7777).in?(HARDLINK_FALLBACK_FILE_MODES)
-              next
+            if hardlink_mode && file_identity(source_stat) != file_identity(destination_stat)
+              destination_mode = destination_stat.mode & 0o7777
+              retry_safe_mode = destination_mode.in?(HARDLINK_FALLBACK_FILE_MODES) ||
+                (destination_mode.in?(LIBRARY_FILE_MODES) &&
+                  synthetic_library_file_mode?(parent, destination_mode))
+              next unless retry_safe_mode
             end
 
             source.rewind
@@ -1161,7 +1168,7 @@ class FileCopyService
               apply_file_mode!(
                 destination,
                 LIBRARY_FILE_MODE,
-                accepted_modes: SAFE_LIBRARY_FILE_MODES
+                accepted_modes: LIBRARY_FILE_MODES
               )
             end
             file_durable = sync_io(destination)
@@ -1373,6 +1380,43 @@ class FileCopyService
       trusted
     end
 
+    # Probe a newly created sibling rather than chmodding retained download
+    # data. A broad fallback mode is retry-safe only when this filesystem
+    # demonstrably ignores the requested library mode.
+    def synthetic_library_file_mode?(parent, expected_mode)
+      probe_basename = ".shelfarr-owner-probe-#{SecureRandom.hex(16)}.tmp"
+      probe_identity = nil
+      probe_uid = nil
+      synthetic = false
+      begin
+        with_created_regular_child(parent, probe_basename, 0o600) do |probe|
+          probe_stat = probe.stat
+          probe_identity = file_identity(probe_stat)
+          probe_uid = probe_stat.uid
+          effective_mode = apply_file_mode!(
+            probe,
+            LIBRARY_FILE_MODE,
+            accepted_modes: LIBRARY_FILE_MODES
+          )
+          synthetic = effective_mode == expected_mode && effective_mode != LIBRARY_FILE_MODE
+        end
+      ensure
+        if probe_identity
+          cleanup = remove_pinned_child_if_identity(
+            parent,
+            probe_basename,
+            probe_identity,
+            expected_owner_uid: probe_uid
+          )
+          synthetic = false unless cleanup.in?([ :removed, :missing ])
+          cleanup_interrupted_owner_probes(parent, probe_uid)
+        end
+      end
+      synthetic
+    rescue UnsafePathError, SystemCallError
+      false
+    end
+
     def safe_relative_path(path)
       relative = Pathname(path.to_s)
       if relative.absolute? || relative.each_filename.any? { |part| part.in?([ ".", ".." ]) }
@@ -1403,8 +1447,8 @@ class FileCopyService
       effective_mode
     end
 
-    def apply_directory_mode!(directory, requested_mode)
-      accepted_modes = requested_mode == DIRECTORY_MODE ? SAFE_LIBRARY_DIRECTORY_MODES : [ requested_mode ]
+    def apply_directory_mode!(directory, requested_mode, accepted_modes: nil)
+      accepted_modes ||= requested_mode == DIRECTORY_MODE ? LIBRARY_DIRECTORY_MODES : [ requested_mode ]
       mode_error = nil
       begin
         native_fchmod(directory.fileno, requested_mode)
@@ -1433,7 +1477,7 @@ class FileCopyService
       heartbeat: nil,
       allow_compatibility_fallback: false,
       source_validator: nil,
-      accepted_modes: SAFE_LIBRARY_FILE_MODES,
+      accepted_modes: LIBRARY_FILE_MODES,
       require_durable: false
     )
       raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
@@ -1454,6 +1498,7 @@ class FileCopyService
             lock_identity = file_identity(lock.stat)
             raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
 
+            apply_file_mode!(lock, 0o600, accepted_modes: LIBRARY_FILE_MODES)
             sync_io(parent)
             persist_copy_lock_pending!(lock, token)
 
@@ -1461,7 +1506,7 @@ class FileCopyService
               temporary_identity = file_identity(temporary.stat)
               persist_copy_lock_identity!(lock, token, temporary_identity)
               sync_io(parent)
-              apply_file_mode!(temporary, 0o600, accepted_modes: [ 0o600 ])
+              apply_file_mode!(temporary, 0o600, accepted_modes: accepted_modes)
               if heartbeat
                 copy_source_io(source, temporary, heartbeat: heartbeat)
               else
@@ -1573,6 +1618,7 @@ class FileCopyService
             lock_identity = file_identity(lock.stat)
             raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
 
+            apply_file_mode!(lock, 0o600, accepted_modes: LIBRARY_FILE_MODES)
             sync_io(parent)
 
             validate_hardlink_source!(
@@ -1762,7 +1808,7 @@ class FileCopyService
           )
           with_created_regular_child(parent, destination_basename, 0o600) do |destination|
             destination_identity = file_identity(destination.stat)
-            apply_file_mode!(destination, 0o600, accepted_modes: [ 0o600 ])
+            apply_file_mode!(destination, 0o600, accepted_modes: accepted_modes)
             persist_copy_lock_compatibility!(
               lock,
               token,
@@ -1843,7 +1889,7 @@ class FileCopyService
 
       with_pinned_regular_child(parent, lock_basename) do |lock|
         return unless lock.flock(File::LOCK_EX | File::LOCK_NB)
-        return unless private_entry_owned_by_process?(lock.stat, parent)
+        return unless secure_copy_lock?(lock, parent)
 
         lock_identity = file_identity(lock.stat)
         lock.rewind
@@ -1952,7 +1998,7 @@ class FileCopyService
       quarantine = open_pinned_directory_child(parent, basename)
       begin
         stat = quarantine.stat
-        return unless private_entry_owned_by_process?(stat, parent) && (stat.mode & 0o777) == 0o700
+        return unless secure_cleanup_quarantine?(quarantine, parent)
 
         quarantine_identity = file_identity(stat)
         children = pinned_directory_children(quarantine)
@@ -1987,6 +2033,24 @@ class FileCopyService
       end
     rescue Errno::ENOENT, Errno::ELOOP, UnsafePathError
       nil
+    end
+
+    def secure_copy_lock?(lock, parent)
+      stat = lock.stat
+      return false unless private_entry_owned_by_process?(stat, parent)
+      return false unless (stat.mode & 0o7777).in?(LIBRARY_FILE_MODES)
+
+      apply_file_mode!(lock, 0o600, accepted_modes: LIBRARY_FILE_MODES)
+      true
+    end
+
+    def secure_cleanup_quarantine?(quarantine, parent)
+      stat = quarantine.stat
+      return false unless private_entry_owned_by_process?(stat, parent)
+      return false unless (stat.mode & 0o7777).in?(LIBRARY_DIRECTORY_MODES)
+
+      apply_directory_mode!(quarantine, 0o700, accepted_modes: LIBRARY_DIRECTORY_MODES)
+      true
     end
 
     def persist_copy_lock_pending!(lock, token)
@@ -2363,7 +2427,7 @@ class FileCopyService
             secure_pinned_library_tree!(child, heartbeat: heartbeat)
             apply_directory_mode!(child, DIRECTORY_MODE)
           elsif stat.file?
-            apply_file_mode!(child, LIBRARY_FILE_MODE, accepted_modes: SAFE_LIBRARY_FILE_MODES)
+            apply_file_mode!(child, LIBRARY_FILE_MODE, accepted_modes: LIBRARY_FILE_MODES)
           else
             raise UnsafePathError, "source tree contains a symbolic link or non-regular path"
           end
@@ -2831,7 +2895,11 @@ class FileCopyService
             raise UnsafePathError, "cleanup quarantine is owned by another user"
           end
 
-          apply_directory_mode!(quarantine, 0o700)
+          apply_directory_mode!(
+            quarantine,
+            0o700,
+            accepted_modes: LIBRARY_DIRECTORY_MODES
+          )
           sync_io(quarantine)
           sync_io(parent)
           return [ quarantine, basename, file_identity(stat) ]
@@ -2884,7 +2952,7 @@ class FileCopyService
 
         quarantine = open_pinned_directory_child(parent, basename)
         begin
-          next unless private_entry_owned_by_process?(quarantine.stat, parent)
+          next unless secure_cleanup_quarantine?(quarantine, parent)
           next unless pinned_directory_children(quarantine) == [ COPY_QUARANTINE_ENTRY ]
 
           matches = false

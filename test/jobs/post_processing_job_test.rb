@@ -676,6 +676,45 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_includes output, "0 hardlinked, 0 copied after unsupported fallback, 1 reused"
   end
 
+  test "hardlink retry reuses a synthetic-mode fallback copy after interruption" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    source_file = File.join(@temp_source, "audiobook.mp3")
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    destination_file = File.join(destination, "audiobook.mp3")
+    hardlink_attempts = 0
+    first_job = PostProcessingJob.new(@download.id)
+
+    output = with_synthetic_library_modes(
+      root: @temp_dest_base,
+      file_mode: 0o666,
+      directory_mode: 0o777
+    ) do
+      FileCopyService.stub(:hardlink_noreplace, ->(*) {
+        hardlink_attempts += 1
+        raise FileCopyService::HardlinkUnsupportedError, "simulated unsupported hardlink"
+      }) do
+        first_job.stub(:finalize_acquisition!, ->(*) { raise Interrupt, "simulated interruption" }) do
+          assert_raises(Interrupt) { first_job.perform_now }
+        end
+
+        assert_equal 0o666, File.stat(destination_file).mode & 0o7777
+
+        retry_job = PostProcessingJob.new(@download.id, 0, first_job.job_id)
+        capture_private_post_processing_logs do
+          retry_job.perform_now
+        end
+      end
+    end
+
+    assert_equal 1, hardlink_attempts
+    assert @request.reload.completed?
+    assert File.exist?(source_file)
+    assert_equal "test audio content", File.binread(destination_file)
+    assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
+    assert_includes output, "0 hardlinked, 0 copied after unsupported fallback, 1 reused"
+  end
+
   test "hardlinks a shared sidecar into each split bundle destination" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
@@ -1294,6 +1333,76 @@ class PostProcessingJobTest < ActiveJob::TestCase
     destination = Dir.glob(File.join(@temp_dest_base, @book.author, @book.title, "*.m4b")).sole
     assert @request.reload.completed?
     assert_equal 0o600, File.stat(destination).mode & 0o777
+  end
+
+  test "single-file ebook copy supports synthetic Windows ACL modes and compatibility publication" do
+    source_file = File.join(@temp_source, "Original.epub")
+    write_valid_ebook_file(source_file)
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    @book.update!(book_type: :ebook)
+    @download.update!(download_path: source_file)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    with_synthetic_library_modes(root: @temp_dest_base, file_mode: 0o666, directory_mode: 0o777) do
+      without_atomic_file_publication do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    destination = Dir.glob(File.join(@temp_dest_base, @book.author, @book.title, "*.epub")).sole
+    assert @request.reload.completed?
+    assert_equal "PK\x03\x04valid ebook content", File.binread(destination)
+    assert_equal 0o666, File.stat(destination).mode & 0o7777
+    assert_equal 0o777, File.stat(File.dirname(destination)).mode & 0o7777
+  end
+
+  test "recursive audiobook copy supports synthetic Windows ACL modes and compatibility publication" do
+    nested_source = File.join(@temp_source, "Disc One")
+    FileUtils.mkdir_p(nested_source)
+    FileUtils.mv(File.join(@temp_source, "audiobook.mp3"), File.join(nested_source, "chapter.mp3"))
+    SettingsService.set(:audiobookshelf_url, "")
+
+    with_synthetic_library_modes(root: @temp_dest_base, file_mode: 0o644, directory_mode: 0o755) do
+      without_atomic_file_publication do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title, "Disc One", "chapter.mp3")
+    assert @request.reload.completed?
+    assert_equal "test audio content", File.binread(destination)
+    assert_equal 0o644, File.stat(destination).mode & 0o7777
+    assert_equal 0o755, File.stat(File.dirname(destination)).mode & 0o7777
+  end
+
+  test "unsafe synthetic directory modes preserve typed permission diagnostics" do
+    SettingsService.set(:audiobookshelf_url, "")
+
+    output = capture_private_post_processing_logs do
+      with_synthetic_library_modes(root: @temp_dest_base, file_mode: 0o4777, directory_mode: 0o1777) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert_includes output, "Download ##{@download.id} failed: FileCopyService::UnsafeFilePermissionsError"
+    refute_includes output, "Download ##{@download.id} failed: RuntimeError"
+    assert_match(/unsupported file or directory permissions/i, @request.reload.issue_description)
+  end
+
+  test "nested import permission failures preserve typed diagnostics" do
+    SettingsService.set(:audiobookshelf_url, "")
+
+    output = FileCopyService.stub(:cp_noreplace, ->(*) { raise Errno::EACCES, "permission denied" }) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert_includes output, "Download ##{@download.id} failed: Errno::EACCES"
+    assert_includes output, "permission denied"
+    refute_includes output, "Download ##{@download.id} failed: RuntimeError"
+    assert_match(/does not have permission .*write the library/i, @request.reload.issue_description)
   end
 
   test "falls back to buffered move when NFS copy_file_range fails for single files" do
@@ -2551,6 +2660,28 @@ class PostProcessingJobTest < ActiveJob::TestCase
   end
 
   private
+
+  def without_atomic_file_publication(&operation)
+    FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
+      FileCopyService.stub(:native_rename_noreplace, false, &operation)
+    end
+  end
+
+  def with_synthetic_library_modes(root:, file_mode:, directory_mode:, &operation)
+    root = File.expand_path(root)
+    real_fchmod = FileCopyService.method(:native_fchmod)
+    synthetic_fchmod = lambda do |descriptor, requested_mode|
+      descriptor_path = File.readlink("/proc/self/fd/#{descriptor}") rescue nil
+      unless descriptor_path == root || descriptor_path&.start_with?("#{root}/")
+        next real_fchmod.call(descriptor, requested_mode)
+      end
+
+      handle = File.for_fd(descriptor, "rb", autoclose: false)
+      handle.chmod(handle.stat.directory? ? directory_mode : file_mode)
+    end
+
+    FileCopyService.stub(:native_fchmod, synthetic_fchmod, &operation)
+  end
 
   def capture_private_post_processing_logs
     output = StringIO.new

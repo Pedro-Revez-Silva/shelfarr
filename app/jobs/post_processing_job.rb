@@ -125,7 +125,11 @@ class PostProcessingJob < ApplicationJob
 
       run_completion_side_effects(request, download, book, book_path)
     rescue => e
-      Rails.logger.error "[PostProcessingJob] Download ##{download.id} failed: #{e.class}"
+      error_detail = "#{e.class}: #{e.message.to_s.squish.first(500)}"
+      if e.cause && !e.cause.equal?(e)
+        error_detail << " (caused by #{e.cause.class}: #{e.cause.message.to_s.squish.first(500)})"
+      end
+      Rails.logger.error "[PostProcessingJob] Download ##{download.id} failed: #{error_detail}"
       mark_post_processing_failure!(download, request, e) unless acquisition_finalized
     end
   end
@@ -257,7 +261,7 @@ class PostProcessingJob < ApplicationJob
     when BookAcquisitionConflictError
       error.message
     when FileCopyService::UnsafeFilePermissionsError
-      "The library filesystem cannot enforce safe file permissions; it must support mode 0600 or 0640"
+      "The library filesystem reported unsupported file or directory permissions"
     when FileCopyService::DurabilityUnsupportedError
       "The library filesystem cannot safely complete destructive imports because fsync is unsupported; use another filesystem or retain the download source"
     when FileCopyService::UnsafePathError
@@ -951,14 +955,10 @@ class PostProcessingJob < ApplicationJob
     else
       raise "Refusing to import non-regular path: #{source}"
     end
-  rescue Errno::ENOENT, Errno::EACCES => e
-    raise "Could not safely import #{source}: #{e.message}"
   end
 
   def ensure_real_import_directory!(path)
     FileCopyService.ensure_directory(path, root: @import_base_path, mode: 0o750)
-  rescue FileCopyService::UnsafePathError, SystemCallError => error
-    raise "Refusing to import into an unsafe directory: #{path}: #{error.message}"
   end
 
   def move_completed_downloads?
