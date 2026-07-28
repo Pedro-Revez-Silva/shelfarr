@@ -1887,7 +1887,7 @@ class FileCopyService
       lock_basename = ".shelfarr-copy-#{token}.lock"
       temporary_basename = ".shelfarr-copy-#{token}.tmp"
 
-      with_pinned_regular_child(parent, lock_basename) do |lock|
+      with_pinned_regular_child(parent, lock_basename, writable: true) do |lock|
         return unless lock.flock(File::LOCK_EX | File::LOCK_NB)
         return unless secure_copy_lock?(lock, parent)
 
@@ -2717,14 +2717,15 @@ class FileCopyService
       directory
     end
 
-    def with_pinned_regular_child(parent, basename)
+    def with_pinned_regular_child(parent, basename, writable: false)
+      access_mode = writable ? File::RDWR : File::RDONLY
       descriptor = native_openat(
         parent.fileno,
         basename,
-        File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+        access_mode | File::NOFOLLOW | File::NONBLOCK,
         0
       )
-      file = File.for_fd(descriptor, "rb", autoclose: true)
+      file = File.for_fd(descriptor, writable ? "r+b" : "rb", autoclose: true)
       begin
         raise UnsafePathError, "path is not a regular file" unless file.stat.file?
 

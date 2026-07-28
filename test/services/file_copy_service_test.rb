@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "fiddle"
+require "fcntl"
 
 class FileCopyServiceTest < ActiveSupport::TestCase
   include SyntheticLibraryModesTestHelper
@@ -934,6 +935,56 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
 
+    assert_not File.exist?(lock)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "interrupted cleanup uses a writable descriptor for NFS exclusive locks" do
+    token = "e" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    File.binwrite(temporary, "interrupted bytes")
+    lock = write_copy_lock(token, File.stat(temporary))
+    lock_basename = File.basename(lock)
+    opened_files = {}
+    lock_access_modes = []
+    flock_operations = []
+    real_openat = FileCopyService.method(:native_openat)
+    real_for_fd = File.method(:for_fd)
+    nfs_openat = lambda do |directory_fd, basename, flags, mode|
+      descriptor = real_openat.call(directory_fd, basename, flags, mode)
+      access_mode = flags & Fcntl::O_ACCMODE
+      opened_files[descriptor] = [ basename, access_mode ]
+      lock_access_modes << access_mode if basename == lock_basename
+      descriptor
+    end
+    nfs_for_fd = lambda do |*arguments, **options|
+      file = real_for_fd.call(*arguments, **options)
+      basename, access_mode = opened_files.fetch(file.fileno)
+      if basename == lock_basename
+        real_flock = file.method(:flock)
+        file.define_singleton_method(:flock) do |operation|
+          flock_operations << operation
+          if access_mode == File::RDONLY && (operation & File::LOCK_EX).positive?
+            raise Errno::EBADF
+          end
+
+          real_flock.call(operation)
+        end
+      end
+      file
+    end
+
+    FileCopyService.stub(:native_openat, nfs_openat) do
+      File.stub(:for_fd, nfs_for_fd) do
+        FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+      end
+    end
+
+    assert_equal File::RDWR, lock_access_modes.shift
+    assert_not_empty lock_access_modes
+    assert lock_access_modes.all? { |access_mode| access_mode == File::RDONLY }
+    assert_equal [ File::LOCK_EX | File::LOCK_NB ], flock_operations
+    assert_not File.exist?(temporary)
     assert_not File.exist?(lock)
     assert_empty Dir.children(@dest_dir)
   end
