@@ -4,6 +4,8 @@ require "test_helper"
 require "stringio"
 
 class PostProcessingJobTest < ActiveJob::TestCase
+  include SyntheticLibraryModesTestHelper
+
   setup do
     LibraryPlatformClient.reset_connections!
 
@@ -1405,6 +1407,48 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_match(/does not have permission .*write the library/i, @request.reload.issue_description)
   end
 
+  test "invalid filesystem diagnostic bytes do not strand post-processing" do
+    SettingsService.set(:audiobookshelf_url, "")
+    invalid_message = "permission denied for bad-\xFF".dup.force_encoding(Encoding::UTF_8)
+    failure = lambda do |*|
+      raise FileCopyService::UnsafeFilePermissionsError,
+        invalid_message,
+        cause: Errno::EACCES.new(invalid_message)
+    end
+
+    output = FileCopyService.stub(:cp_noreplace, failure) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert output.valid_encoding?
+    assert_includes output,
+      "Download ##{@download.id} failed: FileCopyService::UnsafeFilePermissionsError"
+    assert_includes output, "caused by Errno::EACCES"
+    assert_includes output, "\uFFFD"
+    assert @request.reload.attention_needed?
+    assert_match(/unsupported file or directory permissions/i, @request.issue_description)
+  end
+
+  test "invalid generic error bytes still mark post-processing for attention" do
+    SettingsService.set(:audiobookshelf_url, "")
+    invalid_message = "unexpected failure for bad-\xFF".dup.force_encoding(Encoding::UTF_8)
+    failure = ->(*) { raise RuntimeError, invalid_message }
+
+    output = FileCopyService.stub(:cp_noreplace, failure) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert output.valid_encoding?
+    assert_includes output, "Download ##{@download.id} failed: RuntimeError"
+    assert_includes output, "\uFFFD"
+    assert @request.reload.attention_needed?
+    assert_match(/safe filesystem operation failed/i, @request.issue_description)
+  end
+
   test "falls back to buffered move when NFS copy_file_range fails for single files" do
     source_file = File.join(@temp_source, "Original Name.m4b")
     File.write(source_file, "single file audio content")
@@ -2665,22 +2709,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
       FileCopyService.stub(:native_rename_noreplace, false, &operation)
     end
-  end
-
-  def with_synthetic_library_modes(root:, file_mode:, directory_mode:, &operation)
-    root = File.expand_path(root)
-    real_fchmod = FileCopyService.method(:native_fchmod)
-    synthetic_fchmod = lambda do |descriptor, requested_mode|
-      descriptor_path = File.readlink("/proc/self/fd/#{descriptor}") rescue nil
-      unless descriptor_path == root || descriptor_path&.start_with?("#{root}/")
-        next real_fchmod.call(descriptor, requested_mode)
-      end
-
-      handle = File.for_fd(descriptor, "rb", autoclose: false)
-      handle.chmod(handle.stat.directory? ? directory_mode : file_mode)
-    end
-
-    FileCopyService.stub(:native_fchmod, synthetic_fchmod, &operation)
   end
 
   def capture_private_post_processing_logs

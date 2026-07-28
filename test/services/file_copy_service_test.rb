@@ -4,6 +4,8 @@ require "test_helper"
 require "fiddle"
 
 class FileCopyServiceTest < ActiveSupport::TestCase
+  include SyntheticLibraryModesTestHelper
+
   setup do
     @tmp_dir = Dir.mktmpdir
     @src_file = File.join(@tmp_dir, "source.txt")
@@ -769,6 +771,28 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@dest_dir)
   end
 
+  test "cleanup_interrupted_copies recovers a synthetic-mode copy lock" do
+    token = "f" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    File.binwrite(temporary, "interrupted bytes")
+    temporary_stat = File.stat(temporary)
+    lock = write_copy_lock(token, temporary_stat)
+    File.chmod(0o666, temporary)
+    File.chmod(0o666, lock)
+
+    with_synthetic_library_modes(
+      root: @dest_dir,
+      file_mode: 0o666,
+      directory_mode: 0o777
+    ) do
+      FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+    end
+
+    assert_not File.exist?(temporary)
+    assert_not File.exist?(lock)
+    assert_empty Dir.children(@dest_dir)
+  end
+
   test "cleanup_interrupted_copies recovers a crash-left private quarantine" do
     token = "a" * 32
     temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
@@ -784,6 +808,31 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(temporary)
     assert_not File.exist?(lock)
     assert_not File.exist?(quarantine)
+  end
+
+  test "cleanup_interrupted_copies recovers a synthetic-mode quarantine" do
+    token = "d" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    File.binwrite(temporary, "interrupted bytes")
+    temporary_stat = File.stat(temporary)
+    quarantine = copy_quarantine_path(temporary_stat, "e" * 32)
+    Dir.mkdir(quarantine, 0o700)
+    entry = File.join(quarantine, FileCopyService::COPY_QUARANTINE_ENTRY)
+    File.rename(temporary, entry)
+    File.chmod(0o666, entry)
+    File.chmod(0o777, quarantine)
+
+    with_synthetic_library_modes(
+      root: @dest_dir,
+      file_mode: 0o666,
+      directory_mode: 0o777
+    ) do
+      FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+    end
+
+    assert_not File.exist?(entry)
+    assert_not File.exist?(quarantine)
+    assert_empty Dir.children(@dest_dir)
   end
 
   test "cleanup_interrupted_copies retains a fresh empty quarantine" do
@@ -1976,7 +2025,11 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     nested = File.join(source_root_path, "nested")
     invalid_filename = "chapter-\xFF.mp3".b
     FileUtils.mkdir_p(nested)
-    File.binwrite(File.join(nested, invalid_filename), "chapter")
+    begin
+      File.binwrite(File.join(nested, invalid_filename), "chapter")
+    rescue Errno::EILSEQ
+      skip "host filesystem rejects invalid UTF-8 filenames"
+    end
 
     error = assert_raises(FileCopyService::UnsafePathError) do
       FileCopyService.snapshot_source_root(source_root_path)
@@ -2817,23 +2870,6 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
       FileCopyService.stub(:native_rename_noreplace, false, &operation)
     end
-  end
-
-  def with_synthetic_library_modes(root:, file_mode:, directory_mode:, fchmod_error: nil, &operation)
-    root = File.expand_path(root)
-    real_fchmod = FileCopyService.method(:native_fchmod)
-    synthetic_fchmod = lambda do |descriptor, requested_mode|
-      descriptor_path = File.readlink("/proc/self/fd/#{descriptor}") rescue nil
-      unless descriptor_path == root || descriptor_path&.start_with?("#{root}/")
-        next real_fchmod.call(descriptor, requested_mode)
-      end
-
-      handle = File.for_fd(descriptor, "rb", autoclose: false)
-      handle.chmod(handle.stat.directory? ? directory_mode : file_mode)
-      raise fchmod_error if fchmod_error
-    end
-
-    FileCopyService.stub(:native_fchmod, synthetic_fchmod, &operation)
   end
 
   def copy_quarantine_path(expected_stat, token)

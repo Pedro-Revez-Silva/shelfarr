@@ -10,6 +10,14 @@ class AudiobookProbeService
   MAX_ANALYZE_MICROSECONDS = 5_000_000
   MAX_DURATION = 15.seconds
   MAX_ADDRESS_SPACE_BYTES = 512.megabytes
+  SPAWN_RESOURCE_LIMITS = {
+    rlimit_cpu: 10,
+    rlimit_fsize: MAX_OUTPUT_BYTES,
+    rlimit_core: 0
+  }.tap do |limits|
+    # Darwin exposes RLIMIT_AS but rejects attempts to set it with EINVAL.
+    limits[:rlimit_as] = MAX_ADDRESS_SPACE_BYTES unless RUBY_PLATFORM.include?("darwin")
+  end.freeze
 
   class << self
     attr_writer :probe
@@ -42,10 +50,7 @@ class AudiobookProbeService
           out: output.path,
           err: File::NULL,
           pgroup: true,
-          rlimit_cpu: 10,
-          rlimit_as: MAX_ADDRESS_SPACE_BYTES,
-          rlimit_fsize: MAX_OUTPUT_BYTES,
-          rlimit_core: 0
+          **SPAWN_RESOURCE_LIMITS
         )
         status = wait_for_probe(pid)
         return false unless status&.success?

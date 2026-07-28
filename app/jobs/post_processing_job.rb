@@ -10,6 +10,8 @@ class PostProcessingJob < ApplicationJob
   EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
   EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
   EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
+  ERROR_DETAIL_CHARACTER_LIMIT = 500
+  ERROR_DETAIL_INPUT_BYTE_LIMIT = ERROR_DETAIL_CHARACTER_LIMIT * 4
   MAX_FILENAME_BYTES = 255
   POST_PROCESSING_LOCK_SLOTS = 256
   class BookAcquisitionConflictError < StandardError; end
@@ -20,8 +22,8 @@ class PostProcessingJob < ApplicationJob
   def perform(download_id, source_path_retry_count = 0, expected_owner_job_id = nil)
     if Rails.logger.respond_to?(:silence)
       # Active Record DEBUG binds can contain Book titles and library paths.
-      # Post-processing logs only opaque record IDs and error classes, so keep
-      # the entire acquisition below INFO even in verbose development mode.
+      # Keep those below INFO; explicit error diagnostics are scrubbed and
+      # bounded before they reach the logger.
       Rails.logger.silence(Logger::INFO) do
         perform_privately(download_id, source_path_retry_count, expected_owner_job_id)
       end
@@ -125,9 +127,10 @@ class PostProcessingJob < ApplicationJob
 
       run_completion_side_effects(request, download, book, book_path)
     rescue => e
-      error_detail = "#{e.class}: #{e.message.to_s.squish.first(500)}"
-      if e.cause && !e.cause.equal?(e)
-        error_detail << " (caused by #{e.cause.class}: #{e.cause.message.to_s.squish.first(500)})"
+      error_detail = "#{e.class}: #{bounded_exception_message(e)}"
+      cause = e.cause
+      if cause && !cause.equal?(e)
+        error_detail << " (caused by #{cause.class}: #{bounded_exception_message(cause)})"
       end
       Rails.logger.error "[PostProcessingJob] Download ##{download.id} failed: #{error_detail}"
       mark_post_processing_failure!(download, request, e) unless acquisition_finalized
@@ -259,7 +262,7 @@ class PostProcessingJob < ApplicationJob
   def safe_attention_message(error)
     detail = case error
     when BookAcquisitionConflictError
-      error.message
+      bounded_exception_message(error)
     when FileCopyService::UnsafeFilePermissionsError
       "The library filesystem reported unsupported file or directory permissions"
     when FileCopyService::DurabilityUnsupportedError
@@ -281,8 +284,23 @@ class PostProcessingJob < ApplicationJob
     "Post-processing failed: #{detail.to_s.first(500)}"
   end
 
+  def bounded_exception_message(error)
+    raw = error.message.to_s.dup
+    raw = raw.byteslice(0, ERROR_DETAIL_INPUT_BYTE_LIMIT).to_s
+    raw.force_encoding(Encoding::UTF_8) if raw.encoding == Encoding::BINARY
+    normalized = raw.encode(
+      Encoding::UTF_8,
+      invalid: :replace,
+      undef: :replace,
+      replace: "\uFFFD"
+    )
+    normalized.squish.first(ERROR_DETAIL_CHARACTER_LIMIT)
+  rescue StandardError
+    "[unavailable error detail]"
+  end
+
   def safe_attention_detail(error)
-    case error.message.to_s
+    case bounded_exception_message(error)
     when /source path is blank/i
       "Source path is blank because the download client did not report one"
     when /source path not found/i
