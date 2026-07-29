@@ -95,6 +95,7 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `PUID` | `1000` | User ID for file permissions. Should match the owner of your mounted volumes |
 | `PGID` | `1000` | Group ID for file permissions. Should match the group of your mounted volumes |
 | `CHOWN_ON_START` | `auto` | Control startup ownership fixes for both standard containers. `auto` (default) adjusts only when needed, `always` fails on adjustment errors, and `never` skips `chown` calls for pre-permissioned/root-squashed volumes. The Audible companion still rejects group/world-accessible private state or credential/token files. |
+| `TRUST_NFS_UID_SQUASH` | `false` | Set to `true` only on an NFS export using `all_squash` (remaps every client's UID to one shared identity — most NAS UIs expose this as something like "map all users") and that no untrusted client can mount. This does not prove a file was written by this container — it tells Shelfarr to trust that the export is effectively single-tenant so its ownership safety checks aren't defeated by the squash. |
 | `HTTP_PORT` | `80` | Internal container port. Change if port 80 is in use (e.g., behind gluetun) |
 | `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set |
 | `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
