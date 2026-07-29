@@ -1347,13 +1347,21 @@ class FileCopyService
 
     private
 
-    # NFS root_squash/all_squash remaps every uid to a fixed value (0 for
-    # classic root_squash, or e.g. 65534 for Synology "map all users").
-    # Discover that mapping from an exclusive entry on the same filesystem
-    # rather than assuming only root ever gets squashed.
+    # root_squash remaps only root-owned entries to a fixed anonymous uid, so
+    # a matching probe still narrows the writer down to "some root process on
+    # some client" -- an already-accepted risk for the root-only case this
+    # historically supported. all_squash remaps *every* client's uid to that
+    # same anonymous identity, so a matching probe no longer says anything
+    # about who wrote the entry: any other client mounting the export, at any
+    # privilege level, produces an identical result. Trusting that match
+    # would silently defeat the 0600/0700 isolation these private staging
+    # dirs, locks, and quarantines rely on. We only take the shortcut path
+    # for real root, or when the operator has explicitly told us the export
+    # is single-tenant via TRUST_NFS_UID_SQUASH -- never implicitly.
     def private_entry_owned_by_process?(stat, parent)
       effective_uid = Process.euid
       return true if stat.uid == effective_uid
+      return false unless effective_uid.zero? || trust_nfs_uid_squash?
 
       probe_basename = ".shelfarr-owner-probe-#{SecureRandom.hex(16)}.tmp"
       probe_identity = nil
@@ -1379,6 +1387,15 @@ class FileCopyService
         end
       end
       trusted
+    end
+
+    # Opt-in only: an operator asserting this env var means they accept that
+    # an NFS export squashing every uid to one identity (e.g. Synology "map
+    # all users") cannot distinguish this process's writes from any other
+    # client's. This does not identify the creating process -- it trusts the
+    # export is effectively single-tenant.
+    def trust_nfs_uid_squash?
+      ENV["TRUST_NFS_UID_SQUASH"]&.downcase == "true"
     end
 
     # Probe a newly created sibling rather than chmodding retained download
