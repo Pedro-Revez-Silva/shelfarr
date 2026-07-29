@@ -860,21 +860,23 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   end
 
   test "cleanup_interrupted_copies retains stale empty quarantines with wrong owner or mode" do
+    skip "requires root to create an unrelated owner" unless Process.uid.zero?
+
     expected_stat = File.stat(@src_file)
     owner_quarantine = copy_quarantine_path(expected_stat, "7" * 32)
     mode_quarantine = copy_quarantine_path(expected_stat, "8" * 32)
     Dir.mkdir(owner_quarantine, 0o700)
     Dir.mkdir(mode_quarantine, 0o700)
+    File.chown(65_534, -1, owner_quarantine)
     File.chmod(0o1777, mode_quarantine)
     stale_time = Time.now - FileCopyService::COPY_QUARANTINE_STALE_AGE - 60
     File.utime(stale_time, stale_time, owner_quarantine)
     File.utime(stale_time, stale_time, mode_quarantine)
 
-    Process.stub(:euid, Process.euid + 1) do
-      FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
-    end
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
     assert File.directory?(owner_quarantine)
 
+    File.chown(Process.uid, -1, owner_quarantine)
     FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
 
     assert_not File.exist?(owner_quarantine)
@@ -2475,6 +2477,38 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "private staging allows an all-squashed directory owner for a non-root PUID process" do
+    parent = File.join(@dest_dir, "private-staging")
+    abandoned_probe = File.join(parent, ".shelfarr-owner-probe-#{'d' * 32}.tmp")
+    FileUtils.mkdir_p(parent)
+    chown_for_root_squash(parent)
+    File.binwrite(abandoned_probe, "")
+    chown_for_root_squash(abandoned_probe)
+
+    # Synology's "map all users" squash remaps every uid, including a
+    # non-root PUID process's own uid, so effective_uid never matches the
+    # squashed value either.
+    with_root_squashed_creation(parent, effective_uid: 65_535) do
+      FileCopyService.secure_private_directory!(parent, root: @dest_dir)
+      created = FileCopyService.create_private_directory(
+        parent,
+        root: @dest_dir,
+        prefix: "download-42-"
+      )
+      private_file = FileCopyService.create_private_file(
+        parent,
+        root: @dest_dir,
+        prefix: "archive-",
+        suffix: ".zip"
+      )
+
+      private_file.io.close
+      assert File.directory?(created.name)
+      assert File.file?(private_file.name)
+      assert_not File.exist?(abandoned_probe)
+    end
+  end
+
   test "private staging rejects an unrelated owner when running as local root" do
     skip "requires root to create an unrelated owner" unless Process.uid.zero?
 
@@ -2490,10 +2524,13 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   end
 
   test "private staging rejects a different owner for a non-root process" do
+    skip "requires root to create an unrelated owner" unless Process.uid.zero?
+
     parent = File.join(@dest_dir, "private-staging")
     FileUtils.mkdir_p(parent)
+    File.chown(65_534, -1, parent)
 
-    Process.stub(:euid, File.stat(parent).uid + 1) do
+    Process.stub(:euid, 65_535) do
       assert_raises(FileCopyService::UnsafePathError) do
         FileCopyService.secure_private_directory!(parent, root: @dest_dir)
       end
@@ -2930,7 +2967,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     )
   end
 
-  def with_root_squashed_creation(directory, &operation)
+  def with_root_squashed_creation(directory, effective_uid: 0, &operation)
     real_mkdir = FileCopyService.method(:native_mkdirat)
     real_open = FileCopyService.method(:native_openat)
     squashed_mkdir = lambda do |directory_fd, basename, mode|
@@ -2946,7 +2983,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     FileCopyService.stub(:native_mkdirat, squashed_mkdir) do
       FileCopyService.stub(:native_openat, squashed_open) do
-        Process.stub(:euid, 0, &operation)
+        Process.stub(:euid, effective_uid, &operation)
       end
     end
   end

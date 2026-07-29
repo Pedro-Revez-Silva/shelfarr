@@ -1347,12 +1347,13 @@ class FileCopyService
 
     private
 
-    # root_squash changes the UID reported for root-created entries. Discover
-    # that mapping from an exclusive entry on the same filesystem.
+    # NFS root_squash/all_squash remaps every uid to a fixed value (0 for
+    # classic root_squash, or e.g. 65534 for Synology "map all users").
+    # Discover that mapping from an exclusive entry on the same filesystem
+    # rather than assuming only root ever gets squashed.
     def private_entry_owned_by_process?(stat, parent)
       effective_uid = Process.euid
       return true if stat.uid == effective_uid
-      return false unless effective_uid.zero?
 
       probe_basename = ".shelfarr-owner-probe-#{SecureRandom.hex(16)}.tmp"
       probe_identity = nil
