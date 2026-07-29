@@ -1390,10 +1390,10 @@ class FileCopyService
     end
 
     # Opt-in only: an operator asserting this env var means they accept that
-    # an NFS export squashing every uid to one identity (e.g. Synology "map
-    # all users") cannot distinguish this process's writes from any other
-    # client's. This does not identify the creating process -- it trusts the
-    # export is effectively single-tenant.
+    # an NFS export using all_squash (remaps every uid to one identity)
+    # cannot distinguish this process's writes from any other client's. This
+    # does not identify the creating process -- it trusts the export is
+    # effectively single-tenant.
     def trust_nfs_uid_squash?
       ENV["TRUST_NFS_UID_SQUASH"]&.downcase == "true"
     end
