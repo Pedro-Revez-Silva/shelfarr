@@ -292,6 +292,7 @@
                 <tr><td class="key"><code>PUID</code></td><td class="default"><code>1000</code></td><td>User ID for file permissions. Match the owner of your mounted volumes.</td></tr>
                 <tr><td class="key"><code>PGID</code></td><td class="default"><code>1000</code></td><td>Group ID for file permissions. Match the group of your mounted volumes.</td></tr>
                 <tr><td class="key"><code>CHOWN_ON_START</code></td><td class="default"><code>auto</code></td><td>Startup ownership policy for both standard containers. <code>auto</code> adjusts only when needed; <code>always</code> fails on adjustment errors; <code>never</code> skips <code>chown</code> for pre-permissioned/root-squashed mounts. The Audible companion still rejects group/world-accessible private state and credential/token files.</td></tr>
+                <tr><td class="key"><code>TRUST_NFS_UID_SQUASH</code></td><td class="default"><code>false</code></td><td>Set to <code>true</code> only on an NFS export that remaps every client's UID to one shared identity (e.g. Synology's "map all users" squash) and that no untrusted client can mount. This does not prove a file was written by this container &mdash; it tells Shelfarr to trust that the export is effectively single-tenant so its ownership safety checks aren't defeated by the squash.</td></tr>
                 <tr><td class="key"><code>HTTP_PORT</code></td><td class="default"><code>80</code></td><td>Internal container port. Change if 80 clashes (e.g. behind gluetun), then update the port mapping.</td></tr>
                 <tr><td class="key"><code>RAILS_MASTER_KEY</code></td><td class="default"><code>(auto)</code></td><td>Encryption key for stored secrets. Auto-generated on first run if unset.</td></tr>
                 <tr><td class="key"><code>RAILS_RELATIVE_URL_ROOT</code></td><td class="default"><code>/</code></td><td>Base path when running behind a reverse proxy at a sub-path, e.g. <code>/shelfarr</code>.</td></tr>
@@ -484,6 +485,9 @@
 
           <h3>Permission denied writing to the library</h3>
           <p>Set <code>PUID</code>/<code>PGID</code> to match the owner of your mounted folders (run <code>ls -n</code> on them to check). The Compose example passes one <code>CHOWN_ON_START</code> policy to Shelfarr and its companion. On NFS shares that block <code>chown</code>, set it to <code>never</code> and pre-permission every mounted folder yourself.</p>
+
+          <h3>Post-processing fails with "A safe filesystem operation failed" on NFS</h3>
+          <p>Your NFS export likely squashes <em>every</em> client's UID to one shared identity (e.g. a Synology share with Squash set to "Map all users"), not just root's. Shelfarr's ownership safety checks can't tell that apart from a genuinely different owner and fail closed by default. If the export is only ever mounted by this container &mdash; no other client can reach it &mdash; set <code>TRUST_NFS_UID_SQUASH=true</code>. Otherwise, change the NFS Squash setting to "No mapping" and use <code>PUID</code>/<code>PGID</code> to control ownership instead.</p>
 
           <h3>Anna's Archive returns nothing</h3>
           <p>The site may be behind anti-bot protection &mdash; configure <code>flaresolverr_url</code>. Member-speed downloads also require an <code>anna_archive_api_key</code>.</p>
