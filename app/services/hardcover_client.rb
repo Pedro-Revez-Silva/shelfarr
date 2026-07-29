@@ -234,7 +234,7 @@ class HardcoverClient
         f.response :json, parser_options: { symbolize_names: false }
         f.adapter Faraday.default_adapter
         f.headers["Content-Type"] = "application/json"
-        f.headers["authorization"] = api_token
+        f.headers["Authorization"] = authorization_header
         f.headers["User-Agent"] = "Shelfarr/1.0"
         f.options.timeout = 30
         f.options.open_timeout = 10
@@ -243,6 +243,11 @@ class HardcoverClient
 
     def api_token
       SettingsService.get(:hardcover_api_token)
+    end
+
+    def authorization_header
+      token = api_token.to_s.strip
+      token.match?(/\ABearer\s+/i) ? token : "Bearer #{token}"
     end
 
     def handle_response(response)

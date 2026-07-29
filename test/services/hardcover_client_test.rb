@@ -228,6 +228,23 @@ class HardcoverClientTest < ActiveSupport::TestCase
 
     VCR.turned_off do
       stub_request(:post, HardcoverClient::BASE_URL)
+        .with(headers: { "Authorization" => "Bearer test_token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "data" => { "me" => { "id" => 123 } } }.to_json
+        )
+
+      assert HardcoverClient.test_connection
+    end
+  end
+
+  test "test_connection preserves an existing bearer authorization scheme" do
+    SettingsService.set(:hardcover_api_token, "Bearer test_token")
+
+    VCR.turned_off do
+      stub_request(:post, HardcoverClient::BASE_URL)
+        .with(headers: { "Authorization" => "Bearer test_token" })
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
