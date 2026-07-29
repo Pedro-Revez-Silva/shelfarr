@@ -4,6 +4,10 @@ module IndexerClients
   class Prowlarr < Base
     Result = IndexerClients::Result
 
+    # Prowlarr's own default when a definition carries no priority, so
+    # de-duplication always has something to order by.
+    DEFAULT_INDEXER_PRIORITY = 25
+
     class << self
       def search(query, categories: nil, book_type: nil, limit: 100, title: nil, author: nil)
         ensure_configured!
@@ -11,12 +15,15 @@ module IndexerClients
         cats = categories || categories_for_type(book_type)
 
         if search_type_for(title: title, author: author) == "search"
-          return execute_search(query, type: "search", categories: cats, limit: limit, indexer_ids: filtered_indexer_ids)
+          items = execute_search(query, type: "search", categories: cats, limit: limit, indexer_ids: filtered_indexer_ids)
+          return items.map { |item| parse_result(item) }
         end
 
-        book_search_plans(query, title: title, author: author).flat_map do |plan|
-          execute_search(plan[:query], type: "book", categories: cats, limit: limit, indexer_ids: plan[:indexer_ids])
-        end
+        scoped = scoped_indexers
+        plans = book_search_plans(query, title: title, author: author, indexers: scoped)
+        items = execute_book_search_plans(plans, categories: cats, limit: limit)
+
+        deduplicate_by_guid(items, indexer_priorities(scoped)).map { |item| parse_result(item) }
       end
 
       def indexers
@@ -210,9 +217,67 @@ module IndexerClients
 
         response = request { connection.get("api/v1/search", params) }
 
-        handle_response(response) do |data|
-          Array(data).map { |item| parse_result(item) }
+        handle_response(response) { |data| Array(data) }
+      end
+
+      # A plan can name indexers Prowlarr will not search: it drops disabled
+      # definitions and indexers it has temporarily blocked after repeated
+      # failures from an explicit indexerIds selection, then fails the whole
+      # search ("Search failed due to all selected indexers being unavailable",
+      # HTTP 400) when nothing is left. That must not throw away what the other
+      # plan already returned, so an error is only propagated when every plan
+      # fails.
+      def execute_book_search_plans(plans, categories:, limit:)
+        items = []
+        errors = []
+
+        plans.each do |plan|
+          items.concat(
+            execute_search(plan[:query], type: "book", categories: categories, limit: limit, indexer_ids: plan[:indexer_ids])
+          )
+        rescue IndexerClients::Base::Error => e
+          selection = plan[:indexer_ids] ? plan[:indexer_ids].join(", ") : "all indexers"
+          Rails.logger.warn "[IndexerClients::Prowlarr] Book search plan failed (#{selection}): #{e.message}"
+          errors << e
         end
+
+        raise errors.first if errors.any? && errors.size == plans.size
+
+        items
+      end
+
+      # Prowlarr de-duplicates by GUID within a single search and keeps the copy
+      # from the highest-priority indexer (DeDupeReleases orders by ascending
+      # IndexerPriority). Splitting the search across plans moves that job here,
+      # since the same release can legitimately come back from both plans.
+      def deduplicate_by_guid(items, priorities)
+        best = {}
+
+        items.each do |item|
+          # Nothing to de-duplicate a GUID-less result against; key it on
+          # identity so it is kept rather than merged with another.
+          key = item["guid"].presence || item.object_id
+          incumbent = best[key]
+          next if incumbent && indexer_priority(incumbent, priorities) <= indexer_priority(item, priorities)
+
+          best[key] = item
+        end
+
+        best.values
+      end
+
+      def indexer_priorities(indexers)
+        Array(indexers).each_with_object({}) do |indexer, priorities|
+          next unless indexer.is_a?(Hash)
+
+          id = indexer["id"]
+          priority = Integer(indexer["priority"], exception: false)
+          priorities[id] = priority if id.present? && priority
+        end
+      end
+
+      def indexer_priority(item, priorities)
+        priorities.fetch(item["indexerId"], DEFAULT_INDEXER_PRIORITY)
       end
 
       # Prowlarr does not degrade a book search gracefully: when the query
@@ -227,24 +292,58 @@ module IndexerClients
       # accept and give each group the richest query it supports. A token is
       # only ever emitted when the indexer is known to support it; everything
       # else falls back to free text, which every indexer accepts.
-      def book_search_plans(query, title:, author:)
-        structured, free_text = Array(scoped_indexers).partition do |indexer|
+      def book_search_plans(query, title:, author:, indexers: scoped_indexers)
+        free_text_query = build_free_text_query(query, title: title, author: author)
+
+        # Indexer list unavailable, or nothing matched the configured tags: keep
+        # letting Prowlarr pick the indexers, with the query shape none of them
+        # can reject.
+        return [ search_plan(free_text_query, nil) ] if indexers.blank?
+
+        available = indexers.select { |indexer| searchable?(indexer) }
+
+        # Every indexer in scope is disabled or blocked. Prowlarr would fail any
+        # explicit selection built from them, and there is nothing else to ask.
+        return [] if available.empty?
+
+        structured, free_text = available.partition do |indexer|
           supports_structured_book_search?(indexer, title: title, author: author)
         end
 
         plans = []
-        plans << search_plan(build_query(query, title: title, author: author), structured) if structured.any?
-        plans << search_plan(build_free_text_query(query, title: title, author: author), free_text) if free_text.any?
+        plans << search_plan(build_query(query, title: title, author: author), indexer_ids(structured)) if structured.any?
+        plans << search_plan(free_text_query, indexer_ids(free_text)) if free_text.any?
 
-        return plans if plans.any?
+        # One plan covers every indexer Prowlarr would have searched anyway, so
+        # drop the selection and leave the choice to Prowlarr exactly as before
+        # this split existed. An indexer blocked since the list was read then
+        # costs nothing.
+        plans.first[:indexer_ids] = nil if plans.one? && indexer_filter_tags.empty?
 
-        # Indexer list unavailable (or nothing matched the configured tags):
-        # search everything with the query shape no indexer can reject.
-        [ search_plan(build_free_text_query(query, title: title, author: author), []) ]
+        plans
       end
 
-      def search_plan(query, indexers)
-        { query: query, indexer_ids: indexers.map { |indexer| indexer["id"] }.presence }
+      # Prowlarr searches neither a disabled indexer nor one it has temporarily
+      # blocked after repeated failures, and rejects a selection containing only
+      # those, so they must not shape a plan.
+      def searchable?(indexer)
+        return false unless indexer.is_a?(Hash)
+        return false if indexer["enable"] == false
+
+        disabled_till = indexer.dig("status", "disabledTill")
+        return true if disabled_till.blank?
+
+        Time.parse(disabled_till.to_s) <= Time.current
+      rescue ArgumentError
+        true
+      end
+
+      def indexer_ids(indexers)
+        indexers.filter_map { |indexer| indexer["id"] }.presence
+      end
+
+      def search_plan(query, indexer_ids)
+        { query: query, indexer_ids: indexer_ids }
       end
 
       def supports_structured_book_search?(indexer, title:, author:)
