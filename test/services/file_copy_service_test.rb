@@ -2475,6 +2475,54 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "private staging rejects an all-squashed directory for a non-root process without an explicit trust opt-in" do
+    parent = File.join(@dest_dir, "private-staging")
+    FileUtils.mkdir_p(parent)
+    chown_for_root_squash(parent)
+
+    # A matching probe under all_squash only proves the export remaps every
+    # client's uid to the same anonymous identity -- not that this process
+    # wrote the entry. Without TRUST_NFS_UID_SQUASH, a non-root process must
+    # still fail closed here, exactly as it does for a genuinely different
+    # owner.
+    with_root_squashed_creation(parent, effective_uid: 65_535) do
+      assert_raises(FileCopyService::UnsafePathError) do
+        FileCopyService.secure_private_directory!(parent, root: @dest_dir)
+      end
+    end
+  end
+
+  test "private staging allows an all-squashed directory owner for a non-root PUID process with an explicit trust opt-in" do
+    parent = File.join(@dest_dir, "private-staging")
+    abandoned_probe = File.join(parent, ".shelfarr-owner-probe-#{'d' * 32}.tmp")
+    FileUtils.mkdir_p(parent)
+    chown_for_root_squash(parent)
+    File.binwrite(abandoned_probe, "")
+    chown_for_root_squash(abandoned_probe)
+
+    with_env("TRUST_NFS_UID_SQUASH" => "true") do
+      with_root_squashed_creation(parent, effective_uid: 65_535) do
+        FileCopyService.secure_private_directory!(parent, root: @dest_dir)
+        created = FileCopyService.create_private_directory(
+          parent,
+          root: @dest_dir,
+          prefix: "download-42-"
+        )
+        private_file = FileCopyService.create_private_file(
+          parent,
+          root: @dest_dir,
+          prefix: "archive-",
+          suffix: ".zip"
+        )
+
+        private_file.io.close
+        assert File.directory?(created.name)
+        assert File.file?(private_file.name)
+        assert_not File.exist?(abandoned_probe)
+      end
+    end
+  end
+
   test "private staging rejects an unrelated owner when running as local root" do
     skip "requires root to create an unrelated owner" unless Process.uid.zero?
 
@@ -2930,7 +2978,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     )
   end
 
-  def with_root_squashed_creation(directory, &operation)
+  def with_root_squashed_creation(directory, effective_uid: 0, &operation)
     real_mkdir = FileCopyService.method(:native_mkdirat)
     real_open = FileCopyService.method(:native_openat)
     squashed_mkdir = lambda do |directory_fd, basename, mode|
@@ -2946,7 +2994,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     FileCopyService.stub(:native_mkdirat, squashed_mkdir) do
       FileCopyService.stub(:native_openat, squashed_open) do
-        Process.stub(:euid, 0, &operation)
+        Process.stub(:euid, effective_uid, &operation)
       end
     end
   end
