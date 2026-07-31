@@ -19,8 +19,12 @@ module IndexerClients
           return items.map { |item| parse_result(item) }
         end
 
-        scoped = scoped_indexers
-        plans = book_search_plans(query, title: title, author: author, indexers: scoped)
+        # Resolve the configured tag scope once and carry it through. Reading it
+        # a second time while planning lets a transient /api/v1/tag failure read
+        # as "no tags configured" and widen the search past the user's scope.
+        tags = indexer_filter_tags
+        scoped = scoped_indexers(tags: tags)
+        plans = book_search_plans(query, title: title, author: author, tags: tags, indexers: scoped)
         items = execute_book_search_plans(plans, categories: cats, limit: limit)
 
         deduplicate_by_guid(items, indexer_priorities(scoped)).map { |item| parse_result(item) }
@@ -292,7 +296,7 @@ module IndexerClients
       # accept and give each group the richest query it supports. A token is
       # only ever emitted when the indexer is known to support it; everything
       # else falls back to free text, which every indexer accepts.
-      def book_search_plans(query, title:, author:, indexers: scoped_indexers)
+      def book_search_plans(query, title:, author:, tags: indexer_filter_tags, indexers: scoped_indexers(tags: tags))
         free_text_query = build_free_text_query(query, title: title, author: author)
 
         # Indexer list unavailable, or nothing matched the configured tags: keep
@@ -317,8 +321,9 @@ module IndexerClients
         # One plan covers every indexer Prowlarr would have searched anyway, so
         # drop the selection and leave the choice to Prowlarr exactly as before
         # this split existed. An indexer blocked since the list was read then
-        # costs nothing.
-        plans.first[:indexer_ids] = nil if plans.one? && indexer_filter_tags.empty?
+        # costs nothing. Only safe without a tag scope: with one, "every indexer
+        # Prowlarr would search" is the whole enabled set, not the tagged subset.
+        plans.first[:indexer_ids] = nil if plans.one? && tags.empty?
 
         plans
       end

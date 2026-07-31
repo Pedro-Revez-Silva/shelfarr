@@ -609,6 +609,49 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "book search keeps a name-resolved tag scope when the tag endpoint fails again" do
+    SettingsService.set(:prowlarr_tags, "books")
+    ProwlarrClient.instance_variable_set(:@connection, nil)
+
+    VCR.turned_off do
+      # The tag names resolve once, then the endpoint starts failing. The scope
+      # was already resolved, so the book search must still be restricted to it.
+      stub_request(:get, %r{localhost:9696/api/v1/tag})
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [ { "id" => 42, "label" => "books" } ].to_json
+          },
+          {
+            status: 500,
+            headers: { "Content-Type" => "application/json" },
+            body: { "error" => "boom" }.to_json
+          }
+        )
+
+      # Both are free-text only, so the split leaves a single plan — the path
+      # that drops indexerIds when nothing is scoping the search.
+      stub_indexers(
+        { "id" => 1, "name" => "Untagged", "tags" => [ 7 ],
+          "capabilities" => { "bookSearchParams" => [ "q" ] } },
+        { "id" => 2, "name" => "Tagged", "tags" => [ 42 ],
+          "capabilities" => { "bookSearchParams" => [ "q" ] } }
+      )
+
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with(query: hash_including("type" => "book", "indexerIds" => "2"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      ProwlarrClient.search("", title: "Frankenstein", author: "Mary Shelley")
+      assert_requested search_stub
+    end
+  end
+
   # SSL error handling tests
   test "test_connection returns false on SSL error" do
     VCR.turned_off do
