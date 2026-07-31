@@ -3,6 +3,21 @@
 require "test_helper"
 
 class ProwlarrClientTest < ActiveSupport::TestCase
+  # Indexer advertising the structured book search params Prowlarr needs before
+  # it will accept a {title:}/{author:} query.
+  STRUCTURED_INDEXER = {
+    "id" => 1,
+    "name" => "StructuredIndexer",
+    "capabilities" => { "bookSearchParams" => [ "q", "author", "title" ] }
+  }.freeze
+
+  # The common case: a tracker that only accepts free text.
+  FREE_TEXT_INDEXER = {
+    "id" => 2,
+    "name" => "FreeTextIndexer",
+    "capabilities" => { "bookSearchParams" => [ "q" ] }
+  }.freeze
+
   setup do
     # Configure Prowlarr settings for tests
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
@@ -77,6 +92,8 @@ class ProwlarrClientTest < ActiveSupport::TestCase
 
   test "search uses Prowlarr book search when title or author are provided" do
     VCR.turned_off do
+      stub_indexers(STRUCTURED_INDEXER)
+
       search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           query = req.uri.query_values
@@ -105,6 +122,8 @@ class ProwlarrClientTest < ActiveSupport::TestCase
 
   test "search sanitizes braces in structured book query values" do
     VCR.turned_off do
+      stub_indexers(STRUCTURED_INDEXER)
+
       search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           query = req.uri.query_values
@@ -129,6 +148,210 @@ class ProwlarrClientTest < ActiveSupport::TestCase
 
       assert_equal [], results
       assert_requested search_stub
+    end
+  end
+
+  test "search sends a free-text book query to indexers that only support q" do
+    VCR.turned_off do
+      stub_indexers(FREE_TEXT_INDEXER)
+
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values
+
+          query["type"] == "book" &&
+            query["query"] == "Inferno Dan Brown" &&
+            # A single plan covers every indexer Prowlarr would search anyway,
+            # so it is left unrestricted rather than pinned to a selection.
+            query["indexerIds"].nil?
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      assert_equal [], ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+      assert_requested search_stub
+    end
+  end
+
+  test "search splits a book search by what each indexer can accept" do
+    VCR.turned_off do
+      stub_indexers(STRUCTURED_INDEXER, FREE_TEXT_INDEXER)
+
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values
+
+          query["indexerIds"] == "1" &&
+            query["query"] == "{title:Inferno} {author:Dan Brown}"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "guid" => "structured-1", "title" => "Inferno", "indexer" => "StructuredIndexer" } ].to_json
+        )
+
+      free_text_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values
+
+          query["indexerIds"] == "2" && query["query"] == "Inferno Dan Brown"
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "guid" => "free-text-1", "title" => "Inferno", "indexer" => "FreeTextIndexer" } ].to_json
+        )
+
+      results = ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+
+      assert_equal [ "structured-1", "free-text-1" ], results.map(&:guid)
+      assert_requested structured_stub
+      assert_requested free_text_stub
+    end
+  end
+
+  test "search falls back to a free-text book query when indexer capabilities are unavailable" do
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/indexer}).to_return(status: 500, body: "")
+
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values
+
+          query["type"] == "book" &&
+            query["query"] == "Inferno Dan Brown" &&
+            query["indexerIds"].nil?
+        end
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      assert_equal [], ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+      assert_requested search_stub
+    end
+  end
+
+  test "search does not plan around a disabled indexer" do
+    VCR.turned_off do
+      # /api/v1/indexer returns every configured definition, disabled ones
+      # included, but Prowlarr will not search them: a selection naming only
+      # disabled indexers fails the search outright.
+      stub_indexers(STRUCTURED_INDEXER, FREE_TEXT_INDEXER.merge("enable" => false))
+
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          query = req.uri.query_values
+
+          query["query"] == "{title:Inferno} {author:Dan Brown}" && query["indexerIds"].nil?
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "guid" => "structured-1", "title" => "Inferno", "indexer" => "StructuredIndexer" } ].to_json
+        )
+
+      results = ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+
+      assert_equal [ "structured-1" ], results.map(&:guid)
+      assert_requested structured_stub
+      assert_not_requested :get, %r{localhost:9696/api/v1/search}, query: hash_including("indexerIds" => "2")
+    end
+  end
+
+  test "search does not plan around an indexer Prowlarr has temporarily blocked" do
+    VCR.turned_off do
+      blocked = FREE_TEXT_INDEXER.merge("status" => { "disabledTill" => 1.hour.from_now.utc.iso8601 })
+      stub_indexers(STRUCTURED_INDEXER, blocked)
+
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["query"] == "{title:Inferno} {author:Dan Brown}" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+
+      assert_equal [], ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+      assert_requested structured_stub
+      assert_not_requested :get, %r{localhost:9696/api/v1/search}, query: hash_including("query" => "Inferno Dan Brown")
+    end
+  end
+
+  test "search returns nothing when every indexer in scope is unavailable" do
+    VCR.turned_off do
+      stub_indexers(
+        STRUCTURED_INDEXER.merge("enable" => false),
+        FREE_TEXT_INDEXER.merge("enable" => false)
+      )
+
+      assert_equal [], ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+      assert_not_requested :get, %r{localhost:9696/api/v1/search}
+    end
+  end
+
+  test "search keeps the results of a plan that succeeded when another plan fails" do
+    VCR.turned_off do
+      # An indexer can be disabled or blocked between reading the list and
+      # running the search; Prowlarr then answers 400 for that selection.
+      stub_indexers(STRUCTURED_INDEXER, FREE_TEXT_INDEXER)
+
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["indexerIds"] == "1" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "guid" => "structured-1", "title" => "Inferno", "indexer" => "StructuredIndexer" } ].to_json
+        )
+
+      free_text_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["indexerIds"] == "2" }
+        .to_return(status: 400, body: "")
+
+      results = ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+
+      assert_equal [ "structured-1" ], results.map(&:guid)
+      assert_requested structured_stub
+      assert_requested free_text_stub
+    end
+  end
+
+  test "search raises when every book search plan fails" do
+    VCR.turned_off do
+      stub_indexers(STRUCTURED_INDEXER, FREE_TEXT_INDEXER)
+      stub_request(:get, %r{localhost:9696/api/v1/search}).to_return(status: 400, body: "")
+
+      assert_raises IndexerClients::Base::Error do
+        ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+      end
+    end
+  end
+
+  test "search de-duplicates plan results by guid, keeping the higher-priority indexer" do
+    VCR.turned_off do
+      # Prowlarr de-duplicates by GUID within one search and keeps the copy from
+      # the indexer with the lowest priority number. Splitting the search across
+      # plans makes that this client's job.
+      stub_indexers(
+        STRUCTURED_INDEXER.merge("priority" => 50),
+        FREE_TEXT_INDEXER.merge("priority" => 1)
+      )
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["indexerIds"] == "1" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "guid" => "shared", "title" => "Inferno", "indexer" => "StructuredIndexer", "indexerId" => 1 } ].to_json
+        )
+
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["indexerIds"] == "2" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            { "guid" => "shared", "title" => "Inferno", "indexer" => "FreeTextIndexer", "indexerId" => 2 },
+            { "guid" => "free-text-only", "title" => "Inferno", "indexer" => "FreeTextIndexer", "indexerId" => 2 }
+          ].to_json
+        )
+
+      results = ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+
+      assert_equal [ "shared", "free-text-only" ], results.map(&:guid)
+      assert_equal "FreeTextIndexer", results.first.indexer
     end
   end
 
@@ -386,6 +609,49 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "book search keeps a name-resolved tag scope when the tag endpoint fails again" do
+    SettingsService.set(:prowlarr_tags, "books")
+    ProwlarrClient.instance_variable_set(:@connection, nil)
+
+    VCR.turned_off do
+      # The tag names resolve once, then the endpoint starts failing. The scope
+      # was already resolved, so the book search must still be restricted to it.
+      stub_request(:get, %r{localhost:9696/api/v1/tag})
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [ { "id" => 42, "label" => "books" } ].to_json
+          },
+          {
+            status: 500,
+            headers: { "Content-Type" => "application/json" },
+            body: { "error" => "boom" }.to_json
+          }
+        )
+
+      # Both are free-text only, so the split leaves a single plan — the path
+      # that drops indexerIds when nothing is scoping the search.
+      stub_indexers(
+        { "id" => 1, "name" => "Untagged", "tags" => [ 7 ],
+          "capabilities" => { "bookSearchParams" => [ "q" ] } },
+        { "id" => 2, "name" => "Tagged", "tags" => [ 42 ],
+          "capabilities" => { "bookSearchParams" => [ "q" ] } }
+      )
+
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with(query: hash_including("type" => "book", "indexerIds" => "2"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      ProwlarrClient.search("", title: "Frankenstein", author: "Mary Shelley")
+      assert_requested search_stub
+    end
+  end
+
   # SSL error handling tests
   test "test_connection returns false on SSL error" do
     VCR.turned_off do
@@ -405,5 +671,16 @@ class ProwlarrClientTest < ActiveSupport::TestCase
         ProwlarrClient.search("test query")
       end
     end
+  end
+
+  private
+
+  def stub_indexers(*indexers)
+    stub_request(:get, %r{localhost:9696/api/v1/indexer})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: indexers.to_json
+      )
   end
 end
