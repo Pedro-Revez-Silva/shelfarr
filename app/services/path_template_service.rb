@@ -82,7 +82,7 @@ class PathTemplateService
 
     # Build the full destination path for a book
     def build_destination(book, base_path: nil)
-      base = base_path || default_base_path(book)
+      base = base_path || output_root_for(book)
       template = template_for(book)
       relative_path = build_path(book, template)
 
@@ -117,9 +117,12 @@ class PathTemplateService
       end
     end
 
-    private
-
-    def default_base_path(book)
+    # The configured output root for a book's type — the directory every template
+    # renders beneath. Public because callers that build a destination themselves
+    # must resolve it the same way build_destination would; a second definition
+    # is how a caller ends up publishing under a root the templating does not
+    # expect.
+    def output_root_for(book)
       if book.audiobook?
         SettingsService.get(:audiobook_output_path, default: "/audiobooks")
       elsif book.comicbook?
@@ -128,6 +131,19 @@ class PathTemplateService
         SettingsService.get(:ebook_output_path, default: "/ebooks")
       end
     end
+
+    # Every configured output root, for callers reasoning about the set rather
+    # than one book's — e.g. refusing a watched folder that overlaps somewhere
+    # Shelfarr imports into.
+    def output_roots
+      [
+        SettingsService.get(:audiobook_output_path, default: "/audiobooks"),
+        SettingsService.get(:ebook_output_path, default: "/ebooks"),
+        SettingsService.get(:comicbook_output_path, default: "/comics")
+      ]
+    end
+
+    private
 
     def sanitize_filename(name)
       name

@@ -156,6 +156,19 @@ Rails.application.routes.draw do
       post :retry_all
     end
     resources :activity_logs, only: [ :index ]
+    resources :detected_imports, only: [ :index, :show, :destroy ] do
+      member do
+        post :import
+        post :dismiss
+        post :restore
+        post :rematch
+        post :search
+        post :undo
+      end
+      collection do
+        post :scan
+      end
+    end
     resources :requests, only: [] do
       resources :search_results, only: [ :index ] do
         member do

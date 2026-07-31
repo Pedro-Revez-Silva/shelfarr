@@ -125,6 +125,7 @@ class PostProcessingJob < ApplicationJob
       end
       cleanup_usenet_download(download) if remove_usenet_download && cleanup_outcome == :complete
 
+      dismiss_detected_imports_for(source_path)
       run_completion_side_effects(request, download, book, book_path)
     rescue => e
       error_detail = "#{e.class}: #{bounded_exception_message(e)}"
@@ -440,6 +441,25 @@ class PostProcessingJob < ApplicationJob
     end
 
     raise source_path_not_found_message(source_path)
+  end
+
+  # The watched-folder scanner queues anything under the library import path,
+  # which commonly includes the download client's completed folder. If it reaches
+  # a download before post-processing does, the same content sits in the review
+  # queue while this job imports it, and approving that row afterwards would
+  # import the title twice. Which rows to retire is the model's business (see
+  # DetectedImport.dismiss_for_imported_source!); this job just reports.
+  def dismiss_detected_imports_for(source_path)
+    dismissed = DetectedImport.dismiss_for_imported_source!(source_path)
+    return if dismissed.zero?
+
+    Rails.logger.info(
+      "[PostProcessingJob] Dismissed #{dismissed} watched-folder #{'detection'.pluralize(dismissed)} " \
+        "already imported by this job"
+    )
+  rescue => e
+    # Never fail a completed import over review-queue bookkeeping.
+    Rails.logger.warn "[PostProcessingJob] Could not dismiss watched-folder detections (#{e.class})"
   end
 
   def cleanup_usenet_download(download)

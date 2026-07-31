@@ -23,6 +23,27 @@ class Book < ApplicationRecord
   scope :acquired, -> { where.not(file_path: nil).where("TRIM(file_path) <> ''") }
   scope :pending, -> { where(file_path: nil) }
   scope :acquisition_reserved, -> { where.not(acquisition_reservation_token: nil) }
+  # Rows +owner+ holds the acquisition reservation on. With .unclaimed this is
+  # the compare-and-swap used to finalize or release: only the holder of a
+  # still-unclaimed reservation may act on it.
+  scope :reserved_by, ->(owner) {
+    where(
+      acquisition_reservation_owner_type: owner.class.name,
+      acquisition_reservation_owner_id: owner.id
+    )
+  }
+  # Distinct from .pending, which only recognises a NULL file_path: a claim
+  # written as whitespace is not a claim.
+  scope :unclaimed, -> { where("file_path IS NULL OR TRIM(file_path) = ''") }
+
+  # Clears an acquisition reservation. Named once because the three columns must
+  # always go together — the validation above rejects a row that keeps an owner
+  # without its token.
+  RESERVATION_CLEARED = {
+    acquisition_reservation_token: nil,
+    acquisition_reservation_owner_type: nil,
+    acquisition_reservation_owner_id: nil
+  }.freeze
 
   def acquired?
     file_path.present?

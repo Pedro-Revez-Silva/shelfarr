@@ -2703,6 +2703,33 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
   end
 
+  test "retires the watched-folder detection for a release reached through a symlinked import path" do
+    real_root = Dir.mktmpdir("pp-watched-real")
+    link_base = Dir.mktmpdir("pp-watched-link")
+    link_root = File.join(link_base, "downloads")
+    File.symlink(real_root, link_root)
+    SettingsService.set(:library_import_path, link_root)
+
+    # The scanner canonicalises the root, so the detection it recorded for this
+    # release is named under the real path.
+    release = File.join(File.realpath(real_root), "Some Audiobook")
+    FileUtils.mkdir_p(release)
+    detection = DetectedImport.create!(
+      source_path: release, status: "detected", book_type: "audiobook", detected_at: Time.current
+    )
+
+    # Post-processing imports the same release, naming the track through the
+    # symlink the download client reported.
+    PostProcessingJob.new.send(
+      :dismiss_detected_imports_for, File.join(link_root, "Some Audiobook", "track01.mp3")
+    )
+
+    assert_equal "dismissed", detection.reload.status,
+      "otherwise approving the detection afterwards imports the same title a second time"
+  ensure
+    [ real_root, link_base ].each { |dir| FileUtils.rm_rf(dir) if dir }
+  end
+
   private
 
   def without_atomic_file_publication(&operation)

@@ -5,7 +5,7 @@ module OutboundNotifications
     class ConfigurationError < StandardError; end
     class DeliveryError < StandardError; end
 
-    EVENTS = %w[request_created request_completed request_failed request_attention].freeze
+    EVENTS = %w[request_created request_completed request_failed request_attention import_detected].freeze
     TEST_EVENT = "test"
 
     class << self
