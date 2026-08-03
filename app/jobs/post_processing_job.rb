@@ -128,6 +128,8 @@ class PostProcessingJob < ApplicationJob
       run_completion_side_effects(request, download, book, book_path)
     rescue => e
       error_detail = "#{e.class}: #{bounded_exception_message(e)}"
+      diagnostic_path = bounded_error_path(e)
+      error_detail << " at #{diagnostic_path.inspect}" if diagnostic_path
       cause = e.cause
       if cause && !cause.equal?(e)
         error_detail << " (caused by #{cause.class}: #{bounded_exception_message(cause)})"
@@ -263,8 +265,13 @@ class PostProcessingJob < ApplicationJob
     detail = case error
     when BookAcquisitionConflictError
       bounded_exception_message(error)
+    when FileCopyService::DirectoryNotWritableError
+      location = safe_attention_library_path(error)
+      "Shelfarr cannot write to #{location || "the configured library directory"}"
     when FileCopyService::UnsafeFilePermissionsError
-      "The library filesystem reported unsupported file or directory permissions"
+      location = safe_attention_library_path(error)
+      message = "The library filesystem reported unsupported file or directory permissions"
+      location ? "#{message} at #{location}" : message
     when FileCopyService::DurabilityUnsupportedError
       "The library filesystem cannot safely complete destructive imports because fsync is unsupported; use another filesystem or retain the download source"
     when FileCopyService::UnsafePathError
@@ -285,18 +292,44 @@ class PostProcessingJob < ApplicationJob
   end
 
   def bounded_exception_message(error)
-    raw = error.message.to_s.dup
+    bounded_diagnostic_text(error.message)
+  rescue StandardError
+    "[unavailable error detail]"
+  end
+
+  def bounded_diagnostic_text(value)
+    raw = value.to_s.dup
     raw = raw.byteslice(0, ERROR_DETAIL_INPUT_BYTE_LIMIT).to_s
     raw.force_encoding(Encoding::UTF_8) if raw.encoding == Encoding::BINARY
-    normalized = raw.encode(
+    raw.encode(
       Encoding::UTF_8,
       invalid: :replace,
       undef: :replace,
       replace: "\uFFFD"
-    )
-    normalized.squish.first(ERROR_DETAIL_CHARACTER_LIMIT)
+    ).squish.first(ERROR_DETAIL_CHARACTER_LIMIT)
+  end
+
+  def bounded_error_path(error)
+    return unless error.respond_to?(:path) && error.path.present?
+
+    bounded_diagnostic_text(error.path)
   rescue StandardError
-    "[unavailable error detail]"
+    nil
+  end
+
+  def safe_attention_library_path(error)
+    return unless error.respond_to?(:path) && error.path.present?
+    return unless error.respond_to?(:root) && error.root.present?
+
+    path = Pathname(error.path).expand_path
+    root = Pathname(error.root).expand_path
+    relative = path.relative_path_from(root)
+    return if relative.each_filename.any? { |part| part == ".." }
+    return "the configured library root" if relative.to_s == "."
+
+    "library path #{bounded_diagnostic_text(relative.to_s).inspect}"
+  rescue StandardError
+    nil
   end
 
   def safe_attention_detail(error)

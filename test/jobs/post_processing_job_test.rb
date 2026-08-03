@@ -1378,6 +1378,55 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal 0o755, File.stat(File.dirname(destination)).mode & 0o7777
   end
 
+  test "imports through a pre-existing shared author directory without changing its mode" do
+    destination = PathTemplateService.build_destination(@book, base_path: @temp_dest_base)
+    shared_author = File.dirname(destination)
+    FileUtils.mkdir_p(shared_author)
+    File.chmod(0o2775, shared_author)
+    shared_mode = File.stat(shared_author).mode & 0o7777
+    skip "host filesystem does not retain setgid directory modes" unless shared_mode == 0o2775
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(destination, "audiobook.mp3")
+    assert @request.reload.completed?
+    assert_equal "test audio content", File.binread(destination)
+    assert_equal 0o2775, File.stat(shared_author).mode & 0o7777
+    assert_equal 0o750, File.stat(File.dirname(destination)).mode & 0o7777
+  end
+
+  test "non-writable shared directories report the failing relative library path" do
+    destination = PathTemplateService.build_destination(@book, base_path: @temp_dest_base)
+    FileUtils.mkdir_p(destination)
+    real_ensure = FileCopyService.method(:ensure_directory)
+    denied_access = lambda do |path, root:, mode: FileCopyService::DIRECTORY_MODE|
+      if File.expand_path(path.to_s) == File.expand_path(destination)
+        raise FileCopyService::DirectoryNotWritableError.new(
+          "library directory is not writable",
+          path: path,
+          root: root
+        )
+      end
+
+      real_ensure.call(path, root: root, mode: mode)
+    end
+    SettingsService.set(:audiobookshelf_url, "")
+
+    output = FileCopyService.stub(:ensure_directory, denied_access) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    relative_destination = Pathname(destination).relative_path_from(Pathname(@temp_dest_base)).to_s
+    assert_includes output, "FileCopyService::DirectoryNotWritableError"
+    assert_includes output, destination
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, relative_destination
+    refute_includes @request.issue_description, @temp_dest_base
+  end
+
   test "unsafe synthetic directory modes preserve typed permission diagnostics" do
     SettingsService.set(:audiobookshelf_url, "")
 
@@ -1390,6 +1439,8 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_includes output, "Download ##{@download.id} failed: FileCopyService::UnsafeFilePermissionsError"
     refute_includes output, "Download ##{@download.id} failed: RuntimeError"
     assert_match(/unsupported file or directory permissions/i, @request.reload.issue_description)
+    assert_includes @request.issue_description, @book.author
+    refute_includes @request.issue_description, @temp_dest_base
   end
 
   test "nested import permission failures preserve typed diagnostics" do

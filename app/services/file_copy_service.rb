@@ -41,7 +41,17 @@ class FileCopyService
   DARWIN_RENAME_EXCL = 0x4
   AT_REMOVEDIR = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
 
-  class UnsafePathError < StandardError; end
+  class UnsafePathError < StandardError
+    attr_reader :path, :root
+
+    def initialize(message = nil, path: nil, root: nil)
+      @path = path&.to_s
+      @root = root&.to_s
+      super(message)
+    end
+  end
+
+  class DirectoryNotWritableError < UnsafePathError; end
   class UnsafeFilePermissionsError < UnsafePathError; end
   class AtomicPublicationUnsupportedError < StandardError; end
   class DurabilityUnsupportedError < StandardError; end
@@ -290,12 +300,25 @@ class FileCopyService
     end
 
     # Create a destination directory relative to a trusted output root while
-    # rejecting symlinks and non-directories in every path component.
+    # rejecting symlinks and non-directories in every path component. Existing
+    # library directories are never chmodded: shared NFS/CIFS libraries may be
+    # writable through group permissions or ACLs without being owned by this
+    # process. Validate the effective ACL-backed write/traverse access instead.
+    # Explicit private modes retain the strict chmod behavior expected by their
+    # callers.
     def ensure_directory(path, root:, mode: DIRECTORY_MODE)
-      expanded_path = Pathname(path).expand_path
-      expanded_root = Pathname(root).expand_path
-      with_pinned_directory(path, root: root, create: true, mode: mode) do |directory|
-        apply_directory_mode!(directory, mode) unless expanded_path == expanded_root
+      preserve_shared_permissions = mode == DIRECTORY_MODE
+      with_pinned_directory(
+        path,
+        root: root,
+        create: true,
+        mode: mode,
+        chmod_existing: !preserve_shared_permissions,
+        chmod_created: !preserve_shared_permissions
+      ) do |directory|
+        if preserve_shared_permissions
+          verify_directory_writable!(directory, path: path, root: root)
+        end
         sync_io(directory)
       end
       path
@@ -1097,7 +1120,9 @@ class FileCopyService
           expected_mode = apply_file_mode!(
             file,
             LIBRARY_FILE_MODE,
-            accepted_modes: LIBRARY_FILE_MODES
+            accepted_modes: LIBRARY_FILE_MODES,
+            path: path,
+            root: root
           )
           file_durable = sync_io(file)
           expected_identity = file_identity(file.stat)
@@ -1168,7 +1193,9 @@ class FileCopyService
               apply_file_mode!(
                 destination,
                 LIBRARY_FILE_MODE,
-                accepted_modes: LIBRARY_FILE_MODES
+                accepted_modes: LIBRARY_FILE_MODES,
+                path: destination_path,
+                root: root
               )
             end
             file_durable = sync_io(destination)
@@ -1435,6 +1462,24 @@ class FileCopyService
       false
     end
 
+    def verify_directory_writable!(directory, path:, root:)
+      accessible = File.writable?(path) && File.executable?(path)
+      validate_current_directory_identity!(Pathname(path).expand_path, directory)
+      return true if accessible
+
+      raise DirectoryNotWritableError.new(
+        "library directory is not writable",
+        path: path,
+        root: root
+      )
+    rescue Errno::EACCES, Errno::EPERM, Errno::EROFS => error
+      raise DirectoryNotWritableError.new(
+        "library directory is not writable",
+        path: path,
+        root: root
+      ), cause: error
+    end
+
     def safe_relative_path(path)
       relative = Pathname(path.to_s)
       if relative.absolute? || relative.each_filename.any? { |part| part.in?([ ".", ".." ]) }
@@ -1443,7 +1488,7 @@ class FileCopyService
       relative
     end
 
-    def apply_file_mode!(file, requested_mode, accepted_modes:)
+    def apply_file_mode!(file, requested_mode, accepted_modes:, path: nil, root: nil)
       mode_error = nil
       begin
         native_fchmod(file.fileno, requested_mode)
@@ -1453,9 +1498,12 @@ class FileCopyService
 
       effective_mode = file.stat.mode & 0o7777
       unless effective_mode.in?(accepted_modes)
-        raise UnsafeFilePermissionsError,
+        error = UnsafeFilePermissionsError.new(
           "library filesystem did not preserve safe file permissions",
-          cause: mode_error
+          path: path,
+          root: root
+        )
+        raise error, cause: mode_error
       end
       if mode_error || effective_mode != requested_mode
         Rails.logger.warn(
@@ -1465,7 +1513,13 @@ class FileCopyService
       effective_mode
     end
 
-    def apply_directory_mode!(directory, requested_mode, accepted_modes: nil)
+    def apply_directory_mode!(
+      directory,
+      requested_mode,
+      accepted_modes: nil,
+      path: nil,
+      root: nil
+    )
       accepted_modes ||= requested_mode == DIRECTORY_MODE ? LIBRARY_DIRECTORY_MODES : [ requested_mode ]
       mode_error = nil
       begin
@@ -1476,9 +1530,12 @@ class FileCopyService
 
       effective_mode = directory.stat.mode & 0o7777
       unless effective_mode.in?(accepted_modes)
-        raise UnsafeFilePermissionsError,
+        error = UnsafeFilePermissionsError.new(
           "filesystem did not preserve safe directory permissions",
-          cause: mode_error
+          path: path,
+          root: root
+        )
+        raise error, cause: mode_error
       end
       if mode_error || effective_mode != requested_mode
         Rails.logger.warn(
@@ -1516,7 +1573,13 @@ class FileCopyService
             lock_identity = file_identity(lock.stat)
             raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
 
-            apply_file_mode!(lock, 0o600, accepted_modes: LIBRARY_FILE_MODES)
+            apply_file_mode!(
+              lock,
+              0o600,
+              accepted_modes: LIBRARY_FILE_MODES,
+              path: destination,
+              root: root
+            )
             sync_io(parent)
             persist_copy_lock_pending!(lock, token)
 
@@ -1524,7 +1587,13 @@ class FileCopyService
               temporary_identity = file_identity(temporary.stat)
               persist_copy_lock_identity!(lock, token, temporary_identity)
               sync_io(parent)
-              apply_file_mode!(temporary, 0o600, accepted_modes: accepted_modes)
+              apply_file_mode!(
+                temporary,
+                0o600,
+                accepted_modes: accepted_modes,
+                path: destination,
+                root: root
+              )
               if heartbeat
                 copy_source_io(source, temporary, heartbeat: heartbeat)
               else
@@ -1533,7 +1602,9 @@ class FileCopyService
               published_mode = apply_file_mode!(
                 temporary,
                 LIBRARY_FILE_MODE,
-                accepted_modes: accepted_modes
+                accepted_modes: accepted_modes,
+                path: destination,
+                root: root
               )
               published_file_durable = flush_and_sync(temporary)
               if require_durable && !published_file_durable
@@ -1567,14 +1638,16 @@ class FileCopyService
                 )
                 published_identity, published_mode, published_file_durable =
                   publish_private_child_by_copy_noreplace!(
-                  parent,
-                  temporary_basename,
-                  basename,
-                  temporary_identity,
-                  lock: lock,
-                  token: token,
-                  heartbeat: heartbeat,
-                  accepted_modes: accepted_modes
+                    parent,
+                    temporary_basename,
+                    basename,
+                    temporary_identity,
+                    lock: lock,
+                    token: token,
+                    heartbeat: heartbeat,
+                    accepted_modes: accepted_modes,
+                    path: destination,
+                    root: root
                   )
               end
               validate_published_child!(
@@ -1636,7 +1709,13 @@ class FileCopyService
             lock_identity = file_identity(lock.stat)
             raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
 
-            apply_file_mode!(lock, 0o600, accepted_modes: LIBRARY_FILE_MODES)
+            apply_file_mode!(
+              lock,
+              0o600,
+              accepted_modes: LIBRARY_FILE_MODES,
+              path: destination,
+              root: root
+            )
             sync_io(parent)
 
             validate_hardlink_source!(
@@ -1802,6 +1881,8 @@ class FileCopyService
       token:,
       heartbeat:,
       accepted_modes:,
+      path:,
+      root:,
       mode: LIBRARY_FILE_MODE
     )
       destination_identity = nil
@@ -1826,7 +1907,13 @@ class FileCopyService
           )
           with_created_regular_child(parent, destination_basename, 0o600) do |destination|
             destination_identity = file_identity(destination.stat)
-            apply_file_mode!(destination, 0o600, accepted_modes: accepted_modes)
+            apply_file_mode!(
+              destination,
+              0o600,
+              accepted_modes: accepted_modes,
+              path: path,
+              root: root
+            )
             persist_copy_lock_compatibility!(
               lock,
               token,
@@ -1842,7 +1929,13 @@ class FileCopyService
             else
               copy_source_io(source, destination)
             end
-            destination_mode = apply_file_mode!(destination, mode, accepted_modes: accepted_modes)
+            destination_mode = apply_file_mode!(
+              destination,
+              mode,
+              accepted_modes: accepted_modes,
+              path: path,
+              root: root
+            )
             destination_durable = flush_and_sync(destination)
             unless file_identity(source.stat) == temporary_identity &&
                 source.stat.size == source_size && destination.stat.size == source_size
@@ -2647,15 +2740,30 @@ class FileCopyService
       end
     end
 
-    def with_pinned_directory(path, root:, create:, mode:)
+    def with_pinned_directory(
+      path,
+      root:,
+      create:,
+      mode:,
+      chmod_existing: true,
+      chmod_created: true
+    )
       path = Pathname(path).expand_path
       expanded_root, canonical_root, relative = destination_root_and_relative(path, root)
 
       with_pinned_absolute_directory(canonical_root) do |root_directory|
         validate_current_directory_identity!(expanded_root, root_directory)
-        with_pinned_relative_directory(root_directory, relative, create: create, mode: mode) do |directory|
+        with_pinned_relative_directory(
+          root_directory,
+          relative,
+          create: create,
+          mode: mode,
+          chmod_existing: chmod_existing,
+          chmod_created: chmod_created,
+          root_path: expanded_root
+        ) do |directory, created|
           validate_current_directory_identity!(path, directory)
-          yield directory
+          yield directory, created
         end
       end
     end
@@ -2691,31 +2799,62 @@ class FileCopyService
       handles&.reverse_each { |handle| handle.close unless handle.closed? }
     end
 
-    def with_pinned_relative_directory(root, relative, create:, mode: DIRECTORY_MODE)
+    def with_pinned_relative_directory(
+      root,
+      relative,
+      create:,
+      mode: DIRECTORY_MODE,
+      chmod_existing: true,
+      chmod_created: true,
+      root_path: nil
+    )
       handles = []
       current = root
+      current_path = Pathname(root_path) if root_path
+      last_created = false
       relative.each_filename do |part|
         next if part == "."
         raise UnsafePathError, "parent traversal is not allowed" if part == ".."
 
+        current_path = current_path.join(part) if current_path
+        created = false
         begin
-          child = open_pinned_directory_child(current, part)
-        rescue Errno::ENOENT
-          raise unless create
-
           begin
-            native_mkdirat(current.fileno, part, mode)
-          rescue Errno::EEXIST
-            nil
+            child = open_pinned_directory_child(current, part)
+          rescue Errno::ENOENT
+            raise unless create
+
+            begin
+              native_mkdirat(current.fileno, part, mode)
+              created = true
+            rescue Errno::EEXIST
+              nil
+            end
+            child = open_pinned_directory_child(current, part)
+            sync_io(current)
           end
-          child = open_pinned_directory_child(current, part)
-          sync_io(current)
+          handles << child
+          current = child
+          if create && ((created && chmod_created) || (!created && chmod_existing))
+            apply_directory_mode!(
+              child,
+              mode,
+              path: current_path,
+              root: root_path
+            )
+          end
+        rescue Errno::EACCES, Errno::EPERM, Errno::EROFS => error
+          raise unless current_path && root_path
+
+          raise DirectoryNotWritableError.new(
+            "library directory is not writable",
+            path: current_path,
+            root: root_path
+          ), cause: error
         end
-        apply_directory_mode!(child, mode) if create
-        handles << child
-        current = child
+        last_created = created
       end
-      yield current
+      yield current, last_created
     ensure
       handles&.reverse_each { |handle| handle.close unless handle.closed? }
     end

@@ -14,6 +14,15 @@ module SyntheticLibraryModesTestHelper
   )
     root = File.realpath(root)
     real_fchmod = FileCopyService.method(:native_fchmod)
+    real_mkdirat = FileCopyService.method(:native_mkdirat)
+    synthetic_mkdirat = lambda do |directory_fd, basename, requested_mode|
+      result = real_mkdirat.call(directory_fd, basename, requested_mode)
+      parent_path = synthetic_mode_descriptor_path(directory_fd)
+      if parent_path == root || parent_path.start_with?("#{root}/")
+        File.chmod(directory_mode, File.join(parent_path, basename))
+      end
+      result
+    end
     synthetic_fchmod = lambda do |descriptor, requested_mode|
       descriptor_path = synthetic_mode_descriptor_path(descriptor)
       unless descriptor_path == root || descriptor_path.start_with?("#{root}/")
@@ -25,7 +34,9 @@ module SyntheticLibraryModesTestHelper
       raise fchmod_error if fchmod_error
     end
 
-    FileCopyService.stub(:native_fchmod, synthetic_fchmod, &operation)
+    FileCopyService.stub(:native_mkdirat, synthetic_mkdirat) do
+      FileCopyService.stub(:native_fchmod, synthetic_fchmod, &operation)
+    end
   end
 
   private

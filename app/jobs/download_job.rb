@@ -174,14 +174,34 @@ class DownloadJob < ApplicationJob
   end
 
   def handle_direct_download_failure(download, error, message: nil)
+    library_configuration_error = direct_library_configuration_error?(error)
+    message = direct_library_failure_message if library_configuration_error
     message ||= "Direct download failed: #{error.message}"
     if error.is_a?(BookAcquisitionConflictError) ||
         error.is_a?(DirectDownloadFileService::ConflictError) ||
+        library_configuration_error ||
         transient_direct_download_error?(error)
       download.request.mark_for_attention!(message)
     else
       download.request.handle_download_failure!(download, reason: message)
     end
+  end
+
+  def direct_library_configuration_error?(error)
+    case error
+    when FileCopyService::DirectoryNotWritableError,
+         FileCopyService::UnsafeFilePermissionsError,
+         FileCopyService::AtomicPublicationUnsupportedError,
+         FileCopyService::DurabilityUnsupportedError,
+         Errno::EACCES, Errno::EPERM, Errno::EROFS, Errno::ENOSPC
+      true
+    else
+      false
+    end
+  end
+
+  def direct_library_failure_message
+    "Direct download could not write to the configured library storage"
   end
 
   def transient_direct_download_error?(error)
@@ -1497,7 +1517,12 @@ class DownloadJob < ApplicationJob
 
       Rails.logger.error "[DownloadJob] #{message}"
       Rails.logger.error error.backtrace.first(5).join("\n") if error.backtrace
-      track_request_event(download.request, "failed", download: download, message: error.message, level: :error)
+      event_message = if direct_library_configuration_error?(error)
+        direct_library_failure_message
+      else
+        error.message
+      end
+      track_request_event(download.request, "failed", download: download, message: event_message, level: :error)
       download.update!(status: :failed)
       handle_direct_download_failure(download, error, message: message)
       true
