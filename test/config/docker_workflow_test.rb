@@ -10,7 +10,42 @@ class DockerWorkflowTest < ActiveSupport::TestCase
       Rails.root.join(".github/workflows/docker.yml"),
       aliases: true
     )
+    @triggers = @workflow["on"] || @workflow.fetch(true)
     @jobs = @workflow.fetch("jobs")
+  end
+
+  test "release runs weekly or manually and skips main when it is unchanged" do
+    refute @triggers.key?("push")
+    refute @triggers.key?("pull_request")
+    assert @triggers.key?("workflow_dispatch")
+    assert_equal [ "17 4 * * 1" ], @triggers.fetch("schedule").pluck("cron")
+
+    plan_job = @jobs.fetch("plan")
+    checkout = plan_job.fetch("steps").find { |step| step["name"] == "Checkout main" }
+    planner = plan_job.fetch("steps").find { |step| step["name"] == "Plan release" }.fetch("run")
+
+    assert_equal "main", checkout.dig("with", "ref")
+    assert_equal "read", plan_job.dig("permissions", "contents")
+    assert_includes planner, "git diff --quiet"
+    assert_includes planner, "date -u +'%Y.%m.%d'"
+    assert_includes planner, 'version="${date_version}.${release_number}"'
+    assert_includes planner, 'git tag --list "v${date_version}.*"'
+    assert_includes planner, 'echo "should_release=false"'
+    assert_equal "weekly-release-main", @workflow.dig("concurrency", "group")
+    assert_equal false, @workflow.dig("concurrency", "cancel-in-progress")
+  end
+
+  test "calendar versioning does not derive a bump from commit messages" do
+    workflow_source = Rails.root.join(".github/workflows/docker.yml").read
+    planner = @jobs.fetch("plan").fetch("steps").find do |step|
+      step["name"] == "Plan release"
+    end.fetch("run")
+
+    refute_includes workflow_source, "github-tag-action"
+    refute_includes workflow_source, "default_bump"
+    refute_includes workflow_source, "new_version"
+    refute_includes workflow_source, "new_tag"
+    refute_includes planner, "git log"
   end
 
   test "release waits for the full validation gate and paired Docker images" do
@@ -20,21 +55,16 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert validation_commands.any? { |command| command.include?("bin/bundler-audit --update") }
 
     docker_job = @jobs.fetch("docker")
-    assert_equal %w[validate version], docker_job.fetch("needs")
-    assert_includes docker_job.fetch("if"), "always()"
-    assert_includes docker_job.fetch("if"), "needs.version.result == 'skipped'"
+    assert_equal %w[plan validate], docker_job.fetch("needs")
+    assert_includes docker_job.fetch("if"), "needs.plan.outputs.should_release == 'true'"
 
     docker_steps = docker_job.fetch("steps")
     candidate_steps = docker_steps.select { |step| step["name"]&.match?(/Build .* candidate\z/) }
     promotion_steps = docker_steps.select { |step| step["name"]&.start_with?("Promote exact ") }
     assert_equal 2, candidate_steps.size
     assert_equal 2, promotion_steps.size
-    assert candidate_steps.all? { |step|
-      step.dig("with", "push").include?("github.event_name != 'pull_request'")
-    }
-    assert promotion_steps.all? { |step|
-      step.fetch("if").include?("github.event_name != 'pull_request'")
-    }
+    assert candidate_steps.all? { |step| step.dig("with", "push") == true }
+    assert promotion_steps.none? { |step| step.key?("if") }
     assert promotion_steps.all? { |step| step.fetch("run").include?("docker buildx imagetools create") }
     assert promotion_steps.all? { |step| step.dig("env", "CANDIDATE_DIGEST").include?("outputs.digest") }
 
@@ -46,34 +76,33 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert_equal "Promote exact Shelfarr candidate", promotion_steps.last.fetch("name")
 
     release_job = @jobs.fetch("publish-release")
-    assert_equal %w[validate version docker], release_job.fetch("needs")
-    assert_includes release_job.fetch("if"), "needs.docker.result == 'success'"
-    assert release_job.fetch("steps").any? { |step|
-      step["uses"]&.start_with?("softprops/action-gh-release@")
-    }
-
-    version_step = @jobs.fetch("version").fetch("steps").find do |step|
-      step["uses"]&.start_with?("mathieudutour/github-tag-action@")
-    end
-    assert_equal true, version_step.dig("with", "dry_run")
-    assert_equal true, version_step.dig("with", "fetch_all_tags")
-    assert_equal "read", @jobs.fetch("version").dig("permissions", "contents")
-
+    assert_equal %w[plan validate docker], release_job.fetch("needs")
+    assert_equal "write", release_job.dig("permissions", "contents")
     release_step = release_job.fetch("steps").find do |step|
-      step["uses"]&.start_with?("softprops/action-gh-release@")
+      step["name"] == "Create tag and GitHub release after paired images"
     end
     tag_verification_step = release_job.fetch("steps").find do |step|
       step["name"] == "Verify release tag and release target"
     end
-    assert_equal "${{ github.sha }}", release_step.dig("with", "target_commitish")
+    assert_includes release_step.fetch("run"), 'gh release create "${TAG}"'
+    assert_includes release_step.fetch("run"), '--target "${HEAD_SHA}"'
     assert_includes tag_verification_step.fetch("run"), "git/ref/tags/${RELEASE_TAG}"
-    assert_includes tag_verification_step.fetch("run"), 'test "${tag_commit}" = "${GITHUB_SHA}"'
+    assert_includes tag_verification_step.fetch("run"), 'test "${tag_commit}" = "${HEAD_SHA}"'
     assert_includes tag_verification_step.fetch("run"), "gh release view"
-    assert_equal false, @workflow.dig("concurrency", "cancel-in-progress")
 
-    refute @jobs.fetch("version").fetch("steps").any? { |step|
+    refute @jobs.values.flat_map { |job| job.fetch("steps", []) }.any? { |step|
       step["uses"]&.start_with?("softprops/action-gh-release@")
     }
+  end
+
+  test "every release job uses the commit selected by the planner" do
+    %w[validate docker publish-release].each do |job_name|
+      checkout = @jobs.fetch(job_name).fetch("steps").find do |step|
+        step["name"] == "Checkout planned commit"
+      end
+
+      assert_equal "${{ needs.plan.outputs.head_sha }}", checkout.dig("with", "ref")
+    end
   end
 
   test "all workflow actions use immutable commit references" do
@@ -104,6 +133,24 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert commands.any? { |command| command.include?("dotnet format") && command.include?("--verify-no-changes") }
     assert commands.any? { |command| command.include?("dotnet test") && command.include?("--no-restore") }
     assert_equal "10.0.302", setup_step.dig("with", "dotnet-version")
+  end
+
+  test "pull request CI keeps companion and container validation without publishing" do
+    workflow = YAML.safe_load_file(
+      Rails.root.join(".github/workflows/ci.yml"),
+      aliases: true
+    )
+    jobs = workflow.fetch("jobs")
+    companion_commands = jobs.fetch("companion").fetch("steps").filter_map { |step| step["run"] }
+    container_build = jobs.fetch("container").fetch("steps").find do |step|
+      step["name"] == "Build Shelfarr image"
+    end
+
+    assert companion_commands.any? { |command| command.include?("dotnet restore") && command.include?("--locked-mode") }
+    assert companion_commands.any? { |command| command.include?("dotnet format") && command.include?("--verify-no-changes") }
+    assert companion_commands.any? { |command| command.include?("dotnet test") && command.include?("--no-restore") }
+    assert companion_commands.any? { |command| command.include?("container-smoke.sh") }
+    assert_equal false, container_build.dig("with", "push")
   end
 
   test "companion build inputs and upstream source are immutable" do
@@ -144,6 +191,5 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert_equal "arm64", qemu.dig("with", "platforms")
     assert_match %r{\Aimage=moby/buildkit:[^@]+@sha256:[0-9a-f]{64}\z},
       buildx.dig("with", "driver-opts")
-    assert_equal "true", @workflow.dig("env", "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24")
   end
 end

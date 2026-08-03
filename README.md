@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/github/license/Pedro-Revez-Silva/shelfarr" alt="License">
   </a>
   <a href="https://github.com/Pedro-Revez-Silva/shelfarr/actions/workflows/docker.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/Pedro-Revez-Silva/shelfarr/docker.yml?label=build" alt="Build Status">
+    <img src="https://img.shields.io/github/actions/workflow/status/Pedro-Revez-Silva/shelfarr/docker.yml?label=release" alt="Release Status">
   </a>
   <a href="https://github.com/Pedro-Revez-Silva/shelfarr/pkgs/container/shelfarr">
     <img src="https://img.shields.io/badge/ghcr.io-shelfarr-blue?logo=docker" alt="Docker Image">
@@ -76,7 +76,7 @@ mv docker-compose.example.yml docker-compose.yml
 #    - /path/to/ebooks → your Audiobookshelf ebooks folder
 #    - /path/to/downloads → your download client's completed folder
 #    - Optionally set SHELFARR_VERSION in .env to pin Shelfarr and its companion
-#      (use the OCI image version without the GitHub tag's leading "v")
+#      (for GitHub release vYYYY.MM.DD.N, use OCI version YYYY.MM.DD.N)
 
 # 3. Start
 docker compose up -d
@@ -99,7 +99,7 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `HTTP_PORT` | `80` | Internal container port. Change if port 80 is in use (e.g., behind gluetun) |
 | `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set |
 | `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
-| `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vX.Y.Z`, use `X.Y.Z`) |
+| `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vYYYY.MM.DD.N`, use `YYYY.MM.DD.N`) |
 | `LIBATION_BOOKS_PATH` | Docker named volume | Optional host path for retained Audible backup copies; useful for large libraries |
 
 Audible Backup additionally requires the audiobook output filesystem to support advisory locks, hard links within that same mount, and Unix mode changes. Keep Shelfarr's `.shelfarr-staging` directory on the audiobook output filesystem and run the documented preflight before connecting Audible. mergerfs/libfuse mounts with a `umask=` mode override need a compatible underlying bind or a coordinated mount correction; do not bypass the check. See the [Audible Backup storage requirements and filesystem preflight](docs/audible-backup.md#preflight-the-audiobook-filesystem).

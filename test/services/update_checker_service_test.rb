@@ -31,6 +31,31 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "calendar release supersedes the legacy semantic version" do
+    VCR.turned_off do
+      stub_github_release("2026.08.03.1", name: "Release 2026.08.03.1")
+
+      UpdateCheckerService.stub(:current_version, "0.39.4") do
+        result = UpdateCheckerService.check(force: true)
+
+        assert result.update_available?
+        assert_equal "2026.08.03.1", result.latest_version
+      end
+    end
+  end
+
+  test "compares calendar releases by date and release number" do
+    VCR.turned_off do
+      stub_github_release("2026.08.03.2")
+
+      UpdateCheckerService.stub(:current_version, "2026.08.03.1") do
+        result = UpdateCheckerService.check(force: true)
+
+        assert result.update_available?
+      end
+    end
+  end
+
   test "no update when versions match" do
     VCR.turned_off do
       stub_github_release("0.1.0")
