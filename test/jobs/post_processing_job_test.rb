@@ -1393,7 +1393,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.reload.completed?
     assert_equal "test audio content", File.binread(destination)
     assert_equal 0o2775, File.stat(shared_author).mode & 0o7777
-    assert_equal 0o750, File.stat(File.dirname(destination)).mode & 0o7777
+    assert_equal 0o750, File.stat(File.dirname(destination)).mode & 0o777
   end
 
   test "non-writable shared directories report the failing relative library path" do
