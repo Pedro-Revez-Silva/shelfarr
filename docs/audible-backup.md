@@ -65,10 +65,10 @@ The companion starts idle and does not contact Audible until an administrator ex
 For a reproducible deployment, put the exact published Shelfarr **OCI image version** in `.env`; the same value selects the matching companion. Use the numeric version without the GitHub release tag's leading `v`:
 
 ```dotenv
-SHELFARR_VERSION=X.Y.Z
+SHELFARR_VERSION=YYYY.MM.DD.N
 ```
 
-For example, GitHub release `vX.Y.Z` is published as container image tag `X.Y.Z`; setting `SHELFARR_VERSION=vX.Y.Z` will not select that image. Replace `X.Y.Z` with the release number you are deploying.
+For example, GitHub release `vYYYY.MM.DD.N` is published as container image tag `YYYY.MM.DD.N`; setting `SHELFARR_VERSION=vYYYY.MM.DD.N` will not select that image. Replace `YYYY.MM.DD.N` with the release number you are deploying.
 
 Normal installations should use a published release. Shelfarr publishes the application and matching companion images for releases, but pull-request builds are not published as installable image tags. Building both images from source is a contributor or release-candidate test workflow, not part of a normal update.
 
