@@ -143,6 +143,187 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal 0o777, File.stat(directory).mode & 0o7777
   end
 
+  test "ensure_directory restores shared access bits on every component after a restrictive umask" do
+    parent = File.join(@dest_dir, "restrictive-umask-parent")
+    directory = File.join(parent, "restrictive-umask-child")
+    previous_umask = File.umask(0o077)
+
+    begin
+      FileCopyService.ensure_directory(directory, root: @dest_dir)
+    ensure
+      File.umask(previous_umask)
+    end
+
+    assert_equal 0o750, File.stat(parent).mode & 0o777
+    assert_equal 0o750, File.stat(directory).mode & 0o777
+  end
+
+  test "ensure_directory rejects a created directory that cannot recover shared access bits" do
+    directory = File.join(@dest_dir, "unrepairable-umask-directory")
+    previous_umask = File.umask(0o077)
+
+    begin
+      error = FileCopyService.stub(:native_fchmod, ->(*) { raise Errno::EOPNOTSUPP }) do
+        assert_raises(FileCopyService::UnsafeFilePermissionsError) do
+          FileCopyService.ensure_directory(directory, root: @dest_dir)
+        end
+      end
+    ensure
+      File.umask(previous_umask)
+    end
+
+    assert_equal directory, error.path
+    assert_equal @dest_dir, error.root
+    assert_equal 0o700, File.stat(directory).mode & 0o777
+  end
+
+  test "ensure_directory retains special bits on a newly created shared directory" do
+    directory = File.join(@dest_dir, "setgid-directory")
+    real_mkdirat = FileCopyService.method(:native_mkdirat)
+    setgid_mkdirat = lambda do |directory_fd, basename, mode|
+      result = real_mkdirat.call(directory_fd, basename, mode)
+      parent_path = synthetic_mode_descriptor_path(directory_fd)
+      File.chmod(0o2700, File.join(parent_path, basename))
+      result
+    end
+
+    FileCopyService.stub(:native_mkdirat, setgid_mkdirat) do
+      FileCopyService.ensure_directory(directory, root: @dest_dir)
+    end
+
+    assert_equal 0o2750, File.stat(directory).mode & 0o7777
+  end
+
+  test "ensure_directory does not chmod pre-existing shared directories" do
+    shared_parent = File.join(@dest_dir, "shared-author")
+    directory = File.join(shared_parent, "existing-title")
+    FileUtils.mkdir_p(directory)
+    File.chmod(0o2775, shared_parent)
+    File.chmod(0o777, directory)
+    parent_mode = File.stat(shared_parent).mode & 0o7777
+    skip "host filesystem does not retain setgid directory modes" unless parent_mode == 0o2775
+
+    FileCopyService.ensure_directory(directory, root: @dest_dir)
+
+    assert_equal 0o2775, File.stat(shared_parent).mode & 0o7777
+    assert_equal 0o777, File.stat(directory).mode & 0o7777
+  end
+
+  test "ensure_directory preserves a shared parent when creating a child" do
+    shared_parent = File.join(@dest_dir, "shared-author")
+    directory = File.join(shared_parent, "new-title")
+    FileUtils.mkdir_p(shared_parent)
+    File.chmod(0o2775, shared_parent)
+    parent_mode = File.stat(shared_parent).mode & 0o7777
+    skip "host filesystem does not retain setgid directory modes" unless parent_mode == 0o2775
+
+    FileCopyService.ensure_directory(directory, root: @dest_dir)
+
+    assert_equal 0o2775, File.stat(shared_parent).mode & 0o7777
+    assert_equal 0o750, File.stat(directory).mode & 0o777
+  end
+
+  test "ensure_directory reports a path-aware error when an existing directory is not writable" do
+    directory = File.join(@dest_dir, "shared-author")
+    FileUtils.mkdir_p(directory)
+
+    error = File.stub(:writable?, ->(path) { path != directory }) do
+      assert_raises(FileCopyService::DirectoryNotWritableError) do
+        FileCopyService.ensure_directory(directory, root: @dest_dir)
+      end
+    end
+
+    assert_equal directory, error.path
+    assert_equal @dest_dir, error.root
+    assert_equal "library directory is not writable", error.message
+    refute_includes error.message, @dest_dir
+  end
+
+  test "ensure_directory checks access after creating a directory" do
+    directory = File.join(@dest_dir, "new-shared-author")
+
+    error = File.stub(:writable?, ->(path) { path != directory }) do
+      assert_raises(FileCopyService::DirectoryNotWritableError) do
+        FileCopyService.ensure_directory(directory, root: @dest_dir)
+      end
+    end
+
+    assert File.directory?(directory)
+    assert_equal directory, error.path
+    assert_equal @dest_dir, error.root
+  end
+
+  test "ensure_directory reports a path-aware creation permission error" do
+    directory = File.join(@dest_dir, "denied-directory")
+    real_mkdir = FileCopyService.method(:native_mkdirat)
+    denied_mkdir = lambda do |directory_fd, basename, mode|
+      raise Errno::EACCES, "simulated ACL denial" if basename == "denied-directory"
+
+      real_mkdir.call(directory_fd, basename, mode)
+    end
+
+    error = FileCopyService.stub(:native_mkdirat, denied_mkdir) do
+      assert_raises(FileCopyService::DirectoryNotWritableError) do
+        FileCopyService.ensure_directory(directory, root: @dest_dir)
+      end
+    end
+
+    assert_equal directory, error.path
+    assert_equal @dest_dir, error.root
+    assert_instance_of Errno::EACCES, error.cause
+  end
+
+  test "ensure_directory keeps strict chmod behavior for explicit private modes" do
+    directory = File.join(@dest_dir, "private-directory")
+    FileUtils.mkdir_p(directory)
+    File.chmod(0o755, directory)
+
+    FileCopyService.ensure_directory(directory, root: @dest_dir, mode: 0o700)
+
+    assert_equal 0o700, File.stat(directory).mode & 0o7777
+  end
+
+  test "ensure_directory ignores unrelated entries with invalid UTF-8 names" do
+    directory = File.join(@dest_dir, "shared-author")
+    FileUtils.mkdir_p(directory)
+    invalid_entry = File.join(directory.b, "invalid-\xFF".b)
+    begin
+      File.binwrite(invalid_entry, "unrelated")
+    rescue Errno::EILSEQ
+      skip "host filesystem does not accept invalid UTF-8 filenames"
+    end
+
+    FileCopyService.ensure_directory(directory, root: @dest_dir)
+
+    assert_equal "unrelated", File.binread(invalid_entry)
+  end
+
+  test "cp_noreplace supports fixed CIFS 0775 modes" do
+    directory = File.join(@dest_dir, "cifs-directory")
+    destination = File.join(directory, "cifs-file.txt")
+
+    with_synthetic_library_modes(
+      root: @dest_dir,
+      file_mode: 0o775,
+      directory_mode: 0o775,
+      fchmod_error: Errno::EOPNOTSUPP
+    ) do
+      FileCopyService.ensure_directory(directory, root: @dest_dir)
+      without_atomic_file_publication do
+        FileCopyService.cp_noreplace(
+          @src_file,
+          destination,
+          root: @dest_dir,
+          allow_compatibility_fallback: true
+        )
+      end
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal 0o775, File.stat(directory).mode & 0o7777
+    assert_equal 0o775, File.stat(destination).mode & 0o7777
+  end
+
   test "cp_noreplace supports synthetic Windows ACL modes and compatibility publication" do
     destination = File.join(@dest_dir, "windows-mode.txt")
 

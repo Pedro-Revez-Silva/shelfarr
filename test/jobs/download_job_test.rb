@@ -338,6 +338,27 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "does not blocklist on a direct download library configuration error" do
+    @download.update!(status: :downloading, download_type: "direct")
+    error = FileCopyService::DirectoryNotWritableError.new(
+      "library directory is not writable",
+      path: "/private/library/author/title",
+      root: "/private/library"
+    )
+
+    DownloadJob.new.send(
+      :handle_direct_download_failure,
+      @download,
+      error,
+      message: "Direct download failed at /private/library/author/title"
+    )
+
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+    assert_includes @request.issue_description, "configured library storage"
+    refute_includes @request.issue_description, "/private/library"
+  end
+
   test "does not blocklist on LibriVox direct audiobook transient download error" do
     Dir.mktmpdir do |dir|
       setup_librivox_download(output_path: dir)
