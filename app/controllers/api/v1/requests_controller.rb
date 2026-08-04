@@ -279,6 +279,13 @@ class API::V1::RequestsController < API::V1::ApplicationController
   end
 
   def grab_search_result
+    unless @request.manual_download_allowed?
+      render json: {
+        errors: [ "Cannot grab a release while the request is completed, processing, or dispatching" ]
+      }, status: :unprocessable_entity
+      return
+    end
+
     result = @request.search_results.find(params[:search_result_id])
     @request.select_result!(result)
     render json: request_payload_with_selected_result(@request.reload)

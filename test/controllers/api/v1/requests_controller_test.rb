@@ -624,6 +624,43 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
+  test "grab rejects completed and processing requests" do
+    _token, raw = APIToken.issue!(
+      name: "Writer",
+      user: @user,
+      scopes: %w[requests:write]
+    )
+    result = search_results(:pending_result)
+
+    completed = requests(:pending_request)
+    completed.update!(status: :completed)
+    post grab_api_v1_request_path(completed),
+      headers: { "Authorization" => "Bearer #{raw}" },
+      params: { search_result_id: result.id }
+    assert_response :unprocessable_entity
+    assert_match(/completed|processing|dispatching/i, JSON.parse(response.body)["errors"].join)
+
+    processing = Request.create!(
+      book: Book.create!(title: "Processing Grab", book_type: :ebook, open_library_work_id: "OL_API_GRAB_PROC"),
+      user: @user,
+      status: :processing
+    )
+    processing_result = processing.search_results.create!(
+      guid: "test-guid-grab-processing",
+      title: "Processing release",
+      indexer: "TestIndexer",
+      magnet_url: "magnet:?xt=urn:btih:grabproc",
+      size_bytes: 1_000,
+      seeders: 5,
+      status: :pending
+    )
+    post grab_api_v1_request_path(processing),
+      headers: { "Authorization" => "Bearer #{raw}" },
+      params: { search_result_id: processing_result.id }
+    assert_response :unprocessable_entity
+    assert_no_enqueued_jobs(only: DownloadJob)
+  end
+
   test "grab does not allow writing another users request without admin scope" do
     other = users(:two)
     other_request = Request.create!(

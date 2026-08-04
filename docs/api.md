@@ -90,7 +90,7 @@ Requires `requests:write`. Selects a downloadable acquisition candidate and star
 }
 ```
 
-Returns the request payload plus `selected_result`. Clears a previous blocklist flag on that result when re-grabbing it. Returns `404` if the result is missing, and `422` if it is not downloadable or `search_result_id` is omitted.
+Returns the request payload plus `selected_result`. Clears a previous blocklist flag on that result when re-grabbing it. Returns `404` if the result is missing, and `422` if it is not downloadable, `search_result_id` is omitted, or the request is already `completed`, `processing`, or mid-dispatch (same rules as manual magnet/NZB selection).
 
 `POST /api/v1/requests/:id/blocklist_and_next`
 
