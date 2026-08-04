@@ -694,6 +694,20 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(outside_dest)
   end
 
+  test "cp_noreplace falls back to rename when same-directory linkat returns EINVAL" do
+    # CIFS/SMB often returns EINVAL for unsupported hardlinks instead of
+    # EOPNOTSUPP. Intra-directory publish must still rename into place.
+    destination = File.join(@dest_dir, "cifs-einval.txt")
+
+    FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EINVAL }) do
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal 0o640, File.stat(destination).mode & 0o777
+    assert_empty Dir.children(@dest_dir) - [ "cifs-einval.txt" ]
+  end
+
   test "hardlink_noreplace classifies only initial unsupported link errors" do
     unsupported_errors = [
       Errno::EXDEV,
@@ -702,6 +716,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       Errno::ENOTSUP,
       Errno::ENOSYS,
       Errno::EMLINK,
+      Errno::EINVAL,
       Fiddle::DLError,
       NotImplementedError
     ]
