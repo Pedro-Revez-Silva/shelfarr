@@ -98,12 +98,24 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
   test "schedule_post_scan_refresh! enqueues a delayed one-shot sync" do
     clear_enqueued_jobs
 
-    assert_enqueued_with(
-      job: AudiobookshelfLibrarySyncJob,
-      args: [ { schedule_next: false } ],
-      at: AudiobookshelfLibrarySyncJob::POST_SCAN_REFRESH_WAIT.from_now
-    ) do
-      AudiobookshelfLibrarySyncJob.schedule_post_scan_refresh!
+    with_post_scan_refresh_cache do
+      assert_enqueued_with(
+        job: AudiobookshelfLibrarySyncJob,
+        args: [ { schedule_next: false } ],
+        at: AudiobookshelfLibrarySyncJob::POST_SCAN_REFRESH_WAIT.from_now
+      ) do
+        AudiobookshelfLibrarySyncJob.schedule_post_scan_refresh!
+      end
+    end
+  end
+
+  test "schedule_post_scan_refresh! coalesces repeated calls into one delayed job" do
+    clear_enqueued_jobs
+
+    with_post_scan_refresh_cache do
+      assert_enqueued_jobs 1, only: AudiobookshelfLibrarySyncJob do
+        5.times { AudiobookshelfLibrarySyncJob.schedule_post_scan_refresh! }
+      end
     end
   end
 
@@ -130,5 +142,14 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     yield
   ensure
     singleton.define_method(:get, original_get)
+  end
+
+  def with_post_scan_refresh_cache
+    previous = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    Rails.cache.clear
+    yield
+  ensure
+    Rails.cache = previous
   end
 end

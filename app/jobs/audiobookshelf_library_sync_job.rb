@@ -10,6 +10,7 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   # Grimmory) have time to discover newly imported files before we refresh
   # Shelfarr's inventory cache used for duplicate detection.
   POST_SCAN_REFRESH_WAIT = 90.seconds
+  POST_SCAN_REFRESH_CACHE_KEY = "library-platform-post-scan-refresh"
 
   # schedule_next: false for one-shot post-grab refreshes that must not reset
   # the periodic sync cadence.
@@ -21,8 +22,18 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
     schedule_next_run if schedule_next
   end
 
+  # Coalesce bulk imports: only one delayed full-inventory sync is scheduled
+  # per wait window, no matter how many files call this method.
   def self.schedule_post_scan_refresh!
     return unless LibraryPlatformClient.configured?
+
+    claimed = Rails.cache.write(
+      POST_SCAN_REFRESH_CACHE_KEY,
+      true,
+      expires_in: POST_SCAN_REFRESH_WAIT,
+      unless_exist: true
+    )
+    return unless claimed
 
     set(wait: POST_SCAN_REFRESH_WAIT).perform_later(schedule_next: false)
   end
