@@ -2754,6 +2754,25 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
   end
 
+  test "trigger_library_scan schedules a delayed inventory refresh after scan" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "audio-lib")
+    scanned = []
+    clear_enqueued_jobs
+
+    LibraryPlatformClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
+      assert_enqueued_with(
+        job: AudiobookshelfLibrarySyncJob,
+        args: [ { schedule_next: false } ]
+      ) do
+        PostProcessingJob.new.send(:trigger_library_scan, @book)
+      end
+    end
+
+    assert_equal [ "audio-lib" ], scanned
+  end
+
   private
 
   def without_atomic_file_publication(&operation)

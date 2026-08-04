@@ -341,11 +341,24 @@ class SettingsServiceTest < ActiveSupport::TestCase
   end
 
   test "label_for uses brand and neutral library platform labels" do
+    SettingsService.set(:library_platform, "audiobookshelf")
+
     assert_equal "BookOrbit URL", SettingsService.label_for(:bookorbit_url)
     assert_equal "Grimmory URL", SettingsService.label_for(:grimmory_url)
     assert_equal "Audiobook Library", SettingsService.label_for(:audiobookshelf_audiobook_library_id)
     assert_equal "Comics & Manga Library", SettingsService.label_for(:audiobookshelf_comicbook_library_id)
     assert_equal "Max Retries", SettingsService.label_for(:max_retries)
+  end
+
+  test "label_for scopes delivery library labels to the active non-ABS platform" do
+    SettingsService.set(:library_platform, "bookorbit")
+
+    assert_equal "Audiobook Library (BookOrbit)", SettingsService.label_for(:audiobookshelf_audiobook_library_id)
+    assert_equal "Ebook Library (BookOrbit)", SettingsService.label_for(:audiobookshelf_ebook_library_id)
+    assert_equal "Library Sync Interval (BookOrbit)", SettingsService.label_for(:audiobookshelf_library_sync_interval)
+
+    SettingsService.set(:library_platform, "grimmory")
+    assert_equal "Comics & Manga Library (Grimmory)", SettingsService.label_for(:audiobookshelf_comicbook_library_id)
   end
 
   test "library_id_for_book resolves separate comic library with ebook fallback" do

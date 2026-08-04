@@ -1306,6 +1306,7 @@ class DownloadJob < ApplicationJob
     return unless lib_id.present?
 
     LibraryPlatformClient.scan_library(lib_id)
+    AudiobookshelfLibrarySyncJob.schedule_post_scan_refresh!
     Rails.logger.info "[DownloadJob] Triggered #{LibraryPlatformClient.display_name} library scan for #{book.book_type}"
   rescue LibraryPlatformClient::Error => e
     Rails.logger.warn "[DownloadJob] Failed to trigger scan: #{e.message}"

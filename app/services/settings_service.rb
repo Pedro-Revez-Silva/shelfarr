@@ -314,9 +314,29 @@ class SettingsService
     audiobookshelf_library_sync_interval: "Library Sync Interval"
   }.freeze
 
+  # Delivery/scan library settings keep ABS-era keys for compatibility, but the
+  # labels must name the active platform so BookOrbit/Grimmory installs are not
+  # misread as Audiobookshelf-only (#400).
+  PLATFORM_SCOPED_LIBRARY_LABEL_KEYS = %i[
+    audiobookshelf_audiobook_library_id
+    audiobookshelf_ebook_library_id
+    audiobookshelf_comicbook_library_id
+    audiobookshelf_audiobook_scan_library_ids
+    audiobookshelf_ebook_scan_library_ids
+    audiobookshelf_comicbook_scan_library_ids
+    audiobookshelf_library_sync_interval
+  ].freeze
+
   class << self
     def label_for(key)
-      LABELS.fetch(key.to_sym, key.to_s.titleize)
+      key = key.to_sym
+      base = LABELS.fetch(key, key.to_s.titleize)
+      return base unless PLATFORM_SCOPED_LIBRARY_LABEL_KEYS.include?(key)
+
+      platform = active_library_platform
+      return base if platform == "audiobookshelf"
+
+      "#{base} (#{LibraryPlatformClient.display_name(platform)})"
     end
 
     def env_override_name(key)
