@@ -300,12 +300,13 @@ class FileCopyService
     end
 
     # Create a destination directory relative to a trusted output root while
-    # rejecting symlinks and non-directories in every path component. Existing
+    # rejecting symlinks and non-directories in every path component. Pre-existing
     # library directories are never chmodded: shared NFS/CIFS libraries may be
-    # writable through group permissions or ACLs without being owned by this
-    # process. Validate the effective ACL-backed write/traverse access instead.
-    # Explicit private modes retain the strict chmod behavior expected by their
-    # callers.
+    # libraries may be writable through group permissions or ACLs without being
+    # owned by this process. Newly created components still recover the requested
+    # access bits from a restrictive umask while retaining inherited special bits.
+    # Validate the effective ACL-backed write/traverse access afterward. Explicit
+    # private modes retain the strict chmod behavior expected by their callers.
     def ensure_directory(path, root:, mode: DIRECTORY_MODE)
       preserve_shared_permissions = mode == DIRECTORY_MODE
       with_pinned_directory(
@@ -314,7 +315,8 @@ class FileCopyService
         create: true,
         mode: mode,
         chmod_existing: !preserve_shared_permissions,
-        chmod_created: !preserve_shared_permissions
+        chmod_created: true,
+        preserve_created_special_bits: preserve_shared_permissions
       ) do |directory|
         if preserve_shared_permissions
           verify_directory_writable!(directory, path: path, root: root)
@@ -1545,6 +1547,24 @@ class FileCopyService
       effective_mode
     end
 
+    def apply_created_shared_directory_mode!(directory, requested_mode, path:, root:)
+      special_bits = directory.stat.mode & 0o7000
+      requested_access = requested_mode & 0o777
+      accepted_modes = LIBRARY_DIRECTORY_MODES.filter_map do |effective_access|
+        next unless (effective_access & requested_access) == requested_access
+
+        special_bits | effective_access
+      end
+
+      apply_directory_mode!(
+        directory,
+        special_bits | requested_access,
+        accepted_modes: accepted_modes,
+        path: path,
+        root: root
+      )
+    end
+
     def publish_source_io_noreplace(
       source,
       destination,
@@ -2746,7 +2766,8 @@ class FileCopyService
       create:,
       mode:,
       chmod_existing: true,
-      chmod_created: true
+      chmod_created: true,
+      preserve_created_special_bits: false
     )
       path = Pathname(path).expand_path
       expanded_root, canonical_root, relative = destination_root_and_relative(path, root)
@@ -2760,6 +2781,7 @@ class FileCopyService
           mode: mode,
           chmod_existing: chmod_existing,
           chmod_created: chmod_created,
+          preserve_created_special_bits: preserve_created_special_bits,
           root_path: expanded_root
         ) do |directory, created|
           validate_current_directory_identity!(path, directory)
@@ -2806,6 +2828,7 @@ class FileCopyService
       mode: DIRECTORY_MODE,
       chmod_existing: true,
       chmod_created: true,
+      preserve_created_special_bits: false,
       root_path: nil
     )
       handles = []
@@ -2836,12 +2859,21 @@ class FileCopyService
           handles << child
           current = child
           if create && ((created && chmod_created) || (!created && chmod_existing))
-            apply_directory_mode!(
-              child,
-              mode,
-              path: current_path,
-              root: root_path
-            )
+            if created && preserve_created_special_bits
+              apply_created_shared_directory_mode!(
+                child,
+                mode,
+                path: current_path,
+                root: root_path
+              )
+            else
+              apply_directory_mode!(
+                child,
+                mode,
+                path: current_path,
+                root: root_path
+              )
+            end
           end
         rescue Errno::EACCES, Errno::EPERM, Errno::EROFS => error
           raise unless current_path && root_path
