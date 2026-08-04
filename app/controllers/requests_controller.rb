@@ -39,6 +39,19 @@ class RequestsController < ApplicationController
     # Apply attention filter
     @requests = @requests.needs_attention if params[:attention] == "true"
 
+    # Title/author search within the current filtered request list (#407).
+    # SQLite LOWER() is ASCII-only; use a Ruby-backed function for Unicode folds.
+    @request_query = params[:q].to_s.strip.first(200)
+    if @request_query.present?
+      register_request_search_functions!
+      like = "%#{ActiveRecord::Base.sanitize_sql_like(unicode_fold(@request_query))}%"
+      @requests = @requests.joins(:book).where(
+        "shelfarr_request_search_lower(books.title) LIKE :q ESCAPE '\\' OR " \
+        "shelfarr_request_search_lower(books.author) LIKE :q ESCAPE '\\'",
+        q: like
+      )
+    end
+
     @requests = @requests.order(created_at: :desc)
 
     # Counts for filter tabs
@@ -317,6 +330,19 @@ class RequestsController < ApplicationController
   end
 
   private
+
+  def register_request_search_functions!
+    database = Request.connection.raw_connection
+    return unless database.respond_to?(:create_function)
+
+    database.create_function("shelfarr_request_search_lower", 1) do |function, value|
+      function.result = unicode_fold(value)
+    end
+  end
+
+  def unicode_fold(value)
+    value.to_s.unicode_normalize(:nfc).downcase
+  end
 
   def send_single_file(boundary, book)
     path = boundary.target
