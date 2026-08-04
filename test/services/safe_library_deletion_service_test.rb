@@ -26,6 +26,20 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@root)
   end
 
+  test "unlinks a reference-mode library symlink without touching the target" do
+    source = File.join(@root, "download-source.epub")
+    File.binwrite(source, "download bytes")
+    FileUtils.rm_f(@path)
+    File.symlink(source, @path)
+    @book.update!(file_path: @path)
+
+    assert SafeLibraryDeletionService.new(@book).delete!
+    assert_not File.symlink?(@path)
+    assert_not File.exist?(@path)
+    assert File.exist?(source)
+    assert_equal "download bytes", File.binread(source)
+  end
+
   test "never deletes a pathname replacement installed before quarantine" do
     service = SafeLibraryDeletionService.new(@book)
     preserved = File.join(@root, "preserved-original.epub")

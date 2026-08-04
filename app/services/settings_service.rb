@@ -35,7 +35,7 @@ class SettingsService
   ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
-  COMPLETED_DOWNLOAD_IMPORT_MODES = %w[copy move hardlink].freeze
+  COMPLETED_DOWNLOAD_IMPORT_MODES = %w[copy move hardlink reference].freeze
   LIBRARY_PLATFORMS = %w[audiobookshelf bookorbit grimmory].freeze
   INDEXER_SEARCH_SCOPES = %w[broad strict unrestricted custom].freeze
   INDEXER_SEARCH_SCOPE_OPTIONS = {
@@ -99,7 +99,7 @@ class SettingsService
     download_check_interval: { type: "integer", default: 60, category: "download", description: "Seconds between download status checks" },
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
     post_processing_source_path_retries: { type: "integer", default: 10, category: "download", description: "Number of post-processing retries while waiting for completed download files to appear" },
-    completed_download_import_mode: { type: "string", default: "copy", category: "download", description: "Choose Copy, Move, or Hardlink. Hardlink requires one container-visible filesystem; unsupported or cross-filesystem links fall back to copy." },
+    completed_download_import_mode: { type: "string", default: "copy", category: "download", description: "Choose Copy, Move, Hardlink, or Reference. Hardlink requires one container-visible filesystem; unsupported or cross-filesystem links fall back to copy. Reference creates a library symlink to the download path (for debrid/rclone mounts) and never copies bytes." },
     split_audiobook_bundle_imports: { type: "boolean", default: false, category: "download", description: "Split releases containing multiple self-contained M4B/AAX books into per-book folders. MP3, FLAC, and other chapter-based releases stay together." },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
 

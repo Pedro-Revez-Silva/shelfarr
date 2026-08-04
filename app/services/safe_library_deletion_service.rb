@@ -192,6 +192,8 @@ class SafeLibraryDeletionService
       )
     rescue Errno::ENOENT
       return recover_quarantined_entry!(parent)
+    rescue Errno::ELOOP
+      return delete_reference_symlink!(parent, basename, interrupted: interrupted)
     end
     if interrupted.any?
       raise Error, "An interrupted deletion exists beside the current library path"
@@ -214,10 +216,44 @@ class SafeLibraryDeletionService
       restore_quarantined_entry(parent, quarantine, basename)
       raise
     end
-  rescue Errno::ELOOP, Errno::ENXIO, Errno::ENODEV, Errno::EOPNOTSUPP
+  rescue Errno::ENXIO, Errno::ENODEV, Errno::EOPNOTSUPP
     raise Error, "Shelfarr refuses to remove a symbolic link or special library entry"
   ensure
     entry&.close unless entry&.closed?
+  end
+
+  # Reference import mode stores library leaves as symlinks. Claim the name with
+  # rename-noreplace into a quarantine basename, confirm it is still a symlink
+  # (openat O_NOFOLLOW → ELOOP), then unlink without following the target.
+  def delete_reference_symlink!(parent, basename, interrupted:)
+    if interrupted.any?
+      raise Error, "An interrupted deletion exists beside the current library path"
+    end
+
+    quarantine = ".shelfarr-ref-quarantine-#{SecureRandom.hex(16)}"
+    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, quarantine)
+      raise Error, "This filesystem cannot atomically quarantine a library deletion"
+    end
+    sync_directory(parent)
+
+    begin
+      native_openat(
+        parent.fileno,
+        quarantine,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK
+      )
+      restore_quarantined_entry(parent, quarantine, basename)
+      raise Error, "Shelfarr refuses to remove a non-symlink library entry claimed as a reference"
+    rescue Errno::ELOOP
+      native_unlinkat(parent.fileno, quarantine, 0)
+      sync_directory(parent)
+      true
+    rescue Errno::ENOENT
+      true
+    rescue
+      restore_quarantined_entry(parent, quarantine, basename)
+      raise
+    end
   end
 
   def delete_quarantined_entry!(parent, basename, expected_identity:)

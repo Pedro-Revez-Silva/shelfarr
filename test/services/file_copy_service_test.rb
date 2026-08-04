@@ -645,6 +645,55 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal [ "hardlinked.txt" ], Dir.children(@dest_dir)
   end
 
+  test "reference_noreplace creates a library symlink without copying bytes" do
+    destination = File.join(@dest_dir, "referenced.txt")
+
+    FileCopyService.reference_noreplace(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      source_root: nil
+    )
+
+    assert File.symlink?(destination)
+    assert_equal Pathname(@src_file).expand_path.to_s, File.readlink(destination)
+    assert_equal "test content", File.binread(destination)
+    assert_equal 1, File.stat(@src_file).nlink
+    assert_equal [ "referenced.txt" ], Dir.children(@dest_dir)
+  end
+
+  test "reference_noreplace never overwrites an occupied destination" do
+    destination = File.join(@dest_dir, "referenced.txt")
+    File.binwrite(destination, "existing library bytes")
+
+    assert_raises(Errno::EEXIST) do
+      FileCopyService.reference_noreplace(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        source_root: nil
+      )
+    end
+
+    assert_not File.symlink?(destination)
+    assert_equal "existing library bytes", File.binread(destination)
+  end
+
+  test "reference_noreplace refuses destinations outside the library root" do
+    outside_dest = File.join(@tmp_dir, "outside-dest.txt")
+
+    assert_raises(FileCopyService::UnsafePathError) do
+      FileCopyService.reference_noreplace(
+        @src_file,
+        outside_dest,
+        root: @dest_dir,
+        source_root: nil
+      )
+    end
+
+    assert_not File.exist?(outside_dest)
+  end
+
   test "hardlink_noreplace classifies only initial unsupported link errors" do
     unsupported_errors = [
       Errno::EXDEV,
