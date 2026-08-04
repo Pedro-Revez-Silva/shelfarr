@@ -119,7 +119,8 @@
                             <p><strong class="text-gray-400">Copy:</strong> Retains the source and uses extra disk space.</p>
                             <p><strong class="text-gray-400">Move:</strong> Removes the source and can stop torrent seeding.</p>
                             <p><strong class="text-gray-400">Hardlink:</strong> Retains the source without duplicate data; unsupported or cross-filesystem links fall back to copy.</p>
-                            <p>Hardlinked names share content, ownership, and permissions; edits through either name affect both.</p>
+                            <p><strong class="text-gray-400">Reference:</strong> Creates a library symlink pointing at the download path (no byte copy). Intended for debrid/rclone mounts where hardlinks are impossible. Deleting the library entry removes only the symlink.</p>
+                            <p>Hardlinked names share content, ownership, and permissions; edits through either name affect both. Reference links break if the download path is removed.</p>
                           </div>
                         <% elsif key.to_s == "library_platform" %>
                           <%= form.select "settings[#{key}]", options_for_select([["Audiobookshelf", "audiobookshelf"], ["BookOrbit", "bookorbit"], ["Grimmory", "grimmory"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>

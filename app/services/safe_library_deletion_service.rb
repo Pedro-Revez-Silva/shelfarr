@@ -192,6 +192,8 @@ class SafeLibraryDeletionService
       )
     rescue Errno::ENOENT
       return recover_quarantined_entry!(parent)
+    rescue Errno::ELOOP
+      return delete_reference_symlink!(parent, basename, interrupted: interrupted)
     end
     if interrupted.any?
       raise Error, "An interrupted deletion exists beside the current library path"
@@ -214,10 +216,45 @@ class SafeLibraryDeletionService
       restore_quarantined_entry(parent, quarantine, basename)
       raise
     end
-  rescue Errno::ELOOP, Errno::ENXIO, Errno::ENODEV, Errno::EOPNOTSUPP
+  rescue Errno::ENXIO, Errno::ENODEV, Errno::EOPNOTSUPP
     raise Error, "Shelfarr refuses to remove a symbolic link or special library entry"
   ensure
     entry&.close unless entry&.closed?
+  end
+
+  # Reference import mode stores library leaves as symlinks. Claim the name with
+  # rename-noreplace into a book-scoped quarantine basename (recoverable after
+  # crash), confirm it is still a symlink (openat O_NOFOLLOW → ELOOP), then
+  # unlink without following the target.
+  def delete_reference_symlink!(parent, basename, interrupted:)
+    if interrupted.any?
+      raise Error, "An interrupted deletion exists beside the current library path"
+    end
+
+    quarantine = "#{quarantine_prefix}ref-#{SecureRandom.hex(8)}"
+    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, quarantine)
+      raise Error, "This filesystem cannot atomically quarantine a library deletion"
+    end
+    sync_directory(parent)
+
+    begin
+      native_openat(
+        parent.fileno,
+        quarantine,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK
+      )
+      restore_quarantined_entry(parent, quarantine, basename)
+      raise Error, "Shelfarr refuses to remove a non-symlink library entry claimed as a reference"
+    rescue Errno::ELOOP
+      native_unlinkat(parent.fileno, quarantine, 0)
+      sync_directory(parent)
+      true
+    rescue Errno::ENOENT
+      true
+    rescue
+      restore_quarantined_entry(parent, quarantine, basename)
+      raise
+    end
   end
 
   def delete_quarantined_entry!(parent, basename, expected_identity:)
@@ -257,7 +294,28 @@ class SafeLibraryDeletionService
     raise Error, "Multiple interrupted library deletions need manual review" if matches.many?
 
     basename, identity = matches.sole
-    delete_quarantined_entry!(parent, basename, expected_identity: identity)
+    if identity.is_a?(Array) && identity.first == :reference
+      finish_reference_quarantine!(parent, basename)
+    else
+      delete_quarantined_entry!(parent, basename, expected_identity: identity)
+    end
+  end
+
+  def finish_reference_quarantine!(parent, basename)
+    begin
+      native_openat(
+        parent.fileno,
+        basename,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK
+      )
+      raise Error, "Interrupted reference quarantine is no longer a symlink"
+    rescue Errno::ELOOP
+      native_unlinkat(parent.fileno, basename, 0)
+      sync_directory(parent)
+      true
+    rescue Errno::ENOENT
+      true
+    end
   end
 
   def restore_quarantined_entry(parent, quarantine, original)
@@ -294,7 +352,12 @@ class SafeLibraryDeletionService
 
   def quarantined_identity(basename)
     match = /\A#{Regexp.escape(quarantine_prefix)}(\d+)-(\d+)\z/.match(basename)
-    [ match[1].to_i, match[2].to_i ] if match
+    return [ match[1].to_i, match[2].to_i ] if match
+
+    match = /\A#{Regexp.escape(quarantine_prefix)}ref-([0-9a-f]+)\z/.match(basename)
+    return [ :reference, match[1] ] if match
+
+    nil
   end
 
   def quarantined_entries(parent)

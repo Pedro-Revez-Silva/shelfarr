@@ -37,6 +37,7 @@ class PostProcessingJob < ApplicationJob
   def perform_privately(download_id, source_path_retry_count, expected_owner_job_id)
     @hardlinked_file_count = 0
     @hardlink_fallback_copied_count = 0
+    @referenced_file_count = 0
     @reused_file_count = 0
     download = Download.find_by(id: download_id)
     return unless download&.completed?
@@ -101,7 +102,9 @@ class PostProcessingJob < ApplicationJob
         download
       )
 
-      remove_usenet_download = usenet_cleanup_requested?(download)
+      # Reference mode keeps download bytes as the only content; never delete
+      # usenet/client sources after a symlink-only import.
+      remove_usenet_download = usenet_cleanup_requested?(download) && !reference_completed_downloads?
       source_cleanup = import_files(
         source_path,
         destination,
@@ -355,7 +358,8 @@ class PostProcessingJob < ApplicationJob
 
   def verifiable_library_entry?(path)
     stat = File.lstat(path)
-    stat.file? || stat.directory?
+    # Reference import mode publishes leaf symlinks under the library root.
+    stat.file? || stat.directory? || stat.symlink?
   rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
     false
   end
@@ -551,12 +555,15 @@ class PostProcessingJob < ApplicationJob
     @imported_book_path_override = nil
     @import_base_path = Pathname(base_path || get_base_path(book)).expand_path
     @defer_source_removal = move_completed_downloads?
-    @require_durable_import = require_durable
-    validate_destructive_import_paths!(source_snapshot, destination) if require_durable
+    # Reference mode only publishes symlinks; fsync durability of library
+    # bytes does not apply and move/usenet cleanup must not require snapshots.
+    @require_durable_import = require_durable && !reference_completed_downloads?
+    validate_destructive_import_paths!(source_snapshot, destination) if @require_durable_import
     action = {
       "copy" => "Copying",
       "move" => "Moving",
-      "hardlink" => "Hardlinking"
+      "hardlink" => "Hardlinking",
+      "reference" => "Referencing"
     }.fetch(completed_download_import_mode, "Copying")
     Rails.logger.info "[PostProcessingJob] #{action} library content"
     validate_ebook_source!(source) if readable_file_import?(book)
@@ -614,6 +621,11 @@ class PostProcessingJob < ApplicationJob
           "#{@hardlinked_file_count} hardlinked, " \
           "#{@hardlink_fallback_copied_count} copied after unsupported fallback, " \
           "#{@reused_file_count} reused"
+      )
+    elsif reference_completed_downloads?
+      Rails.logger.info(
+        "[PostProcessingJob] Reference import completed successfully: " \
+          "#{@referenced_file_count} referenced, #{@reused_file_count} reused"
       )
     else
       Rails.logger.info "[PostProcessingJob] #{action} completed successfully"
@@ -857,7 +869,15 @@ class PostProcessingJob < ApplicationJob
   end
 
   def import_file(source, destination)
-    if hardlink_completed_downloads?
+    if reference_completed_downloads?
+      FileCopyService.reference_noreplace(
+        source,
+        destination,
+        root: @import_base_path,
+        source_root: @import_source_root
+      )
+      @referenced_file_count += 1
+    elsif hardlink_completed_downloads?
       begin
         FileCopyService.hardlink_noreplace(
           source,
@@ -937,7 +957,12 @@ class PostProcessingJob < ApplicationJob
     loop do
       break unless path_occupied?(candidate)
 
-      if !File.symlink?(candidate) && same_file_content?(source, candidate)
+      if File.symlink?(candidate)
+        if reference_completed_downloads? &&
+            File.readlink(candidate) == Pathname(source).expand_path.to_s
+          return [ candidate, true ]
+        end
+      elsif same_file_content?(source, candidate)
         unless hardlink_completed_downloads?
           return [ candidate, true ]
         end
@@ -977,6 +1002,14 @@ class PostProcessingJob < ApplicationJob
   end
 
   def verify_imported_destination!(source, destination, require_durable:)
+    if reference_completed_downloads?
+      source_path = Pathname(source).expand_path.to_s
+      unless File.lstat(destination).symlink? && File.readlink(destination) == source_path
+        raise Errno::ESTALE, "library reference changed after import"
+      end
+      return
+    end
+
     snapshot = FileCopyService.verified_library_file_snapshot(
       source,
       destination,
@@ -1018,6 +1051,10 @@ class PostProcessingJob < ApplicationJob
 
   def hardlink_completed_downloads?
     completed_download_import_mode == "hardlink"
+  end
+
+  def reference_completed_downloads?
+    completed_download_import_mode == "reference"
   end
 
   def completed_download_import_mode

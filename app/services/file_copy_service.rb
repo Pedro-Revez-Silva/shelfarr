@@ -174,6 +174,69 @@ class FileCopyService
       dest
     end
 
+    # Create a no-replace library entry that is a symlink to a verified regular
+    # source under source_root (reference import mode for debrid/rclone mounts).
+    # Publication uses symlinkat against a pinned destination parent so an
+    # ancestor rename cannot redirect the library entry outside the root.
+    def reference_noreplace(src, dest, root:, source_root:)
+      source_path = Pathname(src).expand_path
+      destination_path = Pathname(dest).expand_path
+      target = source_path.to_s
+
+      with_pinned_source(source_path, source_root: source_root) do |source, *_rest|
+        raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
+
+        with_pinned_destination_parent(destination_path, root: root) do |parent, basename, parent_path|
+          begin
+            existing = native_openat(
+              parent.fileno,
+              basename,
+              File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+              0
+            )
+            IO.for_fd(existing).close
+            raise Errno::EEXIST, destination_path.to_s
+          rescue Errno::ENOENT
+            # Destination name is free.
+          rescue Errno::ELOOP
+            raise Errno::EEXIST, destination_path.to_s
+          end
+
+          begin
+            native_symlinkat(target, parent.fileno, basename)
+          rescue Errno::EEXIST
+            raise
+          end
+
+          begin
+            link_target = native_readlinkat(parent.fileno, basename)
+            unless link_target == target
+              remove_published_reference_if_ours!(parent, basename, expected_target: target)
+              raise UnsafePathError, "reference publication did not produce the expected symlink"
+            end
+          rescue Errno::ENOENT
+            raise UnsafePathError, "reference publication did not produce the expected symlink"
+          rescue Errno::EINVAL, SystemCallError
+            # Basename is no longer a symlink (replacement). Leave it alone.
+            raise UnsafePathError, "reference publication did not produce the expected symlink"
+          end
+          validate_current_directory_identity!(parent_path, parent)
+        end
+      end
+
+      dest.to_s
+    end
+
+    # Unlink only when the name still points at the target we published.
+    def remove_published_reference_if_ours!(parent, basename, expected_target:)
+      current = native_readlinkat(parent.fileno, basename)
+      return unless current == expected_target
+
+      native_unlinkat(parent.fileno, basename, 0)
+    rescue Errno::ENOENT, Errno::EINVAL, SystemCallError
+      nil
+    end
+
     # Publish from a source descriptor already pinned by the caller (for
     # example, a verified HTTP Tempfile) without resolving its pathname again.
     def cp_io_noreplace(source, dest, root: nil, heartbeat: nil)
@@ -3263,6 +3326,34 @@ class FileCopyService
         destination_basename,
         0
       )
+    end
+
+    def native_symlinkat(target, directory_fd, basename)
+      call_native_function(
+        native_function(
+          :symlinkat,
+          [ Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP ]
+        ),
+        target,
+        directory_fd,
+        basename
+      )
+    end
+
+    def native_readlinkat(directory_fd, basename)
+      buffer_size = 4096
+      buffer = "\0" * buffer_size
+      function = native_function(
+        :readlinkat,
+        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T ]
+      )
+      Fiddle.last_error = 0
+      length = function.call(directory_fd, basename, buffer, buffer_size)
+      if length == -1
+        raise SystemCallError.new("readlinkat", Fiddle.last_error)
+      end
+
+      buffer.byteslice(0, length).force_encoding(Encoding::UTF_8)
     end
 
     def native_unlinkat(directory_fd, basename, flags = 0)

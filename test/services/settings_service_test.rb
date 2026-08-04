@@ -170,7 +170,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
       SettingsService.set(:completed_download_import_mode, "rename")
     end
 
-    assert_equal "Completed Download Import Mode must be one of: copy, move, hardlink", error.message
+    assert_equal "Completed Download Import Mode must be one of: copy, move, hardlink, reference", error.message
     assert_equal "move", SettingsService.get(:completed_download_import_mode)
   end
 
