@@ -1817,8 +1817,10 @@ class FileCopyService
                 temporary_basename
               )
               temporary_identity = source_identity
+            # Include EINVAL: some network filesystems (notably CIFS) report
+            # "hardlink unsupported" that way instead of EXDEV/EOPNOTSUPP.
             rescue Errno::EXDEV, Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP,
-                Errno::ENOSYS, Errno::EMLINK, Fiddle::DLError, NotImplementedError => error
+                Errno::ENOSYS, Errno::EMLINK, Errno::EINVAL, Fiddle::DLError, NotImplementedError => error
               raise HardlinkUnsupportedError,
                 "The source and destination filesystems cannot create the requested hardlink",
                 cause: error
@@ -1939,8 +1941,11 @@ class FileCopyService
         parent.fileno,
         destination_basename
       )
+    # CIFS/SMB often returns EINVAL rather than EOPNOTSUPP/ENOTSUP when
+    # hardlinks are unsupported. Treat it as "link unsupported" so the
+    # rename-based atomic publish path still runs (same as native_rename_noreplace).
     rescue Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS, Errno::EMLINK,
-        Fiddle::DLError, NotImplementedError
+        Errno::EINVAL, Fiddle::DLError, NotImplementedError
       result = native_rename_noreplace(
         parent.fileno,
         temporary_basename,
