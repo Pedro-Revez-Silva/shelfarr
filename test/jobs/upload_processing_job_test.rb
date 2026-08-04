@@ -1369,18 +1369,29 @@ class UploadProcessingJobTest < ActiveJob::TestCase
   end
 
   test "trigger_library_scan uses configured library and swallows client errors" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
     SettingsService.set(:audiobookshelf_audiobook_library_id, "audio-lib")
     book = books(:audiobook_acquired)
     scanned = []
+    clear_enqueued_jobs
 
     LibraryPlatformClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
-      UploadProcessingJob.new.send(:trigger_library_scan, book)
+      assert_enqueued_with(
+        job: AudiobookshelfLibrarySyncJob,
+        args: [ { schedule_next: false } ]
+      ) do
+        UploadProcessingJob.new.send(:trigger_library_scan, book)
+      end
     end
 
     assert_equal [ "audio-lib" ], scanned
 
+    clear_enqueued_jobs
     LibraryPlatformClient.stub(:scan_library, ->(*) { raise LibraryPlatformClient::Error, "scan failed" }) do
-      assert_nothing_raised { UploadProcessingJob.new.send(:trigger_library_scan, book) }
+      assert_no_enqueued_jobs(only: AudiobookshelfLibrarySyncJob) do
+        assert_nothing_raised { UploadProcessingJob.new.send(:trigger_library_scan, book) }
+      end
     end
   end
 

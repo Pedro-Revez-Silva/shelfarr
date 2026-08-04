@@ -207,7 +207,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_match "Related titles", response.body
-    assert_match "Related titles in your library", response.body
+    assert_match "Related titles in Audiobookshelf", response.body
     assert_match "Likely match", response.body
     assert_match "There and Back Again", response.body
     assert_match "Andy Serkis", response.body
@@ -390,7 +390,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :success
-    assert_no_match "Related titles in your library", response.body
+    assert_no_match "Related titles in Audiobookshelf", response.body
   end
 
   test "results ignores missing audiobookshelf items" do
@@ -416,7 +416,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :success
-    assert_no_match "Related titles in your library", response.body
+    assert_no_match "Related titles in Audiobookshelf", response.body
   end
 
   test "results renders one request action without passing formats in the URL" do

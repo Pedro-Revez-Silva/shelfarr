@@ -236,9 +236,14 @@
                     </div>
                   </div>
                 <% elsif category == "audiobookshelf" %>
+                  <% active_library_platform_name = LibraryPlatformClient.display_name %>
                   <div class="grid grid-cols-1 gap-2 border-t border-gray-800 pt-4">
                     <div class="space-y-2">
-                      <p class="text-sm text-gray-300 font-medium">Library Sync</p>
+                      <p class="text-sm text-gray-300 font-medium"><%= active_library_platform_name %> Library Sync</p>
+                      <p class="text-xs text-gray-500">
+                        Inventory cache for duplicate detection against <%= active_library_platform_name %>.
+                        This is separate from Shelfarr&apos;s own Library page (books imported by Shelfarr).
+                      </p>
                       <% if @audiobookshelf_library_items_count.to_i > 0 %>
                         <p class="text-xs text-gray-500">
                           Cached items: <%= @audiobookshelf_library_items_count %> ·
@@ -251,7 +256,7 @@
                           No cached items yet. Run a sync to populate.
                         </p>
                       <% end %>
-                      <%= link_to "Sync Library Platform", sync_audiobookshelf_library_admin_settings_path, data: { turbo_method: :post }, class: "inline-block rounded-md px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white text-sm cursor-pointer" %>
+                      <%= link_to "Sync #{active_library_platform_name} Inventory", sync_audiobookshelf_library_admin_settings_path, data: { turbo_method: :post }, class: "inline-block rounded-md px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white text-sm cursor-pointer" %>
                     </div>
                     <div>
                       <% if @audiobookshelf_library_items.any? %>

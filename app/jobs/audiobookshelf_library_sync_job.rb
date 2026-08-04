@@ -6,12 +6,25 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
     key: "audiobookshelf-library-sync",
     duration: 10.minutes
 
-  def perform
+  # Delay after a library-platform scan so remote indexers (BookOrbit, ABS,
+  # Grimmory) have time to discover newly imported files before we refresh
+  # Shelfarr's inventory cache used for duplicate detection.
+  POST_SCAN_REFRESH_WAIT = 90.seconds
+
+  # schedule_next: false for one-shot post-grab refreshes that must not reset
+  # the periodic sync cadence.
+  def perform(schedule_next: true)
     return unless LibraryPlatformClient.configured?
 
     AudiobookshelfLibrarySyncService.new.sync!
   ensure
-    schedule_next_run
+    schedule_next_run if schedule_next
+  end
+
+  def self.schedule_post_scan_refresh!
+    return unless LibraryPlatformClient.configured?
+
+    set(wait: POST_SCAN_REFRESH_WAIT).perform_later(schedule_next: false)
   end
 
   private

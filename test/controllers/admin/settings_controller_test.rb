@@ -429,6 +429,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index shows neutral and brand-correct library platform labels" do
+    SettingsService.set(:library_platform, "audiobookshelf")
+
     get admin_settings_url
 
     assert_response :success
@@ -449,8 +451,27 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "label[for='settings_audiobookshelf_ebook_scan_library_ids']", text: "Additional Ebook Libraries to Scan"
     assert_select "label[for='settings_audiobookshelf_comicbook_scan_library_ids']", text: "Additional Comics & Manga Libraries to Scan"
     assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval"
+    assert_match(/Audiobookshelf Library Sync/, @response.body)
     assert_no_match /Bookorbit/, @response.body
     assert_no_match /Audiobookshelf Audiobook Library/, @response.body
+  end
+
+  test "index scopes library delivery labels and sync copy to BookOrbit" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:bookorbit_url, "http://localhost:3000")
+    SettingsService.set(:bookorbit_username, "admin")
+    SettingsService.set(:bookorbit_password, "secret")
+
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label[for='settings_audiobookshelf_audiobook_library_id']", text: "Audiobook Library (BookOrbit)"
+    assert_select "label[for='settings_audiobookshelf_ebook_library_id']", text: "Ebook Library (BookOrbit)"
+    assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval (BookOrbit)"
+    assert_match(/BookOrbit Library Sync/, @response.body)
+    assert_match(/Inventory cache for duplicate detection against BookOrbit/, @response.body)
+    assert_match(/Sync BookOrbit Inventory/, @response.body)
+    assert_match(/separate from Shelfarr/, @response.body)
   end
 
   test "index shows text input when audiobookshelf not configured" do

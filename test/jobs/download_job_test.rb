@@ -2054,6 +2054,26 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal "Indexer Result Title", result
   end
 
+  test "trigger_library_scan schedules a delayed inventory refresh after scan" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "audio-lib")
+    book = books(:audiobook_acquired)
+    scanned = []
+    clear_enqueued_jobs
+
+    LibraryPlatformClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
+      assert_enqueued_with(
+        job: AudiobookshelfLibrarySyncJob,
+        args: [ { schedule_next: false } ]
+      ) do
+        DownloadJob.new.send(:trigger_library_scan, book)
+      end
+    end
+
+    assert_equal [ "audio-lib" ], scanned
+  end
+
   private
 
   def setup_zlibrary_download
