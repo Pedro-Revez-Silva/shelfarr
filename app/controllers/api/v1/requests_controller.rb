@@ -2,9 +2,9 @@
 
 class API::V1::RequestsController < API::V1::ApplicationController
   before_action -> { require_scope!("requests:read") }, only: [ :index, :show, :search_results ]
-  before_action -> { require_scope!("requests:write") }, only: [ :create, :destroy ]
+  before_action -> { require_scope!("requests:write") }, only: [ :create, :destroy, :grab ]
   before_action -> { require_scope!("requests:admin") }, only: [ :retry, :blocklist_and_next ]
-  before_action :set_request, only: [ :show, :destroy, :retry, :search_results, :blocklist_and_next ]
+  before_action :set_request, only: [ :show, :destroy, :retry, :search_results, :grab, :blocklist_and_next ]
 
   def index
     requests = request_scope.includes(:book, :user).order(created_at: :desc)
@@ -97,7 +97,19 @@ class API::V1::RequestsController < API::V1::ApplicationController
     }
   end
 
+  # Select a downloadable acquisition candidate and start download (Quartermaster, etc.).
+  # Body: { "search_result_id": 123 }
+  def grab
+    if params[:search_result_id].blank?
+      render json: { errors: [ "search_result_id is required" ] }, status: :unprocessable_entity
+      return
+    end
+
+    grab_search_result
+  end
+
   def blocklist_and_next
+    # Backward-compatible grab overload used before POST .../grab existed.
     if params[:search_result_id].present?
       grab_search_result
       return

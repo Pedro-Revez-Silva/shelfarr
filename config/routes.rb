@@ -74,6 +74,7 @@ Rails.application.routes.draw do
       resources :requests, only: [ :index, :create, :show, :destroy ] do
         member do
           get :search_results
+          post :grab
           post :blocklist_and_next
           post :retry
         end
