@@ -18,7 +18,7 @@ Scopes:
 
 - `search:read` - search metadata providers
 - `requests:read` - list and read visible requests
-- `requests:write` - create and cancel requests for the token user
+- `requests:write` - create, cancel, and grab a release for visible requests
 - `requests:admin` - retry requests and act across users
 - `users:write` - create users
 
@@ -79,6 +79,22 @@ Requires `requests:admin`.
 `GET /api/v1/requests/:id/search_results`
 
 Requires `requests:read`. Returns downloadable acquisition candidates in `search_results` and currently enabled, market-valid third-party purchase options in a separate `store_offers` array. The first beta provider returns DRM-free ebook offers. Store offers include normalized provider, format, DRM, market, price, product URL, and quote-time fields; they are never downloadable or auto-selected by Shelfarr.
+
+`POST /api/v1/requests/:id/grab`
+
+Requires `requests:write`. Selects a downloadable acquisition candidate and starts the download for a request the token can see (own requests for user tokens; all requests for admin/global tokens).
+
+```json
+{
+  "search_result_id": 123
+}
+```
+
+Returns the request payload plus `selected_result`. Clears a previous blocklist flag on that result when re-grabbing it. Returns `404` if the result is missing, and `422` if it is not downloadable, `search_result_id` is omitted, or the request is already `completed`, `processing`, or mid-dispatch (same rules as manual magnet/NZB selection).
+
+`POST /api/v1/requests/:id/blocklist_and_next`
+
+Requires `requests:admin`. Blocklists the currently selected release and auto-selects the next downloadable candidate. Passing `search_result_id` is still accepted as a compatibility alias for grab, but new clients should use `POST .../grab` instead (and can use `requests:write`).
 
 ## Users
 
