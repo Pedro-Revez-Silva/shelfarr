@@ -246,7 +246,10 @@ class PathTemplateService
         },
         "series" => {
           value: book.series,
-          path: "Unknown Series",
+          # Empty path fallback: omit the series segment entirely when a book
+          # has no series (no "Unknown Series" folder). Empty path segments are
+          # collapsed by sanitize_path_segments.
+          path: "",
           filename: ""
         },
         "narrator" => {

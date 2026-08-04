@@ -56,7 +56,7 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
   test "handles missing series" do
     @book.update!(series: nil)
     result = PathTemplateService.build_path(@book, "{author}/{series}/{title}")
-    assert_equal "Stephen King/Unknown Series/The Shining", result
+    assert_equal "Stephen King/The Shining", result
   end
 
   test "supports optional suffixes for missing path variables" do

@@ -126,6 +126,32 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", attention_request.book.title
   end
 
+  test "index searches requests by title or author" do
+    sign_out
+    sign_in_as(@admin)
+
+    match = Request.create!(
+      book: Book.create!(title: "Unique Hobbit Quest", author: "Tolkien Search", book_type: :ebook, open_library_work_id: "OL_REQ_SEARCH_1"),
+      user: @user,
+      status: :pending
+    )
+    Request.create!(
+      book: Book.create!(title: "Unrelated Title", author: "Someone Else", book_type: :ebook, open_library_work_id: "OL_REQ_SEARCH_2"),
+      user: @user,
+      status: :pending
+    )
+
+    get requests_path(q: "hobbit")
+    assert_response :success
+    assert_select "h3", match.book.title
+    assert_select "h3", text: "Unrelated Title", count: 0
+    assert_select "input#request-query[value='hobbit']"
+
+    get requests_path(q: "tolkien")
+    assert_response :success
+    assert_select "h3", match.book.title
+  end
+
   test "index shows attention count and active count" do
     sign_out
     sign_in_as(@admin)

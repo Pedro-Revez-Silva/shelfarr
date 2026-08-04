@@ -7,15 +7,16 @@
   <nav class="mb-6" aria-label="Request filters">
     <div class="flex flex-wrap gap-2">
       <%
+        query_params = @request_query.present? ? { q: @request_query } : {}
         current_filter = params[:attention] == "true" ? "attention" : (params[:status].presence || "all")
         filters = [
-          { key: "all", label: "All", path: requests_path },
-          { key: "attention", label: "Need Attention", path: requests_path(attention: "true"), count: @attention_count, alert: true },
-          { key: "active", label: "Active", path: requests_path(status: "active"), count: @active_count },
-          { key: "awaiting_purchase", label: "Store Offers", path: requests_path(status: "awaiting_purchase") },
-          { key: "completed", label: "Completed", path: requests_path(status: "completed") },
-          { key: "not_found", label: "Not Found", path: requests_path(status: "not_found") },
-          { key: "failed", label: "Cancelled", path: requests_path(status: "failed") }
+          { key: "all", label: "All", path: requests_path(query_params) },
+          { key: "attention", label: "Need Attention", path: requests_path(query_params.merge(attention: "true")), count: @attention_count, alert: true },
+          { key: "active", label: "Active", path: requests_path(query_params.merge(status: "active")), count: @active_count },
+          { key: "awaiting_purchase", label: "Store Offers", path: requests_path(query_params.merge(status: "awaiting_purchase")) },
+          { key: "completed", label: "Completed", path: requests_path(query_params.merge(status: "completed")) },
+          { key: "not_found", label: "Not Found", path: requests_path(query_params.merge(status: "not_found")) },
+          { key: "failed", label: "Cancelled", path: requests_path(query_params.merge(status: "failed")) }
         ]
       %>
       <% filters.each do |filter| %>
@@ -37,8 +38,33 @@
     </div>
   </nav>
 
+  <div class="mb-6">
+    <%= form_with url: requests_path, method: :get, local: true, class: "flex flex-col sm:flex-row gap-2" do %>
+      <% if params[:status].present? %>
+        <%= hidden_field_tag :status, params[:status] %>
+      <% end %>
+      <% if params[:attention].present? %>
+        <%= hidden_field_tag :attention, params[:attention] %>
+      <% end %>
+      <label for="request-query" class="sr-only">Search requests by title or author</label>
+      <%= text_field_tag :q, @request_query,
+            id: "request-query",
+            placeholder: "Search requests by title or author…",
+            autocomplete: "off",
+            class: "flex-1 rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" %>
+      <div class="flex gap-2">
+        <%= submit_tag "Search", class: "rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 cursor-pointer" %>
+        <% if @request_query.present? %>
+          <%= link_to "Clear",
+                requests_path(params.permit(:status, :attention).to_h.symbolize_keys),
+                class: "inline-flex items-center rounded-lg bg-gray-800 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700" %>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+
   <%
-    has_filters = params[:status].present? || params[:attention].present?
+    has_filters = params[:status].present? || params[:attention].present? || @request_query.present?
   %>
   <% if @requests.empty? %>
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-12 text-center">
@@ -47,14 +73,18 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
         <h3 class="text-lg font-medium text-white mb-2">
-          <% if params[:attention] == "true" %>
+          <% if @request_query.present? %>
+            No matching requests
+          <% elsif params[:attention] == "true" %>
             No requests need attention
           <% else %>
             No matching requests
           <% end %>
         </h3>
         <p class="text-gray-500 mb-4">
-          <% if params[:attention] == "true" %>
+          <% if @request_query.present? %>
+            No requests match “<%= @request_query %>”.
+          <% elsif params[:attention] == "true" %>
             All requests are processing normally.
           <% else %>
             No requests match your current filter.
@@ -228,14 +258,15 @@
       <div class="mt-6 flex flex-wrap items-center justify-between gap-3 text-sm text-gray-400">
         <p><%= @requests_total_count %> <%= "request".pluralize(@requests_total_count) %> &middot; Page <%= @requests_page %> of <%= @requests_total_pages %></p>
         <div class="flex gap-2">
+          <% pagination_params = { status: params[:status], attention: params[:attention], q: @request_query.presence }.compact %>
           <% if @requests_page > 1 %>
             <%= link_to "Previous",
-              requests_path(status: params[:status], attention: params[:attention], page: @requests_page - 1),
+              requests_path(pagination_params.merge(page: @requests_page - 1)),
               class: "rounded-md bg-gray-800 px-3 py-2 text-white hover:bg-gray-700" %>
           <% end %>
           <% if @requests_page < @requests_total_pages %>
             <%= link_to "Next",
-              requests_path(status: params[:status], attention: params[:attention], page: @requests_page + 1),
+              requests_path(pagination_params.merge(page: @requests_page + 1)),
               class: "rounded-md bg-gray-800 px-3 py-2 text-white hover:bg-gray-700" %>
           <% end %>
         </div>

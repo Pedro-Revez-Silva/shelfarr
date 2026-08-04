@@ -39,6 +39,16 @@ class RequestsController < ApplicationController
     # Apply attention filter
     @requests = @requests.needs_attention if params[:attention] == "true"
 
+    # Title/author search within the current filtered request list (#407)
+    @request_query = params[:q].to_s.strip.first(200)
+    if @request_query.present?
+      like = "%#{ActiveRecord::Base.sanitize_sql_like(@request_query.downcase)}%"
+      @requests = @requests.joins(:book).where(
+        "LOWER(books.title) LIKE :q ESCAPE '\\' OR LOWER(books.author) LIKE :q ESCAPE '\\'",
+        q: like
+      )
+    end
+
     @requests = @requests.order(created_at: :desc)
 
     # Counts for filter tabs
