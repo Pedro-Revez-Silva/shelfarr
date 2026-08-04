@@ -152,6 +152,26 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", match.book.title
   end
 
+  test "index search is Unicode case-insensitive" do
+    sign_out
+    sign_in_as(@admin)
+
+    match = Request.create!(
+      book: Book.create!(
+        title: "Émile Zola Collected Works",
+        author: "Émile Zola",
+        book_type: :ebook,
+        open_library_work_id: "OL_REQ_SEARCH_UNICODE"
+      ),
+      user: @user,
+      status: :pending
+    )
+
+    get requests_path(q: "émile")
+    assert_response :success
+    assert_select "h3", match.book.title
+  end
+
   test "index shows attention count and active count" do
     sign_out
     sign_in_as(@admin)
