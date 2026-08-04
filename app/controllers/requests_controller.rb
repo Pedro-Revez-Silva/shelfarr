@@ -359,6 +359,16 @@ class RequestsController < ApplicationController
       expected_inode: cache_stat.ino
     )
     send_pinned_file(cache_file, filename: zip_filename, type: "application/zip")
+  rescue LibraryDownloadArchiveService::UnsafePathError => e
+    cache_file&.close unless cache_file&.closed?
+    # Reference-mode trees contain authorized library symlinks the archive
+    # service intentionally rejects; stream a one-shot zip of those targets.
+    if e.message.to_s.include?("symbolic link")
+      send_reference_tree_zip(path, book, output_root: output_root, zip_filename: zip_filename)
+    else
+      Rails.logger.error "[Download] Error creating zip for book ##{book.id}: #{e.class}"
+      redirect_to @request, alert: "Library files changed while preparing the download. Please try again."
+    end
   rescue LibraryDownloadArchiveService::ResourceLimitError => e
     cache_file&.close unless cache_file&.closed?
     Rails.logger.warn "[Download] Archive resource limit for book ##{book.id}: #{e.class}"
@@ -372,6 +382,67 @@ class RequestsController < ApplicationController
     cache_file&.close unless cache_file&.closed?
     Rails.logger.error "[Download] Error creating zip for book ##{book.id}: #{e.class}"
     redirect_to @request, alert: "Library files changed while preparing the download. Please try again."
+  end
+
+  def send_reference_tree_zip(path, book, output_root:, zip_filename:)
+    require "zip"
+    require "tempfile"
+
+    root = Pathname(output_root).expand_path.realpath
+    source = Pathname(path).expand_path
+    raise UnsafeDownloadPathError, "reference tree outside library root" unless
+      canonical_path_contained?(source.realpath.to_s, root.to_s) || source.realpath == root
+
+    entries = collect_authorized_reference_entries(source, library_root: root)
+    raise UnsafeDownloadPathError, "reference tree has no downloadable entries" if entries.empty?
+
+    tmp = Tempfile.new([ "shelfarr-ref-", ".zip" ])
+    tmp.binmode
+    Zip::File.open(tmp.path, create: true) do |zip|
+      entries.each do |entry_name, target_path|
+        zip.get_output_stream(entry_name) { |out| out.write(File.binread(target_path)) }
+      end
+    end
+    tmp.rewind
+    send_data tmp.read, filename: zip_filename, type: "application/zip", disposition: "attachment"
+  rescue UnsafeDownloadPathError, SystemCallError, Zip::Error => e
+    Rails.logger.warn "[Download] Reference tree zip failed for book ##{book.id}: #{e.class}"
+    redirect_to @request, alert: "Unable to prepare a download for this reference library item."
+  ensure
+    tmp&.close!
+  end
+
+  def collect_authorized_reference_entries(directory, library_root:, prefix: nil)
+    content_roots = authorized_content_roots
+    results = []
+    Dir.each_child(directory) do |name|
+      child = directory.join(name)
+      relative = prefix ? File.join(prefix, name) : name
+      stat = File.lstat(child)
+      if stat.directory?
+        results.concat(
+          collect_authorized_reference_entries(child, library_root: library_root, prefix: relative)
+        )
+      elsif stat.symlink?
+        target = Pathname(File.readlink(child))
+        target = child.parent.join(target) unless target.absolute?
+        real = target.expand_path.realpath
+        raise UnsafeDownloadPathError, "reference leaf is not a file" unless File.lstat(real).file?
+        unless content_roots.any? { |root| canonical_path_contained?(real.to_s, root.to_s) }
+          raise UnsafeDownloadPathError, "reference leaf escapes authorized roots"
+        end
+        results << [ relative, real.to_s ]
+      elsif stat.file?
+        real = child.realpath
+        unless content_roots.any? { |root| canonical_path_contained?(real.to_s, root.to_s) }
+          raise UnsafeDownloadPathError, "library file escapes authorized roots"
+        end
+        results << [ relative, real.to_s ]
+      else
+        raise UnsafeDownloadPathError, "unsupported library entry type"
+      end
+    end
+    results
   end
 
   def send_pinned_file(file, filename:, type:)
@@ -405,7 +476,11 @@ class RequestsController < ApplicationController
   def canonical_download_boundary(path)
     raise UnsafeDownloadPathError, "library path is blank" if path.blank?
 
-    canonical_target = Pathname(path).expand_path.realpath
+    expanded = Pathname(path).expand_path
+    link_stat = File.lstat(expanded)
+    return reference_download_boundary(expanded) if link_stat.symlink?
+
+    canonical_target = expanded.realpath
     target_stat = File.lstat(canonical_target)
     kind = if target_stat.file?
       :file
@@ -429,11 +504,49 @@ class RequestsController < ApplicationController
     )
   end
 
+  # Reference import mode publishes library leaves as symlinks to download
+  # paths. Authorize the library pathname under output roots, then open the
+  # resolved target only if it sits under a configured library or download root.
+  def reference_download_boundary(library_path)
+    library_parent = library_path.parent.realpath
+    library_entry = library_parent.join(library_path.basename)
+    library_root = canonical_output_roots.select do |root|
+      canonical_path_contained?(library_parent.to_s, root.to_s) || library_parent == root
+    end.max_by { |root| root.to_s.length }
+    raise UnsafeDownloadPathError, "reference library path is outside configured roots" unless library_root
+
+    target = Pathname(File.readlink(library_entry))
+    target = library_parent.join(target) unless target.absolute?
+    canonical_target = target.expand_path.realpath
+    target_stat = File.lstat(canonical_target)
+    raise UnsafeDownloadPathError, "reference target is not a regular file" unless target_stat.file?
+
+    content_root = authorized_content_roots.select do |root|
+      canonical_path_contained?(canonical_target.to_s, root.to_s)
+    end.max_by { |root| root.to_s.length }
+    raise UnsafeDownloadPathError, "reference target resolves outside authorized roots" unless content_root
+
+    DownloadBoundary.new(
+      target: canonical_target.to_s,
+      root: content_root.to_s,
+      device: target_stat.dev,
+      inode: target_stat.ino,
+      kind: :file
+    )
+  end
+
   def allowed_output_paths
     [
       SettingsService.get(:audiobook_output_path),
       SettingsService.get(:ebook_output_path),
       SettingsService.get(:comicbook_output_path)
+    ].compact.reject(&:blank?)
+  end
+
+  def allowed_download_paths
+    [
+      SettingsService.get(:download_local_path, default: "/downloads"),
+      SettingsService.get(:download_remote_path)
     ].compact.reject(&:blank?)
   end
 
@@ -445,7 +558,15 @@ class RequestsController < ApplicationController
   end
 
   def canonical_output_roots
-    allowed_output_paths.filter_map do |configured_root|
+    canonicalize_roots(allowed_output_paths)
+  end
+
+  def authorized_content_roots
+    canonicalize_roots(allowed_output_paths + allowed_download_paths)
+  end
+
+  def canonicalize_roots(paths)
+    paths.filter_map do |configured_root|
       candidate = Pathname(configured_root).expand_path.realpath
       next if candidate.root?
       next unless candidate.lstat.directory?

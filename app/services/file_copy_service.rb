@@ -211,15 +211,13 @@ class FileCopyService
           begin
             link_target = native_readlinkat(parent.fileno, basename)
             unless link_target == target
-              native_unlinkat(parent.fileno, basename, 0)
+              remove_published_reference_if_ours!(parent, basename, expected_target: target)
               raise UnsafePathError, "reference publication did not produce the expected symlink"
             end
-          rescue Errno::ENOENT, Errno::EINVAL, SystemCallError
-            begin
-              native_unlinkat(parent.fileno, basename, 0)
-            rescue Errno::ENOENT
-              # already gone
-            end
+          rescue Errno::ENOENT
+            raise UnsafePathError, "reference publication did not produce the expected symlink"
+          rescue Errno::EINVAL, SystemCallError
+            # Basename is no longer a symlink (replacement). Leave it alone.
             raise UnsafePathError, "reference publication did not produce the expected symlink"
           end
           validate_current_directory_identity!(parent_path, parent)
@@ -227,6 +225,16 @@ class FileCopyService
       end
 
       dest.to_s
+    end
+
+    # Unlink only when the name still points at the target we published.
+    def remove_published_reference_if_ours!(parent, basename, expected_target:)
+      current = native_readlinkat(parent.fileno, basename)
+      return unless current == expected_target
+
+      native_unlinkat(parent.fileno, basename, 0)
+    rescue Errno::ENOENT, Errno::EINVAL, SystemCallError
+      nil
     end
 
     # Publish from a source descriptor already pinned by the caller (for
