@@ -8,13 +8,51 @@
             name="description"
             content="Self-hosted ebook and audiobook request and download system for the *arr ecosystem. Search indexers, automate downloads, deliver to Audiobookshelf."
         />
+        <meta name="keywords" content="shelfarr, ebook request, audiobook request, self-hosted library, audiobookshelf, readarr alternative, prowlarr, qbittorrent, arr ecosystem, book discovery, open library, hardcover" />
+        <meta name="robots" content="index, follow" />
+        <meta name="theme-color" content="#030712" />
+        <link rel="canonical" href="https://shelfarr.org/" />
+
+        <!-- Open Graph / Facebook -->
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content="https://shelfarr.org/" />
         <meta property="og:title" content="Shelfarr - Book Request System" />
         <meta
             property="og:description"
             content="Self-hosted ebook and audiobook request and download system for the *arr ecosystem."
         />
-        <meta property="og:type" content="website" />
+        <meta property="og:image" content="https://shelfarr.org/screenshot-dashboard.png" />
+        <meta property="og:site_name" content="Shelfarr" />
+
+        <!-- Twitter Card -->
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:url" content="https://shelfarr.org/" />
+        <meta name="twitter:title" content="Shelfarr - Book Request System" />
+        <meta name="twitter:description" content="Self-hosted ebook and audiobook request and download system for the *arr ecosystem." />
+        <meta name="twitter:image" content="https://shelfarr.org/screenshot-dashboard.png" />
+
+        <!-- Favicons -->
         <link rel="icon" href="logo.png" type="image/png" />
+        <link rel="apple-touch-icon" href="logo.png" />
+
+        <!-- Schema.org JSON-LD Structured Data -->
+        <script type="application/ld+json">
+        {
+          "@context": "https://schema.org",
+          "@type": "SoftwareApplication",
+          "name": "Shelfarr",
+          "operatingSystem": "Linux, Windows, macOS, Docker",
+          "applicationCategory": "MultimediaApplication",
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+          },
+          "description": "Self-hosted ebook and audiobook request and download system for the *arr ecosystem. Search indexers, automate downloads, deliver to Audiobookshelf.",
+          "url": "https://shelfarr.org/",
+          "license": "https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/LICENSE"
+        }
+        </script>
         <style>
             :root {
                 --bg-primary: #030712; /* gray-950 */
@@ -23,18 +61,21 @@
                 --text-primary: #f9fafb; /* gray-50 */
                 --text-secondary: #9ca3af; /* gray-400 */
                 --text-muted: #6b7280; /* gray-500 */
-                --accent: #1d4ed8; /* blue-700 - darker, less bright */
+                --accent: #1d4ed8; /* blue-700 */
                 --accent-hover: #2563eb; /* blue-600 */
+                --accent-light: #60a5fa; /* blue-400 */
                 --accent-glow: rgba(29, 78, 216, 0.15);
                 --border: #374151; /* gray-700 */
                 --gradient-start: #1d4ed8; /* blue-700 */
                 --gradient-end: #2563eb; /* blue-600 */
+                --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
             }
 
             * {
                 margin: 0;
                 padding: 0;
                 box-sizing: border-box;
+                -webkit-tap-highlight-color: transparent;
             }
 
             html {
@@ -42,9 +83,7 @@
             }
 
             body {
-                font-family:
-                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                    "Helvetica Neue", sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
                 background: var(--bg-primary);
                 color: var(--text-primary);
                 line-height: 1.6;
@@ -65,13 +104,15 @@
                 right: 0;
                 z-index: 100;
                 padding: 16px 0;
-                background: rgba(3, 7, 18, 0.8);
+                background: rgba(3, 7, 18, 0.85);
                 backdrop-filter: blur(12px);
+                -webkit-backdrop-filter: blur(12px);
                 border-bottom: 1px solid transparent;
-                transition: border-color 0.3s;
+                transition: background-color 0.3s var(--ease-out), border-color 0.3s var(--ease-out);
             }
 
             nav.scrolled {
+                background: rgba(8, 12, 24, 0.94);
                 border-bottom-color: var(--border);
             }
 
@@ -92,11 +133,7 @@
             }
 
             .logo span {
-                background: linear-gradient(
-                    135deg,
-                    var(--gradient-start),
-                    var(--gradient-end)
-                );
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
@@ -105,37 +142,53 @@
             .logo-icon {
                 width: 32px;
                 height: 32px;
-                border-radius: 6px;
+                border-radius: 8px;
+                transition: transform 0.25s var(--ease-out);
+            }
+
+            .logo:hover .logo-icon {
+                transform: scale(1.05);
             }
 
             .nav-links {
                 display: flex;
-                gap: 32px;
+                gap: 8px;
                 align-items: center;
             }
 
             .nav-links a {
                 color: var(--text-secondary);
                 text-decoration: none;
-                font-size: 0.95rem;
-                transition: color 0.2s;
+                font-size: 0.9rem;
+                font-weight: 500;
+                padding: 8px 16px;
+                border-radius: 8px;
+                transition: color 0.2s var(--ease-out), background-color 0.2s var(--ease-out);
             }
 
             .nav-links a:hover {
                 color: var(--text-primary);
+                background: rgba(255, 255, 255, 0.06);
+            }
+
+            .nav-links a.active {
+                color: #fff;
+                background: rgba(96, 165, 250, 0.12);
             }
 
             .nav-links .btn-nav {
-                background: var(--accent);
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
                 color: #fff;
-                padding: 10px 20px;
+                padding: 9px 20px;
                 border-radius: 8px;
-                font-weight: 500;
+                font-weight: 600;
+                box-shadow: 0 4px 16px var(--accent-glow);
             }
 
             .nav-links .btn-nav:hover {
-                background: var(--accent-hover);
+                background: linear-gradient(135deg, var(--gradient-end), #3b82f6);
                 color: #fff;
+                transform: translateY(-1px);
             }
 
             /* Hero Section */
@@ -192,13 +245,8 @@
             }
 
             @keyframes pulse {
-                0%,
-                100% {
-                    opacity: 1;
-                }
-                50% {
-                    opacity: 0.5;
-                }
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.5; }
             }
 
             .hero h1 {
@@ -210,11 +258,7 @@
             }
 
             .hero h1 .gradient {
-                background: linear-gradient(
-                    135deg,
-                    var(--gradient-start),
-                    var(--gradient-end)
-                );
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
@@ -243,17 +287,15 @@
                 font-size: 1rem;
                 font-weight: 600;
                 text-decoration: none;
-                transition: all 0.2s;
+                transition: transform 0.15s var(--ease-out), background 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out), border-color 0.2s var(--ease-out);
                 border: none;
                 cursor: pointer;
             }
 
+            .btn:active { transform: scale(0.97); }
+
             .btn-primary {
-                background: linear-gradient(
-                    135deg,
-                    var(--gradient-start),
-                    var(--gradient-end)
-                );
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
                 color: #fff;
                 box-shadow: 0 4px 20px var(--accent-glow);
             }
@@ -306,6 +348,13 @@
                 letter-spacing: -0.02em;
             }
 
+            .feature-content h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
             .feature-content p {
                 color: var(--text-secondary);
                 font-size: 1.1rem;
@@ -318,30 +367,98 @@
 
             .feature-list li {
                 display: flex;
-                align-items: flex-start;
-                gap: 12px;
+                align-items: center;
+                gap: 14px;
                 margin-bottom: 12px;
                 color: var(--text-secondary);
+                padding: 10px 16px;
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 10px;
+                transition: background-color 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out);
+            }
+
+            .feature-list li:hover {
+                background: rgba(96, 165, 250, 0.06);
+                border-color: rgba(96, 165, 250, 0.2);
+                color: var(--text-primary);
             }
 
             .feature-list .check {
-                color: var(--accent);
+                color: var(--accent-light);
                 font-weight: bold;
                 flex-shrink: 0;
+                width: 28px;
+                height: 28px;
+                border-radius: 50%;
+                background: rgba(96, 165, 250, 0.1);
+                border: 1px solid rgba(96, 165, 250, 0.2);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 0.85rem;
             }
 
+            .feature-list li strong {
+                color: var(--text-primary);
+            }
+
+            /* Framed Feature Visual */
             .feature-visual {
                 background: var(--bg-card);
                 border: 1px solid var(--border);
                 border-radius: 16px;
-                padding: 24px;
                 position: relative;
                 overflow: hidden;
+                box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+                transition: transform 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out), border-color 0.3s var(--ease-out);
+            }
+
+            .feature-visual:hover {
+                transform: translateY(-4px);
+                border-color: rgba(96, 165, 250, 0.3);
+                box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(37, 99, 235, 0.1);
+            }
+
+            .browser-mockup-bar {
+                background: rgba(15, 23, 42, 0.95);
+                padding: 10px 16px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            }
+
+            .browser-dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+            }
+
+            .browser-dot.red { background: #ef4444; }
+            .browser-dot.yellow { background: #eab308; }
+            .browser-dot.green { background: #22c55e; }
+
+            .browser-url-pill {
+                flex: 1;
+                background: rgba(3, 7, 18, 0.7);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 100px;
+                padding: 4px 14px;
+                font-family: "SF Mono", Monaco, "Fira Code", "Courier New", monospace;
+                font-size: 0.76rem;
+                color: var(--text-muted);
+                margin-left: 8px;
+                text-align: left;
+            }
+
+            .browser-url-pill .lock {
+                color: #22c55e;
+                margin-right: 6px;
             }
 
             .feature-visual img {
                 width: 100%;
-                border-radius: 8px;
                 display: block;
             }
 
@@ -357,6 +474,13 @@
                 margin-bottom: 16px;
             }
 
+            .integrations h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
             .integrations .subtitle {
                 color: var(--text-secondary);
                 font-size: 1.1rem;
@@ -368,9 +492,9 @@
                 display: flex;
                 justify-content: center;
                 align-items: center;
-                gap: 24px;
+                gap: 16px;
                 flex-wrap: wrap;
-                margin-bottom: 60px;
+                margin-bottom: 20px;
             }
 
             .integration-item {
@@ -390,7 +514,7 @@
                 align-items: center;
                 justify-content: center;
                 font-size: 2rem;
-                transition: all 0.3s;
+                transition: transform 0.3s var(--ease-out), border-color 0.3s var(--ease-out);
             }
 
             .integration-icon:hover {
@@ -399,17 +523,15 @@
             }
 
             .integration-icon.shelfarr {
-                background: linear-gradient(
-                    135deg,
-                    var(--gradient-start),
-                    var(--gradient-end)
-                );
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
                 border: none;
             }
 
             .integration-name {
-                font-size: 0.9rem;
+                font-size: 0.85rem;
                 color: var(--text-secondary);
+                max-width: 130px;
+                text-align: center;
             }
 
             .integration-arrow {
@@ -430,6 +552,13 @@
                 margin-bottom: 60px;
             }
 
+            .features-grid-section h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
             .features-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -441,7 +570,7 @@
                 border: 1px solid var(--border);
                 border-radius: 16px;
                 padding: 28px;
-                transition: all 0.3s;
+                transition: transform 0.3s var(--ease-out), border-color 0.3s var(--ease-out);
             }
 
             .feature-card:hover {
@@ -458,6 +587,10 @@
                 font-size: 1.15rem;
                 font-weight: 600;
                 margin-bottom: 8px;
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 8px;
             }
 
             .feature-card p {
@@ -465,7 +598,19 @@
                 font-size: 0.95rem;
             }
 
-            /* FAQ */
+            .beta-badge {
+                display: inline-block;
+                padding: 2px 8px;
+                background: rgba(96, 165, 250, 0.12);
+                border: 1px solid rgba(96, 165, 250, 0.3);
+                border-radius: 4px;
+                font-size: 0.7rem;
+                font-weight: 600;
+                color: var(--accent-light);
+                letter-spacing: 0.02em;
+            }
+
+            /* FAQ — Accessible Tablist */
             .faq {
                 padding: 100px 0;
             }
@@ -474,34 +619,114 @@
                 font-size: clamp(1.75rem, 3vw, 2.5rem);
                 font-weight: 700;
                 text-align: center;
-                margin-bottom: 60px;
+                margin-bottom: 16px;
             }
 
-            .faq-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-                gap: 24px;
+            .faq h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
+            .faq .subtitle {
+                text-align: center;
+                color: var(--text-secondary);
+                font-size: 1.1rem;
+                margin-bottom: 48px;
+            }
+
+            .faq-tabs-track {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                padding-bottom: 0;
+                margin-bottom: 24px;
+                max-width: 900px;
+                margin-left: auto;
+                margin-right: auto;
+            }
+
+            .faq-tab {
+                background: var(--bg-card);
+                border: 1px solid var(--border);
+                color: var(--text-secondary);
+                padding: 8px 16px;
+                border-radius: 8px;
+                font-size: 0.85rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: background-color 0.2s var(--ease-out), border-color 0.2s var(--ease-out), color 0.2s var(--ease-out);
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                font-family: inherit;
+            }
+
+            .faq-tab:hover {
+                background: var(--bg-secondary);
+                border-color: rgba(96, 165, 250, 0.3);
+                color: var(--text-primary);
+            }
+
+            .faq-tab:focus-visible {
+                outline: 2px solid var(--accent-light);
+                outline-offset: 2px;
+            }
+
+            .faq-tab.active {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                border-color: transparent;
+                color: #fff;
+            }
+
+            .faq-panel {
+                background: var(--bg-secondary);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 32px;
+                max-width: 900px;
+                margin: 0 auto;
+                min-height: 120px;
+            }
+
+            .faq-panel-question {
+                font-size: 1.15rem;
+                font-weight: 600;
+                color: var(--text-primary);
+                margin-bottom: 12px;
+            }
+
+            .faq-panel-answer {
+                color: var(--text-secondary);
+                font-size: 1rem;
+                line-height: 1.7;
+            }
+
+            .faq-noscript {
                 max-width: 900px;
                 margin: 0 auto;
             }
 
-            .faq-item {
-                padding: 24px;
+            .faq-noscript .faq-noscript-item {
                 background: var(--bg-secondary);
                 border: 1px solid var(--border);
                 border-radius: 12px;
+                padding: 24px;
+                margin-bottom: 16px;
             }
 
-            .faq-item h3 {
+            .faq-noscript dt {
                 font-size: 1.05rem;
                 font-weight: 600;
-                margin-bottom: 8px;
                 color: var(--text-primary);
+                margin-bottom: 8px;
             }
 
-            .faq-item p {
+            .faq-noscript dd {
                 color: var(--text-secondary);
                 font-size: 0.95rem;
+                line-height: 1.7;
             }
 
             /* CTA */
@@ -540,6 +765,13 @@
                 margin-bottom: 16px;
             }
 
+            .cta h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
             .cta p {
                 color: var(--text-secondary);
                 font-size: 1.15rem;
@@ -565,31 +797,74 @@
                 margin-bottom: 24px;
             }
 
-            .code-block {
+            .install h2 .gradient {
+                background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
+            .terminal {
+                max-width: 920px;
+                margin: 0 auto;
                 background: var(--bg-card);
                 border: 1px solid var(--border);
                 border-radius: 12px;
-                padding: 24px;
-                overflow-x: auto;
-                max-width: 700px;
-                margin: 0 auto;
+                overflow: hidden;
             }
 
-            .code-block pre {
-                font-family:
-                    "SF Mono", Monaco, "Fira Code", "Courier New", monospace;
-                font-size: 0.9rem;
-                line-height: 1.8;
-                color: var(--text-secondary);
+            .terminal-bar {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 12px 16px;
+                background: var(--bg-secondary);
+                border-bottom: 1px solid var(--border);
             }
 
-            .code-block .comment {
+            .terminal-dot {
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+            }
+
+            .terminal-dot.red { background: #ef4444; }
+            .terminal-dot.yellow { background: #eab308; }
+            .terminal-dot.green { background: #22c55e; }
+
+            .terminal-title {
+                margin-left: 8px;
+                font-size: 0.8rem;
                 color: var(--text-muted);
             }
 
-            .code-block .cmd {
-                color: var(--accent);
+            .terminal-body {
+                padding: 24px;
+                overflow-x: auto;
+                scrollbar-width: none;
+                -ms-overflow-style: none;
             }
+
+            .terminal-body::-webkit-scrollbar {
+                display: none;
+            }
+
+            .terminal-body pre {
+                font-family: "SF Mono", Monaco, "Fira Code", "Courier New", monospace;
+                font-size: 0.85rem;
+                line-height: 1.8;
+                color: var(--text-secondary);
+                white-space: pre;
+                margin: 0;
+            }
+
+            .terminal-body .t-comment { color: var(--text-muted); }
+            .terminal-body .t-cmd { color: var(--accent-light); }
+            .terminal-body .t-arg { color: var(--text-primary); }
+            .terminal-body .t-flag { color: #eab308; }
+            .terminal-body .t-url { color: var(--accent-light); text-decoration: underline; }
+            .terminal-body .t-prompt { color: var(--text-muted); }
+            .terminal-body .t-success { color: #22c55e; }
 
             /* Footer */
             footer {
@@ -636,7 +911,7 @@
                 color: var(--text-secondary);
                 text-decoration: none;
                 font-size: 0.9rem;
-                transition: color 0.2s;
+                transition: color 0.2s var(--ease-out);
             }
 
             .footer-links a:hover {
@@ -658,10 +933,6 @@
                     display: none;
                 }
 
-                .faq-grid {
-                    grid-template-columns: 1fr;
-                }
-
                 .integration-flow {
                     gap: 16px;
                 }
@@ -677,6 +948,63 @@
 
                 .footer-left {
                     flex-direction: column;
+                }
+
+                .terminal {
+                    max-width: 100%;
+                }
+
+                .terminal-body pre {
+                    font-size: 0.78rem;
+                }
+
+                .faq-panel {
+                    padding: 20px;
+                }
+
+                .faq-tabs-track {
+                    gap: 6px;
+                }
+
+                .faq-tab {
+                    padding: 6px 12px;
+                    font-size: 0.78rem;
+                }
+            }
+
+            @media (max-width: 480px) {
+                .container {
+                    padding: 0 16px;
+                }
+
+                .hero {
+                    padding: 100px 0 60px;
+                }
+
+                .terminal-body {
+                    padding: 16px;
+                }
+
+                .terminal-body pre {
+                    font-size: 0.72rem;
+                    line-height: 1.6;
+                }
+
+                .feature-card {
+                    padding: 20px;
+                }
+
+                .faq-panel {
+                    padding: 16px;
+                }
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                *, *::before, *::after {
+                    animation-duration: 0.01ms !important;
+                    animation-iteration-count: 1 !important;
+                    transition-duration: 0.01ms !important;
+                    scroll-behavior: auto !important;
                 }
             }
         </style>
@@ -702,404 +1030,405 @@
             </div>
         </nav>
 
-        <section class="hero">
-            <div class="container">
-                <div class="hero-content">
-                    <div class="hero-badge">
-                        <span class="dot"></span>
-                        Open Source & Self-Hosted
-                    </div>
-                    <h1>
-                        Your Personal<br />
-                        <span class="gradient">Book Request System</span>
-                    </h1>
-                    <p class="subtitle">
-                        A self-hosted request and download system for ebooks and
-                        audiobooks. Search, request, enjoy.
-                    </p>
-                    <div class="hero-buttons">
-                        <a
-                            href="getting-started.html"
-                            class="btn btn-primary"
-                        >
-                            Get Started
-                        </a>
-                        <a
-                            href="https://github.com/Pedro-Revez-Silva/shelfarr"
-                            class="btn btn-secondary"
-                        >
-                            View on GitHub
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section class="feature-section" id="features">
-            <div class="container">
-                <div class="feature-grid">
-                    <div class="feature-content">
-                        <h2>Beautiful Book Discovery</h2>
-                        <p>
-                            Browse millions of books through Open Library and
-                            Hardcover. See covers, descriptions, series and
-                            edition details at a glance.
+        <main id="main-content">
+            <section class="hero">
+                <div class="container">
+                    <div class="hero-content">
+                        <div class="hero-badge">
+                            <span class="dot"></span>
+                            Open Source &amp; Self-Hosted
+                        </div>
+                        <h1>
+                            Your Personal<br />
+                            <span class="gradient">Book Request System</span>
+                        </h1>
+                        <p class="subtitle">
+                            Search, request, and download ebooks and audiobooks.
+                            Self-hosted, open source, built for the *arr ecosystem.
                         </p>
-                        <ul class="feature-list">
-                            <li>
-                                <span class="check">✓</span> Search by title,
-                                author, or ISBN
-                            </li>
-                            <li>
-                                <span class="check">✓</span> Rich metadata with
-                                series and narrator details
-                            </li>
-                            <li>
-                                <span class="check">✓</span> Choose between
-                                audiobook or ebook formats
-                            </li>
-                            <li>
-                                <span class="check">✓</span> One-click request,
-                                or upload your own files
-                            </li>
-                        </ul>
-                    </div>
-                    <div class="feature-visual">
-                        <img
-                            src="screenshot-search.png"
-                            alt="Shelfarr Search Interface"
-                        />
+                        <div class="hero-buttons">
+                            <a
+                                href="getting-started.html"
+                                class="btn btn-primary"
+                            >
+                                Get Started
+                            </a>
+                            <a
+                                href="https://github.com/Pedro-Revez-Silva/shelfarr"
+                                class="btn btn-secondary"
+                            >
+                                View on GitHub
+                            </a>
+                        </div>
                     </div>
                 </div>
-            </div>
-        </section>
+            </section>
 
-        <section class="feature-section">
-            <div class="container">
-                <div class="feature-grid reverse">
-                    <div class="feature-content">
-                        <h2>Automated Acquisition</h2>
-                        <p>
-                            Let Shelfarr handle the heavy lifting. It searches
-                            your sources, scores results against your format
-                            preferences and manages downloads automatically.
-                        </p>
-                        <ul class="feature-list">
-                            <li>
-                                <span class="check">✓</span> Prowlarr,
-                                Jackett &amp; NZBHydra2 indexer search
-                            </li>
-                            <li>
-                                <span class="check">✓</span> Direct ebook &amp;
-                                audiobook downloads from selected sources
-                            </li>
-                            <li>
-                                <span class="check">✓</span> qBittorrent,
-                                Decypharr, SABnzbd, NZBGet, Deluge &amp;
-                                Transmission
-                            </li>
-                            <li>
-                                <span class="check">✓</span> Auto-selection and
-                                per-indexer download routing
-                            </li>
-                        </ul>
-                    </div>
-                    <div class="feature-visual">
-                        <img
-                            src="screenshot-dashboard.png"
-                            alt="Shelfarr Dashboard"
-                        />
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section class="integrations" id="integrations">
-            <div class="container">
-                <h2>Fits Right Into Your Stack</h2>
-                <p class="subtitle">
-                    Shelfarr connects seamlessly with the tools you already use
-                    in your *arr ecosystem.
-                </p>
-                <div class="integration-flow">
-                    <div class="integration-item">
-                        <div class="integration-icon">🔍</div>
-                        <span class="integration-name"
-                            >Open Library / Hardcover</span
-                        >
-                    </div>
-                    <span class="integration-arrow">→</span>
-                    <div class="integration-item">
-                        <div class="integration-icon shelfarr">
+            <section class="feature-section" id="features">
+                <div class="container">
+                    <div class="feature-grid">
+                        <div class="feature-content">
+                            <h2>Beautiful <span class="gradient">Book Discovery</span></h2>
+                            <p>
+                                Browse millions of books through Open Library and
+                                Hardcover. See covers, descriptions, series and
+                                edition details at a glance.
+                            </p>
+                            <ul class="feature-list">
+                                <li>
+                                    <span class="check">✓</span>
+                                    <div><strong>Instant Search:</strong> Query by title, author, or ISBN with auto-suggestions</div>
+                                </li>
+                                <li>
+                                    <span class="check">✓</span>
+                                    <div><strong>Rich Metadata:</strong> Full series order, narrators, publishers, and release dates</div>
+                                </li>
+                                <li>
+                                    <span class="check">✓</span>
+                                    <div><strong>Format Toggles:</strong> Seamlessly switch between audiobook and ebook editions</div>
+                                </li>
+                                <li>
+                                    <span class="check">✓</span>
+                                    <div><strong>One-Click Request:</strong> Automated fulfillment or manual file uploads</div>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="feature-visual">
+                            <div class="browser-mockup-bar">
+                                <div class="browser-dot red"></div>
+                                <div class="browser-dot yellow"></div>
+                                <div class="browser-dot green"></div>
+                                <div class="browser-url-pill">
+                                    <span class="lock">🔒</span> shelfarr.local/search?q=harry+potter
+                                </div>
+                            </div>
                             <img
-                                src="logo.png"
-                                alt="Shelfarr"
-                                style="
-                                    width: 48px;
-                                    height: 48px;
-                                    border-radius: 8px;
-                                "
+                                src="screenshot-search.png"
+                                alt="Shelfarr Search Interface"
                             />
                         </div>
-                        <span class="integration-name">Shelfarr</span>
-                    </div>
-                    <span class="integration-arrow">→</span>
-                    <div class="integration-item">
-                        <div class="integration-icon">🔎</div>
-                        <span class="integration-name">Prowlarr / Jackett / NZBHydra2</span>
-                    </div>
-                    <span class="integration-arrow">→</span>
-                    <div class="integration-item">
-                        <div class="integration-icon">⬇️</div>
-                        <span class="integration-name">Download Clients</span>
-                    </div>
-                    <span class="integration-arrow">→</span>
-                    <div class="integration-item">
-                        <div class="integration-icon">🎧</div>
-                        <span class="integration-name">Audiobookshelf</span>
                     </div>
                 </div>
-            </div>
-        </section>
+            </section>
 
-        <section class="features-grid-section">
-            <div class="container">
-                <h2>Everything You Need</h2>
-                <div class="features-grid">
-                    <div class="feature-card">
-                        <div class="feature-card-icon">👥</div>
-                        <h3>Multi-User &amp; Roles</h3>
-                        <p>
-                            Users request books, admins approve and manage.
-                            Role-based access keeps things organized.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔐</div>
-                        <h3>Two-Factor Auth</h3>
-                        <p>
-                            Secure your instance with TOTP-based 2FA and backup
-                            codes for all user accounts.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔑</div>
-                        <h3>OIDC/SSO</h3>
-                        <p>
-                            Single sign-on via OpenID Connect. Works with
-                            Authentik, Authelia, Keycloak, and more.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔔</div>
-                        <h3>Notifications</h3>
-                        <p>
-                            In-app, Discord, Telegram and generic webhook
-                            notifications for every request event.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">📖</div>
-                        <h3>Direct Downloads</h3>
-                        <p>
-                            Ebooks and audiobooks from Anna's Archive, ebooks
-                            from Z-Library, plus free public-domain audiobooks
-                            from LibriVox &mdash; no torrent client needed.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🏪</div>
-                        <h3>Third-Party Stores (Beta)</h3>
-                        <p>
-                            See legitimate DRM-free ebook offers from supported
-                            sellers in a separate section. Checkout and payment
-                            always stay with the store.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🎧</div>
-                        <h3>Audible Backup (Beta)</h3>
-                        <p>
-                            Browse and preserve audiobooks you already own,
-                            confirm a safe one-time backup of eligible existing
-                            purchases, schedule hourly or longer library
-                            refreshes, and optionally back up future purchases
-                            using the Libation companion.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">⬆️</div>
-                        <h3>Manual Uploads</h3>
-                        <p>
-                            Upload your own ebook or audiobook files to fulfill
-                            a request when automation can't find it.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🎚️</div>
-                        <h3>Format Preferences</h3>
-                        <p>
-                            Preferred, approved and rejected formats, plus
-                            bitrate and single-file rules for auto-selection.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🧭</div>
-                        <h3>Download Routing</h3>
-                        <p>
-                            Route specific indexers to specific download clients
-                            per torrent or usenet result.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">📂</div>
-                        <h3>Smart Organization</h3>
-                        <p>
-                            Path and filename templates organize files by
-                            author, series and title, ready for Audiobookshelf.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔄</div>
-                        <h3>Library Sync</h3>
-                        <p>
-                            Automatic Audiobookshelf scans after downloads
-                            complete. Your books appear instantly.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🔌</div>
-                        <h3>REST API</h3>
-                        <p>
-                            Scoped, user-owned API tokens for search and request
-                            automation under <code>/api/v1</code>.
-                        </p>
-                    </div>
-                    <div class="feature-card">
-                        <div class="feature-card-icon">🐳</div>
-                        <h3>Docker Ready</h3>
-                        <p>
-                            Deploy in minutes with Docker. Works perfectly with
-                            your existing container setup.
-                        </p>
+            <section class="feature-section" id="acquisition">
+                <div class="container">
+                    <div class="feature-grid reverse">
+                        <div class="feature-content">
+                            <h2>Automated <span class="gradient">Acquisition</span></h2>
+                            <p>
+                                Let Shelfarr handle the heavy lifting. It queries your indexers, scores results against your custom format preferences, and manages downloads automatically.
+                            </p>
+                            <ul class="feature-list">
+                                <li>
+                                    <span class="check">✓</span>
+                                    <div><strong>Indexer Search:</strong> Seamless Prowlarr, Jackett &amp; NZBHydra2 integration</div>
+                                </li>
+                                <li>
+                                    <span class="check">✓</span>
+                                    <div><strong>Direct Sources:</strong> Direct ebook &amp; audiobook downloads without torrent clients</div>
+                                </li>
+                                <li>
+                                    <span class="check">✓</span>
+                                    <div><strong>Download Clients:</strong> qBittorrent, Decypharr, SABnzbd, NZBGet, Deluge &amp; Transmission</div>
+                                </li>
+                                <li>
+                                    <span class="check">✓</span>
+                                    <div><strong>Smart Priority Routing:</strong> Auto-selection rules per indexer and download client</div>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="feature-visual">
+                            <div class="browser-mockup-bar">
+                                <div class="browser-dot red"></div>
+                                <div class="browser-dot yellow"></div>
+                                <div class="browser-dot green"></div>
+                                <div class="browser-url-pill">
+                                    <span class="lock">🔒</span> shelfarr.local/dashboard
+                                </div>
+                            </div>
+                            <img
+                                src="screenshot-dashboard.png"
+                                alt="Shelfarr Dashboard & Acquisition Engine"
+                            />
+                        </div>
                     </div>
                 </div>
-            </div>
-        </section>
+            </section>
 
-        <section class="faq" id="faq">
-            <div class="container">
-                <h2>Frequently Asked Questions</h2>
-                <div class="faq-grid">
-                    <div class="faq-item">
-                        <h3>Do I need Prowlarr?</h3>
-                        <p>
-                            Not necessarily. You can use Anna's Archive for
-                            ebooks and audiobooks, Z-Library for ebooks, or
-                            LibriVox for public-domain audiobooks, without any indexer. For the widest
-                            selection, Prowlarr, Jackett or NZBHydra2 is recommended.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>What download clients are supported?</h3>
-                        <p>
-                            qBittorrent, Decypharr, Deluge and Transmission for
-                            torrents, plus SABnzbd and NZBGet for usenet.
-                            Configure multiple clients with priority ordering
-                            and per-indexer routing.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Does it work without Audiobookshelf?</h3>
-                        <p>
-                            Yes! Shelfarr organizes files to your specified
-                            output paths. Audiobookshelf integration is optional
-                            but recommended.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Can users request books themselves?</h3>
-                        <p>
-                            Users can search and request books. Admins can
-                            review requests and manage the download queue.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Does Shelfarr sell books or handle payment?</h3>
-                        <p>
-                            No. Beta store integrations only show eligible
-                            offers and send you to the seller. Shelfarr never
-                            receives card details, store passwords or order
-                            information.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Can Shelfarr back up new Audible purchases automatically?</h3>
-                        <p>
-                            Yes, as an explicit beta opt-in. Run one manual sync
-                            first, enable scheduled sync, then enable automatic
-                            backup. The next successful manual or scheduled sync
-                            refreshes a no-download baseline. Only purchased
-                            audiobooks first discovered by later syncs are queued.
-                            The existing library is separate: after the first sync,
-                            Shelfarr asks whether to queue a confirmed, conservatively
-                            filtered background batch. Subscriptions, local matches,
-                            identity conflicts and prior attempts are excluded, and
-                            progress is managed from Library while Libation processes
-                            one title at a time.
-                        </p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Is Audible Backup built by Shelfarr?</h3>
-                        <p>
-                            Shelfarr provides the management and import
-                            integration around a separate, pinned Libation
-                            companion. Libation remains an independent GPL-3.0
-                            project and is credited throughout the feature.
-                        </p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section class="cta">
-            <div class="container">
-                <div class="cta-content">
-                    <h2>Ready to Build Your Library?</h2>
-                    <p>
-                        Get started with Shelfarr in minutes. Free, open source
-                        and self-hosted.
+            <section class="integrations" id="integrations">
+                <div class="container">
+                    <h2>Fits Right Into Your <span class="gradient">Stack</span></h2>
+                    <p class="subtitle">
+                        Shelfarr connects seamlessly with the tools you already use
+                        in your *arr ecosystem.
                     </p>
-                    <div class="cta-buttons">
-                        <a href="getting-started.html" class="btn btn-primary"
-                            >Get Started</a
-                        >
-                        <a href="configuration.html" class="btn btn-secondary"
-                            >Settings Reference</a
-                        >
+                    <div class="integration-flow">
+                        <div class="integration-item">
+                            <div class="integration-icon">🔍</div>
+                            <span class="integration-name">Open Library / Hardcover</span>
+                        </div>
+                        <span class="integration-arrow">→</span>
+                        <div class="integration-item">
+                            <div class="integration-icon shelfarr">
+                                <img
+                                    src="logo.png"
+                                    alt="Shelfarr"
+                                    style="width: 48px; height: 48px; border-radius: 8px;"
+                                />
+                            </div>
+                            <span class="integration-name">Shelfarr</span>
+                        </div>
+                        <span class="integration-arrow">→</span>
+                        <div class="integration-item">
+                            <div class="integration-icon">🔎</div>
+                            <span class="integration-name">Prowlarr / Jackett / NZBHydra2</span>
+                        </div>
+                        <span class="integration-arrow">→</span>
+                        <div class="integration-item">
+                            <div class="integration-icon">⬇️</div>
+                            <span class="integration-name">Download Clients</span>
+                        </div>
+                        <span class="integration-arrow">→</span>
+                        <div class="integration-item">
+                            <div class="integration-icon">🎧</div>
+                            <span class="integration-name">Audiobookshelf</span>
+                        </div>
                     </div>
                 </div>
-            </div>
-        </section>
+            </section>
 
-        <section class="install" id="install">
-            <div class="container">
-                <h2>Quick Start with Docker</h2>
-                <div class="code-block">
-                    <pre><span class="comment"># Create directory and get compose file</span>
-<span class="cmd">mkdir</span> shelfarr && <span class="cmd">cd</span> shelfarr
-<span class="cmd">curl</span> -O https://raw.githubusercontent.com/Pedro-Revez-Silva/shelfarr/main/docker-compose.example.yml
-<span class="cmd">mv</span> docker-compose.example.yml docker-compose.yml
-
-<span class="comment"># Edit paths in docker-compose.yml, then start</span>
-<span class="cmd">docker-compose</span> up -d
-
-<span class="comment"># Access at http://localhost:5056 — the first user to register becomes admin</span></pre>
+            <section class="features-grid-section">
+                <div class="container">
+                    <h2>Everything You <span class="gradient">Need</span></h2>
+                    <div class="features-grid">
+                        <div class="feature-card">
+                            <div class="feature-card-icon">👥</div>
+                            <h3>Multi-User &amp; Roles</h3>
+                            <p>
+                                Users request books, admins approve and manage.
+                                Role-based access keeps things organized.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🔐</div>
+                            <h3>Two-Factor Auth</h3>
+                            <p>
+                                Secure your instance with TOTP-based 2FA and backup
+                                codes for all user accounts.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🔑</div>
+                            <h3>OIDC/SSO</h3>
+                            <p>
+                                Single sign-on via OpenID Connect. Works with
+                                Authentik, Authelia, Keycloak, and more.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🔔</div>
+                            <h3>Notifications</h3>
+                            <p>
+                                In-app, Discord, Telegram and generic webhook
+                                notifications for every request event.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">📖</div>
+                            <h3>Direct Downloads</h3>
+                            <p>
+                                Ebooks and audiobooks from Anna's Archive, ebooks
+                                from Z-Library, plus free public-domain audiobooks
+                                from LibriVox &mdash; no torrent client needed.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🏪</div>
+                            <h3>Third-Party Stores <span class="beta-badge">Beta</span></h3>
+                            <p>
+                                See legitimate DRM-free ebook offers from supported
+                                sellers in a separate section. Checkout and payment
+                                always stay with the store.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🎧</div>
+                            <h3>Audible Backup <span class="beta-badge">Beta</span></h3>
+                            <p>
+                                Browse and preserve audiobooks you already own,
+                                confirm a safe one-time backup of eligible existing
+                                purchases, schedule hourly or longer library
+                                refreshes, and optionally back up future purchases
+                                using the Libation companion.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">⬆️</div>
+                            <h3>Manual Uploads</h3>
+                            <p>
+                                Upload your own ebook or audiobook files to fulfill
+                                a request when automation can't find it.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🎚️</div>
+                            <h3>Format Preferences</h3>
+                            <p>
+                                Preferred, approved and rejected formats, plus
+                                bitrate and single-file rules for auto-selection.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🧭</div>
+                            <h3>Download Routing</h3>
+                            <p>
+                                Route specific indexers to specific download clients
+                                per torrent or usenet result.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">📂</div>
+                            <h3>Smart Organization</h3>
+                            <p>
+                                Path and filename templates organize files by
+                                author, series and title, ready for Audiobookshelf.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🔄</div>
+                            <h3>Library Sync</h3>
+                            <p>
+                                Automatic Audiobookshelf scans after downloads
+                                complete. Your books appear instantly.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🔌</div>
+                            <h3>REST API</h3>
+                            <p>
+                                Scoped, user-owned API tokens for search and request
+                                automation under <code>/api/v1</code>.
+                            </p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-card-icon">🐳</div>
+                            <h3>Docker Ready</h3>
+                            <p>
+                                Deploy in minutes with Docker. Works perfectly with
+                                your existing container setup.
+                            </p>
+                        </div>
+                    </div>
                 </div>
-            </div>
-        </section>
+            </section>
 
-        <footer>
+            <section class="faq" id="faq">
+                <div class="container">
+                    <h2>Frequently Asked <span class="gradient">Questions</span></h2>
+                    <p class="subtitle">Select a question to see the answer.</p>
+
+                    <div class="faq-tabs-track" role="tablist" aria-label="Frequently asked questions" id="faq-tablist">
+                        <button class="faq-tab active" role="tab" id="faq-tab-0" aria-selected="true" aria-controls="faq-panel" tabindex="0" onclick="selectFaq(0, this)">Indexer</button>
+                        <button class="faq-tab" role="tab" id="faq-tab-1" aria-selected="false" aria-controls="faq-panel" tabindex="-1" onclick="selectFaq(1, this)">Clients</button>
+                        <button class="faq-tab" role="tab" id="faq-tab-2" aria-selected="false" aria-controls="faq-panel" tabindex="-1" onclick="selectFaq(2, this)">Audiobookshelf</button>
+                        <button class="faq-tab" role="tab" id="faq-tab-3" aria-selected="false" aria-controls="faq-panel" tabindex="-1" onclick="selectFaq(3, this)">Requests</button>
+                        <button class="faq-tab" role="tab" id="faq-tab-4" aria-selected="false" aria-controls="faq-panel" tabindex="-1" onclick="selectFaq(4, this)">Stores</button>
+                        <button class="faq-tab" role="tab" id="faq-tab-5" aria-selected="false" aria-controls="faq-panel" tabindex="-1" onclick="selectFaq(5, this)">Audible Backup</button>
+                        <button class="faq-tab" role="tab" id="faq-tab-6" aria-selected="false" aria-controls="faq-panel" tabindex="-1" onclick="selectFaq(6, this)">Libation</button>
+                    </div>
+
+                    <div class="faq-panel" role="tabpanel" id="faq-panel" aria-labelledby="faq-tab-0">
+                        <div class="faq-panel-question" id="faq-question"></div>
+                        <div class="faq-panel-answer" id="faq-answer"></div>
+                    </div>
+
+                    <noscript>
+                        <dl class="faq-noscript">
+                            <div class="faq-noscript-item">
+                                <dt>Do I need Prowlarr?</dt>
+                                <dd>Not necessarily. You can use Anna's Archive for ebooks and audiobooks, Z-Library for ebooks, or LibriVox for public-domain audiobooks, without any indexer. For the widest selection, Prowlarr, Jackett or NZBHydra2 is recommended.</dd>
+                            </div>
+                            <div class="faq-noscript-item">
+                                <dt>What download clients are supported?</dt>
+                                <dd>qBittorrent, Decypharr, Deluge and Transmission for torrents, plus SABnzbd and NZBGet for usenet. Configure multiple clients with priority ordering and per-indexer routing.</dd>
+                            </div>
+                            <div class="faq-noscript-item">
+                                <dt>Does it work without Audiobookshelf?</dt>
+                                <dd>Yes! Shelfarr organizes files to your specified output paths. Audiobookshelf integration is optional but recommended.</dd>
+                            </div>
+                            <div class="faq-noscript-item">
+                                <dt>Can users request books themselves?</dt>
+                                <dd>Users can search and request books. Admins can review requests and manage the download queue.</dd>
+                            </div>
+                            <div class="faq-noscript-item">
+                                <dt>Does Shelfarr sell books or handle payment?</dt>
+                                <dd>No. Beta store integrations only show eligible offers and send you to the seller. Shelfarr never receives card details, store passwords or order information.</dd>
+                            </div>
+                            <div class="faq-noscript-item">
+                                <dt>Can Shelfarr back up new Audible purchases automatically?</dt>
+                                <dd>Yes, as an explicit beta opt-in. Run one manual sync first, enable scheduled sync, then enable automatic backup. The next successful manual or scheduled sync refreshes a no-download baseline. Only purchased audiobooks first discovered by later syncs are queued. The existing library is separate: after the first sync, Shelfarr asks whether to queue a confirmed, conservatively filtered background batch. Subscriptions, local matches, identity conflicts and prior attempts are excluded, and progress is managed from Library while Libation processes one title at a time.</dd>
+                            </div>
+                            <div class="faq-noscript-item">
+                                <dt>Is Audible Backup built by Shelfarr?</dt>
+                                <dd>Shelfarr provides the management and import integration around a separate, pinned Libation companion. Libation remains an independent GPL-3.0 project and is credited throughout the feature.</dd>
+                            </div>
+                        </dl>
+                    </noscript>
+                </div>
+            </section>
+
+            <section class="cta">
+                <div class="container">
+                    <div class="cta-content">
+                        <h2>Ready to Build Your <span class="gradient">Digital Library</span>?</h2>
+                        <p>
+                            Get started with Shelfarr in minutes. Free, open source
+                            and self-hosted.
+                        </p>
+                        <div class="cta-buttons">
+                            <a href="getting-started.html" class="btn btn-primary"
+                                >Get Started</a
+                            >
+                            <a href="configuration.html" class="btn btn-secondary"
+                                >Settings Reference</a
+                            >
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="install" id="install">
+                <div class="container">
+                    <h2>Quick Start with <span class="gradient">Docker</span></h2>
+                    <div class="terminal">
+                        <div class="terminal-bar">
+                            <div class="terminal-dot red"></div>
+                            <div class="terminal-dot yellow"></div>
+                            <div class="terminal-dot green"></div>
+                            <span class="terminal-title">terminal — shelfarr setup</span>
+                        </div>
+                        <div class="terminal-body">
+                            <pre><span class="t-comment"># Create directory and get compose file</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mkdir</span> <span class="t-arg">shelfarr</span> <span class="t-prompt">&amp;&amp;</span> <span class="t-cmd">cd</span> <span class="t-arg">shelfarr</span>
+<span class="t-prompt">$</span> <span class="t-cmd">curl</span> <span class="t-flag">-O</span> <span class="t-url">https://raw.githubusercontent.com/Pedro-Revez-Silva/shelfarr/main/docker-compose.example.yml</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mv</span> <span class="t-arg">docker-compose.example.yml</span> <span class="t-arg">docker-compose.yml</span>
+
+<span class="t-comment"># Edit paths in docker-compose.yml, then start</span>
+<span class="t-prompt">$</span> <span class="t-cmd">docker-compose</span> <span class="t-flag">up</span> <span class="t-flag">-d</span>
+
+<span class="t-success">✓ Container started · listening on :5056</span>
+
+<span class="t-comment"># Access at http://localhost:5056 — the first user to register becomes admin</span>
+<span class="t-prompt">$</span></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+
+        <footer id="footer">
             <div class="container">
                 <div class="footer-left">
                     <a href="#" class="logo"
@@ -1119,7 +1448,7 @@
                                 d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"
                             />
                         </svg>
-                        Free & Open Source
+                        Free &amp; Open Source
                     </span>
                 </div>
                 <div class="footer-links">
@@ -1140,14 +1469,89 @@
         </footer>
 
         <script>
-            // Navbar scroll effect
+            // Navbar scroll effect & scroll-spy
             const navbar = document.getElementById("navbar");
-            window.addEventListener("scroll", () => {
+            const spySections = document.querySelectorAll("section[id]");
+            const spyNavLinks = document.querySelectorAll(".nav-links a[href^='#']");
+
+            function updateNavScrollSpy() {
                 if (window.scrollY > 50) {
                     navbar.classList.add("scrolled");
                 } else {
                     navbar.classList.remove("scrolled");
                 }
+
+                let currentSectionId = "";
+                spySections.forEach(section => {
+                    const sectionTop = section.offsetTop - 180;
+                    const sectionHeight = section.offsetHeight;
+                    if (window.scrollY >= sectionTop && window.scrollY < sectionTop + sectionHeight) {
+                        currentSectionId = section.getAttribute("id");
+                    }
+                });
+
+                spyNavLinks.forEach(link => {
+                    link.classList.remove("active");
+                    if (currentSectionId && link.getAttribute("href") === `#${currentSectionId}`) {
+                        link.classList.add("active");
+                    }
+                });
+            }
+
+            window.addEventListener("scroll", updateNavScrollSpy);
+            window.addEventListener("DOMContentLoaded", updateNavScrollSpy);
+
+            // FAQ accessible tablist
+            const faqData = [
+                { q: "Do I need Prowlarr?", a: "Not necessarily. You can use Anna's Archive for ebooks and audiobooks, Z-Library for ebooks, or LibriVox for public-domain audiobooks, without any indexer. For the widest selection, Prowlarr, Jackett or NZBHydra2 is recommended." },
+                { q: "What download clients are supported?", a: "qBittorrent, Decypharr, Deluge and Transmission for torrents, plus SABnzbd and NZBGet for usenet. Configure multiple clients with priority ordering and per-indexer routing." },
+                { q: "Does it work without Audiobookshelf?", a: "Yes! Shelfarr organizes files to your specified output paths. Audiobookshelf integration is optional but recommended." },
+                { q: "Can users request books themselves?", a: "Users can search and request books. Admins can review requests and manage the download queue." },
+                { q: "Does Shelfarr sell books or handle payment?", a: "No. Beta store integrations only show eligible offers and send you to the seller. Shelfarr never receives card details, store passwords or order information." },
+                { q: "Can Shelfarr back up new Audible purchases automatically?", a: "Yes, as an explicit beta opt-in. Run one manual sync first, enable scheduled sync, then enable automatic backup. The next successful manual or scheduled sync refreshes a no-download baseline. Only purchased audiobooks first discovered by later syncs are queued. The existing library is separate: after the first sync, Shelfarr asks whether to queue a confirmed, conservatively filtered background batch. Subscriptions, local matches, identity conflicts and prior attempts are excluded, and progress is managed from Library while Libation processes one title at a time." },
+                { q: "Is Audible Backup built by Shelfarr?", a: "Shelfarr provides the management and import integration around a separate, pinned Libation companion. Libation remains an independent GPL-3.0 project and is credited throughout the feature." }
+            ];
+
+            function selectFaq(index, btn) {
+                const tabs = document.querySelectorAll('.faq-tab');
+                tabs.forEach(t => {
+                    t.classList.remove('active');
+                    t.setAttribute('aria-selected', 'false');
+                    t.setAttribute('tabindex', '-1');
+                });
+                if (btn) {
+                    btn.classList.add('active');
+                    btn.setAttribute('aria-selected', 'true');
+                    btn.setAttribute('tabindex', '0');
+                }
+                const panel = document.getElementById('faq-panel');
+                if (panel) panel.setAttribute('aria-labelledby', 'faq-tab-' + index);
+                document.getElementById('faq-question').textContent = faqData[index].q;
+                document.getElementById('faq-answer').textContent = faqData[index].a;
+            }
+
+            // Keyboard navigation for FAQ tabs (roving tabindex)
+            const tablist = document.getElementById('faq-tablist');
+            if (tablist) {
+                tablist.addEventListener('keydown', (e) => {
+                    const tabs = Array.from(tablist.querySelectorAll('.faq-tab'));
+                    const current = tabs.findIndex(t => t.getAttribute('tabindex') === '0');
+                    if (current === -1) return;
+                    let next = current;
+                    if (e.key === 'ArrowRight') next = (current + 1) % tabs.length;
+                    else if (e.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+                    else if (e.key === 'Home') next = 0;
+                    else if (e.key === 'End') next = tabs.length - 1;
+                    else return;
+                    e.preventDefault();
+                    tabs[next].focus();
+                    selectFaq(next, tabs[next]);
+                });
+            }
+
+            // Load first FAQ on init
+            window.addEventListener('DOMContentLoaded', () => {
+                selectFaq(0, document.querySelector('.faq-tab'));
             });
         </script>
     </body>
