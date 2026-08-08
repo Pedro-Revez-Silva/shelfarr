@@ -641,6 +641,62 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_includes output, "1 hardlinked, 0 copied after unsupported fallback, 0 reused"
   end
 
+  test "reference retry reuses a native target match when File.readlink fails" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    source = File.join(@temp_source, "audiobook.mp3")
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    FileUtils.mkdir_p(destination)
+    referenced = File.join(destination, "audiobook.mp3")
+    File.symlink(Pathname(source).expand_path.to_s, referenced)
+
+    File.stub(:readlink, ->(*) { raise Errno::EIO, "simulated CIFS disagreement" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.completed?
+    assert_equal Pathname(source).expand_path.to_s, File.readlink(referenced)
+    assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
+  end
+
+  test "reference retry suffixes a mismatched symlink" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    source = File.join(@temp_source, "audiobook.mp3")
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    FileUtils.mkdir_p(destination)
+    referenced = File.join(destination, "audiobook.mp3")
+    File.symlink("/different/source.mp3", referenced)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?
+    assert_equal "/different/source.mp3", File.readlink(referenced)
+    assert_equal Pathname(source).expand_path.to_s,
+      File.readlink(File.join(destination, "audiobook (2).mp3"))
+  end
+
+  test "reference EEXIST reconciliation reuses the concurrent native target match" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    attempts = 0
+    concurrent_publication = lambda do |source, target, **|
+      attempts += 1
+      File.symlink(Pathname(source).expand_path.to_s, target)
+      raise Errno::EEXIST, target
+    end
+
+    FileCopyService.stub(:reference_noreplace, concurrent_publication) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert_equal 1, attempts
+    assert @request.reload.completed?
+    assert File.symlink?(File.join(destination, "audiobook.mp3"))
+    assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
+  end
+
   test "hardlink retry reuses a secure fallback copy after interruption" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "hardlink")

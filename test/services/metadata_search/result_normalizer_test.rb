@@ -4,6 +4,31 @@ require "test_helper"
 
 module MetadataSearch
   class ResultNormalizerTest < ActiveSupport::TestCase
+    test "uses Hardcover stable numeric id links and rejects malformed ids" do
+      result = HardcoverClient::SearchResult.new(
+        id: "175280",
+        title: "Piranesi",
+        author: "Susanna Clarke",
+        description: nil,
+        release_year: 2020,
+        cover_url: nil,
+        has_audiobook: true,
+        has_ebook: true,
+        series_name: nil,
+        series_position: nil
+      )
+
+      normalized = ResultNormalizer.call("hardcover", result)
+
+      assert_equal "175280", normalized.source_id
+      assert_equal "hardcover:175280", normalized.work_id
+      assert_equal "https://hardcover.app/id/book/175280", normalized.source_url
+      assert_equal "https://hardcover.app/id/book/1", ResultNormalizer.call("hardcover", result.with(id: 1)).source_url
+      assert_nil ResultNormalizer.call("hardcover", result.with(id: nil)).source_url
+      assert_nil ResultNormalizer.call("hardcover", result.with(id: 0)).source_url
+      assert_nil ResultNormalizer.call("hardcover", result.with(id: "175280/unsafe")).source_url
+    end
+
     test "retains Google categories and emits graphic classification evidence" do
       result = GoogleBooksClient::SearchResult.new(
         id: "gb1",
@@ -44,6 +69,7 @@ module MetadataSearch
       assert_equal 90, normalized.classification_confidence
       assert_equal [ "subject:Graphic novels" ], normalized.classification_evidence
       assert_equal [ "Graphic novels" ], normalized.subjects
+      assert_equal "https://openlibrary.org/works/OL123W", normalized.source_url
     end
 
     test "uses requested kind as weak fallback when provider evidence is absent" do

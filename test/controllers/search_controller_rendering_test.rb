@@ -88,6 +88,49 @@ class SearchControllerRenderingTest < ActionController::TestCase
     assert_no_match %r{href="/books/books/}, response.body
   end
 
+  test "index keeps mounted search and snapshot paths" do
+    @controller.define_singleton_method(:require_authentication) { true }
+    @request.set_header("SCRIPT_NAME", "/books")
+
+    get :index, params: { q: "dune", page: 2 }
+
+    assert_response :success
+    assert_select "[data-search-index-url-value='/books/search']"
+    assert_select "[data-search-stream-url-value='/books/search/results/stream']"
+    assert_select "[data-search-snapshot-url-value='/books/search/results/snapshot']"
+  end
+
+  test "pagination links keep the mounted synchronous results path" do
+    @controller.instance_variable_set(:@live_script_name, "/books")
+    @controller.instance_variable_set(:@query, "dune")
+    results = Array.new(21) { candidate }
+
+    html = @controller.send(
+      :render_search_results_stream,
+      results: results,
+      loading: false,
+      pending_providers: [],
+      completed_providers: [],
+      error: nil
+    )
+
+    link = Nokogiri::HTML.fragment(html).css("a").find { |element| element.text == "Next" }
+    uri = URI.parse(link["href"])
+    assert_equal "/books/search/results", uri.path
+    assert_equal({ "q" => "dune", "page" => "2" }, Rack::Utils.parse_query(uri.query))
+  end
+
+  test "a direct one-character query is idle instead of permanently loading" do
+    @controller.define_singleton_method(:require_authentication) { true }
+    get :index, params: { q: "a", page: 1 }
+
+    assert_response :success
+    assert_select "[data-controller='search'][data-search-initial-search-value='false']"
+    assert_select "#search-results[aria-busy='false']"
+    assert_select "[data-search-state][data-search-complete='true']"
+    assert_select "p", text: "No results found"
+  end
+
   test "audiobookshelf_matches_for returns placeholders without library items" do
     LibraryItem.destroy_all
 

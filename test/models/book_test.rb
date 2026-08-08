@@ -135,6 +135,8 @@ class BookTest < ActiveSupport::TestCase
     google_book = Book.new(title: "Google Book", book_type: :ebook, google_books_id: "abc123")
     open_library_book = Book.new(title: "Open Book", book_type: :ebook, open_library_work_id: "OL123W")
     hardcover_book = Book.new(title: "Hardcover Book", book_type: :ebook, hardcover_id: "789")
+    malformed_hardcover_book = Book.new(title: "Malformed Hardcover Book", book_type: :ebook, hardcover_id: "789/unsafe")
+    missing_source_book = Book.new(title: "Missing Source Book", book_type: :ebook)
 
     assert_equal "Google Books", google_book.metadata_source_name
     assert_equal "https://books.google.com/books?id=abc123", google_book.metadata_source_url
@@ -142,7 +144,9 @@ class BookTest < ActiveSupport::TestCase
     assert_equal "Open Library", open_library_book.metadata_source_name
     assert_equal "https://openlibrary.org/works/OL123W", open_library_book.metadata_source_url
     assert_equal "Hardcover", hardcover_book.metadata_source_name
-    assert_equal "https://hardcover.app/books/789", hardcover_book.metadata_source_url
+    assert_equal "https://hardcover.app/id/book/789", hardcover_book.metadata_source_url
+    assert_nil malformed_hardcover_book.metadata_source_url
+    assert_nil missing_source_book.metadata_source_url
   end
 
 

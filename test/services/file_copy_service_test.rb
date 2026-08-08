@@ -13,6 +13,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     @dest_dir = File.join(@tmp_dir, "dest")
     FileUtils.mkdir_p(@dest_dir)
     File.write(@src_file, "test content")
+    @source_snapshot = FileCopyService.snapshot_source_file(@src_file)
   end
 
   teardown do
@@ -660,6 +661,111 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "test content", File.binread(destination)
     assert_equal 1, File.stat(@src_file).nlink
     assert_equal [ "referenced.txt" ], Dir.children(@dest_dir)
+  end
+
+  test "reference_target_matches compares the exact normalized symlink target" do
+    destination = File.join(@dest_dir, "referenced.txt")
+    source_alias = File.join(@tmp_dir, "missing", "..", "source.txt")
+    File.symlink(Pathname(source_alias).expand_path.to_s, destination)
+
+    assert FileCopyService.reference_target_matches?(
+      source_alias, destination, root: @dest_dir, source_snapshot: @source_snapshot
+    )
+
+    [ File.join(@tmp_dir, "other.txt"), "../source.txt" ].each do |target|
+      File.unlink(destination)
+      File.symlink(target, destination)
+      assert_not FileCopyService.reference_target_matches?(
+        @src_file, destination, root: @dest_dir, source_snapshot: @source_snapshot
+      )
+    end
+
+    File.unlink(destination)
+    File.binwrite(destination, "not a symlink")
+    assert_not FileCopyService.reference_target_matches?(
+      @src_file, destination, root: @dest_dir, source_snapshot: @source_snapshot
+    )
+    assert_raises(ArgumentError) do
+      FileCopyService.reference_target_matches?(@src_file, destination, root: @dest_dir)
+    end
+  end
+
+  test "reference_target_matches rejects source replacement and ancestry changes" do
+    destination = File.join(@dest_dir, "snapshot-reference.txt")
+    File.symlink(@src_file, destination)
+    real_readlink = FileCopyService.method(:native_readlinkat)
+    replacing_readlink = lambda do |*arguments|
+      target = real_readlink.call(*arguments)
+      File.rename(@src_file, File.join(@tmp_dir, "original-source.txt"))
+      File.binwrite(@src_file, "replacement")
+      target
+    end
+    FileCopyService.stub(:native_readlinkat, replacing_readlink) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_target_matches?(
+          @src_file, destination, root: @dest_dir, source_snapshot: @source_snapshot
+        )
+      end
+    end
+
+    source_root_path = File.join(@tmp_dir, "authorized-source")
+    source = File.join(source_root_path, "book.mp3")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(source, "authorized")
+    source_root = FileCopyService.snapshot_source_root(source_root_path)
+    rooted_destination = File.join(@dest_dir, "root-reference.txt")
+    File.symlink(source, rooted_destination)
+    File.rename(source_root_path, File.join(@tmp_dir, "displaced-source"))
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(source, "replacement")
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.reference_target_matches?(
+        source, rooted_destination, root: @dest_dir, source_root: source_root
+      )
+    end
+  end
+
+  test "reference_target_matches fails closed for destination and filesystem races" do
+    outside = File.join(@tmp_dir, "outside-reference.txt")
+    File.symlink(@src_file, outside)
+    assert_raises(FileCopyService::UnsafePathError) do
+      FileCopyService.reference_target_matches?(
+        @src_file, outside, root: @dest_dir, source_snapshot: @source_snapshot
+      )
+    end
+    assert_raises(Errno::ENOENT) do
+      FileCopyService.reference_target_matches?(
+        @src_file, File.join(@dest_dir, "missing"), root: @dest_dir, source_snapshot: @source_snapshot
+      )
+    end
+
+    nested = File.join(@dest_dir, "nested")
+    displaced = File.join(@dest_dir, "displaced")
+    destination = File.join(nested, "referenced.txt")
+    FileUtils.mkdir_p(nested)
+    File.symlink(@src_file, destination)
+    real_readlink = FileCopyService.method(:native_readlinkat)
+    replacing_readlink = lambda do |*arguments|
+      target = real_readlink.call(*arguments)
+      File.rename(nested, displaced)
+      FileUtils.mkdir_p(nested)
+      target
+    end
+    FileCopyService.stub(:native_readlinkat, replacing_readlink) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_target_matches?(
+          @src_file, destination, root: @dest_dir, source_snapshot: @source_snapshot
+        )
+      end
+    end
+    FileCopyService.stub(:native_readlinkat, ->(*) { raise Errno::ESTALE }) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_target_matches?(
+          @src_file, File.join(displaced, "referenced.txt"),
+          root: @dest_dir, source_snapshot: @source_snapshot
+        )
+      end
+    end
   end
 
   test "reference_noreplace never overwrites an occupied destination" do

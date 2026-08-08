@@ -1,3 +1,42 @@
+<%
+  total_results = @search_total_results.to_i
+  current_page = @search_page.to_i.clamp(1, SearchResultSnapshot::MAX_PAGES)
+  page_count = @search_page_count.to_i
+  complete = @search_complete == true
+  status = if @error.present?
+    @error
+  elsif @search_loading
+    total_results.positive? ? "Found #{total_results} results so far. Still searching." : "Searching metadata providers."
+  elsif total_results.zero?
+    "No results found."
+  else
+    "Page #{current_page} of #{page_count} loaded. #{total_results} total results."
+  end
+  preload_page = current_page + 1 if complete && @search_has_next && @search_snapshot_id.present?
+%>
+
+<div
+  data-search-state
+  data-search-query="<%= @query %>"
+  data-search-content-kind="<%= @content_kind %>"
+  data-search-page="<%= current_page %>"
+  data-search-page-count="<%= page_count %>"
+  data-search-has-next="<%= @search_has_next == true %>"
+  data-search-complete="<%= complete %>"
+  data-search-snapshot-id="<%= @search_snapshot_id %>"
+  data-search-snapshot-expires-at="<%= @search_snapshot_expires_at %>"
+  data-search-preload-page="<%= preload_page %>"
+  data-search-failed-providers="<%= Array(@search_provider_failure_names).join(",") %>"
+>
+  <h2 id="search-results-heading" tabindex="-1" class="mb-4 text-xl font-semibold text-white focus:outline-none">Search results</h2>
+  <p class="sr-only" role="status" aria-live="polite" aria-atomic="true"><%= status %></p>
+
+  <% if @error.blank? && complete && @search_provider_failure_names.present? %>
+    <p class="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+      Some metadata providers could not be reached: <%= @search_provider_failure_names.to_sentence %>.
+    </p>
+  <% end %>
+
 <% if @error.present? %>
   <div class="bg-red-500/10 border border-red-500/20 rounded-lg p-4 text-red-400">
     <%= @error %>
@@ -24,7 +63,7 @@
 <% else %>
   <div class="mb-6 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
     <div>
-      <p class="text-sm text-gray-500"><%= @results.size %> result<%= @results.size == 1 ? '' : 's' %> for "<span class="font-medium text-gray-300"><%= @query %></span>"</p>
+      <p class="text-sm text-gray-500"><%= total_results %> result<%= total_results == 1 ? '' : 's' %> for "<span class="font-medium text-gray-300"><%= @query %></span>"</p>
       <% if @search_loading && @search_pending_provider_names.present? %>
         <p class="mt-1 text-xs text-gray-600">Still checking <%= @search_pending_provider_names.to_sentence %></p>
       <% end %>
@@ -51,3 +90,26 @@
     <% end %>
   </div>
 <% end %>
+
+<% if total_results.positive? && (page_count > 1 || current_page > 1) %>
+  <nav class="mt-8 flex items-center justify-center gap-2" aria-label="Search result pages">
+    <% if complete && current_page > 1 %>
+      <%= link_to "Previous", search_results_path(q: @query, content_kind: @content_kind, page: current_page - 1),
+        class: "inline-flex min-h-11 items-center justify-center rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm font-medium text-gray-200 hover:border-gray-500 hover:text-white",
+        data: { action: "click->search#navigate", search_page: current_page - 1 } %>
+    <% else %>
+      <span class="inline-flex min-h-11 items-center justify-center rounded-lg border border-gray-800 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-600" aria-disabled="true">Previous</span>
+    <% end %>
+
+    <span class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white" aria-current="page" aria-label="Page <%= current_page %>"><%= current_page %></span>
+
+    <% if complete && @search_has_next %>
+      <%= link_to "Next", search_results_path(q: @query, content_kind: @content_kind, page: current_page + 1),
+        class: "inline-flex min-h-11 items-center justify-center rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm font-medium text-gray-200 hover:border-gray-500 hover:text-white",
+        data: { action: "click->search#navigate", search_page: current_page + 1 } %>
+    <% else %>
+      <span class="inline-flex min-h-11 items-center justify-center rounded-lg border border-gray-800 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-600" aria-disabled="true"><%= @search_loading ? "Loading" : "Next" %></span>
+    <% end %>
+  </nav>
+<% end %>
+</div>

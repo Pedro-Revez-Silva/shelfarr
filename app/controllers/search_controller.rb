@@ -4,39 +4,64 @@ class SearchController < ApplicationController
   include ActionController::Live
 
   def index
-    @query = params[:q]
+    @live_script_name = request.script_name.presence
+    @query = params[:q].to_s.strip
     @content_kind = normalized_content_kind(params[:content_kind])
+    @search_page = SearchResultSnapshot.normalize_page(params[:page])
+    @results = []
+    @error = nil
+    @search_loading = @query.length >= 2
+    @search_total_results = 0
+    @search_page_count = 0
+    @search_has_next = false
+    @search_complete = !@search_loading
+    @search_initial_search = @search_loading
+    @search_provider_failure_names = []
+    @audiobookshelf_matches = []
+    @existing_books_lookup = {}
   end
 
   def results
+    @live_script_name = request.script_name.presence
     @query = params[:q].to_s.strip
     @content_kind = normalized_content_kind(params[:content_kind])
+    return head :not_found if request.format.symbol == :html && invalid_explicit_search_page?
 
+    @search_page = SearchResultSnapshot.normalize_page(params[:page])
+    requested_page = @search_page
+    @search_initial_search = false
+    private_search_response!
+
+    aggregate_results = []
+    error = nil
     if @query.blank?
-      @results = []
-      @error = nil
-      @audiobookshelf_matches = []
-      @existing_books_lookup = {}
+      aggregate_results = []
     else
       begin
-        @results = search_metadata(@query)
-        @audiobookshelf_matches = audiobookshelf_matches_for(@results)
-        @existing_books_lookup = existing_books_lookup_for(@results)
-        @error = nil
+        aggregate_results = search_metadata(@query)
       rescue HardcoverClient::ConnectionError, GoogleBooksClient::ConnectionError, OpenLibraryClient::ConnectionError, ComicVineClient::ConnectionError => e
-        @results = []
-        @audiobookshelf_matches = []
-        @existing_books_lookup = {}
-        @error = "Unable to connect to metadata service. Please try again later."
+        error = "Unable to connect to metadata service. Please try again later."
         Rails.logger.error("Metadata service connection error: #{e.message}")
       rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, ComicVineClient::Error, MetadataService::Error => e
-        @results = []
-        @audiobookshelf_matches = []
-        @existing_books_lookup = {}
-        @error = "Search failed. Please try again."
+        error = "Search failed. Please try again."
         Rails.logger.error("Metadata service error: #{e.message}")
       end
     end
+
+    assign_search_results(
+      results: aggregate_results,
+      loading: false,
+      pending_providers: [],
+      completed_providers: [],
+      failed_providers: [],
+      provider_count: nil,
+      page: @search_page,
+      snapshot_id: nil,
+      snapshot_expires_at: nil,
+      error: error
+    )
+
+    return head :not_found if request.format.symbol == :html && error.nil? && @search_page != requested_page
 
     respond_to do |format|
       format.turbo_stream
@@ -50,60 +75,148 @@ class SearchController < ApplicationController
     @live_script_name = request.script_name.presence
     @query = params[:q].to_s.strip
     @content_kind = normalized_content_kind(params[:content_kind])
+    @search_page = SearchResultSnapshot.normalize_page(params[:page])
 
     response.headers["Content-Type"] = "text/vnd.turbo-stream.html; charset=utf-8"
-    response.headers["Cache-Control"] = "no-cache"
+    private_search_response!
     response.headers["X-Accel-Buffering"] = "no"
 
     if @query.blank?
-      write_search_results_stream(results: [], loading: false)
+      write_search_results_stream(results: [], loading: false, page: @search_page)
       return
     end
 
     providers = MetadataService.enabled_metadata_providers(content_kind: @content_kind)
     if providers.empty?
-      write_search_results_stream(results: [], loading: false)
+      write_search_results_stream(results: [], loading: false, page: @search_page)
       return
     end
 
     query = @query
     results_by_provider = {}
     completed_providers = []
+    failed_providers = []
+    snapshot_id = SearchResultSnapshot.create(
+      user: Current.user,
+      query: query,
+      content_kind: @content_kind,
+      provider_count: providers.size
+    )
+    snapshot_expires_at = nil
 
     write_search_results_stream(
       results: [],
       loading: true,
       pending_providers: providers,
-      completed_providers: completed_providers
+      completed_providers: completed_providers,
+      page: @search_page,
+      snapshot_id: snapshot_id,
+      snapshot_expires_at: snapshot_expires_at,
+      provider_count: providers.size
     )
 
-    each_provider_search(query) do |provider, results|
+    each_provider_search(query) do |provider, results, failed|
       completed_providers << provider
+      failed_providers << provider if failed
       results_by_provider[provider] = results
 
       candidates = MetadataService.aggregate_provider_results(
         MetadataService.merge_provider_results(results_by_provider),
+        limit: SearchResultSnapshot::MAX_RESULTS,
         content_kind: @content_kind
       )
       pending_providers = providers - completed_providers
+      complete = pending_providers.empty?
+      error = provider_failure_error(candidates, failed_providers, providers, complete: complete)
+
+      if snapshot_id
+        snapshot = SearchResultSnapshot.write(
+          user: Current.user,
+          id: snapshot_id,
+          query: query,
+          content_kind: @content_kind,
+          results: candidates,
+          complete: complete,
+          failed_providers: failed_providers,
+          provider_count: providers.size
+        )
+        if snapshot
+          candidates = snapshot.results
+          snapshot_expires_at = snapshot.expires_at
+        else
+          snapshot_id = nil
+          snapshot_expires_at = nil
+        end
+      end
 
       write_search_results_stream(
         results: candidates,
-        loading: pending_providers.any?,
+        loading: !complete,
         pending_providers: pending_providers,
-        completed_providers: completed_providers
+        completed_providers: completed_providers,
+        failed_providers: failed_providers,
+        provider_count: providers.size,
+        page: @search_page,
+        snapshot_id: snapshot_id,
+        snapshot_expires_at: snapshot_expires_at,
+        error: error
       )
     end
   rescue IOError, ActionController::Live::ClientDisconnected
     Rails.logger.info("Search results stream disconnected")
   rescue HardcoverClient::ConnectionError, GoogleBooksClient::ConnectionError, OpenLibraryClient::ConnectionError, ComicVineClient::ConnectionError => e
     Rails.logger.error("Metadata service connection error: #{e.message}")
-    write_search_results_stream(results: [], error: "Unable to connect to metadata service. Please try again later.", loading: false)
+    write_search_results_stream(
+      results: [],
+      error: "Unable to connect to metadata service. Please try again later.",
+      loading: false,
+      page: @search_page
+    )
   rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, ComicVineClient::Error, MetadataService::Error => e
     Rails.logger.error("Metadata service error: #{e.message}")
-    write_search_results_stream(results: [], error: "Search failed. Please try again.", loading: false)
+    write_search_results_stream(results: [], error: "Search failed. Please try again.", loading: false, page: @search_page)
+  rescue StandardError => e
+    Rails.logger.error("Search stream failed: #{e.class}: #{e.message}")
+    write_search_results_stream(results: [], error: "Search failed. Please try again.", loading: false, page: @search_page)
   ensure
     response.stream.close
+  end
+
+  def snapshot_results
+    @live_script_name = request.script_name.presence
+    @query = params[:q].to_s.strip
+    @content_kind = normalized_content_kind(params[:content_kind])
+    @search_page = SearchResultSnapshot.normalize_page(params[:page])
+    private_search_response!
+
+    snapshot = SearchResultSnapshot.fetch(
+      user: Current.user,
+      id: params[:snapshot_id],
+      query: @query,
+      content_kind: @content_kind
+    )
+    return head :not_found unless snapshot&.complete
+
+    error = provider_failure_error(
+      snapshot.results,
+      snapshot.failed_providers,
+      Array.new(snapshot.provider_count),
+      complete: true
+    )
+    assign_search_results(
+      results: snapshot.results,
+      loading: false,
+      pending_providers: [],
+      completed_providers: [],
+      failed_providers: snapshot.failed_providers,
+      provider_count: snapshot.provider_count,
+      page: @search_page,
+      snapshot_id: snapshot.id,
+      snapshot_expires_at: snapshot.expires_at,
+      error: error
+    )
+
+    render template: "search/results", formats: [ :turbo_stream ], layout: false
   end
 
   def details
@@ -183,33 +296,81 @@ class SearchController < ApplicationController
     true
   end
 
-  def write_search_results_stream(results:, loading:, pending_providers: [], completed_providers: [], error: nil)
+  def write_search_results_stream(results:, loading:, pending_providers: [], completed_providers: [],
+    failed_providers: [], provider_count: nil, page: 1, snapshot_id: nil, snapshot_expires_at: nil, error: nil)
     response.stream.write(
       render_search_results_stream(
         results: results,
         loading: loading,
         pending_providers: pending_providers,
         completed_providers: completed_providers,
+        failed_providers: failed_providers,
+        provider_count: provider_count,
+        page: page,
+        snapshot_id: snapshot_id,
+        snapshot_expires_at: snapshot_expires_at,
         error: error
       )
     )
   end
 
-  def render_search_results_stream(results:, loading:, pending_providers:, completed_providers:, error:)
-    @results = results
-    @error = error
-    @search_loading = loading
-    @search_pending_provider_names = provider_names(pending_providers)
-    @search_completed_provider_names = provider_names(completed_providers)
-    enrichment = stream_enrichment_for(results, loading: loading)
-    @audiobookshelf_matches = enrichment[:audiobookshelf_matches]
-    @existing_books_lookup = enrichment[:existing_books_lookup]
+  def render_search_results_stream(results:, loading:, pending_providers:, completed_providers:,
+    failed_providers: [], provider_count: nil, page: 1, snapshot_id: nil, snapshot_expires_at: nil, error:)
+    assign_search_results(
+      results: results,
+      loading: loading,
+      pending_providers: pending_providers,
+      completed_providers: completed_providers,
+      failed_providers: failed_providers,
+      provider_count: provider_count,
+      page: page,
+      snapshot_id: snapshot_id,
+      snapshot_expires_at: snapshot_expires_at,
+      error: error
+    )
 
     render_to_string(
       template: "search/results",
       formats: [ :turbo_stream ],
       layout: false
     )
+  end
+
+  def assign_search_results(results:, loading:, pending_providers:, completed_providers:,
+    failed_providers:, provider_count:, page:, snapshot_id:, snapshot_expires_at:, error:)
+    requested_page = SearchResultSnapshot.normalize_page(page)
+    @search_total_results = results.size
+    @search_page_count = (@search_total_results.to_f / SearchResultSnapshot::PAGE_SIZE).ceil
+    @search_page = if !loading && error.blank?
+      @search_page_count.positive? ? [ requested_page, @search_page_count ].min : 1
+    else
+      requested_page
+    end
+    @search_has_next = @search_page < @search_page_count
+    @results = results.slice((@search_page - 1) * SearchResultSnapshot::PAGE_SIZE, SearchResultSnapshot::PAGE_SIZE) || []
+    @error = error
+    @search_loading = loading
+    @search_complete = !loading
+    @search_snapshot_id = snapshot_id
+    @search_snapshot_expires_at = snapshot_expires_at
+    @search_provider_count = provider_count.to_i
+    @search_pending_provider_names = provider_names(pending_providers)
+    @search_completed_provider_names = provider_names(completed_providers)
+    @search_provider_failure_names = provider_names(failed_providers)
+    enrichment = stream_enrichment_for(@results, loading: loading)
+    @audiobookshelf_matches = enrichment[:audiobookshelf_matches]
+    @existing_books_lookup = enrichment[:existing_books_lookup]
+  end
+
+  def provider_failure_error(results, failed_providers, providers, complete:)
+    return unless complete && results.empty? && providers.any? && failed_providers.size >= providers.size
+
+    "Unable to connect to metadata service. Please try again later."
+  end
+
+  def private_search_response!
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Pragma"] = "no-cache"
   end
 
   def audiobookshelf_matches_for(results)
@@ -247,21 +408,39 @@ class SearchController < ApplicationController
   end
 
   def search_metadata(query)
-    return MetadataService.search(query, content_kind: @content_kind) if @content_kind.present?
+    if @content_kind.present?
+      return MetadataService.search(
+        query,
+        content_kind: @content_kind,
+        aggregate_limit: SearchResultSnapshot::MAX_RESULTS
+      )
+    end
 
-    MetadataService.search(query)
+    MetadataService.search(query, aggregate_limit: SearchResultSnapshot::MAX_RESULTS)
   end
 
   def each_provider_search(query)
     if @content_kind.present?
-      MetadataService.each_provider_search(query, content_kind: @content_kind) { |provider, results| yield provider, results }
+      MetadataService.each_provider_search(query, content_kind: @content_kind) do |provider, results, failed|
+        yield provider, results, failed
+      end
     else
-      MetadataService.each_provider_search(query) { |provider, results| yield provider, results }
+      MetadataService.each_provider_search(query) { |provider, results, failed| yield provider, results, failed }
     end
   end
 
   def normalized_content_kind(value)
     ContentKinds.normalize(value, default: nil)
+  end
+
+  def invalid_explicit_search_page?
+    return false unless params.key?(:page)
+
+    value = params[:page].to_s
+    return true unless value.match?(/\A[1-9]\d*\z/)
+
+    page = Integer(value, exception: false)
+    !page&.between?(1, SearchResultSnapshot::MAX_PAGES)
   end
 
   def enrich_details_from_source

@@ -85,7 +85,7 @@ class Book < ApplicationRecord
 
     case source
     when "hardcover"
-      "https://hardcover.app/books/#{source_id}"
+      MetadataSources.hardcover_book_url(source_id)
     when "google_books"
       "https://books.google.com/books?id=#{source_id}"
     when "openlibrary"

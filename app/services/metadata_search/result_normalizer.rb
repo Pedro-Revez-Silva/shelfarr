@@ -39,7 +39,7 @@ module MetadataSearch
           series_position: result.series_position,
           has_ebook: result.has_ebook,
           has_audiobook: result.has_audiobook,
-          source_url: "https://hardcover.app/books/#{result.id}",
+          source_url: MetadataSources.hardcover_book_url(result.id),
           raw_payload: nil,
           content_kind: classification.content_kind,
           resource_kind: "work",
