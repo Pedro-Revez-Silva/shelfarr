@@ -97,9 +97,10 @@ class API::V1::SearchControllerTest < ActionDispatch::IntegrationTest
       content_kind: "manga"
     )
 
-    MetadataService.stub(:search, ->(_query, limit:, content_kind:) {
+    MetadataService.stub(:search, ->(_query, limit:, content_kind:, **options) {
       assert_equal "graphic", content_kind
       assert_equal 10, limit
+      assert_empty options
       [ result ]
     }) do
       get api_v1_search_path,

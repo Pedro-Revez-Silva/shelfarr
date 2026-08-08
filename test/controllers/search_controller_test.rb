@@ -55,8 +55,9 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "results normalizes legacy graphic filters before searching" do
-    MetadataService.stub(:search, ->(_query, content_kind:) {
+    MetadataService.stub(:search, ->(_query, content_kind:, aggregate_limit:) {
       assert_equal "graphic", content_kind
+      assert_equal SearchResultSnapshot::MAX_RESULTS, aggregate_limit
       []
     }) do
       get search_results_path, params: { q: "akira", content_kind: "comic" }
@@ -162,7 +163,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "results renders connection error message" do
-    MetadataService.stub(:search, ->(_) { raise GoogleBooksClient::ConnectionError, "network down" }) do
+    MetadataService.stub(:search, ->(*, **) { raise GoogleBooksClient::ConnectionError, "network down" }) do
       get search_results_path, params: { q: "fiction" }
     end
 
@@ -171,7 +172,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "results renders generic metadata error message" do
-    MetadataService.stub(:search, ->(_) { raise GoogleBooksClient::Error, "api down" }) do
+    MetadataService.stub(:search, ->(*, **) { raise GoogleBooksClient::Error, "api down" }) do
       get search_results_path, params: { q: "fiction" }
     end
 
@@ -320,7 +321,8 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
       assert_equal "graphic", content_kind
       block.call("openlibrary", [])
     end
-    aggregate = lambda do |_results, content_kind:|
+    aggregate = lambda do |_results, limit:, content_kind:|
+      assert_equal SearchResultSnapshot::MAX_RESULTS, limit
       aggregated_content_kinds << content_kind
       []
     end

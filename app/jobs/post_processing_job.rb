@@ -957,12 +957,11 @@ class PostProcessingJob < ApplicationJob
     loop do
       break unless path_occupied?(candidate)
 
-      if File.symlink?(candidate)
-        if reference_completed_downloads? &&
-            File.readlink(candidate) == Pathname(source).expand_path.to_s
+      if reference_completed_downloads?
+        if reference_target_matches?(source, candidate)
           return [ candidate, true ]
         end
-      elsif same_file_content?(source, candidate)
+      elsif !File.symlink?(candidate) && same_file_content?(source, candidate)
         unless hardlink_completed_downloads?
           return [ candidate, true ]
         end
@@ -1001,10 +1000,19 @@ class PostProcessingJob < ApplicationJob
     )
   end
 
+  def reference_target_matches?(source, destination)
+    FileCopyService.reference_target_matches?(
+      source,
+      destination,
+      root: @import_base_path,
+      source_root: @import_source_root,
+      source_snapshot: @import_source_file_snapshot
+    )
+  end
+
   def verify_imported_destination!(source, destination, require_durable:)
     if reference_completed_downloads?
-      source_path = Pathname(source).expand_path.to_s
-      unless File.lstat(destination).symlink? && File.readlink(destination) == source_path
+      unless reference_target_matches?(source, destination)
         raise Errno::ESTALE, "library reference changed after import"
       end
       return
