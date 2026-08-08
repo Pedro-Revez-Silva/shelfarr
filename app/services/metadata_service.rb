@@ -29,7 +29,7 @@ class MetadataService
     def source_url
       case source.to_s
       when "hardcover"
-        "https://hardcover.app/books/#{source_id}" if source_id.present?
+        MetadataSources.hardcover_book_url(source_id)
       when "google_books"
         "https://books.google.com/books?id=#{source_id}" if source_id.present?
       when "openlibrary"

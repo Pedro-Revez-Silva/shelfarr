@@ -293,6 +293,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
       result = MetadataService.book_details("hardcover:12345")
 
       assert_equal "hardcover", result.source
+      assert_equal "https://hardcover.app/id/book/12345", result.source_url
       assert_equal "Test Book", result.title
       assert_nil result.series_position
     end
@@ -376,8 +377,10 @@ class MetadataServiceTest < ActiveSupport::TestCase
     assert_nil result.cover_id
     assert_equal "1", result.series_position
     assert_equal "Hardcover", result.source_name
-    assert_equal "https://hardcover.app/books/123", result.source_url
+    assert_equal "https://hardcover.app/id/book/123", result.source_url
     assert_equal "Metadata from Hardcover", result.source_attribution
+    assert_nil result.with(source_id: nil).source_url
+    assert_nil result.with(source_id: "123/unsafe").source_url
   end
 
   test "SearchResult exposes source metadata for each provider" do
