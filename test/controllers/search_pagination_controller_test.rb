@@ -236,6 +236,23 @@ class SearchPaginationControllerTest < ActionDispatch::IntegrationTest
     assert_includes response.body, 'data-search-failed-providers="Google Books"'
   end
 
+  test "stream exposes partial provider failures when healthy providers find no results" do
+    provider_search = lambda do |_query, **_options, &block|
+      block.call("openlibrary", [], false)
+      block.call("google_books", [], true)
+    end
+
+    MetadataService.stub(:enabled_metadata_providers, %w[openlibrary google_books]) do
+      MetadataService.stub(:each_provider_search, provider_search) do
+        get search_results_stream_path, params: { q: "missing book" }
+      end
+    end
+
+    assert_response :success
+    assert_includes response.body, "No results found"
+    assert_includes response.body, "Some metadata providers could not be reached: Google Books."
+  end
+
   test "stream renders all-provider failure on the requested page and clears loading state" do
     provider_search = lambda do |_query, **_options, &block|
       block.call("openlibrary", [], true)

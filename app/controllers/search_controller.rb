@@ -10,12 +10,12 @@ class SearchController < ApplicationController
     @search_page = SearchResultSnapshot.normalize_page(params[:page])
     @results = []
     @error = nil
-    @search_loading = @query.present?
+    @search_loading = @query.length >= 2
     @search_total_results = 0
     @search_page_count = 0
     @search_has_next = false
-    @search_complete = false
-    @search_initial_search = @query.present?
+    @search_complete = !@search_loading
+    @search_initial_search = @search_loading
     @search_provider_failure_names = []
     @audiobookshelf_matches = []
     @existing_books_lookup = {}

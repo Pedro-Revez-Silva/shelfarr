@@ -120,6 +120,17 @@ class SearchControllerRenderingTest < ActionController::TestCase
     assert_equal({ "q" => "dune", "page" => "2" }, Rack::Utils.parse_query(uri.query))
   end
 
+  test "a direct one-character query is idle instead of permanently loading" do
+    @controller.define_singleton_method(:require_authentication) { true }
+    get :index, params: { q: "a", page: 1 }
+
+    assert_response :success
+    assert_select "[data-controller='search'][data-search-initial-search-value='false']"
+    assert_select "#search-results[aria-busy='false']"
+    assert_select "[data-search-state][data-search-complete='true']"
+    assert_select "p", text: "No results found"
+  end
+
   test "audiobookshelf_matches_for returns placeholders without library items" do
     LibraryItem.destroy_all
 
