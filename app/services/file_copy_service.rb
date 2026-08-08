@@ -227,6 +227,38 @@ class FileCopyService
       dest.to_s
     end
 
+    def reference_target_matches?(source, destination, root:, source_root: nil, source_snapshot: nil)
+      if source_root.nil? == source_snapshot.nil?
+        raise ArgumentError, "reference source requires exactly one authorization snapshot"
+      end
+
+      source_path = Pathname(source).expand_path
+      if source_snapshot && source_path != source_snapshot.path
+        raise UnsafePathError, "reference source does not match its authorization snapshot"
+      end
+      source_operation = if source_snapshot
+        ->(&operation) { with_pinned_source_snapshot(source_snapshot, &operation) }
+      else
+        ->(&operation) { with_pinned_source(source_path, source_root: source_root, &operation) }
+      end
+
+      result = nil
+      source_operation.call do |pinned_source, *_source_path|
+        raise Errno::EINVAL, "source is not a regular file" unless pinned_source.stat.file?
+
+        with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
+          matches = begin
+            native_readlinkat(parent.fileno, basename) == source_path.to_s
+          rescue Errno::EINVAL
+            false
+          end
+          validate_current_directory_identity!(parent_path, parent)
+          result = matches
+        end
+      end
+      result
+    end
+
     # Unlink only when the name still points at the target we published.
     def remove_published_reference_if_ours!(parent, basename, expected_target:)
       current = native_readlinkat(parent.fileno, basename)
