@@ -359,6 +359,42 @@ class DownloadJobTest < ActiveJob::TestCase
     refute_includes @request.issue_description, "/private/library"
   end
 
+  test "does not blocklist on a wrapped direct download library configuration error" do
+    @download.update!(status: :downloading, download_type: "direct")
+    permissions_error = FileCopyService::UnsafeFilePermissionsError.new(
+      "filesystem did not preserve safe directory permissions",
+      path: "/private/library/.shelfarr-staging",
+      root: "/private/library"
+    )
+    error = FileCopyService.stub(:secure_private_directory!, ->(*) { raise permissions_error }) do
+      assert_raises(DirectDownloadFileService::Error) do
+        DirectDownloadFileService.staging_parent(root: "/private/library")
+      end
+    end
+
+    DownloadJob.new.send(
+      :handle_direct_download_failure,
+      @download,
+      error,
+      message: "Direct download failed at /private/library/.shelfarr-staging"
+    )
+
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+    assert_includes @request.issue_description, "configured library storage"
+    refute_includes @request.issue_description, "/private/library"
+  end
+
+  test "does not classify a wrapped direct network permission error as library configuration" do
+    error = begin
+      raise DownloadJob::DirectDownloadError, "connection denied", cause: Errno::EACCES.new("connect")
+    rescue DownloadJob::DirectDownloadError => wrapped_error
+      wrapped_error
+    end
+
+    assert_not DownloadJob.new.send(:direct_library_configuration_error?, error)
+  end
+
   test "does not blocklist on LibriVox direct audiobook transient download error" do
     Dir.mktmpdir do |dir|
       setup_librivox_download(output_path: dir)

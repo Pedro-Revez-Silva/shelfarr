@@ -188,6 +188,19 @@ class DownloadJob < ApplicationJob
   end
 
   def direct_library_configuration_error?(error)
+    return true if direct_library_configuration_exception?(error)
+    return false unless error.is_a?(DirectDownloadFileService::Error)
+
+    8.times do
+      error = error.cause
+      return false unless error
+      return true if direct_library_configuration_exception?(error)
+    end
+
+    false
+  end
+
+  def direct_library_configuration_exception?(error)
     case error
     when FileCopyService::DirectoryNotWritableError,
          FileCopyService::UnsafeFilePermissionsError,
