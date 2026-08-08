@@ -275,6 +275,82 @@ class MetadataServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "search_provider keeps array callers while exposing skipped outcomes" do
+    SettingsService.set(:metadata_source, "google_books")
+    MetadataProviderStatus.create!(
+      provider: "google_books",
+      status: "rate_limited",
+      rate_limited_until: 10.minutes.from_now
+    )
+
+    assert_equal [], MetadataService.search_provider("google_books", "dune")
+
+    outcome = MetadataService.search_provider("google_books", "dune", with_outcome: true)
+    assert_instance_of MetadataService::ProviderSearchOutcome, outcome
+    assert_empty outcome.results
+    assert outcome.failed
+    assert outcome.skipped
+  end
+
+  test "concurrent searches use their invocation-local provider outcomes" do
+    started = Queue.new
+    releases = { "successful" => Queue.new, "failed" => Queue.new }
+    outcomes = Queue.new
+    provider_search = lambda do |_provider, query, **_options|
+      started << query
+      releases.fetch(query).pop
+      MetadataService::ProviderSearchOutcome.new(
+        results: query == "successful" ? [ query ] : [],
+        failed: query == "failed",
+        skipped: false
+      )
+    end
+
+    SettingsService.stub(:enabled_metadata_providers, %w[openlibrary]) do
+      MetadataService.stub(:search_provider, provider_search) do
+        threads = %w[successful failed].map do |query|
+          Thread.new do
+            MetadataService.each_provider_search(query) do |_provider, results, failed|
+              outcomes << [ query, results, failed ]
+            end
+          end
+        end
+
+        assert_equal %w[failed successful], 2.times.map { started.pop }.sort
+        releases["failed"] << true
+        releases["successful"] << true
+        threads.each(&:join)
+      end
+    end
+
+    assert_equal(
+      [ [ "failed", [], true ], [ "successful", [ "successful" ], false ] ],
+      2.times.map { outcomes.pop }.sort_by(&:first)
+    )
+  end
+
+  test "aggregate-only limits do not change configured provider request limits" do
+    searched = nil
+    aggregate = nil
+    concurrent_search = lambda do |providers, query, limit:, content_kind:|
+      searched = { providers: providers, query: query, limit: limit, content_kind: content_kind }
+      []
+    end
+    aggregate_results = lambda do |results, limit:, content_kind:|
+      aggregate = { results: results, limit: limit, content_kind: content_kind }
+      []
+    end
+
+    MetadataService.stub(:search_providers_concurrently, concurrent_search) do
+      MetadataService.stub(:aggregate_provider_results, aggregate_results) do
+        MetadataService.search("dune", aggregate_limit: SearchResultSnapshot::MAX_RESULTS)
+      end
+    end
+
+    assert_nil searched[:limit]
+    assert_equal SearchResultSnapshot::MAX_RESULTS, aggregate[:limit]
+  end
+
   test "book_details handles hardcover work_id" do
     SettingsService.set(:hardcover_api_token, "test_token")
 
@@ -487,6 +563,34 @@ class MetadataServiceTest < ActiveSupport::TestCase
     assert_equal 1, results.size
     assert_equal "High Confidence", results.first.title
     assert_equal 90, results.first.confidence
+  end
+
+  test "bounded web aggregation remains untruncated until pagination after deduplication" do
+    SettingsService.set(:metadata_provider_priority, "openlibrary,google_books")
+    provider_results = 22.times.map do |index|
+      metadata_provider_result(
+        source: "openlibrary",
+        source_id: "ol-#{index}",
+        title: "Result #{index}",
+        year: 2000 + index
+      )
+    end
+    provider_results << metadata_provider_result(
+      source: "google_books",
+      source_id: "gb-0",
+      title: "Result 0",
+      year: 2000
+    )
+
+    results = MetadataService.aggregate_provider_results(
+      provider_results,
+      limit: SearchResultSnapshot::MAX_RESULTS
+    )
+
+    assert_equal 22, results.size
+    assert_equal 2, results.find { |result| result.title == "Result 0" }.sources.size
+    assert_equal 20, results.first(SearchResultSnapshot::PAGE_SIZE).size
+    assert_equal 2, results.drop(SearchResultSnapshot::PAGE_SIZE).size
   end
 
   test "requested content kind does not prune enabled metadata providers" do

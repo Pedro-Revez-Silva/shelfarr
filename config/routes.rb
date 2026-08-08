@@ -20,6 +20,7 @@ Rails.application.routes.draw do
   get "search/modal/close", to: "search#close_modal", as: :search_modal_close
   get "search/results", to: "search#results"
   get "search/results/stream", to: "search#stream_results"
+  get "search/results/snapshot", to: "search#snapshot_results"
 
   # Library
   resources :library, only: [ :index, :show, :destroy ] do

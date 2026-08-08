@@ -5,6 +5,8 @@
 class MetadataService
   class Error < StandardError; end
 
+  ProviderSearchOutcome = Data.define(:results, :failed, :skipped)
+
   SearchResult = Data.define(
     :source, :source_id, :title, :author, :description, :year,
     :cover_url, :has_audiobook, :has_ebook, :series_name, :series_position
@@ -49,13 +51,13 @@ class MetadataService
   class << self
     # Search for books across enabled metadata sources and aggregate duplicates
     # into Shelfarr candidates.
-    def search(query, limit: nil, content_kind: nil)
+    def search(query, limit: nil, content_kind: nil, aggregate_limit: nil)
       content_kind = ContentKinds.normalize(content_kind, default: nil)
       providers = enabled_metadata_providers(content_kind: content_kind)
       Rails.logger.info "[MetadataService] Searching '#{query}' using providers: #{providers.join(', ')}"
 
       provider_results = search_providers_concurrently(providers, query, limit: limit, content_kind: content_kind)
-      aggregate_provider_results(provider_results, limit: limit, content_kind: content_kind)
+      aggregate_provider_results(provider_results, limit: aggregate_limit || limit, content_kind: content_kind)
     end
 
     def each_provider_search(query, limit: nil, content_kind: nil)
@@ -68,12 +70,20 @@ class MetadataService
         Thread.new do
           Rails.application.executor.wrap do
             ActiveRecord::Base.connection_pool.with_connection do
-              queue << [ provider, search_provider(provider, query, limit: limit, content_kind: content_kind) ]
+              outcome = search_provider(
+                provider,
+                query,
+                limit: limit,
+                content_kind: content_kind,
+                with_outcome: true
+              )
+              outcome = ProviderSearchOutcome.new(results: Array(outcome), failed: false, skipped: false) unless outcome.is_a?(ProviderSearchOutcome)
+              queue << [ provider, outcome.results, outcome.failed ]
             end
           end
         rescue StandardError => e
           Rails.logger.warn "[MetadataService] #{provider} search failed: #{e.message}"
-          queue << [ provider, [] ]
+          queue << [ provider, [], true ]
         end
       end
 
@@ -84,12 +94,13 @@ class MetadataService
       threads&.each(&:join)
     end
 
-    def search_provider(provider, query, limit: nil, content_kind: nil)
+    def search_provider(provider, query, limit: nil, content_kind: nil, with_outcome: false)
       content_kind = ContentKinds.normalize(content_kind, default: nil)
       status = MetadataProviderStatus.for_provider(provider)
       unless status.available?
         Rails.logger.info "[MetadataService] Skipping #{provider}: #{status.status}"
-        return []
+        outcome = ProviderSearchOutcome.new(results: [], failed: true, skipped: true)
+        return with_outcome ? outcome : outcome.results
       end
 
       results = if content_kind.present?
@@ -98,11 +109,13 @@ class MetadataService
         send("search_#{provider}", query, provider_limit(provider, limit))
       end
       status.record_success!
-      results
+      outcome = ProviderSearchOutcome.new(results: results, failed: false, skipped: false)
+      with_outcome ? outcome : outcome.results
     rescue *provider_errors(provider) => e
       status&.record_failure!(e)
       Rails.logger.warn "[MetadataService] #{provider} search failed: #{e.message}"
-      []
+      outcome = ProviderSearchOutcome.new(results: [], failed: true, skipped: false)
+      with_outcome ? outcome : outcome.results
     end
 
     def aggregate_provider_results(provider_results, limit: nil, content_kind: nil)
