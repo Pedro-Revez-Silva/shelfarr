@@ -541,6 +541,62 @@ class MetadataServiceTest < ActiveSupport::TestCase
     assert results.all? { |result| result.content_kind == "graphic" }
   end
 
+  test "strong graphic results remain when a slower provider fills the result limit with fallbacks" do
+    SettingsService.set(:metadata_provider_priority, "openlibrary,comic_vine")
+    comic_results = 10.times.map do |index|
+      metadata_provider_result(
+        source: "comic_vine",
+        source_id: "comic-#{index}",
+        title: "Low Comic #{index}",
+        content_kind: "graphic",
+        classification_confidence: 100
+      )
+    end
+    fallback_results = 20.times.map do |index|
+      metadata_provider_result(
+        source: "openlibrary",
+        source_id: "fallback-#{index}",
+        title: "Low Fallback #{index}",
+        content_kind: "graphic",
+        classification_confidence: 20
+      )
+    end
+
+    partial_results = MetadataService.aggregate_provider_results(comic_results, content_kind: "graphic")
+    final_results = MetadataService.aggregate_provider_results(
+      fallback_results + comic_results,
+      content_kind: "graphic"
+    )
+
+    assert_equal 20, final_results.size
+    assert_empty partial_results.map(&:work_id) - final_results.map(&:work_id)
+    assert_equal Array.new(10, "comic_vine"), final_results.first(10).map(&:source)
+  end
+
+  test "provider priority orders strong requested-kind matches regardless of raw classification confidence" do
+    SettingsService.set(:metadata_provider_priority, "google_books,comic_vine")
+    provider_results = [
+      metadata_provider_result(
+        source: "comic_vine",
+        source_id: "definitive-graphic",
+        title: "Definitive Graphic",
+        content_kind: "graphic",
+        classification_confidence: 100
+      ),
+      metadata_provider_result(
+        source: "google_books",
+        source_id: "strong-graphic",
+        title: "Strong Graphic",
+        content_kind: "graphic",
+        classification_confidence: 90
+      )
+    ]
+
+    results = MetadataService.aggregate_provider_results(provider_results, content_kind: "graphic")
+
+    assert_equal %w[google_books comic_vine], results.map(&:source)
+  end
+
   test "search_google_books returns empty array when provider disabled" do
     SettingsService.set(:google_books_enabled, false)
 

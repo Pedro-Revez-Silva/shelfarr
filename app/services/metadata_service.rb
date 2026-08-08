@@ -277,6 +277,8 @@ class MetadataService
       candidates.sort_by do |candidate|
         [
           candidate.content_kind == requested_content_kind ? 0 : 1,
+          requested_content_kind &&
+            candidate.classification_confidence < MetadataSearch::ContentClassifier::STRONG_CONFIDENCE ? 1 : 0,
           priority.index(candidate.source.to_s) || priority.size,
           -candidate.confidence,
           candidate.title.to_s.downcase,

@@ -13,18 +13,21 @@ export default class extends Controller {
   connect() {
     this.timeout = null
     this.currentAbortController = null
-    this.requestSequence = 0
+    this.requestSequence ??= 0
   }
 
   disconnect() {
     if (this.timeout) {
       clearTimeout(this.timeout)
     }
+    this.requestSequence += 1
     this.abortCurrentRequest()
   }
 
   search() {
     const query = this.inputTarget.value.trim()
+    const contentKind = this.currentContentKind
+    const requestId = ++this.requestSequence
 
     // Clear existing timeout
     if (this.timeout) {
@@ -46,17 +49,19 @@ export default class extends Controller {
     }
 
     this.timeout = setTimeout(() => {
-      this.performSearch(query)
+      this.timeout = null
+      this.performSearch(query, contentKind, requestId)
     }, this.debounceValue)
   }
 
-  async performSearch(query) {
+  async performSearch(query, contentKind, requestId) {
+    if (!this.searchStateMatches(requestId, query, contentKind)) return
+
     const params = new URLSearchParams({ q: query })
-    if (this.hasContentKindTarget && this.contentKindTarget.value) {
-      params.set("content_kind", this.contentKindTarget.value)
+    if (contentKind) {
+      params.set("content_kind", contentKind)
     }
     const url = `${this.searchUrl}?${params.toString()}`
-    const requestId = ++this.requestSequence
     const abortController = new AbortController()
 
     this.currentAbortController = abortController
@@ -70,12 +75,12 @@ export default class extends Controller {
         }
       })
 
-      if (response.ok && requestId === this.requestSequence && this.inputTarget.value.trim() === query) {
+      if (response.ok && this.searchStateMatches(requestId, query, contentKind)) {
         if (response.body) {
-          await this.renderStreamingResponse(response, requestId, query)
+          await this.renderStreamingResponse(response, requestId, query, contentKind)
         } else {
           const html = await response.text()
-          this.renderStreamMessage(html, requestId, query)
+          this.renderStreamMessage(html, requestId, query, contentKind)
         }
       }
     } catch (error) {
@@ -103,7 +108,11 @@ export default class extends Controller {
     return this.hasStreamUrlValue ? this.streamUrlValue : this.urlValue
   }
 
-  async renderStreamingResponse(response, requestId, query) {
+  get currentContentKind() {
+    return this.hasContentKindTarget ? this.contentKindTarget.value : ""
+  }
+
+  async renderStreamingResponse(response, requestId, query, contentKind) {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     const closingTag = "</turbo-stream>"
@@ -118,23 +127,29 @@ export default class extends Controller {
         const endIndex = closingIndex + closingTag.length
         const message = buffer.slice(0, endIndex)
         buffer = buffer.slice(endIndex)
-        this.renderStreamMessage(message, requestId, query)
+        this.renderStreamMessage(message, requestId, query, contentKind)
         closingIndex = buffer.indexOf(closingTag)
       }
 
       if (done) {
         if (buffer.trim().length > 0) {
-          this.renderStreamMessage(buffer, requestId, query)
+          this.renderStreamMessage(buffer, requestId, query, contentKind)
         }
         break
       }
     }
   }
 
-  renderStreamMessage(html, requestId, query) {
-    if (requestId === this.requestSequence && this.inputTarget.value.trim() === query) {
+  renderStreamMessage(html, requestId, query, contentKind) {
+    if (this.searchStateMatches(requestId, query, contentKind)) {
       Turbo.renderStreamMessage(html)
     }
+  }
+
+  searchStateMatches(requestId, query, contentKind) {
+    return requestId === this.requestSequence &&
+      this.inputTarget.value.trim() === query &&
+      this.currentContentKind === contentKind
   }
 
   showSpinner() {
