@@ -74,8 +74,33 @@ jobs:
         working-directory: services/libation_companion
         run: ./tests/container-smoke.sh
 
+  filesystem-contracts:
+    needs: [quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y cifs-utils libvips
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
+        with:
+          bundler-cache: true
+
+      - name: Prepare test database
+        env:
+          RAILS_ENV: test
+        run: bin/rails db:test:prepare
+
+      - name: Run CIFS filesystem contracts
+        run: test/filesystem_contracts/cifs-smoke.sh
+
   container:
-    needs: [quality, companion]
+    needs: [quality, companion, filesystem-contracts]
     runs-on: ubuntu-latest
 
     steps:

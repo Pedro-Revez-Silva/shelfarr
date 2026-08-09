@@ -435,90 +435,27 @@ class OwnedMediaImportFileService
     end
 
     def class_native_openat(directory_fd, basename, flags:, mode: 0)
-      Fiddle.last_error = 0
-      descriptor = if (flags & File::CREAT).positive?
-        function = class_native_function(
-          :openat_create,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VARIADIC ],
-          symbol: :openat
-        )
-        function.call(directory_fd, basename, flags, Fiddle::TYPE_INT, mode)
-      else
-        function = class_native_function(
-          :openat,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]
-        )
-        function.call(directory_fd, basename, flags)
-      end
-      return descriptor unless descriptor == -1
-
-      raise SystemCallError.new("openat", Fiddle.last_error)
+      FilesystemSyscalls.openat(directory_fd, basename, flags: flags, mode: mode)
     end
 
     def class_native_mkdirat(directory_fd, basename, mode)
-      call_class_native_path_function(
-        class_native_function(:mkdirat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-        directory_fd,
-        basename,
-        mode
-      )
+      FilesystemSyscalls.mkdirat(directory_fd, basename, mode)
     rescue Errno::EEXIST
       nil
     end
 
     def class_native_fchmod(descriptor, mode)
-      Fiddle.last_error = 0
-      result = class_native_function(
-        :fchmod,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_INT ]
-      ).call(descriptor, mode)
-      return if result.zero?
-
-      raise SystemCallError.new("fchmod", Fiddle.last_error)
+      FilesystemSyscalls.fchmod(descriptor, mode)
     end
 
     def class_native_renameat(source_fd, source_basename, destination_fd, destination_basename)
-      call_class_native_path_function(
-        class_native_function(
-          :renameat,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP ]
-        ),
-        source_fd,
-        source_basename,
-        destination_fd,
-        destination_basename
-      )
+      FilesystemSyscalls.renameat(source_fd, source_basename, destination_fd, destination_basename)
     end
 
     def class_native_unlinkat(directory_fd, basename)
-      call_class_native_path_function(
-        class_native_function(:unlinkat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-        directory_fd,
-        basename,
-        0
-      )
+      FilesystemSyscalls.unlinkat(directory_fd, basename)
     rescue Errno::ENOENT
       nil
-    end
-
-    def call_class_native_path_function(function, *arguments)
-      pointers = arguments.map do |argument|
-        argument.is_a?(String) ? Fiddle::Pointer[argument + "\0"] : argument
-      end
-      Fiddle.last_error = 0
-      result = function.call(*pointers)
-      return result unless result == -1
-
-      raise SystemCallError.new("filesystem operation", Fiddle.last_error)
-    end
-
-    def class_native_function(name, arguments, symbol: name)
-      @class_native_functions ||= {}
-      @class_native_functions[[ name, arguments ]] ||= Fiddle::Function.new(
-        Fiddle::Handle::DEFAULT[symbol.to_s],
-        arguments,
-        Fiddle::TYPE_INT
-      )
     end
 
     def same_class_file_identity?(left, right)
@@ -1108,79 +1045,46 @@ class OwnedMediaImportFileService
   end
 
   def native_linkat(source_directory_fd, source_basename, destination_directory_fd, destination_basename)
-    call_native_path_function(
-      native_function(
-        :linkat,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]
-      ),
-      source_directory_fd,
-      source_basename,
-      destination_directory_fd,
-      destination_basename,
-      0
-    )
+    with_audiobook_filesystem_syscall do
+      FilesystemSyscalls.linkat(
+        source_directory_fd,
+        source_basename,
+        destination_directory_fd,
+        destination_basename
+      )
+    end
   end
 
-
   def native_mkdirat(directory_fd, basename, mode)
-    call_native_path_function(
-      native_function(:mkdirat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-      directory_fd,
-      basename,
-      mode
-    )
+    with_audiobook_filesystem_syscall do
+      FilesystemSyscalls.mkdirat(directory_fd, basename, mode)
+    end
   rescue Errno::EEXIST
     nil
   end
 
   def native_openat(directory_fd, basename, flags: File::RDONLY | File::NOFOLLOW)
-    function = native_function(
-      :openat,
-      [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_INT ]
-    )
-    Fiddle.last_error = 0
-    descriptor = function.call(directory_fd, basename, flags, 0)
-    return descriptor unless descriptor == -1
-
-    raise SystemCallError.new("openat", Fiddle.last_error)
+    with_audiobook_filesystem_syscall do
+      FilesystemSyscalls.openat(directory_fd, basename, flags: flags)
+    end
   end
 
   def native_unlinkat(directory_fd, basename)
     return if basename.blank?
 
-    call_native_path_function(
-      native_function(:unlinkat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-      directory_fd,
-      basename,
-      0
-    )
+    with_audiobook_filesystem_syscall do
+      FilesystemSyscalls.unlinkat(directory_fd, basename)
+    end
   rescue Errno::ENOENT
     nil
   end
 
   def native_fchmod(descriptor, mode)
-    call_native_path_function(
-      native_function(:fchmod, [ Fiddle::TYPE_INT, Fiddle::TYPE_INT ]),
-      descriptor,
-      mode
-    )
+    with_audiobook_filesystem_syscall { FilesystemSyscalls.fchmod(descriptor, mode) }
   end
 
-  def call_native_path_function(function, *arguments)
-    Fiddle.last_error = 0
-    result = function.call(*arguments)
-    return result if result.zero?
-
-    raise SystemCallError.new("filesystem operation", Fiddle.last_error)
-  end
-
-  def native_function(name, arguments)
-    @native_functions ||= {}
-    @native_functions[name] ||= Fiddle::Function.new(
-      Fiddle::Handle::DEFAULT[name.to_s],
-      arguments,
-      Fiddle::TYPE_INT
-    )
+  def with_audiobook_filesystem_syscall
+    yield
   rescue Fiddle::DLError => e
     raise Error, "The audiobook filesystem cannot safely pin destinations: #{e.message}"
   end

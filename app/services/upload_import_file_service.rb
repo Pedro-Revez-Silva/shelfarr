@@ -23,9 +23,6 @@ class UploadImportFileService
   FILE_MODE = 0o640
   SHA256_PATTERN = /\A[0-9a-f]{64}\z/
   MAX_CANDIDATES = 10_000
-  LINUX_RENAME_NOREPLACE = 0x1
-  DARWIN_RENAME_EXCL = 0x4
-
   attr_reader :upload, :source_path
 
   class << self
@@ -631,81 +628,42 @@ class UploadImportFileService
     end
 
     def native_linkat(source_directory_fd, source_basename, destination_directory_fd, destination_basename)
-      call_native_path_function(
-        native_function(
-          :linkat,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]
-        ),
-        source_directory_fd,
-        source_basename,
-        destination_directory_fd,
-        destination_basename,
-        0
-      )
+      with_upload_filesystem_syscall do
+        FilesystemSyscalls.linkat(
+          source_directory_fd,
+          source_basename,
+          destination_directory_fd,
+          destination_basename
+        )
+      end
     end
 
     def native_mkdirat(directory_fd, basename, mode)
-      call_native_path_function(
-        native_function(:mkdirat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-        directory_fd,
-        basename,
-        mode
-      )
+      with_upload_filesystem_syscall do
+        FilesystemSyscalls.mkdirat(directory_fd, basename, mode)
+      end
     rescue Errno::EEXIST
       nil
     end
 
     def native_openat(directory_fd, basename, flags: File::RDONLY | File::NOFOLLOW, mode: 0)
-      function = native_function(
-        :openat,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_INT ]
-      )
-      Fiddle.last_error = 0
-      descriptor = function.call(directory_fd, basename, flags, mode)
-      return descriptor unless descriptor == -1
-
-      raise SystemCallError.new("openat", Fiddle.last_error)
+      with_upload_filesystem_syscall do
+        FilesystemSyscalls.openat(directory_fd, basename, flags: flags, mode: mode)
+      end
     end
 
     def native_unlinkat(directory_fd, basename)
       return if basename.blank?
 
-      call_native_path_function(
-        native_function(:unlinkat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-        directory_fd,
-        basename,
-        0
-      )
+      with_upload_filesystem_syscall do
+        FilesystemSyscalls.unlinkat(directory_fd, basename)
+      end
     rescue Errno::ENOENT
       nil
     end
 
     def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
-      function, arguments = if RUBY_PLATFORM.include?("darwin")
-        [
-          :renameatx_np,
-          [ source_fd, source_basename, destination_fd, destination_basename, DARWIN_RENAME_EXCL ]
-        ]
-      elsif RUBY_PLATFORM.include?("linux")
-        [
-          :renameat2,
-          [ source_fd, source_basename, destination_fd, destination_basename, LINUX_RENAME_NOREPLACE ]
-        ]
-      else
-        return false
-      end
-
-      signature = [
-        Fiddle::TYPE_INT,
-        Fiddle::TYPE_VOIDP,
-        Fiddle::TYPE_INT,
-        Fiddle::TYPE_VOIDP,
-        Fiddle::TYPE_UINT
-      ]
-      call_native_path_function(native_function(function, signature), *arguments)
-      true
-    rescue Fiddle::DLError, Errno::ENOSYS, Errno::EINVAL, Errno::EOPNOTSUPP, Errno::ENOTSUP
-      false
+      FilesystemSyscalls.rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
     end
 
     def restore_ingress_quarantine(directory, quarantine, original)
@@ -724,36 +682,15 @@ class UploadImportFileService
     end
 
     def native_fchmod(descriptor, mode)
-      call_native_path_function(
-        native_function(:fchmod, [ Fiddle::TYPE_INT, Fiddle::TYPE_INT ]),
-        descriptor,
-        mode
-      )
+      with_upload_filesystem_syscall { FilesystemSyscalls.fchmod(descriptor, mode) }
     end
 
     def native_ftruncate(descriptor, length)
-      call_native_path_function(
-        native_function(:ftruncate, [ Fiddle::TYPE_INT, Fiddle::TYPE_LONG ]),
-        descriptor,
-        length
-      )
+      with_upload_filesystem_syscall { FilesystemSyscalls.ftruncate(descriptor, length) }
     end
 
-    def call_native_path_function(function, *arguments)
-      Fiddle.last_error = 0
-      result = function.call(*arguments)
-      return result if result.zero?
-
-      raise SystemCallError.new("filesystem operation", Fiddle.last_error)
-    end
-
-    def native_function(name, arguments)
-      @native_functions ||= {}
-      @native_functions[name] ||= Fiddle::Function.new(
-        Fiddle::Handle::DEFAULT[name.to_s],
-        arguments,
-        Fiddle::TYPE_INT
-      )
+    def with_upload_filesystem_syscall
+      yield
     rescue Fiddle::DLError => error
       raise Error, "The library filesystem cannot safely pin upload paths: #{error.message}"
     end

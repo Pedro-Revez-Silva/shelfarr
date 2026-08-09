@@ -11,8 +11,6 @@ class SafeLibraryDeletionService
   class Error < StandardError; end
 
   AT_REMOVEDIR = RbConfig::CONFIG.fetch("host_os").match?(/darwin/i) ? 0x80 : 0x200
-  LINUX_RENAME_NOREPLACE = 0x1
-  DARWIN_RENAME_EXCL = 0x4
   INTERNAL_DIRECTORIES = [
     OwnedMediaImportFileService::STAGING_DIRECTORY,
     UploadImportFileService::PRIVATE_DIRECTORY
@@ -388,74 +386,14 @@ class SafeLibraryDeletionService
   end
 
   def native_openat(directory_fd, basename, flags)
-    call_native(
-      native_function(
-        :openat,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_INT ]
-      ),
-      directory_fd,
-      basename,
-      flags,
-      0
-    )
+    FilesystemSyscalls.openat(directory_fd, basename, flags: flags)
   end
 
   def native_unlinkat(directory_fd, basename, flags)
-    call_native(
-      native_function(
-        :unlinkat,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]
-      ),
-      directory_fd,
-      basename,
-      flags
-    )
+    FilesystemSyscalls.unlinkat(directory_fd, basename, flags)
   end
 
   def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
-    function, arguments = if RUBY_PLATFORM.include?("darwin")
-      [
-        :renameatx_np,
-        [ source_fd, source_basename, destination_fd, destination_basename, DARWIN_RENAME_EXCL ]
-      ]
-    elsif RUBY_PLATFORM.include?("linux")
-      [
-        :renameat2,
-        [ source_fd, source_basename, destination_fd, destination_basename, LINUX_RENAME_NOREPLACE ]
-      ]
-    else
-      return false
-    end
-    signature = [
-      Fiddle::TYPE_INT,
-      Fiddle::TYPE_VOIDP,
-      Fiddle::TYPE_INT,
-      Fiddle::TYPE_VOIDP,
-      Fiddle::TYPE_UINT
-    ]
-    call_native(native_function(function, signature), *arguments)
-    true
-  rescue Fiddle::DLError, Errno::ENOSYS, Errno::EINVAL, Errno::EOPNOTSUPP, Errno::ENOTSUP
-    false
-  end
-
-  def call_native(function, *arguments)
-    pointers = arguments.map do |argument|
-      argument.is_a?(String) ? Fiddle::Pointer[argument + "\0"] : argument
-    end
-    Fiddle.last_error = 0
-    result = function.call(*pointers)
-    return result unless result == -1
-
-    raise SystemCallError.new("filesystem operation", Fiddle.last_error)
-  end
-
-  def native_function(name, arguments)
-    @native_functions ||= {}
-    @native_functions[name] ||= Fiddle::Function.new(
-      Fiddle::Handle::DEFAULT[name.to_s],
-      arguments,
-      Fiddle::TYPE_INT
-    )
+    FilesystemSyscalls.rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
   end
 end

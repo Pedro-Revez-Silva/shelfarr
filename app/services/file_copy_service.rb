@@ -3,6 +3,7 @@
 require "fiddle"
 require "pathname"
 require "digest"
+require "set"
 
 # NFS-safe file copy operations.
 #
@@ -36,9 +37,8 @@ class FileCopyService
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   SOURCE_QUARANTINE_PATTERN = /\A\.shelfarr-source-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   COPY_QUARANTINE_ENTRY = "entry"
+  HARDLINK_PROBE_ENTRY = "entry"
   COPY_QUARANTINE_STALE_AGE = 24 * 60 * 60
-  LINUX_RENAME_NOREPLACE = 0x1
-  DARWIN_RENAME_EXCL = 0x4
   AT_REMOVEDIR = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
 
   class UnsafePathError < StandardError
@@ -680,12 +680,10 @@ class FileCopyService
             raise Errno::ESTALE, "private publication source changed"
           end
 
-          publish_private_child_noreplace!(
+          publish_private_child_atomically_noreplace!(
             parent,
             source.basename.to_s,
-            basename,
-            [ private_file.device, private_file.inode ],
-            mode: mode
+            basename
           )
         end
         validate_published_child!(
@@ -1728,22 +1726,11 @@ class FileCopyService
               source_validator&.call
 
               begin
-                if published_mode == LIBRARY_FILE_MODE
-                  publish_private_child_noreplace!(
-                    parent,
-                    temporary_basename,
-                    basename,
-                    temporary_identity
-                  )
-                else
-                  publish_private_child_noreplace!(
-                    parent,
-                    temporary_basename,
-                    basename,
-                    temporary_identity,
-                    mode: published_mode
-                  )
-                end
+                publish_private_child_atomically_noreplace!(
+                  parent,
+                  temporary_basename,
+                  basename
+                )
                 published_identity = temporary_identity
               rescue AtomicPublicationUnsupportedError
                 raise unless allow_compatibility_fallback
@@ -1752,7 +1739,7 @@ class FileCopyService
                   "[FileCopyService] Atomic publication unsupported; using exclusive-copy compatibility mode"
                 )
                 published_identity, published_mode, published_file_durable =
-                  publish_private_child_by_copy_noreplace!(
+                  publish_private_child_by_exclusive_copy_noreplace!(
                     parent,
                     temporary_basename,
                     basename,
@@ -1813,6 +1800,11 @@ class FileCopyService
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
       with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
+        if hardlink_identity_unreliable?(source_parent_path, parent_path)
+          raise HardlinkUnsupportedError,
+            "The source or destination filesystem does not expose stable hardlink identities"
+        end
+
         token = SecureRandom.hex(16)
         temporary_basename = ".shelfarr-copy-#{token}.tmp"
         lock_basename = ".shelfarr-copy-#{token}.lock"
@@ -1841,6 +1833,11 @@ class FileCopyService
               source_manifest
             )
             persist_copy_lock_identity!(lock, token, source_identity)
+            verify_hardlink_identity_support!(
+              parent,
+              lock_basename,
+              ".shelfarr-hardlink-probe-#{token}"
+            )
             begin
               native_linkat(
                 source_parent.fileno,
@@ -1881,13 +1878,17 @@ class FileCopyService
             )
             validate_current_directory_identity!(parent_path, parent)
 
-            publish_private_child_noreplace!(
-              parent,
-              temporary_basename,
-              basename,
-              temporary_identity,
-              mode: source_mode
-            )
+            begin
+              publish_private_child_atomically_noreplace!(
+                parent,
+                temporary_basename,
+                basename
+              )
+            rescue AtomicPublicationUnsupportedError => error
+              raise HardlinkUnsupportedError,
+                "The destination filesystem cannot safely publish the requested hardlink",
+                cause: error
+            end
             validate_published_child!(
               parent,
               basename,
@@ -1942,6 +1943,51 @@ class FileCopyService
       end
     end
 
+    def verify_hardlink_identity_support!(parent, lock_basename, probe_directory_basename)
+      probe_directory = nil
+      native_mkdirat(parent.fileno, probe_directory_basename, 0o700)
+      probe_directory = open_pinned_directory_child(parent, probe_directory_basename)
+      unless secure_cleanup_quarantine?(probe_directory, parent)
+        raise UnsafePathError, "hardlink identity probe directory is not private"
+      end
+
+      native_hardlink_probe(
+        parent.fileno,
+        lock_basename,
+        probe_directory.fileno,
+        HARDLINK_PROBE_ENTRY
+      )
+      with_pinned_regular_child(parent, lock_basename) do |reopened_lock|
+        lock_identity = file_identity(reopened_lock.stat)
+        with_pinned_regular_child(probe_directory, HARDLINK_PROBE_ENTRY) do |probe|
+          unless file_identity(probe.stat) == lock_identity
+            raise HardlinkUnsupportedError,
+              "The destination filesystem does not expose stable hardlink identities"
+          end
+        end
+      end
+    rescue Errno::EXDEV, Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS, Errno::EMLINK,
+        Errno::EINVAL, Fiddle::DLError, NotImplementedError => error
+      raise HardlinkUnsupportedError,
+        "The destination filesystem cannot verify hardlink identity",
+        cause: error
+    ensure
+      if probe_directory
+        begin
+          cleanup = remove_hardlink_probe_directory(
+            parent,
+            probe_directory_basename,
+            directory: probe_directory
+          )
+          unless cleanup.in?([ :removed, :missing ])
+            raise UnsafePathError, "hardlink identity probe could not be removed safely"
+          end
+        ensure
+          probe_directory.close unless probe_directory.closed?
+        end
+      end
+    end
+
     def copy_source_io(source, target, heartbeat: nil)
       source.rewind
       if heartbeat
@@ -1966,33 +2012,29 @@ class FileCopyService
       end
     end
 
-    def publish_private_child_noreplace!(parent, temporary_basename, destination_basename, identity, mode: LIBRARY_FILE_MODE)
+    def publish_private_child_atomically_noreplace!(parent, temporary_basename, destination_basename)
+      published = native_rename_noreplace(
+        parent.fileno,
+        temporary_basename,
+        parent.fileno,
+        destination_basename
+      )
+      return if published
+
       native_linkat(
         parent.fileno,
         temporary_basename,
         parent.fileno,
         destination_basename
       )
-    # CIFS/SMB often returns EINVAL rather than EOPNOTSUPP/ENOTSUP when
-    # hardlinks are unsupported. Treat it as "link unsupported" so the
-    # rename-based atomic publish path still runs (same as native_rename_noreplace).
-    rescue Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS, Errno::EMLINK,
-        Errno::EINVAL, Fiddle::DLError, NotImplementedError
-      result = native_rename_noreplace(
-        parent.fileno,
-        temporary_basename,
-        parent.fileno,
-        destination_basename
-      )
-      unless result
-        raise AtomicPublicationUnsupportedError,
-          "The destination filesystem cannot atomically publish library files"
-      end
-
-      validate_published_child!(parent, destination_basename, identity, expected_mode: mode)
+    rescue Errno::EXDEV, Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS, Errno::EMLINK,
+        Errno::EINVAL, Fiddle::DLError, NotImplementedError => error
+      raise AtomicPublicationUnsupportedError,
+        "The destination filesystem cannot atomically publish library files",
+        cause: error
     end
 
-    def publish_private_child_by_copy_noreplace!(
+    def publish_private_child_by_exclusive_copy_noreplace!(
       parent,
       temporary_basename,
       destination_basename,
@@ -2121,6 +2163,11 @@ class FileCopyService
       with_pinned_regular_child(parent, lock_basename, writable: true) do |lock|
         return unless lock.flock(File::LOCK_EX | File::LOCK_NB)
         return unless secure_copy_lock?(lock, parent)
+        probe_cleanup = remove_hardlink_probe_directory(
+          parent,
+          ".shelfarr-hardlink-probe-#{token}"
+        )
+        return unless probe_cleanup.in?([ :removed, :missing ])
 
         lock_identity = file_identity(lock.stat)
         lock.rewind
@@ -2223,6 +2270,43 @@ class FileCopyService
       )
     rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, IOError, UnsafePathError
       nil
+    end
+
+    def remove_hardlink_probe_directory(
+      parent,
+      basename,
+      directory: nil
+    )
+      opened_here = directory.nil?
+      directory ||= open_pinned_directory_child(parent, basename)
+      return :retained unless secure_cleanup_quarantine?(directory, parent)
+
+      children = pinned_directory_children(directory)
+      return :retained unless children.empty? || children == [ HARDLINK_PROBE_ENTRY ]
+
+      if children == [ HARDLINK_PROBE_ENTRY ]
+        begin
+          with_pinned_regular_child(directory, HARDLINK_PROBE_ENTRY) do
+            native_unlinkat(directory.fileno, HARDLINK_PROBE_ENTRY)
+          end
+        rescue Errno::ENOENT
+          nil
+        end
+        sync_io(directory)
+      end
+
+      # CIFS may retain a stale directory listing and replace a freshly created
+      # directory's provisional inode after its first child operation. rmdir
+      # still asks the server to prove this random private directory is empty.
+      native_unlinkat(parent.fileno, basename, AT_REMOVEDIR)
+      sync_io(parent)
+      :removed
+    rescue Errno::ENOENT
+      :missing
+    rescue Errno::EEXIST, Errno::ENOTEMPTY, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+      :retained
+    ensure
+      directory.close if opened_here && directory && !directory.closed?
     end
 
     def cleanup_interrupted_quarantine(parent, basename, expected_identity)
@@ -2812,6 +2896,55 @@ class FileCopyService
       [ *manifest.first(5), manifest.fetch(6) ]
     end
 
+    def hardlink_identity_unreliable?(*paths)
+      return false unless RUBY_PLATFORM.include?("linux")
+
+      mounts = File.binread("/proc/self/mountinfo").lines(chomp: true).filter_map do |line|
+        mount_fields, separator, filesystem_fields = line.partition(" - ")
+        next if separator.empty?
+
+        fields = mount_fields.split
+        filesystem = filesystem_fields.split
+        next if fields.size < 6 || filesystem.size < 3
+
+        mount_id = Integer(fields.fetch(0), exception: false)
+        parent_id = Integer(fields.fetch(1), exception: false)
+        next unless mount_id && parent_id
+
+        mountpoint = fields.fetch(4).gsub(/\\([0-7]{3})/) do
+          [ Regexp.last_match(1).to_i(8) ].pack("C")
+        end
+        [ mount_id, parent_id, fields.fetch(2), mountpoint, filesystem.fetch(0), fields.fetch(5), filesystem.fetch(2) ]
+      end
+      mount_parents = mounts.to_h { |mount_id, parent_id, *| [ mount_id, parent_id ] }
+
+      paths.any? do |path|
+        expanded = Pathname(path).expand_path.realpath.to_s.b
+        stat = File.stat(expanded)
+        device = "#{stat.dev_major}:#{stat.dev_minor}"
+        mount = mounts.select do |_mount_id, _parent_id, mount_device, mountpoint, *|
+          mount_device == device &&
+            (expanded == mountpoint || expanded.start_with?("#{mountpoint.delete_suffix("/")}/"))
+        end.max_by do |mount_id, _parent_id, _mount_device, mountpoint, *|
+          depth = 0
+          seen = Set.new
+          current = mount_id
+          while (parent = mount_parents[current]) && seen.add?(current)
+            depth += 1
+            current = parent
+          end
+          [ mountpoint.bytesize, depth ]
+        end
+        next true unless mount
+        next false unless mount.fetch(4).in?([ "cifs", "smb3" ])
+
+        options = "#{mount.fetch(5)},#{mount.fetch(6)}".split(",")
+        !options.include?("serverino")
+      end
+    rescue ArgumentError, Encoding::CompatibilityError, Errno::ENOENT, Errno::EACCES
+      true
+    end
+
     def pinned_child_identity(parent, basename, directory: false)
       descriptor = native_openat(
         parent.fileno,
@@ -3320,154 +3453,47 @@ class FileCopyService
     end
 
     def native_openat(directory_fd, basename, flags, mode)
-      Fiddle.last_error = 0
-      descriptor = if (flags & File::CREAT).positive?
-        # openat is variadic when O_CREAT is present. On arm64 Darwin, treating
-        # mode_t as a fixed fourth argument silently creates mode-000 files.
-        function = native_function(
-          :openat_create,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VARIADIC ],
-          symbol: :openat
-        )
-        function.call(directory_fd, basename, flags, Fiddle::TYPE_INT, mode)
-      else
-        function = native_function(
-          :openat,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]
-        )
-        function.call(directory_fd, basename, flags)
-      end
-      return descriptor unless descriptor == -1
-
-      raise SystemCallError.new("openat", Fiddle.last_error)
+      FilesystemSyscalls.openat(directory_fd, basename, flags: flags, mode: mode)
     end
 
     def native_mkdirat(directory_fd, basename, mode)
-      call_native_function(
-        native_function(:mkdirat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-        directory_fd,
-        basename,
-        mode
-      )
+      FilesystemSyscalls.mkdirat(directory_fd, basename, mode)
     end
 
     def native_linkat(source_fd, source_basename, destination_fd, destination_basename)
-      call_native_function(
-        native_function(
-          :linkat,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]
-        ),
-        source_fd,
-        source_basename,
-        destination_fd,
-        destination_basename,
-        0
-      )
+      FilesystemSyscalls.linkat(source_fd, source_basename, destination_fd, destination_basename)
+    end
+
+    def native_hardlink_probe(source_fd, source_basename, destination_fd, destination_basename)
+      FilesystemSyscalls.linkat(source_fd, source_basename, destination_fd, destination_basename)
     end
 
     def native_symlinkat(target, directory_fd, basename)
-      call_native_function(
-        native_function(
-          :symlinkat,
-          [ Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP ]
-        ),
-        target,
-        directory_fd,
-        basename
-      )
+      FilesystemSyscalls.symlinkat(target, directory_fd, basename)
     end
 
     def native_readlinkat(directory_fd, basename)
-      buffer_size = 4096
-      buffer = "\0" * buffer_size
-      function = native_function(
-        :readlinkat,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T ]
-      )
-      Fiddle.last_error = 0
-      length = function.call(directory_fd, basename, buffer, buffer_size)
-      if length == -1
-        raise SystemCallError.new("readlinkat", Fiddle.last_error)
-      end
-
-      buffer.byteslice(0, length).force_encoding(Encoding::UTF_8)
+      FilesystemSyscalls.readlinkat(directory_fd, basename)
     end
 
     def native_unlinkat(directory_fd, basename, flags = 0)
-      call_native_function(
-        native_function(:unlinkat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-        directory_fd,
-        basename,
-        flags
-      )
+      FilesystemSyscalls.unlinkat(directory_fd, basename, flags)
     end
 
     def native_fchmod(descriptor, mode)
-      call_native_function(
-        native_function(:fchmod, [ Fiddle::TYPE_INT, Fiddle::TYPE_INT ]),
-        descriptor,
-        mode
-      )
+      FilesystemSyscalls.fchmod(descriptor, mode)
     end
 
     def native_futimes_now(descriptor)
-      call_native_function(
-        native_function(:futimes, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP ]),
-        descriptor,
-        nil
-      )
+      FilesystemSyscalls.futimes_now(descriptor)
     end
 
     def native_renameat(source_fd, source_basename, destination_fd, destination_basename)
-      call_native_function(
-        native_function(
-          :renameat,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP ]
-        ),
-        source_fd,
-        source_basename,
-        destination_fd,
-        destination_basename
-      )
+      FilesystemSyscalls.renameat(source_fd, source_basename, destination_fd, destination_basename)
     end
 
     def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
-      function, arguments = if RUBY_PLATFORM.include?("darwin")
-        [
-          :renameatx_np,
-          [ source_fd, source_basename, destination_fd, destination_basename, DARWIN_RENAME_EXCL ]
-        ]
-      elsif RUBY_PLATFORM.include?("linux")
-        [
-          :renameat2,
-          [ source_fd, source_basename, destination_fd, destination_basename, LINUX_RENAME_NOREPLACE ]
-        ]
-      else
-        return false
-      end
-
-      signature = [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_UINT ]
-      call_native_function(native_function(function, signature), *arguments)
-      true
-    rescue Fiddle::DLError, Errno::ENOSYS, Errno::EINVAL, Errno::EOPNOTSUPP, Errno::ENOTSUP
-      false
-    end
-
-    def native_function(name, arguments, symbol: name)
-      @native_functions ||= {}
-      @native_functions[[ name, arguments ]] ||= Fiddle::Function.new(
-        Fiddle::Handle::DEFAULT[symbol.to_s],
-        arguments,
-        Fiddle::TYPE_INT
-      )
-    end
-
-    def call_native_function(function, *arguments)
-      Fiddle.last_error = 0
-      result = function.call(*arguments)
-      return result if result.zero?
-
-      raise SystemCallError.new("filesystem operation", Fiddle.last_error)
+      FilesystemSyscalls.rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
     end
 
     def file_identity(stat)

@@ -554,19 +554,19 @@ class PostProcessingJobTest < ActiveJob::TestCase
     source_file = File.join(@temp_source, "audiobook.mp3")
     destination = File.join(@temp_dest_base, @book.author, @book.title)
     destination_file = File.join(destination, "audiobook.mp3")
-    real_publish = FileCopyService.method(:publish_private_child_noreplace!)
+    real_publish = FileCopyService.method(:publish_private_child_atomically_noreplace!)
     raced = false
 
     output = FileCopyService.stub(
-      :publish_private_child_noreplace!,
-      ->(parent, temporary, basename, identity, mode: FileCopyService::LIBRARY_FILE_MODE) {
+      :publish_private_child_atomically_noreplace!,
+      ->(parent, temporary, basename) {
         unless raced
           raced = true
           File.binwrite(File.join(destination, basename), "test audio content")
           raise Errno::EEXIST, basename
         end
 
-        real_publish.call(parent, temporary, basename, identity, mode: mode)
+        real_publish.call(parent, temporary, basename)
       }
     ) do
       FileCopyService.stub(:secure_library_file!, ->(*) { flunk "Hardlink-mode reuse must never chmod the destination" }) do
@@ -1036,18 +1036,18 @@ class PostProcessingJobTest < ActiveJob::TestCase
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
     File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
     File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
-    real_publish = FileCopyService.method(:publish_private_child_noreplace!)
+    real_publish = FileCopyService.method(:publish_private_child_atomically_noreplace!)
     publish_race = true
     book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
 
-    FileCopyService.stub(:publish_private_child_noreplace!, ->(parent, source, destination, identity) {
+    FileCopyService.stub(:publish_private_child_atomically_noreplace!, ->(parent, source, destination) {
       if publish_race
         publish_race = false
         File.write(File.join(book_one_destination, destination), "concurrent file")
         raise Errno::EEXIST, destination
       end
 
-      real_publish.call(parent, source, destination, identity)
+      real_publish.call(parent, source, destination)
     }) do
       PostProcessingJob.perform_now(@download.id)
     end
@@ -1099,7 +1099,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal "book two audio", File.read(book_two_destination)
   end
 
-  test "does not overwrite a concurrent file when hard-link publication is unavailable" do
+  test "does not overwrite a concurrent file when atomic publication is unavailable" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
     @book.update!(title: "Book Two")
@@ -1109,14 +1109,16 @@ class PostProcessingJobTest < ActiveJob::TestCase
     publish_race = true
     book_one_destination = File.join(@temp_dest_base, @book.author, "Book One")
 
-    FileCopyService.stub(:native_linkat, ->(_source_fd, _source, _destination_fd, destination) {
-      if publish_race
-        publish_race = false
-        File.write(File.join(book_one_destination, destination), "concurrent file")
+    FileCopyService.stub(:native_rename_noreplace, false) do
+      FileCopyService.stub(:native_linkat, ->(_source_fd, _source, _destination_fd, destination) {
+        if publish_race
+          publish_race = false
+          File.write(File.join(book_one_destination, destination), "concurrent file")
+        end
+        raise Errno::EOPNOTSUPP, "hard links unavailable"
+      }) do
+        PostProcessingJob.perform_now(@download.id)
       end
-      raise Errno::EOPNOTSUPP, "hard links unavailable"
-    }) do
-      PostProcessingJob.perform_now(@download.id)
     end
 
     assert @request.reload.completed?
