@@ -916,7 +916,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
           )
         end
 
-        assert_match(/stable hardlink identities/, error.message)
+        assert_match(/safely verify hardlink identities/, error.message)
       end
     end
   end
@@ -935,7 +935,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
           )
         end
 
-        assert_match(/stable hardlink identities/, error.message)
+        assert_match(/safely verify hardlink identities/, error.message)
       end
     end
   end

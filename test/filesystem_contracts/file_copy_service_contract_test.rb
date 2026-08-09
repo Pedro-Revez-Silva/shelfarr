@@ -169,7 +169,7 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
 
     assert_equal source.binread, destination.binread
     assert source.file?
-    assert_not hardlinked if cifs_noserverino_profile?
+    assert_not hardlinked if cifs_profile?
 
     if hardlinked
       source.open("ab") do |file|

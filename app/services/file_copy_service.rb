@@ -1854,9 +1854,9 @@ class FileCopyService
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
       with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
-        if hardlink_identity_unreliable?(source_parent, parent)
+        if hardlink_identity_unreliable?(source_parent, parent, reject_cifs: true)
           raise HardlinkUnsupportedError,
-            "The source or destination filesystem does not expose stable hardlink identities"
+            "The source or destination filesystem cannot safely verify hardlink identities"
         end
 
         token = SecureRandom.hex(16)
@@ -2832,7 +2832,7 @@ class FileCopyService
       [ *manifest.first(5), manifest.fetch(6) ]
     end
 
-    def hardlink_identity_unreliable?(*filesystem_entries)
+    def hardlink_identity_unreliable?(*filesystem_entries, reject_cifs: false)
       return false unless RUBY_PLATFORM.include?("linux")
 
       mounts = File.binread("/proc/self/mountinfo").lines(chomp: true).filter_map do |line|
@@ -2878,6 +2878,7 @@ class FileCopyService
         end
         next true unless mount
         next false unless mount.fetch(4).in?([ "cifs", "smb3" ])
+        next true if reject_cifs
 
         options = "#{mount.fetch(5)},#{mount.fetch(6)}".split(",")
         !options.include?("serverino")
