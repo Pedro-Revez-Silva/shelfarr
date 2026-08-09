@@ -81,11 +81,7 @@ jobs:
   validate:
     needs: [plan]
     if: needs.plan.outputs.should_release == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
@@ -97,7 +93,7 @@ jobs:
           ref: ${{ needs.plan.outputs.head_sha }}
 
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y cifs-utils libvips
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libvips
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
@@ -114,9 +110,6 @@ jobs:
         env:
           RAILS_ENV: test
         run: bin/quality push
-
-      - name: Run CIFS filesystem contracts
-        run: test/filesystem_contracts/cifs-smoke.sh
 
       - name: Audit Shelfarr gems
         run: bin/bundler-audit --update
@@ -153,8 +146,43 @@ jobs:
         working-directory: services/libation_companion
         run: ./tests/container-smoke.sh
 
+  filesystem-contracts:
+    needs: [plan]
+    if: needs.plan.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout planned commit
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          ref: ${{ needs.plan.outputs.head_sha }}
+
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y cifs-utils libvips
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+
+      - name: Prepare Shelfarr test database
+        env:
+          RAILS_ENV: test
+        run: bin/rails db:test:prepare
+
+      - name: Run CIFS filesystem contracts
+        run: test/filesystem_contracts/cifs-smoke.sh
+
   docker:
-    needs: [plan, validate]
+    needs: [plan, validate, filesystem-contracts]
     if: needs.plan.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     permissions:

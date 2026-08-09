@@ -48,16 +48,21 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     refute_includes planner, "git log"
   end
 
-  test "release waits for the full validation gate and paired Docker images" do
+  test "release waits for full validation, architecture contracts, and paired Docker images" do
     validation_commands = @jobs.fetch("validate").fetch("steps").filter_map { |step| step["run"] }
+    filesystem_job = @jobs.fetch("filesystem-contracts")
+    filesystem_commands = filesystem_job.fetch("steps").filter_map { |step| step["run"] }
 
     assert validation_commands.any? { |command| command.include?("bin/quality push") }
-    assert validation_commands.any? { |command| command.include?("cifs-smoke.sh") }
     assert validation_commands.any? { |command| command.include?("bin/bundler-audit --update") }
-    assert_includes @jobs.dig("validate", "strategy", "matrix", "runner"), "ubuntu-24.04-arm"
+    assert_equal "ubuntu-latest", @jobs.dig("validate", "runs-on")
+    assert filesystem_commands.any? { |command| command.include?("cifs-utils") }
+    assert filesystem_commands.any? { |command| command.include?("cifs-smoke.sh") }
+    assert_equal %w[ubuntu-latest ubuntu-24.04-arm],
+      filesystem_job.dig("strategy", "matrix", "runner")
 
     docker_job = @jobs.fetch("docker")
-    assert_equal %w[plan validate], docker_job.fetch("needs")
+    assert_equal %w[plan validate filesystem-contracts], docker_job.fetch("needs")
     assert_includes docker_job.fetch("if"), "needs.plan.outputs.should_release == 'true'"
 
     docker_steps = docker_job.fetch("steps")
@@ -98,7 +103,7 @@ class DockerWorkflowTest < ActiveSupport::TestCase
   end
 
   test "every release job uses the commit selected by the planner" do
-    %w[validate docker publish-release].each do |job_name|
+    %w[validate filesystem-contracts docker publish-release].each do |job_name|
       checkout = @jobs.fetch(job_name).fetch("steps").find do |step|
         step["name"] == "Checkout planned commit"
       end
