@@ -106,6 +106,7 @@ class CleanupTempFilesJob < ApplicationJob
       Upload.where.not(cleanup_source_path: nil).pluck(:cleanup_source_path).compact
     )
     directories = [ Rails.root.join("tmp", "uploads") ]
+    ordinary_directories = ordinary_upload_staging_directories
     owned_staging_roots.each do |root|
       # Each Shelfarr database owns only its fingerprinted subdirectory. Two
       # instances may intentionally share one audiobook filesystem and must
@@ -116,10 +117,38 @@ class CleanupTempFilesJob < ApplicationJob
     deleted_count = directories.uniq.sum do |directory|
       cleanup_upload_directory(directory, max_age: max_age, protected_paths: protected_paths)
     end
+    deleted_count += ordinary_directories.sum do |directory, root|
+      cleanup_ordinary_upload_directory(
+        directory,
+        root: root,
+        max_age: max_age,
+        protected_paths: protected_paths
+      )
+    end
 
     Rails.logger.info "[CleanupTempFilesJob] Deleted #{deleted_count} orphaned upload files" if deleted_count > 0
   rescue Errno::ENOENT, Errno::EACCES => e
     Rails.logger.warn "[CleanupTempFilesJob] Could not inspect upload staging: #{e.class}"
+  end
+
+  def ordinary_upload_staging_directories
+    configured_roots = [
+      SettingsService.get(:audiobook_output_path),
+      SettingsService.get(:ebook_output_path),
+      SettingsService.get(:comicbook_output_path)
+    ]
+    historical_roots = Upload.where.not(destination_root: [ nil, "" ]).distinct.pluck(:destination_root)
+    fingerprint = UploadImportFileService.send(:database_fingerprint)
+
+    (configured_roots + historical_roots).compact_blank.filter_map do |root|
+      root = Pathname(root).expand_path
+      next unless root.directory?
+
+      canonical_root = root.realpath
+      [ canonical_root.join(UploadImportFileService::PRIVATE_DIRECTORY, fingerprint), canonical_root ]
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
+      nil
+    end.uniq
   end
 
   def owned_staging_roots
@@ -148,6 +177,7 @@ class CleanupTempFilesJob < ApplicationJob
     return 0 unless File.directory?(directory)
 
     directory = Pathname(directory).expand_path
+    FileCopyService.cleanup_interrupted_copies(directory, root: directory.to_s)
     protected_directories = protected_paths.each_with_object(Set.new) do |raw_path, paths|
       path = Pathname(raw_path).expand_path
       next unless path.to_s.start_with?("#{directory}#{File::SEPARATOR}")
@@ -184,20 +214,72 @@ class CleanupTempFilesJob < ApplicationJob
       next
     end
     deleted_count
+  rescue FileCopyService::AtomicPublicationUnsupportedError, FileCopyService::UnsafePathError,
+    SystemCallError => error
+    Rails.logger.warn "[CleanupTempFilesJob] Could not safely inspect upload staging: #{error.class}"
+    0
   end
 
-  def delete_upload_file_unless_active(path, max_age:)
+  def cleanup_ordinary_upload_directory(directory, root:, max_age:, protected_paths:)
+    directory = Pathname(directory).expand_path
+    root = Pathname(root).expand_path
+    FileCopyService.cleanup_interrupted_copies(directory, root: root.to_s)
+    parent_identity = FileCopyService.directory_identity(directory, root: root.to_s)
+    children = FileCopyService.directory_children(directory, root: root.to_s)
+    attempt_pattern = UploadImportFileService.send(:private_attempt_pattern)
+
+    children.sum do |child|
+      next 0 unless child.type == :file
+      next 0 unless attempt_pattern.match?(child.name)
+      next 0 if child.mtime > max_age
+
+      path = directory.join(child.name)
+      next 0 if protected_paths.include?(path.to_s)
+
+      removed = delete_upload_file_unless_active(
+        path,
+        max_age: max_age,
+        root: root,
+        expected_identity: [ child.device, child.inode ],
+        expected_parent_identity: parent_identity
+      )
+      removed ? 1 : 0
+    end
+  rescue Errno::ENOENT
+    0
+  rescue FileCopyService::AtomicPublicationUnsupportedError, FileCopyService::UnsafePathError,
+    SystemCallError => error
+    Rails.logger.warn "[CleanupTempFilesJob] Could not safely inspect ordinary upload staging: #{error.class}"
+    0
+  end
+
+  def delete_upload_file_unless_active(
+    path,
+    max_age:,
+    root: Pathname(path).parent,
+    expected_identity: nil,
+    expected_parent_identity: nil
+  )
     # Referenced files are not orphans. Preserve every Upload status so failed
     # Audible backups remain retryable and a failed->pending transition cannot
     # race cleanup on SQLite (where SELECT ... FOR UPDATE is not a row lock).
-    return false if Upload.where(file_path: path).exists?
+    return false if Upload.where(file_path: path.to_s).exists?
 
     stat = File.lstat(path)
     return false unless stat.file? && stat.mtime <= max_age
 
-    File.unlink(path)
-    true
+    FileCopyService.remove_regular_file_safely(
+      path,
+      root: root.to_s,
+      expected_identity: expected_identity,
+      expected_parent_identity: expected_parent_identity,
+      maximum_mtime: max_age
+    )
   rescue Errno::ENOENT
+    false
+  rescue FileCopyService::UnsafePathError, FileCopyService::AtomicPublicationUnsupportedError,
+    SystemCallError => error
+    Rails.logger.warn "[CleanupTempFilesJob] Could not safely clean an upload file: #{error.class}"
     false
   end
 

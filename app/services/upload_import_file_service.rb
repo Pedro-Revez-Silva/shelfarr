@@ -22,6 +22,8 @@ class UploadImportFileService
   LOCK_SHARDS = 1_024
   FILE_MODE = 0o640
   SHA256_PATTERN = /\A[0-9a-f]{64}\z/
+  FILESYSTEM_OWNER_SETTING_KEY = "internal_filesystem_owner_token"
+  FILESYSTEM_OWNER_TOKEN_PATTERN = /\A[0-9a-f]{32}\z/
   MAX_CANDIDATES = 10_000
   attr_reader :upload, :source_path
 
@@ -127,7 +129,8 @@ class UploadImportFileService
         ) do |upload_directory|
           with_pinned_child(upload_directory, candidate.basename.to_s) do |file|
             identity = file.stat
-            quarantine = ".shelfarr-discard-#{SecureRandom.hex(16)}"
+            quarantine = ".shelfarr-discard-#{identity.dev.to_s(16)}-" \
+              "#{identity.ino.to_s(16)}-#{SecureRandom.hex(16)}.tmp"
             renamed = native_rename_noreplace(
               upload_directory.fileno,
               candidate.basename.to_s,
@@ -240,7 +243,6 @@ class UploadImportFileService
             return false
           end
 
-          remove_private_copy(upload, root)
           clear_reservation!(upload)
           remove_empty_library_directories(library_path, destination, root)
           true
@@ -441,16 +443,6 @@ class UploadImportFileService
       upload.reload
     end
 
-    def remove_private_copy(upload, root)
-      with_pinned_absolute_directory(root) do |root_directory|
-        relative = Pathname(PRIVATE_DIRECTORY).join(database_fingerprint)
-        with_pinned_relative_directory(root_directory, relative, create: true, mode: 0o700) do |private_dir|
-          native_unlinkat(private_dir.fileno, "upload_#{upload.id}.tmp")
-          private_dir.fsync
-        end
-      end
-    end
-
     def remove_verified_destination!(destination, expected_size:, digest:)
       quarantine = ".shelfarr-upload-rollback-#{SecureRandom.hex(16)}"
       with_pinned_absolute_directory(destination.parent) do |parent|
@@ -536,6 +528,42 @@ class UploadImportFileService
       Digest::SHA256.hexdigest(
         ActiveRecord::Base.connection_db_config.database.to_s
       ).first(12)
+    end
+
+    def private_attempt_basename(upload_id)
+      "upload_#{upload_id}-#{filesystem_owner_token}-#{SecureRandom.hex(16)}.tmp"
+    end
+
+    def private_attempt_pattern(upload_id = nil)
+      id_pattern = upload_id ? Regexp.escape(upload_id.to_s) : "\\d+"
+      /\Aupload_#{id_pattern}-#{Regexp.escape(filesystem_owner_token)}-[0-9a-f]{32}\.tmp\z/
+    end
+
+    def filesystem_owner_token
+      setting = Setting.find_by(key: FILESYSTEM_OWNER_SETTING_KEY)
+      if setting
+        token = setting.value.to_s
+        unless FILESYSTEM_OWNER_TOKEN_PATTERN.match?(token)
+          raise Error, "Shelfarr's filesystem owner token is invalid"
+        end
+        return token
+      end
+
+      token = SecureRandom.hex(16)
+      now = Time.current
+      Setting.insert_all(
+        [ {
+          key: FILESYSTEM_OWNER_SETTING_KEY,
+          value: token,
+          value_type: "string",
+          category: "internal",
+          description: "Private filesystem staging owner",
+          created_at: now,
+          updated_at: now
+        } ],
+        unique_by: :index_settings_on_key
+      )
+      Setting.find_by!(key: FILESYSTEM_OWNER_SETTING_KEY).value
     end
 
     def with_pinned_file(path, flags: File::RDONLY | File::NOFOLLOW | File::NONBLOCK)
@@ -664,6 +692,8 @@ class UploadImportFileService
 
     def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
       FilesystemSyscalls.rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
+    rescue Errno::EINVAL
+      false
     end
 
     def restore_ingress_quarantine(directory, quarantine, original)
@@ -818,6 +848,7 @@ class UploadImportFileService
         private_relative = Pathname(PRIVATE_DIRECTORY).join(
           self.class.send(:database_fingerprint)
         )
+        FileCopyService.cleanup_interrupted_copies(root.join(private_relative), root: root)
 
         self.class.send(:with_pinned_absolute_directory, root) do |root_directory|
           self.class.send(
@@ -837,7 +868,6 @@ class UploadImportFileService
                   :validate_open_file!, existing, upload.file_size, upload.content_sha256
                 )
                 validate_published_parent!(destination.parent, destination_parent)
-                self.class.send(:remove_private_copy, upload, root)
                 return book_library_path
               end
             rescue Errno::ENOENT
@@ -935,8 +965,11 @@ class UploadImportFileService
     destination_basename:,
     private_directory:
   )
-    temporary_basename = "upload_#{upload.id}.tmp"
-    self.class.send(:native_unlinkat, private_directory.fileno, temporary_basename)
+    reclaim_interrupted_private_attempts!(private_directory)
+    temporary_basename = self.class.send(:private_attempt_basename, upload.id)
+    temporary_identity = nil
+    source_consumed = false
+    destination_published = false
 
     self.class.send(:with_pinned_absolute_directory, source_path.parent) do |source_parent|
       self.class.send(:with_pinned_child, source_parent, source_path.basename.to_s) do |source|
@@ -952,6 +985,8 @@ class UploadImportFileService
         )
         private_copy = IO.new(descriptor, "wb", autoclose: true)
         begin
+          private_stat = private_copy.stat
+          temporary_identity = [ private_stat.dev, private_stat.ino ]
           source.rewind
           IO.copy_stream(source, private_copy)
           private_copy.flush
@@ -971,13 +1006,29 @@ class UploadImportFileService
       )
       temporary_stat = private_copy.stat
     end
-    self.class.send(
-      :native_linkat,
+    published_by_rename = self.class.send(
+      :native_rename_noreplace,
       private_directory.fileno,
       temporary_basename,
       destination_parent.fileno,
       destination_basename
     )
+    source_consumed = published_by_rename
+    destination_published = published_by_rename
+    unless published_by_rename
+      unless FileCopyService.stable_hardlink_identity?(destination_parent)
+        raise Error, "The library filesystem does not expose stable hardlink identities"
+      end
+
+      self.class.send(
+        :native_linkat,
+        private_directory.fileno,
+        temporary_basename,
+        destination_parent.fileno,
+        destination_basename
+      )
+      destination_published = true
+    end
     destination_parent.fsync
     self.class.send(:with_pinned_child, destination_parent, destination_basename) do |published|
       self.class.send(
@@ -988,11 +1039,61 @@ class UploadImportFileService
       end
     end
     validate_published_parent!(destination_parent_path, destination_parent)
+  rescue Errno::EINVAL => error
+    raise unless destination_published
+
+    raise AmbiguousPublicationError,
+      "The upload destination could not be verified after publication: #{error.message}"
   ensure
-    if private_directory && temporary_basename
-      self.class.send(:native_unlinkat, private_directory.fileno, temporary_basename)
-      private_directory.fsync
+    if private_directory && temporary_basename && temporary_identity && !source_consumed
+      begin
+        cleanup = FileCopyService.send(
+          :remove_pinned_child_if_identity,
+          private_directory,
+          temporary_basename,
+          temporary_identity
+        )
+        private_directory.fsync if cleanup.in?([ :removed, :missing ])
+        unless cleanup.in?([ :removed, :missing ])
+          Rails.logger.warn("[UploadImportFileService] Retained an unverified private upload copy")
+        end
+      rescue => cleanup_error
+        Rails.logger.warn(
+          "[UploadImportFileService] Could not clean the private upload copy: " \
+            "#{cleanup_error.class}: #{cleanup_error.message}"
+        )
+      end
     end
+  end
+
+  def reclaim_interrupted_private_attempts!(private_directory)
+    pattern = self.class.send(:private_attempt_pattern, upload.id)
+    attempts = FileCopyService.send(:pinned_directory_children, private_directory).grep(pattern)
+    return if attempts.empty?
+
+    unless FileCopyService.stable_hardlink_identity?(private_directory)
+      raise Error, "An interrupted private upload attempt requires manual cleanup before retrying"
+    end
+
+    attempts.each do |basename|
+      identity = nil
+      self.class.send(:with_pinned_child, private_directory, basename) do |attempt|
+        stat = attempt.stat
+        identity = [ stat.dev, stat.ino ]
+      end
+      removed = FileCopyService.send(
+        :remove_pinned_child_if_identity,
+        private_directory,
+        basename,
+        identity
+      )
+      unless removed.in?([ :removed, :missing ])
+        raise Error, "An interrupted private upload attempt could not be cleaned safely"
+      end
+    end
+    private_directory.fsync
+  rescue Errno::ELOOP, Errno::ENOTDIR, FileCopyService::UnsafePathError => error
+    raise Error, "An interrupted private upload attempt could not be cleaned safely: #{error.message}"
   end
 
   def validate_published_parent!(path, pinned_parent)

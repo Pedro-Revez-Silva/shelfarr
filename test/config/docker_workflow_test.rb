@@ -54,6 +54,7 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert validation_commands.any? { |command| command.include?("bin/quality push") }
     assert validation_commands.any? { |command| command.include?("cifs-smoke.sh") }
     assert validation_commands.any? { |command| command.include?("bin/bundler-audit --update") }
+    assert_includes @jobs.dig("validate", "strategy", "matrix", "runner"), "ubuntu-24.04-arm"
 
     docker_job = @jobs.fetch("docker")
     assert_equal %w[plan validate], docker_job.fetch("needs")
@@ -155,6 +156,7 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert filesystem_commands.any? { |command| command.include?("cifs-utils") }
     assert filesystem_commands.any? { |command| command.include?("cifs-smoke.sh") }
     assert_equal [ "quality" ], jobs.fetch("filesystem-contracts").fetch("needs")
+    assert_includes jobs.dig("filesystem-contracts", "strategy", "matrix", "runner"), "ubuntu-24.04-arm"
     assert_includes jobs.fetch("container").fetch("needs"), "filesystem-contracts"
     assert_equal false, container_build.dig("with", "push")
   end

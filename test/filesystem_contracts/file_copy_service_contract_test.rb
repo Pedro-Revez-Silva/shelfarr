@@ -34,6 +34,7 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
     assert destination.directory?
     assert File.writable?(destination)
     assert File.executable?(destination)
+    assert_equal 0o775, destination.stat.mode & 0o777 if cifs_profile?
 
     probe = destination.join("write-probe")
     probe.binwrite("writable")
@@ -56,14 +57,17 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
       FileCopyService.cp_noreplace(
         source.to_s,
         destination.to_s,
-        root: @library_root.to_s,
-        allow_compatibility_fallback: true
+        root: @library_root.to_s
       )
 
       assert_equal content, destination.binread
       assert_equal content, source.binread
-      assert_includes FileCopyService::LIBRARY_FILE_MODES,
-        destination.stat.mode & 0o7777
+      if cifs_profile?
+        assert_equal 0o775, destination.stat.mode & 0o777
+      else
+        assert_includes FileCopyService::LIBRARY_FILE_MODES,
+          destination.stat.mode & 0o7777
+      end
     end
 
     assert_no_publication_artifacts
@@ -79,8 +83,7 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
       FileCopyService.cp_noreplace(
         source.to_s,
         destination.to_s,
-        root: @library_root.to_s,
-        allow_compatibility_fallback: true
+        root: @library_root.to_s
       )
     end
 
@@ -90,36 +93,54 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
   end
 
   test "concurrent publications retain exactly one complete winner" do
+    skip "noserverino cannot prove concurrent source or artifact identities" if cifs_noserverino_profile?
+
     destination = @library_root.join("winner.txt")
     sources = [ "first complete bytes", "second complete bytes" ].map.with_index do |content, index|
       @source_root.join("source-#{index}.txt").tap { |path| path.binwrite(content) }
     end
     ready = Queue.new
     release = Queue.new
-
-    workers = sources.map do |source|
-      Thread.new do
-        ready << true
-        release.pop
-        FileCopyService.cp_noreplace(
-          source.to_s,
-          destination.to_s,
-          root: @library_root.to_s,
-          allow_compatibility_fallback: true
-        )
-        :published
-      rescue Errno::EEXIST
-        :occupied
-      end
+    publishing = Queue.new
+    publish = Queue.new
+    workers = nil
+    real_publish = FileCopyService.method(:publish_private_child_atomically_noreplace!)
+    synchronized_publish = lambda do |*arguments, **options|
+      publishing << true
+      publish.pop
+      real_publish.call(*arguments, **options)
     end
-    sources.size.times { ready.pop }
-    sources.size.times { release << true }
-    outcomes = workers.map(&:value)
+
+    outcomes = FileCopyService.stub(:publish_private_child_atomically_noreplace!, synchronized_publish) do
+      workers = sources.map do |source|
+        Thread.new do
+          ready << true
+          release.pop
+          FileCopyService.cp_noreplace(
+            source.to_s,
+            destination.to_s,
+            root: @library_root.to_s
+          )
+          :published
+        rescue Errno::EEXIST
+          :occupied
+        end
+      end
+      sources.size.times { ready.pop }
+      sources.size.times { release << true }
+      sources.size.times { publishing.pop }
+      sources.size.times { publish << true }
+      workers.map(&:value)
+    end
 
     assert_equal [ :occupied, :published ], outcomes.sort
     assert_includes sources.map(&:binread), destination.binread
     assert_no_publication_artifacts
   ensure
+    workers&.size&.times do
+      release << true
+      publish << true
+    end
     workers&.each { |worker| worker.join if worker.alive? }
   end
 
@@ -141,8 +162,7 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
         source.to_s,
         destination.to_s,
         root: @library_root.to_s,
-        hardlink_mode: true,
-        allow_compatibility_fallback: true
+        hardlink_mode: true
       )
       false
     end
@@ -177,38 +197,100 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
     destination = @library_root.join("move.epub")
     content = SecureRandom.random_bytes(24_576)
     source.binwrite(content)
-    source_snapshot = FileCopyService.snapshot_source_file(source.to_s)
 
-    FileCopyService.cp_noreplace(
-      source.to_s,
-      destination.to_s,
-      root: @library_root.to_s,
-      source_snapshot: source_snapshot,
-      allow_compatibility_fallback: true,
-      require_durable: true
-    )
-    destination_snapshot = FileCopyService.verified_library_file_snapshot(
-      source.to_s,
-      destination.to_s,
-      root: @library_root.to_s,
-      source_snapshot: source_snapshot,
-      require_durable: true
-    )
-    assert destination_snapshot
-
-    removed = FileCopyService.remove_source_file(
-      source_snapshot,
-      destination_snapshot: destination_snapshot
-    )
-    if removed
-      assert_not source.exist?
-    else
+    if cifs_profile?
+      error = assert_raises(Errno::ESTALE) do
+        FileCopyService.mv_noreplace(
+          source.to_s,
+          destination.to_s,
+          root: @library_root.to_s
+        )
+      end
+      assert_match(/source changed after no-clobber move/, error.message)
       assert_equal content, source.binread
+    else
+      FileCopyService.mv_noreplace(
+        source.to_s,
+        destination.to_s,
+        root: @library_root.to_s
+      )
+      assert_not source.exist?
     end
 
     assert_equal content, destination.binread
     assert_no_publication_artifacts
     assert_empty Dir.children(@source_root).grep(/\A\.shelfarr-/)
+  end
+
+  test "moves a local source into the mounted library and removes the source" do
+    local_root = Pathname(Dir.mktmpdir("shelfarr-local-source-"))
+    source = local_root.join("local.epub")
+    destination = @library_root.join("local.epub")
+    content = SecureRandom.random_bytes(24_576)
+    source.binwrite(content)
+
+    FileCopyService.mv_noreplace(
+      source.to_s,
+      destination.to_s,
+      root: @library_root.to_s
+    )
+
+    assert_not source.exist?
+    assert_equal content, destination.binread
+    assert_no_publication_artifacts
+  ensure
+    FileUtils.rm_rf(local_root) if local_root
+  end
+
+  test "recovers interrupted publication artifacts in a nested library directory" do
+    nested = @library_root.join("Author", "Book")
+    FileUtils.mkdir_p(nested)
+    token = SecureRandom.hex(16)
+    temporary = nested.join(".shelfarr-copy-#{token}.tmp")
+    lock = nested.join(".shelfarr-copy-#{token}.lock")
+    temporary.binwrite("partial publication")
+    temporary_stat = temporary.stat
+    lock.binwrite(
+      "#{FileCopyService::COPY_LOCK_MAGIC}:#{token}:full:" \
+        "#{temporary_stat.dev}:#{temporary_stat.ino}"
+    )
+
+    if cifs_noserverino_profile?
+      error = assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+        FileCopyService.cleanup_interrupted_copies(nested.to_s, root: @library_root.to_s)
+      end
+      assert_match(/manual cleanup/, error.message)
+      assert temporary.exist?
+      assert lock.exist?
+      assert_equal "partial publication", temporary.binread
+      retry_source = @source_root.join("retry.txt")
+      retry_source.binwrite("retry bytes")
+      entries = Dir.children(nested)
+      assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+        FileCopyService.cp_noreplace(
+          retry_source.to_s,
+          nested.join("retry.txt").to_s,
+          root: @library_root.to_s
+        )
+      end
+      assert_equal entries.sort, Dir.children(nested).sort
+    elsif cifs_profile?
+      FileCopyService.cleanup_interrupted_copies(nested.to_s, root: @library_root.to_s)
+      assert_not temporary.exist?
+      assert_not lock.exist?
+      quarantines = Dir.glob(nested.join(".shelfarr-copy-quarantine-*").to_s)
+      assert_equal 1, quarantines.size
+      assert_empty Dir.children(quarantines.sole)
+      stale_time = Time.now - FileCopyService::COPY_QUARANTINE_STALE_AGE - 60
+      File.utime(stale_time, stale_time, quarantines.sole)
+      FileCopyService.cleanup_interrupted_copies(nested.to_s, root: @library_root.to_s)
+      assert_no_publication_artifacts
+    else
+      FileCopyService.cleanup_interrupted_copies(nested.to_s, root: @library_root.to_s)
+      assert_not temporary.exist?
+      assert_not lock.exist?
+      assert_no_publication_artifacts
+    end
   end
 
   test "private file locks exclude a second process" do
@@ -260,11 +342,69 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
     end
   end
 
+  test "service-specific interrupted attempts are reclaimed or block retries" do
+    staging = @library_root.join("private-attempts")
+    FileUtils.mkdir_p(staging)
+    owner_token = UploadImportFileService.send(:filesystem_owner_token)
+    upload_id = 42
+    upload_attempt = staging.join("upload_#{upload_id}-#{owner_token}-#{"a" * 32}.tmp")
+    libation_basename = "libation_42.m4b"
+    libation_attempt = staging.join(
+      ".#{libation_basename}.#{owner_token}.#{"b" * 32}.tmp"
+    )
+    upload_attempt.binwrite("upload attempt")
+    libation_attempt.binwrite("libation attempt")
+    upload = Struct.new(:id).new(upload_id)
+    upload_service = UploadImportFileService.allocate
+    upload_service.instance_variable_set(:@upload, upload)
+    libation_pattern = /\A\.#{Regexp.escape(libation_basename)}\.#{Regexp.escape(owner_token)}\.[0-9a-f]{32}\.tmp\z/
+
+    staging.open(File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |directory|
+      if cifs_noserverino_profile?
+        upload_error = assert_raises(UploadImportFileService::Error) do
+          upload_service.send(:reclaim_interrupted_private_attempts!, directory)
+        end
+        libation_error = assert_raises(OwnedMediaImportFileService::Error) do
+          OwnedMediaImportFileService.send(
+            :reclaim_interrupted_copy_attempts!,
+            directory,
+            libation_pattern
+          )
+        end
+        assert_match(/manual cleanup/, upload_error.message)
+        assert_match(/manual cleanup/, libation_error.message)
+        assert upload_attempt.exist?
+        assert libation_attempt.exist?
+      else
+        upload_service.send(:reclaim_interrupted_private_attempts!, directory)
+        OwnedMediaImportFileService.send(
+          :reclaim_interrupted_copy_attempts!,
+          directory,
+          libation_pattern
+        )
+        sleep 2 if cifs_profile? # Let the configured one-second attribute cache expire.
+        assert_not upload_attempt.exist?
+        assert_not libation_attempt.exist?
+      end
+    end
+  end
+
   private
 
   def assert_no_publication_artifacts
-    artifacts = Dir.children(@library_root).grep(/\A\.shelfarr-/)
+    artifacts = Dir.glob(
+      File.join(@library_root, "**", ".shelfarr-*"),
+      File::FNM_DOTMATCH
+    )
     assert_empty artifacts
+  end
+
+  def cifs_profile?
+    ENV.fetch("SHELFARR_FILESYSTEM_CONTRACT_PROFILE", "").start_with?("cifs-")
+  end
+
+  def cifs_noserverino_profile?
+    ENV["SHELFARR_FILESYSTEM_CONTRACT_PROFILE"] == "cifs-noserverino"
   end
 
   def report_contract_profile_once

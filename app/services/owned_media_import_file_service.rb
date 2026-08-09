@@ -67,11 +67,15 @@ class OwnedMediaImportFileService
     def copy_io_to_staging!(media_import, source, extension, root: output_root)
       destination = staging_path_for(media_import, extension, root: root)
       basename = destination.basename.to_s
-      temporary = ".#{basename}.#{SecureRandom.hex(16)}.tmp"
+      owner_token = UploadImportFileService.send(:filesystem_owner_token)
+      attempt_pattern = /\A\.#{Regexp.escape(basename)}\.#{Regexp.escape(owner_token)}\.[0-9a-f]{32}\.tmp\z/
+      temporary = ".#{basename}.#{owner_token}.#{SecureRandom.hex(16)}.tmp"
       size = nil
       copying = false
 
+      FileCopyService.cleanup_interrupted_copies(destination.dirname, root: root)
       secure_directory!(destination.dirname) do |directory|
+        reclaim_interrupted_copy_attempts!(directory, attempt_pattern)
         descriptor = class_native_openat(
           directory.fileno,
           temporary,
@@ -113,6 +117,35 @@ class OwnedMediaImportFileService
       raise if copying
 
       raise Error, "Shelfarr could not stage the Libation audiobook safely: #{error.message}"
+    end
+
+    def reclaim_interrupted_copy_attempts!(directory, pattern)
+      attempts = FileCopyService.send(:pinned_directory_children, directory).grep(pattern)
+      return if attempts.empty?
+
+      unless FileCopyService.stable_hardlink_identity?(directory)
+        raise Error, "An interrupted Libation staging attempt requires manual cleanup before retrying"
+      end
+
+      attempts.each do |basename|
+        identity = nil
+        with_class_pinned_regular_child(directory, basename) do |attempt|
+          stat = attempt.stat
+          identity = [ stat.dev, stat.ino ]
+        end
+        removed = FileCopyService.send(
+          :remove_pinned_child_if_identity,
+          directory,
+          basename,
+          identity
+        )
+        unless removed.in?([ :removed, :missing ])
+          raise Error, "An interrupted Libation staging attempt could not be cleaned safely"
+        end
+      end
+      directory.fsync
+    rescue Errno::ELOOP, Errno::ENOTDIR, FileCopyService::UnsafePathError => error
+      raise Error, "An interrupted Libation staging attempt could not be cleaned safely: #{error.message}"
     end
 
     # Imports staged by an earlier Shelfarr beta lived below Rails tmp. Move
@@ -900,14 +933,24 @@ class OwnedMediaImportFileService
 
   def publish_pinned_hard_link!(source_parent:, source_stat:, destination_parent:, destination:)
     basename = destination.basename.to_s
+    published = false
+    unless FileCopyService.stable_hardlink_identity?(source_parent, destination_parent)
+      raise Error, "The audiobook filesystem does not expose stable hardlink identities"
+    end
+
     native_linkat(
       source_parent.fileno,
       source_path.basename.to_s,
       destination_parent.fileno,
       basename
     )
+    published = true
     destination_parent.fsync
     validate_pinned_destination!(destination_parent, destination, source_stat: source_stat)
+  rescue Errno::EINVAL => error
+    raise unless published
+
+    raise Error, "The audiobook destination could not be verified after publication: #{error.message}"
   end
 
   def validate_pinned_destination!(directory, destination, source_stat: nil)

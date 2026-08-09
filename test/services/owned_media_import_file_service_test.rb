@@ -76,6 +76,31 @@ class OwnedMediaImportFileServiceTest < ActiveSupport::TestCase
     assert_equal "durable audiobook bytes", File.binread(@source)
   end
 
+  test "does not accumulate Libation attempts when filesystem identities are unreliable" do
+    stage_directory = OwnedMediaImportFileService.staging_upload_directory
+    basename = OwnedMediaImportFileService.staging_path_for(@media_import, ".m4b").basename.to_s
+    owner_token = UploadImportFileService.send(:filesystem_owner_token)
+    stale_attempt = stage_directory.join(
+      ".#{basename}.#{owner_token}.#{"a" * 32}.tmp"
+    )
+    File.binwrite(stale_attempt, "interrupted bytes")
+
+    error = FileCopyService.stub(:stable_hardlink_identity?, false) do
+      assert_raises(OwnedMediaImportFileService::Error) do
+        OwnedMediaImportFileService.send(
+          :copy_io_to_staging!,
+          @media_import,
+          StringIO.new("new bytes"),
+          ".m4b",
+          root: Pathname(@output_root)
+        )
+      end
+    end
+
+    assert_match(/manual cleanup/, error.message)
+    assert_equal [ stale_attempt.basename.to_s ], Dir.children(stage_directory).grep(/\.tmp\z/)
+  end
+
   test "reconciles a hard exit after the destination link but before staging unlink" do
     service = persistent_service
     service.with_destination_lock { }
@@ -219,6 +244,55 @@ class OwnedMediaImportFileServiceTest < ActiveSupport::TestCase
     assert_match(/became occupied/, error.message)
     assert_equal "concurrent library bytes", File.binread(destination)
     assert_equal "durable audiobook bytes", File.binread(@upload.file_path)
+  end
+
+  test "an unreliable identity filesystem is never published by hardlink" do
+    service = persistent_service
+    service.with_destination_lock { }
+    destination = Pathname(@media_import.reload.destination_path)
+    service.define_singleton_method(:native_linkat) do |*|
+      flunk "Unreliable identities must not use linkat"
+    end
+
+    error = FileCopyService.stub(:stable_hardlink_identity?, false) do
+      assert_raises(OwnedMediaImportFileService::Error) do
+        service.with_destination_lock { service.finalize! }
+      end
+    end
+
+    assert_match(/stable hardlink identities/, error.message)
+    assert_not destination.exist?
+    assert_equal "durable audiobook bytes", File.binread(@upload.file_path)
+  end
+
+  test "a successful hardlink with an unusable destination retains staged recovery" do
+    service = persistent_service
+    service.with_destination_lock { }
+    destination = Pathname(@media_import.reload.destination_path)
+    real_link = service.method(:native_linkat)
+    real_open = service.method(:native_openat)
+    published = false
+    service.define_singleton_method(:native_linkat) do |*arguments|
+      real_link.call(*arguments).tap { published = true }
+    end
+    service.define_singleton_method(:native_openat) do |directory_fd, basename, flags: nil|
+      if published && basename == destination.basename.to_s
+        raise Errno::EINVAL, "simulated CIFS reopen failure"
+      end
+
+      real_open.call(directory_fd, basename, flags: flags)
+    end
+
+    error = FileCopyService.stub(:stable_hardlink_identity?, true) do
+      assert_raises(OwnedMediaImportFileService::Error) do
+        service.with_destination_lock { service.finalize! }
+      end
+    end
+
+    assert_match(/could not be verified after publication/, error.message)
+    assert destination.exist?
+    assert_equal "durable audiobook bytes", File.binread(@upload.file_path)
+    assert @media_import.reload.destination_path.present?
   end
 
   test "does not delete a replacement file after its own published link is displaced" do

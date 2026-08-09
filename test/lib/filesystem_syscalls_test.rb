@@ -29,6 +29,37 @@ class FilesystemSyscallsTest < ActiveSupport::TestCase
     assert_equal 0o600, File.stat(path).mode & 0o777
   end
 
+  test "openat passes the mode required by O_TMPFILE" do
+    skip "O_TMPFILE is unavailable on this platform" unless File.const_defined?(:TMPFILE)
+
+    descriptor = FilesystemSyscalls.openat(
+      @directory.fileno,
+      ".",
+      flags: File::RDWR | File::TMPFILE,
+      mode: 0o600
+    )
+    file = IO.new(descriptor, "w+b", autoclose: true)
+
+    assert_equal 0o600, file.stat.mode & 0o777
+  rescue Errno::EOPNOTSUPP, Errno::EINVAL
+    skip "The test filesystem does not support O_TMPFILE"
+  ensure
+    file&.close unless file&.closed?
+  end
+
+  test "path operations reject embedded null bytes" do
+    assert_raises(ArgumentError) do
+      FilesystemSyscalls.openat(
+        @directory.fileno,
+        "prefix\0suffix",
+        flags: File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+        mode: 0o600
+      )
+    end
+
+    assert_not File.exist?(File.join(@temporary_directory, "prefix"))
+  end
+
   test "rename_noreplace publishes once without replacing an existing path" do
     File.binwrite(File.join(@temporary_directory, "source.txt"), "source")
 
@@ -53,7 +84,27 @@ class FilesystemSyscallsTest < ActiveSupport::TestCase
     assert_equal "second", File.binread(File.join(@temporary_directory, "second.txt"))
   end
 
+  test "rename_noreplace preserves invalid topology errors" do
+    parent = File.join(@temporary_directory, "parent")
+    child = File.join(parent, "child")
+    FileUtils.mkdir_p(child)
+    child_directory = File.open(child, File::RDONLY | File::NONBLOCK)
+
+    assert_raises(Errno::EINVAL) do
+      FilesystemSyscalls.rename_noreplace(
+        @directory.fileno,
+        "parent",
+        child_directory.fileno,
+        "moved"
+      )
+    end
+  ensure
+    child_directory&.close unless child_directory&.closed?
+  end
+
   test "ftruncate preserves lengths beyond a signed 32-bit offset" do
+    skip "Shelfarr supports 64-bit filesystem offsets" if Fiddle::SIZEOF_LONG < 8
+
     descriptor = FilesystemSyscalls.openat(
       @directory.fileno,
       "sparse.bin",

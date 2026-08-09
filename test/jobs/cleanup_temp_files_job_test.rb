@@ -242,6 +242,108 @@ class CleanupTempFilesJobIsolatedTest < ActiveJob::TestCase
     assert_not File.directory?(nested)
   end
 
+  test "actual cleanup reclaims stale randomized ordinary upload attempts" do
+    root = @temp_base.join("ebook-library")
+    SettingsService.set(:ebook_output_path, root.to_s)
+    private_directory = root.join(
+      UploadImportFileService::PRIVATE_DIRECTORY,
+      UploadImportFileService.send(:database_fingerprint)
+    )
+    FileUtils.mkdir_p(private_directory)
+    orphan = private_directory.join(
+      UploadImportFileService.send(:private_attempt_basename, 42)
+    )
+    File.binwrite(orphan, "crash-left bytes")
+    FileUtils.touch(orphan, mtime: 25.hours.ago.to_time)
+
+    CleanupTempFilesJob.new.send(:cleanup_upload_temps)
+
+    assert_not orphan.exist?
+  end
+
+  test "ordinary upload cleanup preserves persistent locks and unknown files" do
+    private_directory = @temp_base.join("ordinary-staging")
+    locks_directory = private_directory.join(UploadImportFileService::LOCKS_DIRECTORY)
+    FileUtils.mkdir_p(locks_directory)
+    lock_path = locks_directory.join("lock-0001")
+    unknown = private_directory.join("unrecognized.tmp")
+    foreign_attempt = private_directory.join("upload_42-#{"f" * 32}-#{"a" * 32}.tmp")
+    File.binwrite(lock_path, "")
+    File.binwrite(unknown, "unknown bytes")
+    File.binwrite(foreign_attempt, "foreign attempt")
+    FileUtils.touch([ lock_path, unknown, foreign_attempt ], mtime: 25.hours.ago.to_time)
+    lock = File.open(lock_path, "r+")
+    assert lock.flock(File::LOCK_EX | File::LOCK_NB)
+    lock_identity = [ lock.stat.dev, lock.stat.ino ]
+
+    deleted = CleanupTempFilesJob.new.send(
+      :cleanup_ordinary_upload_directory,
+      private_directory,
+      root: @temp_base,
+      max_age: 24.hours.ago,
+      protected_paths: Set.new
+    )
+
+    assert_equal 0, deleted
+    assert_equal lock_identity, [ File.stat(lock_path).dev, File.stat(lock_path).ino ]
+    assert_equal "unknown bytes", File.binread(unknown)
+    assert_equal "foreign attempt", File.binread(foreign_attempt)
+  ensure
+    lock&.close
+  end
+
+  test "ordinary upload cleanup refuses a replaced staging directory" do
+    private_directory = @temp_base.join("ordinary-staging")
+    displaced_directory = @temp_base.join("displaced-staging")
+    replacement_directory = @temp_base.join("replacement-staging")
+    FileUtils.mkdir_p([ private_directory, replacement_directory ])
+    basename = UploadImportFileService.send(:private_attempt_basename, 42)
+    original = private_directory.join(basename)
+    replacement = replacement_directory.join(basename)
+    File.binwrite(original, "original orphan")
+    File.binwrite(replacement, "unrelated replacement")
+    FileUtils.touch([ original, replacement ], mtime: 25.hours.ago.to_time)
+    real_remove = FileCopyService.method(:remove_regular_file_safely)
+    swap_directory = lambda do |path, **options|
+      File.rename(private_directory, displaced_directory)
+      File.symlink(replacement_directory, private_directory)
+      real_remove.call(path, **options)
+    end
+
+    deleted = FileCopyService.stub(:remove_regular_file_safely, swap_directory) do
+      CleanupTempFilesJob.new.send(
+        :cleanup_ordinary_upload_directory,
+        private_directory,
+        root: @temp_base,
+        max_age: 24.hours.ago,
+        protected_paths: Set.new
+      )
+    end
+
+    assert_equal 0, deleted
+    assert_equal "original orphan", File.binread(displaced_directory.join(basename))
+    assert_equal "unrelated replacement", File.binread(replacement)
+  end
+
+  test "ordinary upload cleanup rejects a staging symlink below the configured root" do
+    root = @temp_base.join("ebook-library")
+    external = @temp_base.join("external-staging")
+    fingerprint = UploadImportFileService.send(:database_fingerprint)
+    external_private = external.join(fingerprint)
+    FileUtils.mkdir_p([ root, external_private ])
+    File.symlink(external, root.join(UploadImportFileService::PRIVATE_DIRECTORY))
+    orphan = external_private.join(
+      UploadImportFileService.send(:private_attempt_basename, 42)
+    )
+    File.binwrite(orphan, "external bytes")
+    FileUtils.touch(orphan, mtime: 25.hours.ago.to_time)
+    SettingsService.set(:ebook_output_path, root.to_s)
+
+    CleanupTempFilesJob.new.send(:cleanup_upload_temps)
+
+    assert_equal "external bytes", File.binread(orphan)
+  end
+
   test "actual cleanup preserves nested files used by active uploads" do
     nested = @uploads_dir.join("database-fingerprint")
     FileUtils.mkdir_p(nested)

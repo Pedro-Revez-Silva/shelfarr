@@ -324,8 +324,10 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
       File.symlink(outside, destination.parent)
     end
 
-    error = UploadImportFileService.stub(:native_linkat, swapping_linkat) do
-      assert_raises(UploadImportFileService::AmbiguousPublicationError) { service.publish! }
+    error = UploadImportFileService.stub(:native_rename_noreplace, false) do
+      UploadImportFileService.stub(:native_linkat, swapping_linkat) do
+        assert_raises(UploadImportFileService::AmbiguousPublicationError) { service.publish! }
+      end
     end
 
     assert_match(/directory changed/, error.message)
@@ -339,7 +341,59 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
     FileUtils.rm_rf(moved_parent) if moved_parent
   end
 
-  test "a retry removes a private copy left after the destination was published" do
+  test "an unreliable identity filesystem is never published by hardlink" do
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+
+    error = FileCopyService.stub(:stable_hardlink_identity?, false) do
+      UploadImportFileService.stub(:native_rename_noreplace, false) do
+        UploadImportFileService.stub(:native_linkat, ->(*) { flunk "Unreliable identities must not use linkat" }) do
+          assert_raises(UploadImportFileService::Error) { service.publish! }
+        end
+      end
+    end
+
+    assert_match(/stable hardlink identities/, error.message)
+    assert File.exist?(@source)
+  end
+
+  test "a successful hardlink with an unusable destination retains an ambiguous reservation" do
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    destination = Pathname(@upload.reload.destination_path)
+    real_link = UploadImportFileService.method(:native_linkat)
+    real_open = UploadImportFileService.method(:native_openat)
+    published = false
+    opening = lambda do |directory_fd, basename, flags:, mode: 0|
+      if published && basename == destination.basename.to_s
+        raise Errno::EINVAL, "simulated CIFS reopen failure"
+      end
+
+      real_open.call(directory_fd, basename, flags: flags, mode: mode)
+    end
+    linking = lambda do |*arguments|
+      real_link.call(*arguments).tap { published = true }
+    end
+
+    error = FileCopyService.stub(:stable_hardlink_identity?, true) do
+      UploadImportFileService.stub(:native_rename_noreplace, false) do
+        UploadImportFileService.stub(:native_linkat, linking) do
+          UploadImportFileService.stub(:native_openat, opening) do
+            FileCopyService.stub(:remove_pinned_child_if_identity, ->(*) { raise IOError, "cleanup failed" }) do
+              assert_raises(UploadImportFileService::AmbiguousPublicationError) { service.publish! }
+            end
+          end
+        end
+      end
+    end
+
+    assert_match(/could not be verified after publication/, error.message)
+    assert destination.exist?
+    assert_not service.restore_and_clear!
+    assert_equal destination.to_s, @upload.reload.destination_path
+  end
+
+  test "a retry retains an unverified private copy left after destination publication" do
     service = UploadImportFileService.new(upload: @upload, book: @book)
     service.reserve!
     service.publish!
@@ -353,7 +407,96 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
     File.binwrite(private_copy, "original ebook bytes")
 
     assert_equal service.book_library_path, service.publish!
-    assert_not File.exist?(private_copy)
+    assert_equal "original ebook bytes", File.binread(private_copy)
+  end
+
+  test "successful rename publication preserves a replacement at the consumed private path" do
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    private_directory = File.join(
+      File.realpath(@library_root),
+      UploadImportFileService::PRIVATE_DIRECTORY,
+      UploadImportFileService.send(:database_fingerprint)
+    )
+    private_copy = nil
+    real_rename = UploadImportFileService.method(:native_rename_noreplace)
+    renaming = lambda do |*arguments|
+      real_rename.call(*arguments).tap do |published|
+        private_copy = File.join(private_directory, arguments.fetch(1))
+        File.binwrite(private_copy, "replacement private bytes") if published
+      end
+    end
+
+    UploadImportFileService.stub(:native_rename_noreplace, renaming) do
+      service.publish!
+    end
+    service.publish!
+
+    assert_equal "replacement private bytes", File.binread(private_copy)
+    assert_equal "original ebook bytes", File.binread(@upload.reload.destination_path)
+  end
+
+  test "a crash-left private attempt does not block a retry" do
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    private_directory = File.join(
+      File.realpath(@library_root),
+      UploadImportFileService::PRIVATE_DIRECTORY,
+      UploadImportFileService.send(:database_fingerprint)
+    )
+    FileUtils.mkdir_p(private_directory)
+    stale_copy = File.join(private_directory, "upload_#{@upload.id}-#{"a" * 32}.tmp")
+    File.binwrite(stale_copy, "crash-left bytes")
+
+    service.publish!
+
+    assert_equal "crash-left bytes", File.binread(stale_copy)
+    assert_equal "original ebook bytes", File.binread(@upload.reload.destination_path)
+  end
+
+  test "a retry reclaims its owner-tagged private attempt on reliable filesystems" do
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    private_directory = File.join(
+      File.realpath(@library_root),
+      UploadImportFileService::PRIVATE_DIRECTORY,
+      UploadImportFileService.send(:database_fingerprint)
+    )
+    FileUtils.mkdir_p(private_directory)
+    stale_copy = File.join(
+      private_directory,
+      UploadImportFileService.send(:private_attempt_basename, @upload.id)
+    )
+    File.binwrite(stale_copy, "interrupted bytes")
+
+    service.publish!
+
+    assert_not File.exist?(stale_copy)
+    assert_equal "original ebook bytes", File.binread(@upload.reload.destination_path)
+  end
+
+  test "a retry does not accumulate owner-tagged attempts when identities are unreliable" do
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    private_directory = File.join(
+      File.realpath(@library_root),
+      UploadImportFileService::PRIVATE_DIRECTORY,
+      UploadImportFileService.send(:database_fingerprint)
+    )
+    FileUtils.mkdir_p(private_directory)
+    stale_copy = File.join(
+      private_directory,
+      UploadImportFileService.send(:private_attempt_basename, @upload.id)
+    )
+    File.binwrite(stale_copy, "interrupted bytes")
+
+    error = FileCopyService.stub(:stable_hardlink_identity?, false) do
+      assert_raises(UploadImportFileService::Error) { service.publish! }
+    end
+
+    assert_match(/manual cleanup/, error.message)
+    assert_equal [ File.basename(stale_copy) ], Dir.children(private_directory).grep(/\Aupload_/)
+    assert_not File.exist?(@upload.reload.destination_path)
   end
 
   test "completed cleanup reconciles a source already truncated before its marker cleared" do

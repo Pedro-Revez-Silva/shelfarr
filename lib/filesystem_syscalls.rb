@@ -10,13 +10,14 @@ module FilesystemSyscalls
   class << self
     def openat(directory_fd, basename, flags:, mode: 0)
       Fiddle.last_error = 0
-      descriptor = if (flags & File::CREAT).positive?
+      descriptor = if open_requires_mode?(flags)
         # openat is variadic when O_CREAT is present. On arm64 Darwin, treating
         # mode_t as a fixed fourth argument silently creates mode-000 files.
         native_function(
           :openat_create,
           [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VARIADIC ],
-          symbol: :openat
+          symbol: :openat,
+          cache: false
         ).call(directory_fd, path_pointer(basename), flags, Fiddle::TYPE_INT, mode)
       else
         native_function(
@@ -63,15 +64,16 @@ module FilesystemSyscalls
 
     def readlinkat(directory_fd, basename)
       buffer_size = 4096
-      buffer = Fiddle::Pointer.malloc(buffer_size)
+      buffer = "\0".b * buffer_size
       Fiddle.last_error = 0
       length = native_function(
         :readlinkat,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T ]
+        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T ],
+        return_type: Fiddle::TYPE_SSIZE_T
       ).call(directory_fd, path_pointer(basename), buffer, buffer_size)
       raise SystemCallError.new("readlinkat", Fiddle.last_error) if length == -1
 
-      buffer.to_s(length).force_encoding(Encoding::UTF_8)
+      buffer.byteslice(0, length).force_encoding(Encoding::UTF_8)
     end
 
     def unlinkat(directory_fd, basename, flags = 0)
@@ -126,7 +128,7 @@ module FilesystemSyscalls
         flag
       )
       true
-    rescue Fiddle::DLError, Errno::ENOSYS, Errno::EINVAL, Errno::EOPNOTSUPP, Errno::ENOTSUP
+    rescue Fiddle::DLError, Errno::ENOSYS, Errno::EOPNOTSUPP, Errno::ENOTSUP
       false
     end
 
@@ -140,17 +142,35 @@ module FilesystemSyscalls
       raise SystemCallError.new(name.to_s, Fiddle.last_error)
     end
 
-    def native_function(name, arguments, symbol: name)
+    def native_function(name, arguments, symbol: name, return_type: Fiddle::TYPE_INT, cache: true)
+      return build_native_function(symbol, arguments, return_type) unless cache
+
       @native_functions ||= {}
-      @native_functions[[ name, arguments ]] ||= Fiddle::Function.new(
+      @native_functions[[ name, arguments, return_type ]] ||= build_native_function(
+        symbol,
+        arguments,
+        return_type
+      )
+    end
+
+    def build_native_function(symbol, arguments, return_type)
+      Fiddle::Function.new(
         Fiddle::Handle::DEFAULT[symbol.to_s],
         arguments,
-        Fiddle::TYPE_INT
+        return_type
       )
     end
 
     def path_pointer(path)
-      Fiddle::Pointer[path.to_s.b + "\0"]
+      path = path.to_s.b
+      raise ArgumentError, "path contains null byte" if path.include?("\0")
+
+      Fiddle::Pointer[path + "\0"]
+    end
+
+    def open_requires_mode?(flags)
+      (flags & File::CREAT).positive? ||
+        (File.const_defined?(:TMPFILE) && (flags & File::TMPFILE) == File::TMPFILE)
     end
   end
 end

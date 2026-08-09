@@ -654,7 +654,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
       PostProcessingJob.perform_now(@download.id)
     end
 
-    assert @request.reload.completed?
+    assert @request.reload.completed?, @request.issue_description
     assert_equal Pathname(source).expand_path.to_s, File.readlink(referenced)
     assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
   end
@@ -1078,7 +1078,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal "long-name audio", File.read(File.join(long_title_destination, duplicate_filename))
   end
 
-  test "publishes split imports when the destination filesystem rejects atomic publication" do
+  test "retains split imports when the destination filesystem rejects atomic publication" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
     @book.update!(title: "Book Two")
@@ -1094,9 +1094,12 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
     book_one_destination = File.join(@temp_dest_base, @book.author, "Book One", "Book One.m4b")
     book_two_destination = File.join(@temp_dest_base, @book.author, "Book Two", "Book Two.m4b")
-    assert @request.reload.completed?
-    assert_equal "book one audio", File.read(book_one_destination)
-    assert_equal "book two audio", File.read(book_two_destination)
+    assert @request.reload.attention_needed?
+    assert_match(/safe filesystem operation failed/i, @request.issue_description)
+    assert_not File.exist?(book_one_destination)
+    assert_not File.exist?(book_two_destination)
+    assert_equal "book one audio", File.read(File.join(@temp_source, "Book One.m4b"))
+    assert_equal "book two audio", File.read(File.join(@temp_source, "Book Two.m4b"))
   end
 
   test "does not overwrite a concurrent file when atomic publication is unavailable" do
@@ -1121,9 +1124,12 @@ class PostProcessingJobTest < ActiveJob::TestCase
       end
     end
 
-    assert @request.reload.completed?
+    assert @request.reload.attention_needed?
+    assert_match(/safe filesystem operation failed/i, @request.issue_description)
     assert_equal "concurrent file", File.read(File.join(book_one_destination, "Book One.m4b"))
-    assert_equal "book one audio", File.read(File.join(book_one_destination, "Book One (2).m4b"))
+    assert_not File.exist?(File.join(book_one_destination, "Book One (2).m4b"))
+    assert_equal "book one audio", File.read(File.join(@temp_source, "Book One.m4b"))
+    assert_equal "book two audio", File.read(File.join(@temp_source, "Book Two.m4b"))
   end
 
   test "reclaims interrupted temporary files after publication completed" do
@@ -1395,7 +1401,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal 0o600, File.stat(destination).mode & 0o777
   end
 
-  test "single-file ebook copy supports synthetic Windows ACL modes and compatibility publication" do
+  test "single-file ebook copy fails closed without atomic publication on synthetic Windows ACL modes" do
     source_file = File.join(@temp_source, "Original.epub")
     write_valid_ebook_file(source_file)
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
@@ -1410,14 +1416,13 @@ class PostProcessingJobTest < ActiveJob::TestCase
       end
     end
 
-    destination = Dir.glob(File.join(@temp_dest_base, @book.author, @book.title, "*.epub")).sole
-    assert @request.reload.completed?
-    assert_equal "PK\x03\x04valid ebook content", File.binread(destination)
-    assert_equal 0o666, File.stat(destination).mode & 0o7777
-    assert_equal 0o777, File.stat(File.dirname(destination)).mode & 0o7777
+    assert @request.reload.attention_needed?
+    assert_match(/safe filesystem operation failed/i, @request.issue_description)
+    assert_empty Dir.glob(File.join(@temp_dest_base, @book.author, @book.title, "*.epub"))
+    assert_equal "PK\x03\x04valid ebook content", File.binread(source_file)
   end
 
-  test "recursive audiobook copy supports synthetic Windows ACL modes and compatibility publication" do
+  test "recursive audiobook copy fails closed without atomic publication on synthetic Windows ACL modes" do
     nested_source = File.join(@temp_source, "Disc One")
     FileUtils.mkdir_p(nested_source)
     FileUtils.mv(File.join(@temp_source, "audiobook.mp3"), File.join(nested_source, "chapter.mp3"))
@@ -1430,10 +1435,10 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
 
     destination = File.join(@temp_dest_base, @book.author, @book.title, "Disc One", "chapter.mp3")
-    assert @request.reload.completed?
-    assert_equal "test audio content", File.binread(destination)
-    assert_equal 0o644, File.stat(destination).mode & 0o7777
-    assert_equal 0o755, File.stat(File.dirname(destination)).mode & 0o7777
+    assert @request.reload.attention_needed?
+    assert_match(/safe filesystem operation failed/i, @request.issue_description)
+    assert_not File.exist?(destination)
+    assert_equal "test audio content", File.binread(File.join(nested_source, "chapter.mp3"))
   end
 
   test "imports through a pre-existing shared author directory without changing its mode" do

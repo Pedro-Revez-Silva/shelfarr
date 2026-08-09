@@ -395,5 +395,7 @@ class SafeLibraryDeletionService
 
   def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
     FilesystemSyscalls.rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
+  rescue Errno::EINVAL
+    false
   end
 end

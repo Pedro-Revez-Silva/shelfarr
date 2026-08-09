@@ -35,9 +35,9 @@ class FileCopyService
   COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:prepared:([0-9]+):([0-9]+):([0-9a-f]+)\z/
   COPY_LOCK_COMPATIBILITY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:(copying|complete):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9a-f]+)\z/
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
+  DISCARD_PATTERN = /\A\.shelfarr-discard-([0-9a-f]+)-([0-9a-f]+)-[0-9a-f]{32}\.tmp\z/
   SOURCE_QUARANTINE_PATTERN = /\A\.shelfarr-source-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   COPY_QUARANTINE_ENTRY = "entry"
-  HARDLINK_PROBE_ENTRY = "entry"
   COPY_QUARANTINE_STALE_AGE = 24 * 60 * 60
   AT_REMOVEDIR = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
 
@@ -54,6 +54,7 @@ class FileCopyService
   class DirectoryNotWritableError < UnsafePathError; end
   class UnsafeFilePermissionsError < UnsafePathError; end
   class AtomicPublicationUnsupportedError < StandardError; end
+  class AmbiguousPublicationError < StandardError; end
   class DurabilityUnsupportedError < StandardError; end
   class HardlinkUnsupportedError < StandardError; end
   SourceFileSnapshot = Struct.new(
@@ -103,10 +104,10 @@ class FileCopyService
     end
 
     # Copy a regular file through a complete private file in the destination
-    # directory. Publication uses an atomic no-replace operation when the
-    # filesystem supports one, or an exclusive descriptor-backed copy with
-    # crash recovery on compatibility filesystems. Every destination component
-    # is opened from a pinned root descriptor with O_NOFOLLOW.
+    # directory. Publication uses an atomic no-replace operation and fails
+    # closed when the destination filesystem cannot provide one. Every
+    # destination component is opened from a pinned root descriptor with
+    # O_NOFOLLOW.
     def cp_noreplace(
       src,
       dest,
@@ -115,7 +116,6 @@ class FileCopyService
       source_snapshot: nil,
       heartbeat: nil,
       hardlink_mode: false,
-      allow_compatibility_fallback: false,
       require_durable: false
     )
       if hardlink_mode
@@ -126,7 +126,6 @@ class FileCopyService
             dest,
             root: root,
             heartbeat: heartbeat,
-            allow_compatibility_fallback: allow_compatibility_fallback,
             source_validator: validator,
             accepted_modes: LIBRARY_FILE_MODES,
             require_durable: require_durable
@@ -144,7 +143,6 @@ class FileCopyService
             dest,
             root: root,
             heartbeat: heartbeat,
-            allow_compatibility_fallback: allow_compatibility_fallback,
             source_validator: validator,
             accepted_modes: LIBRARY_FILE_MODES,
             require_durable: require_durable
@@ -172,6 +170,10 @@ class FileCopyService
         )
       end
       dest
+    end
+
+    def stable_hardlink_identity?(*filesystem_entries)
+      !hardlink_identity_unreliable?(*filesystem_entries)
     end
 
     # Create a no-replace library entry that is a symlink to a verified regular
@@ -211,7 +213,8 @@ class FileCopyService
           begin
             link_target = native_readlinkat(parent.fileno, basename)
             unless link_target == target
-              remove_published_reference_if_ours!(parent, basename, expected_target: target)
+              # The name may have been replaced after symlinkat. Retain it;
+              # there is no descriptor-based unlink primitive for symlinks.
               raise UnsafePathError, "reference publication did not produce the expected symlink"
             end
           rescue Errno::ENOENT
@@ -259,16 +262,6 @@ class FileCopyService
       result
     end
 
-    # Unlink only when the name still points at the target we published.
-    def remove_published_reference_if_ours!(parent, basename, expected_target:)
-      current = native_readlinkat(parent.fileno, basename)
-      return unless current == expected_target
-
-      native_unlinkat(parent.fileno, basename, 0)
-    rescue Errno::ENOENT, Errno::EINVAL, SystemCallError
-      nil
-    end
-
     # Publish from a source descriptor already pinned by the caller (for
     # example, a verified HTTP Tempfile) without resolving its pathname again.
     def cp_io_noreplace(source, dest, root: nil, heartbeat: nil)
@@ -286,8 +279,7 @@ class FileCopyService
       dest,
       root: nil,
       source_root: nil,
-      heartbeat: nil,
-      allow_compatibility_fallback: false
+      heartbeat: nil
     )
       source_snapshot = snapshot_source_file(src, source_root: source_root)
       cp_noreplace(
@@ -297,7 +289,6 @@ class FileCopyService
         source_root: source_root,
         source_snapshot: source_snapshot,
         heartbeat: heartbeat,
-        allow_compatibility_fallback: allow_compatibility_fallback,
         require_durable: true
       )
       destination_snapshot = verified_library_file_snapshot(
@@ -322,6 +313,9 @@ class FileCopyService
       source_root ||= snapshot_source_root(source, heartbeat: heartbeat)
       source_path = Pathname(source).expand_path
       destination_path = Pathname(destination).expand_path
+      if destination_path == source_path || destination_path.to_s.start_with?("#{source_path}#{File::SEPARATOR}")
+        raise Errno::EINVAL, "destination directory is inside the source tree"
+      end
 
       with_pinned_absolute_directory(source_root.canonical_parent_path) do |source_parent|
         unless file_identity(source_parent.stat) == [ source_root.parent_device, source_root.parent_inode ]
@@ -680,18 +674,34 @@ class FileCopyService
             raise Errno::ESTALE, "private publication source changed"
           end
 
-          publish_private_child_atomically_noreplace!(
-            parent,
-            source.basename.to_s,
-            basename
-          )
+          publication_method = if hardlink_identity_unreliable?(parent)
+            publish_private_child_atomically_noreplace!(
+              parent,
+              source.basename.to_s,
+              basename,
+              allow_link_fallback: false
+            )
+          else
+            publish_private_child_atomically_noreplace!(
+              parent,
+              source.basename.to_s,
+              basename
+            )
+          end
         end
-        validate_published_child!(
-          parent,
-          basename,
-          [ private_file.device, private_file.inode ],
-          expected_mode: mode
-        )
+        begin
+          validate_published_child!(
+            parent,
+            basename,
+            [ private_file.device, private_file.inode ],
+            expected_mode: mode
+          )
+        rescue Errno::EINVAL => error
+          raise unless publication_method == :link
+
+          raise AmbiguousPublicationError,
+            "The linked destination could not be verified after publication: #{error.message}"
+        end
         validate_current_directory_identity!(parent_path, parent)
         sync_io(parent)
       end
@@ -704,6 +714,8 @@ class FileCopyService
       source = Pathname(private_file.name).expand_path
       removed = false
       with_pinned_destination_parent(source, root: root) do |parent, basename, parent_path|
+        return false if hardlink_identity_unreliable?(parent)
+
         with_pinned_regular_child(parent, basename) do |current|
           next unless file_identity(current.stat) == [ private_file.device, private_file.inode ]
 
@@ -721,16 +733,35 @@ class FileCopyService
     # Remove a regular file only after atomically moving it to a unique name
     # inside the same pinned private directory and verifying that the moved
     # entry is the inode inspected by this process.
-    def remove_regular_file_safely(path, root:)
+    def remove_regular_file_safely(
+      path,
+      root:,
+      expected_identity: nil,
+      expected_parent_identity: nil,
+      maximum_mtime: nil
+    )
       path = Pathname(path).expand_path
       with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
-        expected_identity = nil
-        with_pinned_regular_child(parent, basename) do |current|
-          expected_identity = file_identity(current.stat)
+        if hardlink_identity_unreliable?(parent)
+          raise UnsafePathError, "cleanup requires stable filesystem identities"
+        end
+        if expected_parent_identity && file_identity(parent.stat) != expected_parent_identity
+          raise Errno::ESTALE, "cleanup directory changed before file removal"
         end
 
-        quarantine = ".shelfarr-discard-#{SecureRandom.hex(16)}.tmp"
-        renamed = native_rename_noreplace(
+        inspected_identity = nil
+        with_pinned_regular_child(parent, basename) do |current|
+          stat = current.stat
+          inspected_identity = file_identity(stat)
+          if expected_identity && inspected_identity != expected_identity
+            raise Errno::ESTALE, "cleanup file changed before removal"
+          end
+          return false if maximum_mtime && stat.mtime > maximum_mtime
+        end
+
+        quarantine = ".shelfarr-discard-#{inspected_identity.first.to_s(16)}-" \
+          "#{inspected_identity.last.to_s(16)}-#{SecureRandom.hex(16)}.tmp"
+        renamed = native_rename_noreplace_compatibility(
           parent.fileno,
           basename,
           parent.fileno,
@@ -745,8 +776,8 @@ class FileCopyService
         with_pinned_regular_child(parent, quarantine) do |current|
           actual_identity = file_identity(current.stat)
         end
-        unless actual_identity == expected_identity
-          restored = native_rename_noreplace(
+        unless actual_identity == inspected_identity
+          restored = native_rename_noreplace_compatibility(
             parent.fileno,
             quarantine,
             parent.fileno,
@@ -875,6 +906,8 @@ class FileCopyService
       parent_path = Pathname(parent_path).expand_path
       snapshot = nil
       with_pinned_directory(parent_path, root: root, create: false, mode: 0o700) do |parent|
+        return false if hardlink_identity_unreliable?(parent)
+
         child = open_pinned_directory_child(parent, child_name)
         begin
           stat = child.stat
@@ -1109,6 +1142,8 @@ class FileCopyService
       end
 
       with_pinned_absolute_directory(source_snapshot.canonical_parent_path) do |parent|
+        return false if hardlink_identity_unreliable?(parent)
+
         unless file_identity(parent.stat) == [ source_snapshot.parent_device, source_snapshot.parent_inode ]
           raise Errno::ESTALE, "source parent identity changed during cleanup"
         end
@@ -1161,11 +1196,13 @@ class FileCopyService
       quarantine_basename = ".shelfarr-remove-#{SecureRandom.hex(16)}"
 
       with_pinned_absolute_directory(canonical_parent) do |parent|
+        return false if hardlink_identity_unreliable?(parent)
+
         unless file_identity(parent.stat) == [ source_root.parent_device, source_root.parent_inode ]
           raise Errno::ESTALE, "source parent identity changed during cleanup"
         end
         validate_current_directory_identity!(parent_path, parent)
-        renamed = native_rename_noreplace(
+        renamed = native_rename_noreplace_compatibility(
           parent.fileno,
           expanded.basename.to_s,
           parent.fileno,
@@ -1405,16 +1442,38 @@ class FileCopyService
       destination = File.join(directory, ".shelfarr-cleanup-probe")
       with_pinned_destination_parent(destination, root: root) do |parent, _basename, parent_path|
         validate_current_directory_identity!(parent_path, parent)
-        Dir.children(parent_path).each do |entry|
+        identity_reliable = !hardlink_identity_unreliable?(parent)
+        entries = Dir.children(parent_path)
+        unless identity_reliable
+          retained = entries.any? do |entry|
+            COPY_LOCK_PATTERN.match?(entry) || COPY_QUARANTINE_PATTERN.match?(entry) ||
+              DISCARD_PATTERN.match?(entry) || OWNER_PROBE_PATTERN.match?(entry)
+          end
+          if retained
+            Rails.logger.warn(
+              "[FileCopyService] Interrupted publication artifacts require manual cleanup because " \
+                "the filesystem does not expose stable identities"
+            )
+            raise AtomicPublicationUnsupportedError,
+              "Interrupted publication artifacts require manual cleanup before another import"
+          end
+        end
+        entries.each do |entry|
           if (match = COPY_LOCK_PATTERN.match(entry))
-            cleanup_interrupted_copy(parent, match[1])
-          elsif (match = COPY_QUARANTINE_PATTERN.match(entry))
+            cleanup_interrupted_copy(parent, match[1]) if identity_reliable
+          elsif identity_reliable && (match = COPY_QUARANTINE_PATTERN.match(entry))
             cleanup_interrupted_quarantine(
               parent,
               entry,
               [ match[1].to_i(16), match[2].to_i(16) ]
             )
-          elsif OWNER_PROBE_PATTERN.match?(entry)
+          elsif identity_reliable && (match = DISCARD_PATTERN.match(entry))
+            remove_pinned_child_if_identity(
+              parent,
+              entry,
+              [ match[1].to_i(16), match[2].to_i(16) ]
+            )
+          elsif identity_reliable && OWNER_PROBE_PATTERN.match?(entry)
             cleanup_interrupted_owner_probe(parent, entry)
           end
         end
@@ -1663,7 +1722,6 @@ class FileCopyService
       destination,
       root:,
       heartbeat: nil,
-      allow_compatibility_fallback: false,
       source_validator: nil,
       accepted_modes: LIBRARY_FILE_MODES,
       require_durable: false
@@ -1724,40 +1782,36 @@ class FileCopyService
                 raise DurabilityUnsupportedError, "destination file fsync is unsupported"
               end
               source_validator&.call
+              identity_reliable = !hardlink_identity_unreliable?(parent)
 
-              begin
+              publication_method = if identity_reliable
                 publish_private_child_atomically_noreplace!(
                   parent,
                   temporary_basename,
                   basename
                 )
-                published_identity = temporary_identity
-              rescue AtomicPublicationUnsupportedError
-                raise unless allow_compatibility_fallback
-
-                Rails.logger.warn(
-                  "[FileCopyService] Atomic publication unsupported; using exclusive-copy compatibility mode"
+              else
+                publish_private_child_atomically_noreplace!(
+                  parent,
+                  temporary_basename,
+                  basename,
+                  allow_link_fallback: false
                 )
-                published_identity, published_mode, published_file_durable =
-                  publish_private_child_by_exclusive_copy_noreplace!(
-                    parent,
-                    temporary_basename,
-                    basename,
-                    temporary_identity,
-                    lock: lock,
-                    token: token,
-                    heartbeat: heartbeat,
-                    accepted_modes: accepted_modes,
-                    path: destination,
-                    root: root
-                  )
               end
-              validate_published_child!(
-                parent,
-                basename,
-                published_identity,
-                expected_mode: published_mode
-              )
+              published_identity = temporary_identity
+              begin
+                validate_published_child!(
+                  parent,
+                  basename,
+                  published_identity,
+                  expected_mode: published_mode
+                )
+              rescue Errno::EINVAL => error
+                raise unless publication_method == :link
+
+                raise AmbiguousPublicationError,
+                  "The linked destination could not be verified after publication: #{error.message}"
+              end
               validate_current_directory_identity!(parent_path, parent)
               parent_durable = sync_io(parent)
               if require_durable && !(published_file_durable && parent_durable)
@@ -1800,7 +1854,7 @@ class FileCopyService
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
       with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
-        if hardlink_identity_unreliable?(source_parent_path, parent_path)
+        if hardlink_identity_unreliable?(source_parent, parent)
           raise HardlinkUnsupportedError,
             "The source or destination filesystem does not expose stable hardlink identities"
         end
@@ -1833,10 +1887,11 @@ class FileCopyService
               source_manifest
             )
             persist_copy_lock_identity!(lock, token, source_identity)
-            verify_hardlink_identity_support!(
+            lock_identity = verify_hardlink_identity_support!(
               parent,
+              lock,
               lock_basename,
-              ".shelfarr-hardlink-probe-#{token}"
+              ".shelfarr-hardlink-probe-#{token}.tmp"
             )
             begin
               native_linkat(
@@ -1879,7 +1934,7 @@ class FileCopyService
             validate_current_directory_identity!(parent_path, parent)
 
             begin
-              publish_private_child_atomically_noreplace!(
+              publication_method = publish_private_child_atomically_noreplace!(
                 parent,
                 temporary_basename,
                 basename
@@ -1889,13 +1944,20 @@ class FileCopyService
                 "The destination filesystem cannot safely publish the requested hardlink",
                 cause: error
             end
-            validate_published_child!(
-              parent,
-              basename,
-              source_identity,
-              expected_mode: source_mode,
-              expected_manifest: source_manifest
-            )
+            begin
+              validate_published_child!(
+                parent,
+                basename,
+                source_identity,
+                expected_mode: source_mode,
+                expected_manifest: source_manifest
+              )
+            rescue Errno::EINVAL => error
+              raise unless publication_method == :link
+
+              raise AmbiguousPublicationError,
+                "The linked destination could not be verified after publication: #{error.message}"
+            end
             validate_hardlink_source!(
               source,
               source_parent,
@@ -1943,47 +2005,52 @@ class FileCopyService
       end
     end
 
-    def verify_hardlink_identity_support!(parent, lock_basename, probe_directory_basename)
-      probe_directory = nil
-      native_mkdirat(parent.fileno, probe_directory_basename, 0o700)
-      probe_directory = open_pinned_directory_child(parent, probe_directory_basename)
-      unless secure_cleanup_quarantine?(probe_directory, parent)
-        raise UnsafePathError, "hardlink identity probe directory is not private"
-      end
-
+    def verify_hardlink_identity_support!(parent, lock, lock_basename, probe_basename)
+      lock_path_identity = nil
+      probe_identity = nil
       native_hardlink_probe(
         parent.fileno,
         lock_basename,
-        probe_directory.fileno,
-        HARDLINK_PROBE_ENTRY
+        parent.fileno,
+        probe_basename
       )
       with_pinned_regular_child(parent, lock_basename) do |reopened_lock|
-        lock_identity = file_identity(reopened_lock.stat)
-        with_pinned_regular_child(probe_directory, HARDLINK_PROBE_ENTRY) do |probe|
-          unless file_identity(probe.stat) == lock_identity
+        lock_path_identity = file_identity(reopened_lock.stat)
+        unless file_identity(lock.stat) == lock_path_identity
+          raise HardlinkUnsupportedError,
+            "The destination filesystem does not expose stable hardlink identities"
+        end
+        with_pinned_regular_child(parent, probe_basename) do |probe|
+          probe_identity = file_identity(probe.stat)
+          unless probe_identity == lock_path_identity
             raise HardlinkUnsupportedError,
               "The destination filesystem does not expose stable hardlink identities"
           end
         end
       end
+      lock_path_identity
     rescue Errno::EXDEV, Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS, Errno::EMLINK,
         Errno::EINVAL, Fiddle::DLError, NotImplementedError => error
       raise HardlinkUnsupportedError,
         "The destination filesystem cannot verify hardlink identity",
         cause: error
     ensure
-      if probe_directory
+      if probe_identity && probe_identity == lock_path_identity
+        in_flight_error = $!
+        cleanup_error = nil
         begin
-          cleanup = remove_hardlink_probe_directory(
-            parent,
-            probe_directory_basename,
-            directory: probe_directory
-          )
-          unless cleanup.in?([ :removed, :missing ])
-            raise UnsafePathError, "hardlink identity probe could not be removed safely"
+          cleanup = remove_pinned_child_if_identity(parent, probe_basename, probe_identity)
+        rescue => error
+          cleanup_error = error
+          cleanup = :retained
+        end
+        unless cleanup.in?([ :removed, :missing ])
+          if in_flight_error
+            Rails.logger.warn("[FileCopyService] Retained a hardlink identity probe after capability failure")
+          else
+            raise cleanup_error || UnsafePathError,
+              "hardlink identity probe could not be removed safely"
           end
-        ensure
-          probe_directory.close unless probe_directory.closed?
         end
       end
     end
@@ -2012,14 +2079,27 @@ class FileCopyService
       end
     end
 
-    def publish_private_child_atomically_noreplace!(parent, temporary_basename, destination_basename)
-      published = native_rename_noreplace(
-        parent.fileno,
-        temporary_basename,
-        parent.fileno,
-        destination_basename
-      )
-      return if published
+    def publish_private_child_atomically_noreplace!(
+      parent,
+      temporary_basename,
+      destination_basename,
+      allow_link_fallback: true
+    )
+      published = begin
+        native_rename_noreplace(
+          parent.fileno,
+          temporary_basename,
+          parent.fileno,
+          destination_basename
+        )
+      rescue Errno::EINVAL
+        false
+      end
+      return :rename if published
+      unless allow_link_fallback
+        raise AtomicPublicationUnsupportedError,
+          "The destination filesystem cannot atomically publish library files"
+      end
 
       native_linkat(
         parent.fileno,
@@ -2027,111 +2107,12 @@ class FileCopyService
         parent.fileno,
         destination_basename
       )
+      :link
     rescue Errno::EXDEV, Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS, Errno::EMLINK,
         Errno::EINVAL, Fiddle::DLError, NotImplementedError => error
       raise AtomicPublicationUnsupportedError,
         "The destination filesystem cannot atomically publish library files",
         cause: error
-    end
-
-    def publish_private_child_by_exclusive_copy_noreplace!(
-      parent,
-      temporary_basename,
-      destination_basename,
-      temporary_identity,
-      lock:,
-      token:,
-      heartbeat:,
-      accepted_modes:,
-      path:,
-      root:,
-      mode: LIBRARY_FILE_MODE
-    )
-      destination_identity = nil
-      destination_mode = nil
-      destination_durable = false
-      source_size = nil
-
-      begin
-        with_pinned_regular_child(parent, temporary_basename) do |source|
-          source_stat = source.stat
-          unless file_identity(source_stat) == temporary_identity
-            raise Errno::ESTALE, "private publication source changed"
-          end
-          source_size = source_stat.size
-
-          persist_copy_lock_compatibility!(
-            lock,
-            token,
-            :prepared,
-            temporary_identity,
-            destination_basename
-          )
-          with_created_regular_child(parent, destination_basename, 0o600) do |destination|
-            destination_identity = file_identity(destination.stat)
-            apply_file_mode!(
-              destination,
-              0o600,
-              accepted_modes: accepted_modes,
-              path: path,
-              root: root
-            )
-            persist_copy_lock_compatibility!(
-              lock,
-              token,
-              :copying,
-              temporary_identity,
-              destination_basename,
-              destination_identity
-            )
-            sync_io(parent)
-
-            if heartbeat
-              copy_source_io(source, destination, heartbeat: heartbeat)
-            else
-              copy_source_io(source, destination)
-            end
-            destination_mode = apply_file_mode!(
-              destination,
-              mode,
-              accepted_modes: accepted_modes,
-              path: path,
-              root: root
-            )
-            destination_durable = flush_and_sync(destination)
-            unless file_identity(source.stat) == temporary_identity &&
-                source.stat.size == source_size && destination.stat.size == source_size
-              raise Errno::ESTALE, "file changed during compatibility publication"
-            end
-          end
-        end
-
-        with_pinned_regular_child(parent, temporary_basename) do |source|
-          unless file_identity(source.stat) == temporary_identity && source.stat.size == source_size
-            raise Errno::ESTALE, "private publication source changed"
-          end
-        end
-        validate_published_child!(
-          parent,
-          destination_basename,
-          destination_identity,
-          expected_mode: destination_mode
-        )
-        sync_io(parent)
-        persist_copy_lock_compatibility!(
-          lock,
-          token,
-          :complete,
-          temporary_identity,
-          destination_basename,
-          destination_identity
-        )
-        [ destination_identity, destination_mode, destination_durable ]
-      rescue
-        remove_pinned_child_if_identity(parent, destination_basename, destination_identity)
-        sync_io(parent)
-        raise
-      end
     end
 
     def validate_published_child!(
@@ -2163,16 +2144,25 @@ class FileCopyService
       with_pinned_regular_child(parent, lock_basename, writable: true) do |lock|
         return unless lock.flock(File::LOCK_EX | File::LOCK_NB)
         return unless secure_copy_lock?(lock, parent)
-        probe_cleanup = remove_hardlink_probe_directory(
-          parent,
-          ".shelfarr-hardlink-probe-#{token}"
-        )
-        return unless probe_cleanup.in?([ :removed, :missing ])
 
         lock_identity = file_identity(lock.stat)
         lock.rewind
         state, expected_temporary_identity, destination_basename,
           expected_destination_identity = copy_lock_cleanup_state(lock.read, token)
+        probe_basename = ".shelfarr-hardlink-probe-#{token}.tmp"
+        probe_cleanup = if state == :full
+          begin
+            remove_pinned_child_if_identity(parent, probe_basename, lock_identity)
+          rescue Errno::EINVAL
+            :retained
+          end
+        elsif pinned_child_missing?(parent, probe_basename)
+          :missing
+        else
+          :retained
+        end
+        return unless probe_cleanup.in?([ :removed, :missing ])
+
         cleanup_result = case state
         when :full
           remove_pinned_child_if_identity(
@@ -2226,7 +2216,7 @@ class FileCopyService
             destination_status
           end
         when :pending, :legacy
-          remove_pinned_regular_child(parent, temporary_basename)
+          pinned_child_missing?(parent, temporary_basename) ? :missing : :retained
         else
           pinned_child_missing?(parent, temporary_basename) ? :missing : :retained
         end
@@ -2270,43 +2260,6 @@ class FileCopyService
       )
     rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, IOError, UnsafePathError
       nil
-    end
-
-    def remove_hardlink_probe_directory(
-      parent,
-      basename,
-      directory: nil
-    )
-      opened_here = directory.nil?
-      directory ||= open_pinned_directory_child(parent, basename)
-      return :retained unless secure_cleanup_quarantine?(directory, parent)
-
-      children = pinned_directory_children(directory)
-      return :retained unless children.empty? || children == [ HARDLINK_PROBE_ENTRY ]
-
-      if children == [ HARDLINK_PROBE_ENTRY ]
-        begin
-          with_pinned_regular_child(directory, HARDLINK_PROBE_ENTRY) do
-            native_unlinkat(directory.fileno, HARDLINK_PROBE_ENTRY)
-          end
-        rescue Errno::ENOENT
-          nil
-        end
-        sync_io(directory)
-      end
-
-      # CIFS may retain a stale directory listing and replace a freshly created
-      # directory's provisional inode after its first child operation. rmdir
-      # still asks the server to prove this random private directory is empty.
-      native_unlinkat(parent.fileno, basename, AT_REMOVEDIR)
-      sync_io(parent)
-      :removed
-    rescue Errno::ENOENT
-      :missing
-    rescue Errno::EEXIST, Errno::ENOTEMPTY, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
-      :retained
-    ensure
-      directory.close if opened_here && directory && !directory.closed?
     end
 
     def cleanup_interrupted_quarantine(parent, basename, expected_identity)
@@ -2377,28 +2330,6 @@ class FileCopyService
         lock,
         "#{COPY_LOCK_MAGIC}:#{token}:full:#{identity.first}:#{identity.last}"
       )
-    end
-
-    def persist_copy_lock_compatibility!(
-      lock,
-      token,
-      state,
-      temporary_identity,
-      destination_basename,
-      destination_identity = nil
-    )
-      encoded_basename = destination_basename.b.unpack1("H*")
-      record = "#{COPY_LOCK_MAGIC}:#{token}:compatibility:#{state}:" \
-        "#{temporary_identity.first}:#{temporary_identity.last}:"
-      if destination_identity
-        record << "#{destination_identity.first}:#{destination_identity.last}:"
-      end
-      record << encoded_basename
-
-      checksum = Digest::SHA256.hexdigest(record)
-      lock.seek(0, IO::SEEK_END)
-      lock.write("\n#{record}:#{checksum}\n")
-      flush_and_sync(lock)
     end
 
     def persist_copy_lock_record!(lock, record)
@@ -2805,7 +2736,7 @@ class FileCopyService
         relative = prefix ? prefix.join(entry) : Pathname(entry)
         expected = expected_entries.fetch(relative.to_s)
         quarantine = ".shelfarr-remove-child-#{SecureRandom.hex(16)}"
-        renamed = native_rename_noreplace(
+        renamed = native_rename_noreplace_compatibility(
           directory.fileno,
           entry,
           directory.fileno,
@@ -2896,7 +2827,7 @@ class FileCopyService
       [ *manifest.first(5), manifest.fetch(6) ]
     end
 
-    def hardlink_identity_unreliable?(*paths)
+    def hardlink_identity_unreliable?(*filesystem_entries)
       return false unless RUBY_PLATFORM.include?("linux")
 
       mounts = File.binread("/proc/self/mountinfo").lines(chomp: true).filter_map do |line|
@@ -2918,9 +2849,14 @@ class FileCopyService
       end
       mount_parents = mounts.to_h { |mount_id, parent_id, *| [ mount_id, parent_id ] }
 
-      paths.any? do |path|
-        expanded = Pathname(path).expand_path.realpath.to_s.b
-        stat = File.stat(expanded)
+      filesystem_entries.any? do |entry|
+        expanded, stat = if entry.respond_to?(:fileno) && entry.respond_to?(:stat)
+          descriptor_path = File.readlink("/proc/self/fd/#{entry.fileno}").delete_suffix(" (deleted)")
+          [ Pathname(descriptor_path).expand_path.to_s.b, entry.stat ]
+        else
+          path = Pathname(entry).expand_path.realpath
+          [ path.to_s.b, File.stat(path) ]
+        end
         device = "#{stat.dev_major}:#{stat.dev_minor}"
         mount = mounts.select do |_mount_id, _parent_id, mount_device, mountpoint, *|
           mount_device == device &&
@@ -2941,7 +2877,7 @@ class FileCopyService
         options = "#{mount.fetch(5)},#{mount.fetch(6)}".split(",")
         !options.include?("serverino")
       end
-    rescue ArgumentError, Encoding::CompatibilityError, Errno::ENOENT, Errno::EACCES
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
       true
     end
 
@@ -2965,7 +2901,7 @@ class FileCopyService
     end
 
     def restore_quarantined_replacement(parent, quarantine_basename, original_basename)
-      restored = native_rename_noreplace(
+      restored = native_rename_noreplace_compatibility(
         parent.fileno,
         quarantine_basename,
         parent.fileno,
@@ -3340,7 +3276,7 @@ class FileCopyService
     end
 
     def restore_quarantined_child!(quarantine, parent, basename)
-      restored = native_rename_noreplace(
+      restored = native_rename_noreplace_compatibility(
         quarantine.fileno,
         COPY_QUARANTINE_ENTRY,
         parent.fileno,
@@ -3494,6 +3430,17 @@ class FileCopyService
 
     def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
       FilesystemSyscalls.rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
+    end
+
+    def native_rename_noreplace_compatibility(
+      source_fd,
+      source_basename,
+      destination_fd,
+      destination_basename
+    )
+      native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
+    rescue Errno::EINVAL
+      false
     end
 
     def file_identity(stat)
