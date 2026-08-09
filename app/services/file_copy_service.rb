@@ -1863,11 +1863,9 @@ class FileCopyService
         temporary_basename = ".shelfarr-copy-#{token}.tmp"
         lock_basename = ".shelfarr-copy-#{token}.lock"
         temporary_identity = nil
-        lock_identity = nil
 
         begin
           with_created_regular_child(parent, lock_basename, 0o600) do |lock|
-            lock_identity = file_identity(lock.stat)
             raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
 
             apply_file_mode!(
@@ -1887,7 +1885,7 @@ class FileCopyService
               source_manifest
             )
             persist_copy_lock_identity!(lock, token, source_identity)
-            lock_identity = verify_hardlink_identity_support!(
+            verify_hardlink_identity_support!(
               parent,
               lock,
               lock_basename,
@@ -1972,15 +1970,22 @@ class FileCopyService
             end
           end
         ensure
-          temporary_cleanup = remove_pinned_child_if_identity(
-            parent,
-            temporary_basename,
-            temporary_identity
-          )
-          if temporary_cleanup.in?([ :removed, :missing ])
-            remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
+          # The lock descriptor can retain a provisional CIFS inode after the
+          # hardlink probe gives the path its server identity. Once its flock
+          # is released, reopen the journal and clean probe, temp, then lock
+          # using their current pinned path identities.
+          in_flight_error = $!
+          begin
+            cleanup_interrupted_copy(parent, token)
+            sync_io(parent)
+          rescue => cleanup_error
+            raise unless in_flight_error
+
+            Rails.logger.warn(
+              "[FileCopyService] Hardlink teardown was deferred after capability failure: " \
+                "#{cleanup_error.class}"
+            )
           end
-          sync_io(parent)
         end
       end
     end

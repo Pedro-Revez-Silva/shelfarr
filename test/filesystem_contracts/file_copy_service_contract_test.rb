@@ -187,6 +187,7 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
       source.open("ab") { |file| file.write("independent mutation") }
       assert_equal copied_content, destination.binread
     end
+    reclaim_deferred_empty_quarantines if cifs_profile?
     assert_no_publication_artifacts
   end
 
@@ -388,6 +389,22 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
   end
 
   private
+
+  def reclaim_deferred_empty_quarantines
+    artifacts = Dir.children(@library_root).grep(/\A\.shelfarr-/)
+    quarantines, unexpected = artifacts.partition do |entry|
+      FileCopyService::COPY_QUARANTINE_PATTERN.match?(entry)
+    end
+    assert_empty unexpected
+    quarantines.each do |entry|
+      path = @library_root.join(entry)
+      assert path.directory?
+      assert_empty Dir.children(path)
+      stale_time = Time.now - FileCopyService::COPY_QUARANTINE_STALE_AGE - 60
+      File.utime(stale_time, stale_time, path)
+    end
+    FileCopyService.cleanup_interrupted_copies(@library_root.to_s, root: @library_root.to_s)
+  end
 
   def assert_no_publication_artifacts
     artifacts = Dir.glob(

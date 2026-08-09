@@ -972,7 +972,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
         end
 
         assert_match(/stable hardlink identities/, error.message)
-        assert_equal 1, Dir.glob(File.join(@dest_dir, ".shelfarr-hardlink-probe-*.tmp")).size
+        assert_empty Dir.glob(File.join(@dest_dir, ".shelfarr-hardlink-probe-*.tmp"))
         assert_equal 1, Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock")).size
       end
     end
@@ -980,6 +980,71 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(destination)
     FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
     assert_empty Dir.children(@dest_dir)
+  end
+
+  test "hardlink_noreplace cleans a probe after the lock descriptor reports a provisional identity" do
+    destination = File.join(@dest_dir, "hardlinked.txt")
+    real_identity = FileCopyService.method(:file_identity)
+    real_link = FileCopyService.method(:native_hardlink_probe)
+    linked = false
+    linked_identity_calls = 0
+
+    provisional_descriptor_identity = lambda do |stat|
+      identity = real_identity.call(stat)
+      if linked && stat.file? && stat.nlink > 1
+        linked_identity_calls += 1
+        return [ identity.first, identity.last + 1 ] if linked_identity_calls == 2
+      end
+      identity
+    end
+    linking = lambda do |*arguments|
+      real_link.call(*arguments).tap { linked = true }
+    end
+
+    FileCopyService.stub(:native_hardlink_probe, linking) do
+      FileCopyService.stub(:file_identity, provisional_descriptor_identity) do
+        error = assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+
+        assert_match(/stable hardlink identities/, error.message)
+      end
+    end
+
+    assert_not File.exist?(destination)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "hardlink_noreplace preserves its typed fallback error when teardown is deferred" do
+    destination = File.join(@dest_dir, "hardlinked.txt")
+    capability_failure = lambda do |*|
+      raise FileCopyService::HardlinkUnsupportedError, "hardlink capability unavailable"
+    end
+    teardown_failure = lambda do |*|
+      raise FileCopyService::UnsafePathError, "cleanup identity unavailable"
+    end
+
+    FileCopyService.stub(:verify_hardlink_identity_support!, capability_failure) do
+      FileCopyService.stub(:cleanup_interrupted_copy, teardown_failure) do
+        error = assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+
+        assert_equal "hardlink capability unavailable", error.message
+      end
+    end
+
+    assert_not File.exist?(destination)
   end
 
   test "hardlink_noreplace uses the visible SMB3 mount when mounts are stacked" do
@@ -1290,8 +1355,6 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
 
     assert verified_lock
-    assert_equal 1, Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock")).size
-    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
     assert_empty Dir.children(@dest_dir)
   end
 
@@ -1760,12 +1823,12 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     real_open = FileCopyService.method(:with_pinned_regular_child)
     failed = false
 
-    transient_open = lambda do |parent, basename, &operation|
+    transient_open = lambda do |parent, basename, **options, &operation|
       if !failed && basename.match?(/\A\.shelfarr-copy-.*\.tmp\z/)
         failed = true
         raise Errno::EIO
       end
-      real_open.call(parent, basename, &operation)
+      real_open.call(parent, basename, **options, &operation)
     end
 
     FileCopyService.stub(:with_pinned_regular_child, transient_open) do
