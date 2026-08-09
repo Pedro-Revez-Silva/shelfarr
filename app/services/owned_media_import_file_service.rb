@@ -67,11 +67,15 @@ class OwnedMediaImportFileService
     def copy_io_to_staging!(media_import, source, extension, root: output_root)
       destination = staging_path_for(media_import, extension, root: root)
       basename = destination.basename.to_s
-      temporary = ".#{basename}.#{SecureRandom.hex(16)}.tmp"
+      owner_token = UploadImportFileService.send(:filesystem_owner_token)
+      attempt_pattern = /\A\.#{Regexp.escape(basename)}\.#{Regexp.escape(owner_token)}\.[0-9a-f]{32}\.tmp\z/
+      temporary = ".#{basename}.#{owner_token}.#{SecureRandom.hex(16)}.tmp"
       size = nil
       copying = false
 
+      FileCopyService.cleanup_interrupted_copies(destination.dirname, root: root)
       secure_directory!(destination.dirname) do |directory|
+        reclaim_interrupted_copy_attempts!(directory, attempt_pattern)
         descriptor = class_native_openat(
           directory.fileno,
           temporary,
@@ -113,6 +117,35 @@ class OwnedMediaImportFileService
       raise if copying
 
       raise Error, "Shelfarr could not stage the Libation audiobook safely: #{error.message}"
+    end
+
+    def reclaim_interrupted_copy_attempts!(directory, pattern)
+      attempts = FileCopyService.send(:pinned_directory_children, directory).grep(pattern)
+      return if attempts.empty?
+
+      unless FileCopyService.stable_hardlink_identity?(directory)
+        raise Error, "An interrupted Libation staging attempt requires manual cleanup before retrying"
+      end
+
+      attempts.each do |basename|
+        identity = nil
+        with_class_pinned_regular_child(directory, basename) do |attempt|
+          stat = attempt.stat
+          identity = [ stat.dev, stat.ino ]
+        end
+        removed = FileCopyService.send(
+          :remove_pinned_child_if_identity,
+          directory,
+          basename,
+          identity
+        )
+        unless removed.in?([ :removed, :missing ])
+          raise Error, "An interrupted Libation staging attempt could not be cleaned safely"
+        end
+      end
+      directory.fsync
+    rescue Errno::ELOOP, Errno::ENOTDIR, FileCopyService::UnsafePathError => error
+      raise Error, "An interrupted Libation staging attempt could not be cleaned safely: #{error.message}"
     end
 
     # Imports staged by an earlier Shelfarr beta lived below Rails tmp. Move
@@ -435,90 +468,27 @@ class OwnedMediaImportFileService
     end
 
     def class_native_openat(directory_fd, basename, flags:, mode: 0)
-      Fiddle.last_error = 0
-      descriptor = if (flags & File::CREAT).positive?
-        function = class_native_function(
-          :openat_create,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VARIADIC ],
-          symbol: :openat
-        )
-        function.call(directory_fd, basename, flags, Fiddle::TYPE_INT, mode)
-      else
-        function = class_native_function(
-          :openat,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]
-        )
-        function.call(directory_fd, basename, flags)
-      end
-      return descriptor unless descriptor == -1
-
-      raise SystemCallError.new("openat", Fiddle.last_error)
+      FilesystemSyscalls.openat(directory_fd, basename, flags: flags, mode: mode)
     end
 
     def class_native_mkdirat(directory_fd, basename, mode)
-      call_class_native_path_function(
-        class_native_function(:mkdirat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-        directory_fd,
-        basename,
-        mode
-      )
+      FilesystemSyscalls.mkdirat(directory_fd, basename, mode)
     rescue Errno::EEXIST
       nil
     end
 
     def class_native_fchmod(descriptor, mode)
-      Fiddle.last_error = 0
-      result = class_native_function(
-        :fchmod,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_INT ]
-      ).call(descriptor, mode)
-      return if result.zero?
-
-      raise SystemCallError.new("fchmod", Fiddle.last_error)
+      FilesystemSyscalls.fchmod(descriptor, mode)
     end
 
     def class_native_renameat(source_fd, source_basename, destination_fd, destination_basename)
-      call_class_native_path_function(
-        class_native_function(
-          :renameat,
-          [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP ]
-        ),
-        source_fd,
-        source_basename,
-        destination_fd,
-        destination_basename
-      )
+      FilesystemSyscalls.renameat(source_fd, source_basename, destination_fd, destination_basename)
     end
 
     def class_native_unlinkat(directory_fd, basename)
-      call_class_native_path_function(
-        class_native_function(:unlinkat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-        directory_fd,
-        basename,
-        0
-      )
+      FilesystemSyscalls.unlinkat(directory_fd, basename)
     rescue Errno::ENOENT
       nil
-    end
-
-    def call_class_native_path_function(function, *arguments)
-      pointers = arguments.map do |argument|
-        argument.is_a?(String) ? Fiddle::Pointer[argument + "\0"] : argument
-      end
-      Fiddle.last_error = 0
-      result = function.call(*pointers)
-      return result unless result == -1
-
-      raise SystemCallError.new("filesystem operation", Fiddle.last_error)
-    end
-
-    def class_native_function(name, arguments, symbol: name)
-      @class_native_functions ||= {}
-      @class_native_functions[[ name, arguments ]] ||= Fiddle::Function.new(
-        Fiddle::Handle::DEFAULT[symbol.to_s],
-        arguments,
-        Fiddle::TYPE_INT
-      )
     end
 
     def same_class_file_identity?(left, right)
@@ -963,14 +933,24 @@ class OwnedMediaImportFileService
 
   def publish_pinned_hard_link!(source_parent:, source_stat:, destination_parent:, destination:)
     basename = destination.basename.to_s
+    published = false
+    unless FileCopyService.stable_hardlink_identity?(source_parent, destination_parent)
+      raise Error, "The audiobook filesystem does not expose stable hardlink identities"
+    end
+
     native_linkat(
       source_parent.fileno,
       source_path.basename.to_s,
       destination_parent.fileno,
       basename
     )
+    published = true
     destination_parent.fsync
     validate_pinned_destination!(destination_parent, destination, source_stat: source_stat)
+  rescue Errno::EINVAL => error
+    raise unless published
+
+    raise Error, "The audiobook destination could not be verified after publication: #{error.message}"
   end
 
   def validate_pinned_destination!(directory, destination, source_stat: nil)
@@ -1108,79 +1088,46 @@ class OwnedMediaImportFileService
   end
 
   def native_linkat(source_directory_fd, source_basename, destination_directory_fd, destination_basename)
-    call_native_path_function(
-      native_function(
-        :linkat,
-        [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]
-      ),
-      source_directory_fd,
-      source_basename,
-      destination_directory_fd,
-      destination_basename,
-      0
-    )
+    with_audiobook_filesystem_syscall do
+      FilesystemSyscalls.linkat(
+        source_directory_fd,
+        source_basename,
+        destination_directory_fd,
+        destination_basename
+      )
+    end
   end
 
-
   def native_mkdirat(directory_fd, basename, mode)
-    call_native_path_function(
-      native_function(:mkdirat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-      directory_fd,
-      basename,
-      mode
-    )
+    with_audiobook_filesystem_syscall do
+      FilesystemSyscalls.mkdirat(directory_fd, basename, mode)
+    end
   rescue Errno::EEXIST
     nil
   end
 
   def native_openat(directory_fd, basename, flags: File::RDONLY | File::NOFOLLOW)
-    function = native_function(
-      :openat,
-      [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT, Fiddle::TYPE_INT ]
-    )
-    Fiddle.last_error = 0
-    descriptor = function.call(directory_fd, basename, flags, 0)
-    return descriptor unless descriptor == -1
-
-    raise SystemCallError.new("openat", Fiddle.last_error)
+    with_audiobook_filesystem_syscall do
+      FilesystemSyscalls.openat(directory_fd, basename, flags: flags)
+    end
   end
 
   def native_unlinkat(directory_fd, basename)
     return if basename.blank?
 
-    call_native_path_function(
-      native_function(:unlinkat, [ Fiddle::TYPE_INT, Fiddle::TYPE_VOIDP, Fiddle::TYPE_INT ]),
-      directory_fd,
-      basename,
-      0
-    )
+    with_audiobook_filesystem_syscall do
+      FilesystemSyscalls.unlinkat(directory_fd, basename)
+    end
   rescue Errno::ENOENT
     nil
   end
 
   def native_fchmod(descriptor, mode)
-    call_native_path_function(
-      native_function(:fchmod, [ Fiddle::TYPE_INT, Fiddle::TYPE_INT ]),
-      descriptor,
-      mode
-    )
+    with_audiobook_filesystem_syscall { FilesystemSyscalls.fchmod(descriptor, mode) }
   end
 
-  def call_native_path_function(function, *arguments)
-    Fiddle.last_error = 0
-    result = function.call(*arguments)
-    return result if result.zero?
-
-    raise SystemCallError.new("filesystem operation", Fiddle.last_error)
-  end
-
-  def native_function(name, arguments)
-    @native_functions ||= {}
-    @native_functions[name] ||= Fiddle::Function.new(
-      Fiddle::Handle::DEFAULT[name.to_s],
-      arguments,
-      Fiddle::TYPE_INT
-    )
+  def with_audiobook_filesystem_syscall
+    yield
   rescue Fiddle::DLError => e
     raise Error, "The audiobook filesystem cannot safely pin destinations: #{e.message}"
   end

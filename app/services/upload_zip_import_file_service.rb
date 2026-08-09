@@ -471,7 +471,7 @@ class UploadZipImportFileService
   rescue OwnedMediaImportFileService::Error,
     FileCopyService::UnsafePathError,
     FileCopyService::AtomicPublicationUnsupportedError,
-    Errno::EXDEV, Errno::EPERM, Errno::ENOTSUP, Errno::ELOOP, Errno::ENOTDIR => error
+    Errno::EXDEV, Errno::EINVAL, Errno::EPERM, Errno::ENOTSUP, Errno::ELOOP, Errno::ENOTDIR => error
     raise Error, "The library filesystem cannot safely publish ZIP uploads: #{error.message}"
   end
 

@@ -43,7 +43,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   test "cp_noreplace preserves a destination replacement made during the copy" do
     dest_file = File.join(@dest_dir, "output.txt")
 
-    FileCopyService.stub(:publish_private_child_noreplace!, ->(_parent, _source, destination, _identity) {
+    FileCopyService.stub(:publish_private_child_atomically_noreplace!, ->(_parent, _source, destination) {
       File.binwrite(dest_file, "concurrent replacement")
       raise Errno::EEXIST, destination
     }) do
@@ -310,14 +310,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       fchmod_error: Errno::EOPNOTSUPP
     ) do
       FileCopyService.ensure_directory(directory, root: @dest_dir)
-      without_atomic_file_publication do
-        FileCopyService.cp_noreplace(
-          @src_file,
-          destination,
-          root: @dest_dir,
-          allow_compatibility_fallback: true
-        )
-      end
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
     end
 
     assert_equal "test content", File.binread(destination)
@@ -325,7 +318,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal 0o775, File.stat(destination).mode & 0o7777
   end
 
-  test "cp_noreplace supports synthetic Windows ACL modes and compatibility publication" do
+  test "cp_noreplace supports synthetic Windows ACL modes" do
     destination = File.join(@dest_dir, "windows-mode.txt")
 
     with_synthetic_library_modes(
@@ -334,14 +327,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       directory_mode: 0o777,
       fchmod_error: Errno::EOPNOTSUPP
     ) do
-      without_atomic_file_publication do
-        FileCopyService.cp_noreplace(
-          @src_file,
-          destination,
-          root: @dest_dir,
-          allow_compatibility_fallback: true
-        )
-      end
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
     end
 
     assert_equal "test content", File.binread(destination)
@@ -422,29 +408,16 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "other bytes!", File.binread(@src_file)
   end
 
-  test "cp_noreplace uses exclusive copy when atomic publication is unsupported" do
+  test "cp_noreplace fails closed when atomic publication is unsupported" do
     destination = File.join(@dest_dir, "compatible.txt")
 
     without_atomic_file_publication do
-      FileCopyService.cp_noreplace(
-        @src_file,
-        destination,
-        root: @dest_dir,
-        allow_compatibility_fallback: true
-      )
-    end
-
-    assert_equal "test content", File.binread(destination)
-    assert_equal 0o640, File.stat(destination).mode & 0o777
-    assert_empty Dir.children(@dest_dir) - [ "compatible.txt" ]
-  end
-
-  test "cp_noreplace remains strict unless compatibility publication is enabled" do
-    destination = File.join(@dest_dir, "strict.txt")
-
-    without_atomic_file_publication do
       assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
-        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        FileCopyService.cp_noreplace(
+          @src_file,
+          destination,
+          root: @dest_dir
+        )
       end
     end
 
@@ -453,7 +426,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@dest_dir)
   end
 
-  test "compatibility publication never overwrites an occupied destination" do
+  test "failed atomic publication never overwrites an occupied destination" do
     destination = File.join(@dest_dir, "occupied.txt")
     raced = false
 
@@ -467,12 +440,11 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     FileCopyService.stub(:native_linkat, unsupported_link) do
       FileCopyService.stub(:native_rename_noreplace, false) do
-        assert_raises(Errno::EEXIST) do
+        assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
           FileCopyService.cp_noreplace(
             @src_file,
             destination,
-            root: @dest_dir,
-            allow_compatibility_fallback: true
+            root: @dest_dir
           )
         end
       end
@@ -483,7 +455,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal [ "occupied.txt" ], Dir.children(@dest_dir)
   end
 
-  test "compatibility publication removes an interrupted partial destination" do
+  test "failed atomic publication never starts a direct destination copy" do
     destination = File.join(@dest_dir, "partial.txt")
     real_copy = FileCopyService.method(:copy_source_io)
     copy_calls = 0
@@ -500,38 +472,38 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     FileCopyService.stub(:copy_source_io, interrupted_copy) do
       without_atomic_file_publication do
-        assert_raises(IOError) do
+        assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
           FileCopyService.cp_noreplace(
             @src_file,
             destination,
-            root: @dest_dir,
-            allow_compatibility_fallback: true
+            root: @dest_dir
           )
         end
       end
     end
 
-    assert_equal 2, copy_calls
+    assert_equal 1, copy_calls
     assert_not File.exist?(destination)
     assert_equal "test content", File.binread(@src_file)
     assert_empty Dir.children(@dest_dir)
   end
 
-  test "mv_noreplace removes its source after compatibility publication" do
+  test "mv_noreplace retains its source when atomic publication is unsupported" do
     destination = File.join(@dest_dir, "moved-compatible.txt")
 
     without_atomic_file_publication do
-      FileCopyService.mv_noreplace(
-        @src_file,
-        destination,
-        root: @dest_dir,
-        allow_compatibility_fallback: true
-      )
+      assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+        FileCopyService.mv_noreplace(
+          @src_file,
+          destination,
+          root: @dest_dir
+        )
+      end
     end
 
-    assert_not File.exist?(@src_file)
-    assert_equal "test content", File.binread(destination)
-    assert_empty Dir.children(@dest_dir) - [ "moved-compatible.txt" ]
+    assert_equal "test content", File.binread(@src_file)
+    assert_not File.exist?(destination)
+    assert_empty Dir.children(@dest_dir)
   end
 
   test "mv_noreplace retains its source when file fsync is unsupported" do
@@ -800,18 +772,93 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(outside_dest)
   end
 
-  test "cp_noreplace falls back to rename when same-directory linkat returns EINVAL" do
+  test "cp_noreplace fails closed when rename is unavailable and linkat returns EINVAL" do
     # CIFS/SMB often returns EINVAL for unsupported hardlinks instead of
-    # EOPNOTSUPP. Intra-directory publish must still rename into place.
+    # EOPNOTSUPP. It must still fail without exposing a partial destination.
     destination = File.join(@dest_dir, "cifs-einval.txt")
 
-    FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EINVAL }) do
-      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    FileCopyService.stub(:native_rename_noreplace, false) do
+      FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EINVAL }) do
+        assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+          FileCopyService.cp_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir
+          )
+        end
+      end
     end
 
+    assert_not File.exist?(destination)
+    assert_equal "test content", File.binread(@src_file)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "cp_noreplace fails closed when an unreliable filesystem cannot rename" do
+    destination = File.join(@dest_dir, "cifs-false-success.txt")
+
+    error = FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      FileCopyService.stub(:native_rename_noreplace, false) do
+        FileCopyService.stub(:native_linkat, ->(*) { flunk "An unreliable mount must not publish by link" }) do
+          assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+            FileCopyService.cp_noreplace(
+              @src_file,
+              destination,
+              root: @dest_dir
+            )
+          end
+        end
+      end
+    end
+
+    assert_match(/cannot atomically publish/, error.message)
+    assert_not File.exist?(destination)
+    assert_equal "test content", File.binread(@src_file)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "cp_noreplace classifies an unusable linked destination as ambiguous" do
+    destination = File.join(@dest_dir, "ambiguous-link.txt")
+    destination_basename = File.basename(destination)
+    real_link = FileCopyService.method(:native_linkat)
+    real_open = FileCopyService.method(:native_openat)
+    linked = false
+    rejected_open = false
+    linking = lambda do |source_fd, source_name, destination_fd, destination_name|
+      real_link.call(source_fd, source_name, destination_fd, destination_name).tap do
+        linked = true if destination_name == destination_basename
+      end
+    end
+    opening = lambda do |directory_fd, basename, flags, mode|
+      if linked && !rejected_open && basename == destination_basename
+        rejected_open = true
+        raise Errno::EINVAL, "simulated CIFS reopen failure"
+      end
+
+      real_open.call(directory_fd, basename, flags, mode)
+    end
+
+    error = FileCopyService.stub(:hardlink_identity_unreliable?, false) do
+      FileCopyService.stub(:native_rename_noreplace, false) do
+        FileCopyService.stub(:native_linkat, linking) do
+          FileCopyService.stub(:native_openat, opening) do
+            assert_raises(FileCopyService::AmbiguousPublicationError) do
+              FileCopyService.cp_noreplace(
+                @src_file,
+                destination,
+                root: @dest_dir
+              )
+            end
+          end
+        end
+      end
+    end
+
+    assert linked
+    assert rejected_open
+    assert_match(/could not be verified after publication/, error.message)
     assert_equal "test content", File.binread(destination)
-    assert_equal 0o640, File.stat(destination).mode & 0o777
-    assert_empty Dir.children(@dest_dir) - [ "cifs-einval.txt" ]
+    assert_empty Dir.children(@dest_dir) - [ destination_basename ]
   end
 
   test "hardlink_noreplace classifies only initial unsupported link errors" do
@@ -847,6 +894,184 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "hardlink_noreplace rejects CIFS mounts without stable server inodes before linking" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    stat = File.stat(@tmp_dir)
+    device = "#{stat.dev_major}:#{stat.dev_minor}"
+    mountpoint = @tmp_dir.gsub(" ", "\\040")
+    unrelated = "9 0 0:9 / /tmp/invalid-".b + "\xFF".b +
+      " rw,relatime - ext4 /dev/test rw\n".b
+    mountinfo = unrelated +
+      "1 0 #{device} / #{mountpoint} rw,relatime - cifs //server/share rw,noserverino\n".b
+
+    File.stub(:binread, mountinfo) do
+      FileCopyService.stub(:native_linkat, ->(*) { flunk "An unreliable mount must not attempt a hardlink" }) do
+        error = assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            File.join(@dest_dir, "hardlinked.txt"),
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+
+        assert_match(/safely verify hardlink identities/, error.message)
+      end
+    end
+  end
+
+  test "hardlink_noreplace fails closed when Linux mount metadata is unavailable" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    File.stub(:binread, ->(*) { raise Errno::ENOENT }) do
+      FileCopyService.stub(:native_linkat, ->(*) { flunk "Unknown mounts must not attempt a hardlink" }) do
+        error = assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            File.join(@dest_dir, "hardlinked.txt"),
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+
+        assert_match(/safely verify hardlink identities/, error.message)
+      end
+    end
+  end
+
+  test "hardlink_noreplace classifies an unstable linked identity as unsupported" do
+    destination = File.join(@dest_dir, "hardlinked.txt")
+    real_identity = FileCopyService.method(:file_identity)
+    linked = false
+    linked_identity_calls = 0
+
+    unstable_identity = lambda do |stat|
+      identity = real_identity.call(stat)
+      if linked && stat.file? && stat.nlink > 1
+        linked_identity_calls += 1
+        [ identity.first, identity.last + [ linked_identity_calls, 2 ].min ]
+      else
+        identity
+      end
+    end
+    real_link = FileCopyService.method(:native_hardlink_probe)
+    linking = lambda do |*arguments|
+      real_link.call(*arguments).tap { linked = true }
+    end
+
+    FileCopyService.stub(:native_hardlink_probe, linking) do
+      FileCopyService.stub(:file_identity, unstable_identity) do
+        error = assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+
+        assert_match(/stable hardlink identities/, error.message)
+        assert_empty Dir.glob(File.join(@dest_dir, ".shelfarr-hardlink-probe-*.tmp"))
+        assert_equal 1, Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock")).size
+      end
+    end
+
+    assert_not File.exist?(destination)
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "hardlink_noreplace cleans a probe after the lock descriptor reports a provisional identity" do
+    destination = File.join(@dest_dir, "hardlinked.txt")
+    real_identity = FileCopyService.method(:file_identity)
+    real_link = FileCopyService.method(:native_hardlink_probe)
+    linked = false
+    linked_identity_calls = 0
+
+    provisional_descriptor_identity = lambda do |stat|
+      identity = real_identity.call(stat)
+      if linked && stat.file? && stat.nlink > 1
+        linked_identity_calls += 1
+        return [ identity.first, identity.last + 1 ] if linked_identity_calls == 2
+      end
+      identity
+    end
+    linking = lambda do |*arguments|
+      real_link.call(*arguments).tap { linked = true }
+    end
+
+    FileCopyService.stub(:native_hardlink_probe, linking) do
+      FileCopyService.stub(:file_identity, provisional_descriptor_identity) do
+        error = assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+
+        assert_match(/stable hardlink identities/, error.message)
+      end
+    end
+
+    assert_not File.exist?(destination)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "hardlink_noreplace preserves its typed fallback error when teardown is deferred" do
+    destination = File.join(@dest_dir, "hardlinked.txt")
+    capability_failure = lambda do |*|
+      raise FileCopyService::HardlinkUnsupportedError, "hardlink capability unavailable"
+    end
+    teardown_failure = lambda do |*|
+      raise FileCopyService::UnsafePathError, "cleanup identity unavailable"
+    end
+
+    FileCopyService.stub(:verify_hardlink_identity_support!, capability_failure) do
+      FileCopyService.stub(:cleanup_interrupted_copy, teardown_failure) do
+        error = assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+
+        assert_equal "hardlink capability unavailable", error.message
+      end
+    end
+
+    assert_not File.exist?(destination)
+  end
+
+  test "hardlink_noreplace uses the visible SMB3 mount when mounts are stacked" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    stat = File.stat(@tmp_dir)
+    device = "#{stat.dev_major}:#{stat.dev_minor}"
+    mountpoint = @tmp_dir.gsub(" ", "\\040")
+    mountinfo = [
+      "1 0 #{device} / #{mountpoint} rw,relatime - smb3 //server/share rw,serverino",
+      "2 1 #{device} / #{mountpoint} rw,relatime - smb3 //server/share rw"
+    ].join("\n")
+
+    File.stub(:binread, "#{mountinfo}\n".b) do
+      FileCopyService.stub(:native_linkat, ->(*) { flunk "The hidden serverino mount must not be selected" }) do
+        assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            File.join(@dest_dir, "hardlinked.txt"),
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+      end
+    end
+  end
+
   test "hardlink_noreplace does not classify a post-publication error as unsupported" do
     destination = File.join(@dest_dir, "hardlinked.txt")
     real_validate = FileCopyService.method(:validate_published_child!)
@@ -874,7 +1099,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   test "hardlink_noreplace cleans its verified temp and lock after publication failure" do
     destination = File.join(@dest_dir, "hardlinked.txt")
 
-    FileCopyService.stub(:publish_private_child_noreplace!, ->(*) { raise IOError, "publication failed" }) do
+    FileCopyService.stub(:publish_private_child_atomically_noreplace!, ->(*) { raise IOError, "publication failed" }) do
       assert_raises(IOError) do
         FileCopyService.hardlink_noreplace(
           @src_file,
@@ -895,7 +1120,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     displaced = File.join(@dest_dir, "displaced-private-link")
     replacement = nil
 
-    publish = lambda do |_parent, temporary_basename, _destination_basename, _identity, mode:|
+    publish = lambda do |_parent, temporary_basename, _destination_basename|
       temporary = File.join(@dest_dir, temporary_basename)
       File.rename(temporary, displaced)
       File.binwrite(temporary, "replacement temp")
@@ -903,7 +1128,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       raise IOError, "publication failed"
     end
 
-    FileCopyService.stub(:publish_private_child_noreplace!, publish) do
+    FileCopyService.stub(:publish_private_child_atomically_noreplace!, publish) do
       assert_raises(IOError) do
         FileCopyService.hardlink_noreplace(
           @src_file,
@@ -939,13 +1164,15 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       real_rename.call(source_fd, source_name, destination_fd, destination_name)
     end
 
-    FileCopyService.stub(:native_renameat, racing_rename) do
-      FileCopyService.hardlink_noreplace(
-        @src_file,
-        destination,
-        root: @dest_dir,
-        source_root: nil
-      )
+    with_link_publication_fallback(destination) do
+      FileCopyService.stub(:native_renameat, racing_rename) do
+        FileCopyService.hardlink_noreplace(
+          @src_file,
+          destination,
+          root: @dest_dir,
+          source_root: nil
+        )
+      end
     end
 
     assert swapped
@@ -973,7 +1200,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal [ "hardlinked.txt" ], Dir.children(@dest_dir)
   end
 
-  test "destination-local EMLINK falls back to no-replace rename publication" do
+  test "destination-local EMLINK becomes a typed hardlink fallback when rename is unavailable" do
     destination = File.join(@dest_dir, "hardlinked.txt")
     real_link = FileCopyService.method(:native_linkat)
     link_calls = 0
@@ -985,23 +1212,27 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       real_link.call(source_fd, source_name, destination_fd, destination_name)
     end
 
-    FileCopyService.stub(:native_linkat, linking) do
-      FileCopyService.hardlink_noreplace(
-        @src_file,
-        destination,
-        root: @dest_dir,
-        source_root: nil
-      )
+    error = with_link_publication_fallback(destination) do
+      FileCopyService.stub(:native_linkat, linking) do
+        assert_raises(FileCopyService::HardlinkUnsupportedError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
+      end
     end
 
     assert_equal 2, link_calls
-    assert_equal [ File.stat(@src_file).dev, File.stat(@src_file).ino ],
-      [ File.stat(destination).dev, File.stat(destination).ino ]
-    assert_equal [ "hardlinked.txt" ], Dir.children(@dest_dir)
+    assert_instance_of FileCopyService::AtomicPublicationUnsupportedError, error.cause
+    assert_not File.exist?(destination)
+    assert_empty Dir.children(@dest_dir)
   end
 
-  test "destination-local low-level link failures fall back to rename publication" do
-    [ Fiddle::DLError, NotImplementedError ].each_with_index do |error_class, index|
+  test "destination-local low-level link failures become typed hardlink fallbacks" do
+    [ Errno::EXDEV, Fiddle::DLError, NotImplementedError ].each_with_index do |error_class, index|
       destination = File.join(@dest_dir, "hardlinked-#{index}.txt")
       real_link = FileCopyService.method(:native_linkat)
       link_calls = 0
@@ -1013,18 +1244,23 @@ class FileCopyServiceTest < ActiveSupport::TestCase
         real_link.call(source_fd, source_name, destination_fd, destination_name)
       end
 
-      FileCopyService.stub(:native_linkat, linking) do
-        FileCopyService.hardlink_noreplace(
-          @src_file,
-          destination,
-          root: @dest_dir,
-          source_root: nil
-        )
+      error = with_link_publication_fallback(destination) do
+        FileCopyService.stub(:native_linkat, linking) do
+          assert_raises(FileCopyService::HardlinkUnsupportedError) do
+            FileCopyService.hardlink_noreplace(
+              @src_file,
+              destination,
+              root: @dest_dir,
+              source_root: nil
+            )
+          end
+        end
       end
 
       assert_equal 2, link_calls
-      assert_equal [ File.stat(@src_file).dev, File.stat(@src_file).ino ],
-        [ File.stat(destination).dev, File.stat(destination).ino ]
+      assert_instance_of FileCopyService::AtomicPublicationUnsupportedError, error.cause
+      assert_not File.exist?(destination)
+      assert_empty Dir.children(@dest_dir)
     end
   end
 
@@ -1032,7 +1268,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     copy_destination = File.join(@dest_dir, "copied.txt")
     hardlink_destination = File.join(@dest_dir, "hardlinked.txt")
     real_copy = FileCopyService.method(:copy_source_io)
-    real_publish = FileCopyService.method(:publish_private_child_noreplace!)
+    real_publish = FileCopyService.method(:publish_private_child_atomically_noreplace!)
     verified_copy_lock = false
     verified_hardlink_lock = false
 
@@ -1048,15 +1284,16 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       FileCopyService.cp_noreplace(@src_file, copy_destination, root: @dest_dir)
     end
 
-    inspecting_publish = lambda do |parent, temporary_basename, destination_basename, identity, mode:|
+    inspecting_publish = lambda do |parent, temporary_basename, destination_basename|
       lock_path = Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock")).sole
       record = FileCopyService::COPY_LOCK_RECORD_PATTERN.match(File.binread(lock_path))
       assert record
-      assert_equal identity, [ record[2].to_i, record[3].to_i ]
+      temporary = File.stat(File.join(@dest_dir, temporary_basename))
+      assert_equal [ temporary.dev, temporary.ino ], [ record[2].to_i, record[3].to_i ]
       verified_hardlink_lock = true
-      real_publish.call(parent, temporary_basename, destination_basename, identity, mode: mode)
+      real_publish.call(parent, temporary_basename, destination_basename)
     end
-    FileCopyService.stub(:publish_private_child_noreplace!, inspecting_publish) do
+    FileCopyService.stub(:publish_private_child_atomically_noreplace!, inspecting_publish) do
       FileCopyService.hardlink_noreplace(
         @src_file,
         hardlink_destination,
@@ -1118,8 +1355,6 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
 
     assert verified_lock
-    assert_equal 1, Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock")).size
-    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
     assert_empty Dir.children(@dest_dir)
   end
 
@@ -1160,6 +1395,51 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(temporary)
     assert_not File.exist?(lock)
     assert_not File.exist?(quarantine)
+  end
+
+  test "cleanup_interrupted_copies retains quarantines when mount identities are unreliable" do
+    token = "f" * 32
+    temporary = File.join(@dest_dir, ".shelfarr-copy-#{token}.tmp")
+    File.binwrite(temporary, "interrupted bytes")
+    temporary_stat = File.stat(temporary)
+    lock = write_copy_lock(token, temporary_stat)
+    File.chmod(0o644, lock)
+    quarantine = copy_quarantine_path(temporary_stat, "a" * 32)
+    Dir.mkdir(quarantine, 0o700)
+    entry = File.join(quarantine, FileCopyService::COPY_QUARANTINE_ENTRY)
+    File.rename(temporary, entry)
+
+    output = StringIO.new
+    logger = ActiveSupport::Logger.new(output)
+    Rails.stub(:logger, logger) do
+      FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+        assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+          FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+        end
+      end
+    end
+
+    assert_equal "interrupted bytes", File.binread(entry)
+    assert File.exist?(quarantine)
+    assert File.exist?(lock)
+    assert_equal 0o644, File.stat(lock).mode & 0o777
+    assert_match(/require manual cleanup/, output.string)
+  end
+
+  test "cleanup_interrupted_copies reclaims an identity-tagged discard" do
+    discarded = File.join(@dest_dir, ".shelfarr-discard-placeholder.tmp")
+    File.binwrite(discarded, "discarded bytes")
+    stat = File.stat(discarded)
+    tagged = File.join(
+      @dest_dir,
+      ".shelfarr-discard-#{stat.dev.to_s(16)}-#{stat.ino.to_s(16)}-#{"a" * 32}.tmp"
+    )
+    File.rename(discarded, tagged)
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_not File.exist?(tagged)
+    assert_empty Dir.children(@dest_dir)
   end
 
   test "cleanup_interrupted_copies recovers a synthetic-mode quarantine" do
@@ -1543,12 +1823,12 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     real_open = FileCopyService.method(:with_pinned_regular_child)
     failed = false
 
-    transient_open = lambda do |parent, basename, &operation|
+    transient_open = lambda do |parent, basename, **options, &operation|
       if !failed && basename.match?(/\A\.shelfarr-copy-.*\.tmp\z/)
         failed = true
         raise Errno::EIO
       end
-      real_open.call(parent, basename, &operation)
+      real_open.call(parent, basename, **options, &operation)
     end
 
     FileCopyService.stub(:with_pinned_regular_child, transient_open) do
@@ -1566,6 +1846,31 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(destination)
     assert_equal 1, File.stat(@src_file).nlink
     assert_empty Dir.children(@dest_dir)
+  end
+
+  test "interrupted cleanup removes a hardlink identity probe before its lock" do
+    token = "d" * 32
+    lock = write_copy_lock(token, File.stat(@src_file))
+    probe = File.join(@dest_dir, ".shelfarr-hardlink-probe-#{token}.tmp")
+    File.link(lock, probe)
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_not File.exist?(probe)
+    assert_not File.exist?(lock)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "interrupted cleanup retains a hardlink probe that is not the validated lock" do
+    token = "e" * 32
+    lock = write_copy_lock(token, File.stat(@src_file))
+    probe = File.join(@dest_dir, ".shelfarr-hardlink-probe-#{token}.tmp")
+    File.binwrite(probe, "replacement probe")
+
+    FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+
+    assert_equal "replacement probe", File.binread(probe)
+    assert File.exist?(lock)
   end
 
   test "completed hardlink cleanup retains symlink and directory temp replacements" do
@@ -1588,13 +1893,15 @@ class FileCopyServiceTest < ActiveSupport::TestCase
         result
       end
 
-      FileCopyService.stub(:validate_published_child!, replacing_validate) do
-        FileCopyService.hardlink_noreplace(
-          @src_file,
-          destination,
-          root: @dest_dir,
-          source_root: nil
-        )
+      with_link_publication_fallback(destination) do
+        FileCopyService.stub(:validate_published_child!, replacing_validate) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
       end
 
       assert_equal [ File.stat(@src_file).dev, File.stat(@src_file).ino ],
@@ -1608,7 +1915,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "interrupted cleanup recovers v2 pending and legacy v1 regular temps" do
+  test "interrupted cleanup retains unverified v2 pending and legacy v1 regular temps" do
     pending_token = "d" * 32
     legacy_token = "e" * 32
     pending_temporary = File.join(@dest_dir, ".shelfarr-copy-#{pending_token}.tmp")
@@ -1622,10 +1929,10 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
 
-    assert_not File.exist?(pending_temporary)
-    assert_not File.exist?(pending_lock)
-    assert_not File.exist?(legacy_temporary)
-    assert_not File.exist?(legacy_lock)
+    assert_equal "pending temp", File.binread(pending_temporary)
+    assert File.exist?(pending_lock)
+    assert_equal "legacy temp", File.binread(legacy_temporary)
+    assert File.exist?(legacy_lock)
   end
 
   test "pending and legacy cleanup retain non-regular token replacements" do
@@ -1744,14 +2051,16 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       end
     end
 
-    error = FileCopyService.stub(:native_renameat, racing_rename) do
-      assert_raises(FileCopyService::UnsafePathError) do
-        FileCopyService.hardlink_noreplace(
-          @src_file,
-          destination,
-          root: @dest_dir,
-          source_root: nil
-        )
+    error = with_link_publication_fallback(destination) do
+      FileCopyService.stub(:native_renameat, racing_rename) do
+        assert_raises(FileCopyService::UnsafePathError) do
+          FileCopyService.hardlink_noreplace(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            source_root: nil
+          )
+        end
       end
     end
 
@@ -2705,6 +3014,17 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert FileCopyService.remove_source_file(snapshot)
   end
 
+  test "remove_source_file retains data when filesystem identities are unreliable" do
+    snapshot = FileCopyService.snapshot_source_file(@src_file)
+
+    removed = FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      FileCopyService.remove_source_file(snapshot)
+    end
+
+    assert_not removed
+    assert_equal "test content", File.binread(@src_file)
+  end
+
   test "remove_source_tree only deletes the exact snapshotted directory" do
     source_root_path = File.join(@tmp_dir, "download")
     FileUtils.mkdir_p(source_root_path)
@@ -2713,6 +3033,34 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     assert FileCopyService.remove_source_tree(snapshot)
     assert_not File.exist?(source_root_path)
+  end
+
+  test "remove_source_tree safely retains the source when no-replace rename returns EINVAL" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+
+    removed = FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL }) do
+      FileCopyService.remove_source_tree(snapshot)
+    end
+
+    assert_not removed
+    assert_equal "chapter", File.binread(File.join(source_root_path, "chapter.mp3"))
+  end
+
+  test "remove_source_tree retains data when filesystem identities are unreliable" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+
+    removed = FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      FileCopyService.remove_source_tree(snapshot)
+    end
+
+    assert_not removed
+    assert_equal "chapter", File.binread(File.join(source_root_path, "chapter.mp3"))
   end
 
   test "remove_source_tree restores a replacement that wins before quarantine" do
@@ -2955,6 +3303,36 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(outside)
   end
 
+  test "private file publication never falls back to link on an unreliable mount" do
+    private_file = FileCopyService.create_private_file(
+      @dest_dir,
+      root: @dest_dir,
+      prefix: "archive-",
+      suffix: ".zip"
+    )
+    private_file.io.write("private bytes")
+    destination = File.join(@dest_dir, "published.zip")
+
+    FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      FileCopyService.stub(:native_rename_noreplace, false) do
+        FileCopyService.stub(:native_linkat, ->(*) { flunk "Unreliable identities must not use linkat" }) do
+          assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+            FileCopyService.publish_private_file_noreplace(
+              private_file,
+              destination,
+              root: @dest_dir
+            )
+          end
+        end
+      end
+    end
+
+    assert File.exist?(private_file.name)
+    assert_not File.exist?(destination)
+  ensure
+    private_file&.io&.close unless private_file&.io&.closed?
+  end
+
   test "identity-scoped directory cleanup preserves a same-path replacement" do
     parent = File.join(@dest_dir, "private-staging")
     FileUtils.mkdir_p(parent)
@@ -3011,6 +3389,35 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal [ "winner.mp3" ], Dir.children(destination)
     assert_equal "winner", File.binread(File.join(destination, "winner.mp3"))
     assert_equal "new", File.binread(File.join(source, "new.mp3"))
+  end
+
+  test "mv_directory_noreplace preserves an EINVAL publication error" do
+    source = File.join(@tmp_dir, "staging-tree")
+    destination = File.join(@dest_dir, "published-tree")
+    FileUtils.mkdir_p(source)
+    File.binwrite(File.join(source, "chapter.mp3"), "chapter")
+
+    FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL }) do
+      assert_raises(Errno::EINVAL) do
+        FileCopyService.mv_directory_noreplace(source, destination, root: @dest_dir)
+      end
+    end
+
+    assert File.exist?(source)
+    assert_not File.exist?(destination)
+  end
+
+  test "mv_directory_noreplace preserves invalid descendant topology errors" do
+    source = File.join(@dest_dir, "staging-tree")
+    destination = File.join(source, "nested-destination")
+    FileUtils.mkdir_p(source)
+
+    assert_raises(Errno::EINVAL) do
+      FileCopyService.mv_directory_noreplace(source, destination, root: @dest_dir)
+    end
+
+    assert File.exist?(source)
+    assert_not File.exist?(destination)
   end
 
   test "mv_directory_noreplace retains publication when destination parent is swapped" do
@@ -3320,6 +3727,20 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
       FileCopyService.stub(:native_rename_noreplace, false, &operation)
     end
+  end
+
+  def with_link_publication_fallback(destination, &operation)
+    real_rename = FileCopyService.method(:native_rename_noreplace)
+    destination_basename = File.basename(destination)
+    fallback = lambda do |source_fd, source_name, destination_fd, destination_name|
+      if source_name.match?(/\A\.shelfarr-copy-.*\.tmp\z/) && destination_name == destination_basename
+        false
+      else
+        real_rename.call(source_fd, source_name, destination_fd, destination_name)
+      end
+    end
+
+    FileCopyService.stub(:native_rename_noreplace, fallback, &operation)
   end
 
   def copy_quarantine_path(expected_stat, token)

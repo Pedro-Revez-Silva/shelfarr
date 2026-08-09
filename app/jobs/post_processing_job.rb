@@ -897,7 +897,6 @@ class PostProcessingJob < ApplicationJob
           root: @import_base_path,
           source_root: @import_source_root,
           hardlink_mode: true,
-          allow_compatibility_fallback: true,
           require_durable: @require_durable_import
         )
         @hardlink_fallback_copied_count += 1
@@ -909,7 +908,6 @@ class PostProcessingJob < ApplicationJob
         root: @import_base_path,
         source_root: @import_source_root,
         source_snapshot: @import_source_file_snapshot,
-        allow_compatibility_fallback: true,
         require_durable: @require_durable_import
       )
     end

@@ -52,7 +52,9 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     validation_commands = @jobs.fetch("validate").fetch("steps").filter_map { |step| step["run"] }
 
     assert validation_commands.any? { |command| command.include?("bin/quality push") }
+    assert validation_commands.any? { |command| command.include?("cifs-smoke.sh") }
     assert validation_commands.any? { |command| command.include?("bin/bundler-audit --update") }
+    assert_includes @jobs.dig("validate", "strategy", "matrix", "runner"), "ubuntu-24.04-arm"
 
     docker_job = @jobs.fetch("docker")
     assert_equal %w[plan validate], docker_job.fetch("needs")
@@ -142,6 +144,7 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     )
     jobs = workflow.fetch("jobs")
     companion_commands = jobs.fetch("companion").fetch("steps").filter_map { |step| step["run"] }
+    filesystem_commands = jobs.fetch("filesystem-contracts").fetch("steps").filter_map { |step| step["run"] }
     container_build = jobs.fetch("container").fetch("steps").find do |step|
       step["name"] == "Build Shelfarr image"
     end
@@ -150,6 +153,11 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert companion_commands.any? { |command| command.include?("dotnet format") && command.include?("--verify-no-changes") }
     assert companion_commands.any? { |command| command.include?("dotnet test") && command.include?("--no-restore") }
     assert companion_commands.any? { |command| command.include?("container-smoke.sh") }
+    assert filesystem_commands.any? { |command| command.include?("cifs-utils") }
+    assert filesystem_commands.any? { |command| command.include?("cifs-smoke.sh") }
+    assert_equal [ "quality" ], jobs.fetch("filesystem-contracts").fetch("needs")
+    assert_includes jobs.dig("filesystem-contracts", "strategy", "matrix", "runner"), "ubuntu-24.04-arm"
+    assert_includes jobs.fetch("container").fetch("needs"), "filesystem-contracts"
     assert_equal false, container_build.dig("with", "push")
   end
 
