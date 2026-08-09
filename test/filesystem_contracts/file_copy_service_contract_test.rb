@@ -169,9 +169,7 @@ class FileCopyServiceContractTest < ActiveSupport::TestCase
 
     assert_equal source.binread, destination.binread
     assert source.file?
-    profile = ENV["SHELFARR_FILESYSTEM_CONTRACT_PROFILE"]
-    assert hardlinked if profile == "cifs-serverino"
-    assert_not hardlinked if profile == "cifs-noserverino"
+    assert_not hardlinked if cifs_noserverino_profile?
 
     if hardlinked
       source.open("ab") do |file|
