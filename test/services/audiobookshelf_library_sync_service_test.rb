@@ -77,6 +77,71 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       assert_equal "0", item.series_position
       assert_equal 1937, item.published_year
       assert_equal "9780261103283", item.isbn
+      assert_equal "audiobook", item.book_type
+      assert_equal "ebook_or_comic", LibraryItem.find_by!(library_id: "lib-ebook").book_type
+    end
+  end
+
+  test "bulk sync preserves a newer overlapping row" do
+    newer = LibraryItem.create!(
+      library_id: "lib-audio",
+      audiobookshelf_id: "newer-item",
+      title: "Newer Metadata",
+      synced_at: 1.hour.from_now
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [ { "id" => "newer-item", "title" => "Older Metadata" } ],
+            "total" => 1
+          }.to_json
+        )
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "results" => [], "total" => 0 }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal "Newer Metadata", newer.reload.title
+      assert_operator newer.synced_at, :>, Time.current
+    end
+  end
+
+  test "bulk sync publishes inventories larger than one upsert batch" do
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    items = 600.times.map do |index|
+      { "id" => "bulk-#{index}", "title" => "Bulk Title #{index}" }
+    end
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "results" => items.first(500), "total" => items.size }.to_json
+        )
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("page" => "1"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "results" => items.drop(500), "total" => items.size }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal 600, result.items_synced
+      assert_equal 600, LibraryItem.where(library_id: "lib-audio").count
     end
   end
 
@@ -131,7 +196,32 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       assert result.success?
       assert_equal 1, result.items_synced
       assert_equal 1, result.libraries_synced
-      assert_equal "Saga #1", LibraryItem.find_by!(library_id: "lib-comics", audiobookshelf_id: "comic-1").title
+      item = LibraryItem.find_by!(library_id: "lib-comics", audiobookshelf_id: "comic-1")
+      assert_equal "Saga #1", item.title
+      assert_equal "comicbook", item.book_type
+    end
+  end
+
+  test "marks the ebook delivery library as mixed when comics use it as fallback" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [ { "id" => "mixed-1", "title" => "Mixed Library Title" } ],
+            "total" => 1
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_equal "ebook_or_comic", LibraryItem.find_by!(audiobookshelf_id: "mixed-1").book_type
     end
   end
 
@@ -402,6 +492,30 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "leaves format unknown when one library is assigned to multiple book types" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "shared-library")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "shared-library")
+    SettingsService.set(:audiobookshelf_comicbook_library_id, "")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/shared-library/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [ { "id" => "shared-1", "title" => "Shared Format" } ],
+            "total" => 1
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_nil LibraryItem.find_by!(audiobookshelf_id: "shared-1").book_type
+    end
+  end
+
   test "does not prune cached items when library sync fails with a transient API failure" do
     LibraryItem.create!(
       library_platform: "audiobookshelf",
@@ -568,12 +682,60 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
         )
 
       result = AudiobookshelfLibrarySyncService.new.sync!
-      assert result.success?
+      assert_not result.success?
+      assert result.errors.all? { |error| error.include?("settings changed during synchronization") }
 
       # Because settings changed mid-run, destructive pruning of lib-old should be skipped
       assert LibraryItem.exists?(audiobookshelf_id: "ab-old")
     end
   ensure
     SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
+  end
+
+  test "does not persist inventory through a newly selected platform during a sync" do
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return do
+          SettingsService.set(:library_platform, "bookorbit")
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: {
+              "results" => [ { "id" => "wrong-platform", "title" => "Wrong Platform" } ],
+              "total" => 1
+            }.to_json
+          }
+        end
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert_not result.success?
+      assert_includes result.errors.first, "settings changed during synchronization"
+      assert_not LibraryItem.exists?(audiobookshelf_id: "wrong-platform")
+      assert_requested :get, %r{localhost:13378/api/libraries/lib-audio/items}, times: 1
+      assert_not_requested :post, %r{/api/v1/auth/login}
+    end
+  ensure
+    SettingsService.set(:library_platform, "audiobookshelf")
+  end
+
+  test "allows database timeouts to reach the job retry policy" do
+    service = AudiobookshelfLibrarySyncService.new
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "results" => [], "total" => 0 }.to_json
+        )
+
+      service.stub(:publish_library_snapshot!, ->(*, **) { raise ActiveRecord::StatementTimeout, "locked" }) do
+        assert_raises(ActiveRecord::StatementTimeout) { service.sync! }
+      end
+    end
   end
 end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 class LibraryItem < ApplicationRecord
+  BOOK_TYPES = %w[audiobook ebook comicbook ebook_or_comic].freeze
   MAX_DISPLAY_TEXT_CHARACTERS = 500
   MAX_DISPLAY_TEXT_BYTES = MAX_DISPLAY_TEXT_CHARACTERS * 4
   BIDI_CONTROL_PATTERN = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/
@@ -9,12 +10,14 @@ class LibraryItem < ApplicationRecord
   validates :library_id, presence: true
   validates :audiobookshelf_id, presence: true
   validates :library_id, uniqueness: { scope: [ :library_platform, :audiobookshelf_id ] }
+  validates :book_type, inclusion: { in: BOOK_TYPES }, allow_nil: true
 
   scope :by_synced_at_desc, -> { order(synced_at: :desc, title: :asc) }
   scope :for_platform, ->(platform) { where(library_platform: platform) }
   scope :for_active_platform, -> { for_platform(SettingsService.active_library_platform) }
   scope :for_libraries, ->(ids) { where(library_id: ids) }
   scope :available_for_matching, -> { for_active_platform.where.not(missing: true) }
+  scope :visible_in_library, -> { available_for_matching }
 
   def library_url
     LibraryPlatformClient.item_url(self)
@@ -30,6 +33,20 @@ class LibraryItem < ApplicationRecord
 
   def display_author
     sanitized_text(author)
+  end
+
+  def book_type_label
+    case book_type
+    when "audiobook" then "Audio"
+    when "ebook" then "Ebook"
+    when "comicbook" then "Comic"
+    when "ebook_or_comic" then "Ebook / Comic"
+    else "Book"
+    end
+  end
+
+  def platform_name
+    LibraryPlatformClient.display_name(library_platform)
   end
 
   def series_label

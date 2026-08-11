@@ -1,0 +1,48 @@
+<div class="mx-auto max-w-2xl">
+  <div class="mb-6">
+    <%= link_to "&larr; Back to Library".html_safe, library_index_path, class: "text-blue-400 hover:text-blue-300" %>
+  </div>
+
+  <article class="overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
+    <div class="p-6">
+      <div class="flex flex-col gap-6 sm:flex-row">
+        <div class="flex aspect-[2/3] w-32 shrink-0 items-center justify-center rounded bg-gradient-to-br from-teal-950 via-gray-800 to-gray-950 shadow">
+          <svg class="h-10 w-10 text-teal-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+          </svg>
+        </div>
+
+        <div class="min-w-0 flex-1">
+          <h1 class="text-2xl font-bold text-white"><%= @library_item.display_title.presence || "Untitled" %></h1>
+          <% if @library_item.display_author.present? %>
+            <p class="mt-1 text-gray-400"><%= @library_item.display_author %></p>
+          <% end %>
+
+          <div class="mt-4 flex flex-wrap gap-2">
+            <span class="inline-flex items-center rounded-full bg-teal-500/20 px-3 py-1 text-sm font-medium text-teal-300">Available in <%= @library_item.platform_name %></span>
+            <span class="inline-flex items-center rounded-full bg-gray-800 px-3 py-1 text-sm font-medium text-gray-300"><%= @library_item.book_type_label %></span>
+          </div>
+
+          <% details = [ *@library_item.detail_badges, @library_item.identifier_label ].compact %>
+          <% if details.any? %>
+            <ul class="mt-5 flex flex-wrap gap-2 text-sm text-gray-400">
+              <% details.each do |detail| %>
+                <li class="rounded bg-gray-800 px-2.5 py-1"><%= detail %></li>
+              <% end %>
+            </ul>
+          <% end %>
+        </div>
+      </div>
+
+      <div class="mt-6 border-t border-gray-800 pt-6">
+        <p class="text-sm text-gray-400">This title is indexed by Shelfarr and remains managed by <%= @library_item.platform_name %>. Shelfarr will not move, rename, or delete its files.</p>
+        <% if @library_item.library_url.present? %>
+          <%= link_to "Open in #{@library_item.platform_name}", @library_item.library_url,
+            target: "_blank",
+            rel: "noopener noreferrer",
+            class: "mt-4 inline-flex rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white transition hover:bg-teal-600" %>
+        <% end %>
+      </div>
+    </div>
+  </article>
+</div>

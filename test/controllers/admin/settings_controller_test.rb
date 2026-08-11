@@ -469,9 +469,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "label[for='settings_audiobookshelf_ebook_library_id']", text: "Ebook Library (BookOrbit)"
     assert_select "label[for='settings_audiobookshelf_library_sync_interval']", text: "Library Sync Interval (BookOrbit)"
     assert_match(/BookOrbit Library Sync/, @response.body)
-    assert_match(/Inventory cache for duplicate detection against BookOrbit/, @response.body)
+    assert_match(/Synced inventory for duplicate detection and Shelfarr/, @response.body)
     assert_match(/Sync BookOrbit Inventory/, @response.body)
-    assert_match(/separate from Shelfarr/, @response.body)
+    assert_match(/Files remain managed by BookOrbit/, @response.body)
   end
 
   test "index shows text input when audiobookshelf not configured" do

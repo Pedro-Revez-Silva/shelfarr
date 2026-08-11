@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_23_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_09_000000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -179,6 +179,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_23_120000) do
     t.string "asin"
     t.string "audiobookshelf_id", null: false
     t.string "author"
+    t.string "book_type"
     t.datetime "created_at", null: false
     t.text "description"
     t.string "isbn"
@@ -198,6 +199,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_23_120000) do
     t.index ["isbn"], name: "index_library_items_on_isbn"
     t.index ["library_id"], name: "index_library_items_on_library_id"
     t.index ["library_platform", "library_id", "audiobookshelf_id"], name: "idx_on_library_platform_library_id_audiobookshelf_i_c1fd6c7905", unique: true
+    t.index ["library_platform", "missing", "book_type"], name: "idx_on_library_platform_missing_book_type_96095de597"
     t.index ["library_platform"], name: "index_library_items_on_library_platform"
     t.index ["missing"], name: "index_library_items_on_missing"
     t.index ["synced_at"], name: "index_library_items_on_synced_at"

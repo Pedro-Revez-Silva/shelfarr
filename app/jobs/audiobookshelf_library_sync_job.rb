@@ -2,9 +2,12 @@
 
 class AudiobookshelfLibrarySyncJob < ApplicationJob
   queue_as :default
+  retry_on ActiveRecord::StatementTimeout, wait: :polynomially_longer, attempts: 5 do |job, _error|
+    job.send(:schedule_next_run) if job.send(:schedule_next_after_failure?)
+  end
   limits_concurrency to: 1,
     key: "audiobookshelf-library-sync",
-    duration: 10.minutes
+    duration: 1.hour
 
   # Delay after a library-platform scan so remote indexers (BookOrbit, ABS,
   # Grimmory) have time to discover newly imported files before we refresh
@@ -15,10 +18,10 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   # schedule_next: false for one-shot post-grab refreshes that must not reset
   # the periodic sync cadence.
   def perform(schedule_next: true)
+    @schedule_next_after_failure = schedule_next
     return unless LibraryPlatformClient.configured?
 
     AudiobookshelfLibrarySyncService.new.sync!
-  ensure
     schedule_next_run if schedule_next
   end
 
@@ -39,6 +42,10 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   end
 
   private
+
+  def schedule_next_after_failure?
+    @schedule_next_after_failure == true
+  end
 
   def schedule_next_run
     return unless LibraryPlatformClient.configured?

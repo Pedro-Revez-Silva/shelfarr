@@ -95,6 +95,20 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     assert_equal 1, LibraryItem.count
   end
 
+  test "a database timeout enqueues only the retry attempt" do
+    service = Object.new
+    service.define_singleton_method(:sync!) do
+      raise ActiveRecord::StatementTimeout, "database is locked"
+    end
+    clear_enqueued_jobs
+
+    AudiobookshelfLibrarySyncService.stub(:new, service) do
+      assert_enqueued_jobs 1, only: AudiobookshelfLibrarySyncJob do
+        AudiobookshelfLibrarySyncJob.perform_now
+      end
+    end
+  end
+
   test "schedule_post_scan_refresh! enqueues a delayed one-shot sync" do
     clear_enqueued_jobs
 

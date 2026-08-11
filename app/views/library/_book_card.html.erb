@@ -1,4 +1,10 @@
 <% audible_purchase = @audible_tagged_book_ids.include?(book.id) %>
+<% synced_copy = @synced_library_book_ids.include?(book.id) %>
+<% format_label, format_class = case book.book_type
+when "audiobook" then [ "Audio", "bg-purple-500/90" ]
+when "comicbook" then [ "Comic", "bg-pink-500/90" ]
+else [ "Ebook", "bg-blue-500/90" ]
+end %>
 
 <article
   class="group flex h-full flex-col overflow-hidden rounded-xl bg-gray-900 shadow-lg ring-1 ring-gray-800 transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl motion-reduce:transition-none motion-reduce:hover:scale-100"
@@ -29,9 +35,12 @@
         <% if audible_purchase %>
           <span class="rounded bg-orange-600/90 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm" title="Owned on Audible">Audible</span>
         <% end %>
+        <% if synced_copy %>
+          <span class="rounded bg-teal-600/90 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm" title="Available in <%= LibraryPlatformClient.display_name %>"><%= LibraryPlatformClient.display_name %></span>
+        <% end %>
       </div>
-      <span class="absolute right-2 top-2 inline-flex items-center rounded px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm <%= book.audiobook? ? 'bg-purple-500/90' : 'bg-blue-500/90' %>">
-        <%= book.audiobook? ? "Audio" : "Ebook" %>
+      <span class="absolute right-2 top-2 inline-flex items-center rounded px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm <%= format_class %>">
+        <%= format_label %>
       </span>
 
     </div>
@@ -42,7 +51,7 @@
         <p class="mt-1 truncate text-xs text-gray-400"><%= book.author %></p>
       <% end %>
       <div class="mt-3 flex-1 text-xs">
-        <p class="text-emerald-300">Available on this server</p>
+        <p class="text-emerald-300"><%= synced_copy ? "Available here and in #{LibraryPlatformClient.display_name}" : "Available on this server" %></p>
       </div>
       <span class="mt-3 w-full rounded-md bg-blue-600 px-3 py-2 text-center text-sm font-medium text-white group-hover:bg-blue-500">View details</span>
     </div>

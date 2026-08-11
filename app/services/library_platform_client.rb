@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "uri"
+
 class LibraryPlatformClient
   class Error < StandardError; end
   class ConnectionError < Error; end
@@ -21,20 +23,22 @@ class LibraryPlatformClient
       DISPLAY_NAMES.fetch(platform, platform.to_s.titleize)
     end
 
-    def configured?
-      client.configured?
+    def configured?(platform: active_platform)
+      client_for(platform).configured?
     end
 
-    def libraries
-      translate_errors { client.libraries }
+    def libraries(platform: active_platform)
+      translate_errors(platform: platform) { client_for(platform).libraries }
     end
 
     def library(id)
       translate_errors { client.library(id) }
     end
 
-    def library_items(id, page_size: 500)
-      translate_errors { client.library_items(id, page_size: page_size) }
+    def library_items(id, page_size: 500, platform: active_platform)
+      translate_errors(platform: platform) do
+        client_for(platform).library_items(id, page_size: page_size)
+      end
     end
 
     def scan_library(id)
@@ -73,7 +77,16 @@ class LibraryPlatformClient
       return nil if base_url.blank?
 
       path_segment = platform.to_s == "audiobookshelf" ? "item" : "book"
-      "#{base_url.to_s.chomp("/")}/#{path_segment}/#{external_id}"
+      encoded_id = URI.encode_www_form_component(external_id.to_s).gsub("+", "%20")
+      uri = URI.parse(base_url.to_s.strip)
+      return nil unless uri.is_a?(URI::HTTP) && uri.host.present? && uri.userinfo.blank?
+
+      uri.query = nil
+      uri.fragment = nil
+      uri.path = "#{uri.path.to_s.chomp("/")}/#{path_segment}/#{encoded_id}"
+      uri.to_s
+    rescue URI::InvalidURIError
+      nil
     end
 
     private
@@ -104,8 +117,8 @@ class LibraryPlatformClient
       end
     end
 
-    def translate_errors
-      active_client = client
+    def translate_errors(platform: active_platform)
+      active_client = client_for(platform)
       yield
     rescue active_client::AuthenticationError => e
       raise AuthenticationError, e.message

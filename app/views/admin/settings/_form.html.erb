@@ -241,12 +241,12 @@
                     <div class="space-y-2">
                       <p class="text-sm text-gray-300 font-medium"><%= active_library_platform_name %> Library Sync</p>
                       <p class="text-xs text-gray-500">
-                        Inventory cache for duplicate detection against <%= active_library_platform_name %>.
-                        This is separate from Shelfarr&apos;s own Library page (books imported by Shelfarr).
+                        Synced inventory for duplicate detection and Shelfarr&apos;s unified Library catalog.
+                        Files remain managed by <%= active_library_platform_name %>.
                       </p>
                       <% if @audiobookshelf_library_items_count.to_i > 0 %>
                         <p class="text-xs text-gray-500">
-                          Cached items: <%= @audiobookshelf_library_items_count %> ·
+                          Synced items: <%= @audiobookshelf_library_items_count %> ·
                           Available: <%= @audiobookshelf_available_library_items_count %> ·
                           Missing flagged: <%= @audiobookshelf_missing_library_items_count %> ·
                           Last synced: <%= @audiobookshelf_library_items_last_synced_at ? time_ago_in_words(@audiobookshelf_library_items_last_synced_at) + " ago" : "never" %>
@@ -260,7 +260,7 @@
                     </div>
                     <div>
                       <% if @audiobookshelf_library_items.any? %>
-                        <p class="text-xs text-gray-400 mb-2">Recent cached items:</p>
+                        <p class="text-xs text-gray-400 mb-2">Recent synced items:</p>
                         <ul class="space-y-2 max-h-64 overflow-y-auto pr-1">
                           <% @audiobookshelf_library_items.each do |item| %>
                             <li class="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">

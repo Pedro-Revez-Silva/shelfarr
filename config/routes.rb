@@ -23,6 +23,7 @@ Rails.application.routes.draw do
   get "search/results/snapshot", to: "search#snapshot_results"
 
   # Library
+  get "library/synced/:id", to: "library#show_synced", as: :synced_library_item
   resources :library, only: [ :index, :show, :destroy ] do
     member do
       post :retry_post_processing

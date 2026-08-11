@@ -8,7 +8,7 @@
     <div>
       <h1 class="font-bold text-3xl text-white">Library</h1>
       <p class="mt-1 text-sm text-gray-500">
-        <%= @owned_library_connection ? "Everything available to read now or back up, in one catalog." : "Books stored on this server and ready to read or listen to." %>
+        <%= (@owned_library_connection || @has_synced_library_items) ? "Everything available to read now or back up, in one catalog." : "Books stored on this server and ready to read or listen to." %>
       </p>
     </div>
     <span class="text-sm text-gray-500"><%= @total_titles %> <%= "title".pluralize(@total_titles) %></span>
@@ -27,10 +27,20 @@
       library_index_path(type: :ebook, q: @query.presence),
       aria: { current: ("page" if @type_filter == "ebook") },
       class: "rounded-full px-4 py-2 text-sm font-medium transition #{@type_filter == 'ebook' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'}" %>
+    <%= link_to "Comics & Manga",
+      library_index_path(type: :comicbook, q: @query.presence),
+      aria: { current: ("page" if @type_filter == "comicbook") },
+      class: "rounded-full px-4 py-2 text-sm font-medium transition #{@type_filter == 'comicbook' ? 'bg-pink-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'}" %>
     <%= link_to "Audible",
       library_index_path(source: :audible, q: @query.presence),
       aria: { current: ("page" if @source_filter == "audible") },
       class: "rounded-full px-4 py-2 text-sm font-medium transition #{@source_filter == 'audible' ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'}" %>
+    <% if @has_synced_library_items %>
+      <%= link_to LibraryPlatformClient.display_name(@active_library_platform),
+        library_index_path(source: @active_library_platform, q: @query.presence),
+        aria: { current: ("page" if @source_filter == @active_library_platform) },
+        class: "rounded-full px-4 py-2 text-sm font-medium transition #{@source_filter == @active_library_platform ? 'bg-teal-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'}" %>
+    <% end %>
   </nav>
 
   <%= form_with url: library_index_path, method: :get, class: "mb-8 flex flex-wrap gap-2" do |form| %>
@@ -92,6 +102,8 @@
         <% @catalog_entries.each do |entry| %>
           <% if entry.book? %>
             <%= render "book_card", book: entry.record %>
+          <% elsif entry.synced? %>
+            <%= render "synced_library_item_card", item: entry.record %>
           <% else %>
             <%= render "owned_library_item_card", item: entry.record %>
           <% end %>

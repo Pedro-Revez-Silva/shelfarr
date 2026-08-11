@@ -28,6 +28,430 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_select "img[src='https://covers.example.test/private-cover.jpg'][referrerpolicy='no-referrer']"
   end
 
+  test "index includes reader-library titles without creating placeholder books" do
+    SettingsService.set(:audiobookshelf_url, "https://abs.example.test")
+    item = LibraryItem.create!(
+      library_id: "audio-library",
+      audiobookshelf_id: "remote-1",
+      title: "Reader Library Title",
+      author: "Reader Author",
+      series: "Reader Series",
+      book_type: "audiobook",
+      synced_at: Time.current
+    )
+
+    assert_no_difference -> { Book.count } do
+      get library_index_path(q: "Reader Library")
+    end
+
+    assert_response :success
+    assert_includes response.headers.fetch("Cache-Control", ""), "no-store"
+    assert_select "[data-library-card][data-library-source='audiobookshelf'][data-synced-library-item-id='#{item.id}']" do
+      assert_select "a[href='#{synced_library_item_path(item)}']"
+      assert_select "h3", "Reader Library Title"
+      assert_select "span", text: "Audiobookshelf"
+      assert_select "span", text: "Audio"
+    end
+    assert_select "a[href='#{library_index_path(source: 'audiobookshelf', q: 'Reader Library')}']", text: "Audiobookshelf"
+  end
+
+  test "synced title details link to the reader without claiming local file ownership" do
+    SettingsService.set(:audiobookshelf_url, "https://abs.example.test")
+    item = LibraryItem.create!(
+      library_id: "ebook-library",
+      audiobookshelf_id: "remote/item 2",
+      title: "Remote Details",
+      author: "Remote Author",
+      isbn: "9781234567897",
+      book_type: "ebook",
+      synced_at: Time.current
+    )
+
+    get synced_library_item_path(item)
+
+    assert_response :success
+    assert_includes response.headers.fetch("Cache-Control", ""), "no-store"
+    assert_select "h1", "Remote Details"
+    assert_select "a[href='https://abs.example.test/item/remote%2Fitem%202'][target='_blank'][rel='noopener noreferrer']", text: "Open in Audiobookshelf"
+    assert_select "body", text: /will not move, rename, or delete its files/
+    assert_select "code", count: 0
+  end
+
+  test "catalog follows the active reader platform" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:bookorbit_url, "https://bookorbit.example.test")
+    item = LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "bookorbit-library",
+      audiobookshelf_id: "42",
+      title: "BookOrbit Library Title",
+      book_type: "ebook"
+    )
+
+    get library_index_path(source: "bookorbit", q: "BookOrbit Library")
+
+    assert_response :success
+    assert_select "[data-library-card][data-library-source='bookorbit'][data-synced-library-item-id='#{item.id}']" do
+      assert_select "span", text: "BookOrbit"
+    end
+    assert_select "a[href='#{library_index_path(source: 'bookorbit', q: 'BookOrbit Library')}']", text: "BookOrbit"
+  end
+
+  test "synced catalog excludes missing and inactive-platform items" do
+    visible = LibraryItem.create!(
+      library_id: "visible-library",
+      audiobookshelf_id: "visible-1",
+      title: "Visible Synced Title",
+      book_type: "ebook"
+    )
+    missing = LibraryItem.create!(
+      library_id: "visible-library",
+      audiobookshelf_id: "missing-1",
+      title: "Missing Synced Title",
+      book_type: "ebook",
+      missing: true
+    )
+    inactive = LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "inactive-library",
+      audiobookshelf_id: "inactive-1",
+      title: "Inactive Synced Title",
+      book_type: "ebook"
+    )
+
+    get library_index_path(q: "Synced Title")
+
+    assert_response :success
+    assert_select "[data-synced-library-item-id='#{visible.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{missing.id}']", count: 0
+    assert_select "[data-synced-library-item-id='#{inactive.id}']", count: 0
+
+    get synced_library_item_path(missing)
+    assert_response :not_found
+    get synced_library_item_path(inactive)
+    assert_response :not_found
+  end
+
+  test "synced catalog supports format and source filters" do
+    audiobook = LibraryItem.create!(
+      library_id: "audio-library",
+      audiobookshelf_id: "format-audio",
+      title: "Synced Format Audio",
+      book_type: "audiobook"
+    )
+    ebook = LibraryItem.create!(
+      library_id: "ebook-library",
+      audiobookshelf_id: "format-ebook",
+      title: "Synced Format Ebook",
+      book_type: "ebook"
+    )
+    unknown = LibraryItem.create!(
+      library_id: "unknown-library",
+      audiobookshelf_id: "format-unknown",
+      title: "Synced Format Unknown"
+    )
+
+    get library_index_path(type: "audiobook", q: "Synced Format")
+
+    assert_response :success
+    assert_select "[data-synced-library-item-id='#{audiobook.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{ebook.id}']", count: 0
+    assert_select "[data-synced-library-item-id='#{unknown.id}']", count: 0
+
+    get library_index_path(source: "audiobookshelf", q: "Synced Format")
+
+    assert_response :success
+    assert_select "#library-catalog [data-library-card]", count: 3
+    assert_select "input[name='source'][value='audiobookshelf']"
+  end
+
+  test "synced ISBN match collapses into the canonical acquired card" do
+    @acquired_audiobook.update!(
+      title: "Canonical Synced Title",
+      author: "Canonical Author",
+      isbn: "9781234567897"
+    )
+    item = LibraryItem.create!(
+      library_id: "audio-library",
+      audiobookshelf_id: "canonical-remote",
+      title: "Different Reader Metadata",
+      author: "Different Reader Author",
+      isbn: "978-1-2345-6789-7",
+      book_type: "audiobook"
+    )
+
+    get library_index_path(source: "audiobookshelf")
+
+    assert_response :success
+    assert_select "#library-catalog [data-library-card]", count: 1
+    assert_select "[data-synced-library-item-id='#{item.id}']", count: 0
+    assert_select "[data-library-book-id='#{@acquired_audiobook.id}']" do
+      assert_select "span", text: "On server"
+      assert_select "span", text: "Audiobookshelf"
+      assert_select "p", text: "Available here and in Audiobookshelf"
+    end
+  end
+
+  test "synced exact metadata match collapses when an identifier is unavailable" do
+    local = Book.create!(
+      title: "Metadata Match Title",
+      author: "Metadata Match Author",
+      book_type: :ebook,
+      file_path: "/ebooks/metadata-match"
+    )
+    synced = LibraryItem.create!(
+      library_id: "ebook-library",
+      audiobookshelf_id: "metadata-match-remote",
+      title: "Metadata Match Title",
+      author: "Metadata Match Author",
+      book_type: "ebook"
+    )
+
+    get library_index_path(q: "Metadata Match Title")
+
+    assert_response :success
+    assert_select "[data-library-book-id='#{local.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{synced.id}']", count: 0
+    assert_select "#library-catalog [data-library-card]", count: 1
+  end
+
+  test "canonical book remains searchable by matched reader metadata" do
+    local = Book.create!(
+      title: "Local Canonical Name",
+      author: "Local Canonical Author",
+      isbn: "9781234567897",
+      book_type: :audiobook,
+      file_path: "/audiobooks/local-canonical-name"
+    )
+    synced = LibraryItem.create!(
+      library_id: "audio-library",
+      audiobookshelf_id: "remote-alias",
+      title: "Reader Alias Name",
+      author: "Reader Alias Author",
+      isbn: "978-1-2345-6789-7",
+      book_type: "audiobook"
+    )
+
+    get library_index_path(q: "Reader Alias Name")
+
+    assert_response :success
+    assert_select "[data-library-book-id='#{local.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{synced.id}']", count: 0
+    assert_select "#library-catalog [data-library-card]", count: 1
+  end
+
+  test "equivalent ISBN-10 and ISBN-13 values collapse into one title" do
+    local = Book.create!(
+      title: "ISBN Thirteen Title",
+      isbn: "9780261103283",
+      book_type: :ebook,
+      file_path: "/ebooks/isbn-thirteen-title"
+    )
+    synced = LibraryItem.create!(
+      library_id: "ebook-library",
+      audiobookshelf_id: "isbn-ten-remote",
+      title: "ISBN Ten Reader Title",
+      isbn: "0261103288",
+      book_type: "ebook"
+    )
+
+    get library_index_path(source: "audiobookshelf")
+
+    assert_response :success
+    assert_select "[data-library-book-id='#{local.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{synced.id}']", count: 0
+    assert_select "#library-catalog [data-library-card]", count: 1
+  end
+
+  test "duplicate synced editions across libraries render once" do
+    first = LibraryItem.create!(
+      library_id: "ebook-library-one",
+      audiobookshelf_id: "duplicate-one",
+      title: "Duplicate Synced Edition",
+      isbn: "9781234567897",
+      book_type: "ebook"
+    )
+    duplicate = LibraryItem.create!(
+      library_id: "ebook-library-two",
+      audiobookshelf_id: "duplicate-two",
+      title: "Duplicate Synced Edition",
+      isbn: "978-1-2345-6789-7",
+      book_type: "ebook"
+    )
+
+    get library_index_path(q: "Duplicate Synced Edition")
+
+    assert_response :success
+    assert_select "[data-synced-library-item-id='#{first.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{duplicate.id}']", count: 0
+    assert_select "#library-catalog [data-library-card]", count: 1
+  end
+
+  test "duplicate grouping preserves aliases across asymmetric metadata" do
+    hidden_alias = LibraryItem.create!(
+      library_id: "mixed-library-one",
+      audiobookshelf_id: "shared-remote-id",
+      title: "Hidden Duplicate Alias",
+      book_type: "ebook"
+    )
+    canonical = LibraryItem.create!(
+      library_id: "mixed-library-two",
+      audiobookshelf_id: "shared-remote-id",
+      title: "Canonical Mixed Metadata",
+      isbn: "9781234567897",
+      book_type: "ebook_or_comic"
+    )
+
+    get library_index_path(q: "Hidden Duplicate Alias")
+
+    assert_response :success
+    assert_select "[data-synced-library-item-id='#{hidden_alias.id}']", count: 0
+    assert_select "[data-synced-library-item-id='#{canonical.id}']", count: 1
+    assert_select "#library-catalog [data-library-card]", count: 1
+  end
+
+  test "duplicate grouping keeps a known format while borrowing its ISBN" do
+    untyped = LibraryItem.create!(
+      library_id: "audio-library-one",
+      audiobookshelf_id: "typed-remote-id",
+      title: "Untyped ISBN Metadata",
+      isbn: "9781234567897"
+    )
+    typed = LibraryItem.create!(
+      library_id: "audio-library-two",
+      audiobookshelf_id: "typed-remote-id",
+      title: "Typed Audio Metadata",
+      book_type: "audiobook"
+    )
+    isbn_duplicate = LibraryItem.create!(
+      library_id: "audio-library-three",
+      audiobookshelf_id: "separate-remote-id",
+      title: "Separate ISBN Metadata",
+      isbn: "978-1-2345-6789-7",
+      book_type: "audiobook"
+    )
+
+    get library_index_path(type: "audiobook", source: "audiobookshelf")
+
+    assert_response :success
+    assert_select "[data-synced-library-item-id='#{untyped.id}']", count: 0
+    assert_select "[data-synced-library-item-id='#{typed.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{isbn_duplicate.id}']", count: 0
+    assert_select "#library-catalog [data-library-card]", count: 1
+  end
+
+  test "a noncanonical synced identifier match suppresses the whole duplicate group" do
+    local = Book.create!(
+      title: "Grouped Local Match",
+      isbn: "9781234567897",
+      book_type: :audiobook,
+      file_path: "/audiobooks/grouped-local-match"
+    )
+    canonical = LibraryItem.create!(
+      library_id: "audio-library-one",
+      audiobookshelf_id: "grouped-remote-id",
+      title: "Canonical Without Identifier",
+      book_type: "audiobook"
+    )
+    matching_duplicate = LibraryItem.create!(
+      library_id: "audio-library-two",
+      audiobookshelf_id: "grouped-remote-id",
+      title: "Duplicate With Identifier",
+      isbn: "978-1-2345-6789-7",
+      book_type: "audiobook"
+    )
+
+    get library_index_path(source: "audiobookshelf")
+
+    assert_response :success
+    assert_select "[data-library-book-id='#{local.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{canonical.id}']", count: 0
+    assert_select "[data-synced-library-item-id='#{matching_duplicate.id}']", count: 0
+    assert_select "#library-catalog [data-library-card]", count: 1
+  end
+
+  test "ambiguous candidates anywhere in a duplicate group preserve the synced card" do
+    metadata_book = Book.create!(
+      title: "Ambiguous Group Metadata",
+      author: "Metadata Author",
+      book_type: :ebook,
+      file_path: "/ebooks/ambiguous-group-metadata"
+    )
+    2.times do |index|
+      Book.create!(
+        title: "Ambiguous ISBN Candidate #{index}",
+        isbn: "9781234567897",
+        book_type: :ebook,
+        file_path: "/ebooks/ambiguous-isbn-candidate-#{index}"
+      )
+    end
+    LibraryItem.create!(
+      library_id: "ebook-library-one",
+      audiobookshelf_id: "ambiguous-group-id",
+      title: metadata_book.title,
+      author: metadata_book.author,
+      book_type: "ebook"
+    )
+    canonical = LibraryItem.create!(
+      library_id: "ebook-library-two",
+      audiobookshelf_id: "ambiguous-group-id",
+      title: "Ambiguous Group Canonical",
+      isbn: "978-1-2345-6789-7",
+      book_type: "ebook"
+    )
+
+    get library_index_path(source: "audiobookshelf")
+
+    assert_response :success
+    assert_select "[data-synced-library-item-id='#{canonical.id}']", count: 1
+    assert_select "[data-library-book-id='#{metadata_book.id}']", count: 0
+    assert_select "#library-catalog [data-library-card]", count: 1
+  end
+
+  test "mixed ebook and comic libraries participate in both format filters" do
+    item = LibraryItem.create!(
+      library_id: "mixed-library",
+      audiobookshelf_id: "mixed-format",
+      title: "Mixed Format Title",
+      book_type: "ebook_or_comic"
+    )
+
+    %w[ebook comicbook].each do |book_type|
+      get library_index_path(type: book_type, q: "Mixed Format Title")
+      assert_response :success
+      assert_select "[data-synced-library-item-id='#{item.id}']", count: 1
+    end
+
+    get library_index_path(type: "audiobook", q: "Mixed Format Title")
+    assert_response :success
+    assert_select "[data-synced-library-item-id='#{item.id}']", count: 0
+  end
+
+  test "conflicting synced ISBN preserves a separate edition" do
+    local = Book.create!(
+      title: "Edition Conflict",
+      author: "Edition Author",
+      isbn: "9781234567897",
+      book_type: :ebook,
+      file_path: "/ebooks/edition-conflict"
+    )
+    synced = LibraryItem.create!(
+      library_id: "ebook-library",
+      audiobookshelf_id: "edition-conflict-remote",
+      title: local.title,
+      author: local.author,
+      isbn: "9781234567880",
+      book_type: "ebook"
+    )
+
+    get library_index_path(q: "Edition Conflict")
+
+    assert_response :success
+    assert_select "[data-library-book-id='#{local.id}']", count: 1
+    assert_select "[data-synced-library-item-id='#{synced.id}']", count: 1
+    assert_select "#library-catalog [data-library-card]", count: 2
+  end
+
   test "admin library shows purchased Audible titles without creating placeholder books" do
     sign_out
     sign_in_as(@admin)
@@ -294,6 +718,13 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
       title: "Unified Sort Alpha",
       ownership_type: "purchased"
     )
+    LibraryItem.create!(
+      library_id: "unified-library",
+      audiobookshelf_id: "unified-synced",
+      title: "Unified Sort Beta",
+      author: "Synced Author",
+      book_type: "audiobook"
+    )
     Book.create!(
       title: "Unified Sort Bravo",
       author: "Local Author",
@@ -310,7 +741,7 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     titles = css_select("#library-catalog [data-library-card] h3").map { |node| node.text.strip }
-    assert_equal [ "Unified Sort Alpha", "Unified Sort Bravo", "Unified Sort Charlie" ], titles
+    assert_equal [ "Unified Sort Alpha", "Unified Sort Beta", "Unified Sort Bravo", "Unified Sort Charlie" ], titles
   end
 
   test "catalog search treats SQL wildcard characters as literal text" do
@@ -394,20 +825,34 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
         updated_at: now
       }
     end
+    synced_rows = 1_000.times.map do |index|
+      {
+        library_platform: "audiobookshelf",
+        library_id: "scale-library",
+        audiobookshelf_id: format("scale-synced-%04d", index),
+        title: format("Scale Catalog %04d Synced", index),
+        author: "Synced Author",
+        book_type: "audiobook",
+        missing: false,
+        created_at: now,
+        updated_at: now
+      }
+    end
     Book.insert_all!(book_rows)
     OwnedLibraryItem.insert_all!(owned_rows)
+    LibraryItem.insert_all!(synced_rows)
 
     instantiated = 0
     subscriber = ActiveSupport::Notifications.subscribe("instantiation.active_record") do |*, payload|
-      if payload[:class_name].in?(%w[Book OwnedLibraryItem])
+      if payload[:class_name].in?(%w[Book LibraryItem OwnedLibraryItem])
         instantiated += payload[:record_count]
       end
     end
-    get library_index_path(q: "Scale Catalog", type: "audiobook", page: 40)
+    get library_index_path(q: "Scale Catalog", type: "audiobook", page: 60)
 
     assert_response :success
     assert_select "#library-catalog [data-library-card]", count: 50
-    assert_select "p", text: /2000 titles · Page 40 of 40/
+    assert_select "p", text: /3000 titles · Page 60 of 60/
     assert_operator instantiated, :<=, 150,
       "a catalog page should not instantiate records from preceding pages"
   ensure
@@ -1115,7 +1560,8 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
 
   def catalog_card_keys
     css_select("#library-catalog [data-library-card]").map do |node|
-      record_id = node["data-library-book-id"] || node["data-owned-library-item-id"]
+      record_id = node["data-library-book-id"] || node["data-owned-library-item-id"] ||
+        node["data-synced-library-item-id"]
       "#{node['data-library-source']}:#{record_id}"
     end
   end

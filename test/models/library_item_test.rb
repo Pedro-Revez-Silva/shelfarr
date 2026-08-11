@@ -39,6 +39,35 @@ class LibraryItemTest < ActiveSupport::TestCase
     assert_equal "http://grimmory.example/book/book-1", item.audiobookshelf_url
   end
 
+  test "library URL encodes the remote item ID as one path segment" do
+    SettingsService.set(:audiobookshelf_url, " http://abs.example/base?old=query#fragment ")
+    item = LibraryItem.new(audiobookshelf_id: "folder/item name")
+
+    assert_equal "http://abs.example/base/item/folder%2Fitem%20name", item.library_url
+  end
+
+  test "library URL rejects unsafe base URLs" do
+    item = LibraryItem.new(audiobookshelf_id: "item-1")
+
+    SettingsService.set(:audiobookshelf_url, "javascript:alert(1)")
+    assert_nil item.library_url
+
+    SettingsService.set(:audiobookshelf_url, "http://user:password@abs.example")
+    assert_nil item.library_url
+  end
+
+  test "book type labels distinguish synced formats" do
+    assert_equal "Audio", LibraryItem.new(book_type: "audiobook").book_type_label
+    assert_equal "Ebook", LibraryItem.new(book_type: "ebook").book_type_label
+    assert_equal "Comic", LibraryItem.new(book_type: "comicbook").book_type_label
+    assert_equal "Ebook / Comic", LibraryItem.new(book_type: "ebook_or_comic").book_type_label
+    assert_equal "Book", LibraryItem.new.book_type_label
+
+    item = LibraryItem.new(book_type: "magazine")
+    assert_not item.valid?
+    assert_includes item.errors[:book_type], "is not included in the list"
+  end
+
   test "display metadata is bounded and strips unsafe controls" do
     item = LibraryItem.new(
       title: "t" * LibraryItem::MAX_DISPLAY_TEXT_CHARACTERS,
