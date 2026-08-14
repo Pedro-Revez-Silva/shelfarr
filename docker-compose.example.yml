@@ -38,6 +38,7 @@ services:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - CHOWN_ON_START=${CHOWN_ON_START:-auto}
+      - TZ=${TZ:-UTC}
       # Optional: Change internal port (default: 80)
       # - HTTP_PORT=8080
       # Optional: Set your own key instead of auto-generating
@@ -69,6 +70,7 @@ services:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - CHOWN_ON_START=${CHOWN_ON_START:-auto}
+      - TZ=${TZ:-UTC}
       - LIBATION_FILES_DIR=/config
       - LIBATION_BOOKS_DIR=/data
       - LIBATION_IN_PROGRESS_DIR=/config/in-progress
