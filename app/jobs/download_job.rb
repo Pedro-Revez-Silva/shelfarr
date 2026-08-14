@@ -425,7 +425,7 @@ class DownloadJob < ApplicationJob
     end
     return unless finalized
 
-    trigger_library_scan(book) if LibraryPlatformClient.configured?
+    trigger_library_scan(book, user: download.request.user) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
     track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
 
@@ -482,7 +482,7 @@ class DownloadJob < ApplicationJob
     file_service.cleanup_after_run!
     return unless finalized
 
-    trigger_library_scan(book) if LibraryPlatformClient.configured?
+    trigger_library_scan(book, user: download.request.user) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
     track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
 
@@ -547,7 +547,7 @@ class DownloadJob < ApplicationJob
     return unless finalized
 
     # Trigger library scan if configured
-    trigger_library_scan(book) if LibraryPlatformClient.configured?
+    trigger_library_scan(book, user: download.request.user) if LibraryPlatformClient.configured?
 
     # Send notification
     NotificationService.request_completed(download.request)
@@ -1313,8 +1313,15 @@ class DownloadJob < ApplicationJob
     FileCopyService.ensure_directory(root.to_s, root: existing_parent.to_s)
   end
 
-  def trigger_library_scan(book)
-    lib_id = SettingsService.library_id_for_book(book)
+  def trigger_library_scan(book, user: nil)
+    user_library_id = if book.comicbook?
+      user&.preferred_comicbook_library_id
+    elsif book.ebook?
+      user&.preferred_ebook_library_id
+    else
+      user&.preferred_audiobook_library_id
+    end
+    lib_id = user_library_id.presence || SettingsService.library_id_for_book(book)
 
     return unless lib_id.present?
 

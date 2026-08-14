@@ -54,6 +54,7 @@ class PostProcessingJob < ApplicationJob
     request = download.request
     return unless claim_request_for_post_processing(download, request, expected_owner_job_id)
 
+    @request_user = request.user
     book = request.book
     acquisition_finalized = false
 
@@ -523,7 +524,14 @@ class PostProcessingJob < ApplicationJob
   end
 
   def library_id_for(book)
-    SettingsService.library_id_for_book(book)
+    user_library_id = if book.comicbook?
+      @request_user&.preferred_comicbook_library_id
+    elsif book.ebook?
+      @request_user&.preferred_ebook_library_id
+    else
+      @request_user&.preferred_audiobook_library_id
+    end
+    user_library_id.presence || SettingsService.library_id_for_book(book)
   end
 
   def import_files(

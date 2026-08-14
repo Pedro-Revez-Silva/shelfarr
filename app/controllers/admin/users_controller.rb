@@ -1,6 +1,6 @@
 module Admin
   class UsersController < BaseController
-    before_action :set_user, only: [:show, :edit, :update, :destroy]
+    before_action :set_user, only: [:show, :edit, :update, :destroy, :library_routing, :update_library_routing]
 
     def index
       @users = User.active.order(created_at: :desc)
@@ -37,6 +37,17 @@ module Admin
       end
     end
 
+    def library_routing
+    end
+
+    def update_library_routing
+      if @user.update(library_routing_params)
+        redirect_to library_routing_admin_user_path(@user), notice: "Library routing updated."
+      else
+        render :library_routing, status: :unprocessable_entity
+      end
+    end
+
     def destroy
       if @user == Current.user
         redirect_to admin_users_path, alert: "You cannot delete yourself."
@@ -54,6 +65,14 @@ module Admin
 
     def user_params
       params.require(:user).permit(:name, :username, :password, :password_confirmation, :role)
+    end
+
+    def library_routing_params
+      params.require(:user).permit(
+        :preferred_audiobook_library_id,
+        :preferred_ebook_library_id,
+        :preferred_comicbook_library_id
+      )
     end
   end
 end

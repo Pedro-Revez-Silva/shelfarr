@@ -1,0 +1,52 @@
+<div class="mx-auto max-w-2xl">
+  <div class="mb-6">
+    <%= link_to "&larr; Back to Users".html_safe, admin_users_path, class: "text-blue-400 hover:text-blue-300" %>
+  </div>
+
+  <h1 class="font-bold text-4xl text-white mb-2">Library Routing</h1>
+  <p class="text-gray-400 mb-8">
+    Configure which library <span class="text-white font-medium"><%= @user.name %></span>
+    (<span class="text-gray-300">@<%= @user.username %></span>)
+    has their completed downloads routed to. Leave any field blank to use the system default.
+  </p>
+
+  <div class="bg-gray-900 rounded-lg border border-gray-800 p-6">
+    <% if @user.errors.any? %>
+      <div class="mb-6 bg-red-500/10 border border-red-500/20 rounded-lg p-4">
+        <ul class="list-disc list-inside text-sm text-red-400">
+          <% @user.errors.full_messages.each do |error| %>
+            <li><%= error %></li>
+          <% end %>
+        </ul>
+      </div>
+    <% end %>
+
+    <%= form_with model: [:admin, @user], url: library_routing_admin_user_path(@user), method: :patch do |form| %>
+      <div class="mb-5">
+        <%= form.label :preferred_audiobook_library_id, "Audiobook Library ID", class: "block text-gray-300 font-medium mb-2" %>
+        <%= form.text_field :preferred_audiobook_library_id,
+              placeholder: "System default",
+              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 w-full" %>
+      </div>
+
+      <div class="mb-5">
+        <%= form.label :preferred_ebook_library_id, "Ebook Library ID", class: "block text-gray-300 font-medium mb-2" %>
+        <%= form.text_field :preferred_ebook_library_id,
+              placeholder: "System default",
+              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 w-full" %>
+      </div>
+
+      <div class="mb-6">
+        <%= form.label :preferred_comicbook_library_id, "Comic Book Library ID", class: "block text-gray-300 font-medium mb-2" %>
+        <%= form.text_field :preferred_comicbook_library_id,
+              placeholder: "System default",
+              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 w-full" %>
+      </div>
+
+      <div class="flex items-center gap-4">
+        <%= form.submit "Save", class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+        <%= link_to "Cancel", admin_users_path, class: "text-gray-400 hover:text-gray-300" %>
+      </div>
+    <% end %>
+  </div>
+</div>
