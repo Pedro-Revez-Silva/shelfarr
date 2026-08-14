@@ -546,6 +546,40 @@ class OwnedMediaBackupJobTest < ActiveJob::TestCase
     assert_match(/single primary artifact/, @media_import.error_message)
   end
 
+  test "uses the newest file when Libation reports collision-suffixed M4Bs" do
+    Dir.mktmpdir("libation-import") do |root|
+      book_dir = File.join(root, "Book")
+      FileUtils.mkdir_p(book_dir)
+      canonical = File.join(book_dir, "A Title.m4b")
+      duplicate = File.join(book_dir, "A Title (1).m4b")
+      File.binwrite(canonical, "older audiobook")
+      File.binwrite(duplicate, "newer audiobook")
+      File.utime(2.minutes.ago.to_time, 2.minutes.ago.to_time, canonical)
+      File.utime(1.minute.ago.to_time, 1.minute.ago.to_time, duplicate)
+
+      job = OwnedMediaBackupJob.new
+      with_env("SHELFARR_LIBATION_IMPORT_ROOT" => root) do
+        assert_equal Pathname(duplicate), job.send(:select_audio_artifact, [ "/data/Book" ])
+      end
+    end
+  end
+
+  test "rejects M4Bs that are not Libation collision copies" do
+    Dir.mktmpdir("libation-import") do |root|
+      book_dir = File.join(root, "Book")
+      FileUtils.mkdir_p(book_dir)
+      File.binwrite(File.join(book_dir, "part-1.m4b"), "one")
+      File.binwrite(File.join(book_dir, "part-2.m4b"), "two")
+
+      job = OwnedMediaBackupJob.new
+      with_env("SHELFARR_LIBATION_IMPORT_ROOT" => root) do
+        assert_raises(OwnedMediaBackupJob::BackupError) do
+          job.send(:select_audio_artifact, [ "/data/Book" ])
+        end
+      end
+    end
+  end
+
   test "finishes after Shelfarr upload processing completes" do
     upload = Upload.create!(
       user: users(:two),

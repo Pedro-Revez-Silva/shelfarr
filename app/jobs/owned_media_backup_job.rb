@@ -345,11 +345,33 @@ class OwnedMediaBackupJob < ApplicationJob
       matches = candidates.select { |path| path.extname.casecmp?(extension) }
       return matches.first if matches.one?
       if matches.many?
+        collision_copy = select_collision_copy(matches)
+        return collision_copy if collision_copy
+
         raise BackupError, "Libation reported multiple #{extension.delete_prefix('.').upcase} files; a single primary artifact is required"
       end
     end
 
     raise BackupError, "Libation did not report a single primary audiobook artifact"
+  end
+
+  # Libation can retain a previous completed file and write a retry using its
+  # usual " (1)" collision suffix. Its current file can differ in metadata, so
+  # use the newest member of that one collision family. Distinct multipart
+  # filenames remain ambiguous and must be rejected.
+  def select_collision_copy(paths)
+    return unless paths.any? { |path| duplicate_suffix?(path) }
+    return unless paths.map { |path| [ path.dirname, collision_basename(path) ] }.uniq.one?
+
+    paths.max_by { |path| [ path.mtime, path.basename.to_s ] }
+  end
+
+  def duplicate_suffix?(path)
+    path.basename(path.extname).to_s.match?(/ \(\d+\)\z/)
+  end
+
+  def collision_basename(path)
+    path.basename(path.extname).to_s.sub(/ \(\d+\)\z/, "")
   end
 
   def audio_files_in(directory)
