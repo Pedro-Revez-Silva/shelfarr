@@ -2329,6 +2329,8 @@ class SearchJobTest < ActiveJob::TestCase
                 language: "en",
                 size_bytes: 1000,
                 download_type: "direct",
+                rank_score: 93,
+                match_evidence: { matched_fields: %w[title author] },
                 info_url: "https://provider.test/books/provider-1"
               }
             ]
@@ -2345,7 +2347,138 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "provider-1", saved_result.provider_result_id
     assert_equal "custom:#{provider.id}:provider-1", saved_result.guid
     assert_equal "direct", saved_result.download_type
+    assert_equal 93, saved_result.provider_rank_score
+    assert_equal %w[title author], saved_result.provider_payload.dig("match_evidence", "matched_fields")
     assert saved_result.downloadable?
+  end
+
+  test "refreshes custom provider ranking metadata for an existing result" do
+    provider = AcquisitionProvider.create!(
+      name: "Ranking Provider",
+      url: "http://provider.test",
+      supports_ebooks: true,
+      supports_audiobooks: false
+    )
+    result_attributes = {
+      provider_result_id: "provider-ranked",
+      title: "The Pending Ebook",
+      author: "Another Author",
+      file_type: "epub",
+      language: "en",
+      size_bytes: 1000,
+      download_type: "direct",
+      download_url: nil,
+      magnet_url: nil,
+      info_url: "https://provider.test/books/provider-ranked",
+      published_at: nil,
+      availability: "available"
+    }
+    job = SearchJob.new
+    initial = CustomAcquisitionProviderClient::Result.new(
+      **result_attributes,
+      rank_score: 25,
+      payload: { "download_type" => "direct", "rank_score" => 25 }
+    )
+    updated = CustomAcquisitionProviderClient::Result.new(
+      **result_attributes,
+      rank_score: 92,
+      payload: {
+        "download_type" => "direct",
+        "rank_score" => 92,
+        "match_evidence" => { "matched_fields" => %w[title author series] }
+      }
+    )
+
+    saved = job.send(:save_custom_provider_result, @request, initial, provider)
+    refreshed = job.send(:save_custom_provider_result, @request, updated, provider)
+
+    assert_equal saved.id, refreshed.id
+    assert_equal 92, refreshed.provider_rank_score
+    assert_equal %w[title author series], refreshed.provider_payload.dig("match_evidence", "matched_fields")
+  end
+
+  test "external ranker reranks the combined saved result set without changing confidence" do
+    @request.search_results.destroy_all
+    RankingProvider.create!(
+      name: "Combined Ranking Provider",
+      url: "http://combined-ranker.test"
+    )
+    candidates = [
+      @request.search_results.create!(guid: "rank-prowlarr", title: "Prowlarr result", source: SearchResult::SOURCE_PROWLARR, confidence_score: 95),
+      @request.search_results.create!(guid: "rank-anna", title: "Anna result", source: SearchResult::SOURCE_ANNA_ARCHIVE, confidence_score: 70),
+      @request.search_results.create!(guid: "rank-zlib", title: "Z-Library result", source: SearchResult::SOURCE_ZLIBRARY, confidence_score: 65),
+      @request.search_results.create!(guid: "rank-librivox", title: "LibriVox result", source: SearchResult::SOURCE_LIBRIVOX, confidence_score: 60)
+    ]
+    VCR.turned_off do
+      stub_request(:post, "http://combined-ranker.test/v1/rank")
+        .with do |request|
+          body = JSON.parse(request.body)
+          body.fetch("candidates").map { |candidate| candidate["source"] }.sort ==
+            %w[anna_archive librivox prowlarr zlibrary].sort
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            rankings: candidates.each_with_index.map do |candidate, index|
+              {
+                candidate_id: candidate.id.to_s,
+                rank_score: 10 + (index * 20),
+                match_evidence: { source_checked: candidate.source }
+              }
+            end
+          }.to_json
+        )
+
+      SearchJob.new.send(:rerank_saved_results, @request)
+    end
+
+    candidates.each_with_index do |candidate, index|
+      candidate.reload
+      assert_equal 10 + (index * 20), candidate.external_rank_score
+      assert_equal candidate.source, candidate.external_rank_evidence["source_checked"]
+    end
+    assert_equal [ 95, 70, 65, 60 ], candidates.map { |candidate| candidate.reload.confidence_score }
+  end
+
+  test "external ranker failure leaves Shelfarr scores and search results unchanged" do
+    RankingProvider.create!(
+      name: "Unavailable Ranking Provider",
+      url: "http://unavailable-ranker.test"
+    )
+    candidate = @request.search_results.create!(
+      guid: "ranker-failure-result",
+      title: "Still usable without ranker",
+      source: SearchResult::SOURCE_PROWLARR,
+      confidence_score: 82,
+      score_breakdown: { "title" => 100 }
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://unavailable-ranker.test/v1/rank").to_return(status: 500)
+      assert_nothing_raised { SearchJob.new.send(:rerank_saved_results, @request) }
+    end
+
+    candidate.reload
+    assert_equal 82, candidate.confidence_score
+    assert_equal({ "title" => 100 }, candidate.score_breakdown)
+  end
+
+  test "search uses normal scores without contacting a ranker when none is configured" do
+    RankingProvider.delete_all
+    candidate = @request.search_results.create!(
+      guid: "no-ranker-result",
+      title: "Normal Shelfarr ordering",
+      source: SearchResult::SOURCE_PROWLARR,
+      confidence_score: 84,
+      score_breakdown: { "title" => 100 }
+    )
+
+    assert_nothing_raised { SearchJob.new.send(:rerank_saved_results, @request) }
+
+    candidate.reload
+    assert_equal 84, candidate.confidence_score
+    assert_equal({ "title" => 100 }, candidate.score_breakdown)
   end
 
   test "heartbeats a long provider sequence so the watchdog does not preempt healthy work" do

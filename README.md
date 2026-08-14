@@ -49,6 +49,7 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 - **Download Routing** — Route specific indexers to specific clients, with priority ordering
 - **REST API** — Scoped, per-user API tokens under `/api/v1`
 - **Custom Acquisition Providers** — Trusted HTTP providers can contribute search results and resolve selected items into direct, torrent or usenet artifacts
+- **Media Ranking Providers** — Optional ranking-only services can enrich and re-rank the combined result set through a versioned, media-neutral API without receiving download or cover URLs
 - **Third-Party Store Offers (Beta)** — Surface legitimate DRM-free editions from supported sellers without handling checkout or payment data
 - **Audible Backup (Beta)** — Sync purchased Audible titles, explicitly queue a one-time backup of eligible existing purchases, optionally back up future purchases automatically, and import them through the separately packaged Libation companion
 

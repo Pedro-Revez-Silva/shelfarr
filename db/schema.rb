@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_23_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_14_190000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -349,6 +349,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_23_120000) do
     t.index ["event_type"], name: "index_request_events_on_event_type"
     t.index ["request_id", "event_type", "source"], name: "index_request_events_on_unique_store_offer_state", unique: true, where: "event_type = 'store_offers_found' AND source = 'store_provider'"
     t.index ["request_id"], name: "index_request_events_on_request_id"
+  end
+
+  create_table "ranking_providers", force: :cascade do |t|
+    t.boolean "allow_private_network", default: false, null: false
+    t.string "api_key"
+    t.datetime "created_at", null: false
+    t.boolean "enabled", default: true, null: false
+    t.string "name", null: false
+    t.integer "priority", default: 0, null: false
+    t.integer "timeout_seconds", default: 30, null: false
+    t.datetime "updated_at", null: false
+    t.string "url", null: false
+    t.index ["enabled", "priority"], name: "index_ranking_providers_on_enabled_and_priority"
+    t.index ["name"], name: "index_ranking_providers_on_name", unique: true
   end
 
   create_table "requests", force: :cascade do |t|

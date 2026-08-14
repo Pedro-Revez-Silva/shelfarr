@@ -23,7 +23,7 @@ class CustomAcquisitionProviderClient
   Result = Data.define(
     :provider_result_id, :title, :author, :file_type, :language, :size_bytes,
     :download_type, :download_url, :magnet_url, :info_url, :published_at,
-    :availability, :payload
+    :availability, :rank_score, :payload
   ) do
     def available?
       availability.blank? || availability == "available"
@@ -166,19 +166,7 @@ class CustomAcquisitionProviderClient
         id: request.id,
         language: request.effective_language
       },
-      book: {
-        id: book.id,
-        title: book.title,
-        author: book.author,
-        book_type: book.book_type,
-        year: book.year,
-        language: book.language,
-        isbn: book.isbn,
-        open_library_work_id: book.open_library_work_id,
-        open_library_edition_id: book.open_library_edition_id,
-        google_books_id: book.google_books_id,
-        hardcover_id: book.hardcover_id
-      }.compact
+      book: book_payload(book)
     }
   end
 
@@ -190,13 +178,36 @@ class CustomAcquisitionProviderClient
         id: search_result.request_id,
         language: search_result.request&.effective_language
       },
-      book: {
-        id: search_result.request&.book_id,
-        title: search_result.request&.book&.title,
-        author: search_result.request&.book&.author,
-        book_type: search_result.request&.book&.book_type
-      }.compact
+      book: book_payload(search_result.request&.book)
     }
+  end
+
+  def book_payload(book)
+    return {} unless book
+
+    {
+      id: book.id,
+      title: book.title,
+      author: book.author,
+      book_type: book.book_type,
+      content_kind: book.content_kind,
+      year: book.year,
+      release_date: book.release_date&.iso8601,
+      language: book.language,
+      publisher: book.publisher,
+      series: book.series,
+      series_position: book.series_position,
+      narrator: book.narrator,
+      description: book.description,
+      issue_number: book.issue_number,
+      isbn: book.isbn,
+      metadata_source: book.metadata_source,
+      open_library_work_id: book.open_library_work_id,
+      open_library_edition_id: book.open_library_edition_id,
+      google_books_id: book.google_books_id,
+      hardcover_id: book.hardcover_id,
+      comic_vine_id: book.comic_vine_id
+    }.compact
   end
 
   def search_result_payload(search_result)
@@ -242,9 +253,11 @@ class CustomAcquisitionProviderClient
     download_type = self.class.normalize_download_type(data["download_type"].presence || data["type"].presence)
     download_type ||= infer_download_type(direct_url:, nzb_url:, magnet_url:)
     availability = normalize_availability(data["availability"].presence || "available")
+    rank_score = normalize_rank_score(data["rank_score"])
     payload = data.merge(
       "download_type" => download_type,
-      "availability" => availability
+      "availability" => availability,
+      "rank_score" => rank_score
     )
 
     Result.new(
@@ -260,6 +273,7 @@ class CustomAcquisitionProviderClient
       info_url: data["info_url"].presence,
       published_at: time_or_nil(data["published_at"]),
       availability: availability,
+      rank_score: rank_score,
       payload: payload
     )
   end
@@ -313,6 +327,11 @@ class CustomAcquisitionProviderClient
 
   def integer_or_nil(value)
     Integer(value, exception: false)
+  end
+
+  def normalize_rank_score(value)
+    score = integer_or_nil(value)
+    score if score&.between?(0, 100)
   end
 
   def time_or_nil(value)

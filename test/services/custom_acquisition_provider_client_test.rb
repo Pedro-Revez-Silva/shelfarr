@@ -15,6 +15,19 @@ class CustomAcquisitionProviderClientTest < ActiveSupport::TestCase
   end
 
   test "search posts request and book context and parses results" do
+    @request.book.update!(
+      content_kind: :book,
+      release_date: Date.new(2019, 4, 2),
+      publisher: "Example Press",
+      series: "Example Series",
+      series_position: "2",
+      narrator: "Example Narrator",
+      description: "Enough local context to disambiguate the requested work.",
+      isbn: "9781234567890",
+      metadata_source: "hardcover",
+      hardcover_id: "hc-123"
+    )
+
     VCR.turned_off do
       stub_request(:post, "http://provider.test/search")
         .with do |request|
@@ -22,6 +35,16 @@ class CustomAcquisitionProviderClientTest < ActiveSupport::TestCase
           request.headers["Authorization"] == "Bearer secret" &&
             body["book"]["title"] == @request.book.title &&
             body["book"]["book_type"] == "ebook" &&
+            body["book"]["content_kind"] == "book" &&
+            body["book"]["release_date"] == "2019-04-02" &&
+            body["book"]["publisher"] == "Example Press" &&
+            body["book"]["series"] == "Example Series" &&
+            body["book"]["series_position"] == "2" &&
+            body["book"]["narrator"] == "Example Narrator" &&
+            body["book"]["description"].present? &&
+            body["book"]["metadata_source"] == "hardcover" &&
+            body["book"]["hardcover_id"] == "hc-123" &&
+            !body["book"].key?("cover_url") &&
             body["request"]["language"].present?
         end
         .to_return(
@@ -51,6 +74,44 @@ class CustomAcquisitionProviderClientTest < ActiveSupport::TestCase
       assert_equal "epub", results.first.file_type
       assert_equal "direct", results.first.download_type
       assert results.first.available?
+    end
+  end
+
+  test "search normalizes provider rank score and preserves match evidence" do
+    VCR.turned_off do
+      stub_request(:post, "http://provider.test/search")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            results: [
+              {
+                id: "ranked",
+                title: "Ranked Provider Result",
+                direct_url: "https://files.test/book.epub",
+                rank_score: 97,
+                match_evidence: {
+                  matched_fields: %w[title author series],
+                  warnings: []
+                }
+              },
+              {
+                id: "invalid-rank",
+                title: "Invalid Rank",
+                direct_url: "https://files.test/other.epub",
+                rank_score: 101
+              }
+            ]
+          }.to_json
+        )
+
+      ranked, invalid = @client.search(@request)
+
+      assert_equal 97, ranked.rank_score
+      assert_equal 97, ranked.payload["rank_score"]
+      assert_equal %w[title author series], ranked.payload.dig("match_evidence", "matched_fields")
+      assert_nil invalid.rank_score
+      assert_nil invalid.payload["rank_score"]
     end
   end
 

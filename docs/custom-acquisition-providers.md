@@ -52,15 +52,29 @@ Request body:
     "title": "Dune",
     "author": "Frank Herbert",
     "book_type": "ebook",
+    "content_kind": "book",
     "year": 1965,
+    "release_date": "1965-08-01",
     "language": "en",
+    "publisher": "Chilton Books",
+    "series": "Dune",
+    "series_position": "1",
+    "narrator": null,
+    "description": "Set on the desert planet Arrakis...",
+    "issue_number": null,
     "isbn": "9780441172719",
+    "metadata_source": "hardcover",
     "open_library_work_id": "OL893415W",
     "open_library_edition_id": "OL26712345M",
+    "google_books_id": "abc123",
     "hardcover_id": "789"
   }
 }
 ```
+
+The book object contains metadata already stored by Shelfarr. `cover_url` is
+intentionally omitted so providers do not need another network request just to
+consume the matching context.
 
 Response body can be either a bare array or an object with `results`:
 
@@ -76,6 +90,11 @@ Response body can be either a bare array or an object with `results`:
       "size_bytes": 5242880,
       "download_type": "direct",
       "availability": "available",
+      "rank_score": 96,
+      "match_evidence": {
+        "matched_fields": ["title", "author", "series"],
+        "warnings": []
+      },
       "info_url": "https://provider.example/books/provider-result-1",
       "published_at": "2026-06-08T12:00:00Z"
     }
@@ -96,10 +115,21 @@ Recommended result fields:
 - `size_bytes`
 - `download_type`: `direct`, `torrent`, or `usenet`
 - `availability`: `available`, `unknown`, `temporarily_unavailable`, or provider-specific text
+- `rank_score`: integer from `0` to `100`; replaces this result's ordering score among results with the same preferred download type
+- `match_evidence`: optional provider-defined JSON explaining the ranking decision
 - `info_url`
 - `published_at`
 
 Shelfarr stores the full result object as provider metadata so `/acquire` can receive it later.
+
+`rank_score` is advisory ordering for results returned by this provider, not a replacement for Shelfarr's stored
+confidence score. Results without it continue to rank by Shelfarr confidence.
+It cannot make a low-confidence result auto-selectable, bypass language
+or format preferences, override the configured download-type order, or make an
+unavailable result downloadable. Invalid and out-of-range values are ignored.
+This lets a trusted provider use richer metadata or a model-assisted matcher to
+re-rank credible candidates without giving it control over Shelfarr's safety
+gates.
 
 ## Acquire
 

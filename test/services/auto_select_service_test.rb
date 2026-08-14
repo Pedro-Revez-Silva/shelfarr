@@ -150,6 +150,59 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert result.reload.selected?
   end
 
+  test "provider rank cannot make a low confidence custom result auto selectable" do
+    provider = AcquisitionProvider.create!(
+      name: "Ranking Provider",
+      url: "http://provider.test"
+    )
+    ranked_but_ineligible = create_search_result(
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "ranked-ineligible",
+      provider_payload: { "download_type" => "direct", "rank_score" => 100 },
+      confidence_score: 49
+    )
+    eligible = create_search_result(
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "eligible",
+      provider_payload: { "download_type" => "direct", "rank_score" => 10 },
+      confidence_score: 95
+    )
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal eligible, selection.search_result
+    assert ranked_but_ineligible.reload.rejected?
+  end
+
+  test "external rank cannot make a low confidence indexer result auto selectable" do
+    ranker = RankingProvider.create!(name: "Auto-select Ranker", url: "http://auto-select-ranker.test")
+    ranked_but_ineligible = create_search_result(
+      guid: "external-rank-ineligible",
+      source: SearchResult::SOURCE_PROWLARR,
+      score_breakdown: { "external_rank_score" => 100, "external_rank_provider_id" => ranker.id },
+      confidence_score: 49,
+      seeders: 10,
+      magnet_url: "magnet:?xt=urn:btih:external-ineligible"
+    )
+    eligible = create_search_result(
+      guid: "external-rank-eligible",
+      source: SearchResult::SOURCE_PROWLARR,
+      score_breakdown: { "external_rank_score" => 10, "external_rank_provider_id" => ranker.id },
+      confidence_score: 95,
+      seeders: 10,
+      magnet_url: "magnet:?xt=urn:btih:external-eligible"
+    )
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal eligible, selection.search_result
+    assert ranked_but_ineligible.reload.rejected?
+  end
+
   test "creates download record and enqueues job on success" do
     result = create_search_result(
       title: "Test Book - Audiobook",

@@ -105,6 +105,92 @@ class SearchResultTest < ActiveSupport::TestCase
     assert_equal [ direct_result, usenet_result, torrent_result ], request.search_results.best_first.to_a
   end
 
+  test "best_first lets custom providers rerank results within a preferred download type" do
+    request = requests(:pending_request)
+    request.search_results.destroy_all
+    provider = AcquisitionProvider.create!(name: "Ranking Provider", url: "http://provider.test")
+
+    locally_higher = request.search_results.create!(
+      guid: "custom-local-score",
+      title: "Locally higher",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "local-score",
+      provider_payload: { "download_type" => "direct", "rank_score" => 10 },
+      confidence_score: 99
+    )
+    provider_higher = request.search_results.create!(
+      guid: "custom-provider-score",
+      title: "Provider higher",
+      source: SearchResult::SOURCE_CUSTOM,
+      acquisition_provider: provider,
+      provider_result_id: "provider-score",
+      provider_payload: { "download_type" => "direct", "rank_score" => 95 },
+      confidence_score: 90
+    )
+
+    SettingsService.set(:preferred_download_types, %w[direct usenet torrent])
+
+    assert_equal [ provider_higher, locally_higher ], request.search_results.best_first.to_a
+    assert_equal 95, provider_higher.provider_rank_score
+  end
+
+  test "best_first applies external ranks to results from every provider" do
+    request = requests(:pending_request)
+    request.search_results.destroy_all
+    ranker = RankingProvider.create!(name: "Model Ranker", url: "http://model-ranker.test")
+
+    anna = request.search_results.create!(
+      guid: "externally-ranked-anna",
+      title: "Anna",
+      source: SearchResult::SOURCE_ANNA_ARCHIVE,
+      confidence_score: 99,
+      score_breakdown: { "external_rank_score" => 10, "external_rank_provider_id" => ranker.id }
+    )
+    zlibrary = request.search_results.create!(
+      guid: "externally-ranked-zlibrary",
+      title: "Z-Library",
+      source: SearchResult::SOURCE_ZLIBRARY,
+      confidence_score: 70,
+      score_breakdown: {
+        "external_rank_score" => 95,
+        "external_rank_provider_id" => ranker.id,
+        "external_rank_evidence" => { "series" => "matched" }
+      }
+    )
+
+    SettingsService.set(:preferred_download_types, %w[direct torrent usenet])
+
+    assert_equal [ zlibrary, anna ], request.search_results.best_first.to_a
+    assert_equal 95, zlibrary.external_rank_score
+    assert_equal "matched", zlibrary.external_rank_evidence["series"]
+  end
+
+  test "best_first ignores saved external ranks when their provider is disabled" do
+    request = requests(:pending_request)
+    request.search_results.destroy_all
+    ranker = RankingProvider.create!(name: "Disabled Model Ranker", url: "http://disabled-model-ranker.test", enabled: false)
+
+    locally_higher = request.search_results.create!(
+      guid: "disabled-ranker-local",
+      title: "Locally higher",
+      source: SearchResult::SOURCE_ANNA_ARCHIVE,
+      confidence_score: 95,
+      score_breakdown: { "external_rank_score" => 10, "external_rank_provider_id" => ranker.id }
+    )
+    externally_higher = request.search_results.create!(
+      guid: "disabled-ranker-external",
+      title: "Externally higher",
+      source: SearchResult::SOURCE_ZLIBRARY,
+      confidence_score: 70,
+      score_breakdown: { "external_rank_score" => 100, "external_rank_provider_id" => ranker.id }
+    )
+
+    SettingsService.set(:preferred_download_types, %w[direct torrent usenet])
+
+    assert_equal [ locally_higher, externally_higher ], request.search_results.best_first.to_a
+  end
+
   test "best_first treats custom provider direct results as direct" do
     request = requests(:pending_request)
     request.search_results.destroy_all

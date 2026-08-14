@@ -196,6 +196,7 @@ class SearchJob < ApplicationJob
 
       if results.any?
         save_results(request, results)
+        rerank_saved_results(request)
         Rails.logger.info "[SearchJob] Total #{results.count} results for request ##{request.id}"
         attempt_auto_select(request)
       elsif store_offers.any?
@@ -554,6 +555,33 @@ class SearchJob < ApplicationJob
     end
   end
 
+  def rerank_saved_results(request)
+    provider = RankingProvider.enabled.by_priority.first
+    return unless provider
+
+    candidates = request.search_results.selectable.not_blocklisted.to_a
+    return if candidates.empty?
+
+    candidates_by_id = candidates.index_by { |candidate| candidate.id.to_s }
+    rankings = provider.client.rank(request, candidates)
+
+    rankings.each do |ranking|
+      candidate = candidates_by_id[ranking.candidate_id]
+      next unless candidate
+
+      breakdown = (candidate.score_breakdown || {}).merge(
+        "external_rank_score" => ranking.rank_score,
+        "external_rank_provider_id" => provider.id
+      )
+      breakdown["external_rank_evidence"] = ranking.match_evidence unless ranking.match_evidence.nil?
+      candidate.update!(score_breakdown: breakdown)
+    end
+
+    Rails.logger.info "[SearchJob] Applied #{rankings.count} external rankings from #{provider.name} to request ##{request.id}"
+  rescue RankingProviderClient::Error => e
+    Rails.logger.warn "[SearchJob] External ranking failed for request ##{request.id} (provider: #{provider&.name}, error: #{e.class})"
+  end
+
   def save_indexer_result(request, result, source)
     search_result = request.search_results.find_or_initialize_by(guid: result.guid)
     search_result.assign_attributes(
@@ -642,24 +670,28 @@ class SearchJob < ApplicationJob
   end
 
   def save_custom_provider_result(request, result, provider)
-    request.search_results.find_or_create_by!(
+    search_result = request.search_results.find_or_initialize_by(
       acquisition_provider: provider,
       provider_result_id: result.provider_result_id
-    ) do |sr|
-      sr.guid = "custom:#{provider.id}:#{result.provider_result_id}"
-      sr.title = build_custom_provider_title(result)
-      sr.indexer = provider.name
-      sr.size_bytes = result.size_bytes
-      sr.seeders = nil
-      sr.leechers = nil
-      sr.download_url = result.download_url
-      sr.magnet_url = result.magnet_url
-      sr.info_url = result.info_url
-      sr.published_at = result.published_at
-      sr.source = SearchResult::SOURCE_CUSTOM
-      sr.detected_language = result.language
-      sr.provider_payload = result.payload
-    end
+    )
+    search_result.assign_attributes(
+      guid: "custom:#{provider.id}:#{result.provider_result_id}",
+      title: build_custom_provider_title(result),
+      indexer: provider.name,
+      size_bytes: result.size_bytes,
+      seeders: nil,
+      leechers: nil,
+      download_url: result.download_url,
+      magnet_url: result.magnet_url,
+      info_url: result.info_url,
+      published_at: result.published_at,
+      source: SearchResult::SOURCE_CUSTOM,
+      detected_language: result.language,
+      provider_payload: result.payload
+    )
+    search_result.status = :pending unless search_result.blocklisted? || search_result.selected?
+    search_result.save!
+    search_result
   end
 
   def build_custom_provider_title(result)

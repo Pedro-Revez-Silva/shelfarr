@@ -66,7 +66,31 @@ class SearchResult < ApplicationRecord
     order(Arel.sql("CASE #{download_type_sql} #{type_order_sql} ELSE #{ordered_types.length} END"))
   }
 
-  scope :best_first, -> { preferred_first.order(confidence_score: :desc, seeders: :desc, size_bytes: :asc, id: :asc) }
+  # A trusted ranking provider may rank the combined acquisition result set
+  # after applying external metadata or model-assisted matching. Per-result
+  # ranks returned from a custom provider's /search remain supported as well.
+  # Both are subordinate to download-type preferences and never replace
+  # Shelfarr's confidence score or auto-selection eligibility checks.
+  scope :best_first, -> {
+    provider_rank_sql = <<~SQL.squish
+      CASE
+        WHEN json_type(score_breakdown, '$.external_rank_score') = 'integer'
+          AND EXISTS (
+            SELECT 1
+            FROM ranking_providers
+            WHERE ranking_providers.id = json_extract(score_breakdown, '$.external_rank_provider_id')
+              AND ranking_providers.enabled = 1
+          )
+        THEN json_extract(score_breakdown, '$.external_rank_score')
+        WHEN source = '#{SOURCE_CUSTOM}'
+          AND json_type(provider_payload, '$.rank_score') = 'integer'
+        THEN json_extract(provider_payload, '$.rank_score')
+        ELSE confidence_score
+      END DESC
+    SQL
+
+    preferred_first.order(Arel.sql(provider_rank_sql), confidence_score: :desc, seeders: :desc, size_bytes: :asc, id: :asc)
+  }
 
   scope :high_confidence, ->(threshold = nil) {
     min_score = threshold || SettingsService.get(:min_match_confidence)
@@ -231,6 +255,23 @@ class SearchResult < ApplicationRecord
 
   def preference_adjustment
     score_detail(:preference_adjustment).to_i
+  end
+
+  def provider_rank_score
+    return unless from_custom_provider?
+
+    value = provider_payload_value(:rank_score)
+    score = Integer(value, exception: false)
+    score if score&.between?(0, 100)
+  end
+
+  def external_rank_score
+    score = Integer(score_detail(:external_rank_score), exception: false)
+    score if score&.between?(0, 100)
+  end
+
+  def external_rank_evidence
+    score_detail(:external_rank_evidence)
   end
 
   # Source helpers

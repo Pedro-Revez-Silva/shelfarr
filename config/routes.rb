@@ -112,6 +112,11 @@ Rails.application.routes.draw do
         post :test
       end
     end
+    resources :ranking_providers do
+      member do
+        post :test
+      end
+    end
     resources :owned_library_connections, only: [ :index, :create, :update ] do
       member do
         post :test
