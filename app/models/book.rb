@@ -28,6 +28,24 @@ class Book < ApplicationRecord
     file_path.present?
   end
 
+  def reference_target_roots
+    roots = JSON.parse(self[:reference_target_roots].to_s)
+    return [] unless roots.is_a?(Array)
+
+    roots.filter_map { |root| root.to_s.presence if root.is_a?(String) }.uniq
+  rescue JSON::ParserError, TypeError
+    []
+  end
+
+  def reference_target_roots=(roots)
+    self[:reference_target_roots] = self.class.dump_reference_target_roots(roots)
+  end
+
+  def self.dump_reference_target_roots(roots)
+    values = Array(roots).filter_map { |root| root.to_s.presence }.uniq
+    values.any? ? JSON.generate(values) : nil
+  end
+
   def acquisition_reserved?
     acquisition_reservation_token.present?
   end

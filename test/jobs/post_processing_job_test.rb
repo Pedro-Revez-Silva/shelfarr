@@ -677,6 +677,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.reload.completed?, @request.issue_description
     assert_equal Pathname(source).expand_path.to_s, File.readlink(referenced)
     assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
+    assert_includes @book.reload.reference_target_roots, Pathname(@temp_download_base).realpath.to_s
   end
 
   test "reference mode imports a top-level source symlink to its final target" do
@@ -762,6 +763,45 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.reload.completed?, @request.issue_description
     assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
     assert_equal "client-root audiobook content", File.binread(referenced)
+    assert_equal [ Pathname(content_root).realpath.to_s ], @book.reload.reference_target_roots
+  ensure
+    FileUtils.rm_rf(content_root)
+  end
+
+  test "reference mode imports a Decypharr directory containing immediate symlink leaves" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    content_root = Dir.mktmpdir("decypharr-content")
+    target_directory = File.join(content_root, "__all__", "release-hash")
+    target = File.join(target_directory, "remote-audiobook.m4b")
+    FileUtils.mkdir_p(target_directory)
+    File.binwrite(target, "decypharr mounted audio")
+    File.symlink(target, File.join(@temp_source, "remote-audiobook.m4b"))
+    client = DownloadClient.create!(
+      name: "Decypharr directory source",
+      client_type: "decypharr",
+      url: "http://localhost:8282",
+      username: "http://shelfarr:3000",
+      password: "Password123!",
+      download_path: content_root
+    )
+    @download.update!(download_client: client)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    referenced = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      "remote-audiobook.m4b"
+    )
+    assert @request.reload.completed?, @request.issue_description
+    assert File.symlink?(referenced)
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert_equal "decypharr mounted audio", File.binread(referenced)
+    assert File.symlink?(File.join(@temp_source, "remote-audiobook.m4b"))
+    assert_equal [ Pathname(content_root).realpath.to_s ], @book.reload.reference_target_roots
   ensure
     FileUtils.rm_rf(content_root)
   end
@@ -1869,9 +1909,8 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal 0o640, File.stat(existing).mode & 0o777
   end
 
-  test "rejects symbolic links and fifo entries anywhere in a recursive source" do
+  test "non-reference mode rejects symbolic links and fifo entries anywhere in a recursive source" do
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:completed_download_import_mode, "reference")
     nested = File.join(@temp_source, "nested")
     FileUtils.mkdir_p(nested)
     File.symlink(File.join(@temp_source, "audiobook.mp3"), File.join(nested, "linked.mp3"))
@@ -1883,6 +1922,40 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.reload.attention_needed?
     assert_match(/symbolic link or non-regular path/i, @request.issue_description)
     assert_not File.exist?(destination)
+  end
+
+  test "reference directory rejects chained links and special targets" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    content_root = Dir.mktmpdir("unsafe-reference-content")
+    regular = File.join(content_root, "regular.mp3")
+    chained = File.join(content_root, "chained.mp3")
+    fifo = File.join(content_root, "target.pipe")
+    File.binwrite(regular, "audio")
+    File.symlink(regular, chained)
+    File.mkfifo(fifo)
+    File.symlink(chained, File.join(@temp_source, "chain.mp3"))
+    File.symlink(fifo, File.join(@temp_source, "fifo.mp3"))
+    client = DownloadClient.create!(
+      name: "Unsafe reference targets",
+      client_type: "decypharr",
+      url: "http://localhost:8282",
+      username: "http://shelfarr:3000",
+      password: "Password123!",
+      download_path: content_root
+    )
+    @download.update!(download_client: client)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.attention_needed?
+    assert_match(/symbolic link or non-regular path/i, @request.issue_description)
+    assert_not File.exist?(destination)
+    assert_equal "audio", File.binread(regular)
+  ensure
+    FileUtils.rm_rf(content_root)
   end
 
   test "never imports outside bytes after the download root is swapped" do
@@ -2566,6 +2639,46 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.processing?
     assert_nil @request.issue_description
     assert_equal retry_job.arguments.third, @download.reload.post_processing_job_id
+  end
+
+  test "retries later when a reference target is not visible yet" do
+    FileUtils.rm_rf(@temp_source)
+    debrid_root = Dir.mktmpdir("delayed-reference-target")
+    staging = File.join(@temp_download_base, "delayed-audiobook.m4b")
+    target = File.join(debrid_root, "delayed-audiobook.m4b")
+    File.symlink(target, staging)
+    @download.update!(download_path: staging)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    SettingsService.set(:download_remote_path, debrid_root)
+    SettingsService.set(:post_processing_source_path_retries, 2)
+
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+    retry_job = assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.processing?
+    assert_nil @request.issue_description
+    File.binwrite(target, "delayed debrid audio")
+    retry_job.perform_now
+
+    assert @request.reload.completed?, @request.issue_description
+    referenced = Dir.glob(File.join(@temp_dest_base, "**", "*.m4b")).sole
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert_equal "delayed debrid audio", File.binread(referenced)
+  ensure
+    FileUtils.rm_rf(debrid_root)
+  end
+
+  test "non-reference acquisition clears stale reference target provenance" do
+    SettingsService.set(:audiobookshelf_url, "")
+    @book.update!(reference_target_roots: [ @temp_download_base ])
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_empty @book.reload.reference_target_roots
   end
 
   test "copies when source path appears on a later retry" do

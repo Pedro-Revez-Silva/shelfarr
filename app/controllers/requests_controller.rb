@@ -424,17 +424,30 @@ class RequestsController < ApplicationController
 
     tmp = Tempfile.new([ "shelfarr-ref-", ".zip" ])
     tmp.binmode
+    tmp.close
     Zip::File.open(tmp.path, create: true) do |zip|
-      entries.each do |entry_name, target_path|
-        zip.get_output_stream(entry_name) { |out| out.write(File.binread(target_path)) }
+      entries.each do |entry_name, target_path, content_root|
+        zip.get_output_stream(entry_name) do |out|
+          FileCopyService.with_regular_file(target_path, root: content_root) do |input|
+            IO.copy_stream(input, out)
+          end
+        end
       end
     end
-    tmp.rewind
-    send_data tmp.read, filename: zip_filename, type: "application/zip", disposition: "attachment"
-  rescue UnsafeDownloadPathError, SystemCallError, Zip::Error => e
+    archive_stat = File.lstat(tmp.path)
+    archive_file = FileCopyService.open_pinned_regular_file(
+      tmp.path,
+      root: File.dirname(tmp.path),
+      expected_device: archive_stat.dev,
+      expected_inode: archive_stat.ino
+    )
+    send_pinned_file(archive_file, filename: zip_filename, type: "application/zip")
+    archive_file = nil
+  rescue UnsafeDownloadPathError, FileCopyService::UnsafePathError, SystemCallError, Zip::Error => e
     Rails.logger.warn "[Download] Reference tree zip failed for book ##{book.id}: #{e.class}"
     redirect_to @request, alert: "Unable to prepare a download for this reference library item."
   ensure
+    archive_file&.close unless archive_file&.closed?
     tmp&.close!
   end
 
@@ -454,16 +467,20 @@ class RequestsController < ApplicationController
         target = child.parent.join(target) unless target.absolute?
         real = target.expand_path.realpath
         raise UnsafeDownloadPathError, "reference leaf is not a file" unless File.lstat(real).file?
-        unless content_roots.any? { |root| canonical_path_contained?(real.to_s, root.to_s) }
-          raise UnsafeDownloadPathError, "reference leaf escapes authorized roots"
-        end
-        results << [ relative, real.to_s ]
+        content_root = content_roots.select do |root|
+          canonical_path_contained?(real.to_s, root.to_s)
+        end.max_by { |root| root.to_s.length }
+        raise UnsafeDownloadPathError, "reference leaf escapes authorized roots" unless content_root
+
+        results << [ relative, real.to_s, content_root.to_s ]
       elsif stat.file?
         real = child.realpath
-        unless content_roots.any? { |root| canonical_path_contained?(real.to_s, root.to_s) }
-          raise UnsafeDownloadPathError, "library file escapes authorized roots"
-        end
-        results << [ relative, real.to_s ]
+        content_root = content_roots.select do |root|
+          canonical_path_contained?(real.to_s, root.to_s)
+        end.max_by { |root| root.to_s.length }
+        raise UnsafeDownloadPathError, "library file escapes authorized roots" unless content_root
+
+        results << [ relative, real.to_s, content_root.to_s ]
       else
         raise UnsafeDownloadPathError, "unsupported library entry type"
       end
@@ -577,7 +594,8 @@ class RequestsController < ApplicationController
     [
       SettingsService.get(:download_local_path, default: "/downloads"),
       SettingsService.get(:download_remote_path),
-      *client_paths
+      *client_paths,
+      *@request.book.reference_target_roots
     ].compact_blank
   end
 

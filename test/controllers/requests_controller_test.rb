@@ -2035,7 +2035,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       title: "Final reference target",
       author: "Security Test",
       book_type: :audiobook,
-      file_path: library_path
+      file_path: library_path,
+      reference_target_roots: [ content_root ]
     )
     request = Request.create!(book: book, user: @user, status: :completed)
     request.downloads.create!(
@@ -2049,6 +2050,95 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal "final debrid audio", response.body
+
+    replacement_root = File.join(temp_dir, "replacement-content")
+    FileUtils.mkdir_p(replacement_root)
+    client.update!(download_path: replacement_root)
+    get download_request_path(request)
+    assert_response :success
+    assert_equal "final debrid audio", response.body
+
+    client.destroy!
+    get download_request_path(request)
+    assert_response :success
+    assert_equal "final debrid audio", response.body
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download sends the committed reference tree archive inode" do
+    require "zip"
+
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    book_directory = File.join(output_root, "Security Test", "Reference Archive")
+    content_root = File.join(temp_dir, "debrid-content")
+    target = File.join(content_root, "book.m4b")
+    FileUtils.mkdir_p([ book_directory, content_root ])
+    File.binwrite(target, "archived debrid audio")
+    File.symlink(target, File.join(book_directory, "book.m4b"))
+    SettingsService.set(:audiobook_output_path, output_root)
+    book = Book.create!(
+      title: "Reference Archive",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: book_directory,
+      reference_target_roots: [ content_root ]
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_response :success
+    assert_equal "application/zip", response.content_type
+    assert_operator response.body.bytesize, :>, 0
+    Zip::File.open_buffer(response.body) do |archive|
+      assert_equal [ "book.m4b" ], archive.entries.map(&:name)
+      assert_equal "archived debrid audio", archive.entries.sole.get_input_stream.read
+    end
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "reference archive rejects a target swapped after authorization" do
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    book_directory = File.join(output_root, "Security Test", "Raced Archive")
+    content_root = File.join(temp_dir, "debrid-content")
+    target = File.join(content_root, "book.m4b")
+    outside = File.join(temp_dir, "outside-secret.m4b")
+    FileUtils.mkdir_p([ book_directory, content_root ])
+    File.binwrite(target, "authorized audio")
+    File.binwrite(outside, "outside secret")
+    File.symlink(target, File.join(book_directory, "book.m4b"))
+    SettingsService.set(:audiobook_output_path, output_root)
+    book = Book.create!(
+      title: "Raced Archive",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: book_directory,
+      reference_target_roots: [ content_root ]
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+    original = FileCopyService.method(:with_regular_file)
+    swapped = false
+    swap_target = lambda do |path, root:, &block|
+      unless swapped
+        File.unlink(target)
+        File.symlink(outside, target)
+        swapped = true
+      end
+      original.call(path, root: root, &block)
+    end
+
+    FileCopyService.stub(:with_regular_file, swap_target) do
+      get download_request_path(request)
+    end
+
+    assert swapped
+    assert_redirected_to request_path(request)
+    assert_equal "Unable to prepare a download for this reference library item.", flash[:alert]
+    assert_not_includes response.body, "outside secret"
   ensure
     FileUtils.rm_rf(temp_dir)
   end

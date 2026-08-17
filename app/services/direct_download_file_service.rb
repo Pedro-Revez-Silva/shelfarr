@@ -513,6 +513,7 @@ class DirectDownloadFileService
 
       current_book.update!(
         file_path: book_path,
+        reference_target_roots: nil,
         acquisition_reservation_token: nil,
         acquisition_reservation_owner_type: nil,
         acquisition_reservation_owner_id: nil

@@ -58,6 +58,7 @@ class FileCopyService
   class AmbiguousPublicationError < StandardError; end
   class DurabilityUnsupportedError < StandardError; end
   class HardlinkUnsupportedError < StandardError; end
+  class ReferenceTargetUnavailableError < UnsafePathError; end
   SourceFileSnapshot = Struct.new(
     :path,
     :parent_path,
@@ -75,6 +76,7 @@ class FileCopyService
     :parent_inode,
     :link_target,
     :target_snapshot,
+    :authorized_root,
     keyword_init: true
   )
   SourceRoot = Struct.new(
@@ -90,6 +92,7 @@ class FileCopyService
     :parent_device,
     :parent_inode,
     :entries,
+    :reference_snapshots,
     keyword_init: true
   )
   DirectoryChild = Struct.new(
@@ -293,30 +296,14 @@ class FileCopyService
       canonical_parent = expanded.parent.realpath
       with_pinned_absolute_directory(canonical_parent) do |parent|
         validate_current_directory_identity!(expanded.parent, parent)
-        parent_stat = parent.stat
         link_target = native_readlinkat(parent.fileno, expanded.basename.to_s)
-        target = Pathname(link_target)
-        target = canonical_parent.join(target) unless target.absolute?
-        canonical_target = target.parent.realpath.join(target.basename)
-        unless roots.any? { |root| path_beneath_root?(canonical_target, root) }
-          raise UnsafePathError, "reference target is outside authorized source roots"
-        end
-
-        target_snapshot = snapshot_source_file(canonical_target)
-        validate_current_directory_identity!(expanded.parent, parent)
-        unless native_readlinkat(parent.fileno, expanded.basename.to_s) == link_target
-          raise Errno::ESTALE, "reference source changed while it was being resolved"
-        end
-
-        return ReferenceSourceSnapshot.new(
-          path: expanded,
-          parent_path: expanded.parent,
-          canonical_parent_path: canonical_parent,
-          parent_device: parent_stat.dev,
-          parent_inode: parent_stat.ino,
-          link_target: link_target,
-          target_snapshot: target_snapshot
-        ).freeze
+        return snapshot_reference_source_at(
+          expanded,
+          parent,
+          canonical_parent,
+          link_target,
+          roots
+        )
       end
     rescue Errno::ELOOP, Errno::ENOTDIR => error
       raise UnsafePathError, "reference target contains a symbolic link or non-directory: #{error.message}"
@@ -1189,6 +1176,63 @@ class FileCopyService
     rescue Errno::ELOOP, Errno::ENOTDIR => error
       raise UnsafePathError,
         "source tree contains a symbolic link or non-regular path: #{error.message}"
+    rescue Errno::ENOENT, Errno::EACCES => error
+      raise UnsafePathError, "source tree is not safely accessible: #{error.message}"
+    end
+
+    # Snapshot a regular directory tree while accepting symlink leaves only for
+    # reference imports. Every link and final target receives its own pinned
+    # authorization snapshot; directory links and chained links remain invalid.
+    def snapshot_reference_source_root(
+      path,
+      authorized_roots:,
+      heartbeat: nil,
+      max_entries: nil,
+      max_depth: nil
+    )
+      expanded = Pathname(path).expand_path
+      canonical = expanded.realpath
+      parent_path = expanded.parent
+      canonical_parent = parent_path.realpath
+      parent_stat = File.lstat(canonical_parent)
+      roots = canonical_reference_roots(authorized_roots)
+      raise UnsafePathError, "reference source has no authorized target root" if roots.empty?
+
+      with_pinned_absolute_directory(canonical) do |directory|
+        validate_current_directory_identity!(expanded, directory)
+        raise UnsafePathError, "source root is not a directory" unless directory.stat.directory?
+
+        reference_snapshots = {}
+        entries = snapshot_pinned_reference_tree(
+          directory,
+          expanded,
+          roots,
+          reference_snapshots: reference_snapshots,
+          heartbeat: heartbeat,
+          max_entries: max_entries,
+          max_depth: max_depth
+        )
+        validate_current_directory_identity!(expanded, directory)
+        stat = directory.stat
+        return SourceRoot.new(
+          path: expanded,
+          canonical_path: canonical,
+          device: stat.dev,
+          inode: stat.ino,
+          size: stat.size,
+          mtime: stat.mtime.to_r,
+          ctime: stat.ctime.to_r,
+          parent_path: parent_path,
+          canonical_parent_path: canonical_parent,
+          parent_device: parent_stat.dev,
+          parent_inode: parent_stat.ino,
+          entries: entries.freeze,
+          reference_snapshots: reference_snapshots.freeze
+        ).freeze
+      end
+    rescue Errno::ELOOP, Errno::ENOTDIR => error
+      raise UnsafePathError,
+        "source tree contains a chained symbolic link or non-regular path: #{error.message}"
     rescue Errno::ENOENT, Errno::EACCES => error
       raise UnsafePathError, "source tree is not safely accessible: #{error.message}"
     end
@@ -3046,6 +3090,132 @@ class FileCopyService
         end
       end
       manifest
+    end
+
+    def snapshot_pinned_reference_tree(
+      directory,
+      source_root_path,
+      authorized_roots,
+      prefix = nil,
+      manifest = {},
+      reference_snapshots:,
+      heartbeat: nil,
+      max_entries: nil,
+      max_depth: nil,
+      depth: 0
+    )
+      remaining = max_entries && max_entries - manifest.size
+      pinned_directory_children(directory, max_entries: remaining).each do |entry|
+        heartbeat&.call
+        relative = prefix ? prefix.join(entry) : Pathname(entry)
+        descriptor = begin
+          native_openat(
+            directory.fileno,
+            entry,
+            File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+            0
+          )
+        rescue Errno::ELOOP
+          parent_path = source_root_path.join(relative.dirname)
+          canonical_parent = parent_path.realpath
+          validate_current_directory_identity!(parent_path, directory)
+          link_target = native_readlinkat(directory.fileno, entry)
+          snapshot = snapshot_reference_source_at(
+            source_root_path.join(relative),
+            directory,
+            canonical_parent,
+            link_target,
+            authorized_roots
+          )
+          manifest[relative.to_s] = reference_manifest_entry(snapshot)
+          reference_snapshots[relative.to_s] = snapshot
+          next
+        end
+
+        child = IO.new(descriptor, "rb", autoclose: true)
+        begin
+          stat = child.stat
+          if stat.directory?
+            if max_depth && depth + 1 > max_depth
+              raise UnsafePathError, "source tree nesting is too deep"
+            end
+
+            manifest[relative.to_s] = directory_manifest_entry(stat)
+            snapshot_pinned_reference_tree(
+              child,
+              source_root_path,
+              authorized_roots,
+              relative,
+              manifest,
+              reference_snapshots: reference_snapshots,
+              heartbeat: heartbeat,
+              max_entries: max_entries,
+              max_depth: max_depth,
+              depth: depth + 1
+            )
+          elsif stat.file?
+            manifest[relative.to_s] = file_manifest_entry(stat)
+          else
+            raise UnsafePathError, "source tree contains a symbolic link or non-regular path"
+          end
+        ensure
+          child.close unless child.closed?
+        end
+      end
+      manifest
+    end
+
+    def snapshot_reference_source_at(expanded, parent, canonical_parent, link_target, authorized_roots)
+      target = Pathname(link_target)
+      target = canonical_parent.join(target) unless target.absolute?
+      canonical_target = canonical_reference_target(target)
+      authorized_root = authorized_roots.select do |root|
+        path_beneath_root?(canonical_target, root)
+      end.max_by { |root| root.to_s.length }
+      unless authorized_root
+        raise UnsafePathError, "reference target is outside authorized source roots"
+      end
+      target_snapshot = snapshot_reference_target(canonical_target)
+
+      validate_current_directory_identity!(expanded.parent, parent)
+      unless native_readlinkat(parent.fileno, expanded.basename.to_s) == link_target
+        raise Errno::ESTALE, "reference source changed while it was being resolved"
+      end
+      parent_stat = parent.stat
+      ReferenceSourceSnapshot.new(
+        path: expanded,
+        parent_path: expanded.parent,
+        canonical_parent_path: canonical_parent,
+        parent_device: parent_stat.dev,
+        parent_inode: parent_stat.ino,
+        link_target: link_target,
+        target_snapshot: target_snapshot,
+        authorized_root: authorized_root
+      ).freeze
+    end
+
+    def canonical_reference_target(target)
+      target.parent.realpath.join(target.basename)
+    rescue Errno::ENOENT => error
+      raise ReferenceTargetUnavailableError,
+        "reference target is not visible yet: #{error.message}"
+    end
+
+    def snapshot_reference_target(canonical_target)
+      snapshot_source_file(canonical_target)
+    rescue Errno::ENOENT => error
+      raise ReferenceTargetUnavailableError,
+        "reference target is not visible yet: #{error.message}"
+    end
+
+    def reference_manifest_entry(snapshot)
+      [
+        snapshot.parent_device,
+        snapshot.parent_inode,
+        :reference,
+        snapshot.link_target,
+        snapshot.target_snapshot.manifest
+      ].freeze
     end
 
     def secure_pinned_library_tree!(directory, heartbeat: nil)

@@ -3,6 +3,24 @@
 require "test_helper"
 
 class BookTest < ActiveSupport::TestCase
+  test "reference target roots serialize as an immutable path list" do
+    book = Book.create!(
+      title: "Reference provenance",
+      book_type: :ebook,
+      reference_target_roots: [ "/debrid", "", "/debrid", "/other" ]
+    )
+
+    assert_equal [ "/debrid", "/other" ], book.reload.reference_target_roots
+    assert_equal '["/debrid","/other"]', book[:reference_target_roots]
+  end
+
+  test "malformed reference target roots fail closed" do
+    book = Book.create!(title: "Malformed provenance", book_type: :ebook)
+    Book.where(id: book.id).update_all(reference_target_roots: '{"root":"/"}')
+
+    assert_empty book.reload.reference_target_roots
+  end
+
   test "acquired scope only includes books with a usable path" do
     acquired = Book.create!(title: "Acquired", book_type: :ebook, file_path: "/books/acquired.epub")
     blank = Book.create!(title: "Blank", book_type: :ebook, file_path: "")

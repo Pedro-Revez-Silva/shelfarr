@@ -778,6 +778,63 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "original content", File.binread(destination)
   end
 
+  test "reference source root snapshots and publishes immediate symlink leaves" do
+    source_root = File.join(@tmp_dir, "decypharr-release")
+    nested = File.join(source_root, "disc")
+    target = File.join(@tmp_dir, "debrid-content", "chapter.m4b")
+    source = File.join(nested, "chapter.m4b")
+    destination = File.join(@dest_dir, "chapter.m4b")
+    FileUtils.mkdir_p([ nested, File.dirname(target) ])
+    File.binwrite(target, "mounted chapter")
+    File.symlink(File.join("..", "..", "debrid-content", "chapter.m4b"), source)
+
+    root_snapshot = FileCopyService.snapshot_reference_source_root(
+      source_root,
+      authorized_roots: [ @tmp_dir ]
+    )
+    source_snapshot = root_snapshot.reference_snapshots.fetch("disc/chapter.m4b")
+    FileCopyService.reference_noreplace(
+      source,
+      destination,
+      root: @dest_dir,
+      source_root: nil,
+      source_snapshot: source_snapshot
+    )
+
+    assert_equal :reference, root_snapshot.entries.fetch("disc/chapter.m4b")[2]
+    assert_equal Pathname(target).realpath.to_s, File.readlink(destination)
+    assert_equal "mounted chapter", File.binread(destination)
+  end
+
+  test "reference source root rejects a changed snapshotted leaf" do
+    source_root = File.join(@tmp_dir, "raced-reference-release")
+    original = File.join(@tmp_dir, "original-leaf.m4b")
+    replacement = File.join(@tmp_dir, "replacement-leaf.m4b")
+    source = File.join(source_root, "book.m4b")
+    destination = File.join(@dest_dir, "book.m4b")
+    FileUtils.mkdir_p(source_root)
+    File.binwrite(original, "original")
+    File.binwrite(replacement, "replacement")
+    File.symlink(original, source)
+    root_snapshot = FileCopyService.snapshot_reference_source_root(
+      source_root,
+      authorized_roots: [ @tmp_dir ]
+    )
+    File.unlink(source)
+    File.symlink(replacement, source)
+
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.reference_noreplace(
+        source,
+        destination,
+        root: @dest_dir,
+        source_root: nil,
+        source_snapshot: root_snapshot.reference_snapshots.fetch("book.m4b")
+      )
+    end
+    assert_not File.exist?(destination)
+  end
+
   test "copy move and hardlink modes continue to reject an immediate source symlink" do
     staging = File.join(@tmp_dir, "mode-staging.txt")
     target = File.join(@tmp_dir, "mode-target.txt")
