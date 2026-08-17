@@ -269,6 +269,57 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_equal 0, @request.downloads.count
   end
 
+  test "does not auto-select a comic issue from a conflicting release year" do
+    @book.update!(
+      title: "Batman - #1 - The Legend of the Batman",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-105811",
+      issue_number: "1",
+      series: "Batman",
+      series_position: "1",
+      release_date: Date.new(1940, 4, 1)
+    )
+    result = create_search_result(
+      title: "Batman #001 (2016) English Comic CBZ",
+      seeders: 100,
+      magnet_url: "magnet:?conflicting-run"
+    )
+    result.calculate_score!
+
+    selection = AutoSelectService.call(@request)
+
+    assert_not selection.success?
+    assert_equal :no_matching_results, selection.reason
+    assert result.reload.pending?
+    assert_equal 0, @request.downloads.count
+  end
+
+  test "does not auto-select a multi-issue comic pack" do
+    @book.update!(
+      title: "Saga - #1",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-438",
+      issue_number: "1",
+      series: "Saga",
+      series_position: "1"
+    )
+    result = create_search_result(
+      title: "Saga #001-#006 English Comic CBZ",
+      seeders: 100,
+      magnet_url: "magnet:?issue-pack"
+    )
+    result.calculate_score!
+
+    selection = AutoSelectService.call(@request)
+
+    assert_not selection.success?
+    assert_equal :no_matching_results, selection.reason
+    assert result.reload.pending?
+    assert_equal 0, @request.downloads.count
+  end
+
   test "selection result error reason works" do
     # Test that the SelectionResult with error reason works correctly
     result = AutoSelectService::SelectionResult.new(selected: false, reason: :error)

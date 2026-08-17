@@ -229,24 +229,114 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_not conflicting_score.breakdown[:auto_select_allowed]
   end
 
-  test "does not reject a comic release containing an ambiguous issue range" do
+  test "requires an explicit comic run year to match the requested release year" do
+    book = Book.create!(
+      title: "Batman - #1 - The Legend of the Batman",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-438",
+      issue_number: "1",
+      series: "Batman",
+      release_date: Date.new(1940, 4, 1)
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+
+    correct_titles = [
+      "Batman (1940) #001 English Comic CBZ",
+      "Batman #001 (1940) English Comic CBZ"
+    ]
+    conflicting_titles = [
+      "Batman (2016) #001 English Comic CBZ",
+      "Batman #001 (2016) English Comic CBZ"
+    ]
+
+    correct_titles.each do |title|
+      score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
+
+      assert_equal :exact, score.breakdown[:issue_match], title
+      assert score.breakdown[:auto_select_allowed], title
+    end
+    conflicting_titles.each do |title|
+      score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
+
+      assert_equal :unknown, score.breakdown[:issue_match], title
+      assert_operator score.total, :<, 50, title
+      assert_not score.breakdown[:auto_select_allowed], title
+    end
+  end
+
+  test "treats comic issue ranges and lists as ambiguous" do
     book = Book.create!(
       title: "Saga",
       book_type: :comicbook,
       content_kind: :graphic,
       comic_vine_id: "4000-439",
-      issue_number: "7",
+      issue_number: "1",
       series: "Saga"
     )
     request = Request.create!(book: book, user: @user, status: :pending, language: "en")
-    release = SearchResult.new(title: "Saga 1-12 English Comic CBZ", seeders: 50)
 
-    score = ReleaseScorer.score(release, request)
+    [
+      "Saga 1-12 English Comic CBZ",
+      "Saga #001-#006 English Comic CBZ",
+      "Saga #001,#002 English Comic CBZ",
+      "Saga #001 #002 English Comic CBZ"
+    ].each do |title|
+      score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
 
-    assert_equal :unknown, score.breakdown[:issue_match]
-    assert_operator score.total, :>, 0
-    assert_operator score.total, :<, 50
-    assert_not score.breakdown[:auto_select_allowed]
+      assert_equal :unknown, score.breakdown[:issue_match], title
+      assert_operator score.total, :>, 0, title
+      assert_operator score.total, :<, 50, title
+      assert_not score.breakdown[:auto_select_allowed], title
+    end
+  end
+
+  test "matches punctuated comic series without matching normalized lookalikes" do
+    spider_man = Book.create!(
+      title: "Spider-Man - #7",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "7",
+      series: "Spider-Man"
+    )
+    spider_man_request = Request.create!(book: spider_man, user: @user, status: :pending, language: "en")
+
+    exact = ReleaseScorer.score(SearchResult.new(title: "Spider-Man #7 English Comic CBZ", seeders: 50), spider_man_request)
+    lookalike = ReleaseScorer.score(SearchResult.new(title: "Spiderwoman #7 English Comic CBZ", seeders: 50), spider_man_request)
+
+    assert_equal :exact, exact.breakdown[:issue_match]
+    assert_equal :unknown, lookalike.breakdown[:issue_match]
+
+    x_series = Book.create!(
+      title: "X - #7",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "7",
+      series: "X"
+    )
+    x_request = Request.create!(book: x_series, user: @user, status: :pending, language: "en")
+
+    assert_equal :exact,
+      ReleaseScorer.score(SearchResult.new(title: "X #7 English Comic CBZ", seeders: 50), x_request).breakdown[:issue_match]
+    assert_equal :unknown,
+      ReleaseScorer.score(SearchResult.new(title: "10 #7 English Comic CBZ", seeders: 50), x_request).breakdown[:issue_match]
+  end
+
+  test "normalizes padded numeric stems in comic issue labels" do
+    [ [ "7A", "Saga 007A English Comic CBZ" ], [ "7.5", "Saga 007.5 English Comic CBZ" ] ].each do |issue, title|
+      book = Book.create!(
+        title: "Saga - ##{issue}",
+        book_type: :comicbook,
+        content_kind: :graphic,
+        issue_number: issue,
+        series: "Saga"
+      )
+      request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+      score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
+
+      assert_equal :exact, score.breakdown[:issue_match], title
+      assert score.breakdown[:auto_select_allowed], title
+    end
   end
 
   test "does not reject conflicting alphanumeric comic issue labels" do

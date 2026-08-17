@@ -242,7 +242,7 @@ class ReleaseScorer
     normalized_requested = normalize_issue_number(requested)
     normalized_detected = normalize_issue_number(detected[:value])
     status = if normalized_requested == normalized_detected
-      :exact
+      comic_issue_run_year_conflict?(detected) ? :unknown : :exact
     elsif numeric_issue_number?(normalized_requested) && numeric_issue_number?(normalized_detected)
       :mismatch
     else
@@ -253,33 +253,69 @@ class ReleaseScorer
   end
 
   def detect_comic_issue_number
-    series_tokens = normalize_for_matching(@book.series).split
+    series_tokens = @book.series.to_s.downcase.scan(/[[:alnum:]]+/)
     return if series_tokens.empty?
 
-    series_pattern = series_tokens.map { |token| Regexp.escape(token) }.join("[^[:alnum:]]+")
+    series_pattern = series_tokens.map { |token| Regexp.escape(token) }.join("[^[:alnum:]]*")
     series_match = @search_result.title.to_s.match(/(?<![[:alnum:]])#{series_pattern}(?![[:alnum:]])/i)
     return unless series_match
 
     tail = @search_result.title.to_s[series_match.end(0)..]
     separator = '[\s._:–—-]'
-    marker = '(?:#|issues?\s*|no\.?\s*|numbers?\s*)'
-    issue = '(\d+(?:\.\d+)?[a-z]?)'
-    range = tail.match(/\A#{separator}*#{marker}?#{issue}\s*(?:-|–|—|to)\s*\d+(?:\.\d+)?[a-z]?/i)
-    return { value: range[1], ambiguous: true } if range
+    marker = '(?:#|(?:issues?|no\.?|numbers?)\s*#?\s*)'
+    issue_value = '\d+(?:\.\d+)?[a-z]?'
+    issue = "(?<issue>#{issue_value})"
+    tail, run_year = extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
+    multiple = tail.match(
+      /\A#{separator}*#{marker}?#{issue}(?:\s*(?:-|–|—|to|,|&|\+|and)\s*|\s+(?=#))#{marker}?#{issue_value}(?![[:alnum:]])/i
+    )
+    return comic_issue_detection(multiple, tail, run_year:, ambiguous: true) if multiple
 
     explicit = tail.match(/\A#{separator}*#{marker}\s*#{issue}(?![[:alnum:]])/i)
-    return { value: explicit[1], ambiguous: false } if explicit
+    return comic_issue_detection(explicit, tail, run_year:) if explicit
 
     plain = tail.match(/\A#{separator}+#{issue}(?![[:alnum:]])/i)
     return unless plain
-    return if plain[1].match?(/\A(?:19|20)\d{2}\z/)
+    return if plain[:issue].match?(/\A(?:19|20)\d{2}\z/)
 
-    { value: plain[1], ambiguous: false }
+    comic_issue_detection(plain, tail, run_year:)
+  end
+
+  def extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
+    wrapped = tail.match(/\A#{separator}*[\(\[](?<year>\d{4})[\)\]]/)
+    return [ tail[wrapped.end(0)..], wrapped[:year].to_i ] if wrapped
+
+    plain = tail.match(
+      /\A#{separator}*(?<year>\d{4})(?=#{separator}+(?:#{marker})?#{issue_value}(?![[:alnum:]]))/i
+    )
+    return [ tail[plain.end(0)..], plain[:year].to_i ] if plain
+
+    [ tail, nil ]
+  end
+
+  def comic_issue_detection(match, tail, run_year:, ambiguous: false)
+    run_year ||= comic_run_year_after(tail[match.end(0)..])
+    { value: match[:issue], ambiguous: ambiguous, run_year: run_year }
+  end
+
+  def comic_run_year_after(tail)
+    match = tail.to_s.match(
+      /\A[\s._:–—-]*(?:[\(\[](?<wrapped>\d{4})[\)\]]|(?<plain>\d{4})(?!\d))/
+    )
+    (match&.[](:wrapped) || match&.[](:plain))&.to_i
+  end
+
+  def comic_issue_run_year_conflict?(detected)
+    requested_year = @book.release_date&.year
+    detected[:run_year].present? && requested_year.present? && detected[:run_year] != requested_year
   end
 
   def normalize_issue_number(value)
     normalized = value.to_s.delete_prefix("#").squish.downcase
-    numeric_issue_number?(normalized) ? normalized.to_i.to_s : normalized
+    numeric_stem = normalized.match(/\A0*(\d+)((?:\.\d+)?[a-z]?)\z/i)
+    return normalized unless numeric_stem
+
+    "#{numeric_stem[1].to_i}#{numeric_stem[2]}"
   end
 
   def numeric_issue_number?(value)

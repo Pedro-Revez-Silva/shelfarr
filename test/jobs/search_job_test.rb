@@ -993,7 +993,7 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal volume.title, job.send(:generic_indexer_attempts, volume_request).first.query
   end
 
-  test "does not zero-pad nonnumeric comic issue labels" do
+  test "zero-pads alphanumeric comic issue labels" do
     book = Book.create!(
       title: "Saga - #7A",
       book_type: :comicbook,
@@ -1005,7 +1005,37 @@ class SearchJobTest < ActiveJob::TestCase
 
     attempts = SearchJob.new.send(:generic_indexer_attempts, request)
 
-    assert_equal [ "Saga 7A", "Saga #7A" ], attempts.map(&:query)
+    assert_equal [ "Saga 7A", "Saga #7A", "Saga 007A" ], attempts.map(&:query)
+  end
+
+  test "zero-pads decimal comic issue labels" do
+    book = Book.create!(
+      title: "Saga - #7.5",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "7.5",
+      series: "Saga"
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_equal [ "Saga 7.5", "Saga #7.5", "Saga 007.5" ], attempts.map(&:query)
+  end
+
+  test "does not zero-pad comic issue labels without a numeric stem" do
+    book = Book.create!(
+      title: "Saga - Special",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "Special",
+      series: "Saga"
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_equal [ "Saga Special", "Saga #Special" ], attempts.map(&:query)
   end
 
   test "sends the author to Prowlarr indexers that only accept free text" do

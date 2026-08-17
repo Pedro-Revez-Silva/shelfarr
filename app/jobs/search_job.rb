@@ -950,10 +950,17 @@ class SearchJob < ApplicationJob
     series = book.series.to_s.squish
     return [] if issue_number.blank? || series.blank?
 
-    numeric_match = issue_number.match(/\A0*(\d+)\z/)
-    display_number = numeric_match ? numeric_match[1].to_i.to_s : issue_number
+    numeric_match = issue_number.match(/\A0*(\d+)((?:\.\d+)?[a-z]?)\z/i)
+    display_number = if numeric_match
+      "#{numeric_match[1].to_i}#{numeric_match[2]}"
+    else
+      issue_number
+    end
     queries = [ "#{series} #{display_number}", "#{series} ##{display_number}" ]
-    queries << "#{series} #{display_number.rjust(3, '0')}" if numeric_match
+    if numeric_match
+      padded_number = "#{numeric_match[1].to_i.to_s.rjust(3, '0')}#{numeric_match[2]}"
+      queries << "#{series} #{padded_number}"
+    end
     queries.uniq
   end
 
