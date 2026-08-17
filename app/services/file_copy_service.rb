@@ -38,6 +38,8 @@ class FileCopyService
   DRVFS_COPY_JOURNAL_BASENAME = ".shelfarr-drvfs-copy.journal"
   DRVFS_COPY_TERMINAL_STATES = [ :empty, :complete, :conflict, :aborted ].freeze
   DRVFS_COPY_LOCK_RETRY_INTERVAL = 0.05
+  DRVFS_PRIVATE_STAGING_FILE_MODES = [ 0o600, LIBRARY_FILE_MODE ].freeze
+  DRVFS_PRIVATE_STAGING_DIRECTORY_MODES = [ 0o700, DIRECTORY_MODE ].freeze
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   DISCARD_PATTERN = /\A\.shelfarr-discard-([0-9a-f]+)-([0-9a-f]+)-[0-9a-f]{32}\.tmp\z/
   SOURCE_QUARANTINE_PATTERN = /\A\.shelfarr-source-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
@@ -991,6 +993,76 @@ class FileCopyService
       false
     end
 
+    # DrvFS can change inode identities during rename, so the generic
+    # quarantine-based remover must continue to reject it. Direct-download v2
+    # staging instead uses an application-authenticated private namespace and
+    # can remove a fully preflighted tree without renaming it. Callers must
+    # validate that parent_path and child_name name that exact namespace.
+    def remove_owned_private_tree_on_drvfs(
+      parent_path,
+      child_name,
+      root:,
+      expected_identity:,
+      expected_parent_identity:
+    )
+      if child_name.include?(File::SEPARATOR) || child_name.in?([ ".", ".." ])
+        raise UnsafePathError, "private directory child name is unsafe"
+      end
+
+      with_pinned_directory(parent_path, root: root, create: false, mode: 0o700) do |parent|
+        return :not_drvfs unless drvfs_mount?(parent)
+
+        parent_stat = parent.stat
+        if expected_parent_identity && file_identity(parent_stat) != expected_parent_identity
+          return :retained
+        end
+        unless drvfs_private_staging_directory?(parent_stat, parent, root: true)
+          return :retained
+        end
+
+        child = begin
+          open_pinned_directory_child(parent, child_name)
+        rescue Errno::ENOENT
+          return :missing
+        end
+        begin
+          child_stat = child.stat
+          child_identity = file_identity(child_stat)
+          return :retained if expected_identity && child_identity != expected_identity
+          return :retained unless drvfs_private_staging_directory?(child_stat, parent, root: true)
+
+          root_manifest = drvfs_private_staging_manifest(child_stat, parent)
+          current_root = lambda do
+            validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
+            drvfs_private_staging_child_manifest(parent, child_name) == root_manifest
+          rescue SystemCallError, IOError, UnsafePathError
+            false
+          end
+
+          return :retained unless current_root.call
+
+          manifest = snapshot_pinned_drvfs_private_tree(child)
+          return :retained unless current_root.call
+
+          remove_pinned_drvfs_private_tree_contents!(
+            child,
+            manifest,
+            before_remove: current_root
+          )
+          return :retained unless current_root.call
+
+          native_unlinkat(parent.fileno, child_name, AT_REMOVEDIR)
+          sync_io(parent)
+          validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
+          :removed
+        ensure
+          child.close unless child.closed?
+        end
+      end
+    rescue SystemCallError, IOError, UnsafePathError
+      :retained
+    end
+
     # Compare regular files through pinned descriptors. This is used by retry
     # reconciliation so a path swap cannot trick an import into reusing an
     # unrelated library file.
@@ -1747,6 +1819,133 @@ class FileCopyService
         raise UnsafePathError, "private staging path is unsafe"
       end
       relative
+    end
+
+    def snapshot_pinned_drvfs_private_tree(directory, prefix = nil, manifest = {})
+      entries = pinned_directory_children(directory)
+      entries.each do |entry|
+        descriptor = native_openat(
+          directory.fileno,
+          entry,
+          File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+          0
+        )
+        child = IO.new(descriptor, "rb", autoclose: true)
+        begin
+          relative = prefix ? prefix.join(entry) : Pathname(entry)
+          stat = child.stat
+          manifest[relative.to_s] = drvfs_private_staging_manifest(stat, directory)
+          if stat.directory?
+            snapshot_pinned_drvfs_private_tree(child, relative, manifest)
+          elsif !stat.file?
+            raise UnsafePathError, "private staging tree contains a special entry"
+          end
+        ensure
+          child.close unless child.closed?
+        end
+      end
+      unless pinned_directory_children(directory) == entries
+        raise Errno::ESTALE, "private staging tree changed during validation"
+      end
+
+      manifest
+    end
+
+    def remove_pinned_drvfs_private_tree_contents!(directory, expected_entries, prefix = nil, before_remove:)
+      children = pinned_directory_children(directory)
+      expected_children = expected_entries.keys.filter_map do |relative|
+        path = Pathname(relative)
+        next unless path.dirname == (prefix || Pathname("."))
+
+        path.basename.to_s
+      end.sort
+      unless children == expected_children
+        raise Errno::ESTALE, "private staging tree changed before cleanup"
+      end
+
+      children.each do |entry|
+        raise Errno::ESTALE, "private staging root changed during cleanup" unless before_remove.call
+
+        relative = prefix ? prefix.join(entry) : Pathname(entry)
+        expected = expected_entries.fetch(relative.to_s)
+        descriptor = native_openat(
+          directory.fileno,
+          entry,
+          File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+          0
+        )
+        child = IO.new(descriptor, "rb", autoclose: true)
+        begin
+          stat = child.stat
+          current = drvfs_private_staging_manifest(stat, directory)
+          unless current == expected
+            raise Errno::ESTALE, "private staging entry changed before cleanup"
+          end
+
+          if stat.directory?
+            remove_pinned_drvfs_private_tree_contents!(
+              child,
+              expected_entries,
+              relative,
+              before_remove: before_remove
+            )
+          elsif !stat.file?
+            raise UnsafePathError, "private staging tree contains a special entry"
+          end
+
+          raise Errno::ESTALE, "private staging root changed during cleanup" unless before_remove.call
+          unless drvfs_private_staging_child_manifest(directory, entry) == expected
+            raise Errno::ESTALE, "private staging entry was replaced during cleanup"
+          end
+
+          native_unlinkat(directory.fileno, entry, stat.directory? ? AT_REMOVEDIR : 0)
+          sync_io(directory)
+        ensure
+          child.close unless child.closed?
+        end
+      end
+    end
+
+    def drvfs_private_staging_child_manifest(parent, basename)
+      descriptor = native_openat(
+        parent.fileno,
+        basename,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+        0
+      )
+      child = IO.new(descriptor, "rb", autoclose: true)
+      drvfs_private_staging_manifest(child.stat, parent)
+    ensure
+      child&.close unless child&.closed?
+    end
+
+    def drvfs_private_staging_manifest(stat, parent)
+      unless private_entry_owned_by_process?(stat, parent)
+        raise UnsafePathError, "private staging entry is owned by another user"
+      end
+
+      mode = stat.mode & 0o7777
+      if stat.directory?
+        unless mode.in?(DRVFS_PRIVATE_STAGING_DIRECTORY_MODES)
+          raise UnsafePathError, "private staging directory permissions changed"
+        end
+        [ stat.dev, stat.ino, :directory, mode, stat.uid ]
+      elsif stat.file?
+        unless mode.in?(DRVFS_PRIVATE_STAGING_FILE_MODES)
+          raise UnsafePathError, "private staging file permissions changed"
+        end
+        [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.ctime.to_r, mode, stat.uid ]
+      else
+        raise UnsafePathError, "private staging tree contains a special entry"
+      end
+    end
+
+    def drvfs_private_staging_directory?(stat, parent, root: false)
+      return false unless stat.directory?
+      return false unless private_entry_owned_by_process?(stat, parent)
+
+      mode = stat.mode & 0o7777
+      root ? mode == 0o700 : mode.in?(DRVFS_PRIVATE_STAGING_DIRECTORY_MODES)
     end
 
     def apply_file_mode!(file, requested_mode, accepted_modes:, path: nil, root: nil)

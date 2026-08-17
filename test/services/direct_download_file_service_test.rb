@@ -55,6 +55,37 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_nil @download.reload.direct_staging_path
   end
 
+  test "completed DrvFS direct file cleanup removes private v2 staging and recovery state" do
+    with_forced_drvfs_mount(@output_root) do
+      staging = @service.create_staging!
+      staged = FileCopyService.create_private_file(
+        staging,
+        root: @output_root,
+        prefix: "ebook-",
+        suffix: ".epub"
+      )
+      begin
+        staged.io.write("PK\x03\x04complete DrvFS ebook")
+        staged.io.flush
+        staged.io.fsync
+        assert @service.publish_file_and_finalize!(staged.io)
+      ensure
+        staged.io.close unless staged.io.closed?
+      end
+
+      assert File.directory?(staging)
+      assert @service.cleanup_after_run!
+      assert_not File.exist?(staging)
+    end
+
+    assert_nil @download.reload.direct_staging_path
+    assert_nil @download.direct_output_root
+    assert_nil @download.direct_destination_path
+    assert_nil @download.direct_content_manifest
+    assert_nil @download.direct_staging_parent_device
+    assert_equal "PK\x03\x04complete DrvFS ebook", File.binread(@destination)
+  end
+
   test "new staging bypasses an unrepairable broad legacy namespace" do
     legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
     legacy_marker = File.join(legacy, "retained-legacy-entry")
@@ -434,6 +465,31 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert File.directory?(displaced)
   end
 
+  test "DrvFS recovery retains a private same-mode staging replacement" do
+    displaced = nil
+    with_forced_drvfs_mount(@output_root) do
+      staging = @service.create_staging!
+      displaced = "#{staging}-original"
+      File.rename(staging, displaced)
+      FileUtils.mkdir_p(staging, mode: 0o700)
+      File.chmod(0o700, staging)
+      replacement = FileCopyService.create_private_file(
+        staging,
+        root: @output_root,
+        prefix: "replacement-"
+      )
+      replacement.io.write("preserve replacement")
+      replacement.io.close
+      @download.update_columns(status: Download.statuses[:failed], updated_at: 1.hour.ago)
+
+      assert_not DirectDownloadFileService.reconcile!(@download)
+      assert_equal "preserve replacement", File.binread(replacement.name)
+      assert_equal staging, @download.reload.direct_staging_path
+    end
+  ensure
+    FileUtils.rm_rf(displaced) if displaced
+  end
+
   test "recovery retains state when the persisted staging parent was replaced" do
     staging = @service.create_staging!
     @service.send(:reserve_book!)
@@ -507,7 +563,12 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
 
   test "orphan cleanup reclaims only old unreferenced instance staging directories" do
     parent = DirectDownloadFileService.staging_parent(root: @output_root)
-    orphan = Dir.mktmpdir("download-orphan-", parent)
+    orphan_id = Download.maximum(:id).to_i + 100_000
+    orphan = FileCopyService.create_private_directory(
+      parent.to_s,
+      root: @output_root,
+      prefix: "download-#{orphan_id}-"
+    ).name
     File.binwrite(File.join(orphan, "large.partial"), "partial")
     old = 2.days.ago.to_time
     File.utime(old, old, File.join(orphan, "large.partial"))
@@ -521,6 +582,80 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert File.directory?(active)
     @download.update!(status: :failed)
     DirectDownloadFileService.reconcile!(@download)
+  end
+
+  test "orphan cleanup reclaims old private v2 staging on DrvFS" do
+    with_forced_drvfs_mount(@output_root) do
+      parent = DirectDownloadFileService.staging_parent(root: @output_root)
+      orphan_id = Download.maximum(:id).to_i + 100_000
+      orphan = FileCopyService.create_private_directory(
+        parent.to_s,
+        root: @output_root,
+        prefix: "download-#{orphan_id}-"
+      )
+      staged = FileCopyService.create_private_file(
+        orphan.name,
+        root: @output_root,
+        prefix: "ebook-",
+        suffix: ".epub"
+      )
+      staged.io.write("PK\x03\x04orphaned DrvFS payload")
+      staged.io.close
+      nested = FileCopyService.ensure_private_relative_directory(
+        orphan.name,
+        "nested/deep",
+        root: @output_root
+      )
+      nested_file = FileCopyService.create_private_file(
+        nested,
+        root: @output_root,
+        prefix: "chapter-",
+        suffix: ".m4b"
+      )
+      nested_file.io.write("nested payload")
+      nested_file.io.close
+      old = 2.days.ago.to_time
+      File.utime(old, old, orphan.name)
+
+      assert_equal 1, DirectDownloadFileService.cleanup_orphans!(root: @output_root)
+      assert_not File.exist?(orphan.name)
+    end
+  end
+
+  test "DrvFS orphan cleanup retains lookalikes symlinks and special entries" do
+    skip "mkfifo is unavailable" unless File.respond_to?(:mkfifo)
+
+    with_forced_drvfs_mount(@output_root) do
+      parent = DirectDownloadFileService.staging_parent(root: @output_root)
+      next_id = Download.maximum(:id).to_i + 100_000
+      outside = File.join(@output_root, "outside-payload")
+      File.binwrite(outside, "outside bytes")
+
+      symlink_tree = FileCopyService.create_private_directory(
+        parent.to_s,
+        root: @output_root,
+        prefix: "download-#{next_id}-"
+      ).name
+      File.symlink(outside, File.join(symlink_tree, "linked.epub"))
+
+      special_tree = FileCopyService.create_private_directory(
+        parent.to_s,
+        root: @output_root,
+        prefix: "download-#{next_id + 1}-"
+      ).name
+      File.mkfifo(File.join(special_tree, "partial.pipe"), 0o600)
+
+      lookalike = File.join(parent, "download-orphan-#{'a' * 32}")
+      Dir.mkdir(lookalike, 0o700)
+      old = 2.days.ago.to_time
+      [ symlink_tree, special_tree, lookalike ].each { |path| File.utime(old, old, path) }
+
+      assert_equal 0, DirectDownloadFileService.cleanup_orphans!(root: @output_root)
+      assert File.symlink?(File.join(symlink_tree, "linked.epub"))
+      assert File.pipe?(File.join(special_tree, "partial.pipe"))
+      assert File.directory?(lookalike)
+      assert_equal "outside bytes", File.binread(outside)
+    end
   end
 
   private
@@ -549,5 +684,20 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
       book_path: directory_destination,
       kind: :directory
     )
+  end
+
+  def with_forced_drvfs_mount(root)
+    stat = File.stat(root)
+    device = "#{stat.dev_major}:#{stat.dev_minor}"
+    mountpoint = root.gsub(" ", "\\040")
+    mountinfo =
+      "500 1 #{device} / #{mountpoint} rw,noatime - 9p C:\\\\ " \
+      "rw,aname=drvfs;path=C:\\\\;uid=#{Process.euid};gid=#{Process.egid};metadata\n".b
+    real_binread = File.method(:binread)
+    reader = lambda do |path, *arguments|
+      path.to_s == "/proc/self/mountinfo" ? mountinfo : real_binread.call(path, *arguments)
+    end
+
+    File.stub(:binread, reader) { yield }
   end
 end

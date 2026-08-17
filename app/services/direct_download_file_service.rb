@@ -12,6 +12,7 @@ class DirectDownloadFileService
   LEGACY_STAGING_DIRECTORY = ".shelfarr-staging"
   STAGING_DIRECTORY = ".shelfarr-staging-v2"
   DIRECT_DOWNLOADS_DIRECTORY = "direct-downloads"
+  STAGING_BASENAME_PATTERN = /\Adownload-([1-9]\d*)-[0-9a-f]{32}\z/
   ORPHAN_MAX_AGE = 24.hours
   ACTIVE_TIMEOUT = 30.minutes
   HEARTBEAT_INTERVAL = 10.seconds
@@ -31,11 +32,7 @@ class DirectDownloadFileService
 
     def staging_parent(root:)
       root = Pathname(root).expand_path
-      directory = root.join(
-        STAGING_DIRECTORY,
-        DIRECT_DOWNLOADS_DIRECTORY,
-        database_fingerprint
-      )
+      directory = staging_parent_path(root: root)
       FileCopyService.secure_private_directory!(directory.to_s, root: root.to_s)
       directory
     rescue SystemCallError, FileCopyService::UnsafePathError => error
@@ -67,23 +64,34 @@ class DirectDownloadFileService
 
     def cleanup_orphans!(root:, max_age: ORPHAN_MAX_AGE.ago)
       parent = staging_parent(root: root)
+      parent_identity = FileCopyService.directory_identity(parent.to_s, root: root)
       referenced = Download.where.not(direct_staging_path: nil).pluck(:direct_staging_path).to_set
       removed = 0
 
       FileCopyService.directory_children(parent.to_s, root: root).each do |child|
-        next unless child.name.start_with?("download-")
+        next unless v2_staging_basename?(child.name)
         next unless child.type == :directory && child.mtime <= max_age
 
         path = parent.join(child.name)
         next if referenced.include?(path.to_s)
 
-        removed += 1 if FileCopyService.remove_directory_child_if_identity(
-          parent.to_s,
+        cleanup = remove_v2_staging_child(
+          parent,
           child.name,
           root: root,
-          device: child.device,
-          inode: child.inode
+          expected_identity: [ child.device, child.inode ],
+          expected_parent_identity: parent_identity
         )
+        if cleanup == :not_drvfs
+          cleanup = FileCopyService.remove_directory_child_if_identity(
+            parent.to_s,
+            child.name,
+            root: root,
+            device: child.device,
+            inode: child.inode
+          ) ? :removed : :retained
+        end
+        removed += 1 if cleanup == :removed
       rescue Errno::ENOENT, Errno::EACCES, FileCopyService::UnsafePathError
         next
       end
@@ -119,6 +127,42 @@ class DirectDownloadFileService
     end
 
     private
+
+    def staging_parent_path(root:)
+      Pathname(root).expand_path.join(
+        STAGING_DIRECTORY,
+        DIRECT_DOWNLOADS_DIRECTORY,
+        database_fingerprint
+      )
+    end
+
+    def v2_staging_basename?(basename, download_id: nil)
+      match = STAGING_BASENAME_PATTERN.match(basename.to_s)
+      match && (!download_id || match[1].to_i == download_id.to_i)
+    end
+
+    def remove_v2_staging_child(
+      parent,
+      child_name,
+      root:,
+      expected_identity:,
+      expected_parent_identity:,
+      download_id: nil
+    )
+      expected_parent = staging_parent_path(root: root)
+      return :retained unless Pathname(parent).expand_path == expected_parent
+      return :retained unless v2_staging_basename?(child_name, download_id: download_id)
+      return :retained unless expected_identity&.all?(&:present?)
+      return :retained unless expected_parent_identity&.all?(&:present?)
+
+      FileCopyService.remove_owned_private_tree_on_drvfs(
+        expected_parent.to_s,
+        child_name,
+        root: Pathname(root).expand_path.to_s,
+        expected_identity: expected_identity,
+        expected_parent_identity: expected_parent_identity
+      )
+    end
 
     def service_for(download)
       new(
@@ -223,14 +267,29 @@ class DirectDownloadFileService
         return true
       end
 
-      File.lstat(path)
-
       parent = staging_parent(root: download.direct_output_root)
       expanded = Pathname(path).expand_path
       return false unless expanded.parent == parent
 
-      snapshot = FileCopyService.snapshot_source_root(expanded)
       expected_identity = [ download.direct_staging_device, download.direct_staging_inode ]
+      expected_parent_identity = [
+        download.direct_staging_parent_device,
+        download.direct_staging_parent_inode
+      ]
+      cleanup = remove_v2_staging_child(
+        parent,
+        expanded.basename.to_s,
+        root: download.direct_output_root,
+        expected_identity: expected_identity,
+        expected_parent_identity: expected_parent_identity,
+        download_id: download.id
+      )
+      return true if cleanup.in?([ :removed, :missing ])
+      return false if cleanup == :retained
+
+      File.lstat(path)
+
+      snapshot = FileCopyService.snapshot_source_root(expanded)
       return false unless [ snapshot.device, snapshot.inode ] == expected_identity
 
       FileCopyService.remove_source_tree(snapshot)
@@ -321,6 +380,8 @@ class DirectDownloadFileService
     @staging_path = created.name
     @staging_device = created.device
     @staging_inode = created.inode
+    @staging_parent_device = created.parent_device
+    @staging_parent_inode = created.parent_inode
 
     persisted = Download.where(
       id: download.id,
@@ -607,6 +668,17 @@ class DirectDownloadFileService
     parent = self.class.staging_parent(root: output_root)
     expanded = Pathname(@staging_path).expand_path
     return unless expanded.parent == parent
+
+    cleanup = self.class.send(
+      :remove_v2_staging_child,
+      parent,
+      expanded.basename.to_s,
+      root: output_root,
+      expected_identity: [ @staging_device, @staging_inode ],
+      expected_parent_identity: [ @staging_parent_device, @staging_parent_inode ],
+      download_id: download.id
+    )
+    return if cleanup.in?([ :removed, :missing, :retained ])
 
     FileCopyService.remove_directory_child_if_identity(
       parent.to_s,
