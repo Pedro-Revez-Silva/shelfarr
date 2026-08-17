@@ -346,6 +346,27 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "reports retained broad legacy direct staging without exposing its output root" do
+    Dir.mktmpdir("legacy-audiobooks") do |audiobook_dir|
+      Dir.mktmpdir("legacy-ebooks-private-root") do |ebook_dir|
+        setup_output_paths(audiobook_dir, ebook_dir)
+        legacy = File.join(ebook_dir, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+        FileUtils.mkdir_p(legacy)
+        File.chmod(0o777, legacy)
+
+        HealthCheckJob.perform_now(service: "output_paths")
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.degraded?
+        assert_includes health.message, "Ebook legacy direct-download staging"
+        assert_includes health.message, "0777"
+        assert_includes health.message, "retained"
+        assert_includes health.message, DirectDownloadFileService::STAGING_DIRECTORY
+        refute_includes health.message, ebook_dir
+      end
+    end
+  end
+
   test "marks output_paths as degraded when one path has issues" do
     Dir.mktmpdir do |valid_dir|
       setup_output_paths(valid_dir, "/nonexistent/path")
@@ -406,7 +427,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
-          body: { "libraries" => [{ "id" => "lib-1", "name" => "Audiobooks" }] }.to_json
+          body: { "libraries" => [ { "id" => "lib-1", "name" => "Audiobooks" } ] }.to_json
         )
 
       HealthCheckJob.perform_now

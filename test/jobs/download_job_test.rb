@@ -1073,7 +1073,15 @@ class DownloadJobTest < ActiveJob::TestCase
       assert_not File.exist?(destination)
       assert @gutenberg_download.reload.failed?
       assert_nil @gutenberg_request.book.reload.file_path
-      assert_empty Dir.glob(File.join(dir, ".shelfarr-staging", "direct-downloads", "**", "download-*"))
+      assert_empty Dir.glob(
+        File.join(
+          dir,
+          DirectDownloadFileService::STAGING_DIRECTORY,
+          DirectDownloadFileService::DIRECT_DOWNLOADS_DIRECTORY,
+          "**",
+          "download-*"
+        )
+      )
     end
   end
 

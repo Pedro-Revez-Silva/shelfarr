@@ -987,6 +987,176 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@dest_dir)
   end
 
+  test "detects only 9p mounts explicitly backed by DrvFS" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    stat = File.stat(@dest_dir)
+    device = "#{stat.dev_major}:#{stat.dev_minor}"
+    mountpoint = @tmp_dir.gsub(" ", "\\040")
+    drvfs_mountinfo =
+      "2286 2276 #{device} / #{mountpoint} rw,noatime - 9p D:\\\\134 " \
+      "rw,aname=drvfs;path=D:\\\\;uid=1000;gid=1000;metadata,cache=5\n"
+    ordinary_9p_mountinfo =
+      "2286 2276 #{device} / #{mountpoint} rw,noatime - 9p hostshare rw,trans=virtio\n"
+    misleading_mountinfo =
+      "2286 2276 #{device} / #{mountpoint} rw,noatime - ext4 /dev/test rw,aname=drvfs\n"
+
+    File.stub(:binread, drvfs_mountinfo.b) do
+      assert FileCopyService.send(:drvfs_mount?, @dest_dir)
+      assert FileCopyService.send(:hardlink_identity_unreliable?, @dest_dir)
+    end
+    [ ordinary_9p_mountinfo, misleading_mountinfo ].each do |mountinfo|
+      File.stub(:binread, mountinfo.b) do
+        assert_not FileCopyService.send(:drvfs_mount?, @dest_dir)
+      end
+    end
+  end
+
+  test "DrvFS cleanup never quarantines an entry whose rename can change identity" do
+    target = File.join(@dest_dir, "drvfs-cleanup-target")
+    File.binwrite(target, "retain me")
+    identity = [ File.stat(target).dev, File.stat(target).ino ]
+
+    result = FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:native_renameat, ->(*) { flunk "DrvFS cleanup must not move an identity-ambiguous entry" }) do
+        FileCopyService.send(:with_pinned_destination_parent, target, root: @dest_dir) do |parent, basename, _|
+          FileCopyService.send(:remove_pinned_child_if_identity, parent, basename, identity)
+        end
+      end
+    end
+
+    assert_equal :retained, result
+    assert_equal "retain me", File.binread(target)
+    assert_empty Dir.glob(File.join(@dest_dir, ".shelfarr-copy-quarantine-*"))
+  end
+
+  test "publication preserves its primary atomic error when quarantine identity changes" do
+    destination = File.join(@dest_dir, "primary-error.txt")
+    real_rename = FileCopyService.method(:native_renameat)
+    real_identity = FileCopyService.method(:file_identity)
+    quarantined = false
+    moving_to_quarantine = lambda do |source_fd, source_name, destination_fd, destination_name|
+      result = real_rename.call(source_fd, source_name, destination_fd, destination_name)
+      quarantined = true if destination_name == FileCopyService::COPY_QUARANTINE_ENTRY
+      result
+    end
+    changed_after_rename = lambda do |stat|
+      identity = real_identity.call(stat)
+      quarantined && stat.file? ? [ identity.first, identity.last + 1 ] : identity
+    end
+    primary = FileCopyService::AtomicPublicationUnsupportedError.new("atomic publication unavailable")
+
+    error = FileCopyService.stub(:drvfs_mount?, false) do
+      FileCopyService.stub(:publish_private_child_atomically_noreplace!, ->(*) { raise primary }) do
+        FileCopyService.stub(:native_renameat, moving_to_quarantine) do
+          FileCopyService.stub(:native_rename_noreplace, false) do
+            FileCopyService.stub(:file_identity, changed_after_rename) do
+              assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+                FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    assert_same primary, error
+    assert quarantined
+    quarantine = Dir.glob(File.join(@dest_dir, ".shelfarr-copy-quarantine-*")).sole
+    assert_equal "test content",
+      File.binread(File.join(quarantine, FileCopyService::COPY_QUARANTINE_ENTRY))
+    assert_not File.exist?(destination)
+  end
+
+  test "DrvFS publication uses an exclusive verified direct copy" do
+    destination = File.join(@dest_dir, "drvfs-compatible.txt")
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:native_rename_noreplace, ->(*) { flunk "DrvFS publication must not rename" }) do
+        FileCopyService.stub(:native_linkat, ->(*) { flunk "DrvFS publication must not hardlink" }) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_includes FileCopyService::LIBRARY_FILE_MODES, File.stat(destination).mode & 0o7777
+    locks = Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock"))
+    assert_equal 1, locks.size
+    assert_match(/drvfs:complete/, File.binread(locks.sole))
+  end
+
+  test "DrvFS publication never overwrites an occupied destination" do
+    destination = File.join(@dest_dir, "drvfs-occupied.txt")
+    File.binwrite(destination, "existing library bytes")
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      assert_raises(Errno::EEXIST) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_equal "existing library bytes", File.binread(destination)
+    assert_equal "test content", File.binread(@src_file)
+  end
+
+  test "DrvFS interruption retains the partial destination and blocks unsafe retry cleanup" do
+    destination = File.join(@dest_dir, "drvfs-partial.txt")
+
+    error = FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:copy_source_io, lambda { |_source, target, **|
+        target.write("partial")
+        target.flush
+        raise IOError, "simulated interrupted direct copy"
+      }) do
+        assert_raises(FileCopyService::AmbiguousPublicationError) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+
+    assert_instance_of IOError, error.cause
+    assert_match(/manual review/, error.message)
+    assert_equal "partial", File.binread(destination)
+    assert_equal 1, Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock")).size
+    retry_error = FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      FileCopyService.stub(:drvfs_mount?, true) do
+        assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+    assert_match(/manual cleanup/, retry_error.message)
+    assert_equal "partial", File.binread(destination)
+  end
+
+  test "DrvFS verification retains both pathname entries after destination replacement" do
+    destination = File.join(@dest_dir, "drvfs-replaced.txt")
+    displaced = File.join(@dest_dir, "drvfs-created-entry.txt")
+    real_copy = FileCopyService.method(:copy_source_io)
+    replaced = false
+    replacing_copy = lambda do |source, target, heartbeat: nil|
+      real_copy.call(source, target, heartbeat: heartbeat)
+      File.rename(destination, displaced)
+      File.binwrite(destination, "replacement bytes")
+      replaced = true
+    end
+
+    error = FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:copy_source_io, replacing_copy) do
+        assert_raises(FileCopyService::AmbiguousPublicationError) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+
+    assert replaced
+    assert_match(/manual review/, error.message)
+    assert_equal "replacement bytes", File.binread(destination)
+    assert_equal "test content", File.binread(displaced)
+    assert_equal "test content", File.binread(@src_file)
+  end
+
   test "cp_noreplace classifies an unusable linked destination as ambiguous" do
     destination = File.join(@dest_dir, "ambiguous-link.txt")
     destination_basename = File.basename(destination)

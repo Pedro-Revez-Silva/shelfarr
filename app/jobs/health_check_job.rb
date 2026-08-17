@@ -178,6 +178,10 @@ class HealthCheckJob < ApplicationJob
     return "#{name} path not configured" if path.blank?
     return "#{name} path does not exist" unless Dir.exist?(path)
     return "#{name} path not writable" unless File.writable?(path)
+
+    legacy_diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: path)
+    return "#{name} #{legacy_diagnostic}" if legacy_diagnostic
+
     nil
   end
 

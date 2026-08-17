@@ -34,6 +34,7 @@ class FileCopyService
   OWNER_PROBE_PATTERN = /\A\.shelfarr-owner-probe-[0-9a-f]{32}\.tmp\z/
   COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:prepared:([0-9]+):([0-9]+):([0-9a-f]+)\z/
   COPY_LOCK_COMPATIBILITY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:(copying|complete):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9a-f]+)\z/
+  COPY_LOCK_DRVFS_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):drvfs:(prepared|copying|complete|conflict):([0-9]+):([0-9a-f]{64}):([0-9a-f]+)\z/
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   DISCARD_PATTERN = /\A\.shelfarr-discard-([0-9a-f]+)-([0-9a-f]+)-[0-9a-f]{32}\.tmp\z/
   SOURCE_QUARANTINE_PATTERN = /\A\.shelfarr-source-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
@@ -1505,8 +1506,12 @@ class FileCopyService
         entries = Dir.children(parent_path)
         unless identity_reliable
           retained = entries.any? do |entry|
-            COPY_LOCK_PATTERN.match?(entry) || COPY_QUARANTINE_PATTERN.match?(entry) ||
-              DISCARD_PATTERN.match?(entry) || OWNER_PROBE_PATTERN.match?(entry)
+            if (match = COPY_LOCK_PATTERN.match(entry))
+              !drvfs_mount?(parent) || !resolved_drvfs_copy_lock?(parent, entry, match[1])
+            else
+              COPY_QUARANTINE_PATTERN.match?(entry) || DISCARD_PATTERN.match?(entry) ||
+                OWNER_PROBE_PATTERN.match?(entry)
+            end
           end
           if retained
             Rails.logger.warn(
@@ -1789,6 +1794,32 @@ class FileCopyService
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
       with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
+        if drvfs_mount?(parent)
+          journal_root = Pathname(root.presence || parent_path).expand_path
+          cleanup_interrupted_copies(journal_root.to_s, root: journal_root.to_s)
+          with_pinned_directory(
+            journal_root,
+            root: journal_root,
+            create: false,
+            mode: DIRECTORY_MODE
+          ) do |journal_parent|
+            publish_source_io_by_drvfs_exclusive_copy!(
+              source,
+              parent,
+              basename,
+              journal_parent: journal_parent,
+              destination_parent_validator: -> { validate_current_directory_identity!(parent_path, parent) },
+              heartbeat: heartbeat,
+              source_validator: source_validator,
+              accepted_modes: accepted_modes,
+              require_durable: require_durable,
+              path: destination,
+              root: root
+            )
+          end
+          return
+        end
+
         token = SecureRandom.hex(16)
         temporary_basename = ".shelfarr-copy-#{token}.tmp"
         lock_basename = ".shelfarr-copy-#{token}.lock"
@@ -1884,15 +1915,25 @@ class FileCopyService
           # otherwise delete a replacement installed by another worker.
           raise
         ensure
-          temporary_cleanup = remove_pinned_child_if_identity(
-            parent,
-            temporary_basename,
-            temporary_identity
-          )
-          if temporary_cleanup.in?([ :removed, :missing ])
-            remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
+          in_flight_error = $!
+          begin
+            temporary_cleanup = remove_pinned_child_if_identity(
+              parent,
+              temporary_basename,
+              temporary_identity
+            )
+            if temporary_cleanup.in?([ :removed, :missing ])
+              remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
+            end
+            sync_io(parent)
+          rescue => cleanup_error
+            raise unless in_flight_error
+
+            Rails.logger.warn(
+              "[FileCopyService] Publication teardown was deferred after " \
+                "#{in_flight_error.class}: #{cleanup_error.class}"
+            )
           end
-          sync_io(parent)
         end
       end
     end
@@ -2179,6 +2220,177 @@ class FileCopyService
         cause: error
     end
 
+    def publish_source_io_by_drvfs_exclusive_copy!(
+      source,
+      parent,
+      destination_basename,
+      journal_parent:,
+      destination_parent_validator:,
+      heartbeat:,
+      source_validator:,
+      accepted_modes:,
+      require_durable:,
+      path:,
+      root:
+    )
+      source_size, source_digest = io_content_identity(source, heartbeat: heartbeat)
+      source_validator&.call
+      token = SecureRandom.hex(16)
+      lock_basename = ".shelfarr-copy-#{token}.lock"
+      destination_created = false
+      published_mode = nil
+
+      with_created_regular_child(journal_parent, lock_basename, 0o600) do |lock|
+        raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
+
+        apply_file_mode!(lock, 0o600, accepted_modes: LIBRARY_FILE_MODES, path: path, root: root)
+        persist_drvfs_copy_lock!(
+          lock,
+          token,
+          :prepared,
+          source_size,
+          source_digest,
+          destination_basename
+        )
+        sync_io(journal_parent)
+
+        begin
+          with_created_regular_child(parent, destination_basename, 0o600) do |destination|
+            destination_created = true
+            persist_drvfs_copy_lock!(
+              lock,
+              token,
+              :copying,
+              source_size,
+              source_digest,
+              destination_basename
+            )
+            sync_io(parent)
+            apply_file_mode!(
+              destination,
+              0o600,
+              accepted_modes: accepted_modes,
+              path: path,
+              root: root
+            )
+            copy_source_io(source, destination, heartbeat: heartbeat)
+            published_mode = apply_file_mode!(
+              destination,
+              LIBRARY_FILE_MODE,
+              accepted_modes: accepted_modes,
+              path: path,
+              root: root
+            )
+            file_durable = flush_and_sync(destination)
+            if require_durable && !file_durable
+              raise DurabilityUnsupportedError, "destination file fsync is unsupported"
+            end
+            unless io_matches_identity?(destination, source_size, source_digest)
+              raise Errno::ESTALE, "direct-copy destination changed while it was written"
+            end
+          end
+
+          source_validator&.call
+          2.times do
+            unless drvfs_destination_matches_source?(
+              source,
+              parent,
+              destination_basename,
+              source_size,
+              source_digest,
+              published_mode
+            )
+              raise Errno::ESTALE, "direct-copy destination could not be verified"
+            end
+          end
+          source_validator&.call
+          destination_parent_validator.call
+          parent_durable = sync_io(parent)
+          if require_durable && !parent_durable
+            raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
+          end
+          persist_drvfs_copy_lock!(
+            lock,
+            token,
+            :complete,
+            source_size,
+            source_digest,
+            destination_basename
+          )
+          sync_io(journal_parent)
+        rescue Errno::EEXIST
+          persist_drvfs_copy_lock!(
+            lock,
+            token,
+            :conflict,
+            source_size,
+            source_digest,
+            destination_basename
+          )
+          raise
+        rescue StandardError => error
+          raise unless destination_created
+
+          raise AmbiguousPublicationError.new(
+            "An incomplete DrvFS direct-copy publication was retained for manual review"
+          ), cause: error
+        end
+      end
+
+      Rails.logger.warn(
+        "[FileCopyService] DrvFS lacks atomic no-clobber publication; " \
+          "used verified O_EXCL direct-copy compatibility mode"
+      )
+    end
+
+    def io_content_identity(io, heartbeat: nil)
+      original_position = io.pos
+      io.rewind
+      size = 0
+      digest = Digest::SHA256.new
+      buffer = +""
+      while io.read(BUFFER_SIZE, buffer)
+        size += buffer.bytesize
+        digest << buffer
+        heartbeat&.call
+      end
+      [ size, digest.hexdigest ]
+    ensure
+      io.seek(original_position) if original_position
+    end
+
+    def io_matches_identity?(io, expected_size, expected_digest)
+      size, digest = io_content_identity(io)
+      size == expected_size && digest == expected_digest
+    end
+
+    def drvfs_destination_matches_source?(
+      source,
+      parent,
+      basename,
+      expected_size,
+      expected_digest,
+      expected_mode
+    )
+      matches = false
+      source_position = nil
+      with_pinned_regular_child(parent, basename) do |destination|
+        stat = destination.stat
+        next unless stat.size == expected_size && (stat.mode & 0o7777) == expected_mode
+        next unless io_matches_identity?(destination, expected_size, expected_digest)
+
+        source_position = source.pos
+        source.rewind
+        destination.rewind
+        matches = compare_io(source, destination)
+      end
+      matches
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+      false
+    ensure
+      source.seek(source_position) if source_position
+    end
+
     def validate_published_child!(
       parent,
       basename,
@@ -2394,6 +2606,44 @@ class FileCopyService
         lock,
         "#{COPY_LOCK_MAGIC}:#{token}:full:#{identity.first}:#{identity.last}"
       )
+    end
+
+    def persist_drvfs_copy_lock!(lock, token, state, source_size, source_digest, destination_basename)
+      encoded_basename = destination_basename.b.unpack1("H*")
+      record = "#{COPY_LOCK_MAGIC}:#{token}:drvfs:#{state}:#{source_size}:" \
+        "#{source_digest}:#{encoded_basename}"
+      checksum = Digest::SHA256.hexdigest(record)
+      lock.seek(0, IO::SEEK_END)
+      lock.write("#{record}:#{checksum}\n")
+      flush_and_sync(lock)
+    end
+
+    def resolved_drvfs_copy_lock?(parent, basename, token)
+      resolved = false
+      with_pinned_regular_child(parent, basename, writable: true) do |lock|
+        next unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+        next unless secure_copy_lock?(lock, parent)
+
+        lock.rewind
+        resolved = drvfs_copy_lock_state(lock.read, token).in?([ :complete, :conflict ])
+      end
+      resolved
+    rescue Errno::ENOENT, Errno::EACCES, Errno::EWOULDBLOCK, IOError, UnsafePathError
+      false
+    end
+
+    def drvfs_copy_lock_state(contents, token)
+      contents.lines(chomp: true).reverse_each do |line|
+        record, separator, checksum = line.rpartition(":")
+        next if separator.empty? || checksum.length != 64
+        next unless Digest::SHA256.hexdigest(record) == checksum
+
+        match = COPY_LOCK_DRVFS_PATTERN.match(record)
+        next unless match && match[1] == token
+
+        return match[2].to_sym
+      end
+      :malformed
     end
 
     def persist_copy_lock_record!(lock, record)
@@ -2971,6 +3221,35 @@ class FileCopyService
     def hardlink_identity_unreliable?(*filesystem_entries, reject_cifs: false)
       return false unless RUBY_PLATFORM.include?("linux")
 
+      mounts, mount_parents = filesystem_mounts
+
+      filesystem_entries.any? do |entry|
+        mount = filesystem_mount_for(entry, mounts, mount_parents)
+        next true unless mount
+        next true if drvfs_mount_record?(mount)
+        next false unless mount.fetch(4).in?([ "cifs", "smb3" ])
+        next true if reject_cifs
+
+        options = "#{mount.fetch(5)},#{mount.fetch(6)}".split(",")
+        !options.include?("serverino")
+      end
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
+      true
+    end
+
+    def drvfs_mount?(*filesystem_entries)
+      return false unless RUBY_PLATFORM.include?("linux")
+
+      mounts, mount_parents = filesystem_mounts
+      filesystem_entries.any? do |entry|
+        mount = filesystem_mount_for(entry, mounts, mount_parents)
+        mount && drvfs_mount_record?(mount)
+      end
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
+      false
+    end
+
+    def filesystem_mounts
       mounts = File.binread("/proc/self/mountinfo").lines(chomp: true).filter_map do |line|
         mount_fields, separator, filesystem_fields = line.partition(" - ")
         next if separator.empty?
@@ -2989,38 +3268,39 @@ class FileCopyService
         [ mount_id, parent_id, fields.fetch(2), mountpoint, filesystem.fetch(0), fields.fetch(5), filesystem.fetch(2) ]
       end
       mount_parents = mounts.to_h { |mount_id, parent_id, *| [ mount_id, parent_id ] }
+      [ mounts, mount_parents ]
+    end
 
-      filesystem_entries.any? do |entry|
-        expanded, stat = if entry.respond_to?(:fileno) && entry.respond_to?(:stat)
-          descriptor_path = File.readlink("/proc/self/fd/#{entry.fileno}").delete_suffix(" (deleted)")
-          [ Pathname(descriptor_path).expand_path.to_s.b, entry.stat ]
-        else
-          path = Pathname(entry).expand_path.realpath
-          [ path.to_s.b, File.stat(path) ]
-        end
-        device = "#{stat.dev_major}:#{stat.dev_minor}"
-        mount = mounts.select do |_mount_id, _parent_id, mount_device, mountpoint, *|
-          mount_device == device &&
-            (expanded == mountpoint || expanded.start_with?("#{mountpoint.delete_suffix("/")}/"))
-        end.max_by do |mount_id, _parent_id, _mount_device, mountpoint, *|
-          depth = 0
-          seen = Set.new
-          current = mount_id
-          while (parent = mount_parents[current]) && seen.add?(current)
-            depth += 1
-            current = parent
-          end
-          [ mountpoint.bytesize, depth ]
-        end
-        next true unless mount
-        next false unless mount.fetch(4).in?([ "cifs", "smb3" ])
-        next true if reject_cifs
-
-        options = "#{mount.fetch(5)},#{mount.fetch(6)}".split(",")
-        !options.include?("serverino")
+    def filesystem_mount_for(entry, mounts, mount_parents)
+      expanded, stat = if entry.respond_to?(:fileno) && entry.respond_to?(:stat)
+        descriptor_path = File.readlink("/proc/self/fd/#{entry.fileno}").delete_suffix(" (deleted)")
+        [ Pathname(descriptor_path).expand_path.to_s.b, entry.stat ]
+      else
+        path = Pathname(entry).expand_path.realpath
+        [ path.to_s.b, File.stat(path) ]
       end
-    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
-      true
+      device = "#{stat.dev_major}:#{stat.dev_minor}"
+      mounts.select do |_mount_id, _parent_id, mount_device, mountpoint, *|
+        mount_device == device &&
+          (expanded == mountpoint || expanded.start_with?("#{mountpoint.delete_suffix("/")}/"))
+      end.max_by do |mount_id, _parent_id, _mount_device, mountpoint, *|
+        depth = 0
+        seen = Set.new
+        current = mount_id
+        while (parent = mount_parents[current]) && seen.add?(current)
+          depth += 1
+          current = parent
+        end
+        [ mountpoint.bytesize, depth ]
+      end
+    end
+
+    def drvfs_mount_record?(mount)
+      return false unless mount.fetch(4) == "9p"
+
+      "#{mount.fetch(5)},#{mount.fetch(6)}".split(",").any? do |option|
+        option.match?(/\Aaname=drvfs(?:;|\z)/)
+      end
     end
 
     def pinned_child_identity(parent, basename, directory: false)
@@ -3271,6 +3551,7 @@ class FileCopyService
       quarantine_kind: :copy,
       expected_owner_uid: nil
     )
+      return :retained if drvfs_mount?(parent)
       return :mismatch unless expected_identity
 
       begin

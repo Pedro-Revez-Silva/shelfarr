@@ -1209,6 +1209,58 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal "book two audio", File.read(File.join(@temp_source, "Book Two.m4b"))
   end
 
+  test "publishes ordinary copies through the DrvFS compatibility path" do
+    SettingsService.set(:audiobookshelf_url, "")
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    real_rename = FileCopyService.method(:native_rename_noreplace)
+    real_link = FileCopyService.method(:native_linkat)
+    rejecting_import_rename = lambda do |*arguments|
+      flunk "DrvFS imports must not rename" if arguments.last == File.basename(expected_dest)
+
+      real_rename.call(*arguments)
+    end
+    rejecting_import_link = lambda do |*arguments|
+      flunk "DrvFS imports must not hardlink" if arguments.last == File.basename(expected_dest)
+
+      real_link.call(*arguments)
+    end
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:native_rename_noreplace, rejecting_import_rename) do
+        FileCopyService.stub(:native_linkat, rejecting_import_link) do
+          PostProcessingJob.perform_now(@download.id)
+        end
+      end
+    end
+
+    assert @request.reload.completed?
+    assert_equal "test audio content", File.binread(expected_dest)
+    assert_equal @request.book.reload.file_path, File.dirname(expected_dest)
+    assert_empty Dir.glob(File.join(File.dirname(expected_dest), ".shelfarr-copy-*.lock"))
+    assert_equal 1, Dir.glob(File.join(@temp_dest_base, ".shelfarr-copy-*.lock")).size
+  end
+
+  test "retains interrupted DrvFS publication artifacts for actionable review" do
+    SettingsService.set(:audiobookshelf_url, "")
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:copy_source_io, lambda { |_source, destination, **|
+        destination.write("partial audio")
+        destination.flush
+        raise IOError, "simulated DrvFS interruption"
+      }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "retained for manual review"
+    assert_includes @request.issue_description, ".shelfarr-copy artifacts"
+    assert_equal "partial audio", File.binread(expected_dest)
+    assert_equal 1, Dir.glob(File.join(@temp_dest_base, ".shelfarr-copy-*.lock")).size
+  end
+
   test "does not overwrite a concurrent file when atomic publication is unavailable" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)

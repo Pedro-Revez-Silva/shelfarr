@@ -277,6 +277,14 @@ class PostProcessingJob < ApplicationJob
       location ? "#{message} at #{location}" : message
     when FileCopyService::DurabilityUnsupportedError
       "The library filesystem cannot safely complete destructive imports because fsync is unsupported; use another filesystem or retain the download source"
+    when FileCopyService::AmbiguousPublicationError
+      "An incomplete library publication was retained for manual review; preserve the destination and .shelfarr-copy artifacts before retrying"
+    when FileCopyService::AtomicPublicationUnsupportedError
+      if bounded_exception_message(error).match?(/manual (?:cleanup|review)/i)
+        "Interrupted library publication artifacts were retained for manual review before retrying"
+      else
+        safe_attention_detail(error)
+      end
     when FileCopyService::UnsafePathError
       "The download contains a symbolic link or non-regular path, or changed during its safety checks"
     when AudiobookBundleImportPlanner::UnsafeDestinationError

@@ -9,7 +9,8 @@ require "pathname"
 # a short, durable Book reservation prevents every acquisition pipeline from
 # claiming the same title while publication is in progress.
 class DirectDownloadFileService
-  STAGING_DIRECTORY = ".shelfarr-staging"
+  LEGACY_STAGING_DIRECTORY = ".shelfarr-staging"
+  STAGING_DIRECTORY = ".shelfarr-staging-v2"
   DIRECT_DOWNLOADS_DIRECTORY = "direct-downloads"
   ORPHAN_MAX_AGE = 24.hours
   ACTIVE_TIMEOUT = 30.minutes
@@ -89,6 +90,23 @@ class DirectDownloadFileService
       removed
     rescue Error, Errno::ENOENT
       0
+    end
+
+    def legacy_staging_diagnostic(root:)
+      root = Pathname(root).expand_path
+      legacy = root.join(LEGACY_STAGING_DIRECTORY)
+      stat = File.lstat(legacy)
+      mode = stat.mode & 0o7777
+      return if stat.directory? && mode == 0o700
+
+      type = stat.directory? ? "directory" : "non-directory entry"
+      "legacy direct-download staging is a retained #{type} with mode #{format('%04o', mode)}; " \
+        "new downloads use #{STAGING_DIRECTORY}, and the legacy entry requires manual review"
+    rescue Errno::ENOENT
+      nil
+    rescue SystemCallError
+      "legacy direct-download staging could not be safely inspected; new downloads use " \
+        "#{STAGING_DIRECTORY}, and the legacy entry requires manual review"
     end
 
     def output_roots
@@ -197,6 +215,14 @@ class DirectDownloadFileService
       return false if download.direct_output_root.blank?
       return false unless valid_output_root_identity?(download)
 
+      if legacy_staging_path?(download)
+        Rails.logger.warn(
+          "[DirectDownloadFileService] Retained legacy staging for download ##{download.id}; " \
+            "its recovery state was released for manual review"
+        )
+        return true
+      end
+
       File.lstat(path)
 
       parent = staging_parent(root: download.direct_output_root)
@@ -211,6 +237,20 @@ class DirectDownloadFileService
     rescue Errno::ENOENT
       valid_output_root_identity?(download) && valid_staging_parent_identity?(download)
     rescue Error, SystemCallError, FileCopyService::UnsafePathError
+      false
+    end
+
+    def legacy_staging_path?(download)
+      root = Pathname(download.direct_output_root).expand_path
+      path = Pathname(download.direct_staging_path).expand_path
+      relative = path.relative_path_from(root)
+      parts = relative.each_filename.to_a
+      parts.length == 4 &&
+        parts[0] == LEGACY_STAGING_DIRECTORY &&
+        parts[1] == DIRECT_DOWNLOADS_DIRECTORY &&
+        parts[2].match?(/\A[0-9a-f]{12}\z/) &&
+        parts[3].match?(/\Adownload-#{download.id}-[0-9a-f]{32}\z/)
+    rescue ArgumentError
       false
     end
 

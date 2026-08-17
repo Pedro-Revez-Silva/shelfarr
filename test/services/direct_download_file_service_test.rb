@@ -55,6 +55,108 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_nil @download.reload.direct_staging_path
   end
 
+  test "new staging bypasses an unrepairable broad legacy namespace" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    legacy_marker = File.join(legacy, "retained-legacy-entry")
+    FileUtils.mkdir_p(legacy)
+    File.binwrite(legacy_marker, "legacy bytes")
+    File.chmod(0o777, legacy)
+    legacy_stat = File.stat(legacy)
+    chmod_paths = []
+    real_fchmod = FileCopyService.method(:native_fchmod)
+    guarded_fchmod = lambda do |descriptor, mode|
+      path = File.readlink("/proc/self/fd/#{descriptor}").delete_suffix(" (deleted)")
+      chmod_paths << path
+      raise Errno::EPERM, "legacy fchmod denied" if path == legacy || path.start_with?("#{legacy}/")
+
+      real_fchmod.call(descriptor, mode)
+    end
+
+    parent = FileCopyService.stub(:native_fchmod, guarded_fchmod) do
+      DirectDownloadFileService.staging_parent(root: @output_root)
+    end
+
+    expected = File.join(
+      @output_root,
+      DirectDownloadFileService::STAGING_DIRECTORY,
+      DirectDownloadFileService::DIRECT_DOWNLOADS_DIRECTORY,
+      DirectDownloadFileService.database_fingerprint
+    )
+    assert_equal expected, parent.to_s
+    assert_equal 0o700, File.stat(parent).mode & 0o7777
+    assert_equal [ legacy_stat.dev, legacy_stat.ino ], [ File.stat(legacy).dev, File.stat(legacy).ino ]
+    assert_equal 0o777, File.stat(legacy).mode & 0o7777
+    assert_equal "legacy bytes", File.binread(legacy_marker)
+    assert chmod_paths.none? { |path| path == legacy || path.start_with?("#{legacy}/") }
+  end
+
+  test "stale persisted legacy staging is retained while its recovery row is released" do
+    legacy_parent = File.join(
+      @output_root,
+      DirectDownloadFileService::LEGACY_STAGING_DIRECTORY,
+      DirectDownloadFileService::DIRECT_DOWNLOADS_DIRECTORY,
+      DirectDownloadFileService.database_fingerprint
+    )
+    legacy_staging = File.join(legacy_parent, "download-#{@download.id}-#{'a' * 32}")
+    legacy_partial = File.join(legacy_staging, "partial.epub")
+    FileUtils.mkdir_p(legacy_staging)
+    File.binwrite(legacy_partial, "untrusted legacy bytes")
+    [
+      File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY),
+      File.join(
+        @output_root,
+        DirectDownloadFileService::LEGACY_STAGING_DIRECTORY,
+        DirectDownloadFileService::DIRECT_DOWNLOADS_DIRECTORY
+      ),
+      legacy_parent,
+      legacy_staging
+    ].each { |path| File.chmod(0o777, path) }
+    staging_stat = File.stat(legacy_staging)
+    parent_stat = File.stat(legacy_parent)
+    root_stat = File.stat(@output_root)
+    token = SecureRandom.hex(32)
+    @book.update!(
+      acquisition_reservation_token: token,
+      acquisition_reservation_owner_type: "Download",
+      acquisition_reservation_owner_id: @download.id
+    )
+    @download.update_columns(
+      status: Download.statuses[:failed],
+      direct_reservation_token: token,
+      direct_staging_path: legacy_staging,
+      direct_staging_device: staging_stat.dev,
+      direct_staging_inode: staging_stat.ino,
+      direct_staging_parent_device: parent_stat.dev,
+      direct_staging_parent_inode: parent_stat.ino,
+      direct_output_root: @output_root,
+      direct_output_root_device: root_stat.dev,
+      direct_output_root_inode: root_stat.ino,
+      updated_at: 1.hour.ago
+    )
+    legacy_identity = [ staging_stat.dev, staging_stat.ino ]
+    real_fchmod = FileCopyService.method(:native_fchmod)
+    guarded_fchmod = lambda do |descriptor, mode|
+      path = File.readlink("/proc/self/fd/#{descriptor}").delete_suffix(" (deleted)")
+      if path.include?(DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+        raise Errno::EPERM, "legacy fchmod denied"
+      end
+
+      real_fchmod.call(descriptor, mode)
+    end
+
+    result = FileCopyService.stub(:native_fchmod, guarded_fchmod) do
+      DirectDownloadFileService.reconcile!(@download)
+    end
+
+    assert_not result
+    assert_nil @download.reload.direct_staging_path
+    assert_nil @download.direct_reservation_token
+    assert_not @book.reload.acquisition_reserved?
+    assert_equal legacy_identity, [ File.stat(legacy_staging).dev, File.stat(legacy_staging).ino ]
+    assert_equal 0o777, File.stat(legacy_staging).mode & 0o7777
+    assert_equal "untrusted legacy bytes", File.binread(legacy_partial)
+  end
+
   test "an interrupted publication retains ownership until recovery safely removes staging" do
     staging = @service.create_staging!
 
