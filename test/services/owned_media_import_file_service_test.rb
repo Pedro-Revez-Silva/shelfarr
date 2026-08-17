@@ -131,6 +131,24 @@ class OwnedMediaImportFileServiceTest < ActiveSupport::TestCase
     assert_equal 0o640, File.stat(destination).mode & 0o777
   end
 
+  test "a persisted reservation cannot be redirected into direct-download staging" do
+    service = persistent_service
+    internal_directory = File.join(
+      File.realpath(@output_root),
+      DirectDownloadFileService::STAGING_DIRECTORY,
+      "Injected"
+    )
+    @media_import.update!(
+      destination_path: File.join(internal_directory, "book.m4b"),
+      library_path: internal_directory
+    )
+
+    assert_raises(OwnedMediaImportFileService::Error) do
+      service.with_destination_lock { service.finalize! }
+    end
+    assert_not File.exist?(internal_directory)
+  end
+
   test "filesystem capability probe verifies locking hard links and library permissions" do
     assert OwnedMediaImportFileService.verify_filesystem_capabilities!
     assert_empty Dir.glob(File.join(@output_root, ".shelfarr-capability-*"))

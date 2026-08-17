@@ -34,7 +34,10 @@ class FileCopyService
   OWNER_PROBE_PATTERN = /\A\.shelfarr-owner-probe-[0-9a-f]{32}\.tmp\z/
   COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:prepared:([0-9]+):([0-9]+):([0-9a-f]+)\z/
   COPY_LOCK_COMPATIBILITY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:(copying|complete):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9a-f]+)\z/
-  COPY_LOCK_DRVFS_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):drvfs:(prepared|copying|complete|conflict):([0-9]+):([0-9a-f]{64}):([0-9a-f]+)\z/
+  COPY_LOCK_DRVFS_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):drvfs:(prepared|copying|complete|conflict|aborted):([0-9]+):([0-9a-f]{64}):([0-9a-f]+)\z/
+  DRVFS_COPY_JOURNAL_BASENAME = ".shelfarr-drvfs-copy.journal"
+  DRVFS_COPY_TERMINAL_STATES = [ :empty, :complete, :conflict, :aborted ].freeze
+  DRVFS_COPY_LOCK_RETRY_INTERVAL = 0.05
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   DISCARD_PATTERN = /\A\.shelfarr-discard-([0-9a-f]+)-([0-9a-f]+)-[0-9a-f]{32}\.tmp\z/
   SOURCE_QUARANTINE_PATTERN = /\A\.shelfarr-source-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
@@ -1550,12 +1553,8 @@ class FileCopyService
         entries = Dir.children(parent_path)
         unless identity_reliable
           retained = entries.any? do |entry|
-            if (match = COPY_LOCK_PATTERN.match(entry))
-              !drvfs_mount?(parent) || !resolved_drvfs_copy_lock?(parent, entry, match[1])
-            else
-              COPY_QUARANTINE_PATTERN.match?(entry) || DISCARD_PATTERN.match?(entry) ||
-                OWNER_PROBE_PATTERN.match?(entry)
-            end
+            COPY_LOCK_PATTERN.match?(entry) || COPY_QUARANTINE_PATTERN.match?(entry) ||
+              DISCARD_PATTERN.match?(entry) || OWNER_PROBE_PATTERN.match?(entry)
           end
           if retained
             Rails.logger.warn(
@@ -1840,26 +1839,34 @@ class FileCopyService
       with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
         if drvfs_mount?(parent)
           journal_root = Pathname(root.presence || parent_path).expand_path
-          cleanup_interrupted_copies(journal_root.to_s, root: journal_root.to_s)
+          journal_destination = Pathname(destination).expand_path.relative_path_from(journal_root).to_s
           with_pinned_directory(
             journal_root,
             root: journal_root,
             create: false,
             mode: DIRECTORY_MODE
           ) do |journal_parent|
-            publish_source_io_by_drvfs_exclusive_copy!(
-              source,
-              parent,
-              basename,
-              journal_parent: journal_parent,
-              destination_parent_validator: -> { validate_current_directory_identity!(parent_path, parent) },
+            with_drvfs_copy_journal(
+              journal_parent,
               heartbeat: heartbeat,
-              source_validator: source_validator,
-              accepted_modes: accepted_modes,
-              require_durable: require_durable,
               path: destination,
               root: root
-            )
+            ) do |journal|
+              publish_source_io_by_drvfs_exclusive_copy!(
+                source,
+                parent,
+                basename,
+                journal: journal,
+                journal_destination: journal_destination,
+                destination_parent_validator: -> { validate_current_directory_identity!(parent_path, parent) },
+                heartbeat: heartbeat,
+                source_validator: source_validator,
+                accepted_modes: accepted_modes,
+                require_durable: require_durable,
+                path: destination,
+                root: root
+              )
+            end
           end
           return
         end
@@ -2268,7 +2275,8 @@ class FileCopyService
       source,
       parent,
       destination_basename,
-      journal_parent:,
+      journal:,
+      journal_destination:,
       destination_parent_validator:,
       heartbeat:,
       source_validator:,
@@ -2280,105 +2288,111 @@ class FileCopyService
       source_size, source_digest = io_content_identity(source, heartbeat: heartbeat)
       source_validator&.call
       token = SecureRandom.hex(16)
-      lock_basename = ".shelfarr-copy-#{token}.lock"
       destination_created = false
       published_mode = nil
 
-      with_created_regular_child(journal_parent, lock_basename, 0o600) do |lock|
-        raise UnsafePathError, "copy lock could not be acquired" unless lock.flock(File::LOCK_EX)
+      reset_drvfs_copy_journal!(
+        journal,
+        token,
+        :prepared,
+        source_size,
+        source_digest,
+        journal_destination
+      )
 
-        apply_file_mode!(lock, 0o600, accepted_modes: LIBRARY_FILE_MODES, path: path, root: root)
+      begin
+        with_created_regular_child(
+          parent,
+          destination_basename,
+          0o600,
+          created: -> { destination_created = true }
+        ) do |destination|
+          persist_drvfs_copy_lock!(
+            journal,
+            token,
+            :copying,
+            source_size,
+            source_digest,
+            journal_destination
+          )
+          sync_io(parent)
+          apply_file_mode!(
+            destination,
+            0o600,
+            accepted_modes: accepted_modes,
+            path: path,
+            root: root
+          )
+          copy_source_io(source, destination, heartbeat: heartbeat)
+          published_mode = apply_file_mode!(
+            destination,
+            LIBRARY_FILE_MODE,
+            accepted_modes: accepted_modes,
+            path: path,
+            root: root
+          )
+          file_durable = flush_and_sync(destination)
+          if require_durable && !file_durable
+            raise DurabilityUnsupportedError, "destination file fsync is unsupported"
+          end
+          unless io_matches_identity?(destination, source_size, source_digest)
+            raise Errno::ESTALE, "direct-copy destination changed while it was written"
+          end
+        end
+
+        source_validator&.call
+        2.times do
+          unless drvfs_destination_matches_source?(
+            source,
+            parent,
+            destination_basename,
+            source_size,
+            source_digest,
+            published_mode
+          )
+            raise Errno::ESTALE, "direct-copy destination could not be verified"
+          end
+        end
+        source_validator&.call
+        destination_parent_validator.call
+        parent_durable = sync_io(parent)
+        if require_durable && !parent_durable
+          raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
+        end
         persist_drvfs_copy_lock!(
-          lock,
+          journal,
           token,
-          :prepared,
+          :complete,
           source_size,
           source_digest,
-          destination_basename
+          journal_destination
         )
-        sync_io(journal_parent)
-
-        begin
-          with_created_regular_child(parent, destination_basename, 0o600) do |destination|
-            destination_created = true
-            persist_drvfs_copy_lock!(
-              lock,
-              token,
-              :copying,
-              source_size,
-              source_digest,
-              destination_basename
-            )
-            sync_io(parent)
-            apply_file_mode!(
-              destination,
-              0o600,
-              accepted_modes: accepted_modes,
-              path: path,
-              root: root
-            )
-            copy_source_io(source, destination, heartbeat: heartbeat)
-            published_mode = apply_file_mode!(
-              destination,
-              LIBRARY_FILE_MODE,
-              accepted_modes: accepted_modes,
-              path: path,
-              root: root
-            )
-            file_durable = flush_and_sync(destination)
-            if require_durable && !file_durable
-              raise DurabilityUnsupportedError, "destination file fsync is unsupported"
-            end
-            unless io_matches_identity?(destination, source_size, source_digest)
-              raise Errno::ESTALE, "direct-copy destination changed while it was written"
-            end
-          end
-
-          source_validator&.call
-          2.times do
-            unless drvfs_destination_matches_source?(
-              source,
-              parent,
-              destination_basename,
-              source_size,
-              source_digest,
-              published_mode
-            )
-              raise Errno::ESTALE, "direct-copy destination could not be verified"
-            end
-          end
-          source_validator&.call
-          destination_parent_validator.call
-          parent_durable = sync_io(parent)
-          if require_durable && !parent_durable
-            raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
-          end
+      rescue Errno::EEXIST
+        persist_drvfs_copy_lock!(
+          journal,
+          token,
+          :conflict,
+          source_size,
+          source_digest,
+          journal_destination
+        )
+        raise
+      rescue StandardError => error
+        unless destination_created
           persist_drvfs_copy_lock!(
-            lock,
+            journal,
             token,
-            :complete,
+            :aborted,
             source_size,
             source_digest,
-            destination_basename
-          )
-          sync_io(journal_parent)
-        rescue Errno::EEXIST
-          persist_drvfs_copy_lock!(
-            lock,
-            token,
-            :conflict,
-            source_size,
-            source_digest,
-            destination_basename
+            journal_destination
           )
           raise
-        rescue StandardError => error
-          raise unless destination_created
-
-          raise AmbiguousPublicationError.new(
-            "An incomplete DrvFS direct-copy publication was retained for manual review"
-          ), cause: error
         end
+
+        raise AmbiguousPublicationError.new(
+          "An incomplete DrvFS direct-copy publication was retained for manual review"
+        ), cause: error
       end
 
       Rails.logger.warn(
@@ -2652,38 +2666,81 @@ class FileCopyService
       )
     end
 
-    def persist_drvfs_copy_lock!(lock, token, state, source_size, source_digest, destination_basename)
-      encoded_basename = destination_basename.b.unpack1("H*")
+    def reset_drvfs_copy_journal!(lock, token, state, source_size, source_digest, destination)
+      lock.rewind
+      lock.truncate(0)
+      persist_drvfs_copy_lock!(lock, token, state, source_size, source_digest, destination)
+    end
+
+    def persist_drvfs_copy_lock!(lock, token, state, source_size, source_digest, destination)
+      encoded_destination = destination.b.unpack1("H*")
       record = "#{COPY_LOCK_MAGIC}:#{token}:drvfs:#{state}:#{source_size}:" \
-        "#{source_digest}:#{encoded_basename}"
+        "#{source_digest}:#{encoded_destination}"
       checksum = Digest::SHA256.hexdigest(record)
       lock.seek(0, IO::SEEK_END)
       lock.write("#{record}:#{checksum}\n")
       flush_and_sync(lock)
     end
 
-    def resolved_drvfs_copy_lock?(parent, basename, token)
-      resolved = false
-      with_pinned_regular_child(parent, basename, writable: true) do |lock|
-        next unless lock.flock(File::LOCK_EX | File::LOCK_NB)
-        next unless secure_copy_lock?(lock, parent)
+    def with_drvfs_copy_journal(parent, heartbeat:, path:, root:)
+      descriptor = native_openat(
+        parent.fileno,
+        DRVFS_COPY_JOURNAL_BASENAME,
+        File::RDWR | File::CREAT | File::NOFOLLOW | File::NONBLOCK,
+        0o600
+      )
+      journal = File.for_fd(descriptor, "r+b", autoclose: true)
+      begin
+        raise UnsafePathError, "DrvFS copy journal is not a regular file" unless journal.stat.file?
 
-        lock.rewind
-        resolved = drvfs_copy_lock_state(lock.read, token).in?([ :complete, :conflict ])
+        acquired = begin
+          journal.flock(File::LOCK_EX | File::LOCK_NB)
+        rescue Errno::EWOULDBLOCK
+          false
+        end
+        until acquired
+          heartbeat&.call
+          sleep(DRVFS_COPY_LOCK_RETRY_INTERVAL)
+          acquired = begin
+            journal.flock(File::LOCK_EX | File::LOCK_NB)
+          rescue Errno::EWOULDBLOCK
+            false
+          end
+        end
+        unless private_entry_owned_by_process?(journal.stat, parent)
+          raise UnsafePathError, "DrvFS copy journal is not safely owned"
+        end
+        apply_file_mode!(
+          journal,
+          0o600,
+          accepted_modes: LIBRARY_FILE_MODES,
+          path: path,
+          root: root
+        )
+
+        journal.rewind
+        state = drvfs_copy_journal_state(journal.read)
+        unless state.in?(DRVFS_COPY_TERMINAL_STATES)
+          raise AtomicPublicationUnsupportedError,
+            "Interrupted DrvFS publication evidence requires manual cleanup before another import"
+        end
+        sync_io(parent)
+        yield journal
+      ensure
+        journal.close unless journal.closed?
       end
-      resolved
-    rescue Errno::ENOENT, Errno::EACCES, Errno::EWOULDBLOCK, IOError, UnsafePathError
-      false
     end
 
-    def drvfs_copy_lock_state(contents, token)
+    def drvfs_copy_journal_state(contents)
+      return :empty if contents.empty?
+
       contents.lines(chomp: true).reverse_each do |line|
         record, separator, checksum = line.rpartition(":")
         next if separator.empty? || checksum.length != 64
         next unless Digest::SHA256.hexdigest(record) == checksum
 
         match = COPY_LOCK_DRVFS_PATTERN.match(record)
-        next unless match && match[1] == token
+        next unless match
 
         return match[2].to_sym
       end
@@ -3685,13 +3742,14 @@ class FileCopyService
       end
     end
 
-    def with_created_regular_child(parent, basename, mode)
+    def with_created_regular_child(parent, basename, mode, created: nil)
       descriptor = native_openat(
         parent.fileno,
         basename,
         File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW,
         mode
       )
+      created&.call
       file = File.for_fd(descriptor, "r+b", autoclose: true)
       begin
         raise UnsafePathError, "created path is not a regular file" unless file.stat.file?

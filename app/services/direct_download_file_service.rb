@@ -439,6 +439,9 @@ class DirectDownloadFileService
       if relative.to_s == ".." || relative.to_s.start_with?("..#{File::SEPARATOR}")
         raise Error, "Direct-download destination is outside the configured library root"
       end
+      if LibraryPathSafety.internal_relative_path?(relative)
+        raise Error, "Direct-download destination uses a Shelfarr internal staging directory"
+      end
     rescue ArgumentError
       raise Error, "Direct-download destination is outside the configured library root"
     end

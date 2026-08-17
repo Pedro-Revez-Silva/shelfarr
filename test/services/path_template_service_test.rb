@@ -231,6 +231,23 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_includes error, ".."
   end
 
+  test "rejects direct-download staging in configured and rendered paths" do
+    valid, error = PathTemplateService.validate_template(".shelfarr-staging-v2/{title}")
+
+    assert_not valid
+    assert_match(/internal staging/i, error)
+
+    @book.update!(author: DirectDownloadFileService::STAGING_DIRECTORY)
+    assert_raises(PathTemplateService::UnsafePathError) do
+      PathTemplateService.build_path(@book, "{author}/{title}")
+    end
+
+    @book.update!(author: DirectDownloadFileService::STAGING_DIRECTORY.upcase)
+    assert_raises(PathTemplateService::UnsafePathError) do
+      PathTemplateService.build_path(@book, "{author}/{title}")
+    end
+  end
+
   test "validate_template returns error for unknown variables" do
     valid, error = PathTemplateService.validate_template("{author}/{title}/{unknown}")
     assert_not valid

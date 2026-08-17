@@ -555,10 +555,12 @@ class OwnedMediaImportFileService
     def safe_library_destination?(destination, root, staging_root)
       return false unless path_within?(destination, root)
       return false if path_within?(destination, staging_root)
+      return false if LibraryPathSafety.internal_path?(destination, root: root)
 
       resolved_parent = destination.parent.realpath
       path_within?(resolved_parent, root.realpath) &&
-        !path_within?(resolved_parent, staging_root.realpath)
+        !path_within?(resolved_parent, staging_root.realpath) &&
+        !LibraryPathSafety.internal_path?(resolved_parent, root: root.realpath)
     rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
       false
     end
@@ -813,7 +815,7 @@ class OwnedMediaImportFileService
     library_path = Pathname(value.presence || book_library_path(canonical_destination_path)).expand_path
     unless path_within?(library_path, @output_root) &&
         library_path != @output_root &&
-        !path_within?(library_path, @output_root.join(STAGING_DIRECTORY))
+        !LibraryPathSafety.internal_path?(library_path, root: @output_root)
       raise Error, "The planned audiobook library path is outside the configured library"
     end
 
@@ -885,7 +887,8 @@ class OwnedMediaImportFileService
   def validate_destination_path!(destination)
     root = @output_root.realpath
     expanded = destination.expand_path
-    unless path_within?(expanded, root) && !path_within?(expanded, root.join(STAGING_DIRECTORY))
+    unless path_within?(expanded, root) &&
+        !LibraryPathSafety.internal_path?(expanded, root: root)
       raise Error, "The planned audiobook destination is outside the configured library"
     end
   end
@@ -972,7 +975,7 @@ class OwnedMediaImportFileService
     resolved_root = @output_root.realpath
     current_stat = File.lstat(destination.dirname)
     unless path_within?(resolved_parent, resolved_root) &&
-        !path_within?(resolved_parent, resolved_root.join(STAGING_DIRECTORY)) &&
+        !LibraryPathSafety.internal_path?(resolved_parent, root: resolved_root) &&
         current_stat.directory? &&
         same_file_identity?(current_stat, directory.stat)
       raise Error, "The planned audiobook destination changed during finalization"
@@ -989,7 +992,8 @@ class OwnedMediaImportFileService
   def with_pinned_destination_parent(destination, create:)
     destination = Pathname(destination).expand_path
     relative = destination.dirname.relative_path_from(@output_root)
-    if relative.to_s.start_with?("..") || path_within?(destination, @output_root.join(STAGING_DIRECTORY))
+    if relative.to_s.start_with?("..") ||
+        LibraryPathSafety.internal_path?(destination, root: @output_root)
       raise Error, "The planned audiobook destination is outside the configured library"
     end
 

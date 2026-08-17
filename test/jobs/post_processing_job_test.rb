@@ -1277,7 +1277,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal "test audio content", File.binread(expected_dest)
     assert_equal @request.book.reload.file_path, File.dirname(expected_dest)
     assert_empty Dir.glob(File.join(File.dirname(expected_dest), ".shelfarr-copy-*.lock"))
-    assert_equal 1, Dir.glob(File.join(@temp_dest_base, ".shelfarr-copy-*.lock")).size
+    journal = File.join(@temp_dest_base, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert File.file?(journal)
+    assert_match(/drvfs:complete/, File.binread(journal))
   end
 
   test "retains interrupted DrvFS publication artifacts for actionable review" do
@@ -1296,9 +1298,11 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
     assert @request.reload.attention_needed?
     assert_includes @request.issue_description, "retained for manual review"
-    assert_includes @request.issue_description, ".shelfarr-copy artifacts"
+    assert_includes @request.issue_description, "Shelfarr filesystem artifacts"
     assert_equal "partial audio", File.binread(expected_dest)
-    assert_equal 1, Dir.glob(File.join(@temp_dest_base, ".shelfarr-copy-*.lock")).size
+    journal = File.join(@temp_dest_base, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert File.file?(journal)
+    assert_match(/drvfs:copying/, File.binread(journal))
   end
 
   test "does not overwrite a concurrent file when atomic publication is unavailable" do

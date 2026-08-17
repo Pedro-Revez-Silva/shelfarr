@@ -200,7 +200,8 @@ class UploadZipImportFileService
     end
 
     def validate_within_root!(path, root)
-      return if path.to_s.start_with?("#{root}#{File::SEPARATOR}")
+      return if path.to_s.start_with?("#{root}#{File::SEPARATOR}") &&
+        !LibraryPathSafety.internal_path?(path, root: root)
 
       raise Error, "The ZIP upload destination escaped its reserved root"
     end

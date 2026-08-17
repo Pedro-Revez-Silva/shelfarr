@@ -179,6 +179,23 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
     assert_not reserved_destination.start_with?(File.realpath(@other_library_root))
   end
 
+  test "a persisted reservation cannot be redirected into internal staging" do
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    internal_directory = File.join(
+      File.realpath(@library_root),
+      DirectDownloadFileService::STAGING_DIRECTORY,
+      "Injected"
+    )
+    @upload.update_columns(
+      destination_path: File.join(internal_directory, "book.epub"),
+      library_path: internal_directory
+    )
+
+    assert_raises(UploadImportFileService::Error) { service.publish! }
+    assert_not File.exist?(internal_directory)
+  end
+
   test "destination-only recovery requires the persisted content digest" do
     service = UploadImportFileService.new(upload: @upload, book: @book)
     service.reserve!

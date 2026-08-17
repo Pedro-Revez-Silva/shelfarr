@@ -121,16 +121,18 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
   end
 
   test "never authorizes Shelfarr internal staging paths as books" do
-    internal_directory = File.join(@root, OwnedMediaImportFileService::STAGING_DIRECTORY)
-    FileUtils.mkdir_p(internal_directory)
-    internal_path = File.join(internal_directory, "staged.m4b")
-    File.binwrite(internal_path, "staged bytes")
-    @book.update!(file_path: internal_path)
+    LibraryPathSafety::INTERNAL_DIRECTORIES.each do |directory|
+      internal_directory = File.join(@root, directory)
+      FileUtils.mkdir_p(internal_directory)
+      internal_path = File.join(internal_directory, "staged.m4b")
+      File.binwrite(internal_path, "staged bytes")
+      @book.update!(file_path: internal_path)
 
-    assert_raises(SafeLibraryDeletionService::Error) do
-      SafeLibraryDeletionService.new(@book).delete!
+      assert_raises(SafeLibraryDeletionService::Error) do
+        SafeLibraryDeletionService.new(@book).delete!
+      end
+      assert_equal "staged bytes", File.binread(internal_path)
     end
-    assert_equal "staged bytes", File.binread(internal_path)
   end
 
   test "supports the configured comic library root" do

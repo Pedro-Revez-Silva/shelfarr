@@ -1138,9 +1138,118 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     assert_equal "test content", File.binread(destination)
     assert_includes FileCopyService::LIBRARY_FILE_MODES, File.stat(destination).mode & 0o7777
-    locks = Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock"))
-    assert_equal 1, locks.size
-    assert_match(/drvfs:complete/, File.binread(locks.sole))
+    journal = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert File.file?(journal)
+    assert_match(/drvfs:complete/, File.binread(journal))
+  end
+
+  test "DrvFS publications serialize on one journal instead of rejecting an active worker" do
+    destinations = [ "first", "second" ].map do |name|
+      directory = File.join(@dest_dir, name)
+      FileUtils.mkdir_p(directory)
+      File.join(directory, "book.txt")
+    end
+    copy_started = Queue.new
+    release_copy = Queue.new
+    second_started = Queue.new
+    first_copy = true
+    real_copy = FileCopyService.method(:copy_source_io)
+    blocking_copy = lambda do |source, target, heartbeat: nil|
+      block_this_copy = first_copy
+      first_copy = false
+      if block_this_copy
+        copy_started << true
+        release_copy.pop
+      end
+      real_copy.call(source, target, heartbeat: heartbeat)
+    end
+    first = nil
+    second = nil
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+        FileCopyService.stub(:copy_source_io, blocking_copy) do
+          first = Thread.new do
+            FileCopyService.cp_noreplace(@src_file, destinations.first, root: @dest_dir)
+            :published
+          rescue => error
+            error
+          end
+          copy_started.pop
+          second = Thread.new do
+            second_started << true
+            FileCopyService.cp_noreplace(@src_file, destinations.second, root: @dest_dir)
+            :published
+          rescue => error
+            error
+          end
+          second_started.pop
+          sleep 0.1
+          assert second.alive?, "the second publication should wait for the active journal"
+
+          release_copy << true
+          assert_equal :published, first.value
+          assert_equal :published, second.value
+        end
+      end
+    end
+
+    assert_equal [ "test content", "test content" ], destinations.map { |path| File.binread(path) }
+  ensure
+    release_copy << true if first&.alive?
+    first&.join
+    second&.join
+  end
+
+  test "DrvFS records aborted destination creation and permits a later publication" do
+    failed_destination = File.join(@dest_dir, "failed.txt")
+    retry_destination = File.join(@dest_dir, "retry.txt")
+    real_open = FileCopyService.method(:native_openat)
+    fail_creation = lambda do |directory_fd, basename, flags, mode|
+      if basename == File.basename(failed_destination) && (flags & File::CREAT) != 0
+        raise Errno::ENOSPC, "simulated full destination"
+      end
+
+      real_open.call(directory_fd, basename, flags, mode)
+    end
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+        FileCopyService.stub(:native_openat, fail_creation) do
+          assert_raises(Errno::ENOSPC) do
+            FileCopyService.cp_noreplace(@src_file, failed_destination, root: @dest_dir)
+          end
+        end
+
+        journal = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+        assert_match(/drvfs:aborted/, File.binread(journal))
+        assert_not File.exist?(failed_destination)
+
+        FileCopyService.cp_noreplace(@src_file, retry_destination, root: @dest_dir)
+      end
+    end
+
+    assert_equal "test content", File.binread(retry_destination)
+  end
+
+  test "DrvFS reuses one bounded journal across completed publications" do
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+        3.times do |index|
+          FileCopyService.cp_noreplace(
+            @src_file,
+            File.join(@dest_dir, "completed-#{index}.txt"),
+            root: @dest_dir
+          )
+        end
+      end
+    end
+
+    internal_entries = Dir.children(@dest_dir).grep(/\A\.shelfarr/)
+    assert_equal [ FileCopyService::DRVFS_COPY_JOURNAL_BASENAME ], internal_entries
+    journal = File.join(@dest_dir, internal_entries.sole)
+    assert_match(/drvfs:complete/, File.binread(journal))
+    assert_operator File.size(journal), :<, 4096
   end
 
   test "DrvFS publication never overwrites an occupied destination" do
@@ -1155,6 +1264,8 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     assert_equal "existing library bytes", File.binread(destination)
     assert_equal "test content", File.binread(@src_file)
+    journal = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert_match(/drvfs:conflict/, File.binread(journal))
   end
 
   test "DrvFS interruption retains the partial destination and blocks unsafe retry cleanup" do
@@ -1175,7 +1286,9 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_instance_of IOError, error.cause
     assert_match(/manual review/, error.message)
     assert_equal "partial", File.binread(destination)
-    assert_equal 1, Dir.glob(File.join(@dest_dir, ".shelfarr-copy-*.lock")).size
+    journal = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert File.file?(journal)
+    assert_match(/drvfs:copying/, File.binread(journal))
     retry_error = FileCopyService.stub(:hardlink_identity_unreliable?, true) do
       FileCopyService.stub(:drvfs_mount?, true) do
         assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do

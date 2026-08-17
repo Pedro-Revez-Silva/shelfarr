@@ -90,6 +90,23 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert chmod_paths.none? { |path| path == legacy || path.start_with?("#{legacy}/") }
   end
 
+  test "rejects destinations in every internal library namespace" do
+    LibraryPathSafety::INTERNAL_DIRECTORIES.each do |directory|
+      internal = File.join(@output_root, directory, "book.epub")
+
+      assert_raises(DirectDownloadFileService::Error) do
+        DirectDownloadFileService.new(
+          download: @download,
+          book: @book,
+          output_root: @output_root,
+          destination_path: internal,
+          book_path: internal,
+          kind: :file
+        )
+      end
+    end
+  end
+
   test "stale persisted legacy staging is retained while its recovery row is released" do
     legacy_parent = File.join(
       @output_root,
