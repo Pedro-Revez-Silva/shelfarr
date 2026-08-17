@@ -3,6 +3,9 @@
 # Scores search results based on how well they match a request.
 # Returns a confidence score (0-100) with a detailed breakdown.
 class ReleaseScorer
+  COMIC_ISSUE_EXACT_BONUS = 15
+  COMIC_ISSUE_UNKNOWN_MAX_SCORE = 49
+
   ROMAN_NUMBER_TOKENS = {
     "II" => "2",
     "III" => "3",
@@ -49,11 +52,14 @@ class ReleaseScorer
     @book = request.book
     @parsed = ReleaseParserService.parse(search_result.title)
     @format_preferences = FormatPreferenceService.evaluate(title: search_result.title, book_type: @book.book_type)
+    @comic_issue_match = classify_comic_issue_match
   end
 
   # Calculate the confidence score
   # @return [Result] Score result with total, breakdown, and detected metadata
   def score
+    issue_status = @comic_issue_match&.fetch(:status, nil)
+    auto_select_allowed = @format_preferences.auto_select_allowed && (@comic_issue_match.nil? || issue_status == :exact)
     breakdown = {
       title: calculate_title_score,
       author: calculate_author_score,
@@ -61,19 +67,29 @@ class ReleaseScorer
       format: calculate_format_score,
       health: calculate_health_score,
       preference_adjustment: @format_preferences.score_adjustment,
-      auto_select_allowed: @format_preferences.auto_select_allowed,
+      auto_select_allowed: auto_select_allowed,
       extension: @format_preferences.matched_extension,
       extensions: @format_preferences.detected_extensions,
       audiobook_structure: @format_preferences.audiobook_structure,
       audio_bitrate_kbps: @format_preferences.audio_bitrate_kbps
     }
+    if @comic_issue_match
+      breakdown.merge!(
+        issue_match: @comic_issue_match[:status],
+        requested_issue_number: @comic_issue_match[:requested],
+        detected_issue_number: @comic_issue_match[:detected],
+        issue_adjustment: comic_issue_adjustment
+      )
+    end
 
     # Calculate weighted total
     base_total = WEIGHTS.sum do |key, weight|
       (breakdown[key] * weight) / 100.0
     end.round
 
-    total = (base_total + @format_preferences.score_adjustment).clamp(0, 100)
+    total = (base_total + @format_preferences.score_adjustment + comic_issue_adjustment).clamp(0, 100)
+    total = [ total, COMIC_ISSUE_UNKNOWN_MAX_SCORE ].min if issue_status == :unknown
+    total = 0 if issue_status == :mismatch
 
     Result.new(
       total: total,
@@ -98,6 +114,8 @@ class ReleaseScorer
   # Title matching score (0-100)
   # Uses trigram similarity like BookMatcherService
   def calculate_title_score
+    return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
+
     release_title = normalize_for_matching(@search_result.title)
     book_title = normalize_for_matching(@book.title)
 
@@ -114,6 +132,7 @@ class ReleaseScorer
   # Author matching score (0-100)
   # Checks if author name appears in release title
   def calculate_author_score
+    return 50 if @comic_issue_match&.fetch(:status, nil) == :exact
     return 50 if @book.author.blank?  # Neutral if no author to match
 
     release_title = normalize_for_matching(@search_result.title)
@@ -206,6 +225,65 @@ class ReleaseScorer
     @search_result.download_url.present? &&
       @search_result.magnet_url.blank? &&
       @search_result.seeders.nil?
+  end
+
+  def comic_issue_adjustment
+    @comic_issue_match&.fetch(:status, nil) == :exact ? COMIC_ISSUE_EXACT_BONUS : 0
+  end
+
+  def classify_comic_issue_match
+    requested = @book.issue_number_for_matching
+    return unless requested
+
+    detected = detect_comic_issue_number
+    return { status: :unknown, requested: requested, detected: nil } unless detected
+    return { status: :unknown, requested: requested, detected: detected[:value] } if detected[:ambiguous]
+
+    normalized_requested = normalize_issue_number(requested)
+    normalized_detected = normalize_issue_number(detected[:value])
+    status = if normalized_requested == normalized_detected
+      :exact
+    elsif numeric_issue_number?(normalized_requested) && numeric_issue_number?(normalized_detected)
+      :mismatch
+    else
+      :unknown
+    end
+
+    { status: status, requested: requested, detected: detected[:value] }
+  end
+
+  def detect_comic_issue_number
+    series_tokens = normalize_for_matching(@book.series).split
+    return if series_tokens.empty?
+
+    series_pattern = series_tokens.map { |token| Regexp.escape(token) }.join("[^[:alnum:]]+")
+    series_match = @search_result.title.to_s.match(/(?<![[:alnum:]])#{series_pattern}(?![[:alnum:]])/i)
+    return unless series_match
+
+    tail = @search_result.title.to_s[series_match.end(0)..]
+    separator = '[\s._:–—-]'
+    marker = '(?:#|issues?\s*|no\.?\s*|numbers?\s*)'
+    issue = '(\d+(?:\.\d+)?[a-z]?)'
+    range = tail.match(/\A#{separator}*#{marker}?#{issue}\s*(?:-|–|—|to)\s*\d+(?:\.\d+)?[a-z]?/i)
+    return { value: range[1], ambiguous: true } if range
+
+    explicit = tail.match(/\A#{separator}*#{marker}\s*#{issue}(?![[:alnum:]])/i)
+    return { value: explicit[1], ambiguous: false } if explicit
+
+    plain = tail.match(/\A#{separator}+#{issue}(?![[:alnum:]])/i)
+    return unless plain
+    return if plain[1].match?(/\A(?:19|20)\d{2}\z/)
+
+    { value: plain[1], ambiguous: false }
+  end
+
+  def normalize_issue_number(value)
+    normalized = value.to_s.delete_prefix("#").squish.downcase
+    numeric_issue_number?(normalized) ? normalized.to_i.to_s : normalized
+  end
+
+  def numeric_issue_number?(value)
+    value.to_s.match?(/\A\d+\z/)
   end
 
   # Normalize text for matching

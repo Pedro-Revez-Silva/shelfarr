@@ -301,6 +301,9 @@ class SearchJob < ApplicationJob
     book = request.book
     query = indexer_language_hint(request)
     categories = primary_indexer_categories(request)
+    issue_queries = comic_issue_search_queries(book)
+    structured_title = issue_queries.second || book.title
+    structured_author = issue_queries.any? ? nil : book.author
 
     Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for request ##{request.id} (type: #{book.book_type})"
 
@@ -309,8 +312,8 @@ class SearchJob < ApplicationJob
         query,
         book_type: book.book_type,
         categories: categories,
-        title: book.title,
-        author: book.author
+        title: structured_title,
+        author: structured_author
       ),
       attempt: SearchAttempt.new(name: :structured_book, query: query, score_penalty: 0)
     )
@@ -915,6 +918,14 @@ class SearchJob < ApplicationJob
   def generic_indexer_attempts(request)
     book = request.book
     language_hint = indexer_language_hint(request)
+    issue_queries = comic_issue_search_queries(book)
+    if issue_queries.any?
+      attempts = issue_queries.map do |query|
+        build_search_attempt(:comic_issue, [ query, language_hint ])
+      end
+      return deduplicate_search_attempts(attempts)
+    end
+
     attempts = [
       build_search_attempt(:exact_title, [ book.title, language_hint ]),
       build_search_attempt(:title_author, [ book.title, book.author, language_hint ])
@@ -932,6 +943,18 @@ class SearchJob < ApplicationJob
     end
 
     deduplicate_search_attempts(attempts)
+  end
+
+  def comic_issue_search_queries(book)
+    issue_number = book.issue_number_for_matching.to_s.delete_prefix("#").squish
+    series = book.series.to_s.squish
+    return [] if issue_number.blank? || series.blank?
+
+    numeric_match = issue_number.match(/\A0*(\d+)\z/)
+    display_number = numeric_match ? numeric_match[1].to_i.to_s : issue_number
+    queries = [ "#{series} #{display_number}", "#{series} ##{display_number}" ]
+    queries << "#{series} #{display_number.rjust(3, '0')}" if numeric_match
+    queries.uniq
   end
 
   def suppress_database_debug_logging(&block)

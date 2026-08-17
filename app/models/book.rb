@@ -109,6 +109,14 @@ class Book < ApplicationRecord
     end
   end
 
+  def issue_number_for_matching
+    return unless comicbook?
+    return issue_number.to_s.squish.presence if issue_number.present?
+    return unless comic_vine_id.to_s.match?(/\A4000-\d+\z/)
+
+    series_position.to_s.squish.presence
+  end
+
   def metadata_source_attribution
     return nil if metadata_source_name.blank?
 

@@ -202,6 +202,95 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal 100, result.breakdown[:title]
   end
 
+  test "rewards an exact comic issue and rejects a conflicting issue" do
+    book = Book.create!(
+      title: "Saga",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-437",
+      issue_number: "7",
+      series: "Saga",
+      series_position: "7"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    exact = SearchResult.new(title: "Saga #7 English Comic CBZ", seeders: 50)
+    conflicting = SearchResult.new(title: "Saga #8 English Comic CBZ", seeders: 50)
+
+    exact_score = ReleaseScorer.score(exact, request)
+    conflicting_score = ReleaseScorer.score(conflicting, request)
+
+    assert_operator exact_score.total, :>, conflicting_score.total
+    assert_operator exact_score.total, :>=, 90
+    assert_equal :exact, exact_score.breakdown[:issue_match]
+    assert_equal "7", exact_score.breakdown[:detected_issue_number]
+    assert_equal :mismatch, conflicting_score.breakdown[:issue_match]
+    assert_equal 0, conflicting_score.total
+    assert_not conflicting_score.breakdown[:auto_select_allowed]
+  end
+
+  test "does not reject a comic release containing an ambiguous issue range" do
+    book = Book.create!(
+      title: "Saga",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-439",
+      issue_number: "7",
+      series: "Saga"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    release = SearchResult.new(title: "Saga 1-12 English Comic CBZ", seeders: 50)
+
+    score = ReleaseScorer.score(release, request)
+
+    assert_equal :unknown, score.breakdown[:issue_match]
+    assert_operator score.total, :>, 0
+    assert_operator score.total, :<, 50
+    assert_not score.breakdown[:auto_select_allowed]
+  end
+
+  test "does not reject conflicting alphanumeric comic issue labels" do
+    book = Book.create!(
+      title: "Saga",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-440",
+      issue_number: "7A",
+      series: "Saga"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    exact = SearchResult.new(title: "Saga #7A English Comic CBZ", seeders: 50)
+    conflicting = SearchResult.new(title: "Saga #7B English Comic CBZ", seeders: 50)
+
+    exact_score = ReleaseScorer.score(exact, request)
+    conflicting_score = ReleaseScorer.score(conflicting, request)
+
+    assert_equal :exact, exact_score.breakdown[:issue_match]
+    assert_equal :unknown, conflicting_score.breakdown[:issue_match]
+    assert_operator conflicting_score.total, :>, 0
+    assert_operator conflicting_score.total, :<, 50
+    assert_not conflicting_score.breakdown[:auto_select_allowed]
+  end
+
+  test "does not treat a Comic Vine volume position as an issue number" do
+    book = Book.create!(
+      title: "Saga Deluxe Volume",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4050-442",
+      issue_number: nil,
+      series: "Saga",
+      series_position: "7"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    release = SearchResult.new(title: "Saga Deluxe Volume English Comic CBZ", seeders: 50)
+
+    score = ReleaseScorer.score(release, request)
+
+    assert_not score.breakdown.key?(:issue_match)
+    assert score.breakdown[:auto_select_allowed]
+  end
+
   test "scores health based on seeders" do
     search_result = @request.search_results.create!(
       guid: "test-9",

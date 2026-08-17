@@ -243,6 +243,32 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert blocked.reload.rejected?
   end
 
+  test "does not auto-select a confidently conflicting comic issue" do
+    @book.update!(
+      title: "Saga",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-437",
+      issue_number: "7",
+      series: "Saga",
+      series_position: "7"
+    )
+    result = create_search_result(
+      title: "Saga #8 English Comic CBZ",
+      seeders: 100,
+      magnet_url: "magnet:?conflicting-issue"
+    )
+    result.calculate_score!
+
+    selection = AutoSelectService.call(@request)
+
+    assert_not selection.success?
+    assert_equal :no_matching_results, selection.reason
+    assert result.reload.pending?
+    assert_equal 0, @request.downloads.count
+  end
+
   test "selection result error reason works" do
     # Test that the SelectionResult with error reason works correctly
     result = AutoSelectService::SelectionResult.new(selected: false, reason: :error)
