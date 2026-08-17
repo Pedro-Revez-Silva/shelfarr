@@ -59,12 +59,15 @@ class ReleaseScorer
   # @return [Result] Score result with total, breakdown, and detected metadata
   def score
     issue_status = @comic_issue_match&.fetch(:status, nil)
-    auto_select_allowed = @format_preferences.auto_select_allowed && (@comic_issue_match.nil? || issue_status == :exact)
+    format_score = calculate_format_score
+    auto_select_allowed = @format_preferences.auto_select_allowed &&
+      !explicit_format_conflict? &&
+      (@comic_issue_match.nil? || issue_status == :exact)
     breakdown = {
       title: calculate_title_score,
       author: calculate_author_score,
       language: calculate_language_score,
-      format: calculate_format_score,
+      format: format_score,
       health: calculate_health_score,
       preference_adjustment: @format_preferences.score_adjustment,
       auto_select_allowed: auto_select_allowed,
@@ -253,32 +256,43 @@ class ReleaseScorer
   end
 
   def detect_comic_issue_number
+    title = @search_result.title.to_s
     series_tokens = @book.series.to_s.downcase.scan(/[[:alnum:]]+/)
     return if series_tokens.empty?
 
     series_pattern = series_tokens.map { |token| Regexp.escape(token) }.join("[^[:alnum:]]*")
-    series_match = @search_result.title.to_s.match(/(?<![[:alnum:]])#{series_pattern}(?![[:alnum:]])/i)
+    series_match = title.match(/(?<![[:alnum:]])#{series_pattern}(?![[:alnum:]])/i)
     return unless series_match
+    return unless bounded_comic_series_match?(title, series_match, series_tokens)
 
-    tail = @search_result.title.to_s[series_match.end(0)..]
+    tail = title[series_match.end(0)..]
     separator = '[\s._:–—-]'
     marker = '(?:#|(?:issues?|no\.?|numbers?)\s*#?\s*)'
     issue_value = '\d+(?:\.\d+)?[a-z]?'
     issue = "(?<issue>#{issue_value})"
     tail, run_year = extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
-    multiple = tail.match(
-      /\A#{separator}*#{marker}?#{issue}(?:\s*(?:-|–|—|to|,|&|\+|and)\s*|\s+(?=#))#{marker}?#{issue_value}(?![[:alnum:]])/i
-    )
-    return comic_issue_detection(multiple, tail, run_year:, ambiguous: true) if multiple
+    run_years = bracketed_comic_run_years(title)
+    run_years << run_year if run_year
 
     explicit = tail.match(/\A#{separator}*#{marker}\s*#{issue}(?![[:alnum:]])/i)
-    return comic_issue_detection(explicit, tail, run_year:) if explicit
+    return comic_issue_detection(explicit, tail, run_years:, marker:, issue_value:) if explicit
 
     plain = tail.match(/\A#{separator}+#{issue}(?![[:alnum:]])/i)
     return unless plain
     return if plain[:issue].match?(/\A(?:19|20)\d{2}\z/)
 
-    comic_issue_detection(plain, tail, run_year:)
+    comic_issue_detection(plain, tail, run_years:, marker:, issue_value:)
+  end
+
+  def bounded_comic_series_match?(title, series_match, series_tokens)
+    return true unless series_tokens.one? && series_tokens.first.match?(/\A\d+\z/)
+
+    prefix = title[...series_match.begin(0)]
+    prefix.match?(/\A(?:[\s._:–—-]*[\(\[]\d{4}[\)\]])*[\s._:–—-]*\z/)
+  end
+
+  def bracketed_comic_run_years(title)
+    title.scan(/[\(\[](\d{4})[\)\]]/).flatten.map(&:to_i).uniq
   end
 
   def extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
@@ -293,9 +307,26 @@ class ReleaseScorer
     [ tail, nil ]
   end
 
-  def comic_issue_detection(match, tail, run_year:, ambiguous: false)
-    run_year ||= comic_run_year_after(tail[match.end(0)..])
-    { value: match[:issue], ambiguous: ambiguous, run_year: run_year }
+  def comic_issue_detection(match, tail, run_years:, marker:, issue_value:)
+    remainder = tail[match.end(0)..]
+    run_years << comic_run_year_after(remainder)
+    run_years = run_years.compact.uniq
+    ambiguous = run_years.many? || additional_comic_issue?(remainder, marker:, issue_value:, run_years:)
+
+    { value: match[:issue], ambiguous: ambiguous, run_year: run_years.one? ? run_years.first : nil }
+  end
+
+  def additional_comic_issue?(tail, marker:, issue_value:, run_years:)
+    return true if tail.match?(/#{marker}\s*#{issue_value}(?![[:alnum:]])/i)
+
+    connector = '(?:[[:punct:]–—]+|\b(?:and|to|thru|through)\b)'
+    tail.to_enum(
+      :scan,
+      /#{connector}\s*(?:#{marker})?\s*(?<additional>#{issue_value})(?![[:alnum:]])/i
+    ).any? do
+      additional = Regexp.last_match[:additional]
+      !additional.match?(/\A\d{4}\z/) || !run_years.include?(additional.to_i)
+    end
   end
 
   def comic_run_year_after(tail)
@@ -308,6 +339,12 @@ class ReleaseScorer
   def comic_issue_run_year_conflict?(detected)
     requested_year = @book.release_date&.year
     detected[:run_year].present? && requested_year.present? && detected[:run_year] != requested_year
+  end
+
+  def explicit_format_conflict?
+    detected = @parsed[:format]
+    requested = @book.book_type&.to_sym
+    detected.present? && requested.in?([ :audiobook, :ebook, :comicbook ]) && detected != requested
   end
 
   def normalize_issue_number(value)

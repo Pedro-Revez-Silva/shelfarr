@@ -320,6 +320,34 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_equal 0, @request.downloads.count
   end
 
+  test "does not auto-select an exact comic issue with a conflicting format" do
+    @book.update!(
+      title: "Saga - #7",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-439",
+      issue_number: "7",
+      series: "Saga",
+      series_position: "7"
+    )
+    result = create_search_result(
+      title: "Saga #007 English EPUB",
+      seeders: 100,
+      magnet_url: "magnet:?conflicting-format"
+    )
+    result.calculate_score!
+
+    selection = AutoSelectService.call(@request)
+
+    assert_not selection.success?
+    assert_equal :no_matching_results, selection.reason
+    assert_equal :exact, result.score_breakdown["issue_match"].to_sym
+    assert_equal 0, result.score_breakdown["format"]
+    assert_not result.score_breakdown["auto_select_allowed"]
+    assert result.reload.pending?
+    assert_equal 0, @request.downloads.count
+  end
+
   test "selection result error reason works" do
     # Test that the SelectionResult with error reason works correctly
     result = AutoSelectService::SelectionResult.new(selected: false, reason: :error)

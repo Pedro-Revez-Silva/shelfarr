@@ -242,12 +242,22 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     request = Request.create!(book: book, user: @user, status: :pending, language: "en")
 
     correct_titles = [
+      "(1940) Batman #001 English Comic CBZ",
+      "[1940] Batman #001 English Comic CBZ",
       "Batman (1940) #001 English Comic CBZ",
-      "Batman #001 (1940) English Comic CBZ"
+      "Batman [1940] #001 English Comic CBZ",
+      "Batman #001 (1940) English Comic CBZ",
+      "Batman #001 English Comic CBZ [1940]",
+      "(1940) Batman #001 English Comic CBZ [1940]"
     ]
     conflicting_titles = [
+      "(2016) Batman #001 English Comic CBZ",
+      "[2016] Batman #001 English Comic CBZ",
       "Batman (2016) #001 English Comic CBZ",
-      "Batman #001 (2016) English Comic CBZ"
+      "Batman [2016] #001 English Comic CBZ",
+      "Batman #001 (2016) English Comic CBZ",
+      "Batman #001 English Comic CBZ [2016]",
+      "Batman (1940) #001 English Comic CBZ [2016]"
     ]
 
     correct_titles.each do |title|
@@ -280,7 +290,13 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       "Saga 1-12 English Comic CBZ",
       "Saga #001-#006 English Comic CBZ",
       "Saga #001,#002 English Comic CBZ",
-      "Saga #001 #002 English Comic CBZ"
+      "Saga #001 #002 English Comic CBZ",
+      "Saga #001/#002 English Comic CBZ",
+      "Saga.#001.#002.English.Comic.CBZ",
+      "Saga #001; #002 English Comic CBZ",
+      "Saga #001 thru #006 English Comic CBZ",
+      "Saga #001 through 006 English Comic CBZ",
+      "Saga #001 (Digital) #002 English Comic CBZ"
     ].each do |title|
       score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
 
@@ -320,6 +336,24 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       ReleaseScorer.score(SearchResult.new(title: "X #7 English Comic CBZ", seeders: 50), x_request).breakdown[:issue_match]
     assert_equal :unknown,
       ReleaseScorer.score(SearchResult.new(title: "10 #7 English Comic CBZ", seeders: 50), x_request).breakdown[:issue_match]
+
+    numeric_series = Book.create!(
+      title: "52 - #7",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "7",
+      series: "52"
+    )
+    numeric_request = Request.create!(book: numeric_series, user: @user, status: :pending, language: "en")
+
+    assert_equal :exact,
+      ReleaseScorer.score(SearchResult.new(title: "52 #007 English Comic CBZ", seeders: 50), numeric_request).breakdown[:issue_match]
+    assert_equal :exact,
+      ReleaseScorer.score(SearchResult.new(title: "(1940) 52 #007 English Comic CBZ", seeders: 50), numeric_request).breakdown[:issue_match]
+    assert_equal :unknown,
+      ReleaseScorer.score(SearchResult.new(title: "Area 52 #007 English Comic CBZ", seeders: 50), numeric_request).breakdown[:issue_match]
+    assert_equal :unknown,
+      ReleaseScorer.score(SearchResult.new(title: "Batman #52 - #007 English Comic CBZ", seeders: 50), numeric_request).breakdown[:issue_match]
   end
 
   test "normalizes padded numeric stems in comic issue labels" do
