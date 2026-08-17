@@ -2012,6 +2012,47 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(temp_dir)
   end
 
+  test "download follows a reference import directly to an authorized final target" do
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    download_root = File.join(temp_dir, "downloads")
+    content_root = File.join(temp_dir, "debrid-content")
+    target = File.join(content_root, "book.m4b")
+    library_path = File.join(output_root, "book.m4b")
+    FileUtils.mkdir_p([ output_root, download_root, content_root ])
+    File.binwrite(target, "final debrid audio")
+    File.symlink(target, library_path)
+    SettingsService.set(:audiobook_output_path, output_root)
+    SettingsService.set(:download_local_path, download_root)
+    client = DownloadClient.create!(
+      name: "Download reference content root",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "deluge",
+      download_path: content_root
+    )
+    book = Book.create!(
+      title: "Final reference target",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: library_path
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+    request.downloads.create!(
+      name: "Reference source",
+      status: :completed,
+      download_client: client,
+      download_path: File.join(download_root, "staged-book.m4b")
+    )
+
+    get download_request_path(request)
+
+    assert_response :success
+    assert_equal "final debrid audio", response.body
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
   test "download rejects a symlinked directory below the configured output root" do
     temp_dir = Dir.mktmpdir
     output_root = File.join(temp_dir, "library")

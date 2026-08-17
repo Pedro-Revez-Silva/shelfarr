@@ -635,6 +635,176 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal [ "referenced.txt" ], Dir.children(@dest_dir)
   end
 
+  test "reference_noreplace resolves an absolute source symlink to its final regular file" do
+    staging = File.join(@tmp_dir, "staged-reference.txt")
+    target = File.join(@tmp_dir, "content", "final-reference.txt")
+    destination = File.join(@dest_dir, "absolute-reference.txt")
+    FileUtils.mkdir_p(File.dirname(target))
+    File.binwrite(target, "remote content")
+    File.symlink(target, staging)
+    snapshot = FileCopyService.snapshot_reference_source(staging, authorized_roots: [ @tmp_dir ])
+
+    FileCopyService.reference_noreplace(
+      staging,
+      destination,
+      root: @dest_dir,
+      source_root: nil,
+      source_snapshot: snapshot
+    )
+
+    assert File.symlink?(destination)
+    assert_equal Pathname(target).realpath.to_s, File.readlink(destination)
+    refute_equal Pathname(staging).expand_path.to_s, File.readlink(destination)
+    assert FileCopyService.reference_target_matches?(
+      staging,
+      destination,
+      root: @dest_dir,
+      source_snapshot: snapshot
+    )
+    File.unlink(staging)
+    assert_equal "remote content", File.binread(destination)
+  end
+
+  test "reference_noreplace resolves a relative source symlink against its pinned parent" do
+    staging_directory = File.join(@tmp_dir, "staging")
+    target = File.join(@tmp_dir, "content", "relative-reference.txt")
+    staging = File.join(staging_directory, "relative-reference.txt")
+    destination = File.join(@dest_dir, "relative-reference.txt")
+    FileUtils.mkdir_p([ staging_directory, File.dirname(target) ])
+    File.binwrite(target, "relative remote content")
+    File.symlink(File.join("..", "content", "relative-reference.txt"), staging)
+
+    FileCopyService.reference_noreplace(
+      staging,
+      destination,
+      root: @dest_dir,
+      source_root: nil,
+      authorized_roots: [ @tmp_dir ]
+    )
+
+    assert_equal Pathname(target).realpath.to_s, File.readlink(destination)
+    File.unlink(staging)
+    assert_equal "relative remote content", File.binread(destination)
+  end
+
+  test "reference_noreplace rejects an immediate symlink target outside authorized roots" do
+    authorized = File.join(@tmp_dir, "authorized")
+    outside = File.join(@tmp_dir, "outside")
+    staging = File.join(authorized, "escaped-reference.txt")
+    target = File.join(outside, "private.txt")
+    destination = File.join(@dest_dir, "escaped-reference.txt")
+    FileUtils.mkdir_p([ authorized, outside ])
+    File.binwrite(target, "private content")
+    File.symlink(target, staging)
+
+    assert_raises(FileCopyService::UnsafePathError) do
+      FileCopyService.reference_noreplace(
+        staging,
+        destination,
+        root: @dest_dir,
+        source_root: nil,
+        authorized_roots: [ authorized ]
+      )
+    end
+
+    assert_not File.exist?(destination)
+    assert_equal "private content", File.binread(target)
+  end
+
+  test "reference_noreplace rejects second-level links and non-regular final targets" do
+    authorized = File.join(@tmp_dir, "authorized-reference-targets")
+    FileUtils.mkdir_p(authorized)
+    regular = File.join(authorized, "regular.txt")
+    second_link = File.join(authorized, "second-link.txt")
+    directory = File.join(authorized, "directory")
+    fifo = File.join(authorized, "target.pipe")
+    File.binwrite(regular, "regular content")
+    File.symlink(regular, second_link)
+    FileUtils.mkdir_p(directory)
+    File.mkfifo(fifo)
+
+    {
+      "second-level" => second_link,
+      "dangling" => File.join(authorized, "missing.txt"),
+      "directory" => directory,
+      "fifo" => fifo
+    }.each do |name, target|
+      staging = File.join(authorized, "#{name}-staging")
+      destination = File.join(@dest_dir, "#{name}.txt")
+      File.symlink(target, staging)
+
+      assert_raises(SystemCallError, FileCopyService::UnsafePathError) do
+        FileCopyService.reference_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          authorized_roots: [ authorized ]
+        )
+      end
+      assert_not File.exist?(destination)
+    end
+  end
+
+  test "reference_noreplace rejects replacement of a snapshotted staging symlink" do
+    staging = File.join(@tmp_dir, "raced-reference.txt")
+    original = File.join(@tmp_dir, "original-reference.txt")
+    replacement = File.join(@tmp_dir, "replacement-reference.txt")
+    destination = File.join(@dest_dir, "raced-reference.txt")
+    File.binwrite(original, "original content")
+    File.binwrite(replacement, "replacement content")
+    File.symlink(original, staging)
+    snapshot = FileCopyService.snapshot_reference_source(staging, authorized_roots: [ @tmp_dir ])
+    real_symlinkat = FileCopyService.method(:native_symlinkat)
+    replacing_publication = lambda do |target, directory_fd, basename|
+      File.unlink(staging)
+      File.symlink(replacement, staging)
+      real_symlinkat.call(target, directory_fd, basename)
+    end
+
+    FileCopyService.stub(:native_symlinkat, replacing_publication) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          source_snapshot: snapshot
+        )
+      end
+    end
+
+    assert_equal Pathname(original).realpath.to_s, File.readlink(destination)
+    assert_equal "original content", File.binread(destination)
+  end
+
+  test "copy move and hardlink modes continue to reject an immediate source symlink" do
+    staging = File.join(@tmp_dir, "mode-staging.txt")
+    target = File.join(@tmp_dir, "mode-target.txt")
+    File.binwrite(target, "mode content")
+    File.symlink(target, staging)
+
+    {
+      "copy" => ->(destination) { FileCopyService.cp_noreplace(staging, destination, root: @dest_dir) },
+      "move" => ->(destination) { FileCopyService.mv_noreplace(staging, destination, root: @dest_dir) },
+      "hardlink" => lambda do |destination|
+        FileCopyService.hardlink_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil
+        )
+      end
+    }.each do |mode, operation|
+      destination = File.join(@dest_dir, "#{mode}-symlink.txt")
+      assert_raises(FileCopyService::UnsafePathError) { operation.call(destination) }
+      assert_not File.exist?(destination)
+    end
+
+    assert File.symlink?(staging)
+    assert_equal "mode content", File.binread(target)
+  end
+
   test "reference_target_matches compares the exact normalized symlink target" do
     destination = File.join(@dest_dir, "referenced.txt")
     source_alias = File.join(@tmp_dir, "missing", "..", "source.txt")

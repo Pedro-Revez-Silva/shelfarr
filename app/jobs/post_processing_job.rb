@@ -365,15 +365,22 @@ class PostProcessingJob < ApplicationJob
   end
 
   def source_path_unavailable?(source_path)
-    source_path.present? && !File.exist?(source_path)
+    source_path.present? && !File.exist?(source_path) &&
+      !(reference_completed_downloads? && File.symlink?(source_path))
   end
 
   def validate_download_specific_source_path!(source_path, authorized_roots, download)
     return unless source_path.present?
 
-    source = canonical_path(source_path)
     roots = Array(authorized_roots).filter_map { |path| canonical_download_root(path) }.uniq
     shared_roots = shared_download_roots(download).filter_map { |path| canonical_download_root(path) }.uniq
+    source_stat = File.lstat(source_path)
+    reference_link = source_stat.symlink? && reference_completed_downloads?
+    source = if reference_link
+      File.join(canonical_path(File.dirname(source_path)), File.basename(source_path))
+    else
+      canonical_path(source_path)
+    end
 
     if shared_roots.include?(source)
       raise "Refusing to import shared download root. " \
@@ -384,16 +391,19 @@ class PostProcessingJob < ApplicationJob
       raise "Refusing to import source outside a configured download root."
     end
 
-    source_stat = File.lstat(source_path)
     snapshot = if source_stat.directory?
       FileCopyService.snapshot_source_root(source_path)
     elsif source_stat.file?
       FileCopyService.snapshot_source_file(source_path)
+    elsif reference_link
+      FileCopyService.snapshot_reference_source(source_path, authorized_roots: shared_roots)
     else
       raise "Refusing to import non-regular path"
     end
     snapshotted_path = if source_stat.directory?
       snapshot.canonical_path.to_s
+    elsif reference_link
+      snapshot.target_snapshot.path.to_s
     else
       snapshot.canonical_parent_path.join(snapshot.path.basename).to_s
     end
@@ -401,7 +411,8 @@ class PostProcessingJob < ApplicationJob
       raise "Refusing to import shared download root. " \
         "The download client must report a download-specific file or directory."
     end
-    unless roots.any? { |root| path_inside_root?(snapshotted_path, root) }
+    final_roots = reference_link ? shared_roots : roots
+    unless final_roots.any? { |root| path_inside_root?(snapshotted_path, root) }
       raise "Refusing to import source outside a configured download root."
     end
 
@@ -757,6 +768,12 @@ class PostProcessingJob < ApplicationJob
 
   def validate_ebook_source!(source)
     unless File.directory?(source)
+      if @import_source_file_snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
+        extension = File.extname(source).delete_prefix(".").downcase
+        target = @import_source_file_snapshot.target_snapshot.path.to_s
+        return if EBOOK_FILE_EXTENSIONS.include?(extension) &&
+          allowed_ebook_import_file?(target, extension: extension)
+      end
       return if ebook_file?(source) && allowed_ebook_import_file?(source)
 
       raise "Unsupported ebook import file type: #{File.basename(source)}"
@@ -790,11 +807,11 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def allowed_ebook_import_file?(path)
+  def allowed_ebook_import_file?(path, extension: nil)
     return false if File.symlink?(path)
     return false unless File.file?(path)
 
-    extension = File.extname(path).delete_prefix(".").downcase
+    extension ||= File.extname(path).delete_prefix(".").downcase
     EBOOK_ALLOWED_EXTENSIONS.include?(extension) && valid_ebook_import_content?(path, extension)
   end
 
@@ -874,7 +891,8 @@ class PostProcessingJob < ApplicationJob
         source,
         destination,
         root: @import_base_path,
-        source_root: @import_source_root
+        source_root: @import_source_root,
+        source_snapshot: @import_source_file_snapshot
       )
       @referenced_file_count += 1
     elsif hardlink_completed_downloads?

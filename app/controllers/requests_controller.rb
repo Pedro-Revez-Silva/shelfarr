@@ -570,10 +570,15 @@ class RequestsController < ApplicationController
   end
 
   def allowed_download_paths
+    client_paths = @request.book.requests
+      .joins(downloads: :download_client)
+      .where.not(download_clients: { download_path: [ nil, "" ] })
+      .pluck("download_clients.download_path")
     [
       SettingsService.get(:download_local_path, default: "/downloads"),
-      SettingsService.get(:download_remote_path)
-    ].compact.reject(&:blank?)
+      SettingsService.get(:download_remote_path),
+      *client_paths
+    ].compact_blank
   end
 
   def canonical_path_contained?(path, root)

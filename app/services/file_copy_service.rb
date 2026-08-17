@@ -66,6 +66,16 @@ class FileCopyService
     :manifest,
     keyword_init: true
   )
+  ReferenceSourceSnapshot = Struct.new(
+    :path,
+    :parent_path,
+    :canonical_parent_path,
+    :parent_device,
+    :parent_inode,
+    :link_target,
+    :target_snapshot,
+    keyword_init: true
+  )
   SourceRoot = Struct.new(
     :path,
     :canonical_path,
@@ -177,15 +187,26 @@ class FileCopyService
     end
 
     # Create a no-replace library entry that is a symlink to a verified regular
-    # source under source_root (reference import mode for debrid/rclone mounts).
+    # source, resolving one immediate source symlink for debrid/rclone staging.
     # Publication uses symlinkat against a pinned destination parent so an
     # ancestor rename cannot redirect the library entry outside the root.
-    def reference_noreplace(src, dest, root:, source_root:)
+    def reference_noreplace(
+      src,
+      dest,
+      root:,
+      source_root:,
+      source_snapshot: nil,
+      authorized_roots: nil
+    )
       source_path = Pathname(src).expand_path
       destination_path = Pathname(dest).expand_path
-      target = source_path.to_s
 
-      with_pinned_source(source_path, source_root: source_root) do |source, *_rest|
+      with_pinned_reference_source(
+        source_path,
+        source_root: source_root,
+        source_snapshot: source_snapshot,
+        authorized_roots: authorized_roots
+      ) do |source, target|
         raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
 
         with_pinned_destination_parent(destination_path, root: root) do |parent, basename, parent_path|
@@ -239,19 +260,17 @@ class FileCopyService
       if source_snapshot && source_path != source_snapshot.path
         raise UnsafePathError, "reference source does not match its authorization snapshot"
       end
-      source_operation = if source_snapshot
-        ->(&operation) { with_pinned_source_snapshot(source_snapshot, &operation) }
-      else
-        ->(&operation) { with_pinned_source(source_path, source_root: source_root, &operation) }
-      end
-
       result = nil
-      source_operation.call do |pinned_source, *_source_path|
+      with_pinned_reference_source(
+        source_path,
+        source_root: source_root,
+        source_snapshot: source_snapshot
+      ) do |pinned_source, target|
         raise Errno::EINVAL, "source is not a regular file" unless pinned_source.stat.file?
 
         with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
           matches = begin
-            native_readlinkat(parent.fileno, basename) == source_path.to_s
+            native_readlinkat(parent.fileno, basename) == target
           rescue Errno::EINVAL
             false
           end
@@ -260,6 +279,46 @@ class FileCopyService
         end
       end
       result
+    end
+
+    # Resolve only an immediate source symlink. Both the staging parent and the
+    # final regular-file parent are pinned and revalidated; the final leaf is
+    # always opened with O_NOFOLLOW.
+    def snapshot_reference_source(path, authorized_roots:)
+      expanded = Pathname(path).expand_path
+      roots = canonical_reference_roots(authorized_roots)
+      raise UnsafePathError, "reference source has no authorized target root" if roots.empty?
+
+      canonical_parent = expanded.parent.realpath
+      with_pinned_absolute_directory(canonical_parent) do |parent|
+        validate_current_directory_identity!(expanded.parent, parent)
+        parent_stat = parent.stat
+        link_target = native_readlinkat(parent.fileno, expanded.basename.to_s)
+        target = Pathname(link_target)
+        target = canonical_parent.join(target) unless target.absolute?
+        canonical_target = target.parent.realpath.join(target.basename)
+        unless roots.any? { |root| path_beneath_root?(canonical_target, root) }
+          raise UnsafePathError, "reference target is outside authorized source roots"
+        end
+
+        target_snapshot = snapshot_source_file(canonical_target)
+        validate_current_directory_identity!(expanded.parent, parent)
+        unless native_readlinkat(parent.fileno, expanded.basename.to_s) == link_target
+          raise Errno::ESTALE, "reference source changed while it was being resolved"
+        end
+
+        return ReferenceSourceSnapshot.new(
+          path: expanded,
+          parent_path: expanded.parent,
+          canonical_parent_path: canonical_parent,
+          parent_device: parent_stat.dev,
+          parent_inode: parent_stat.ino,
+          link_target: link_target,
+          target_snapshot: target_snapshot
+        ).freeze
+      end
+    rescue Errno::ELOOP, Errno::ENOTDIR => error
+      raise UnsafePathError, "reference target contains a symbolic link or non-directory: #{error.message}"
     end
 
     # Publish from a source descriptor already pinned by the caller (for
@@ -2431,6 +2490,83 @@ class FileCopyService
         return true unless left_bytes || right_bytes
         return false unless left_bytes == right_bytes
       end
+    end
+
+    def with_pinned_reference_source(
+      path,
+      source_root:,
+      source_snapshot: nil,
+      authorized_roots: nil
+    )
+      expanded = Pathname(path).expand_path
+      if source_snapshot.is_a?(ReferenceSourceSnapshot)
+        return with_pinned_reference_source_snapshot(expanded, source_snapshot) do |source|
+          yield source, source_snapshot.target_snapshot.path.to_s
+        end
+      end
+      if source_snapshot
+        unless expanded == source_snapshot.path
+          raise UnsafePathError, "reference source does not match its authorization snapshot"
+        end
+
+        return with_pinned_source_snapshot(source_snapshot) do |source, *|
+          yield source, expanded.to_s
+        end
+      end
+      if source_root
+        return with_pinned_source(expanded, source_root: source_root) do |source, *|
+          yield source, expanded.to_s
+        end
+      end
+      if File.lstat(expanded).symlink?
+        snapshot = snapshot_reference_source(expanded, authorized_roots: authorized_roots)
+        return with_pinned_reference_source_snapshot(expanded, snapshot) do |source|
+          yield source, snapshot.target_snapshot.path.to_s
+        end
+      end
+
+      with_pinned_source(expanded) { |source, *| yield source, expanded.to_s }
+    end
+
+    def with_pinned_reference_source_snapshot(expanded, snapshot)
+      unless expanded == snapshot.path
+        raise UnsafePathError, "reference source does not match its authorization snapshot"
+      end
+
+      with_pinned_absolute_directory(snapshot.canonical_parent_path) do |parent|
+        unless file_identity(parent.stat) == [ snapshot.parent_device, snapshot.parent_inode ]
+          raise Errno::ESTALE, "reference source parent changed after it was snapshotted"
+        end
+        validate_reference_source_link!(parent, snapshot)
+        result = with_pinned_source_snapshot(snapshot.target_snapshot) { |source, *| yield source }
+        validate_reference_source_link!(parent, snapshot)
+        result
+      end
+    rescue Errno::EINVAL, Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR
+      raise Errno::ESTALE, "reference source changed after it was snapshotted"
+    end
+
+    def validate_reference_source_link!(parent, snapshot)
+      validate_current_directory_identity!(snapshot.parent_path, parent)
+      unless native_readlinkat(parent.fileno, snapshot.path.basename.to_s) == snapshot.link_target
+        raise Errno::ESTALE, "reference source changed after it was snapshotted"
+      end
+      true
+    end
+
+    def canonical_reference_roots(paths)
+      Array(paths).filter_map do |path|
+        root = Pathname(path).expand_path.realpath
+        next if root.root? || !root.lstat.directory?
+
+        root
+      rescue ArgumentError, SystemCallError
+        nil
+      end.uniq
+    end
+
+    def path_beneath_root?(path, root)
+      path.to_s.start_with?("#{root.to_s.delete_suffix(File::SEPARATOR)}#{File::SEPARATOR}")
     end
 
     def with_pinned_source(path, source_root: nil)
