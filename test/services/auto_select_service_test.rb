@@ -348,6 +348,31 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_equal 0, @request.downloads.count
   end
 
+  test "does not auto-select when the requested series is only a release title suffix" do
+    assert_comic_title_not_auto_selected(
+      series: "X",
+      issue: "7",
+      title: "Generation X #007 English Comic CBZ"
+    )
+  end
+
+  test "does not auto-select a whitespace-separated comic issue pack" do
+    assert_comic_title_not_auto_selected(
+      series: "Saga",
+      issue: "1",
+      title: "Saga #001 002 English Comic CBZ"
+    )
+  end
+
+  test "does not auto-select a conflicting unwrapped release year" do
+    assert_comic_title_not_auto_selected(
+      series: "Batman",
+      issue: "1",
+      release_date: Date.new(1940, 4, 1),
+      title: "2016 Batman #001 English Comic CBZ"
+    )
+  end
+
   test "selection result error reason works" do
     # Test that the SelectionResult with error reason works correctly
     result = AutoSelectService::SelectionResult.new(selected: false, reason: :error)
@@ -358,6 +383,32 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  def assert_comic_title_not_auto_selected(series:, issue:, title:, release_date: nil)
+    @book.update!(
+      title: "#{series} - ##{issue}",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-#{SecureRandom.random_number(1_000_000_000)}",
+      issue_number: issue,
+      series: series,
+      series_position: issue,
+      release_date: release_date
+    )
+    result = create_search_result(
+      title: title,
+      seeders: 100,
+      magnet_url: "magnet:?#{SecureRandom.hex(20)}"
+    )
+    result.calculate_score!
+
+    selection = AutoSelectService.call(@request)
+
+    assert_not selection.success?
+    assert_equal :no_matching_results, selection.reason
+    assert result.reload.pending?
+    assert_equal 0, @request.downloads.count
+  end
 
   def create_search_result(attrs = {})
     result = @request.search_results.create!({

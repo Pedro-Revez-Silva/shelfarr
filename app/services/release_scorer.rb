@@ -260,80 +260,111 @@ class ReleaseScorer
     series_tokens = @book.series.to_s.downcase.scan(/[[:alnum:]]+/)
     return if series_tokens.empty?
 
-    series_pattern = series_tokens.map { |token| Regexp.escape(token) }.join("[^[:alnum:]]*")
-    series_match = title.match(/(?<![[:alnum:]])#{series_pattern}(?![[:alnum:]])/i)
-    return unless series_match
-    return unless bounded_comic_series_match?(title, series_match, series_tokens)
-
-    tail = title[series_match.end(0)..]
     separator = '[\s._:–—-]'
+    run_year = '(?:19|20)\d{2}'
+    year_metadata = "(?:[\\(\\[]#{run_year}[\\)\\]]|#{run_year})"
+    series_pattern = series_tokens.map { |token| Regexp.escape(token) }.join("[^[:alnum:]]*")
+    series_match = title.match(
+      /\A#{separator}*(?:#{year_metadata}#{separator}+)*?(?<series>#{series_pattern})(?![[:alnum:]])/i
+    )
+    return unless series_match
+
+    series_range = series_match.begin(:series)...series_match.end(:series)
+    tail_offset = series_match.end(:series)
+    tail = title[tail_offset..]
     marker = '(?:#|(?:issues?|no\.?|numbers?)\s*#?\s*)'
     issue_value = '\d+(?:\.\d+)?[a-z]?'
     issue = "(?<issue>#{issue_value})"
-    tail, run_year = extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
-    run_years = bracketed_comic_run_years(title)
-    run_years << run_year if run_year
+    tail, consumed = extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
+    tail_offset += consumed
 
     explicit = tail.match(/\A#{separator}*#{marker}\s*#{issue}(?![[:alnum:]])/i)
-    return comic_issue_detection(explicit, tail, run_years:, marker:, issue_value:) if explicit
+    if explicit
+      return comic_issue_detection(
+        explicit,
+        tail,
+        title: title,
+        series_range: series_range,
+        tail_offset: tail_offset,
+        marker: marker,
+        issue_value: issue_value
+      )
+    end
 
     plain = tail.match(/\A#{separator}+#{issue}(?![[:alnum:]])/i)
     return unless plain
     return if plain[:issue].match?(/\A(?:19|20)\d{2}\z/)
 
-    comic_issue_detection(plain, tail, run_years:, marker:, issue_value:)
-  end
-
-  def bounded_comic_series_match?(title, series_match, series_tokens)
-    return true unless series_tokens.one? && series_tokens.first.match?(/\A\d+\z/)
-
-    prefix = title[...series_match.begin(0)]
-    prefix.match?(/\A(?:[\s._:–—-]*[\(\[]\d{4}[\)\]])*[\s._:–—-]*\z/)
-  end
-
-  def bracketed_comic_run_years(title)
-    title.scan(/[\(\[](\d{4})[\)\]]/).flatten.map(&:to_i).uniq
+    comic_issue_detection(
+      plain,
+      tail,
+      title: title,
+      series_range: series_range,
+      tail_offset: tail_offset,
+      marker: marker,
+      issue_value: issue_value
+    )
   end
 
   def extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
-    wrapped = tail.match(/\A#{separator}*[\(\[](?<year>\d{4})[\)\]]/)
-    return [ tail[wrapped.end(0)..], wrapped[:year].to_i ] if wrapped
+    wrapped = tail.match(/\A#{separator}*[\(\[](?<year>(?:19|20)\d{2})[\)\]]/)
+    return [ tail[wrapped.end(0)..], wrapped.end(0) ] if wrapped
 
     plain = tail.match(
-      /\A#{separator}*(?<year>\d{4})(?=#{separator}+(?:#{marker})?#{issue_value}(?![[:alnum:]]))/i
+      /\A#{separator}*(?<year>(?:19|20)\d{2})(?=#{separator}+(?:#{marker})?#{issue_value}(?![[:alnum:]]))/i
     )
-    return [ tail[plain.end(0)..], plain[:year].to_i ] if plain
+    return [ tail[plain.end(0)..], plain.end(0) ] if plain
 
-    [ tail, nil ]
+    [ tail, 0 ]
   end
 
-  def comic_issue_detection(match, tail, run_years:, marker:, issue_value:)
+  def comic_issue_detection(match, tail, title:, series_range:, tail_offset:, marker:, issue_value:)
+    issue_range = (tail_offset + match.begin(:issue))...(tail_offset + match.end(:issue))
+    run_years = comic_run_years(title, excluded_ranges: [ series_range, issue_range ])
     remainder = tail[match.end(0)..]
-    run_years << comic_run_year_after(remainder)
-    run_years = run_years.compact.uniq
     ambiguous = run_years.many? || additional_comic_issue?(remainder, marker:, issue_value:, run_years:)
 
     { value: match[:issue], ambiguous: ambiguous, run_year: run_years.one? ? run_years.first : nil }
   end
 
+  def comic_run_years(title, excluded_ranges:)
+    title.to_enum(
+      :scan,
+      /(?<![[:alnum:]])(?<year>(?:19|20)\d{2})(?![[:alnum:]])/
+    ).filter_map do
+      match = Regexp.last_match
+      range = match.begin(:year)...match.end(:year)
+      next if excluded_ranges.any? { |excluded| ranges_overlap?(range, excluded) }
+
+      match[:year].to_i
+    end.uniq
+  end
+
+  def ranges_overlap?(left, right)
+    left.begin < right.end && right.begin < left.end
+  end
+
   def additional_comic_issue?(tail, marker:, issue_value:, run_years:)
     return true if tail.match?(/#{marker}\s*#{issue_value}(?![[:alnum:]])/i)
+
+    remainder = tail
+    while (plain = remainder.match(/\A\s+(?<additional>#{issue_value})(?![[:alnum:]])/i))
+      return true if additional_comic_issue_value?(plain[:additional], run_years)
+
+      remainder = remainder[plain.end(0)..]
+    end
 
     connector = '(?:[[:punct:]–—]+|\b(?:and|to|thru|through)\b)'
     tail.to_enum(
       :scan,
       /#{connector}\s*(?:#{marker})?\s*(?<additional>#{issue_value})(?![[:alnum:]])/i
     ).any? do
-      additional = Regexp.last_match[:additional]
-      !additional.match?(/\A\d{4}\z/) || !run_years.include?(additional.to_i)
+      additional_comic_issue_value?(Regexp.last_match[:additional], run_years)
     end
   end
 
-  def comic_run_year_after(tail)
-    match = tail.to_s.match(
-      /\A[\s._:–—-]*(?:[\(\[](?<wrapped>\d{4})[\)\]]|(?<plain>\d{4})(?!\d))/
-    )
-    (match&.[](:wrapped) || match&.[](:plain))&.to_i
+  def additional_comic_issue_value?(value, run_years)
+    !value.match?(/\A(?:19|20)\d{2}\z/) || !run_years.include?(value.to_i)
   end
 
   def comic_issue_run_year_conflict?(detected)
