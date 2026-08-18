@@ -307,6 +307,37 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "treats explicitly marked year-shaped values as additional issues" do
+    book = Book.create!(
+      title: "2000 AD - #2000",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "2000",
+      series: "2000 AD"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+
+    [
+      "2000.AD #2000 and #2012 English Comic CBZ",
+      "2000 AD #2000 plus issue 2012 English Comic CBZ",
+      "2000 AD #2000 with No. #2012 English Comic CBZ",
+      "2000 AD #2000 and number 2012 English Comic CBZ"
+    ].each do |title|
+      score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
+
+      assert_equal :unknown, score.breakdown[:issue_match], title
+      assert_not score.breakdown[:auto_select_allowed], title
+    end
+
+    unmarked_year = ReleaseScorer.score(
+      SearchResult.new(title: "2000 AD #2000 published 2012 English Comic CBZ", seeders: 50),
+      request
+    )
+
+    assert_equal :exact, unmarked_year.breakdown[:issue_match]
+    assert unmarked_year.breakdown[:auto_select_allowed]
+  end
+
   test "matches punctuated comic series without matching normalized lookalikes" do
     spider_man = Book.create!(
       title: "Spider-Man - #7",
@@ -354,6 +385,30 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       ReleaseScorer.score(SearchResult.new(title: "Area 52 #007 English Comic CBZ", seeders: 50), numeric_request).breakdown[:issue_match]
     assert_equal :unknown,
       ReleaseScorer.score(SearchResult.new(title: "Batman #52 - #007 English Comic CBZ", seeders: 50), numeric_request).breakdown[:issue_match]
+  end
+
+  test "does not consume issue markers as numeric series punctuation" do
+    [
+      [ "X-23", "7", "X-23 #007 English Comic CBZ", "X #23 #007 English Comic CBZ" ],
+      [ "Batman '66", "1", "Batman '66 #001 English Comic CBZ", "Batman #66 #001 English Comic CBZ" ]
+    ].each do |series, issue, exact_title, conflicting_title|
+      book = Book.create!(
+        title: "#{series} - ##{issue}",
+        book_type: :comicbook,
+        content_kind: :graphic,
+        issue_number: issue,
+        series: series
+      )
+      request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+
+      exact = ReleaseScorer.score(SearchResult.new(title: exact_title, seeders: 50), request)
+      conflicting = ReleaseScorer.score(SearchResult.new(title: conflicting_title, seeders: 50), request)
+
+      assert_equal :exact, exact.breakdown[:issue_match], exact_title
+      assert exact.breakdown[:auto_select_allowed], exact_title
+      assert_equal :unknown, conflicting.breakdown[:issue_match], conflicting_title
+      assert_not conflicting.breakdown[:auto_select_allowed], conflicting_title
+    end
   end
 
   test "requires the comic series to occupy the leading release identity segment" do

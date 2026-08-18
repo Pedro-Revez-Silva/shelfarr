@@ -262,9 +262,10 @@ class ReleaseScorer
     return if series_tokens.empty?
 
     separator = '[\s._:–—-]'
+    series_separator = "[\\s._:,&/'’()!?+\\[\\]–—-]"
     run_year = '(?:19|20)\d{2}'
     year_metadata = "(?:[\\(\\[]#{run_year}[\\)\\]]|#{run_year})"
-    series_pattern = series_tokens.map { |token| Regexp.escape(token) }.join("[^[:alnum:]]*")
+    series_pattern = series_tokens.map { |token| Regexp.escape(token) }.join("#{series_separator}*")
     series_match = title.match(
       /\A#{separator}*(?:#{year_metadata}#{separator}+)*?(?<series>#{series_pattern})(?![[:alnum:]])/i
     )
@@ -273,7 +274,7 @@ class ReleaseScorer
     series_range = series_match.begin(:series)...series_match.end(:series)
     tail_offset = series_match.end(:series)
     tail = title[tail_offset..]
-    marker = '(?:#|(?:issues?|no\.?|numbers?)\s*#?\s*)'
+    marker = '(?:#|(?<![[:alnum:]])(?:issues?|no\.?|numbers?)(?![[:alnum:]])\s*#?\s*)'
     issue_value = COMIC_ISSUE_VALUE_PATTERN
     issue = "(?<issue>#{issue_value})"
     issue_terminator = '(?=\z|\s|[\(\[])'
@@ -288,6 +289,7 @@ class ReleaseScorer
         title: title,
         series_range: series_range,
         tail_offset: tail_offset,
+        marker: marker,
         issue_value: issue_value
       )
     end
@@ -302,6 +304,7 @@ class ReleaseScorer
       title: title,
       series_range: series_range,
       tail_offset: tail_offset,
+      marker: marker,
       issue_value: issue_value
     )
   end
@@ -318,11 +321,11 @@ class ReleaseScorer
     [ tail, 0 ]
   end
 
-  def comic_issue_detection(match, tail, title:, series_range:, tail_offset:, issue_value:)
+  def comic_issue_detection(match, tail, title:, series_range:, tail_offset:, marker:, issue_value:)
     issue_range = (tail_offset + match.begin(:issue))...(tail_offset + match.end(:issue))
     run_years = comic_run_years(title, excluded_ranges: [ series_range, issue_range ])
     remainder = tail[match.end(0)..]
-    ambiguous = run_years.many? || additional_comic_issue?(remainder, issue_value:, run_years:)
+    ambiguous = run_years.many? || additional_comic_issue?(remainder, marker:, issue_value:, run_years:)
 
     { value: match[:issue], ambiguous: ambiguous, run_year: run_years.one? ? run_years.first : nil }
   end
@@ -344,7 +347,9 @@ class ReleaseScorer
     left.begin < right.end && right.begin < left.end
   end
 
-  def additional_comic_issue?(tail, issue_value:, run_years:)
+  def additional_comic_issue?(tail, marker:, issue_value:, run_years:)
+    return true if tail.match?(/#{marker}\s*#{issue_value}(?![[:alnum:]])/i)
+
     tail.to_enum(
       :scan,
       /(?<![[:alnum:]])(?<additional>#{issue_value})(?![[:alnum:]])/i

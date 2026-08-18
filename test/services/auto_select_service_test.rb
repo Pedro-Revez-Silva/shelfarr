@@ -388,6 +388,22 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     )
   end
 
+  test "does not auto-select a marked year-shaped issue pack" do
+    assert_comic_title_not_auto_selected(
+      series: "2000 AD",
+      issue: "2000",
+      title: "2000.AD #2000 and #2012 English Comic CBZ"
+    )
+  end
+
+  test "does not auto-select an issue marker consumed as series punctuation" do
+    assert_comic_title_not_auto_selected(
+      series: "X-23",
+      issue: "7",
+      title: "X #23 #007 English Comic CBZ"
+    )
+  end
+
   test "does not auto-select a conflicting unwrapped release year" do
     assert_comic_title_not_auto_selected(
       series: "Batman",
