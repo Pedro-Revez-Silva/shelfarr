@@ -275,11 +275,16 @@ test "${token_mode}" = "600"
 # subsequent PUID/PGID change must migrate all of it without following the
 # symlink out of the private state volume.
 job_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-docker exec -u 23456:23456 "${container}" sh -c '
+job_created_at="$(date -u -d "1 minute ago" +%Y-%m-%dT%H:%M:%SZ)"
+job_completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+docker exec -u 23456:23456 \
+  -e JOB_CREATED_AT="${job_created_at}" \
+  -e JOB_COMPLETED_AT="${job_completed_at}" \
+  "${container}" sh -c '
   set -eu
   umask 077
   mkdir -p /config/shelfarr-companion/jobs /config/in-progress/example /data/Example\ Book
-  printf "%s" "{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"sync\",\"status\":\"succeeded\",\"createdAt\":\"2026-07-18T00:00:00Z\",\"completedAt\":\"2026-07-18T00:01:00Z\"}" > /config/shelfarr-companion/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json
+  printf "%s" "{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"sync\",\"status\":\"succeeded\",\"createdAt\":\"${JOB_CREATED_AT}\",\"completedAt\":\"${JOB_COMPLETED_AT}\"}" > /config/shelfarr-companion/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json
   printf "%s" "{\"schemaVersion\":1,\"generatedAt\":\"2026-07-18T00:00:00Z\",\"libationVersion\":\"13.5.1\",\"skippedItems\":0,\"items\":[]}" > /config/shelfarr-companion/library.json
   printf chunk > /config/in-progress/example/chunk.partial
   printf sidecar > /config/LibationContext.db-wal.audit
