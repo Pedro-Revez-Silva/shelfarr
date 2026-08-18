@@ -209,10 +209,12 @@ class FileCopyService
       root:,
       source_root:,
       source_snapshot: nil,
-      authorized_roots: nil
+      authorized_roots: nil,
+      authorized_root_snapshot: nil
     )
       source_path = Pathname(src).expand_path
       destination_path = Pathname(dest).expand_path
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
 
       with_pinned_reference_source(
         source_path,
@@ -260,11 +262,19 @@ class FileCopyService
           validate_current_directory_identity!(parent_path, parent)
         end
       end
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
 
       dest.to_s
     end
 
-    def reference_target_matches?(source, destination, root:, source_root: nil, source_snapshot: nil)
+    def reference_target_matches?(
+      source,
+      destination,
+      root:,
+      source_root: nil,
+      source_snapshot: nil,
+      authorized_root_snapshot: nil
+    )
       if source_root.nil? == source_snapshot.nil?
         raise ArgumentError, "reference source requires exactly one authorization snapshot"
       end
@@ -273,6 +283,7 @@ class FileCopyService
       if source_snapshot && source_path != source_snapshot.path
         raise UnsafePathError, "reference source does not match its authorization snapshot"
       end
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
       result = nil
       with_pinned_reference_source(
         source_path,
@@ -291,6 +302,7 @@ class FileCopyService
           result = matches
         end
       end
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
       result
     end
 
@@ -316,6 +328,23 @@ class FileCopyService
       end
     rescue Errno::ELOOP, Errno::ENOTDIR => error
       raise UnsafePathError, "reference target contains a symbolic link or non-directory: #{error.message}"
+    end
+
+    def snapshot_reference_root(path)
+      canonical_reference_roots([ path ]).first ||
+        raise(UnsafePathError, "reference target root is not safely accessible")
+    end
+
+    def validate_reference_root_snapshot!(snapshot)
+      unless snapshot.is_a?(ReferenceRootSnapshot)
+        raise UnsafePathError, "reference target root snapshot is invalid"
+      end
+
+      validate_reference_root_identity!(
+        snapshot.path,
+        device: snapshot.device,
+        inode: snapshot.inode
+      )
     end
 
     # Publish from a source descriptor already pinned by the caller (for
@@ -674,10 +703,14 @@ class FileCopyService
 
     # Yield a regular file through a pinned parent and reject any identity/stat
     # change across the read.
-    def with_regular_file(path, root:)
+    def with_regular_file(path, root:, authorized_root_snapshot: nil)
       raise ArgumentError, "a file block is required" unless block_given?
 
-      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+      result = with_pinned_destination_parent(
+        path,
+        root: root,
+        root_snapshot: authorized_root_snapshot
+      ) do |parent, basename, parent_path|
         with_pinned_regular_child(parent, basename) do |file|
           expected = file_manifest_entry(file.stat)
           result = yield file
@@ -690,6 +723,8 @@ class FileCopyService
           result
         end
       end
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
+      result
     end
 
     # Refresh a regular file's cleanup lease through its pinned descriptor.
@@ -3805,12 +3840,19 @@ class FileCopyService
         "a replacement download directory was retained in quarantine for manual review"
     end
 
-    def with_pinned_destination_parent(destination, root:)
+    def with_pinned_destination_parent(destination, root:, root_snapshot: nil)
       destination = Pathname(destination).expand_path
       expanded_root, canonical_root, relative = destination_root_and_relative(destination, root)
       parent_relative = relative.dirname
 
       with_pinned_absolute_directory(canonical_root) do |root_directory|
+        if root_snapshot
+          expected_root = Pathname(root_snapshot.path).expand_path
+          unless expected_root == expanded_root &&
+              file_identity(root_directory.stat) == [ root_snapshot.device, root_snapshot.inode ]
+            raise Errno::ESTALE, "reference target root changed before file access"
+          end
+        end
         validate_current_directory_identity!(expanded_root, root_directory)
         with_pinned_relative_directory(root_directory, parent_relative, create: false) do |parent|
           yield parent, destination.basename.to_s, destination.parent

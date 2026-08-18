@@ -714,7 +714,12 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.reload.completed?, @request.issue_description
     assert_equal Pathname(source).expand_path.to_s, File.readlink(referenced)
     assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
-    assert_includes @book.reload.reference_target_roots, Pathname(@temp_download_base).realpath.to_s
+    root = @book.reload.reference_target_roots.find do |candidate|
+      candidate.path.to_s == Pathname(@temp_download_base).realpath.to_s
+    end
+    assert root
+    root_stat = File.lstat(@temp_download_base)
+    assert_equal [ root_stat.dev, root_stat.ino ], [ root.device, root.inode ]
   end
 
   test "reference mode imports a top-level source symlink to its final target" do
@@ -800,9 +805,42 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.reload.completed?, @request.issue_description
     assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
     assert_equal "client-root audiobook content", File.binread(referenced)
-    assert_equal [ Pathname(content_root).realpath.to_s ], @book.reload.reference_target_roots
+    assert_equal [ Pathname(content_root).realpath.to_s ],
+      @book.reload.reference_target_roots.map { |root| root.path.to_s }
   ensure
     FileUtils.rm_rf(content_root)
+  end
+
+  test "reference mode authorizes a top-level target under a symlinked download client root" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    content_parent = Dir.mktmpdir("symlinked-debrid-root")
+    real_content_root = File.join(content_parent, "real-debrid-content")
+    configured_content_root = File.join(content_parent, "configured-debrid-content")
+    target = File.join(configured_content_root, "remote-audiobook.mp3")
+    staging = File.join(@temp_download_base, "client-staged-symlinked-root.mp3")
+    FileUtils.mkdir_p(real_content_root)
+    File.symlink(real_content_root, configured_content_root)
+    File.binwrite(File.join(real_content_root, "remote-audiobook.mp3"), "client-root audiobook content")
+    File.symlink(target, staging)
+    client = DownloadClient.create!(
+      name: "Symlinked debrid content mount",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "deluge",
+      download_path: configured_content_root
+    )
+    @download.update!(download_path: staging, download_client: client)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?, @request.issue_description
+    root = @book.reload.reference_target_roots.sole
+    root_stat = File.lstat(real_content_root)
+    assert_equal Pathname(real_content_root).realpath.to_s, root.path.to_s
+    assert_equal [ root_stat.dev, root_stat.ino ], [ root.device, root.inode ]
+  ensure
+    FileUtils.rm_rf(content_parent) if content_parent
   end
 
   test "reference mode imports a Decypharr directory containing immediate symlink leaves" do
@@ -838,7 +876,8 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
     assert_equal "decypharr mounted audio", File.binread(referenced)
     assert File.symlink?(File.join(@temp_source, "remote-audiobook.m4b"))
-    assert_equal [ Pathname(content_root).realpath.to_s ], @book.reload.reference_target_roots
+    assert_equal [ Pathname(content_root).realpath.to_s ],
+      @book.reload.reference_target_roots.map { |root| root.path.to_s }
   ensure
     FileUtils.rm_rf(content_root)
   end
@@ -2714,7 +2753,14 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
   test "non-reference acquisition clears stale reference target provenance" do
     SettingsService.set(:audiobookshelf_url, "")
-    @book.update!(reference_target_roots: [ @temp_download_base ])
+    root_stat = File.lstat(@temp_download_base)
+    @book.update!(reference_target_roots: [
+      {
+        path: Pathname(@temp_download_base).realpath.to_s,
+        device: root_stat.dev,
+        inode: root_stat.ino
+      }
+    ])
 
     PostProcessingJob.perform_now(@download.id)
 

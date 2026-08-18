@@ -1,5 +1,9 @@
+require "json"
+require "pathname"
+
 class Book < ApplicationRecord
   METADATA_SOURCE_NAMES = MetadataSources::NAMES
+  ReferenceTargetRoot = Data.define(:path, :device, :inode)
 
   has_many :requests, dependent: :restrict_with_error
   has_many :uploads, dependent: :nullify
@@ -29,21 +33,46 @@ class Book < ApplicationRecord
   end
 
   def reference_target_roots
-    roots = JSON.parse(self[:reference_target_roots].to_s)
-    return [] unless roots.is_a?(Array)
-
-    roots.filter_map { |root| root.to_s.presence if root.is_a?(String) }.uniq
-  rescue JSON::ParserError, TypeError
-    []
+    self.class.load_reference_target_roots(self[:reference_target_roots])
   end
 
   def reference_target_roots=(roots)
     self[:reference_target_roots] = self.class.dump_reference_target_roots(roots)
   end
 
+  def reference_target_roots_recorded?
+    !self[:reference_target_roots].nil?
+  end
+
+  def self.load_reference_target_roots(payload)
+    values = JSON.parse(payload.to_s)
+    return [] unless values.is_a?(Array)
+
+    roots = values.map { |value| normalize_reference_target_root(value) }
+    return [] if roots.any?(&:nil?) || conflicting_reference_target_roots?(roots)
+
+    roots.uniq
+  rescue JSON::ParserError, TypeError
+    []
+  end
+
   def self.dump_reference_target_roots(roots)
-    values = Array(roots).filter_map { |root| root.to_s.presence }.uniq
-    values.any? ? JSON.generate(values) : nil
+    values = Array(roots)
+    return if values.empty?
+
+    normalized = values.map do |value|
+      normalize_reference_target_root(value) ||
+        raise(ArgumentError, "reference target root provenance is invalid")
+    end
+    if conflicting_reference_target_roots?(normalized)
+      raise ArgumentError, "reference target root identities conflict"
+    end
+
+    JSON.generate(
+      normalized.uniq.map do |root|
+        { "path" => root.path.to_s, "device" => root.device, "inode" => root.inode }
+      end
+    )
   end
 
   def acquisition_reserved?
@@ -281,6 +310,35 @@ class Book < ApplicationRecord
   end
 
   private
+
+  def self.normalize_reference_target_root(value)
+    attributes = if value.is_a?(Hash)
+      value.with_indifferent_access
+    elsif value.respond_to?(:path) && value.respond_to?(:device) && value.respond_to?(:inode)
+      { path: value.path, device: value.device, inode: value.inode }.with_indifferent_access
+    else
+      return
+    end
+    raw_path = attributes[:path].to_s
+    path = Pathname(raw_path)
+    device = Integer(attributes[:device], exception: false)
+    inode = Integer(attributes[:inode], exception: false)
+    return if raw_path.blank? || raw_path.include?("\0")
+    return unless path.absolute? && path.cleanpath.to_s == raw_path && !path.root?
+    return unless device && device >= 0 && inode&.positive?
+
+    ReferenceTargetRoot.new(path: path.freeze, device: device, inode: inode)
+  rescue ArgumentError
+    nil
+  end
+
+  def self.conflicting_reference_target_roots?(roots)
+    roots.group_by(&:path).any? do |_path, matches|
+      matches.map { |root| [ root.device, root.inode ] }.uniq.many?
+    end
+  end
+
+  private_class_method :normalize_reference_target_root, :conflicting_reference_target_roots?
 
   def prevent_destroy_during_active_acquisition
     message = if acquisition_reserved?

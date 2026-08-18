@@ -858,6 +858,52 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "authorized content", File.binread(destination)
   end
 
+  test "reference_noreplace revalidates a regular source root during publication and retry" do
+    authorized = File.join(@tmp_dir, "regular-authorized-root")
+    content = File.join(authorized, "content")
+    displaced = File.join(@tmp_dir, "regular-authorized-root-original")
+    source = File.join(content, "book.txt")
+    destination = File.join(@dest_dir, "regular-root-raced-reference.txt")
+    FileUtils.mkdir_p(content)
+    File.binwrite(source, "authorized regular content")
+    source_snapshot = FileCopyService.snapshot_source_file(source)
+    root_snapshot = FileCopyService.snapshot_reference_root(authorized)
+    real_symlinkat = FileCopyService.method(:native_symlinkat)
+    swapped = false
+    swap_root = lambda do |link_target, directory_fd, basename|
+      File.rename(authorized, displaced)
+      FileUtils.mkdir_p(authorized)
+      File.rename(File.join(displaced, "content"), content)
+      swapped = true
+      real_symlinkat.call(link_target, directory_fd, basename)
+    end
+
+    FileCopyService.stub(:native_symlinkat, swap_root) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_noreplace(
+          source,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          source_snapshot: source_snapshot,
+          authorized_root_snapshot: root_snapshot
+        )
+      end
+    end
+
+    assert swapped
+    assert_equal "authorized regular content", File.binread(destination)
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.reference_target_matches?(
+        source,
+        destination,
+        root: @dest_dir,
+        source_snapshot: source_snapshot,
+        authorized_root_snapshot: root_snapshot
+      )
+    end
+  end
+
   test "reference source root snapshots and publishes immediate symlink leaves" do
     source_root = File.join(@tmp_dir, "decypharr-release")
     nested = File.join(source_root, "disc")

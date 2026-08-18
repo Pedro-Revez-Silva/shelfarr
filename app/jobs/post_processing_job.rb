@@ -118,6 +118,7 @@ class PostProcessingJob < ApplicationJob
         require_durable: move_completed_downloads? || remove_usenet_download,
         source_authorization: source_authorization
       )
+      validate_completed_reference_target_roots! if reference_completed_downloads?
 
       book_path = imported_book_path(book, destination)
       cleanup_state = source_cleanup&.fetch(:state)
@@ -431,7 +432,7 @@ class PostProcessingJob < ApplicationJob
     snapshotted_path = if source_stat.directory?
       snapshot.canonical_path.to_s
     elsif reference_link
-      snapshot.target_snapshot.path.to_s
+      snapshot.canonical_target_path.to_s
     else
       snapshot.canonical_parent_path.join(snapshot.path.basename).to_s
     end
@@ -459,9 +460,10 @@ class PostProcessingJob < ApplicationJob
       return
     end
 
-    source_roots.select do |root|
+    root = source_roots.select do |root|
       path_inside_root?(source_path, root)
     end.max_by(&:length)
+    FileCopyService.snapshot_reference_root(root) if root
   end
 
   def shared_download_roots(download)
@@ -944,12 +946,15 @@ class PostProcessingJob < ApplicationJob
   def import_file(source, destination)
     if reference_completed_downloads?
       source_snapshot = reference_source_snapshot(source)
+      regular_root_snapshot = @reference_regular_source_root unless
+        source_snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
       FileCopyService.reference_noreplace(
         source,
         destination,
         root: @import_base_path,
         source_root: source_snapshot ? nil : @import_source_root,
-        source_snapshot: source_snapshot
+        source_snapshot: source_snapshot,
+        authorized_root_snapshot: regular_root_snapshot
       )
       @referenced_file_count += 1
     elsif hardlink_completed_downloads?
@@ -1075,12 +1080,15 @@ class PostProcessingJob < ApplicationJob
 
   def reference_target_matches?(source, destination)
     source_snapshot = reference_source_snapshot(source)
+    regular_root_snapshot = @reference_regular_source_root unless
+      source_snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
     FileCopyService.reference_target_matches?(
       source,
       destination,
       root: @import_base_path,
       source_root: source_snapshot ? nil : @import_source_root,
-      source_snapshot: source_snapshot
+      source_snapshot: source_snapshot,
+      authorized_root_snapshot: regular_root_snapshot
     )
   end
 
@@ -1251,12 +1259,22 @@ class PostProcessingJob < ApplicationJob
   def record_reference_target_root!(source)
     snapshot = reference_source_snapshot(source)
     root = if snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
-      snapshot.authorized_root.to_s
+      FileCopyService::ReferenceRootSnapshot.new(
+        path: snapshot.authorized_root,
+        device: snapshot.authorized_root_device,
+        inode: snapshot.authorized_root_inode
+      ).freeze
     else
       @reference_regular_source_root
     end
     @completed_reference_target_roots << root if root.present?
     @completed_reference_target_roots.uniq!
+  end
+
+  def validate_completed_reference_target_roots!
+    @completed_reference_target_roots.each do |root|
+      FileCopyService.validate_reference_root_snapshot!(root)
+    end
   end
 
   def reference_source_snapshot(source)

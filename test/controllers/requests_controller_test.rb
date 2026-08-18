@@ -2022,6 +2022,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.mkdir_p([ output_root, download_root, content_root ])
     File.binwrite(target, "final debrid audio")
     File.symlink(target, library_path)
+    content_root_stat = File.lstat(content_root)
     SettingsService.set(:audiobook_output_path, output_root)
     SettingsService.set(:download_local_path, download_root)
     client = DownloadClient.create!(
@@ -2036,7 +2037,13 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       author: "Security Test",
       book_type: :audiobook,
       file_path: library_path,
-      reference_target_roots: [ content_root ]
+      reference_target_roots: [
+        {
+          path: Pathname(content_root).realpath.to_s,
+          device: content_root_stat.dev,
+          inode: content_root_stat.ino
+        }
+      ]
     )
     request = Request.create!(book: book, user: @user, status: :completed)
     request.downloads.create!(
@@ -2066,6 +2073,96 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(temp_dir)
   end
 
+  test "download rejects a persisted reference root replaced by a symlink" do
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    download_root = File.join(temp_dir, "downloads")
+    content_root = File.join(temp_dir, "debrid-content")
+    displaced_root = File.join(temp_dir, "debrid-content-original")
+    staging = File.join(download_root, "staged-book.epub")
+    target = File.join(content_root, "passwd")
+    FileUtils.mkdir_p([ output_root, download_root, content_root ])
+    File.binwrite(target, "PK\x03\x04authorized ebook")
+    File.symlink(target, staging)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:ebook_output_path, output_root)
+    SettingsService.set(:ebook_path_template, "")
+    SettingsService.set(:ebook_filename_template, "{author} - {title}")
+    SettingsService.set(:download_local_path, download_root)
+    SettingsService.set(:completed_download_import_mode, "reference")
+    client = DownloadClient.create!(
+      name: "Persisted reference root",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "deluge",
+      download_path: content_root
+    )
+    book = Book.create!(
+      title: "Immutable reference boundary",
+      author: "Security Test",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :downloading)
+    download = request.downloads.create!(
+      name: book.title,
+      status: :completed,
+      progress: 100,
+      download_path: staging,
+      download_client: client
+    )
+    PostProcessingJob.perform_now(download.id)
+    assert request.reload.completed?, request.issue_description
+    assert File.symlink?(book.reload.file_path)
+    client.destroy!
+    SettingsService.set(:download_remote_path, content_root)
+
+    File.rename(content_root, displaced_root)
+    File.symlink("/etc", content_root)
+    get download_request_path(request)
+
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+    assert_not_equal File.binread("/etc/passwd"), response.body
+
+    File.unlink(content_root)
+    FileUtils.mkdir_p(content_root)
+    File.binwrite(target, "replacement root bytes")
+    get download_request_path(request)
+
+    assert_redirected_to request_path(request)
+    assert_equal "Invalid file path", flash[:alert]
+    assert_not_includes response.body, "replacement root bytes"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "download uses current configured roots when reference provenance is absent" do
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    download_root = File.join(temp_dir, "downloads")
+    target = File.join(download_root, "legacy-book.m4b")
+    library_path = File.join(output_root, "legacy-book.m4b")
+    FileUtils.mkdir_p([ output_root, download_root ])
+    File.binwrite(target, "legacy reference bytes")
+    File.symlink(target, library_path)
+    SettingsService.set(:audiobook_output_path, output_root)
+    SettingsService.set(:download_local_path, download_root)
+    book = Book.create!(
+      title: "Legacy reference",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: library_path
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+
+    get download_request_path(request)
+
+    assert_response :success
+    assert_equal "legacy reference bytes", response.body
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
   test "download sends the committed reference tree archive inode" do
     require "zip"
 
@@ -2077,13 +2174,21 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.mkdir_p([ book_directory, content_root ])
     File.binwrite(target, "archived debrid audio")
     File.symlink(target, File.join(book_directory, "book.m4b"))
+    File.binwrite(File.join(book_directory, "cover.txt"), "regular sidecar")
+    content_root_stat = File.lstat(content_root)
     SettingsService.set(:audiobook_output_path, output_root)
     book = Book.create!(
       title: "Reference Archive",
       author: "Security Test",
       book_type: :audiobook,
       file_path: book_directory,
-      reference_target_roots: [ content_root ]
+      reference_target_roots: [
+        {
+          path: Pathname(content_root).realpath.to_s,
+          device: content_root_stat.dev,
+          inode: content_root_stat.ino
+        }
+      ]
     )
     request = Request.create!(book: book, user: @user, status: :completed)
 
@@ -2093,8 +2198,9 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "application/zip", response.content_type
     assert_operator response.body.bytesize, :>, 0
     Zip::File.open_buffer(response.body) do |archive|
-      assert_equal [ "book.m4b" ], archive.entries.map(&:name)
-      assert_equal "archived debrid audio", archive.entries.sole.get_input_stream.read
+      assert_equal [ "book.m4b", "cover.txt" ], archive.entries.map(&:name).sort
+      assert_equal "archived debrid audio", archive.read("book.m4b")
+      assert_equal "regular sidecar", archive.read("cover.txt")
     end
   ensure
     FileUtils.rm_rf(temp_dir)
@@ -2111,27 +2217,95 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     File.binwrite(target, "authorized audio")
     File.binwrite(outside, "outside secret")
     File.symlink(target, File.join(book_directory, "book.m4b"))
+    content_root_stat = File.lstat(content_root)
     SettingsService.set(:audiobook_output_path, output_root)
     book = Book.create!(
       title: "Raced Archive",
       author: "Security Test",
       book_type: :audiobook,
       file_path: book_directory,
-      reference_target_roots: [ content_root ]
+      reference_target_roots: [
+        {
+          path: Pathname(content_root).realpath.to_s,
+          device: content_root_stat.dev,
+          inode: content_root_stat.ino
+        }
+      ]
     )
     request = Request.create!(book: book, user: @user, status: :completed)
     original = FileCopyService.method(:with_regular_file)
     swapped = false
-    swap_target = lambda do |path, root:, &block|
+    swap_target = lambda do |path, root:, authorized_root_snapshot: nil, &block|
       unless swapped
         File.unlink(target)
         File.symlink(outside, target)
         swapped = true
       end
-      original.call(path, root: root, &block)
+      original.call(
+        path,
+        root: root,
+        authorized_root_snapshot: authorized_root_snapshot,
+        &block
+      )
     end
 
     FileCopyService.stub(:with_regular_file, swap_target) do
+      get download_request_path(request)
+    end
+
+    assert swapped
+    assert_redirected_to request_path(request)
+    assert_equal "Unable to prepare a download for this reference library item.", flash[:alert]
+    assert_not_includes response.body, "outside secret"
+  ensure
+    FileUtils.rm_rf(temp_dir)
+  end
+
+  test "reference archive rejects a persisted root swapped before file access" do
+    temp_dir = Dir.mktmpdir
+    output_root = File.join(temp_dir, "library")
+    book_directory = File.join(output_root, "Security Test", "Root Raced Archive")
+    content_root = File.join(temp_dir, "debrid-content")
+    displaced_root = File.join(temp_dir, "debrid-content-original")
+    outside_root = File.join(temp_dir, "outside")
+    target = File.join(content_root, "book.m4b")
+    FileUtils.mkdir_p([ book_directory, content_root, outside_root ])
+    File.binwrite(target, "authorized audio")
+    File.binwrite(File.join(outside_root, "book.m4b"), "outside secret")
+    File.symlink(target, File.join(book_directory, "book.m4b"))
+    content_root_stat = File.lstat(content_root)
+    SettingsService.set(:audiobook_output_path, output_root)
+    book = Book.create!(
+      title: "Root Raced Archive",
+      author: "Security Test",
+      book_type: :audiobook,
+      file_path: book_directory,
+      reference_target_roots: [
+        {
+          path: Pathname(content_root).realpath.to_s,
+          device: content_root_stat.dev,
+          inode: content_root_stat.ino
+        }
+      ]
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+    original = FileCopyService.method(:with_regular_file)
+    swapped = false
+    swap_root = lambda do |path, root:, authorized_root_snapshot: nil, &block|
+      unless swapped
+        File.rename(content_root, displaced_root)
+        File.symlink(outside_root, content_root)
+        swapped = true
+      end
+      original.call(
+        path,
+        root: root,
+        authorized_root_snapshot: authorized_root_snapshot,
+        &block
+      )
+    end
+
+    FileCopyService.stub(:with_regular_file, swap_root) do
       get download_request_path(request)
     end
 
