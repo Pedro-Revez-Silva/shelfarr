@@ -778,6 +778,86 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "original content", File.binread(destination)
   end
 
+  test "reference_noreplace rejects a target parent swapped before target snapshot" do
+    authorized = File.join(@tmp_dir, "authorized-parent")
+    original_parent = File.join(authorized, "content")
+    displaced_parent = File.join(authorized, "content-original")
+    outside = File.join(@tmp_dir, "outside-parent")
+    staging = File.join(authorized, "staged-reference.txt")
+    destination = File.join(@dest_dir, "parent-raced-reference.txt")
+    FileUtils.mkdir_p([ original_parent, outside ])
+    File.binwrite(File.join(original_parent, "book.txt"), "authorized content")
+    File.binwrite(File.join(outside, "book.txt"), "outside content")
+    File.symlink(File.join(original_parent, "book.txt"), staging)
+    original_snapshot = FileCopyService.method(:snapshot_reference_target)
+    swapped = false
+    swap_parent = lambda do |target|
+      unless swapped
+        File.rename(original_parent, displaced_parent)
+        File.symlink(outside, original_parent)
+        swapped = true
+      end
+      original_snapshot.call(target)
+    end
+
+    FileCopyService.stub(:snapshot_reference_target, swap_parent) do
+      assert_raises(FileCopyService::UnsafePathError) do
+        snapshot = FileCopyService.snapshot_reference_source(
+          staging,
+          authorized_roots: [ authorized ]
+        )
+        FileCopyService.reference_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          source_snapshot: snapshot
+        )
+      end
+    end
+
+    assert swapped
+    assert_not File.exist?(destination)
+    assert_equal "outside content", File.binread(File.join(outside, "book.txt"))
+  end
+
+  test "reference_noreplace rejects an authorized root replaced during publication" do
+    authorized = File.join(@tmp_dir, "authorized-root")
+    displaced = File.join(@tmp_dir, "authorized-root-original")
+    content = File.join(authorized, "content")
+    staging = File.join(@tmp_dir, "root-raced-reference.txt")
+    target = File.join(content, "book.txt")
+    destination = File.join(@dest_dir, "root-raced-reference.txt")
+    FileUtils.mkdir_p(content)
+    File.binwrite(target, "authorized content")
+    File.symlink(target, staging)
+    snapshot = FileCopyService.snapshot_reference_source(staging, authorized_roots: [ authorized ])
+    real_symlinkat = FileCopyService.method(:native_symlinkat)
+    swapped = false
+    swap_root = lambda do |link_target, directory_fd, basename|
+      File.rename(authorized, displaced)
+      FileUtils.mkdir_p(authorized)
+      File.rename(File.join(displaced, "content"), content)
+      swapped = true
+      real_symlinkat.call(link_target, directory_fd, basename)
+    end
+
+    FileCopyService.stub(:native_symlinkat, swap_root) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          source_snapshot: snapshot
+        )
+      end
+    end
+
+    assert swapped
+    assert_equal "authorized content", File.binread(destination)
+  end
+
   test "reference source root snapshots and publishes immediate symlink leaves" do
     source_root = File.join(@tmp_dir, "decypharr-release")
     nested = File.join(source_root, "disc")

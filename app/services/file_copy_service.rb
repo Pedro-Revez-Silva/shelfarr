@@ -73,6 +73,7 @@ class FileCopyService
     :manifest,
     keyword_init: true
   )
+  ReferenceRootSnapshot = Struct.new(:path, :device, :inode, keyword_init: true)
   ReferenceSourceSnapshot = Struct.new(
     :path,
     :parent_path,
@@ -81,7 +82,10 @@ class FileCopyService
     :parent_inode,
     :link_target,
     :target_snapshot,
+    :canonical_target_path,
     :authorized_root,
+    :authorized_root_device,
+    :authorized_root_inode,
     keyword_init: true
   )
   SourceRoot = Struct.new(
@@ -3051,7 +3055,7 @@ class FileCopyService
       expanded = Pathname(path).expand_path
       if source_snapshot.is_a?(ReferenceSourceSnapshot)
         return with_pinned_reference_source_snapshot(expanded, source_snapshot) do |source|
-          yield source, source_snapshot.target_snapshot.path.to_s
+          yield source, source_snapshot.canonical_target_path.to_s
         end
       end
       if source_snapshot
@@ -3071,7 +3075,7 @@ class FileCopyService
       if File.lstat(expanded).symlink?
         snapshot = snapshot_reference_source(expanded, authorized_roots: authorized_roots)
         return with_pinned_reference_source_snapshot(expanded, snapshot) do |source|
-          yield source, snapshot.target_snapshot.path.to_s
+          yield source, snapshot.canonical_target_path.to_s
         end
       end
 
@@ -3083,13 +3087,20 @@ class FileCopyService
         raise UnsafePathError, "reference source does not match its authorization snapshot"
       end
 
+      validate_reference_authorized_root!(snapshot)
       with_pinned_absolute_directory(snapshot.canonical_parent_path) do |parent|
         unless file_identity(parent.stat) == [ snapshot.parent_device, snapshot.parent_inode ]
           raise Errno::ESTALE, "reference source parent changed after it was snapshotted"
         end
         validate_reference_source_link!(parent, snapshot)
-        result = with_pinned_source_snapshot(snapshot.target_snapshot) { |source, *| yield source }
+        result = with_pinned_source_snapshot(snapshot.target_snapshot) do |source, *|
+          validate_reference_authorized_root!(snapshot)
+          published = yield source
+          validate_reference_authorized_root!(snapshot)
+          published
+        end
         validate_reference_source_link!(parent, snapshot)
+        validate_reference_authorized_root!(snapshot)
         result
       end
     rescue Errno::EINVAL, Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR
@@ -3106,13 +3117,22 @@ class FileCopyService
 
     def canonical_reference_roots(paths)
       Array(paths).filter_map do |path|
-        root = Pathname(path).expand_path.realpath
-        next if root.root? || !root.lstat.directory?
+        expanded = Pathname(path).expand_path
+        canonical = expanded.realpath
+        next if canonical.root? || !canonical.lstat.directory?
 
-        root
+        with_pinned_absolute_directory(canonical) do |root|
+          validate_current_directory_identity!(expanded, root)
+          stat = root.stat
+          ReferenceRootSnapshot.new(
+            path: canonical,
+            device: stat.dev,
+            inode: stat.ino
+          ).freeze
+        end
       rescue ArgumentError, SystemCallError
         nil
-      end.uniq
+      end.uniq(&:path)
     end
 
     def path_beneath_root?(path, root)
@@ -3424,14 +3444,19 @@ class FileCopyService
     def snapshot_reference_source_at(expanded, parent, canonical_parent, link_target, authorized_roots)
       target = Pathname(link_target)
       target = canonical_parent.join(target) unless target.absolute?
-      canonical_target = canonical_reference_target(target)
+      target_snapshot = snapshot_reference_target(target)
+      canonical_target = target_snapshot.canonical_parent_path.join(target_snapshot.path.basename)
       authorized_root = authorized_roots.select do |root|
-        path_beneath_root?(canonical_target, root)
-      end.max_by { |root| root.to_s.length }
+        path_beneath_root?(canonical_target, root.path)
+      end.max_by { |root| root.path.to_s.length }
       unless authorized_root
         raise UnsafePathError, "reference target is outside authorized source roots"
       end
-      target_snapshot = snapshot_reference_target(canonical_target)
+      validate_reference_root_identity!(
+        authorized_root.path,
+        device: authorized_root.device,
+        inode: authorized_root.inode
+      )
 
       validate_current_directory_identity!(expanded.parent, parent)
       unless native_readlinkat(parent.fileno, expanded.basename.to_s) == link_target
@@ -3446,19 +3471,35 @@ class FileCopyService
         parent_inode: parent_stat.ino,
         link_target: link_target,
         target_snapshot: target_snapshot,
-        authorized_root: authorized_root
+        canonical_target_path: canonical_target,
+        authorized_root: authorized_root.path,
+        authorized_root_device: authorized_root.device,
+        authorized_root_inode: authorized_root.inode
       ).freeze
     end
 
-    def canonical_reference_target(target)
-      target.parent.realpath.join(target.basename)
-    rescue Errno::ENOENT => error
-      raise ReferenceTargetUnavailableError,
-        "reference target is not visible yet: #{error.message}"
+    def validate_reference_authorized_root!(snapshot)
+      validate_reference_root_identity!(
+        snapshot.authorized_root,
+        device: snapshot.authorized_root_device,
+        inode: snapshot.authorized_root_inode
+      )
     end
 
-    def snapshot_reference_target(canonical_target)
-      snapshot_source_file(canonical_target)
+    def validate_reference_root_identity!(path, device:, inode:)
+      with_pinned_absolute_directory(path) do |root|
+        unless file_identity(root.stat) == [ device, inode ]
+          raise Errno::ESTALE, "reference target root changed after it was authorized"
+        end
+        validate_current_directory_identity!(path, root)
+      end
+      true
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
+      raise Errno::ESTALE, "reference target root changed after it was authorized"
+    end
+
+    def snapshot_reference_target(target)
+      snapshot_source_file(target)
     rescue Errno::ENOENT => error
       raise ReferenceTargetUnavailableError,
         "reference target is not visible yet: #{error.message}"

@@ -192,6 +192,43 @@ class PostProcessingJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(unauthorized_root)
   end
 
+  test "reference mode rejects a target parent swapped before target snapshot" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    FileUtils.rm_rf(@temp_source)
+    target_parent = File.join(@temp_download_base, "debrid-content")
+    displaced_parent = File.join(@temp_download_base, "debrid-content-original")
+    outside_root = Dir.mktmpdir("outside-reference-race")
+    staging = File.join(@temp_download_base, "raced-reference.mp3")
+    FileUtils.mkdir_p(target_parent)
+    File.binwrite(File.join(target_parent, "audiobook.mp3"), "authorized content")
+    File.binwrite(File.join(outside_root, "audiobook.mp3"), "outside secret")
+    File.symlink(File.join(target_parent, "audiobook.mp3"), staging)
+    @download.update!(download_path: staging)
+    original_snapshot = FileCopyService.method(:snapshot_reference_target)
+    swapped = false
+    swap_parent = lambda do |target|
+      unless swapped
+        File.rename(target_parent, displaced_parent)
+        File.symlink(outside_root, target_parent)
+        swapped = true
+      end
+      original_snapshot.call(target)
+    end
+
+    FileCopyService.stub(:snapshot_reference_target, swap_parent) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert swapped
+    assert @request.reload.attention_needed?
+    assert_not File.exist?(destination)
+    assert_equal "outside secret", File.binread(File.join(outside_root, "audiobook.mp3"))
+  ensure
+    FileUtils.rm_rf(outside_root) if outside_root
+  end
+
   test "skips a completed download replaced by a manual selection" do
     old_result = @request.search_results.create!(
       guid: "old-result",
