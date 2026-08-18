@@ -483,6 +483,103 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "requires a complete canonical comic issue label" do
+    plain_issue = Book.create!(
+      title: "Saga - #1",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "1",
+      series: "Saga"
+    )
+    plain_request = Request.create!(book: plain_issue, user: @user, status: :pending, language: "en")
+    suffixed_title = "Saga #1-A English Comic CBZ"
+
+    ambiguous = ReleaseScorer.score(SearchResult.new(title: suffixed_title, seeders: 50), plain_request)
+
+    assert_equal :unknown, ambiguous.breakdown[:issue_match]
+    assert_not ambiguous.breakdown[:auto_select_allowed]
+    assert_operator ambiguous.total, :<, 50
+
+    suffixed_issue = Book.create!(
+      title: "Saga - #1-A",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "1-A",
+      series: "Saga"
+    )
+    suffixed_request = Request.create!(book: suffixed_issue, user: @user, status: :pending, language: "en")
+    exact = ReleaseScorer.score(SearchResult.new(title: suffixed_title, seeders: 50), suffixed_request)
+
+    assert_equal :exact, exact.breakdown[:issue_match]
+    assert exact.breakdown[:auto_select_allowed]
+  end
+
+  test "does not interpret punctuation-extended series identities as unmarked issues" do
+    [
+      [ "X", "23", "X-23 English Comic CBZ" ],
+      [ "Batman", "66", "Batman-66 English Comic CBZ" ],
+      [ "52", "1", "52.1 English Comic CBZ" ]
+    ].each do |series, issue, title|
+      book = Book.create!(
+        title: "#{series} - ##{issue}",
+        book_type: :comicbook,
+        content_kind: :graphic,
+        issue_number: issue,
+        series: series
+      )
+      request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+      score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
+
+      assert_equal :unknown, score.breakdown[:issue_match], title
+      assert_not score.breakdown[:auto_select_allowed], title
+    end
+
+    batman = Book.create!(
+      title: "Batman - #1",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "1",
+      series: "Batman"
+    )
+    request = Request.create!(book: batman, user: @user, status: :pending, language: "en")
+    plain = ReleaseScorer.score(SearchResult.new(title: "Batman 001 English Comic CBZ", seeders: 50), request)
+
+    assert_equal :exact, plain.breakdown[:issue_match]
+    assert plain.breakdown[:auto_select_allowed]
+  end
+
+  test "treats any later standalone issue-shaped number as ambiguous" do
+    book = Book.create!(
+      title: "Saga - #1",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "1",
+      series: "Saga",
+      release_date: Date.new(2012, 3, 14)
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+
+    [
+      "Saga #1 y 2 English Comic CBZ",
+      "Saga #1 et 2 English Comic CBZ",
+      "Saga #1 und 2 English Comic CBZ",
+      "Saga #1 plus 2 English Comic CBZ"
+    ].each do |title|
+      score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
+
+      assert_equal :unknown, score.breakdown[:issue_match], title
+      assert_not score.breakdown[:auto_select_allowed], title
+    end
+
+    matching_year = ReleaseScorer.score(
+      SearchResult.new(title: "Saga #1 published 2012 English Comic CBZ", seeders: 50),
+      request
+    )
+
+    assert_equal :exact, matching_year.breakdown[:issue_match]
+    assert matching_year.breakdown[:auto_select_allowed]
+  end
+
   test "does not reject conflicting alphanumeric comic issue labels" do
     book = Book.create!(
       title: "Saga",

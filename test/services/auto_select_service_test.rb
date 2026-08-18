@@ -364,6 +364,30 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     )
   end
 
+  test "does not auto-select a partially consumed comic issue label" do
+    assert_comic_title_not_auto_selected(
+      series: "Saga",
+      issue: "1",
+      title: "Saga #1-A English Comic CBZ"
+    )
+  end
+
+  test "does not auto-select a punctuation-extended series identity" do
+    assert_comic_title_not_auto_selected(
+      series: "X",
+      issue: "23",
+      title: "X-23 English Comic CBZ"
+    )
+  end
+
+  test "does not auto-select an issue pack with a language word separator" do
+    assert_comic_title_not_auto_selected(
+      series: "Saga",
+      issue: "1",
+      title: "Saga #1 y 2 English Comic CBZ"
+    )
+  end
+
   test "does not auto-select a conflicting unwrapped release year" do
     assert_comic_title_not_auto_selected(
       series: "Batman",

@@ -5,6 +5,7 @@
 class ReleaseScorer
   COMIC_ISSUE_EXACT_BONUS = 15
   COMIC_ISSUE_UNKNOWN_MAX_SCORE = 49
+  COMIC_ISSUE_VALUE_PATTERN = '\d+(?:\.\d+)?(?:[a-z]|-[a-z])?'
 
   ROMAN_NUMBER_TOKENS = {
     "II" => "2",
@@ -273,12 +274,13 @@ class ReleaseScorer
     tail_offset = series_match.end(:series)
     tail = title[tail_offset..]
     marker = '(?:#|(?:issues?|no\.?|numbers?)\s*#?\s*)'
-    issue_value = '\d+(?:\.\d+)?[a-z]?'
+    issue_value = COMIC_ISSUE_VALUE_PATTERN
     issue = "(?<issue>#{issue_value})"
+    issue_terminator = '(?=\z|\s|[\(\[])'
     tail, consumed = extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
     tail_offset += consumed
 
-    explicit = tail.match(/\A#{separator}*#{marker}\s*#{issue}(?![[:alnum:]])/i)
+    explicit = tail.match(/\A#{separator}*#{marker}\s*#{issue}#{issue_terminator}/i)
     if explicit
       return comic_issue_detection(
         explicit,
@@ -286,12 +288,11 @@ class ReleaseScorer
         title: title,
         series_range: series_range,
         tail_offset: tail_offset,
-        marker: marker,
         issue_value: issue_value
       )
     end
 
-    plain = tail.match(/\A#{separator}+#{issue}(?![[:alnum:]])/i)
+    plain = tail.match(/\A\s+#{issue}#{issue_terminator}/i)
     return unless plain
     return if plain[:issue].match?(/\A(?:19|20)\d{2}\z/)
 
@@ -301,7 +302,6 @@ class ReleaseScorer
       title: title,
       series_range: series_range,
       tail_offset: tail_offset,
-      marker: marker,
       issue_value: issue_value
     )
   end
@@ -318,11 +318,11 @@ class ReleaseScorer
     [ tail, 0 ]
   end
 
-  def comic_issue_detection(match, tail, title:, series_range:, tail_offset:, marker:, issue_value:)
+  def comic_issue_detection(match, tail, title:, series_range:, tail_offset:, issue_value:)
     issue_range = (tail_offset + match.begin(:issue))...(tail_offset + match.end(:issue))
     run_years = comic_run_years(title, excluded_ranges: [ series_range, issue_range ])
     remainder = tail[match.end(0)..]
-    ambiguous = run_years.many? || additional_comic_issue?(remainder, marker:, issue_value:, run_years:)
+    ambiguous = run_years.many? || additional_comic_issue?(remainder, issue_value:, run_years:)
 
     { value: match[:issue], ambiguous: ambiguous, run_year: run_years.one? ? run_years.first : nil }
   end
@@ -344,20 +344,10 @@ class ReleaseScorer
     left.begin < right.end && right.begin < left.end
   end
 
-  def additional_comic_issue?(tail, marker:, issue_value:, run_years:)
-    return true if tail.match?(/#{marker}\s*#{issue_value}(?![[:alnum:]])/i)
-
-    remainder = tail
-    while (plain = remainder.match(/\A\s+(?<additional>#{issue_value})(?![[:alnum:]])/i))
-      return true if additional_comic_issue_value?(plain[:additional], run_years)
-
-      remainder = remainder[plain.end(0)..]
-    end
-
-    connector = '(?:[[:punct:]–—]+|\b(?:and|to|thru|through)\b)'
+  def additional_comic_issue?(tail, issue_value:, run_years:)
     tail.to_enum(
       :scan,
-      /#{connector}\s*(?:#{marker})?\s*(?<additional>#{issue_value})(?![[:alnum:]])/i
+      /(?<![[:alnum:]])(?<additional>#{issue_value})(?![[:alnum:]])/i
     ).any? do
       additional_comic_issue_value?(Regexp.last_match[:additional], run_years)
     end
@@ -380,7 +370,7 @@ class ReleaseScorer
 
   def normalize_issue_number(value)
     normalized = value.to_s.delete_prefix("#").squish.downcase
-    numeric_stem = normalized.match(/\A0*(\d+)((?:\.\d+)?[a-z]?)\z/i)
+    numeric_stem = normalized.match(/\A0*(\d+)((?:\.\d+)?(?:[a-z]|-[a-z])?)\z/i)
     return normalized unless numeric_stem
 
     "#{numeric_stem[1].to_i}#{numeric_stem[2]}"
