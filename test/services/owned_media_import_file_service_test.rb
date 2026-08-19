@@ -92,7 +92,7 @@ class OwnedMediaImportFileServiceTest < ActiveSupport::TestCase
           @media_import,
           StringIO.new("new bytes"),
           ".m4b",
-          root: Pathname(@output_root)
+          root: Pathname(@output_root).realpath
         )
       end
     end

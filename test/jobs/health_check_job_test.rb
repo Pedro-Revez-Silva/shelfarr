@@ -367,6 +367,26 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "reports nonempty private legacy direct staging without exposing its output root" do
+    Dir.mktmpdir("legacy-audiobooks") do |audiobook_dir|
+      Dir.mktmpdir("legacy-ebooks-private-root") do |ebook_dir|
+        setup_output_paths(audiobook_dir, ebook_dir)
+        legacy = File.join(ebook_dir, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+        FileUtils.mkdir_p(File.join(legacy, DirectDownloadFileService::DIRECT_DOWNLOADS_DIRECTORY))
+        File.chmod(0o700, legacy)
+
+        HealthCheckJob.perform_now(service: "output_paths")
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.degraded?
+        assert_includes health.message, "Ebook legacy direct-download staging"
+        assert_includes health.message, "contains retained entries"
+        assert_includes health.message, DirectDownloadFileService::STAGING_DIRECTORY
+        refute_includes health.message, ebook_dir
+      end
+    end
+  end
+
   test "marks output_paths as degraded when one path has issues" do
     Dir.mktmpdir do |valid_dir|
       setup_output_paths(valid_dir, "/nonexistent/path")

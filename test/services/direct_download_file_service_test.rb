@@ -93,12 +93,14 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     File.binwrite(legacy_marker, "legacy bytes")
     File.chmod(0o777, legacy)
     legacy_stat = File.stat(legacy)
-    chmod_paths = []
+    legacy_identity = [ legacy_stat.dev, legacy_stat.ino ]
+    chmod_identities = []
     real_fchmod = FileCopyService.method(:native_fchmod)
     guarded_fchmod = lambda do |descriptor, mode|
-      path = File.readlink("/proc/self/fd/#{descriptor}").delete_suffix(" (deleted)")
-      chmod_paths << path
-      raise Errno::EPERM, "legacy fchmod denied" if path == legacy || path.start_with?("#{legacy}/")
+      descriptor_stat = IO.for_fd(descriptor, autoclose: false).stat
+      identity = [ descriptor_stat.dev, descriptor_stat.ino ]
+      chmod_identities << identity
+      raise Errno::EPERM, "legacy fchmod denied" if identity == legacy_identity
 
       real_fchmod.call(descriptor, mode)
     end
@@ -118,7 +120,7 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_equal [ legacy_stat.dev, legacy_stat.ino ], [ File.stat(legacy).dev, File.stat(legacy).ino ]
     assert_equal 0o777, File.stat(legacy).mode & 0o7777
     assert_equal "legacy bytes", File.binread(legacy_marker)
-    assert chmod_paths.none? { |path| path == legacy || path.start_with?("#{legacy}/") }
+    assert_not_includes chmod_identities, legacy_identity
   end
 
   test "rejects destinations in every internal library namespace" do
@@ -138,7 +140,7 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "stale persisted legacy staging is retained while its recovery row is released" do
+  test "stale persisted legacy staging retains its recovery owner for manual review" do
     legacy_parent = File.join(
       @output_root,
       DirectDownloadFileService::LEGACY_STAGING_DIRECTORY,
@@ -158,7 +160,7 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
       ),
       legacy_parent,
       legacy_staging
-    ].each { |path| File.chmod(0o777, path) }
+    ].each { |path| File.chmod(0o700, path) }
     staging_stat = File.stat(legacy_staging)
     parent_stat = File.stat(legacy_parent)
     root_stat = File.stat(@output_root)
@@ -182,26 +184,18 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
       updated_at: 1.hour.ago
     )
     legacy_identity = [ staging_stat.dev, staging_stat.ino ]
-    real_fchmod = FileCopyService.method(:native_fchmod)
-    guarded_fchmod = lambda do |descriptor, mode|
-      path = File.readlink("/proc/self/fd/#{descriptor}").delete_suffix(" (deleted)")
-      if path.include?(DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
-        raise Errno::EPERM, "legacy fchmod denied"
-      end
-
-      real_fchmod.call(descriptor, mode)
-    end
-
-    result = FileCopyService.stub(:native_fchmod, guarded_fchmod) do
-      DirectDownloadFileService.reconcile!(@download)
-    end
+    result = DirectDownloadFileService.reconcile!(@download)
 
     assert_not result
-    assert_nil @download.reload.direct_staging_path
-    assert_nil @download.direct_reservation_token
-    assert_not @book.reload.acquisition_reserved?
+    assert_equal legacy_staging, @download.reload.direct_staging_path
+    assert_equal token, @download.direct_reservation_token
+    assert @book.reload.acquisition_reserved?
+    assert_match(
+      /contains retained entries/,
+      DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+    )
     assert_equal legacy_identity, [ File.stat(legacy_staging).dev, File.stat(legacy_staging).ino ]
-    assert_equal 0o777, File.stat(legacy_staging).mode & 0o7777
+    assert_equal 0o700, File.stat(legacy_staging).mode & 0o7777
     assert_equal "untrusted legacy bytes", File.binread(legacy_partial)
   end
 
@@ -698,6 +692,8 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
       path.to_s == "/proc/self/mountinfo" ? mountinfo : real_binread.call(path, *arguments)
     end
 
-    File.stub(:binread, reader) { yield }
+    FileCopyService.stub(:drvfs_mount?, true) do
+      File.stub(:binread, reader) { yield }
+    end
   end
 end

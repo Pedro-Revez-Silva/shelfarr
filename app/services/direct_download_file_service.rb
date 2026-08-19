@@ -105,7 +105,12 @@ class DirectDownloadFileService
       legacy = root.join(LEGACY_STAGING_DIRECTORY)
       stat = File.lstat(legacy)
       mode = stat.mode & 0o7777
-      return if stat.directory? && mode == 0o700
+      if stat.directory? && mode == 0o700
+        return if Dir.empty?(legacy)
+
+        return "legacy direct-download staging contains retained entries; new downloads use " \
+          "#{STAGING_DIRECTORY}, and the legacy entry requires manual review"
+      end
 
       type = stat.directory? ? "directory" : "non-directory entry"
       "legacy direct-download staging is a retained #{type} with mode #{format('%04o', mode)}; " \
@@ -262,9 +267,9 @@ class DirectDownloadFileService
       if legacy_staging_path?(download)
         Rails.logger.warn(
           "[DirectDownloadFileService] Retained legacy staging for download ##{download.id}; " \
-            "its recovery state was released for manual review"
+            "its recovery state remains attached for manual review"
         )
-        return true
+        return false
       end
 
       parent = staging_parent(root: download.direct_output_root)
