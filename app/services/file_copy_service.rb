@@ -2938,10 +2938,15 @@ class FileCopyService
         rescue Errno::EWOULDBLOCK
           false
         end
-        lock_deadline = monotonic_time + drvfs_copy_lock_timeout
+        # Direct-download publications provide a heartbeat that both renews
+        # their durable lease and aborts when ownership is lost. Keep those
+        # cancellable waiters serialized even when another legitimate copy is
+        # long-running. Callers without a heartbeat (notably completed-download
+        # post-processing) must yield their worker after a bounded wait.
+        lock_deadline = monotonic_time + drvfs_copy_lock_timeout unless heartbeat
         until acquired
           heartbeat&.call
-          if monotonic_time >= lock_deadline
+          if lock_deadline && monotonic_time >= lock_deadline
             raise PublicationBusyError,
               "another DrvFS publication is still active; retry this import later"
           end

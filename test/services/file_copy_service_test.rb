@@ -1348,6 +1348,43 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(destination)
   end
 
+  test "DrvFS publication with a heartbeat keeps waiting past the worker deadline" do
+    destination = File.join(@dest_dir, "heartbeat-waiter.txt")
+    journal_path = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    heartbeat_count = 0
+    result = nil
+
+    File.open(journal_path, File::RDWR | File::CREAT, 0o600) do |holder|
+      assert holder.flock(File::LOCK_EX | File::LOCK_NB)
+
+      waiter = Thread.new do
+        FileCopyService.stub(:drvfs_mount?, true) do
+          FileCopyService.stub(:drvfs_copy_lock_timeout, 0) do
+            FileCopyService.cp_noreplace(
+              @src_file,
+              destination,
+              root: @dest_dir,
+              heartbeat: -> { heartbeat_count += 1 }
+            )
+          end
+        end
+      rescue => error
+        error
+      end
+
+      Timeout.timeout(1) { sleep 0.01 until heartbeat_count.positive? }
+      assert waiter.alive?, "the heartbeat-aware publication should remain cancellably queued"
+      holder.flock(File::LOCK_UN)
+      result = waiter.value
+    ensure
+      holder.flock(File::LOCK_UN)
+      waiter&.join
+    end
+
+    assert_equal destination, result
+    assert_equal "test content", File.binread(destination)
+  end
+
   test "DrvFS records aborted destination creation and permits a later publication" do
     failed_destination = File.join(@dest_dir, "failed.txt")
     retry_destination = File.join(@dest_dir, "retry.txt")
