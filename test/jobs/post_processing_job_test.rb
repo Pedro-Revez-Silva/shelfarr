@@ -2751,6 +2751,64 @@ class PostProcessingJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(debrid_root)
   end
 
+  test "retries later when a reference target disappears after authorization" do
+    FileUtils.rm_rf(@temp_source)
+    debrid_root = Dir.mktmpdir("vanished-reference-target")
+    staging = File.join(@temp_download_base, "vanished-audiobook.m4b")
+    target = File.join(debrid_root, "vanished-audiobook.m4b")
+    File.binwrite(target, "temporary debrid audio")
+    File.symlink(target, staging)
+    @download.update!(download_path: staging)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    SettingsService.set(:download_remote_path, debrid_root)
+    SettingsService.set(:post_processing_source_path_retries, 2)
+
+    job = PostProcessingJob.new(@download.id)
+    authorize = job.method(:validate_download_specific_source_path!)
+    authorize_then_hide = lambda do |*arguments|
+      authorization = authorize.call(*arguments)
+      File.unlink(target)
+      authorization
+    end
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+
+    retry_job = assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
+      job.stub(:validate_download_specific_source_path!, authorize_then_hide) { job.perform_now }
+    end
+
+    assert @request.reload.processing?
+    assert_nil @request.issue_description
+    assert_empty Dir.glob(File.join(@temp_dest_base, "**", "*.m4b"))
+
+    File.binwrite(target, "restored debrid audio")
+    retry_job.perform_now
+
+    assert @request.reload.completed?, @request.issue_description
+    referenced = Dir.glob(File.join(@temp_dest_base, "**", "*.m4b")).sole
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert_equal "restored debrid audio", File.binread(referenced)
+  ensure
+    FileUtils.rm_rf(debrid_root)
+  end
+
+  test "retries later when the library publication lock stays busy" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:post_processing_source_path_retries, 2)
+    busy = ->(*) { raise FileCopyService::PublicationBusyError, "library busy" }
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+
+    retry_job = FileCopyService.stub(:cp_noreplace, busy) do
+      assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.processing?
+    assert_nil @request.issue_description
+    assert_equal retry_job.arguments.third, @download.reload.post_processing_job_id
+  end
+
   test "non-reference acquisition clears stale reference target provenance" do
     SettingsService.set(:audiobookshelf_url, "")
     root_stat = File.lstat(@temp_download_base)

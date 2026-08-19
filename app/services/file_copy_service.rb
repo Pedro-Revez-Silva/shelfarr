@@ -38,6 +38,7 @@ class FileCopyService
   DRVFS_COPY_JOURNAL_BASENAME = ".shelfarr-drvfs-copy.journal"
   DRVFS_COPY_TERMINAL_STATES = [ :empty, :complete, :conflict, :aborted ].freeze
   DRVFS_COPY_LOCK_RETRY_INTERVAL = 0.05
+  DRVFS_COPY_LOCK_TIMEOUT = 30.0
   DRVFS_PRIVATE_STAGING_FILE_MODES = [ 0o600, LIBRARY_FILE_MODE ].freeze
   DRVFS_PRIVATE_STAGING_DIRECTORY_MODES = [ 0o700, DIRECTORY_MODE ].freeze
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
@@ -63,6 +64,7 @@ class FileCopyService
   class AmbiguousPublicationError < StandardError; end
   class DurabilityUnsupportedError < StandardError; end
   class HardlinkUnsupportedError < StandardError; end
+  class PublicationBusyError < StandardError; end
   class ReferenceTargetUnavailableError < UnsafePathError; end
   SourceFileSnapshot = Struct.new(
     :path,
@@ -2936,8 +2938,14 @@ class FileCopyService
         rescue Errno::EWOULDBLOCK
           false
         end
+        lock_deadline = monotonic_time + drvfs_copy_lock_timeout
         until acquired
           heartbeat&.call
+          if monotonic_time >= lock_deadline
+            raise PublicationBusyError,
+              "another DrvFS publication is still active; retry this import later"
+          end
+
           sleep(DRVFS_COPY_LOCK_RETRY_INTERVAL)
           acquired = begin
             journal.flock(File::LOCK_EX | File::LOCK_NB)
@@ -2983,6 +2991,14 @@ class FileCopyService
         return match[2].to_sym
       end
       :malformed
+    end
+
+    def drvfs_copy_lock_timeout
+      DRVFS_COPY_LOCK_TIMEOUT
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def persist_copy_lock_record!(lock, record)

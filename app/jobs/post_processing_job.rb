@@ -110,15 +110,22 @@ class PostProcessingJob < ApplicationJob
       # Reference mode keeps download bytes as the only content; never delete
       # usenet/client sources after a symlink-only import.
       remove_usenet_download = usenet_cleanup_requested?(download) && !reference_completed_downloads?
-      source_cleanup = import_files(
-        source_path,
-        destination,
-        book: book,
-        base_path: base_path,
-        require_durable: move_completed_downloads? || remove_usenet_download,
-        source_authorization: source_authorization
-      )
-      validate_completed_reference_target_roots! if reference_completed_downloads?
+      source_cleanup = begin
+        imported = import_files(
+          source_path,
+          destination,
+          book: book,
+          base_path: base_path,
+          require_durable: move_completed_downloads? || remove_usenet_download,
+          source_authorization: source_authorization
+        )
+        validate_completed_reference_target_roots! if reference_completed_downloads?
+        imported
+      rescue FileCopyService::ReferenceTargetUnavailableError
+        return retry_source_path_later(download, request, source_path, source_path_retry_count)
+      rescue FileCopyService::PublicationBusyError
+        return retry_busy_publication_later(download, request, source_path_retry_count)
+      end
 
       book_path = imported_book_path(book, destination)
       cleanup_state = source_cleanup&.fetch(:state)
@@ -537,6 +544,34 @@ class PostProcessingJob < ApplicationJob
     raise source_path_not_found_message(source_path)
   end
 
+  def retry_busy_publication_later(download, request, retry_count)
+    retry_limit = SettingsService.get(:post_processing_source_path_retries).to_i
+    if retry_count < retry_limit
+      next_retry_count = retry_count + 1
+      wait_interval = SettingsService.get(:download_check_interval).to_i.clamp(1, 86_400).seconds
+
+      Rails.logger.warn(
+        "[PostProcessingJob] Library publication is busy for download ##{download.id}. " \
+          "Retrying #{next_retry_count}/#{retry_limit} in #{wait_interval.to_i}s."
+      )
+
+      track_request_event(
+        request,
+        "post_processing_waiting",
+        download: download,
+        message: "Library publication is busy; retrying post-processing",
+        level: :warn,
+        details: { retry_count: next_retry_count, retry_limit: retry_limit }
+      )
+
+      retry_job = self.class.new(download.id, next_retry_count, job_id)
+      raise "Failed to enqueue post-processing retry" unless retry_job.enqueue(wait: wait_interval)
+      return
+    end
+
+    raise "Library publication remained busy after #{retry_limit} retries"
+  end
+
   def cleanup_usenet_download(download)
     Rails.logger.info "[PostProcessingJob] Removing usenet download ##{download.id}"
     download.download_client.adapter.remove_torrent(download.external_id, delete_files: true)
@@ -599,6 +634,11 @@ class PostProcessingJob < ApplicationJob
 
     unless File.exist?(source)
       Rails.logger.error "[PostProcessingJob] Completed download source is not visible"
+      if reference_completed_downloads? && File.symlink?(source)
+        raise FileCopyService::ReferenceTargetUnavailableError,
+          "reference target is not visible yet"
+      end
+
       raise source_path_not_found_message(source)
     end
 

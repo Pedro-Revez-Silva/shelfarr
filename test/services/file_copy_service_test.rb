@@ -1327,6 +1327,27 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     second&.join
   end
 
+  test "DrvFS publication stops waiting after the journal lock deadline" do
+    destination = File.join(@dest_dir, "timed-out.txt")
+    journal_path = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+
+    File.open(journal_path, File::RDWR | File::CREAT, 0o600) do |holder|
+      assert holder.flock(File::LOCK_EX | File::LOCK_NB)
+
+      error = FileCopyService.stub(:drvfs_mount?, true) do
+        FileCopyService.stub(:drvfs_copy_lock_timeout, 0) do
+          assert_raises(FileCopyService::PublicationBusyError) do
+            FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+          end
+        end
+      end
+
+      assert_match(/retry this import later/, error.message)
+    end
+
+    assert_not File.exist?(destination)
+  end
+
   test "DrvFS records aborted destination creation and permits a later publication" do
     failed_destination = File.join(@dest_dir, "failed.txt")
     retry_destination = File.join(@dest_dir, "retry.txt")
