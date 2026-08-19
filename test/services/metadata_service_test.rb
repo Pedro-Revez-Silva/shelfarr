@@ -409,6 +409,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
       series_name: "Saga",
       issue_number: "1",
       release_date: "2012-03-14",
+      series_start_year: 2012,
       content_kind: "graphic",
       collection_id: "4050-99",
       collection_title: "Saga",
@@ -422,6 +423,7 @@ class MetadataServiceTest < ActiveSupport::TestCase
       assert_equal "Saga - #1", result.title
       assert_equal "Writer One", result.author
       assert_equal "graphic", result.content_kind
+      assert_equal 2012, result.series_start_year
     end
   end
 

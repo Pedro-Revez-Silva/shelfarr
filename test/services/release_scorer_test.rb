@@ -229,7 +229,32 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_not conflicting_score.breakdown[:auto_select_allowed]
   end
 
-  test "requires an explicit comic run year to match the requested release year" do
+  test "accepts standard release delimiters after an exact comic issue" do
+    book = Book.create!(
+      title: "Saga",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-437-delimiters",
+      issue_number: "54",
+      series: "Saga",
+      series_position: "54"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+
+    [
+      "Saga.#054.English.Comic.CBZ",
+      "Saga_#054_English_Comic_CBZ"
+    ].each do |title|
+      score = ReleaseScorer.score(SearchResult.new(title: title, seeders: 50), request)
+
+      assert_equal :exact, score.breakdown[:issue_match], title
+      assert_operator score.total, :>=, 80, title
+      assert score.breakdown[:auto_select_allowed], title
+    end
+  end
+
+  test "requires an explicit comic run year to match the series start year" do
     book = Book.create!(
       title: "Batman - #1 - The Legend of the Batman",
       book_type: :comicbook,
@@ -237,7 +262,8 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       comic_vine_id: "4000-438",
       issue_number: "1",
       series: "Batman",
-      release_date: Date.new(1940, 4, 1)
+      release_date: Date.new(2018, 4, 1),
+      series_start_year: 1940
     )
     request = Request.create!(book: book, user: @user, status: :pending, language: "en")
 
@@ -257,7 +283,8 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       "Batman [2016] #001 English Comic CBZ",
       "Batman #001 (2016) English Comic CBZ",
       "Batman #001 English Comic CBZ [2016]",
-      "Batman (1940) #001 English Comic CBZ [2016]"
+      "Batman (1940) #001 English Comic CBZ [2016]",
+      "Batman #001 English Comic CBZ [2018]"
     ]
 
     correct_titles.each do |title|
@@ -464,7 +491,8 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       content_kind: :graphic,
       issue_number: "1",
       series: "Batman",
-      release_date: Date.new(1940, 4, 1)
+      release_date: Date.new(2018, 4, 1),
+      series_start_year: 1940
     )
     batman_request = Request.create!(book: batman, user: @user, status: :pending, language: "en")
 

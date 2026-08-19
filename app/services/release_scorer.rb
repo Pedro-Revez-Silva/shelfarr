@@ -277,7 +277,7 @@ class ReleaseScorer
     marker = '(?:#|(?<![[:alnum:]])(?:issues?|no\.?|numbers?)(?![[:alnum:]])\s*#?\s*)'
     issue_value = COMIC_ISSUE_VALUE_PATTERN
     issue = "(?<issue>#{issue_value})"
-    issue_terminator = '(?=\z|\s|[\(\[])'
+    issue_terminator = '(?=\z|\s|[._:\(\[])'
     tail, consumed = extract_leading_comic_run_year(tail, separator:, marker:, issue_value:)
     tail_offset += consumed
 
@@ -363,7 +363,7 @@ class ReleaseScorer
   end
 
   def comic_issue_run_year_conflict?(detected)
-    requested_year = @book.release_date&.year
+    requested_year = @book.series_start_year
     detected[:run_year].present? && requested_year.present? && detected[:run_year] != requested_year
   end
 

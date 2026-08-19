@@ -15,6 +15,7 @@ class BookMetadataLookupService
     content_kind: :content_kind,
     issue_number: :issue_number,
     release_date: :release_date,
+    series_start_year: :series_start_year,
     series: :series_name,
     series_position: :series_position,
     collection_id: :collection_id,

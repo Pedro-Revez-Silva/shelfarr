@@ -278,7 +278,8 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
       issue_number: "1",
       series: "Batman",
       series_position: "1",
-      release_date: Date.new(1940, 4, 1)
+      release_date: Date.new(2018, 4, 1),
+      series_start_year: 1940
     )
     result = create_search_result(
       title: "Batman #001 (2016) English Comic CBZ",
@@ -408,7 +409,8 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_comic_title_not_auto_selected(
       series: "Batman",
       issue: "1",
-      release_date: Date.new(1940, 4, 1),
+      release_date: Date.new(2018, 4, 1),
+      series_start_year: 1940,
       title: "2016 Batman #001 English Comic CBZ"
     )
   end
@@ -424,7 +426,13 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
 
   private
 
-  def assert_comic_title_not_auto_selected(series:, issue:, title:, release_date: nil)
+  def assert_comic_title_not_auto_selected(
+    series:,
+    issue:,
+    title:,
+    release_date: nil,
+    series_start_year: nil
+  )
     @book.update!(
       title: "#{series} - ##{issue}",
       book_type: :comicbook,
@@ -433,7 +441,8 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
       issue_number: issue,
       series: series,
       series_position: issue,
-      release_date: release_date
+      release_date: release_date,
+      series_start_year: series_start_year
     )
     result = create_search_result(
       title: title,

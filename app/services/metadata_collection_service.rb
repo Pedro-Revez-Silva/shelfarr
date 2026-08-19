@@ -99,6 +99,7 @@ class MetadataCollectionService
           ),
           issue_number: result.issue_number,
           release_date: result.release_date,
+          series_start_year: result.series_start_year,
           series: result.series_name,
           series_position: result.issue_number,
           request_scope: "collection",
