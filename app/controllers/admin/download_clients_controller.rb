@@ -16,7 +16,7 @@ module Admin
     end
 
     def create
-      @download_client = DownloadClient.new(download_client_params)
+      @download_client = DownloadClient.new(download_client_params.except(:clear_api_key))
       @download_client.priority = next_priority_for(@download_client.client_type)
 
       if @download_client.save
@@ -33,15 +33,26 @@ module Admin
 
     def update
       update_params = download_client_params
+      original_api_key = @download_client.api_key
+      api_key_submitted = update_params[:api_key].present?
       # Don't overwrite password/api_key if left blank
       update_params = update_params.except(:password) if update_params[:password].blank?
-      update_params = update_params.except(:api_key) if update_params[:api_key].blank?
+      @clear_api_key = update_params.delete(:clear_api_key) == "1"
+      if @clear_api_key
+        update_params[:api_key] = nil
+      elsif update_params[:api_key].blank?
+        update_params = update_params.except(:api_key)
+      end
 
       if @download_client.update(update_params)
         run_download_client_health_check
         sync_download_monitor
         redirect_to admin_download_clients_path, notice: "Download client was successfully updated."
       else
+        @download_client.api_key = original_api_key
+        if api_key_submitted && !@clear_api_key
+          @download_client.errors.add(:api_key, "replacement was not saved; re-enter it after correcting the other errors")
+        end
         render :edit, status: :unprocessable_entity
       end
     end
@@ -82,7 +93,7 @@ module Admin
 
     def download_client_params
       params.require(:download_client).permit(
-        :name, :client_type, :url, :username, :password, :api_key, :category, :download_path, :enabled,
+        :name, :client_type, :url, :username, :password, :api_key, :clear_api_key, :category, :download_path, :enabled,
         :torrent_verification_max_attempts, :torrent_verification_wait_time
       )
     end

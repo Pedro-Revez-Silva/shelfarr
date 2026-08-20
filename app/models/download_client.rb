@@ -3,6 +3,9 @@
 require "uri"
 
 class DownloadClient < ApplicationRecord
+  QBITTORRENT_API_KEY_PREFIX = "qbt_"
+  QBITTORRENT_API_KEY_LENGTH = 32
+
   encrypts :password, :api_key
 
   enum :client_type, {
@@ -28,6 +31,7 @@ class DownloadClient < ApplicationRecord
     numericality: { only_integer: true, greater_than: 0 }
   validates :torrent_verification_wait_time,
     numericality: { only_integer: true, greater_than_or_equal_to: 0 }
+  validate :qbittorrent_api_key_must_be_valid, if: :qbittorrent_api_key_requires_validation?
 
   scope :enabled, -> { where(enabled: true) }
   scope :by_priority, -> { order(priority: :asc) }
@@ -74,7 +78,21 @@ class DownloadClient < ApplicationRecord
     qbittorrent? || decypharr?
   end
 
+  def valid_qbittorrent_api_key?
+    api_key&.start_with?(QBITTORRENT_API_KEY_PREFIX) && api_key.length == QBITTORRENT_API_KEY_LENGTH
+  end
+
   private
+
+  def qbittorrent_api_key_requires_validation?
+    qbittorrent? && api_key.present? && (will_save_change_to_api_key? || will_save_change_to_client_type?)
+  end
+
+  def qbittorrent_api_key_must_be_valid
+    return if valid_qbittorrent_api_key?
+
+    errors.add(:api_key, "must start with qbt_ and contain 28 characters after the prefix")
+  end
 
   def normalize_url
     self.url = url.to_s.strip if url.present?
