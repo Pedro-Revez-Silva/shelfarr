@@ -3,7 +3,7 @@
 require "test_helper"
 
 class BookMetadataBackfillJobTest < ActiveJob::TestCase
-  test "processes books with blank series or series position by default" do
+  test "processes books with blank series metadata or missing Comic Vine run years by default" do
     blank_series = Book.create!(
       title: "Blank Series",
       author: "Author One",
@@ -27,6 +27,15 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
       series: "Known Series",
       series_position: "3"
     )
+    missing_comic_run_year = Book.create!(
+      title: "Batman - #1",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-105811",
+      series: "Batman",
+      series_position: "1",
+      series_start_year: nil
+    )
 
     processed = []
 
@@ -41,6 +50,7 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
 
     assert_includes processed_ids, blank_series.id
     assert_includes processed_ids, blank_series_position.id
+    assert_includes processed_ids, missing_comic_run_year.id
     assert_not_includes processed_ids, filled_series.id
     assert_equal "Known Series", filled_series.reload.series
   end

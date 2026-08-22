@@ -363,8 +363,12 @@ class ReleaseScorer
   end
 
   def comic_issue_run_year_conflict?(detected)
+    return false if detected[:run_year].blank?
+
     requested_year = @book.series_start_year
-    detected[:run_year].present? && requested_year.present? && detected[:run_year] != requested_year
+    return @book.comic_vine_id.to_s.start_with?("4000-") if requested_year.blank?
+
+    detected[:run_year] != requested_year
   end
 
   def explicit_format_conflict?

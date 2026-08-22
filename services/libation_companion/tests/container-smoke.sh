@@ -275,7 +275,9 @@ test "${token_mode}" = "600"
 # subsequent PUID/PGID change must migrate all of it without following the
 # symlink out of the private state volume.
 job_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-job_created_at="$(date -u -d "1 minute ago" +%Y-%m-%dT%H:%M:%SZ)"
+if ! job_created_at="$(date -u -d "1 minute ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
+  job_created_at="$(date -u -v-1M +%Y-%m-%dT%H:%M:%SZ)"
+fi
 job_completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 docker exec -u 23456:23456 \
   -e JOB_CREATED_AT="${job_created_at}" \

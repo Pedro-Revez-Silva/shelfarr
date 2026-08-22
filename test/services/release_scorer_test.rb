@@ -302,6 +302,35 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "does not trust an explicit comic run year before volume metadata is backfilled" do
+    book = Book.create!(
+      title: "Batman - #1 - The Legend of the Batman",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-105811",
+      issue_number: "1",
+      series: "Batman",
+      series_position: "1",
+      series_start_year: nil
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+
+    yearless_score = ReleaseScorer.score(
+      SearchResult.new(title: "Batman #001 English Comic CBZ", seeders: 50),
+      request
+    )
+    unverified_year_score = ReleaseScorer.score(
+      SearchResult.new(title: "Batman #001 (2016) English Comic CBZ", seeders: 50),
+      request
+    )
+
+    assert_equal :exact, yearless_score.breakdown[:issue_match]
+    assert yearless_score.breakdown[:auto_select_allowed]
+    assert_equal :unknown, unverified_year_score.breakdown[:issue_match]
+    assert_operator unverified_year_score.total, :<, 50
+    assert_not unverified_year_score.breakdown[:auto_select_allowed]
+  end
+
   test "treats comic issue ranges and lists as ambiguous" do
     book = Book.create!(
       title: "Saga",

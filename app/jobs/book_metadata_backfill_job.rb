@@ -21,6 +21,11 @@ class BookMetadataBackfillJob < ApplicationJob
   def books_for_backfill(book_ids)
     return Book.where(id: book_ids) if book_ids.present?
 
-    Book.where(series: [ nil, "" ]).or(Book.where(series_position: [ nil, "" ]))
+    missing_series = Book.where(series: [ nil, "" ]).or(Book.where(series_position: [ nil, "" ]))
+    missing_comic_run_year = Book.comicbooks
+      .where(series_start_year: nil)
+      .where("comic_vine_id LIKE ?", "4000-%")
+
+    missing_series.or(missing_comic_run_year)
   end
 end
