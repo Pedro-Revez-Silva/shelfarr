@@ -28,6 +28,27 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_select "img[src='https://covers.example.test/private-cover.jpg'][referrerpolicy='no-referrer']"
   end
 
+  test "comic library cards and details use the Comics and Manga badge" do
+    book = Book.create!(
+      title: "Library Comic Label",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-library-label",
+      file_path: "/comics/library-label.cbz"
+    )
+
+    get library_index_path(q: book.title)
+
+    assert_response :success
+    assert_select "[data-library-book-id='#{book.id}'] span[class*='bg-emerald-500/90']",
+      text: "Comics & Manga"
+
+    get library_path(book)
+
+    assert_response :success
+    assert_select "span[class*='bg-emerald-500/20']", text: "Comics & Manga"
+  end
+
   test "admin library shows purchased Audible titles without creating placeholder books" do
     sign_out
     sign_in_as(@admin)

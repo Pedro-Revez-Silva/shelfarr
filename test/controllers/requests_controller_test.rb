@@ -27,6 +27,22 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "nav a[href=?]", search_path, text: "Search", minimum: 1
   end
 
+  test "index labels comic requests as Comics and Manga" do
+    book = Book.create!(
+      title: "Request Comic Label",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-request-label"
+    )
+    request = Request.create!(book: book, user: @user, status: :pending)
+
+    get requests_path
+
+    assert_response :success
+    assert_select "a[href='#{request_path(request)}'] span[class*='bg-emerald-500/20']",
+      text: "Comics & Manga"
+  end
+
   test "admin sees all requests" do
     sign_out
     sign_in_as(@admin)
