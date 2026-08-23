@@ -113,7 +113,7 @@ class DockerWorkflowTest < ActiveSupport::TestCase
   end
 
   test "all workflow actions use immutable commit references" do
-    %w[ci.yml docker.yml].each do |filename|
+    %w[ci.yml docker.yml pr-authorization.yml].each do |filename|
       workflow = YAML.safe_load_file(
         Rails.root.join(".github/workflows", filename),
         aliases: true

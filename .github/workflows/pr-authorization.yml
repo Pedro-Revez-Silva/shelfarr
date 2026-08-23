@@ -1,0 +1,261 @@
+name: PR authorization
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize, ready_for_review]
+  issues:
+    types: [unassigned, closed]
+  workflow_dispatch:
+    inputs:
+      enforce:
+        description: Close unauthorized open pull requests instead of reporting them
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-authorization-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Enforce assigned issue policy
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const marker = "<!-- shelfarr-pr-authorization -->";
+            const approvedBots = new Set([
+              "dependabot[bot]",
+              "github-actions[bot]",
+            ]);
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const repositoryName = `${owner}/${repo}`.toLowerCase();
+            const manualEnforcement = context.payload.inputs?.enforce;
+            const enforce =
+              context.eventName !== "workflow_dispatch" ||
+              manualEnforcement === true ||
+              manualEnforcement === "true";
+
+            async function collectPullNumbers() {
+              if (context.eventName === "pull_request_target") {
+                return [context.payload.pull_request.number];
+              }
+
+              if (context.eventName === "issues") {
+                const result = await github.graphql(
+                  `query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      issue(number: $number) {
+                        timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) {
+                          nodes {
+                            ... on CrossReferencedEvent {
+                              source {
+                                ... on PullRequest {
+                                  number
+                                  state
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }`,
+                  {
+                    owner,
+                    repo,
+                    number: context.payload.issue.number,
+                  },
+                );
+
+                const sources = result.repository.issue?.timelineItems.nodes ?? [];
+                return [
+                  ...new Set(
+                    sources
+                      .map((event) => event.source)
+                      .filter((source) => source?.state === "OPEN")
+                      .map((source) => source.number),
+                  ),
+                ];
+              }
+
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: "open",
+                per_page: 100,
+              });
+              return pulls.map((pull) => pull.number);
+            }
+
+            async function loadPull(number) {
+              const result = await github.graphql(
+                `query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) {
+                      number
+                      state
+                      author {
+                        login
+                      }
+                      closingIssuesReferences(first: 20) {
+                        nodes {
+                          number
+                          state
+                          repository {
+                            nameWithOwner
+                          }
+                          assignees(first: 20) {
+                            nodes {
+                              login
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }`,
+                { owner, repo, number },
+              );
+
+              return result.repository.pullRequest;
+            }
+
+            async function findPolicyComment(number) {
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                {
+                  owner,
+                  repo,
+                  issue_number: number,
+                  per_page: 100,
+                },
+              );
+              return comments.find((comment) => comment.body?.includes(marker));
+            }
+
+            async function upsertPolicyComment(number, body) {
+              const existing = await findPolicyComment(number);
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                });
+                return;
+              }
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: number,
+                body,
+              });
+            }
+
+            async function authorize(number) {
+              const pull = await loadPull(number);
+              if (!pull || pull.state !== "OPEN") {
+                core.info(`Skipping PR #${number}; it is not open.`);
+                return;
+              }
+
+              const author = pull.author?.login ?? "";
+              const normalizedAuthor = author.toLowerCase();
+              if (
+                normalizedAuthor === owner.toLowerCase() ||
+                approvedBots.has(normalizedAuthor)
+              ) {
+                core.info(`PR #${number}: @${author} is exempt from issue assignment.`);
+                return;
+              }
+
+              const shelfarrIssues = pull.closingIssuesReferences.nodes.filter(
+                (issue) => issue.repository.nameWithOwner.toLowerCase() === repositoryName,
+              );
+              const unauthorizedIssues = shelfarrIssues.filter((issue) => {
+                const assignees = issue.assignees.nodes.map(({ login }) =>
+                  login.toLowerCase(),
+                );
+                return issue.state !== "OPEN" || !assignees.includes(normalizedAuthor);
+              });
+              const authorized =
+                shelfarrIssues.length > 0 && unauthorizedIssues.length === 0;
+
+              if (authorized) {
+                const existing = await findPolicyComment(number);
+                if (existing && enforce) {
+                  const issueList = shelfarrIssues
+                    .map((issue) => `#${issue.number}`)
+                    .join(", ");
+                  await github.rest.issues.updateComment({
+                    owner,
+                    repo,
+                    comment_id: existing.id,
+                    body: `${marker}\nAuthorization confirmed: @${author} is assigned to ${issueList}.`,
+                  });
+                }
+                core.info(`PR #${number}: @${author} is authorized by issue assignment.`);
+                return;
+              }
+
+              let reason;
+              if (shelfarrIssues.length === 0) {
+                reason = "The PR does not link an open Shelfarr issue with a closing keyword.";
+              } else {
+                reason = unauthorizedIssues
+                  .map((issue) => {
+                    if (issue.state !== "OPEN") return `#${issue.number} is not open`;
+                    return `#${issue.number} is not assigned to @${author}`;
+                  })
+                  .join("; ");
+                reason += ".";
+              }
+
+              if (!enforce) {
+                core.warning(`DRY RUN: PR #${number} from @${author} is unauthorized: ${reason}`);
+                return;
+              }
+
+              const defaultBranch = context.payload.repository.default_branch;
+              const contributingUrl = `https://github.com/${owner}/${repo}/blob/${defaultBranch}/CONTRIBUTING.md`;
+              const body = [
+                marker,
+                "Thanks for taking the time to contribute. Shelfarr only accepts implementation pull requests for work explicitly assigned by the maintainer.",
+                "",
+                `This pull request was automatically closed because no valid assignment was found: ${reason}`,
+                "",
+                "Before reopening this pull request:",
+                "",
+                "1. Discuss the bug or proposal in a Shelfarr issue.",
+                "2. Wait for the maintainer to assign that issue to you.",
+                "3. Add `Closes #123`, `Fixes #123`, or `Resolves #123` to the pull request description.",
+                "",
+                `Once those conditions are met, you may reopen the pull request. See the [contribution policy](${contributingUrl}) for the complete requirements.`,
+              ].join("\n");
+
+              await upsertPolicyComment(number, body);
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: number,
+                state: "closed",
+              });
+              core.info(`Closed unauthorized PR #${number} from @${author}.`);
+            }
+
+            const pullNumbers = await collectPullNumbers();
+            for (const number of pullNumbers) {
+              await authorize(number);
+            }
