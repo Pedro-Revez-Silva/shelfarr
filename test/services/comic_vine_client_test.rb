@@ -26,6 +26,7 @@ class ComicVineClientTest < ActiveSupport::TestCase
             "results" => issue_payload("123", "1", "Series One", "Issue One")
           }.to_json
         )
+      stub_volume_start_year
 
       result = ComicVineClient.details("comic_vine:4000-123", content_kind: "comic")
 
@@ -34,6 +35,7 @@ class ComicVineClientTest < ActiveSupport::TestCase
       assert_equal "4050-99", result.collection_id
       assert_equal "Series One", result.collection_title
       assert_equal "graphic", result.content_kind
+      assert_equal 2012, result.series_start_year
     end
   end
 
@@ -53,6 +55,7 @@ class ComicVineClientTest < ActiveSupport::TestCase
             ]
           }.to_json
         )
+      stub_volume_start_year
 
       issues = ComicVineClient.volume_issues("4050-99", limit: 2, content_kind: "manga")
 
@@ -60,6 +63,7 @@ class ComicVineClientTest < ActiveSupport::TestCase
       assert_equal "4000-123", issues.first.resource_key
       assert_equal "2", issues.second.issue_number
       assert_equal "graphic", issues.second.content_kind
+      assert_equal [ 2012, 2012 ], issues.map(&:series_start_year)
     end
   end
 
@@ -71,6 +75,18 @@ class ComicVineClientTest < ActiveSupport::TestCase
   end
 
   private
+
+  def stub_volume_start_year
+    stub_request(:get, %r{comicvine\.gamespot\.com/api/volume/4050-99/})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: {
+          "status_code" => 1,
+          "results" => { "id" => 99, "start_year" => "2012" }
+        }.to_json
+      )
+  end
 
   def issue_payload(id, number, volume_name, name)
     {

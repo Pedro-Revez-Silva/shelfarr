@@ -40,6 +40,24 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
     assert_equal "download bytes", File.binread(source)
   end
 
+  test "unlinks a final-target reference after its staging symlink is gone" do
+    download_root = Dir.mktmpdir("reference-download")
+    target = File.join(download_root, "content", "book.epub")
+    staging = File.join(download_root, "staged.epub")
+    FileUtils.mkdir_p(File.dirname(target))
+    File.binwrite(target, "remote download bytes")
+    File.symlink(target, staging)
+    FileUtils.rm_f(@path)
+    File.symlink(Pathname(target).realpath.to_s, @path)
+    File.unlink(staging)
+
+    assert SafeLibraryDeletionService.new(@book).delete!
+    assert_not File.symlink?(@path)
+    assert_equal "remote download bytes", File.binread(target)
+  ensure
+    FileUtils.rm_rf(download_root)
+  end
+
   test "recovers an interrupted reference symlink quarantine" do
     source = File.join(@root, "download-source.epub")
     File.binwrite(source, "download bytes")
@@ -103,16 +121,18 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
   end
 
   test "never authorizes Shelfarr internal staging paths as books" do
-    internal_directory = File.join(@root, OwnedMediaImportFileService::STAGING_DIRECTORY)
-    FileUtils.mkdir_p(internal_directory)
-    internal_path = File.join(internal_directory, "staged.m4b")
-    File.binwrite(internal_path, "staged bytes")
-    @book.update!(file_path: internal_path)
+    LibraryPathSafety::INTERNAL_DIRECTORIES.each do |directory|
+      internal_directory = File.join(@root, directory)
+      FileUtils.mkdir_p(internal_directory)
+      internal_path = File.join(internal_directory, "staged.m4b")
+      File.binwrite(internal_path, "staged bytes")
+      @book.update!(file_path: internal_path)
 
-    assert_raises(SafeLibraryDeletionService::Error) do
-      SafeLibraryDeletionService.new(@book).delete!
+      assert_raises(SafeLibraryDeletionService::Error) do
+        SafeLibraryDeletionService.new(@book).delete!
+      end
+      assert_equal "staged bytes", File.binread(internal_path)
     end
-    assert_equal "staged bytes", File.binread(internal_path)
   end
 
   test "supports the configured comic library root" do

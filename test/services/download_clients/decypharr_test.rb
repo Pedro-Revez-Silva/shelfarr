@@ -46,7 +46,7 @@ class DownloadClients::DecypharrTest < ActiveSupport::TestCase
     end
   end
 
-  test "adds torrents with sequential download flag" do
+  test "adds magnet torrents without sequential download flag" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8282/api/v2/auth/login")
         .to_return(
@@ -56,7 +56,11 @@ class DownloadClients::DecypharrTest < ActiveSupport::TestCase
         )
 
       add_stub = stub_request(:post, "http://localhost:8282/api/v2/torrents/add")
-        .with(body: hash_including("urls" => "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "sequentialDownload" => "true"))
+        .with do |request|
+          params = URI.decode_www_form(request.body).to_h
+          params["urls"] == "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" &&
+            !params.key?("sequentialDownload")
+        end
         .to_return(status: 200, body: "Ok.")
 
       stub_request(:get, "http://localhost:8282/api/v2/torrents/info?hashes=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
@@ -72,7 +76,7 @@ class DownloadClients::DecypharrTest < ActiveSupport::TestCase
     end
   end
 
-  test "uploads torrent files with sequential download flag" do
+  test "uploads torrent files without sequential download flag" do
     VCR.turned_off do
       info_dict = {
         "name" => "Decypharr Book.epub",
@@ -99,8 +103,9 @@ class DownloadClients::DecypharrTest < ActiveSupport::TestCase
 
       add_stub = stub_request(:post, "http://localhost:8282/api/v2/torrents/add")
         .with do |request|
-          request.body.include?("name=\"sequentialDownload\"") &&
-            request.body.include?("true")
+          request.headers["Content-Type"]&.include?("multipart/form-data") &&
+            request.body.include?("name=\"torrents\"") &&
+            !request.body.include?("name=\"sequentialDownload\"")
         end
         .to_return(status: 200, body: "Ok.")
 

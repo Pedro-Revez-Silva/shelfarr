@@ -37,7 +37,12 @@ class BookMetadataBackfillService
         publisher: value_for(book.publisher, metadata[:publisher], fallback_attrs[:publisher]),
         content_kind: content_kind_value_for(book, metadata[:content_kind], fallback_attrs[:content_kind]),
         issue_number: value_for(book.issue_number, metadata[:issue_number], fallback_attrs[:issue_number]),
-        release_date: value_for(book.release_date, metadata[:release_date], fallback_attrs[:release_date])
+        release_date: value_for(book.release_date, metadata[:release_date], fallback_attrs[:release_date]),
+        series_start_year: numeric_value_for(
+          book.series_start_year,
+          metadata[:series_start_year],
+          fallback_attrs[:series_start_year]
+        )
       }.compact
 
       attrs[:metadata_source] = source if book.metadata_source.blank? || book.new_record?

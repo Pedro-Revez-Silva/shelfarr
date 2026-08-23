@@ -359,6 +359,7 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
           author: "Writer One",
           content_kind: "comic",
           issue_number: "1",
+          series_start_year: 2012,
           series: "Saga",
           series_position: "1",
           request_scope: "collection",
@@ -375,6 +376,7 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
           author: "Writer One",
           content_kind: "comic",
           issue_number: "2",
+          series_start_year: 2012,
           series: "Saga",
           series_position: "2",
           request_scope: "collection",
@@ -416,6 +418,7 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert requests.all? { |request| request.request_scope == "collection" }
     assert_equal [ "4000-102", "4000-101" ], requests.map { |request| request.book.comic_vine_id }
     assert_equal [ "Saga", "Saga" ], requests.map(&:collection_title)
+    assert_equal [ 2012, 2012 ], requests.map { |request| request.book.series_start_year }
     assert requests.all? { |request| request.book.content_graphic? }
   end
 

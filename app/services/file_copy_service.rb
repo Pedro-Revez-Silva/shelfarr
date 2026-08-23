@@ -34,6 +34,13 @@ class FileCopyService
   OWNER_PROBE_PATTERN = /\A\.shelfarr-owner-probe-[0-9a-f]{32}\.tmp\z/
   COPY_LOCK_COMPATIBILITY_PREPARED_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:prepared:([0-9]+):([0-9]+):([0-9a-f]+)\z/
   COPY_LOCK_COMPATIBILITY_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):compatibility:(copying|complete):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9a-f]+)\z/
+  COPY_LOCK_DRVFS_PATTERN = /\A#{Regexp.escape(COPY_LOCK_MAGIC)}:([0-9a-f]{32}):drvfs:(prepared|copying|complete|conflict|aborted):([0-9]+):([0-9a-f]{64}):([0-9a-f]+)\z/
+  DRVFS_COPY_JOURNAL_BASENAME = ".shelfarr-drvfs-copy.journal"
+  DRVFS_COPY_TERMINAL_STATES = [ :empty, :complete, :conflict, :aborted ].freeze
+  DRVFS_COPY_LOCK_RETRY_INTERVAL = 0.05
+  DRVFS_COPY_LOCK_TIMEOUT = 30.0
+  DRVFS_PRIVATE_STAGING_FILE_MODES = [ 0o600, LIBRARY_FILE_MODE ].freeze
+  DRVFS_PRIVATE_STAGING_DIRECTORY_MODES = [ 0o700, DIRECTORY_MODE ].freeze
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   DISCARD_PATTERN = /\A\.shelfarr-discard-([0-9a-f]+)-([0-9a-f]+)-[0-9a-f]{32}\.tmp\z/
   SOURCE_QUARANTINE_PATTERN = /\A\.shelfarr-source-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
@@ -57,6 +64,8 @@ class FileCopyService
   class AmbiguousPublicationError < StandardError; end
   class DurabilityUnsupportedError < StandardError; end
   class HardlinkUnsupportedError < StandardError; end
+  class PublicationBusyError < StandardError; end
+  class ReferenceTargetUnavailableError < UnsafePathError; end
   SourceFileSnapshot = Struct.new(
     :path,
     :parent_path,
@@ -64,6 +73,21 @@ class FileCopyService
     :parent_device,
     :parent_inode,
     :manifest,
+    keyword_init: true
+  )
+  ReferenceRootSnapshot = Struct.new(:path, :device, :inode, keyword_init: true)
+  ReferenceSourceSnapshot = Struct.new(
+    :path,
+    :parent_path,
+    :canonical_parent_path,
+    :parent_device,
+    :parent_inode,
+    :link_target,
+    :target_snapshot,
+    :canonical_target_path,
+    :authorized_root,
+    :authorized_root_device,
+    :authorized_root_inode,
     keyword_init: true
   )
   SourceRoot = Struct.new(
@@ -79,6 +103,7 @@ class FileCopyService
     :parent_device,
     :parent_inode,
     :entries,
+    :reference_snapshots,
     keyword_init: true
   )
   DirectoryChild = Struct.new(
@@ -177,15 +202,28 @@ class FileCopyService
     end
 
     # Create a no-replace library entry that is a symlink to a verified regular
-    # source under source_root (reference import mode for debrid/rclone mounts).
+    # source, resolving one immediate source symlink for debrid/rclone staging.
     # Publication uses symlinkat against a pinned destination parent so an
     # ancestor rename cannot redirect the library entry outside the root.
-    def reference_noreplace(src, dest, root:, source_root:)
+    def reference_noreplace(
+      src,
+      dest,
+      root:,
+      source_root:,
+      source_snapshot: nil,
+      authorized_roots: nil,
+      authorized_root_snapshot: nil
+    )
       source_path = Pathname(src).expand_path
       destination_path = Pathname(dest).expand_path
-      target = source_path.to_s
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
 
-      with_pinned_source(source_path, source_root: source_root) do |source, *_rest|
+      with_pinned_reference_source(
+        source_path,
+        source_root: source_root,
+        source_snapshot: source_snapshot,
+        authorized_roots: authorized_roots
+      ) do |source, target|
         raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
 
         with_pinned_destination_parent(destination_path, root: root) do |parent, basename, parent_path|
@@ -226,11 +264,19 @@ class FileCopyService
           validate_current_directory_identity!(parent_path, parent)
         end
       end
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
 
       dest.to_s
     end
 
-    def reference_target_matches?(source, destination, root:, source_root: nil, source_snapshot: nil)
+    def reference_target_matches?(
+      source,
+      destination,
+      root:,
+      source_root: nil,
+      source_snapshot: nil,
+      authorized_root_snapshot: nil
+    )
       if source_root.nil? == source_snapshot.nil?
         raise ArgumentError, "reference source requires exactly one authorization snapshot"
       end
@@ -239,19 +285,18 @@ class FileCopyService
       if source_snapshot && source_path != source_snapshot.path
         raise UnsafePathError, "reference source does not match its authorization snapshot"
       end
-      source_operation = if source_snapshot
-        ->(&operation) { with_pinned_source_snapshot(source_snapshot, &operation) }
-      else
-        ->(&operation) { with_pinned_source(source_path, source_root: source_root, &operation) }
-      end
-
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
       result = nil
-      source_operation.call do |pinned_source, *_source_path|
+      with_pinned_reference_source(
+        source_path,
+        source_root: source_root,
+        source_snapshot: source_snapshot
+      ) do |pinned_source, target|
         raise Errno::EINVAL, "source is not a regular file" unless pinned_source.stat.file?
 
         with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
           matches = begin
-            native_readlinkat(parent.fileno, basename) == source_path.to_s
+            native_readlinkat(parent.fileno, basename) == target
           rescue Errno::EINVAL
             false
           end
@@ -259,7 +304,49 @@ class FileCopyService
           result = matches
         end
       end
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
       result
+    end
+
+    # Resolve only an immediate source symlink. Both the staging parent and the
+    # final regular-file parent are pinned and revalidated; the final leaf is
+    # always opened with O_NOFOLLOW.
+    def snapshot_reference_source(path, authorized_roots:)
+      expanded = Pathname(path).expand_path
+      roots = canonical_reference_roots(authorized_roots)
+      raise UnsafePathError, "reference source has no authorized target root" if roots.empty?
+
+      canonical_parent = expanded.parent.realpath
+      with_pinned_absolute_directory(canonical_parent) do |parent|
+        validate_current_directory_identity!(expanded.parent, parent)
+        link_target = native_readlinkat(parent.fileno, expanded.basename.to_s)
+        return snapshot_reference_source_at(
+          expanded,
+          parent,
+          canonical_parent,
+          link_target,
+          roots
+        )
+      end
+    rescue Errno::ELOOP, Errno::ENOTDIR => error
+      raise UnsafePathError, "reference target contains a symbolic link or non-directory: #{error.message}"
+    end
+
+    def snapshot_reference_root(path)
+      canonical_reference_roots([ path ]).first ||
+        raise(UnsafePathError, "reference target root is not safely accessible")
+    end
+
+    def validate_reference_root_snapshot!(snapshot)
+      unless snapshot.is_a?(ReferenceRootSnapshot)
+        raise UnsafePathError, "reference target root snapshot is invalid"
+      end
+
+      validate_reference_root_identity!(
+        snapshot.path,
+        device: snapshot.device,
+        inode: snapshot.inode
+      )
     end
 
     # Publish from a source descriptor already pinned by the caller (for
@@ -618,10 +705,14 @@ class FileCopyService
 
     # Yield a regular file through a pinned parent and reject any identity/stat
     # change across the read.
-    def with_regular_file(path, root:)
+    def with_regular_file(path, root:, authorized_root_snapshot: nil)
       raise ArgumentError, "a file block is required" unless block_given?
 
-      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+      result = with_pinned_destination_parent(
+        path,
+        root: root,
+        root_snapshot: authorized_root_snapshot
+      ) do |parent, basename, parent_path|
         with_pinned_regular_child(parent, basename) do |file|
           expected = file_manifest_entry(file.stat)
           result = yield file
@@ -634,6 +725,8 @@ class FileCopyService
           result
         end
       end
+      validate_reference_root_snapshot!(authorized_root_snapshot) if authorized_root_snapshot
+      result
     end
 
     # Refresh a regular file's cleanup lease through its pinned descriptor.
@@ -941,6 +1034,76 @@ class FileCopyService
       false
     end
 
+    # DrvFS can change inode identities during rename, so the generic
+    # quarantine-based remover must continue to reject it. Direct-download v2
+    # staging instead uses an application-authenticated private namespace and
+    # can remove a fully preflighted tree without renaming it. Callers must
+    # validate that parent_path and child_name name that exact namespace.
+    def remove_owned_private_tree_on_drvfs(
+      parent_path,
+      child_name,
+      root:,
+      expected_identity:,
+      expected_parent_identity:
+    )
+      if child_name.include?(File::SEPARATOR) || child_name.in?([ ".", ".." ])
+        raise UnsafePathError, "private directory child name is unsafe"
+      end
+
+      with_pinned_directory(parent_path, root: root, create: false, mode: 0o700) do |parent|
+        return :not_drvfs unless drvfs_mount?(parent)
+
+        parent_stat = parent.stat
+        if expected_parent_identity && file_identity(parent_stat) != expected_parent_identity
+          return :retained
+        end
+        unless drvfs_private_staging_directory?(parent_stat, parent, root: true)
+          return :retained
+        end
+
+        child = begin
+          open_pinned_directory_child(parent, child_name)
+        rescue Errno::ENOENT
+          return :missing
+        end
+        begin
+          child_stat = child.stat
+          child_identity = file_identity(child_stat)
+          return :retained if expected_identity && child_identity != expected_identity
+          return :retained unless drvfs_private_staging_directory?(child_stat, parent, root: true)
+
+          root_manifest = drvfs_private_staging_manifest(child_stat, parent)
+          current_root = lambda do
+            validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
+            drvfs_private_staging_child_manifest(parent, child_name) == root_manifest
+          rescue SystemCallError, IOError, UnsafePathError
+            false
+          end
+
+          return :retained unless current_root.call
+
+          manifest = snapshot_pinned_drvfs_private_tree(child)
+          return :retained unless current_root.call
+
+          remove_pinned_drvfs_private_tree_contents!(
+            child,
+            manifest,
+            before_remove: current_root
+          )
+          return :retained unless current_root.call
+
+          native_unlinkat(parent.fileno, child_name, AT_REMOVEDIR)
+          sync_io(parent)
+          validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
+          :removed
+        ensure
+          child.close unless child.closed?
+        end
+      end
+    rescue SystemCallError, IOError, UnsafePathError
+      :retained
+    end
+
     # Compare regular files through pinned descriptors. This is used by retry
     # reconciliation so a path swap cannot trick an import into reusing an
     # unrelated library file.
@@ -1129,6 +1292,63 @@ class FileCopyService
     rescue Errno::ELOOP, Errno::ENOTDIR => error
       raise UnsafePathError,
         "source tree contains a symbolic link or non-regular path: #{error.message}"
+    rescue Errno::ENOENT, Errno::EACCES => error
+      raise UnsafePathError, "source tree is not safely accessible: #{error.message}"
+    end
+
+    # Snapshot a regular directory tree while accepting symlink leaves only for
+    # reference imports. Every link and final target receives its own pinned
+    # authorization snapshot; directory links and chained links remain invalid.
+    def snapshot_reference_source_root(
+      path,
+      authorized_roots:,
+      heartbeat: nil,
+      max_entries: nil,
+      max_depth: nil
+    )
+      expanded = Pathname(path).expand_path
+      canonical = expanded.realpath
+      parent_path = expanded.parent
+      canonical_parent = parent_path.realpath
+      parent_stat = File.lstat(canonical_parent)
+      roots = canonical_reference_roots(authorized_roots)
+      raise UnsafePathError, "reference source has no authorized target root" if roots.empty?
+
+      with_pinned_absolute_directory(canonical) do |directory|
+        validate_current_directory_identity!(expanded, directory)
+        raise UnsafePathError, "source root is not a directory" unless directory.stat.directory?
+
+        reference_snapshots = {}
+        entries = snapshot_pinned_reference_tree(
+          directory,
+          expanded,
+          roots,
+          reference_snapshots: reference_snapshots,
+          heartbeat: heartbeat,
+          max_entries: max_entries,
+          max_depth: max_depth
+        )
+        validate_current_directory_identity!(expanded, directory)
+        stat = directory.stat
+        return SourceRoot.new(
+          path: expanded,
+          canonical_path: canonical,
+          device: stat.dev,
+          inode: stat.ino,
+          size: stat.size,
+          mtime: stat.mtime.to_r,
+          ctime: stat.ctime.to_r,
+          parent_path: parent_path,
+          canonical_parent_path: canonical_parent,
+          parent_device: parent_stat.dev,
+          parent_inode: parent_stat.ino,
+          entries: entries.freeze,
+          reference_snapshots: reference_snapshots.freeze
+        ).freeze
+      end
+    rescue Errno::ELOOP, Errno::ENOTDIR => error
+      raise UnsafePathError,
+        "source tree contains a chained symbolic link or non-regular path: #{error.message}"
     rescue Errno::ENOENT, Errno::EACCES => error
       raise UnsafePathError, "source tree is not safely accessible: #{error.message}"
     end
@@ -1642,6 +1862,133 @@ class FileCopyService
       relative
     end
 
+    def snapshot_pinned_drvfs_private_tree(directory, prefix = nil, manifest = {})
+      entries = pinned_directory_children(directory)
+      entries.each do |entry|
+        descriptor = native_openat(
+          directory.fileno,
+          entry,
+          File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+          0
+        )
+        child = IO.new(descriptor, "rb", autoclose: true)
+        begin
+          relative = prefix ? prefix.join(entry) : Pathname(entry)
+          stat = child.stat
+          manifest[relative.to_s] = drvfs_private_staging_manifest(stat, directory)
+          if stat.directory?
+            snapshot_pinned_drvfs_private_tree(child, relative, manifest)
+          elsif !stat.file?
+            raise UnsafePathError, "private staging tree contains a special entry"
+          end
+        ensure
+          child.close unless child.closed?
+        end
+      end
+      unless pinned_directory_children(directory) == entries
+        raise Errno::ESTALE, "private staging tree changed during validation"
+      end
+
+      manifest
+    end
+
+    def remove_pinned_drvfs_private_tree_contents!(directory, expected_entries, prefix = nil, before_remove:)
+      children = pinned_directory_children(directory)
+      expected_children = expected_entries.keys.filter_map do |relative|
+        path = Pathname(relative)
+        next unless path.dirname == (prefix || Pathname("."))
+
+        path.basename.to_s
+      end.sort
+      unless children == expected_children
+        raise Errno::ESTALE, "private staging tree changed before cleanup"
+      end
+
+      children.each do |entry|
+        raise Errno::ESTALE, "private staging root changed during cleanup" unless before_remove.call
+
+        relative = prefix ? prefix.join(entry) : Pathname(entry)
+        expected = expected_entries.fetch(relative.to_s)
+        descriptor = native_openat(
+          directory.fileno,
+          entry,
+          File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+          0
+        )
+        child = IO.new(descriptor, "rb", autoclose: true)
+        begin
+          stat = child.stat
+          current = drvfs_private_staging_manifest(stat, directory)
+          unless current == expected
+            raise Errno::ESTALE, "private staging entry changed before cleanup"
+          end
+
+          if stat.directory?
+            remove_pinned_drvfs_private_tree_contents!(
+              child,
+              expected_entries,
+              relative,
+              before_remove: before_remove
+            )
+          elsif !stat.file?
+            raise UnsafePathError, "private staging tree contains a special entry"
+          end
+
+          raise Errno::ESTALE, "private staging root changed during cleanup" unless before_remove.call
+          unless drvfs_private_staging_child_manifest(directory, entry) == expected
+            raise Errno::ESTALE, "private staging entry was replaced during cleanup"
+          end
+
+          native_unlinkat(directory.fileno, entry, stat.directory? ? AT_REMOVEDIR : 0)
+          sync_io(directory)
+        ensure
+          child.close unless child.closed?
+        end
+      end
+    end
+
+    def drvfs_private_staging_child_manifest(parent, basename)
+      descriptor = native_openat(
+        parent.fileno,
+        basename,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+        0
+      )
+      child = IO.new(descriptor, "rb", autoclose: true)
+      drvfs_private_staging_manifest(child.stat, parent)
+    ensure
+      child&.close unless child&.closed?
+    end
+
+    def drvfs_private_staging_manifest(stat, parent)
+      unless private_entry_owned_by_process?(stat, parent)
+        raise UnsafePathError, "private staging entry is owned by another user"
+      end
+
+      mode = stat.mode & 0o7777
+      if stat.directory?
+        unless mode.in?(DRVFS_PRIVATE_STAGING_DIRECTORY_MODES)
+          raise UnsafePathError, "private staging directory permissions changed"
+        end
+        [ stat.dev, stat.ino, :directory, mode, stat.uid ]
+      elsif stat.file?
+        unless mode.in?(DRVFS_PRIVATE_STAGING_FILE_MODES)
+          raise UnsafePathError, "private staging file permissions changed"
+        end
+        [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.ctime.to_r, mode, stat.uid ]
+      else
+        raise UnsafePathError, "private staging tree contains a special entry"
+      end
+    end
+
+    def drvfs_private_staging_directory?(stat, parent, root: false)
+      return false unless stat.directory?
+      return false unless private_entry_owned_by_process?(stat, parent)
+
+      mode = stat.mode & 0o7777
+      root ? mode == 0o700 : mode.in?(DRVFS_PRIVATE_STAGING_DIRECTORY_MODES)
+    end
+
     def apply_file_mode!(file, requested_mode, accepted_modes:, path: nil, root: nil)
       mode_error = nil
       begin
@@ -1730,6 +2077,40 @@ class FileCopyService
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
       with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
+        if drvfs_mount?(parent)
+          journal_root = Pathname(root.presence || parent_path).expand_path
+          journal_destination = Pathname(destination).expand_path.relative_path_from(journal_root).to_s
+          with_pinned_directory(
+            journal_root,
+            root: journal_root,
+            create: false,
+            mode: DIRECTORY_MODE
+          ) do |journal_parent|
+            with_drvfs_copy_journal(
+              journal_parent,
+              heartbeat: heartbeat,
+              path: destination,
+              root: root
+            ) do |journal|
+              publish_source_io_by_drvfs_exclusive_copy!(
+                source,
+                parent,
+                basename,
+                journal: journal,
+                journal_destination: journal_destination,
+                destination_parent_validator: -> { validate_current_directory_identity!(parent_path, parent) },
+                heartbeat: heartbeat,
+                source_validator: source_validator,
+                accepted_modes: accepted_modes,
+                require_durable: require_durable,
+                path: destination,
+                root: root
+              )
+            end
+          end
+          return
+        end
+
         token = SecureRandom.hex(16)
         temporary_basename = ".shelfarr-copy-#{token}.tmp"
         lock_basename = ".shelfarr-copy-#{token}.lock"
@@ -1825,15 +2206,25 @@ class FileCopyService
           # otherwise delete a replacement installed by another worker.
           raise
         ensure
-          temporary_cleanup = remove_pinned_child_if_identity(
-            parent,
-            temporary_basename,
-            temporary_identity
-          )
-          if temporary_cleanup.in?([ :removed, :missing ])
-            remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
+          in_flight_error = $!
+          begin
+            temporary_cleanup = remove_pinned_child_if_identity(
+              parent,
+              temporary_basename,
+              temporary_identity
+            )
+            if temporary_cleanup.in?([ :removed, :missing ])
+              remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
+            end
+            sync_io(parent)
+          rescue => cleanup_error
+            raise unless in_flight_error
+
+            Rails.logger.warn(
+              "[FileCopyService] Publication teardown was deferred after " \
+                "#{in_flight_error.class}: #{cleanup_error.class}"
+            )
           end
-          sync_io(parent)
         end
       end
     end
@@ -2120,6 +2511,184 @@ class FileCopyService
         cause: error
     end
 
+    def publish_source_io_by_drvfs_exclusive_copy!(
+      source,
+      parent,
+      destination_basename,
+      journal:,
+      journal_destination:,
+      destination_parent_validator:,
+      heartbeat:,
+      source_validator:,
+      accepted_modes:,
+      require_durable:,
+      path:,
+      root:
+    )
+      source_size, source_digest = io_content_identity(source, heartbeat: heartbeat)
+      source_validator&.call
+      token = SecureRandom.hex(16)
+      destination_created = false
+      published_mode = nil
+
+      reset_drvfs_copy_journal!(
+        journal,
+        token,
+        :prepared,
+        source_size,
+        source_digest,
+        journal_destination
+      )
+
+      begin
+        with_created_regular_child(
+          parent,
+          destination_basename,
+          0o600,
+          created: -> { destination_created = true }
+        ) do |destination|
+          persist_drvfs_copy_lock!(
+            journal,
+            token,
+            :copying,
+            source_size,
+            source_digest,
+            journal_destination
+          )
+          sync_io(parent)
+          apply_file_mode!(
+            destination,
+            0o600,
+            accepted_modes: accepted_modes,
+            path: path,
+            root: root
+          )
+          copy_source_io(source, destination, heartbeat: heartbeat)
+          published_mode = apply_file_mode!(
+            destination,
+            LIBRARY_FILE_MODE,
+            accepted_modes: accepted_modes,
+            path: path,
+            root: root
+          )
+          file_durable = flush_and_sync(destination)
+          if require_durable && !file_durable
+            raise DurabilityUnsupportedError, "destination file fsync is unsupported"
+          end
+          unless io_matches_identity?(destination, source_size, source_digest)
+            raise Errno::ESTALE, "direct-copy destination changed while it was written"
+          end
+        end
+
+        source_validator&.call
+        2.times do
+          unless drvfs_destination_matches_source?(
+            source,
+            parent,
+            destination_basename,
+            source_size,
+            source_digest,
+            published_mode
+          )
+            raise Errno::ESTALE, "direct-copy destination could not be verified"
+          end
+        end
+        source_validator&.call
+        destination_parent_validator.call
+        parent_durable = sync_io(parent)
+        if require_durable && !parent_durable
+          raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
+        end
+        persist_drvfs_copy_lock!(
+          journal,
+          token,
+          :complete,
+          source_size,
+          source_digest,
+          journal_destination
+        )
+      rescue Errno::EEXIST
+        persist_drvfs_copy_lock!(
+          journal,
+          token,
+          :conflict,
+          source_size,
+          source_digest,
+          journal_destination
+        )
+        raise
+      rescue StandardError => error
+        unless destination_created
+          persist_drvfs_copy_lock!(
+            journal,
+            token,
+            :aborted,
+            source_size,
+            source_digest,
+            journal_destination
+          )
+          raise
+        end
+
+        raise AmbiguousPublicationError.new(
+          "An incomplete DrvFS direct-copy publication was retained for manual review"
+        ), cause: error
+      end
+
+      Rails.logger.warn(
+        "[FileCopyService] DrvFS lacks atomic no-clobber publication; " \
+          "used verified O_EXCL direct-copy compatibility mode"
+      )
+    end
+
+    def io_content_identity(io, heartbeat: nil)
+      original_position = io.pos
+      io.rewind
+      size = 0
+      digest = Digest::SHA256.new
+      buffer = +""
+      while io.read(BUFFER_SIZE, buffer)
+        size += buffer.bytesize
+        digest << buffer
+        heartbeat&.call
+      end
+      [ size, digest.hexdigest ]
+    ensure
+      io.seek(original_position) if original_position
+    end
+
+    def io_matches_identity?(io, expected_size, expected_digest)
+      size, digest = io_content_identity(io)
+      size == expected_size && digest == expected_digest
+    end
+
+    def drvfs_destination_matches_source?(
+      source,
+      parent,
+      basename,
+      expected_size,
+      expected_digest,
+      expected_mode
+    )
+      matches = false
+      source_position = nil
+      with_pinned_regular_child(parent, basename) do |destination|
+        stat = destination.stat
+        next unless stat.size == expected_size && (stat.mode & 0o7777) == expected_mode
+        next unless io_matches_identity?(destination, expected_size, expected_digest)
+
+        source_position = source.pos
+        source.rewind
+        destination.rewind
+        matches = compare_io(source, destination)
+      end
+      matches
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+      false
+    ensure
+      source.seek(source_position) if source_position
+    end
+
     def validate_published_child!(
       parent,
       basename,
@@ -2337,6 +2906,106 @@ class FileCopyService
       )
     end
 
+    def reset_drvfs_copy_journal!(lock, token, state, source_size, source_digest, destination)
+      lock.rewind
+      lock.truncate(0)
+      persist_drvfs_copy_lock!(lock, token, state, source_size, source_digest, destination)
+    end
+
+    def persist_drvfs_copy_lock!(lock, token, state, source_size, source_digest, destination)
+      encoded_destination = destination.b.unpack1("H*")
+      record = "#{COPY_LOCK_MAGIC}:#{token}:drvfs:#{state}:#{source_size}:" \
+        "#{source_digest}:#{encoded_destination}"
+      checksum = Digest::SHA256.hexdigest(record)
+      lock.seek(0, IO::SEEK_END)
+      lock.write("#{record}:#{checksum}\n")
+      flush_and_sync(lock)
+    end
+
+    def with_drvfs_copy_journal(parent, heartbeat:, path:, root:)
+      descriptor = native_openat(
+        parent.fileno,
+        DRVFS_COPY_JOURNAL_BASENAME,
+        File::RDWR | File::CREAT | File::NOFOLLOW | File::NONBLOCK,
+        0o600
+      )
+      journal = File.for_fd(descriptor, "r+b", autoclose: true)
+      begin
+        raise UnsafePathError, "DrvFS copy journal is not a regular file" unless journal.stat.file?
+
+        acquired = begin
+          journal.flock(File::LOCK_EX | File::LOCK_NB)
+        rescue Errno::EWOULDBLOCK
+          false
+        end
+        # Direct-download publications provide a heartbeat that both renews
+        # their durable lease and aborts when ownership is lost. Keep those
+        # cancellable waiters serialized even when another legitimate copy is
+        # long-running. Callers without a heartbeat (notably completed-download
+        # post-processing) must yield their worker after a bounded wait.
+        lock_deadline = monotonic_time + drvfs_copy_lock_timeout unless heartbeat
+        until acquired
+          heartbeat&.call
+          if lock_deadline && monotonic_time >= lock_deadline
+            raise PublicationBusyError,
+              "another DrvFS publication is still active; retry this import later"
+          end
+
+          sleep(DRVFS_COPY_LOCK_RETRY_INTERVAL)
+          acquired = begin
+            journal.flock(File::LOCK_EX | File::LOCK_NB)
+          rescue Errno::EWOULDBLOCK
+            false
+          end
+        end
+        unless private_entry_owned_by_process?(journal.stat, parent)
+          raise UnsafePathError, "DrvFS copy journal is not safely owned"
+        end
+        apply_file_mode!(
+          journal,
+          0o600,
+          accepted_modes: LIBRARY_FILE_MODES,
+          path: path,
+          root: root
+        )
+
+        journal.rewind
+        state = drvfs_copy_journal_state(journal.read)
+        unless state.in?(DRVFS_COPY_TERMINAL_STATES)
+          raise AtomicPublicationUnsupportedError,
+            "Interrupted DrvFS publication evidence requires manual cleanup before another import"
+        end
+        sync_io(parent)
+        yield journal
+      ensure
+        journal.close unless journal.closed?
+      end
+    end
+
+    def drvfs_copy_journal_state(contents)
+      return :empty if contents.empty?
+
+      contents.lines(chomp: true).reverse_each do |line|
+        record, separator, checksum = line.rpartition(":")
+        next if separator.empty? || checksum.length != 64
+        next unless Digest::SHA256.hexdigest(record) == checksum
+
+        match = COPY_LOCK_DRVFS_PATTERN.match(record)
+        next unless match
+
+        return match[2].to_sym
+      end
+      :malformed
+    end
+
+    def drvfs_copy_lock_timeout
+      DRVFS_COPY_LOCK_TIMEOUT
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
     def persist_copy_lock_record!(lock, record)
       lock.rewind
       lock.truncate(0)
@@ -2431,6 +3100,99 @@ class FileCopyService
         return true unless left_bytes || right_bytes
         return false unless left_bytes == right_bytes
       end
+    end
+
+    def with_pinned_reference_source(
+      path,
+      source_root:,
+      source_snapshot: nil,
+      authorized_roots: nil
+    )
+      expanded = Pathname(path).expand_path
+      if source_snapshot.is_a?(ReferenceSourceSnapshot)
+        return with_pinned_reference_source_snapshot(expanded, source_snapshot) do |source|
+          yield source, source_snapshot.canonical_target_path.to_s
+        end
+      end
+      if source_snapshot
+        unless expanded == source_snapshot.path
+          raise UnsafePathError, "reference source does not match its authorization snapshot"
+        end
+
+        return with_pinned_source_snapshot(source_snapshot) do |source, *|
+          yield source, expanded.to_s
+        end
+      end
+      if source_root
+        return with_pinned_source(expanded, source_root: source_root) do |source, *|
+          yield source, expanded.to_s
+        end
+      end
+      if File.lstat(expanded).symlink?
+        snapshot = snapshot_reference_source(expanded, authorized_roots: authorized_roots)
+        return with_pinned_reference_source_snapshot(expanded, snapshot) do |source|
+          yield source, snapshot.canonical_target_path.to_s
+        end
+      end
+
+      with_pinned_source(expanded) { |source, *| yield source, expanded.to_s }
+    end
+
+    def with_pinned_reference_source_snapshot(expanded, snapshot)
+      unless expanded == snapshot.path
+        raise UnsafePathError, "reference source does not match its authorization snapshot"
+      end
+
+      validate_reference_authorized_root!(snapshot)
+      with_pinned_absolute_directory(snapshot.canonical_parent_path) do |parent|
+        unless file_identity(parent.stat) == [ snapshot.parent_device, snapshot.parent_inode ]
+          raise Errno::ESTALE, "reference source parent changed after it was snapshotted"
+        end
+        validate_reference_source_link!(parent, snapshot)
+        result = with_pinned_source_snapshot(snapshot.target_snapshot) do |source, *|
+          validate_reference_authorized_root!(snapshot)
+          published = yield source
+          validate_reference_authorized_root!(snapshot)
+          published
+        end
+        validate_reference_source_link!(parent, snapshot)
+        validate_reference_authorized_root!(snapshot)
+        result
+      end
+    rescue Errno::EINVAL, Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR
+      raise Errno::ESTALE, "reference source changed after it was snapshotted"
+    end
+
+    def validate_reference_source_link!(parent, snapshot)
+      validate_current_directory_identity!(snapshot.parent_path, parent)
+      unless native_readlinkat(parent.fileno, snapshot.path.basename.to_s) == snapshot.link_target
+        raise Errno::ESTALE, "reference source changed after it was snapshotted"
+      end
+      true
+    end
+
+    def canonical_reference_roots(paths)
+      Array(paths).filter_map do |path|
+        expanded = Pathname(path).expand_path
+        canonical = expanded.realpath
+        next if canonical.root? || !canonical.lstat.directory?
+
+        with_pinned_absolute_directory(canonical) do |root|
+          validate_current_directory_identity!(expanded, root)
+          stat = root.stat
+          ReferenceRootSnapshot.new(
+            path: canonical,
+            device: stat.dev,
+            inode: stat.ino
+          ).freeze
+        end
+      rescue ArgumentError, SystemCallError
+        nil
+      end.uniq(&:path)
+    end
+
+    def path_beneath_root?(path, root)
+      path.to_s.start_with?("#{root.to_s.delete_suffix(File::SEPARATOR)}#{File::SEPARATOR}")
     end
 
     def with_pinned_source(path, source_root: nil)
@@ -2662,6 +3424,153 @@ class FileCopyService
       manifest
     end
 
+    def snapshot_pinned_reference_tree(
+      directory,
+      source_root_path,
+      authorized_roots,
+      prefix = nil,
+      manifest = {},
+      reference_snapshots:,
+      heartbeat: nil,
+      max_entries: nil,
+      max_depth: nil,
+      depth: 0
+    )
+      remaining = max_entries && max_entries - manifest.size
+      pinned_directory_children(directory, max_entries: remaining).each do |entry|
+        heartbeat&.call
+        relative = prefix ? prefix.join(entry) : Pathname(entry)
+        descriptor = begin
+          native_openat(
+            directory.fileno,
+            entry,
+            File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+            0
+          )
+        rescue Errno::ELOOP
+          parent_path = source_root_path.join(relative.dirname)
+          canonical_parent = parent_path.realpath
+          validate_current_directory_identity!(parent_path, directory)
+          link_target = native_readlinkat(directory.fileno, entry)
+          snapshot = snapshot_reference_source_at(
+            source_root_path.join(relative),
+            directory,
+            canonical_parent,
+            link_target,
+            authorized_roots
+          )
+          manifest[relative.to_s] = reference_manifest_entry(snapshot)
+          reference_snapshots[relative.to_s] = snapshot
+          next
+        end
+
+        child = IO.new(descriptor, "rb", autoclose: true)
+        begin
+          stat = child.stat
+          if stat.directory?
+            if max_depth && depth + 1 > max_depth
+              raise UnsafePathError, "source tree nesting is too deep"
+            end
+
+            manifest[relative.to_s] = directory_manifest_entry(stat)
+            snapshot_pinned_reference_tree(
+              child,
+              source_root_path,
+              authorized_roots,
+              relative,
+              manifest,
+              reference_snapshots: reference_snapshots,
+              heartbeat: heartbeat,
+              max_entries: max_entries,
+              max_depth: max_depth,
+              depth: depth + 1
+            )
+          elsif stat.file?
+            manifest[relative.to_s] = file_manifest_entry(stat)
+          else
+            raise UnsafePathError, "source tree contains a symbolic link or non-regular path"
+          end
+        ensure
+          child.close unless child.closed?
+        end
+      end
+      manifest
+    end
+
+    def snapshot_reference_source_at(expanded, parent, canonical_parent, link_target, authorized_roots)
+      target = Pathname(link_target)
+      target = canonical_parent.join(target) unless target.absolute?
+      target_snapshot = snapshot_reference_target(target)
+      canonical_target = target_snapshot.canonical_parent_path.join(target_snapshot.path.basename)
+      authorized_root = authorized_roots.select do |root|
+        path_beneath_root?(canonical_target, root.path)
+      end.max_by { |root| root.path.to_s.length }
+      unless authorized_root
+        raise UnsafePathError, "reference target is outside authorized source roots"
+      end
+      validate_reference_root_identity!(
+        authorized_root.path,
+        device: authorized_root.device,
+        inode: authorized_root.inode
+      )
+
+      validate_current_directory_identity!(expanded.parent, parent)
+      unless native_readlinkat(parent.fileno, expanded.basename.to_s) == link_target
+        raise Errno::ESTALE, "reference source changed while it was being resolved"
+      end
+      parent_stat = parent.stat
+      ReferenceSourceSnapshot.new(
+        path: expanded,
+        parent_path: expanded.parent,
+        canonical_parent_path: canonical_parent,
+        parent_device: parent_stat.dev,
+        parent_inode: parent_stat.ino,
+        link_target: link_target,
+        target_snapshot: target_snapshot,
+        canonical_target_path: canonical_target,
+        authorized_root: authorized_root.path,
+        authorized_root_device: authorized_root.device,
+        authorized_root_inode: authorized_root.inode
+      ).freeze
+    end
+
+    def validate_reference_authorized_root!(snapshot)
+      validate_reference_root_identity!(
+        snapshot.authorized_root,
+        device: snapshot.authorized_root_device,
+        inode: snapshot.authorized_root_inode
+      )
+    end
+
+    def validate_reference_root_identity!(path, device:, inode:)
+      with_pinned_absolute_directory(path) do |root|
+        unless file_identity(root.stat) == [ device, inode ]
+          raise Errno::ESTALE, "reference target root changed after it was authorized"
+        end
+        validate_current_directory_identity!(path, root)
+      end
+      true
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
+      raise Errno::ESTALE, "reference target root changed after it was authorized"
+    end
+
+    def snapshot_reference_target(target)
+      snapshot_source_file(target)
+    rescue Errno::ENOENT => error
+      raise ReferenceTargetUnavailableError,
+        "reference target is not visible yet: #{error.message}"
+    end
+
+    def reference_manifest_entry(snapshot)
+      [
+        snapshot.parent_device,
+        snapshot.parent_inode,
+        :reference,
+        snapshot.link_target,
+        snapshot.target_snapshot.manifest
+      ].freeze
+    end
+
     def secure_pinned_library_tree!(directory, heartbeat: nil)
       pinned_directory_children(directory).each do |entry|
         heartbeat&.call
@@ -2835,6 +3744,35 @@ class FileCopyService
     def hardlink_identity_unreliable?(*filesystem_entries, reject_cifs: false)
       return false unless RUBY_PLATFORM.include?("linux")
 
+      mounts, mount_parents = filesystem_mounts
+
+      filesystem_entries.any? do |entry|
+        mount = filesystem_mount_for(entry, mounts, mount_parents)
+        next true unless mount
+        next true if drvfs_mount_record?(mount)
+        next false unless mount.fetch(4).in?([ "cifs", "smb3" ])
+        next true if reject_cifs
+
+        options = "#{mount.fetch(5)},#{mount.fetch(6)}".split(",")
+        !options.include?("serverino")
+      end
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
+      true
+    end
+
+    def drvfs_mount?(*filesystem_entries)
+      return false unless RUBY_PLATFORM.include?("linux")
+
+      mounts, mount_parents = filesystem_mounts
+      filesystem_entries.any? do |entry|
+        mount = filesystem_mount_for(entry, mounts, mount_parents)
+        mount && drvfs_mount_record?(mount)
+      end
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
+      false
+    end
+
+    def filesystem_mounts
       mounts = File.binread("/proc/self/mountinfo").lines(chomp: true).filter_map do |line|
         mount_fields, separator, filesystem_fields = line.partition(" - ")
         next if separator.empty?
@@ -2853,38 +3791,39 @@ class FileCopyService
         [ mount_id, parent_id, fields.fetch(2), mountpoint, filesystem.fetch(0), fields.fetch(5), filesystem.fetch(2) ]
       end
       mount_parents = mounts.to_h { |mount_id, parent_id, *| [ mount_id, parent_id ] }
+      [ mounts, mount_parents ]
+    end
 
-      filesystem_entries.any? do |entry|
-        expanded, stat = if entry.respond_to?(:fileno) && entry.respond_to?(:stat)
-          descriptor_path = File.readlink("/proc/self/fd/#{entry.fileno}").delete_suffix(" (deleted)")
-          [ Pathname(descriptor_path).expand_path.to_s.b, entry.stat ]
-        else
-          path = Pathname(entry).expand_path.realpath
-          [ path.to_s.b, File.stat(path) ]
-        end
-        device = "#{stat.dev_major}:#{stat.dev_minor}"
-        mount = mounts.select do |_mount_id, _parent_id, mount_device, mountpoint, *|
-          mount_device == device &&
-            (expanded == mountpoint || expanded.start_with?("#{mountpoint.delete_suffix("/")}/"))
-        end.max_by do |mount_id, _parent_id, _mount_device, mountpoint, *|
-          depth = 0
-          seen = Set.new
-          current = mount_id
-          while (parent = mount_parents[current]) && seen.add?(current)
-            depth += 1
-            current = parent
-          end
-          [ mountpoint.bytesize, depth ]
-        end
-        next true unless mount
-        next false unless mount.fetch(4).in?([ "cifs", "smb3" ])
-        next true if reject_cifs
-
-        options = "#{mount.fetch(5)},#{mount.fetch(6)}".split(",")
-        !options.include?("serverino")
+    def filesystem_mount_for(entry, mounts, mount_parents)
+      expanded, stat = if entry.respond_to?(:fileno) && entry.respond_to?(:stat)
+        descriptor_path = File.readlink("/proc/self/fd/#{entry.fileno}").delete_suffix(" (deleted)")
+        [ Pathname(descriptor_path).expand_path.to_s.b, entry.stat ]
+      else
+        path = Pathname(entry).expand_path.realpath
+        [ path.to_s.b, File.stat(path) ]
       end
-    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
-      true
+      device = "#{stat.dev_major}:#{stat.dev_minor}"
+      mounts.select do |_mount_id, _parent_id, mount_device, mountpoint, *|
+        mount_device == device &&
+          (expanded == mountpoint || expanded.start_with?("#{mountpoint.delete_suffix("/")}/"))
+      end.max_by do |mount_id, _parent_id, _mount_device, mountpoint, *|
+        depth = 0
+        seen = Set.new
+        current = mount_id
+        while (parent = mount_parents[current]) && seen.add?(current)
+          depth += 1
+          current = parent
+        end
+        [ mountpoint.bytesize, depth ]
+      end
+    end
+
+    def drvfs_mount_record?(mount)
+      return false unless mount.fetch(4) == "9p"
+
+      "#{mount.fetch(5)},#{mount.fetch(6)}".split(",").any? do |option|
+        option.match?(/\Aaname=drvfs(?:;|\z)/)
+      end
     end
 
     def pinned_child_identity(parent, basename, directory: false)
@@ -2922,12 +3861,19 @@ class FileCopyService
         "a replacement download directory was retained in quarantine for manual review"
     end
 
-    def with_pinned_destination_parent(destination, root:)
+    def with_pinned_destination_parent(destination, root:, root_snapshot: nil)
       destination = Pathname(destination).expand_path
       expanded_root, canonical_root, relative = destination_root_and_relative(destination, root)
       parent_relative = relative.dirname
 
       with_pinned_absolute_directory(canonical_root) do |root_directory|
+        if root_snapshot
+          expected_root = Pathname(root_snapshot.path).expand_path
+          unless expected_root == expanded_root &&
+              file_identity(root_directory.stat) == [ root_snapshot.device, root_snapshot.inode ]
+            raise Errno::ESTALE, "reference target root changed before file access"
+          end
+        end
         validate_current_directory_identity!(expanded_root, root_directory)
         with_pinned_relative_directory(root_directory, parent_relative, create: false) do |parent|
           yield parent, destination.basename.to_s, destination.parent
@@ -3099,13 +4045,14 @@ class FileCopyService
       end
     end
 
-    def with_created_regular_child(parent, basename, mode)
+    def with_created_regular_child(parent, basename, mode, created: nil)
       descriptor = native_openat(
         parent.fileno,
         basename,
         File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW,
         mode
       )
+      created&.call
       file = File.for_fd(descriptor, "r+b", autoclose: true)
       begin
         raise UnsafePathError, "created path is not a regular file" unless file.stat.file?
@@ -3135,6 +4082,7 @@ class FileCopyService
       quarantine_kind: :copy,
       expected_owner_uid: nil
     )
+      return :retained if drvfs_mount?(parent)
       return :mismatch unless expected_identity
 
       begin

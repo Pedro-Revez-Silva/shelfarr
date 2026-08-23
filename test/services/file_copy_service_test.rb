@@ -635,6 +635,359 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal [ "referenced.txt" ], Dir.children(@dest_dir)
   end
 
+  test "reference_noreplace resolves an absolute source symlink to its final regular file" do
+    staging = File.join(@tmp_dir, "staged-reference.txt")
+    target = File.join(@tmp_dir, "content", "final-reference.txt")
+    destination = File.join(@dest_dir, "absolute-reference.txt")
+    FileUtils.mkdir_p(File.dirname(target))
+    File.binwrite(target, "remote content")
+    File.symlink(target, staging)
+    snapshot = FileCopyService.snapshot_reference_source(staging, authorized_roots: [ @tmp_dir ])
+
+    FileCopyService.reference_noreplace(
+      staging,
+      destination,
+      root: @dest_dir,
+      source_root: nil,
+      source_snapshot: snapshot
+    )
+
+    assert File.symlink?(destination)
+    assert_equal Pathname(target).realpath.to_s, File.readlink(destination)
+    refute_equal Pathname(staging).expand_path.to_s, File.readlink(destination)
+    assert FileCopyService.reference_target_matches?(
+      staging,
+      destination,
+      root: @dest_dir,
+      source_snapshot: snapshot
+    )
+    File.unlink(staging)
+    assert_equal "remote content", File.binread(destination)
+  end
+
+  test "reference_noreplace resolves a relative source symlink against its pinned parent" do
+    staging_directory = File.join(@tmp_dir, "staging")
+    target = File.join(@tmp_dir, "content", "relative-reference.txt")
+    staging = File.join(staging_directory, "relative-reference.txt")
+    destination = File.join(@dest_dir, "relative-reference.txt")
+    FileUtils.mkdir_p([ staging_directory, File.dirname(target) ])
+    File.binwrite(target, "relative remote content")
+    File.symlink(File.join("..", "content", "relative-reference.txt"), staging)
+
+    FileCopyService.reference_noreplace(
+      staging,
+      destination,
+      root: @dest_dir,
+      source_root: nil,
+      authorized_roots: [ @tmp_dir ]
+    )
+
+    assert_equal Pathname(target).realpath.to_s, File.readlink(destination)
+    File.unlink(staging)
+    assert_equal "relative remote content", File.binread(destination)
+  end
+
+  test "reference_noreplace rejects an immediate symlink target outside authorized roots" do
+    authorized = File.join(@tmp_dir, "authorized")
+    outside = File.join(@tmp_dir, "outside")
+    staging = File.join(authorized, "escaped-reference.txt")
+    target = File.join(outside, "private.txt")
+    destination = File.join(@dest_dir, "escaped-reference.txt")
+    FileUtils.mkdir_p([ authorized, outside ])
+    File.binwrite(target, "private content")
+    File.symlink(target, staging)
+
+    assert_raises(FileCopyService::UnsafePathError) do
+      FileCopyService.reference_noreplace(
+        staging,
+        destination,
+        root: @dest_dir,
+        source_root: nil,
+        authorized_roots: [ authorized ]
+      )
+    end
+
+    assert_not File.exist?(destination)
+    assert_equal "private content", File.binread(target)
+  end
+
+  test "reference_noreplace rejects second-level links and non-regular final targets" do
+    authorized = File.join(@tmp_dir, "authorized-reference-targets")
+    FileUtils.mkdir_p(authorized)
+    regular = File.join(authorized, "regular.txt")
+    second_link = File.join(authorized, "second-link.txt")
+    directory = File.join(authorized, "directory")
+    fifo = File.join(authorized, "target.pipe")
+    File.binwrite(regular, "regular content")
+    File.symlink(regular, second_link)
+    FileUtils.mkdir_p(directory)
+    File.mkfifo(fifo)
+
+    {
+      "second-level" => second_link,
+      "dangling" => File.join(authorized, "missing.txt"),
+      "directory" => directory,
+      "fifo" => fifo
+    }.each do |name, target|
+      staging = File.join(authorized, "#{name}-staging")
+      destination = File.join(@dest_dir, "#{name}.txt")
+      File.symlink(target, staging)
+
+      assert_raises(SystemCallError, FileCopyService::UnsafePathError) do
+        FileCopyService.reference_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          authorized_roots: [ authorized ]
+        )
+      end
+      assert_not File.exist?(destination)
+    end
+  end
+
+  test "reference_noreplace rejects replacement of a snapshotted staging symlink" do
+    staging = File.join(@tmp_dir, "raced-reference.txt")
+    original = File.join(@tmp_dir, "original-reference.txt")
+    replacement = File.join(@tmp_dir, "replacement-reference.txt")
+    destination = File.join(@dest_dir, "raced-reference.txt")
+    File.binwrite(original, "original content")
+    File.binwrite(replacement, "replacement content")
+    File.symlink(original, staging)
+    snapshot = FileCopyService.snapshot_reference_source(staging, authorized_roots: [ @tmp_dir ])
+    real_symlinkat = FileCopyService.method(:native_symlinkat)
+    replacing_publication = lambda do |target, directory_fd, basename|
+      File.unlink(staging)
+      File.symlink(replacement, staging)
+      real_symlinkat.call(target, directory_fd, basename)
+    end
+
+    FileCopyService.stub(:native_symlinkat, replacing_publication) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          source_snapshot: snapshot
+        )
+      end
+    end
+
+    assert_equal Pathname(original).realpath.to_s, File.readlink(destination)
+    assert_equal "original content", File.binread(destination)
+  end
+
+  test "reference_noreplace rejects a target parent swapped before target snapshot" do
+    authorized = File.join(@tmp_dir, "authorized-parent")
+    original_parent = File.join(authorized, "content")
+    displaced_parent = File.join(authorized, "content-original")
+    outside = File.join(@tmp_dir, "outside-parent")
+    staging = File.join(authorized, "staged-reference.txt")
+    destination = File.join(@dest_dir, "parent-raced-reference.txt")
+    FileUtils.mkdir_p([ original_parent, outside ])
+    File.binwrite(File.join(original_parent, "book.txt"), "authorized content")
+    File.binwrite(File.join(outside, "book.txt"), "outside content")
+    File.symlink(File.join(original_parent, "book.txt"), staging)
+    original_snapshot = FileCopyService.method(:snapshot_reference_target)
+    swapped = false
+    swap_parent = lambda do |target|
+      unless swapped
+        File.rename(original_parent, displaced_parent)
+        File.symlink(outside, original_parent)
+        swapped = true
+      end
+      original_snapshot.call(target)
+    end
+
+    FileCopyService.stub(:snapshot_reference_target, swap_parent) do
+      assert_raises(FileCopyService::UnsafePathError) do
+        snapshot = FileCopyService.snapshot_reference_source(
+          staging,
+          authorized_roots: [ authorized ]
+        )
+        FileCopyService.reference_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          source_snapshot: snapshot
+        )
+      end
+    end
+
+    assert swapped
+    assert_not File.exist?(destination)
+    assert_equal "outside content", File.binread(File.join(outside, "book.txt"))
+  end
+
+  test "reference_noreplace rejects an authorized root replaced during publication" do
+    authorized = File.join(@tmp_dir, "authorized-root")
+    displaced = File.join(@tmp_dir, "authorized-root-original")
+    content = File.join(authorized, "content")
+    staging = File.join(@tmp_dir, "root-raced-reference.txt")
+    target = File.join(content, "book.txt")
+    destination = File.join(@dest_dir, "root-raced-reference.txt")
+    FileUtils.mkdir_p(content)
+    File.binwrite(target, "authorized content")
+    File.symlink(target, staging)
+    snapshot = FileCopyService.snapshot_reference_source(staging, authorized_roots: [ authorized ])
+    real_symlinkat = FileCopyService.method(:native_symlinkat)
+    swapped = false
+    swap_root = lambda do |link_target, directory_fd, basename|
+      File.rename(authorized, displaced)
+      FileUtils.mkdir_p(authorized)
+      File.rename(File.join(displaced, "content"), content)
+      swapped = true
+      real_symlinkat.call(link_target, directory_fd, basename)
+    end
+
+    FileCopyService.stub(:native_symlinkat, swap_root) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          source_snapshot: snapshot
+        )
+      end
+    end
+
+    assert swapped
+    assert_equal "authorized content", File.binread(destination)
+  end
+
+  test "reference_noreplace revalidates a regular source root during publication and retry" do
+    authorized = File.join(@tmp_dir, "regular-authorized-root")
+    content = File.join(authorized, "content")
+    displaced = File.join(@tmp_dir, "regular-authorized-root-original")
+    source = File.join(content, "book.txt")
+    destination = File.join(@dest_dir, "regular-root-raced-reference.txt")
+    FileUtils.mkdir_p(content)
+    File.binwrite(source, "authorized regular content")
+    source_snapshot = FileCopyService.snapshot_source_file(source)
+    root_snapshot = FileCopyService.snapshot_reference_root(authorized)
+    real_symlinkat = FileCopyService.method(:native_symlinkat)
+    swapped = false
+    swap_root = lambda do |link_target, directory_fd, basename|
+      File.rename(authorized, displaced)
+      FileUtils.mkdir_p(authorized)
+      File.rename(File.join(displaced, "content"), content)
+      swapped = true
+      real_symlinkat.call(link_target, directory_fd, basename)
+    end
+
+    FileCopyService.stub(:native_symlinkat, swap_root) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.reference_noreplace(
+          source,
+          destination,
+          root: @dest_dir,
+          source_root: nil,
+          source_snapshot: source_snapshot,
+          authorized_root_snapshot: root_snapshot
+        )
+      end
+    end
+
+    assert swapped
+    assert_equal "authorized regular content", File.binread(destination)
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.reference_target_matches?(
+        source,
+        destination,
+        root: @dest_dir,
+        source_snapshot: source_snapshot,
+        authorized_root_snapshot: root_snapshot
+      )
+    end
+  end
+
+  test "reference source root snapshots and publishes immediate symlink leaves" do
+    source_root = File.join(@tmp_dir, "decypharr-release")
+    nested = File.join(source_root, "disc")
+    target = File.join(@tmp_dir, "debrid-content", "chapter.m4b")
+    source = File.join(nested, "chapter.m4b")
+    destination = File.join(@dest_dir, "chapter.m4b")
+    FileUtils.mkdir_p([ nested, File.dirname(target) ])
+    File.binwrite(target, "mounted chapter")
+    File.symlink(File.join("..", "..", "debrid-content", "chapter.m4b"), source)
+
+    root_snapshot = FileCopyService.snapshot_reference_source_root(
+      source_root,
+      authorized_roots: [ @tmp_dir ]
+    )
+    source_snapshot = root_snapshot.reference_snapshots.fetch("disc/chapter.m4b")
+    FileCopyService.reference_noreplace(
+      source,
+      destination,
+      root: @dest_dir,
+      source_root: nil,
+      source_snapshot: source_snapshot
+    )
+
+    assert_equal :reference, root_snapshot.entries.fetch("disc/chapter.m4b")[2]
+    assert_equal Pathname(target).realpath.to_s, File.readlink(destination)
+    assert_equal "mounted chapter", File.binread(destination)
+  end
+
+  test "reference source root rejects a changed snapshotted leaf" do
+    source_root = File.join(@tmp_dir, "raced-reference-release")
+    original = File.join(@tmp_dir, "original-leaf.m4b")
+    replacement = File.join(@tmp_dir, "replacement-leaf.m4b")
+    source = File.join(source_root, "book.m4b")
+    destination = File.join(@dest_dir, "book.m4b")
+    FileUtils.mkdir_p(source_root)
+    File.binwrite(original, "original")
+    File.binwrite(replacement, "replacement")
+    File.symlink(original, source)
+    root_snapshot = FileCopyService.snapshot_reference_source_root(
+      source_root,
+      authorized_roots: [ @tmp_dir ]
+    )
+    File.unlink(source)
+    File.symlink(replacement, source)
+
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.reference_noreplace(
+        source,
+        destination,
+        root: @dest_dir,
+        source_root: nil,
+        source_snapshot: root_snapshot.reference_snapshots.fetch("book.m4b")
+      )
+    end
+    assert_not File.exist?(destination)
+  end
+
+  test "copy move and hardlink modes continue to reject an immediate source symlink" do
+    staging = File.join(@tmp_dir, "mode-staging.txt")
+    target = File.join(@tmp_dir, "mode-target.txt")
+    File.binwrite(target, "mode content")
+    File.symlink(target, staging)
+
+    {
+      "copy" => ->(destination) { FileCopyService.cp_noreplace(staging, destination, root: @dest_dir) },
+      "move" => ->(destination) { FileCopyService.mv_noreplace(staging, destination, root: @dest_dir) },
+      "hardlink" => lambda do |destination|
+        FileCopyService.hardlink_noreplace(
+          staging,
+          destination,
+          root: @dest_dir,
+          source_root: nil
+        )
+      end
+    }.each do |mode, operation|
+      destination = File.join(@dest_dir, "#{mode}-symlink.txt")
+      assert_raises(FileCopyService::UnsafePathError) { operation.call(destination) }
+      assert_not File.exist?(destination)
+    end
+
+    assert File.symlink?(staging)
+    assert_equal "mode content", File.binread(target)
+  end
+
   test "reference_target_matches compares the exact normalized symlink target" do
     destination = File.join(@dest_dir, "referenced.txt")
     source_alias = File.join(@tmp_dir, "missing", "..", "source.txt")
@@ -815,6 +1168,347 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(destination)
     assert_equal "test content", File.binread(@src_file)
     assert_empty Dir.children(@dest_dir)
+  end
+
+  test "detects only 9p mounts explicitly backed by DrvFS" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    stat = File.stat(@dest_dir)
+    device = "#{stat.dev_major}:#{stat.dev_minor}"
+    mountpoint = @tmp_dir.gsub(" ", "\\040")
+    drvfs_mountinfo =
+      "2286 2276 #{device} / #{mountpoint} rw,noatime - 9p D:\\\\134 " \
+      "rw,aname=drvfs;path=D:\\\\;uid=1000;gid=1000;metadata,cache=5\n"
+    ordinary_9p_mountinfo =
+      "2286 2276 #{device} / #{mountpoint} rw,noatime - 9p hostshare rw,trans=virtio\n"
+    misleading_mountinfo =
+      "2286 2276 #{device} / #{mountpoint} rw,noatime - ext4 /dev/test rw,aname=drvfs\n"
+
+    File.stub(:binread, drvfs_mountinfo.b) do
+      assert FileCopyService.send(:drvfs_mount?, @dest_dir)
+      assert FileCopyService.send(:hardlink_identity_unreliable?, @dest_dir)
+    end
+    [ ordinary_9p_mountinfo, misleading_mountinfo ].each do |mountinfo|
+      File.stub(:binread, mountinfo.b) do
+        assert_not FileCopyService.send(:drvfs_mount?, @dest_dir)
+      end
+    end
+  end
+
+  test "DrvFS cleanup never quarantines an entry whose rename can change identity" do
+    target = File.join(@dest_dir, "drvfs-cleanup-target")
+    File.binwrite(target, "retain me")
+    identity = [ File.stat(target).dev, File.stat(target).ino ]
+
+    result = FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:native_renameat, ->(*) { flunk "DrvFS cleanup must not move an identity-ambiguous entry" }) do
+        FileCopyService.send(:with_pinned_destination_parent, target, root: @dest_dir) do |parent, basename, _|
+          FileCopyService.send(:remove_pinned_child_if_identity, parent, basename, identity)
+        end
+      end
+    end
+
+    assert_equal :retained, result
+    assert_equal "retain me", File.binread(target)
+    assert_empty Dir.glob(File.join(@dest_dir, ".shelfarr-copy-quarantine-*"))
+  end
+
+  test "publication preserves its primary atomic error when quarantine identity changes" do
+    destination = File.join(@dest_dir, "primary-error.txt")
+    real_rename = FileCopyService.method(:native_renameat)
+    real_identity = FileCopyService.method(:file_identity)
+    quarantined = false
+    moving_to_quarantine = lambda do |source_fd, source_name, destination_fd, destination_name|
+      result = real_rename.call(source_fd, source_name, destination_fd, destination_name)
+      quarantined = true if destination_name == FileCopyService::COPY_QUARANTINE_ENTRY
+      result
+    end
+    changed_after_rename = lambda do |stat|
+      identity = real_identity.call(stat)
+      quarantined && stat.file? ? [ identity.first, identity.last + 1 ] : identity
+    end
+    primary = FileCopyService::AtomicPublicationUnsupportedError.new("atomic publication unavailable")
+
+    error = FileCopyService.stub(:drvfs_mount?, false) do
+      FileCopyService.stub(:publish_private_child_atomically_noreplace!, ->(*) { raise primary }) do
+        FileCopyService.stub(:native_renameat, moving_to_quarantine) do
+          FileCopyService.stub(:native_rename_noreplace, false) do
+            FileCopyService.stub(:file_identity, changed_after_rename) do
+              assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+                FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    assert_same primary, error
+    assert quarantined
+    quarantine = Dir.glob(File.join(@dest_dir, ".shelfarr-copy-quarantine-*")).sole
+    assert_equal "test content",
+      File.binread(File.join(quarantine, FileCopyService::COPY_QUARANTINE_ENTRY))
+    assert_not File.exist?(destination)
+  end
+
+  test "DrvFS publication uses an exclusive verified direct copy" do
+    destination = File.join(@dest_dir, "drvfs-compatible.txt")
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:native_rename_noreplace, ->(*) { flunk "DrvFS publication must not rename" }) do
+        FileCopyService.stub(:native_linkat, ->(*) { flunk "DrvFS publication must not hardlink" }) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_includes FileCopyService::LIBRARY_FILE_MODES, File.stat(destination).mode & 0o7777
+    journal = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert File.file?(journal)
+    assert_match(/drvfs:complete/, File.binread(journal))
+  end
+
+  test "DrvFS publications serialize on one journal instead of rejecting an active worker" do
+    destinations = [ "first", "second" ].map do |name|
+      directory = File.join(@dest_dir, name)
+      FileUtils.mkdir_p(directory)
+      File.join(directory, "book.txt")
+    end
+    copy_started = Queue.new
+    release_copy = Queue.new
+    second_started = Queue.new
+    first_copy = true
+    real_copy = FileCopyService.method(:copy_source_io)
+    blocking_copy = lambda do |source, target, heartbeat: nil|
+      block_this_copy = first_copy
+      first_copy = false
+      if block_this_copy
+        copy_started << true
+        release_copy.pop
+      end
+      real_copy.call(source, target, heartbeat: heartbeat)
+    end
+    first = nil
+    second = nil
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+        FileCopyService.stub(:copy_source_io, blocking_copy) do
+          first = Thread.new do
+            FileCopyService.cp_noreplace(@src_file, destinations.first, root: @dest_dir)
+            :published
+          rescue => error
+            error
+          end
+          copy_started.pop
+          second = Thread.new do
+            second_started << true
+            FileCopyService.cp_noreplace(@src_file, destinations.second, root: @dest_dir)
+            :published
+          rescue => error
+            error
+          end
+          second_started.pop
+          sleep 0.1
+          assert second.alive?, "the second publication should wait for the active journal"
+
+          release_copy << true
+          assert_equal :published, first.value
+          assert_equal :published, second.value
+        end
+      end
+    end
+
+    assert_equal [ "test content", "test content" ], destinations.map { |path| File.binread(path) }
+  ensure
+    release_copy << true if first&.alive?
+    first&.join
+    second&.join
+  end
+
+  test "DrvFS publication stops waiting after the journal lock deadline" do
+    destination = File.join(@dest_dir, "timed-out.txt")
+    journal_path = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+
+    File.open(journal_path, File::RDWR | File::CREAT, 0o600) do |holder|
+      assert holder.flock(File::LOCK_EX | File::LOCK_NB)
+
+      error = FileCopyService.stub(:drvfs_mount?, true) do
+        FileCopyService.stub(:drvfs_copy_lock_timeout, 0) do
+          assert_raises(FileCopyService::PublicationBusyError) do
+            FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+          end
+        end
+      end
+
+      assert_match(/retry this import later/, error.message)
+    end
+
+    assert_not File.exist?(destination)
+  end
+
+  test "DrvFS publication with a heartbeat keeps waiting past the worker deadline" do
+    destination = File.join(@dest_dir, "heartbeat-waiter.txt")
+    journal_path = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    heartbeat_count = 0
+    result = nil
+
+    File.open(journal_path, File::RDWR | File::CREAT, 0o600) do |holder|
+      assert holder.flock(File::LOCK_EX | File::LOCK_NB)
+
+      waiter = Thread.new do
+        FileCopyService.stub(:drvfs_mount?, true) do
+          FileCopyService.stub(:drvfs_copy_lock_timeout, 0) do
+            FileCopyService.cp_noreplace(
+              @src_file,
+              destination,
+              root: @dest_dir,
+              heartbeat: -> { heartbeat_count += 1 }
+            )
+          end
+        end
+      rescue => error
+        error
+      end
+
+      Timeout.timeout(1) { sleep 0.01 until heartbeat_count.positive? }
+      assert waiter.alive?, "the heartbeat-aware publication should remain cancellably queued"
+      holder.flock(File::LOCK_UN)
+      result = waiter.value
+    ensure
+      holder.flock(File::LOCK_UN)
+      waiter&.join
+    end
+
+    assert_equal destination, result
+    assert_equal "test content", File.binread(destination)
+  end
+
+  test "DrvFS records aborted destination creation and permits a later publication" do
+    failed_destination = File.join(@dest_dir, "failed.txt")
+    retry_destination = File.join(@dest_dir, "retry.txt")
+    real_open = FileCopyService.method(:native_openat)
+    fail_creation = lambda do |directory_fd, basename, flags, mode|
+      if basename == File.basename(failed_destination) && (flags & File::CREAT) != 0
+        raise Errno::ENOSPC, "simulated full destination"
+      end
+
+      real_open.call(directory_fd, basename, flags, mode)
+    end
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+        FileCopyService.stub(:native_openat, fail_creation) do
+          assert_raises(Errno::ENOSPC) do
+            FileCopyService.cp_noreplace(@src_file, failed_destination, root: @dest_dir)
+          end
+        end
+
+        journal = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+        assert_match(/drvfs:aborted/, File.binread(journal))
+        assert_not File.exist?(failed_destination)
+
+        FileCopyService.cp_noreplace(@src_file, retry_destination, root: @dest_dir)
+      end
+    end
+
+    assert_equal "test content", File.binread(retry_destination)
+  end
+
+  test "DrvFS reuses one bounded journal across completed publications" do
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+        3.times do |index|
+          FileCopyService.cp_noreplace(
+            @src_file,
+            File.join(@dest_dir, "completed-#{index}.txt"),
+            root: @dest_dir
+          )
+        end
+      end
+    end
+
+    internal_entries = Dir.children(@dest_dir).grep(/\A\.shelfarr/)
+    assert_equal [ FileCopyService::DRVFS_COPY_JOURNAL_BASENAME ], internal_entries
+    journal = File.join(@dest_dir, internal_entries.sole)
+    assert_match(/drvfs:complete/, File.binread(journal))
+    assert_operator File.size(journal), :<, 4096
+  end
+
+  test "DrvFS publication never overwrites an occupied destination" do
+    destination = File.join(@dest_dir, "drvfs-occupied.txt")
+    File.binwrite(destination, "existing library bytes")
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      assert_raises(Errno::EEXIST) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_equal "existing library bytes", File.binread(destination)
+    assert_equal "test content", File.binread(@src_file)
+    journal = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert_match(/drvfs:conflict/, File.binread(journal))
+  end
+
+  test "DrvFS interruption retains the partial destination and blocks unsafe retry cleanup" do
+    destination = File.join(@dest_dir, "drvfs-partial.txt")
+
+    error = FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:copy_source_io, lambda { |_source, target, **|
+        target.write("partial")
+        target.flush
+        raise IOError, "simulated interrupted direct copy"
+      }) do
+        assert_raises(FileCopyService::AmbiguousPublicationError) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+
+    assert_instance_of IOError, error.cause
+    assert_match(/manual review/, error.message)
+    assert_equal "partial", File.binread(destination)
+    journal = File.join(@dest_dir, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert File.file?(journal)
+    assert_match(/drvfs:copying/, File.binread(journal))
+    retry_error = FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      FileCopyService.stub(:drvfs_mount?, true) do
+        assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+    assert_match(/manual cleanup/, retry_error.message)
+    assert_equal "partial", File.binread(destination)
+  end
+
+  test "DrvFS verification retains both pathname entries after destination replacement" do
+    destination = File.join(@dest_dir, "drvfs-replaced.txt")
+    displaced = File.join(@dest_dir, "drvfs-created-entry.txt")
+    real_copy = FileCopyService.method(:copy_source_io)
+    replaced = false
+    replacing_copy = lambda do |source, target, heartbeat: nil|
+      real_copy.call(source, target, heartbeat: heartbeat)
+      File.rename(destination, displaced)
+      File.binwrite(destination, "replacement bytes")
+      replaced = true
+    end
+
+    error = FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:copy_source_io, replacing_copy) do
+        assert_raises(FileCopyService::AmbiguousPublicationError) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+
+    assert replaced
+    assert_match(/manual review/, error.message)
+    assert_equal "replacement bytes", File.binread(destination)
+    assert_equal "test content", File.binread(displaced)
+    assert_equal "test content", File.binread(@src_file)
   end
 
   test "cp_noreplace classifies an unusable linked destination as ambiguous" do

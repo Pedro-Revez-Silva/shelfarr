@@ -12,6 +12,8 @@ class PathTemplateService
   DEFAULT_FILENAME_TEMPLATE = "{author} - {title}".freeze
   TOKEN_PATTERN = /\{([^{}]+)\}/
 
+  class UnsafePathError < StandardError; end
+
   class << self
     # Build a relative path from a template and book metadata
     def build_path(book, template)
@@ -47,6 +49,10 @@ class PathTemplateService
       # Check for path traversal attempts
       if mode == :path && (template.include?("..") || template.start_with?("/"))
         return [ false, "Template cannot contain '..' or start with '/'" ]
+      end
+
+      if mode == :path && LibraryPathSafety.template_targets_internal_directory?(template)
+        return [ false, "Template cannot use a Shelfarr internal staging directory" ]
       end
 
       # Check for unknown variables
@@ -166,7 +172,12 @@ class PathTemplateService
       return "" if template.blank?
 
       result = render_template(book, template, variant: :path)
-      sanitize_path(cleanup_path_result(result))
+      sanitized = sanitize_path(cleanup_path_result(result))
+      if LibraryPathSafety.internal_relative_path?(sanitized)
+        raise UnsafePathError, "Rendered library path uses a Shelfarr internal staging directory"
+      end
+
+      sanitized
     end
 
     def render_filename_template(book, template)

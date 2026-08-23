@@ -424,22 +424,39 @@ class RequestsController < ApplicationController
 
     tmp = Tempfile.new([ "shelfarr-ref-", ".zip" ])
     tmp.binmode
+    tmp.close
     Zip::File.open(tmp.path, create: true) do |zip|
-      entries.each do |entry_name, target_path|
-        zip.get_output_stream(entry_name) { |out| out.write(File.binread(target_path)) }
+      entries.each do |entry_name, target_path, content_root|
+        zip.get_output_stream(entry_name) do |out|
+          root_snapshot = content_root if content_root.is_a?(FileCopyService::ReferenceRootSnapshot)
+          FileCopyService.with_regular_file(
+            target_path,
+            root: root_snapshot ? root_snapshot.path : content_root,
+            authorized_root_snapshot: root_snapshot
+          ) do |input|
+            IO.copy_stream(input, out)
+          end
+        end
       end
     end
-    tmp.rewind
-    send_data tmp.read, filename: zip_filename, type: "application/zip", disposition: "attachment"
-  rescue UnsafeDownloadPathError, SystemCallError, Zip::Error => e
+    archive_stat = File.lstat(tmp.path)
+    archive_file = FileCopyService.open_pinned_regular_file(
+      tmp.path,
+      root: File.dirname(tmp.path),
+      expected_device: archive_stat.dev,
+      expected_inode: archive_stat.ino
+    )
+    send_pinned_file(archive_file, filename: zip_filename, type: "application/zip")
+    archive_file = nil
+  rescue UnsafeDownloadPathError, FileCopyService::UnsafePathError, SystemCallError, Zip::Error => e
     Rails.logger.warn "[Download] Reference tree zip failed for book ##{book.id}: #{e.class}"
     redirect_to @request, alert: "Unable to prepare a download for this reference library item."
   ensure
+    archive_file&.close unless archive_file&.closed?
     tmp&.close!
   end
 
   def collect_authorized_reference_entries(directory, library_root:, prefix: nil)
-    content_roots = authorized_content_roots
     results = []
     Dir.each_child(directory) do |name|
       child = directory.join(name)
@@ -454,16 +471,20 @@ class RequestsController < ApplicationController
         target = child.parent.join(target) unless target.absolute?
         real = target.expand_path.realpath
         raise UnsafeDownloadPathError, "reference leaf is not a file" unless File.lstat(real).file?
-        unless content_roots.any? { |root| canonical_path_contained?(real.to_s, root.to_s) }
-          raise UnsafeDownloadPathError, "reference leaf escapes authorized roots"
-        end
-        results << [ relative, real.to_s ]
+        content_root = authorized_reference_target_roots.select do |root|
+          canonical_path_contained?(real.to_s, root.path.to_s)
+        end.max_by { |root| root.path.to_s.length }
+        raise UnsafeDownloadPathError, "reference leaf escapes authorized roots" unless content_root
+
+        results << [ relative, real.to_s, content_root ]
       elsif stat.file?
         real = child.realpath
-        unless content_roots.any? { |root| canonical_path_contained?(real.to_s, root.to_s) }
-          raise UnsafeDownloadPathError, "library file escapes authorized roots"
-        end
-        results << [ relative, real.to_s ]
+        content_root = canonical_output_roots.select do |root|
+          canonical_path_contained?(real.to_s, root.to_s)
+        end.max_by { |root| root.to_s.length }
+        raise UnsafeDownloadPathError, "library file escapes authorized roots" unless content_root
+
+        results << [ relative, real.to_s, content_root.to_s ]
       else
         raise UnsafeDownloadPathError, "unsupported library entry type"
       end
@@ -547,14 +568,14 @@ class RequestsController < ApplicationController
     target_stat = File.lstat(canonical_target)
     raise UnsafeDownloadPathError, "reference target is not a regular file" unless target_stat.file?
 
-    content_root = authorized_content_roots.select do |root|
-      canonical_path_contained?(canonical_target.to_s, root.to_s)
-    end.max_by { |root| root.to_s.length }
+    content_root = authorized_reference_target_roots.select do |root|
+      canonical_path_contained?(canonical_target.to_s, root.path.to_s)
+    end.max_by { |root| root.path.to_s.length }
     raise UnsafeDownloadPathError, "reference target resolves outside authorized roots" unless content_root
 
     DownloadBoundary.new(
       target: canonical_target.to_s,
-      root: content_root.to_s,
+      root: content_root.path.to_s,
       device: target_stat.dev,
       inode: target_stat.ino,
       kind: :file
@@ -570,10 +591,15 @@ class RequestsController < ApplicationController
   end
 
   def allowed_download_paths
+    client_paths = @request.book.requests
+      .joins(downloads: :download_client)
+      .where.not(download_clients: { download_path: [ nil, "" ] })
+      .pluck("download_clients.download_path")
     [
       SettingsService.get(:download_local_path, default: "/downloads"),
-      SettingsService.get(:download_remote_path)
-    ].compact.reject(&:blank?)
+      SettingsService.get(:download_remote_path),
+      *client_paths
+    ].compact_blank
   end
 
   def canonical_path_contained?(path, root)
@@ -587,8 +613,34 @@ class RequestsController < ApplicationController
     canonicalize_roots(allowed_output_paths)
   end
 
-  def authorized_content_roots
-    canonicalize_roots(allowed_output_paths + allowed_download_paths)
+  def authorized_reference_target_roots
+    book = @request.book
+    if book.reference_target_roots_recorded?
+      validate_persisted_reference_target_roots(book.reference_target_roots)
+    else
+      canonicalize_roots(allowed_output_paths + allowed_download_paths).filter_map do |path|
+        FileCopyService.snapshot_reference_root(path)
+      rescue FileCopyService::UnsafePathError
+        nil
+      end
+    end
+  end
+
+  def validate_persisted_reference_target_roots(roots)
+    roots.filter_map do |root|
+      path = Pathname(root.path)
+      stat = File.lstat(path)
+      next unless stat.directory?
+      next unless [ stat.dev, stat.ino ] == [ root.device, root.inode ]
+
+      FileCopyService::ReferenceRootSnapshot.new(
+        path: path,
+        device: root.device,
+        inode: root.inode
+      ).freeze
+    rescue SystemCallError, ArgumentError
+      nil
+    end
   end
 
   def canonicalize_roots(paths)

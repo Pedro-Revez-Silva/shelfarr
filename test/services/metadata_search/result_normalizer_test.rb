@@ -167,6 +167,7 @@ module MetadataSearch
         series_name: "Saga",
         issue_number: resource_type == "issue" ? "1" : nil,
         release_date: "2012-03-14",
+        series_start_year: 2012,
         content_kind: "graphic",
         collection_id: "4050-1",
         collection_title: "Saga",

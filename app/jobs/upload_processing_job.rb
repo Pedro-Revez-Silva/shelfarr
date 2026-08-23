@@ -225,7 +225,7 @@ class UploadProcessingJob < ApplicationJob
           if ordinary_file_service || zip_file_service
             claim_book_file_path!(book, destination, upload)
           else
-            book.update!(file_path: destination)
+            book.update!(file_path: destination, reference_target_roots: nil)
           end
 
           completed_file_path = if ordinary_file_service
@@ -368,6 +368,7 @@ class UploadProcessingJob < ApplicationJob
       )
       .update_all(
         file_path: destination,
+        reference_target_roots: nil,
         acquisition_reservation_token: nil,
         acquisition_reservation_owner_type: nil,
         acquisition_reservation_owner_id: nil,

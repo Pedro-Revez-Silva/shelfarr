@@ -915,6 +915,129 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "uses compact issue title without author for structured Prowlarr search" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "Saga - #7 - The Chapter",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-437",
+      issue_number: "7",
+      series: "Saga",
+      series_position: "7"
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+    searches = []
+    search = lambda do |query, **options|
+      searches << { query: query, options: options }
+      []
+    end
+
+    IndexerClient.stub(:search, search) do
+      SearchJob.new.send(:search_prowlarr, request)
+    end
+
+    structured = searches.first
+    assert_equal "Saga #7", structured.dig(:options, :title)
+    assert_nil structured.dig(:options, :author)
+  end
+
+  test "uses only compact issue variants for generic indexer searches" do
+    book = Book.create!(
+      title: "Saga - #7 - The Chapter",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-438",
+      issue_number: "7",
+      series: "Saga",
+      series_position: "7"
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_equal [ "Saga 7", "Saga #7", "Saga 007" ], attempts.map(&:query)
+    assert attempts.none? { |attempt| attempt.query.include?(book.author) }
+    assert_not_includes attempts.map(&:query), book.series
+  end
+
+  test "falls back to series position only for confirmed Comic Vine issues" do
+    issue = Book.create!(
+      title: "Saga - The Chapter",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-441",
+      issue_number: nil,
+      series: "Saga",
+      series_position: "9"
+    )
+    volume = Book.create!(
+      title: "Saga Deluxe Volume",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4050-441",
+      issue_number: nil,
+      series: "Saga",
+      series_position: "9"
+    )
+
+    issue_request = Request.create!(book: issue, user: users(:one), status: :pending)
+    volume_request = Request.create!(book: volume, user: users(:one), status: :pending)
+    job = SearchJob.new
+
+    assert_equal [ "Saga 9", "Saga #9", "Saga 009" ], job.send(:generic_indexer_attempts, issue_request).map(&:query)
+    assert_equal volume.title, job.send(:generic_indexer_attempts, volume_request).first.query
+  end
+
+  test "zero-pads alphanumeric comic issue labels" do
+    book = Book.create!(
+      title: "Saga - #7A",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "7A",
+      series: "Saga"
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_equal [ "Saga 7A", "Saga #7A", "Saga 007A" ], attempts.map(&:query)
+  end
+
+  test "zero-pads decimal comic issue labels" do
+    book = Book.create!(
+      title: "Saga - #7.5",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "7.5",
+      series: "Saga"
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_equal [ "Saga 7.5", "Saga #7.5", "Saga 007.5" ], attempts.map(&:query)
+  end
+
+  test "does not zero-pad comic issue labels without a numeric stem" do
+    book = Book.create!(
+      title: "Saga - Special",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      issue_number: "Special",
+      series: "Saga"
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending)
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_equal [ "Saga Special", "Saga #Special" ], attempts.map(&:query)
+  end
+
   test "sends the author to Prowlarr indexers that only accept free text" do
     VCR.turned_off do
       stub_prowlarr_indexers(FREE_TEXT_INDEXERS)

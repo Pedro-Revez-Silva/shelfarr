@@ -11,10 +11,7 @@ class SafeLibraryDeletionService
   class Error < StandardError; end
 
   AT_REMOVEDIR = RbConfig::CONFIG.fetch("host_os").match?(/darwin/i) ? 0x80 : 0x200
-  INTERNAL_DIRECTORIES = [
-    OwnedMediaImportFileService::STAGING_DIRECTORY,
-    UploadImportFileService::PRIVATE_DIRECTORY
-  ].freeze
+  INTERNAL_DIRECTORIES = LibraryPathSafety::INTERNAL_DIRECTORIES
 
   def initialize(book)
     @book = book

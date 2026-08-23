@@ -16,6 +16,7 @@ class MetadataCollectionServiceTest < ActiveSupport::TestCase
       series_name: "Saga",
       issue_number: "1",
       release_date: "2012-03-14",
+      series_start_year: 2012,
       content_kind: "book",
       collection_id: nil,
       collection_title: nil,
@@ -45,6 +46,7 @@ class MetadataCollectionServiceTest < ActiveSupport::TestCase
         assert_equal "collection", items.first.metadata_attrs[:request_scope]
         assert_equal "4050-99", items.first.metadata_attrs[:collection_id]
         assert_equal "Saga", items.first.metadata_attrs[:collection_title]
+        assert_equal 2012, items.first.metadata_attrs[:series_start_year]
         assert_equal "1", items.first.metadata_attrs[:series_position]
         assert_equal "graphic", items.first.metadata_attrs[:content_kind]
       end

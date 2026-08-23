@@ -3,6 +3,59 @@
 require "test_helper"
 
 class BookTest < ActiveSupport::TestCase
+  test "reference target roots serialize immutable path and identity records" do
+    book = Book.create!(
+      title: "Reference provenance",
+      book_type: :ebook,
+      reference_target_roots: [
+        { path: "/debrid", device: 10, inode: 20 },
+        FileCopyService::ReferenceRootSnapshot.new(path: Pathname("/debrid"), device: 10, inode: 20),
+        { "path" => "/other", "device" => 30, "inode" => 40 }
+      ]
+    )
+
+    roots = book.reload.reference_target_roots
+    assert_equal [ "/debrid", "/other" ], roots.map { |root| root.path.to_s }
+    assert_equal [ [ 10, 20 ], [ 30, 40 ] ], roots.map { |root| [ root.device, root.inode ] }
+    assert_equal \
+      '[{"path":"/debrid","device":10,"inode":20},{"path":"/other","device":30,"inode":40}]',
+      book[:reference_target_roots]
+  end
+
+  test "malformed reference target roots fail closed" do
+    book = Book.create!(title: "Malformed provenance", book_type: :ebook)
+    Book.where(id: book.id).update_all(reference_target_roots: '{"root":"/"}')
+
+    assert_empty book.reload.reference_target_roots
+    assert book.reference_target_roots_recorded?
+  end
+
+  test "blank non-null reference target provenance is recorded" do
+    book = Book.create!(title: "Blank provenance", book_type: :ebook)
+    Book.where(id: book.id).update_all(reference_target_roots: "")
+
+    assert_empty book.reload.reference_target_roots
+    assert book.reference_target_roots_recorded?
+  end
+
+  test "obsolete path-only reference provenance is not accepted" do
+    book = Book.create!(title: "Obsolete provenance", book_type: :ebook)
+    Book.where(id: book.id).update_all(reference_target_roots: '["/debrid"]')
+
+    assert_empty book.reload.reference_target_roots
+    assert book.reference_target_roots_recorded?
+  end
+
+  test "invalid or conflicting reference target roots cannot be dumped" do
+    assert_raises(ArgumentError) { Book.dump_reference_target_roots([ "/debrid" ]) }
+    assert_raises(ArgumentError) do
+      Book.dump_reference_target_roots([
+        { path: "/debrid", device: 10, inode: 20 },
+        { path: "/debrid", device: 10, inode: 21 }
+      ])
+    end
+  end
+
   test "acquired scope only includes books with a usable path" do
     acquired = Book.create!(title: "Acquired", book_type: :ebook, file_path: "/books/acquired.epub")
     blank = Book.create!(title: "Blank", book_type: :ebook, file_path: "")

@@ -39,6 +39,7 @@ class PostProcessingJob < ApplicationJob
     @hardlink_fallback_copied_count = 0
     @referenced_file_count = 0
     @reused_file_count = 0
+    @completed_reference_target_roots = []
     download = Download.find_by(id: download_id)
     return unless download&.completed?
 
@@ -96,23 +97,35 @@ class PostProcessingJob < ApplicationJob
       if source_path_unavailable?(source_path)
         return retry_source_path_later(download, request, source_path, source_path_retry_count)
       end
-      source_authorization = validate_download_specific_source_path!(
-        source_path,
-        source_resolution[:authorized_roots],
-        download
-      )
+      source_authorization = begin
+        validate_download_specific_source_path!(
+          source_path,
+          source_resolution[:authorized_roots],
+          download
+        )
+      rescue FileCopyService::ReferenceTargetUnavailableError
+        return retry_source_path_later(download, request, source_path, source_path_retry_count)
+      end
 
       # Reference mode keeps download bytes as the only content; never delete
       # usenet/client sources after a symlink-only import.
       remove_usenet_download = usenet_cleanup_requested?(download) && !reference_completed_downloads?
-      source_cleanup = import_files(
-        source_path,
-        destination,
-        book: book,
-        base_path: base_path,
-        require_durable: move_completed_downloads? || remove_usenet_download,
-        source_authorization: source_authorization
-      )
+      source_cleanup = begin
+        imported = import_files(
+          source_path,
+          destination,
+          book: book,
+          base_path: base_path,
+          require_durable: move_completed_downloads? || remove_usenet_download,
+          source_authorization: source_authorization
+        )
+        validate_completed_reference_target_roots! if reference_completed_downloads?
+        imported
+      rescue FileCopyService::ReferenceTargetUnavailableError
+        return retry_source_path_later(download, request, source_path, source_path_retry_count)
+      rescue FileCopyService::PublicationBusyError
+        return retry_busy_publication_later(download, request, source_path_retry_count)
+      end
 
       book_path = imported_book_path(book, destination)
       cleanup_state = source_cleanup&.fetch(:state)
@@ -189,15 +202,23 @@ class PostProcessingJob < ApplicationJob
       end
 
       if book.file_path.blank?
+        reference_target_roots = Book.dump_reference_target_roots(
+          @completed_reference_target_roots
+        )
         claimed = Book.where(id: book.id)
           .where("file_path IS NULL OR TRIM(file_path) = ''")
           .where(acquisition_reservation_token: nil)
-          .update_all(file_path: imported_path, updated_at: Time.current)
+          .update_all(
+            file_path: imported_path,
+            reference_target_roots: reference_target_roots,
+            updated_at: Time.current
+          )
         unless claimed == 1
           raise BookAcquisitionConflictError,
             "Another acquisition claimed this title while post-processing was finalizing"
         end
         book.file_path = imported_path
+        book[:reference_target_roots] = reference_target_roots
       elsif book.file_path != imported_path
         raise BookAcquisitionConflictError,
           "Another acquisition already attached a different library file to this title"
@@ -277,6 +298,14 @@ class PostProcessingJob < ApplicationJob
       location ? "#{message} at #{location}" : message
     when FileCopyService::DurabilityUnsupportedError
       "The library filesystem cannot safely complete destructive imports because fsync is unsupported; use another filesystem or retain the download source"
+    when FileCopyService::AmbiguousPublicationError
+      "An incomplete library publication was retained for manual review; preserve the destination and adjacent Shelfarr filesystem artifacts before retrying"
+    when FileCopyService::AtomicPublicationUnsupportedError
+      if bounded_exception_message(error).match?(/manual (?:cleanup|review)/i)
+        "Interrupted library publication artifacts were retained for manual review before retrying"
+      else
+        safe_attention_detail(error)
+      end
     when FileCopyService::UnsafePathError
       "The download contains a symbolic link or non-regular path, or changed during its safety checks"
     when AudiobookBundleImportPlanner::UnsafeDestinationError
@@ -365,15 +394,22 @@ class PostProcessingJob < ApplicationJob
   end
 
   def source_path_unavailable?(source_path)
-    source_path.present? && !File.exist?(source_path)
+    source_path.present? && !File.exist?(source_path) &&
+      !(reference_completed_downloads? && File.symlink?(source_path))
   end
 
   def validate_download_specific_source_path!(source_path, authorized_roots, download)
     return unless source_path.present?
 
-    source = canonical_path(source_path)
     roots = Array(authorized_roots).filter_map { |path| canonical_download_root(path) }.uniq
     shared_roots = shared_download_roots(download).filter_map { |path| canonical_download_root(path) }.uniq
+    source_stat = File.lstat(source_path)
+    reference_link = source_stat.symlink? && reference_completed_downloads?
+    source = if reference_link
+      File.join(canonical_path(File.dirname(source_path)), File.basename(source_path))
+    else
+      canonical_path(source_path)
+    end
 
     if shared_roots.include?(source)
       raise "Refusing to import shared download root. " \
@@ -384,16 +420,26 @@ class PostProcessingJob < ApplicationJob
       raise "Refusing to import source outside a configured download root."
     end
 
-    source_stat = File.lstat(source_path)
     snapshot = if source_stat.directory?
-      FileCopyService.snapshot_source_root(source_path)
+      if reference_completed_downloads?
+        FileCopyService.snapshot_reference_source_root(
+          source_path,
+          authorized_roots: shared_roots
+        )
+      else
+        FileCopyService.snapshot_source_root(source_path)
+      end
     elsif source_stat.file?
       FileCopyService.snapshot_source_file(source_path)
+    elsif reference_link
+      FileCopyService.snapshot_reference_source(source_path, authorized_roots: shared_roots)
     else
       raise "Refusing to import non-regular path"
     end
     snapshotted_path = if source_stat.directory?
       snapshot.canonical_path.to_s
+    elsif reference_link
+      snapshot.canonical_target_path.to_s
     else
       snapshot.canonical_parent_path.join(snapshot.path.basename).to_s
     end
@@ -401,11 +447,30 @@ class PostProcessingJob < ApplicationJob
       raise "Refusing to import shared download root. " \
         "The download client must report a download-specific file or directory."
     end
-    unless roots.any? { |root| path_inside_root?(snapshotted_path, root) }
+    final_roots = reference_link ? shared_roots : roots
+    unless final_roots.any? { |root| path_inside_root?(snapshotted_path, root) }
       raise "Refusing to import source outside a configured download root."
     end
 
-    { directory: source_stat.directory?, snapshot: snapshot }
+    {
+      directory: source_stat.directory?,
+      snapshot: snapshot,
+      reference_regular_source_root: reference_completed_downloads? ?
+        reference_regular_source_root_for(snapshot, snapshotted_path, roots) : nil
+    }
+  end
+
+  def reference_regular_source_root_for(snapshot, source_path, source_roots)
+    return if snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
+    if snapshot.is_a?(FileCopyService::SourceRoot) &&
+        snapshot.entries.values.none? { |manifest| manifest[2] == :file }
+      return
+    end
+
+    root = source_roots.select do |root|
+      path_inside_root?(source_path, root)
+    end.max_by(&:length)
+    FileCopyService.snapshot_reference_root(root) if root
   end
 
   def shared_download_roots(download)
@@ -479,6 +544,34 @@ class PostProcessingJob < ApplicationJob
     raise source_path_not_found_message(source_path)
   end
 
+  def retry_busy_publication_later(download, request, retry_count)
+    retry_limit = SettingsService.get(:post_processing_source_path_retries).to_i
+    if retry_count < retry_limit
+      next_retry_count = retry_count + 1
+      wait_interval = SettingsService.get(:download_check_interval).to_i.clamp(1, 86_400).seconds
+
+      Rails.logger.warn(
+        "[PostProcessingJob] Library publication is busy for download ##{download.id}. " \
+          "Retrying #{next_retry_count}/#{retry_limit} in #{wait_interval.to_i}s."
+      )
+
+      track_request_event(
+        request,
+        "post_processing_waiting",
+        download: download,
+        message: "Library publication is busy; retrying post-processing",
+        level: :warn,
+        details: { retry_count: next_retry_count, retry_limit: retry_limit }
+      )
+
+      retry_job = self.class.new(download.id, next_retry_count, job_id)
+      raise "Failed to enqueue post-processing retry" unless retry_job.enqueue(wait: wait_interval)
+      return
+    end
+
+    raise "Library publication remained busy after #{retry_limit} retries"
+  end
+
   def cleanup_usenet_download(download)
     Rails.logger.info "[PostProcessingJob] Removing usenet download ##{download.id}"
     download.download_client.adapter.remove_torrent(download.external_id, delete_files: true)
@@ -541,12 +634,19 @@ class PostProcessingJob < ApplicationJob
 
     unless File.exist?(source)
       Rails.logger.error "[PostProcessingJob] Completed download source is not visible"
+      if reference_completed_downloads? && File.symlink?(source)
+        raise FileCopyService::ReferenceTargetUnavailableError,
+          "reference target is not visible yet"
+      end
+
       raise source_path_not_found_message(source)
     end
 
     source_authorization ||= authorize_import_source(source)
     directory_source = source_authorization.fetch(:directory)
     source_snapshot = source_authorization.fetch(:snapshot)
+    @completed_reference_target_roots = []
+    @reference_regular_source_root = source_authorization[:reference_regular_source_root]
     @import_source_root = source_snapshot if directory_source
     @import_source_file_snapshot = source_snapshot unless directory_source
     @imported_renamed_files = []
@@ -636,6 +736,7 @@ class PostProcessingJob < ApplicationJob
     remove_instance_variable(:@import_base_path) if instance_variable_defined?(:@import_base_path)
     remove_instance_variable(:@import_source_root) if instance_variable_defined?(:@import_source_root)
     remove_instance_variable(:@import_source_file_snapshot) if instance_variable_defined?(:@import_source_file_snapshot)
+    remove_instance_variable(:@reference_regular_source_root) if instance_variable_defined?(:@reference_regular_source_root)
     remove_instance_variable(:@verified_library_snapshots) if instance_variable_defined?(:@verified_library_snapshots)
     remove_instance_variable(:@require_durable_import) if instance_variable_defined?(:@require_durable_import)
   end
@@ -757,6 +858,12 @@ class PostProcessingJob < ApplicationJob
 
   def validate_ebook_source!(source)
     unless File.directory?(source)
+      if @import_source_file_snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
+        extension = File.extname(source).delete_prefix(".").downcase
+        target = @import_source_file_snapshot.target_snapshot.path.to_s
+        return if EBOOK_FILE_EXTENSIONS.include?(extension) &&
+          allowed_ebook_import_file?(target, extension: extension)
+      end
       return if ebook_file?(source) && allowed_ebook_import_file?(source)
 
       raise "Unsupported ebook import file type: #{File.basename(source)}"
@@ -766,7 +873,7 @@ class PostProcessingJob < ApplicationJob
     paths = ebook_directory_files(source)
 
     paths.each do |path|
-      if File.symlink?(path)
+      if File.symlink?(path) && !reference_source_snapshot(path)
         raise "Unsupported ebook import file type: #{File.basename(path)}"
       end
 
@@ -790,11 +897,19 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def allowed_ebook_import_file?(path)
+  def allowed_ebook_import_file?(path, extension: nil)
+    if (snapshot = reference_source_snapshot(path)).is_a?(FileCopyService::ReferenceSourceSnapshot)
+      target = snapshot.target_snapshot.path.to_s
+      extension ||= File.extname(path).delete_prefix(".").downcase
+      return false unless File.file?(target) && !File.symlink?(target)
+
+      return EBOOK_ALLOWED_EXTENSIONS.include?(extension) &&
+        valid_ebook_import_content?(target, extension)
+    end
     return false if File.symlink?(path)
     return false unless File.file?(path)
 
-    extension = File.extname(path).delete_prefix(".").downcase
+    extension ||= File.extname(path).delete_prefix(".").downcase
     EBOOK_ALLOWED_EXTENSIONS.include?(extension) && valid_ebook_import_content?(path, extension)
   end
 
@@ -870,11 +985,16 @@ class PostProcessingJob < ApplicationJob
 
   def import_file(source, destination)
     if reference_completed_downloads?
+      source_snapshot = reference_source_snapshot(source)
+      regular_root_snapshot = @reference_regular_source_root unless
+        source_snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
       FileCopyService.reference_noreplace(
         source,
         destination,
         root: @import_base_path,
-        source_root: @import_source_root
+        source_root: source_snapshot ? nil : @import_source_root,
+        source_snapshot: source_snapshot,
+        authorized_root_snapshot: regular_root_snapshot
       )
       @referenced_file_count += 1
     elsif hardlink_completed_downloads?
@@ -999,12 +1119,16 @@ class PostProcessingJob < ApplicationJob
   end
 
   def reference_target_matches?(source, destination)
+    source_snapshot = reference_source_snapshot(source)
+    regular_root_snapshot = @reference_regular_source_root unless
+      source_snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
     FileCopyService.reference_target_matches?(
       source,
       destination,
       root: @import_base_path,
-      source_root: @import_source_root,
-      source_snapshot: @import_source_file_snapshot
+      source_root: source_snapshot ? nil : @import_source_root,
+      source_snapshot: source_snapshot,
+      authorized_root_snapshot: regular_root_snapshot
     )
   end
 
@@ -1033,7 +1157,11 @@ class PostProcessingJob < ApplicationJob
   def import_directory_entry(source, destination)
     stat = File.lstat(source)
     if stat.symlink?
-      raise "Refusing to import symbolic link: #{source}"
+      unless reference_completed_downloads? && reference_source_snapshot(source)
+        raise "Refusing to import symbolic link: #{source}"
+      end
+
+      import_file_without_duplicate_content(source, File.join(destination, File.basename(source)))
     elsif stat.directory?
       nested_destination = File.join(destination, File.basename(source))
       ensure_real_import_directory!(nested_destination)
@@ -1154,17 +1282,52 @@ class PostProcessingJob < ApplicationJob
   end
 
   def record_imported_source!(source)
+    record_reference_target_root!(source) if reference_completed_downloads?
     return unless @import_source_root
 
     relative = Pathname(source).expand_path.relative_path_from(@import_source_root.path)
     manifest = @import_source_root.entries[relative.to_s]
-    unless manifest && manifest[2] == :file
+    unless manifest && manifest[2].in?([ :file, :reference ])
       raise FileCopyService::UnsafePathError, "imported source is absent from the immutable manifest"
     end
 
     @imported_source_files << relative.to_s
   rescue ArgumentError
     raise FileCopyService::UnsafePathError, "imported source escaped the immutable manifest"
+  end
+
+  def record_reference_target_root!(source)
+    snapshot = reference_source_snapshot(source)
+    root = if snapshot.is_a?(FileCopyService::ReferenceSourceSnapshot)
+      FileCopyService::ReferenceRootSnapshot.new(
+        path: snapshot.authorized_root,
+        device: snapshot.authorized_root_device,
+        inode: snapshot.authorized_root_inode
+      ).freeze
+    else
+      @reference_regular_source_root
+    end
+    @completed_reference_target_roots << root if root.present?
+    @completed_reference_target_roots.uniq!
+  end
+
+  def validate_completed_reference_target_roots!
+    @completed_reference_target_roots.each do |root|
+      FileCopyService.validate_reference_root_snapshot!(root)
+    end
+  end
+
+  def reference_source_snapshot(source)
+    expanded = Pathname(source).expand_path
+    if @import_source_file_snapshot && expanded == @import_source_file_snapshot.path
+      return @import_source_file_snapshot
+    end
+    return unless @import_source_root&.reference_snapshots
+
+    relative = expanded.relative_path_from(@import_source_root.path).to_s
+    @import_source_root.reference_snapshots[relative]
+  rescue ArgumentError
+    nil
   end
 
   def renamed_destination_file(source, destination, book)

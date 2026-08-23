@@ -172,6 +172,63 @@ class PostProcessingJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(unauthorized_source) if unauthorized_source && File.exist?(unauthorized_source)
   end
 
+  test "reference mode refuses a final target outside every configured download root" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    unauthorized_root = Dir.mktmpdir("outside-reference-root")
+    target = File.join(unauthorized_root, "private-audiobook.mp3")
+    staging = File.join(@temp_download_base, "escaped-reference.mp3")
+    File.binwrite(target, "private audiobook content")
+    File.symlink(target, staging)
+    @download.update!(download_path: staging)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.attention_needed?
+    assert_not File.exist?(destination)
+    assert_equal "private audiobook content", File.binread(target)
+  ensure
+    FileUtils.rm_rf(unauthorized_root)
+  end
+
+  test "reference mode rejects a target parent swapped before target snapshot" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    FileUtils.rm_rf(@temp_source)
+    target_parent = File.join(@temp_download_base, "debrid-content")
+    displaced_parent = File.join(@temp_download_base, "debrid-content-original")
+    outside_root = Dir.mktmpdir("outside-reference-race")
+    staging = File.join(@temp_download_base, "raced-reference.mp3")
+    FileUtils.mkdir_p(target_parent)
+    File.binwrite(File.join(target_parent, "audiobook.mp3"), "authorized content")
+    File.binwrite(File.join(outside_root, "audiobook.mp3"), "outside secret")
+    File.symlink(File.join(target_parent, "audiobook.mp3"), staging)
+    @download.update!(download_path: staging)
+    original_snapshot = FileCopyService.method(:snapshot_reference_target)
+    swapped = false
+    swap_parent = lambda do |target|
+      unless swapped
+        File.rename(target_parent, displaced_parent)
+        File.symlink(outside_root, target_parent)
+        swapped = true
+      end
+      original_snapshot.call(target)
+    end
+
+    FileCopyService.stub(:snapshot_reference_target, swap_parent) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert swapped
+    assert @request.reload.attention_needed?
+    assert_not File.exist?(destination)
+    assert_equal "outside secret", File.binread(File.join(outside_root, "audiobook.mp3"))
+  ensure
+    FileUtils.rm_rf(outside_root) if outside_root
+  end
+
   test "skips a completed download replaced by a manual selection" do
     old_result = @request.search_results.create!(
       guid: "old-result",
@@ -657,6 +714,172 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.reload.completed?, @request.issue_description
     assert_equal Pathname(source).expand_path.to_s, File.readlink(referenced)
     assert_not File.exist?(File.join(destination, "audiobook (2).mp3"))
+    root = @book.reload.reference_target_roots.find do |candidate|
+      candidate.path.to_s == Pathname(@temp_download_base).realpath.to_s
+    end
+    assert root
+    root_stat = File.lstat(@temp_download_base)
+    assert_equal [ root_stat.dev, root_stat.ino ], [ root.device, root.inode ]
+  end
+
+  test "reference mode imports a top-level source symlink to its final target" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    FileUtils.rm_rf(@temp_source)
+    target_directory = File.join(@temp_download_base, "debrid-content")
+    target = File.join(target_directory, "remote-audiobook.mp3")
+    staging = File.join(@temp_download_base, "staged-audiobook.mp3")
+    FileUtils.mkdir_p(target_directory)
+    File.binwrite(target, "remote audiobook content")
+    File.symlink(target, staging)
+    @download.update!(download_path: staging)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    referenced = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      PathTemplateService.build_filename(@book, ".mp3")
+    )
+    assert @request.reload.completed?, @request.issue_description
+    assert File.symlink?(referenced)
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert File.symlink?(staging), "reference imports must not clean up the staging link"
+    File.unlink(staging)
+    assert_equal "remote audiobook content", File.binread(referenced)
+  end
+
+  test "reference mode validates and imports a relative top-level ebook symlink" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:completed_download_import_mode, "reference")
+    @book.update!(book_type: :ebook)
+    FileUtils.rm_rf(@temp_source)
+    staging_directory = File.join(@temp_download_base, "staging")
+    target = File.join(@temp_download_base, "debrid-content", "remote-book.epub")
+    staging = File.join(staging_directory, "staged-book.epub")
+    FileUtils.mkdir_p([ staging_directory, File.dirname(target) ])
+    File.binwrite(target, "PK\x03\x04remote ebook content")
+    File.symlink(File.join("..", "debrid-content", "remote-book.epub"), staging)
+    @download.update!(download_path: staging)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    referenced = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      PathTemplateService.build_filename(@book, ".epub")
+    )
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert_equal "PK\x03\x04remote ebook content", File.binread(referenced)
+  end
+
+  test "reference mode authorizes a final target under the download client root" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    content_root = Dir.mktmpdir("debrid-client-content")
+    target = File.join(content_root, "remote-audiobook.mp3")
+    staging = File.join(@temp_download_base, "client-staged-audiobook.mp3")
+    File.binwrite(target, "client-root audiobook content")
+    File.symlink(target, staging)
+    client = DownloadClient.create!(
+      name: "Debrid content mount",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "deluge",
+      download_path: content_root
+    )
+    @download.update!(download_path: staging, download_client: client)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    referenced = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      PathTemplateService.build_filename(@book, ".mp3")
+    )
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert_equal "client-root audiobook content", File.binread(referenced)
+    assert_equal [ Pathname(content_root).realpath.to_s ],
+      @book.reload.reference_target_roots.map { |root| root.path.to_s }
+  ensure
+    FileUtils.rm_rf(content_root)
+  end
+
+  test "reference mode authorizes a top-level target under a symlinked download client root" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    content_parent = Dir.mktmpdir("symlinked-debrid-root")
+    real_content_root = File.join(content_parent, "real-debrid-content")
+    configured_content_root = File.join(content_parent, "configured-debrid-content")
+    target = File.join(configured_content_root, "remote-audiobook.mp3")
+    staging = File.join(@temp_download_base, "client-staged-symlinked-root.mp3")
+    FileUtils.mkdir_p(real_content_root)
+    File.symlink(real_content_root, configured_content_root)
+    File.binwrite(File.join(real_content_root, "remote-audiobook.mp3"), "client-root audiobook content")
+    File.symlink(target, staging)
+    client = DownloadClient.create!(
+      name: "Symlinked debrid content mount",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "deluge",
+      download_path: configured_content_root
+    )
+    @download.update!(download_path: staging, download_client: client)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?, @request.issue_description
+    root = @book.reload.reference_target_roots.sole
+    root_stat = File.lstat(real_content_root)
+    assert_equal Pathname(real_content_root).realpath.to_s, root.path.to_s
+    assert_equal [ root_stat.dev, root_stat.ino ], [ root.device, root.inode ]
+  ensure
+    FileUtils.rm_rf(content_parent) if content_parent
+  end
+
+  test "reference mode imports a Decypharr directory containing immediate symlink leaves" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    content_root = Dir.mktmpdir("decypharr-content")
+    target_directory = File.join(content_root, "__all__", "release-hash")
+    target = File.join(target_directory, "remote-audiobook.m4b")
+    FileUtils.mkdir_p(target_directory)
+    File.binwrite(target, "decypharr mounted audio")
+    File.symlink(target, File.join(@temp_source, "remote-audiobook.m4b"))
+    client = DownloadClient.create!(
+      name: "Decypharr directory source",
+      client_type: "decypharr",
+      url: "http://localhost:8282",
+      username: "http://shelfarr:3000",
+      password: "Password123!",
+      download_path: content_root
+    )
+    @download.update!(download_client: client)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    referenced = File.join(
+      @temp_dest_base,
+      @book.author,
+      @book.title,
+      "remote-audiobook.m4b"
+    )
+    assert @request.reload.completed?, @request.issue_description
+    assert File.symlink?(referenced)
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert_equal "decypharr mounted audio", File.binread(referenced)
+    assert File.symlink?(File.join(@temp_source, "remote-audiobook.m4b"))
+    assert_equal [ Pathname(content_root).realpath.to_s ],
+      @book.reload.reference_target_roots.map { |root| root.path.to_s }
+  ensure
+    FileUtils.rm_rf(content_root)
   end
 
   test "reference retry suffixes a mismatched symlink" do
@@ -1100,6 +1323,62 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(book_two_destination)
     assert_equal "book one audio", File.read(File.join(@temp_source, "Book One.m4b"))
     assert_equal "book two audio", File.read(File.join(@temp_source, "Book Two.m4b"))
+  end
+
+  test "publishes ordinary copies through the DrvFS compatibility path" do
+    SettingsService.set(:audiobookshelf_url, "")
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    real_rename = FileCopyService.method(:native_rename_noreplace)
+    real_link = FileCopyService.method(:native_linkat)
+    rejecting_import_rename = lambda do |*arguments|
+      flunk "DrvFS imports must not rename" if arguments.last == File.basename(expected_dest)
+
+      real_rename.call(*arguments)
+    end
+    rejecting_import_link = lambda do |*arguments|
+      flunk "DrvFS imports must not hardlink" if arguments.last == File.basename(expected_dest)
+
+      real_link.call(*arguments)
+    end
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:native_rename_noreplace, rejecting_import_rename) do
+        FileCopyService.stub(:native_linkat, rejecting_import_link) do
+          PostProcessingJob.perform_now(@download.id)
+        end
+      end
+    end
+
+    assert @request.reload.completed?
+    assert_equal "test audio content", File.binread(expected_dest)
+    assert_equal @request.book.reload.file_path, File.dirname(expected_dest)
+    assert_empty Dir.glob(File.join(File.dirname(expected_dest), ".shelfarr-copy-*.lock"))
+    journal = File.join(@temp_dest_base, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert File.file?(journal)
+    assert_match(/drvfs:complete/, File.binread(journal))
+  end
+
+  test "retains interrupted DrvFS publication artifacts for actionable review" do
+    SettingsService.set(:audiobookshelf_url, "")
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+
+    FileCopyService.stub(:drvfs_mount?, true) do
+      FileCopyService.stub(:copy_source_io, lambda { |_source, destination, **|
+        destination.write("partial audio")
+        destination.flush
+        raise IOError, "simulated DrvFS interruption"
+      }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "retained for manual review"
+    assert_includes @request.issue_description, "Shelfarr filesystem artifacts"
+    assert_equal "partial audio", File.binread(expected_dest)
+    journal = File.join(@temp_dest_base, FileCopyService::DRVFS_COPY_JOURNAL_BASENAME)
+    assert File.file?(journal)
+    assert_match(/drvfs:copying/, File.binread(journal))
   end
 
   test "does not overwrite a concurrent file when atomic publication is unavailable" do
@@ -1710,7 +1989,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal 0o640, File.stat(existing).mode & 0o777
   end
 
-  test "rejects symbolic links and fifo entries anywhere in a recursive source" do
+  test "non-reference mode rejects symbolic links and fifo entries anywhere in a recursive source" do
     SettingsService.set(:audiobookshelf_url, "")
     nested = File.join(@temp_source, "nested")
     FileUtils.mkdir_p(nested)
@@ -1723,6 +2002,40 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.reload.attention_needed?
     assert_match(/symbolic link or non-regular path/i, @request.issue_description)
     assert_not File.exist?(destination)
+  end
+
+  test "reference directory rejects chained links and special targets" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    content_root = Dir.mktmpdir("unsafe-reference-content")
+    regular = File.join(content_root, "regular.mp3")
+    chained = File.join(content_root, "chained.mp3")
+    fifo = File.join(content_root, "target.pipe")
+    File.binwrite(regular, "audio")
+    File.symlink(regular, chained)
+    File.mkfifo(fifo)
+    File.symlink(chained, File.join(@temp_source, "chain.mp3"))
+    File.symlink(fifo, File.join(@temp_source, "fifo.mp3"))
+    client = DownloadClient.create!(
+      name: "Unsafe reference targets",
+      client_type: "decypharr",
+      url: "http://localhost:8282",
+      username: "http://shelfarr:3000",
+      password: "Password123!",
+      download_path: content_root
+    )
+    @download.update!(download_client: client)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.attention_needed?
+    assert_match(/symbolic link or non-regular path/i, @request.issue_description)
+    assert_not File.exist?(destination)
+    assert_equal "audio", File.binread(regular)
+  ensure
+    FileUtils.rm_rf(content_root)
   end
 
   test "never imports outside bytes after the download root is swapped" do
@@ -2406,6 +2719,111 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @request.processing?
     assert_nil @request.issue_description
     assert_equal retry_job.arguments.third, @download.reload.post_processing_job_id
+  end
+
+  test "retries later when a reference target is not visible yet" do
+    FileUtils.rm_rf(@temp_source)
+    debrid_root = Dir.mktmpdir("delayed-reference-target")
+    staging = File.join(@temp_download_base, "delayed-audiobook.m4b")
+    target = File.join(debrid_root, "delayed-audiobook.m4b")
+    File.symlink(target, staging)
+    @download.update!(download_path: staging)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    SettingsService.set(:download_remote_path, debrid_root)
+    SettingsService.set(:post_processing_source_path_retries, 2)
+
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+    retry_job = assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.processing?
+    assert_nil @request.issue_description
+    File.binwrite(target, "delayed debrid audio")
+    retry_job.perform_now
+
+    assert @request.reload.completed?, @request.issue_description
+    referenced = Dir.glob(File.join(@temp_dest_base, "**", "*.m4b")).sole
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert_equal "delayed debrid audio", File.binread(referenced)
+  ensure
+    FileUtils.rm_rf(debrid_root)
+  end
+
+  test "retries later when a reference target disappears after authorization" do
+    FileUtils.rm_rf(@temp_source)
+    debrid_root = Dir.mktmpdir("vanished-reference-target")
+    staging = File.join(@temp_download_base, "vanished-audiobook.m4b")
+    target = File.join(debrid_root, "vanished-audiobook.m4b")
+    File.binwrite(target, "temporary debrid audio")
+    File.symlink(target, staging)
+    @download.update!(download_path: staging)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    SettingsService.set(:download_remote_path, debrid_root)
+    SettingsService.set(:post_processing_source_path_retries, 2)
+
+    job = PostProcessingJob.new(@download.id)
+    authorize = job.method(:validate_download_specific_source_path!)
+    authorize_then_hide = lambda do |*arguments|
+      authorization = authorize.call(*arguments)
+      File.unlink(target)
+      authorization
+    end
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+
+    retry_job = assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
+      job.stub(:validate_download_specific_source_path!, authorize_then_hide) { job.perform_now }
+    end
+
+    assert @request.reload.processing?
+    assert_nil @request.issue_description
+    assert_empty Dir.glob(File.join(@temp_dest_base, "**", "*.m4b"))
+
+    File.binwrite(target, "restored debrid audio")
+    retry_job.perform_now
+
+    assert @request.reload.completed?, @request.issue_description
+    referenced = Dir.glob(File.join(@temp_dest_base, "**", "*.m4b")).sole
+    assert_equal Pathname(target).realpath.to_s, File.readlink(referenced)
+    assert_equal "restored debrid audio", File.binread(referenced)
+  ensure
+    FileUtils.rm_rf(debrid_root)
+  end
+
+  test "retries later when the library publication lock stays busy" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:post_processing_source_path_retries, 2)
+    busy = ->(*) { raise FileCopyService::PublicationBusyError, "library busy" }
+    retry_args = ->(args) { args.first(2) == [ @download.id, 1 ] && args.third.present? }
+
+    retry_job = FileCopyService.stub(:cp_noreplace, busy) do
+      assert_enqueued_with(job: PostProcessingJob, args: retry_args) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.processing?
+    assert_nil @request.issue_description
+    assert_equal retry_job.arguments.third, @download.reload.post_processing_job_id
+  end
+
+  test "non-reference acquisition clears stale reference target provenance" do
+    SettingsService.set(:audiobookshelf_url, "")
+    root_stat = File.lstat(@temp_download_base)
+    @book.update!(reference_target_roots: [
+      {
+        path: Pathname(@temp_download_base).realpath.to_s,
+        device: root_stat.dev,
+        inode: root_stat.ino
+      }
+    ])
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_empty @book.reload.reference_target_roots
   end
 
   test "copies when source path appears on a later retry" do

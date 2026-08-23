@@ -497,7 +497,8 @@ class UploadImportFileService
 
     def validate_path_within_root!(path, root)
       expanded = Pathname(path).expand_path
-      return if expanded.to_s.start_with?("#{root}#{File::SEPARATOR}")
+      return if expanded.to_s.start_with?("#{root}#{File::SEPARATOR}") &&
+        !LibraryPathSafety.internal_path?(expanded, root: root)
 
       raise Error, "The reserved upload path is outside its snapshotted root"
     end

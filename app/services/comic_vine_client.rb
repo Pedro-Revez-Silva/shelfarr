@@ -22,7 +22,7 @@ class ComicVineClient
   Result = Data.define(
     :id, :resource_type, :resource_key, :title, :description, :cover_url,
     :publisher, :creators, :series_name, :issue_number, :release_date,
-    :content_kind, :collection_id, :collection_title, :web_url, :raw_payload
+    :series_start_year, :content_kind, :collection_id, :collection_title, :web_url, :raw_payload
   ) do
     def author
       creators
@@ -64,6 +64,8 @@ class ComicVineClient
       payload = response["results"]
       return nil unless payload.is_a?(Hash)
 
+      payload = with_volume_start_year(payload) if type == "issue"
+
       parse_result(payload.merge("resource_type" => type), requested_content_kind: content_kind)
     end
 
@@ -77,6 +79,7 @@ class ComicVineClient
       remaining = limit&.to_i
       offset = 0
       issues = []
+      series_start_year = volume_start_year(volume_id)
 
       loop do
         page_size = remaining ? [ remaining, MAX_PAGE_SIZE ].min : MAX_PAGE_SIZE
@@ -90,6 +93,11 @@ class ComicVineClient
         )
 
         page = Array(response["results"]).filter_map do |payload|
+          payload = with_volume_start_year(
+            payload,
+            series_start_year: series_start_year,
+            lookup: false
+          )
           parse_result(payload.merge("resource_type" => "issue"), requested_content_kind: content_kind)
         end
         issues.concat(page)
@@ -160,6 +168,8 @@ class ComicVineClient
         series_name: resource_type == "issue" ? volume["name"] : payload["name"],
         issue_number: resource_type == "issue" ? payload["issue_number"].presence : nil,
         release_date: release_date,
+        series_start_year: resource_type == "issue" ?
+          volume["start_year"].presence&.to_i : payload["start_year"].presence&.to_i,
         content_kind: ContentKinds::GRAPHIC,
         collection_id: resource_type == "issue" ? resource_key("volume", volume["id"]) : resource_key("volume", payload["id"]),
         collection_title: resource_type == "issue" ? volume["name"] : payload["name"],
@@ -182,6 +192,30 @@ class ComicVineClient
     def volume_id_from_resource_key(resource_key)
       _type, id = parse_resource_key(resource_key)
       id
+    end
+
+    def with_volume_start_year(payload, series_start_year: nil, lookup: true)
+      volume = payload["volume"]
+      return payload unless volume.is_a?(Hash)
+
+      series_start_year ||= volume["start_year"].presence&.to_i
+      series_start_year ||= volume_start_year(volume["id"]) if lookup
+      return payload unless series_start_year
+
+      payload.merge("volume" => volume.merge("start_year" => series_start_year))
+    end
+
+    def volume_start_year(volume_id)
+      return if volume_id.blank?
+
+      response = get_json(
+        "/volume/4050-#{volume_id}/",
+        field_list: "id,start_year"
+      )
+      response.dig("results", "start_year").presence&.to_i
+    rescue Error => e
+      Rails.logger.warn("[ComicVineClient] Volume start year lookup failed: #{e.message}")
+      nil
     end
 
     def resource_key(resource_type, id)

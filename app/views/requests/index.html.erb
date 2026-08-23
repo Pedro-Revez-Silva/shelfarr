@@ -133,8 +133,8 @@
                     <% end %>
                   </div>
                   <div class="flex max-w-full flex-wrap items-center gap-2 sm:flex-shrink-0">
-                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request.book.audiobook? ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400' %>">
-                      <%= request.book.audiobook? ? 'Audiobook' : 'Ebook' %>
+                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request.book.audiobook? ? 'bg-purple-500/20 text-purple-400' : (request.book.comicbook? ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-500/20 text-blue-400') %>">
+                      <%= request.book.book_type_label %>
                     </span>
                     <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium <%= request_status_color(request.status) %>">
                       <%= request.status.humanize %>

@@ -30,8 +30,8 @@
           <span class="rounded bg-orange-600/90 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm" title="Owned on Audible">Audible</span>
         <% end %>
       </div>
-      <span class="absolute right-2 top-2 inline-flex items-center rounded px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm <%= book.audiobook? ? 'bg-purple-500/90' : 'bg-blue-500/90' %>">
-        <%= book.audiobook? ? "Audio" : "Ebook" %>
+      <span class="absolute right-2 top-2 inline-flex items-center rounded px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm <%= book.audiobook? ? 'bg-purple-500/90' : (book.comicbook? ? 'bg-emerald-500/90' : 'bg-blue-500/90') %>">
+        <%= book.audiobook? ? "Audio" : book.book_type_label %>
       </span>
 
     </div>
