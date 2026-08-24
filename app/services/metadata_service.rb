@@ -125,8 +125,6 @@ class MetadataService
         priority: provider_priority,
         requested_content_kind: requested_content_kind
       )
-      min_confidence = SettingsService.get(:min_match_confidence).to_i
-      candidates = candidates.select { |candidate| candidate.confidence >= min_confidence }
       candidates = filter_candidates_for_content(candidates, requested_content_kind)
       sort_candidates(candidates, requested_content_kind: requested_content_kind).first(limit || default_search_limit)
     end

@@ -551,20 +551,41 @@ class MetadataServiceTest < ActiveSupport::TestCase
     assert_equal %w[hardcover openlibrary google_books], results.map(&:source)
   end
 
-  test "aggregate_provider_results filters candidates below min_match_confidence" do
+  test "aggregate_provider_results preserves a hardcover-only candidate when min_match_confidence exceeds its score" do
     SettingsService.set(:min_match_confidence, 80)
 
     provider_results = [
-      metadata_provider_result(source: "openlibrary", source_id: "OL_LOW", title: "Low Confidence"),
-      metadata_provider_result(source: "openlibrary", source_id: "OL_HIGH_A", title: "High Confidence", year: 1965),
-      metadata_provider_result(source: "google_books", source_id: "GB_HIGH_B", title: "High Confidence", year: 1966)
+      metadata_provider_result(source: "hardcover", source_id: "HC_ONLY", title: "Hardcover Only")
     ]
 
     results = MetadataService.aggregate_provider_results(provider_results)
 
     assert_equal 1, results.size
-    assert_equal "High Confidence", results.first.title
-    assert_equal 90, results.first.confidence
+    assert_equal "Hardcover Only", results.first.title
+    assert_equal [ "hardcover" ], results.first.sources.pluck(:source)
+    assert_equal 70, results.first.confidence
+  end
+
+  test "aggregate_provider_results preserves hardcover-only candidate alongside corroborated candidate" do
+    SettingsService.set(:min_match_confidence, 80)
+    SettingsService.set(:metadata_provider_priority, "hardcover,openlibrary,google_books")
+
+    provider_results = [
+      metadata_provider_result(source: "hardcover", source_id: "HC_ONLY", title: "Hardcover Only"),
+      metadata_provider_result(source: "openlibrary", source_id: "OL_MATCH", title: "Corroborated", year: 1965),
+      metadata_provider_result(source: "google_books", source_id: "GB_MATCH", title: "Corroborated", year: 1966)
+    ]
+
+    results = MetadataService.aggregate_provider_results(provider_results)
+
+    assert_equal [ "Hardcover Only", "Corroborated" ], results.map(&:title)
+    hardcover_candidate = results.first
+    assert_equal [ "hardcover" ], hardcover_candidate.sources.pluck(:source)
+    assert_equal 70, hardcover_candidate.confidence
+
+    corroborated_candidate = results.second
+    assert_equal %w[openlibrary google_books], corroborated_candidate.sources.pluck(:source)
+    assert_equal 90, corroborated_candidate.confidence
   end
 
   test "bounded web aggregation remains untruncated until pagination after deduplication" do
