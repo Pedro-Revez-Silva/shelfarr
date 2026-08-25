@@ -76,8 +76,8 @@
     <% end %>
 
     <%# System Status %>
-    <% unhealthy_count = @system_health.values.count { |h| !h.healthy? } %>
-    <div class="bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition">
+    <% unhealthy_count = @system_health.values.count { |h| h.degraded? || h.down? } %>
+    <% system_card_content = capture do %>
       <div class="flex items-center gap-4">
         <div class="p-3 rounded-lg <%= unhealthy_count > 0 ? 'bg-red-500/20' : 'bg-green-500/20' %>">
           <% if unhealthy_count > 0 %>
@@ -97,7 +97,16 @@
           <div class="text-sm text-gray-500">System</div>
         </div>
       </div>
-    </div>
+    <% end %>
+    <% if Current.user&.admin? %>
+      <%= link_to admin_root_path(anchor: "system-health"), class: "bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition block", data: { system_health_card: true } do %>
+        <%= system_card_content %>
+      <% end %>
+    <% else %>
+      <div class="bg-gray-900 rounded-xl border border-gray-800 p-5" data-system-health-card>
+        <%= system_card_content %>
+      </div>
+    <% end %>
   </div>
 
   <%# Recently Added to Library %>
