@@ -2,7 +2,7 @@ name: PR authorization
 
 on:
   pull_request_target:
-    types: [opened, reopened, edited, synchronize, ready_for_review]
+    types: [opened, reopened, edited, synchronize, ready_for_review, labeled, unlabeled]
   issues:
     types: [unassigned, closed]
   workflow_dispatch:
@@ -36,6 +36,7 @@ jobs:
               "dependabot[bot]",
               "github-actions[bot]",
             ]);
+            const maintainerAdoptedLabel = "maintainer-adopted";
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -108,6 +109,11 @@ jobs:
                       author {
                         login
                       }
+                      labels(first: 100) {
+                        nodes {
+                          name
+                        }
+                      }
                       closingIssuesReferences(first: 20) {
                         nodes {
                           number
@@ -178,6 +184,21 @@ jobs:
                 approvedBots.has(normalizedAuthor)
               ) {
                 core.info(`PR #${number}: @${author} is exempt from issue assignment.`);
+                return;
+              }
+
+              const labels = pull.labels.nodes.map(({ name }) => name.toLowerCase());
+              if (labels.includes(maintainerAdoptedLabel)) {
+                const existing = await findPolicyComment(number);
+                if (existing && enforce) {
+                  await github.rest.issues.updateComment({
+                    owner,
+                    repo,
+                    comment_id: existing.id,
+                    body: `${marker}\nAuthorization confirmed: this pull request was adopted by a Shelfarr maintainer.`,
+                  });
+                }
+                core.info(`PR #${number}: explicitly adopted by a maintainer.`);
                 return;
               }
 
