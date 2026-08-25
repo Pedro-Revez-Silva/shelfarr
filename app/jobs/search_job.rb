@@ -745,16 +745,17 @@ class SearchJob < ApplicationJob
     language = request.effective_language
     return false if language.blank? || language == "en"
 
-    # Only add if we have a known language name
+    # Only add if we have a known language flag
     info = ReleaseParserService.language_info(language)
     info.present?
   end
 
-  # Get the language name for search query
+  # Prefer the short tokens commonly used in release names (for example DE,
+  # FR, and ES) over English display names such as "German" or "French".
   def language_search_term(request)
     language = request.effective_language
     info = ReleaseParserService.language_info(language)
-    info[:name]
+    info[:flag]
   end
 
   def merge_indexer_results(*result_groups)
@@ -923,6 +924,9 @@ class SearchJob < ApplicationJob
       attempts = issue_queries.map do |query|
         build_search_attempt(:comic_issue, [ query, language_hint ])
       end
+      if language_hint.present?
+        attempts.concat(issue_queries.map { |query| build_search_attempt(:comic_issue, [ query ]) })
+      end
       return deduplicate_search_attempts(attempts)
     end
 
@@ -939,7 +943,15 @@ class SearchJob < ApplicationJob
 
     numeric_title_variants(book.title).each do |title_variant|
       attempts << build_search_attempt(:number_variant, [ title_variant, language_hint ])
-      attempts << build_search_attempt(:number_variant, [ title_variant, book.author, language_hint ])
+      attempts << build_search_attempt(:number_variant, [ title_variant, book.author, language_hint ]) if book.author.present?
+    end
+
+    # For non-English requests, add hint-free fallback attempts after all language-tagged attempts.
+    # Scene releases may be untagged or use different language markers than the hint,
+    # and matches_language already accepts untagged results ([lang, nil]).
+    if language_hint.present?
+      attempts << build_search_attempt(:exact_title, [ book.title ])
+      attempts << build_search_attempt(:title_author, [ book.title, book.author ])
     end
 
     deduplicate_search_attempts(attempts)

@@ -839,31 +839,122 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
-  test "includes language in search query for non-English requests" do
-    # Set request language to French
-    @request.update!(language: "fr")
+  test "uses scene language codes instead of English names for non-English requests" do
+    # Set request language to German
+    @request.update!(language: "de")
+    SettingsService.set(:indexer_search_scope, "strict")
 
     VCR.turned_off do
-      # Prowlarr book search should keep language as free text while title/author are structured
+      # Structured book search with scene code
       stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           query = req.uri.query_values["query"]
           req.uri.query_values["type"] == "book" &&
-            query.include?("French") &&
-            query.include?("{title:#{@request.book.title}}") &&
-            query.include?("{author:#{@request.book.author}}")
+            query.include?("DE") &&
+            !query.include?("German")
         end
         .to_return(
           status: 200,
           headers: { "Content-Type" => "application/json" },
           body: [ prowlarr_result_payload ].to_json
         )
-      stub_prowlarr_generic_search_empty
 
-      assert_nothing_raised do
-        SearchJob.perform_now(@request.id)
+      # Accept all generic attempts, then assert the two required query shapes below.
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "search" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      SearchJob.perform_now(@request.id)
+
+      assert_requested :get, %r{localhost:9696/api/v1/search}, at_least_times: 1 do |req|
+        req.uri.query_values["type"] == "search" &&
+          req.uri.query_values["query"].split.include?("DE")
+      end
+      assert_requested :get, %r{localhost:9696/api/v1/search}, at_least_times: 1 do |req|
+        query_parts = req.uri.query_values["query"].split
+        req.uri.query_values["type"] == "search" &&
+          query_parts.exclude?("DE") && query_parts.exclude?("German")
+      end
+      assert_not_requested :get, %r{localhost:9696/api/v1/search} do |req|
+        req.uri.query_values["query"].to_s.include?("German")
       end
     end
+  end
+
+  test "tries hint-free fallback when language-tagged query returns no results" do
+    @request.update!(language: "de")
+    SettingsService.set(:indexer_search_scope, "strict")
+    hint_free_payload = prowlarr_result_payload.merge(
+      "guid" => "hint-free-result",
+      "title" => "#{@request.book.title} #{@request.book.author} EPUB"
+    )
+
+    VCR.turned_off do
+      structured_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["type"] == "book" }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      # All attempts with "DE" return empty
+      with_hint_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"].include?("DE")
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      # Hint-free attempt finds the result
+      hint_free_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with do |req|
+          req.uri.query_values["type"] == "search" &&
+            req.uri.query_values["query"] == @request.book.title &&
+            category_query_param?(req)
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ hint_free_payload ].to_json
+        )
+
+      SearchJob.perform_now(@request.id)
+      @request.reload
+
+      assert_requested structured_stub
+      assert_requested with_hint_stub, at_least_times: 1
+      assert_requested hint_free_stub
+      assert_equal hint_free_payload["title"], @request.search_results.first.title
+    end
+  end
+
+  test "adds language-tagged and hint-free attempts for non-English comic issues" do
+    book = Book.create!(
+      title: "Saga - #7 - The Chapter",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      comic_vine_id: "4000-language-issue",
+      issue_number: "7",
+      series: "Saga"
+    )
+    request = Request.create!(book: book, user: @request.user, status: :pending, language: "de")
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_equal(
+      [ "Saga 7 DE", "Saga #7 DE", "Saga 007 DE", "Saga 7", "Saga #7", "Saga 007" ],
+      attempts.map(&:query)
+    )
   end
 
   test "does not add language to search query for English requests" do
