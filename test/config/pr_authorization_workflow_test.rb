@@ -16,7 +16,7 @@ class PrAuthorizationWorkflowTest < ActiveSupport::TestCase
   end
 
   test "rechecks pull requests when their authorization can change" do
-    assert_equal %w[opened reopened edited synchronize ready_for_review],
+    assert_equal %w[opened reopened edited synchronize ready_for_review labeled unlabeled],
       @triggers.dig("pull_request_target", "types")
     assert_equal %w[unassigned closed], @triggers.dig("issues", "types")
     assert_equal false, @triggers.dig("workflow_dispatch", "inputs", "enforce", "default")
@@ -38,10 +38,14 @@ class PrAuthorizationWorkflowTest < ActiveSupport::TestCase
     assert_includes @script, "shelfarrIssues.length > 0 && unauthorizedIssues.length === 0"
   end
 
-  test "exempts only the owner and approved automation" do
+  test "exempts the owner, approved automation, and maintainer-adopted pull requests" do
     assert_includes @script, 'normalizedAuthor === owner.toLowerCase()'
     assert_includes @script, '"dependabot[bot]"'
     assert_includes @script, '"github-actions[bot]"'
+    assert_includes @script, 'const maintainerAdoptedLabel = "maintainer-adopted"'
+    assert_includes @script, "labels(first: 100)"
+    assert_includes @script, "labels.includes(maintainerAdoptedLabel)"
+    assert_includes @script, "explicitly adopted by a maintainer"
     refute_includes @script, "author_association"
   end
 

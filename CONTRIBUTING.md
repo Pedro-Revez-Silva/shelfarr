@@ -23,6 +23,21 @@ Pull requests that do not meet the assignment requirements are closed
 automatically. After the maintainer assigns the issue and the pull request
 description links it correctly, the author may reopen the pull request.
 
+## Maintainer adoption
+
+Occasionally, a maintainer may choose to finish an existing external pull
+request rather than ask its author to repeat integration work. The maintainer
+will apply the `maintainer-adopted` label and explain the handoff in the pull
+request. That label is explicit approval for the pull request to remain open
+without an assigned issue while the maintainer rebases, adjusts, tests, or
+finishes it.
+
+Adoption does not transfer ownership of the contributor's work. Original
+commits retain their authorship, and substantial rewrites or squashed commits
+must preserve credit with a `Co-authored-by` trailer. Once a pull request is
+adopted, its author does not need to take further action unless the maintainer
+asks for input.
+
 ## Before requesting review
 
 - Rebase once onto the current `main` branch when the implementation is ready.
