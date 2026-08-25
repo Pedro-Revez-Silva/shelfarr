@@ -38,7 +38,6 @@ class AudiobookProbeService
       Tempfile.create([ "shelfarr-ffprobe-", ".json" ]) do |output|
         pid = Process.spawn(
           "ffprobe",
-          "-nostdin",
           "-v", "error",
           "-protocol_whitelist", "file,pipe",
           "-probesize", MAX_PROBE_BYTES.to_s,
@@ -47,6 +46,7 @@ class AudiobookProbeService
           "-show_entries", "stream=codec_type,duration:format=duration",
           "-of", "json",
           "-i", path.to_s,
+          in: File::NULL,
           out: output.path,
           err: File::NULL,
           pgroup: true,
