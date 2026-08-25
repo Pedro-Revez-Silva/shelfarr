@@ -112,6 +112,9 @@ class BookMetadataLookupService
       errors = [ HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, ComicVineClient::Error, MetadataService::Error, ArgumentError ]
       errors << VCR::Errors::UnhandledHTTPRequestError if defined?(VCR::Errors::UnhandledHTTPRequestError)
       errors << WebMock::NetConnectNotAllowedError if defined?(WebMock::NetConnectNotAllowedError)
+      if defined?(Faraday)
+        errors << Faraday::ConnectionFailed << Faraday::TimeoutError << Faraday::SSLError
+      end
       errors
     end
   end
