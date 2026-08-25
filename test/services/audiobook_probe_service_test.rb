@@ -25,6 +25,24 @@ class AudiobookProbeServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "works with real ffprobe on a valid audio file" do
+    skip "ffprobe not available" unless system("ffprobe", "-version", out: File::NULL, err: File::NULL)
+    skip "ffmpeg not available" unless system("ffmpeg", "-version", out: File::NULL, err: File::NULL)
+
+    Dir.mktmpdir do |dir|
+      audio_file = File.join(dir, "test.mp3")
+      generated = system(
+        "ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        "-c:a", "libmp3lame", "-b:a", "64k", audio_file, "-y",
+        in: File::NULL, out: File::NULL, err: File::NULL
+      )
+
+      assert generated, "Test audio file should be created"
+      assert AudiobookProbeService.valid?(audio_file),
+             "AudiobookProbeService should validate a real audio file with the actual ffprobe binary"
+    end
+  end
+
   private
 
   def with_fake_ffprobe(payload)
