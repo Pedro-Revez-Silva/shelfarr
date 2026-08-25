@@ -2462,8 +2462,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
-  test "removes empty SABnzbd job directory after successful import and history delete" do
-    # Setup: Create a category/job directory structure like SABnzbd uses
+  test "removes an empty SABnzbd job directory after history cleanup" do
     category_dir = File.join(@temp_download_base, "complete", "shelfarr")
     job_dir = File.join(category_dir, "Test Audiobook")
     FileUtils.mkdir_p(job_dir)
@@ -2483,11 +2482,10 @@ class PostProcessingJobTest < ActiveJob::TestCase
     )
 
     SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:completed_download_import_mode, "copy")
     SettingsService.set(:remove_completed_usenet_downloads, true)
 
     VCR.turned_off do
-      # Mock successful SABnzbd history delete
       stub_request(:get, "http://localhost:8080/api")
         .with(query: hash_including("mode" => "queue", "name" => "delete"))
         .to_return(
@@ -2497,23 +2495,49 @@ class PostProcessingJobTest < ActiveJob::TestCase
         )
       stub_request(:get, "http://localhost:8080/api")
         .with(query: hash_including("mode" => "history", "name" => "delete", "del_files" => "1"))
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: { "status" => true }.to_json
-        )
+        .to_return do
+          FileUtils.rm_f(File.join(job_dir, "audiobook.mp3"))
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "status" => true }.to_json
+          }
+        end
 
       PostProcessingJob.perform_now(@download.id)
 
       assert @request.reload.completed?
       expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
-      assert File.exist?(File.join(expected_dest, "audiobook.mp3")),
-        "File should be imported successfully"
-      assert_not File.exist?(job_dir),
-        "Empty SABnzbd job directory should be removed after successful import"
-      assert File.exist?(category_dir),
-        "Category directory should remain"
+      assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+      assert_not File.exist?(job_dir)
+      assert File.exist?(category_dir)
     end
+  end
+
+  test "retains nonempty and shared usenet directories" do
+    category_dir = File.join(@temp_download_base, "shelfarr")
+    job_dir = File.join(category_dir, "Test Audiobook")
+    FileUtils.mkdir_p(job_dir)
+    retained_file = File.join(job_dir, "late-file.mp3")
+    File.binwrite(retained_file, "late bytes")
+
+    client = DownloadClient.create!(
+      name: "SABnzbd Safe Cleanup",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key",
+      category: "shelfarr"
+    )
+    @download.update!(download_client: client)
+    job = PostProcessingJob.new
+
+    job.send(:remove_empty_download_job_directory, @download, job_dir, source_directory: true)
+    assert_equal "late bytes", File.binread(retained_file)
+
+    FileUtils.rm_f(retained_file)
+    FileUtils.rmdir(job_dir)
+    job.send(:remove_empty_download_job_directory, @download, category_dir, source_directory: true)
+    assert File.directory?(category_dir)
   end
 
   test "remaps path using category when global remote_path is a sibling folder" do
