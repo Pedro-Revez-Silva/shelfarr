@@ -1145,6 +1145,24 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_nil book.series
   end
 
+  test "create falls back to request params when metadata transport fails" do
+    MetadataService.stub(:book_details, ->(*) { raise Faraday::ConnectionFailed, "connection refused" }) do
+      assert_difference [ "Book.count", "Request.count" ], 1 do
+        post requests_path, params: {
+          work_id: "openlibrary:OL_FARADAY_FALLBACK_123W",
+          title: "Offline Fallback Book",
+          author: "Offline Fallback Author",
+          book_type: "ebook"
+        }
+      end
+    end
+
+    book = Book.last
+    assert_equal "Offline Fallback Book", book.title
+    assert_equal "Offline Fallback Author", book.author
+    assert_redirected_to request_path(Request.last)
+  end
+
   test "create enqueues request_created webhook event" do
     SettingsService.set(:webhook_enabled, true)
     SettingsService.set(:webhook_url, "http://localhost:4567/webhook")

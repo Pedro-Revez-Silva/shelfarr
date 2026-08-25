@@ -97,6 +97,81 @@ class BookMetadataLookupServiceTest < ActiveSupport::TestCase
     )
   end
 
+  test "rescues Faraday ConnectionFailed and continues with alternate identifiers" do
+    alternate = metadata_details(
+      source: "google_books",
+      source_id: "gb-123",
+      title: "Recovered title",
+      description: "Recovered description"
+    )
+    lookup = lambda do |work_id|
+      raise Faraday::ConnectionFailed, "Connection refused" if work_id == "hardcover:123"
+
+      alternate
+    end
+
+    metadata = MetadataService.stub(:book_details, lookup) do
+      BookMetadataLookupService.call([ "hardcover:123", "google_books:gb-123" ])
+    end
+
+    assert_equal "Recovered title", metadata[:title]
+    assert_equal "Recovered description", metadata[:description]
+  end
+
+  test "rescues Faraday TimeoutError and continues with alternate identifiers" do
+    alternate = metadata_details(
+      source: "google_books",
+      source_id: "gb-123",
+      title: "Recovered title",
+      description: "Recovered description"
+    )
+    lookup = lambda do |work_id|
+      raise Faraday::TimeoutError, "Request timed out" if work_id == "hardcover:123"
+
+      alternate
+    end
+
+    metadata = MetadataService.stub(:book_details, lookup) do
+      BookMetadataLookupService.call([ "hardcover:123", "google_books:gb-123" ])
+    end
+
+    assert_equal "Recovered title", metadata[:title]
+    assert_equal "Recovered description", metadata[:description]
+  end
+
+  test "rescues Faraday SSLError and continues with alternate identifiers" do
+    alternate = metadata_details(
+      source: "google_books",
+      source_id: "gb-123",
+      title: "Recovered title",
+      description: "Recovered description"
+    )
+    lookup = lambda do |work_id|
+      raise Faraday::SSLError, "SSL verification failed" if work_id == "hardcover:123"
+
+      alternate
+    end
+
+    metadata = MetadataService.stub(:book_details, lookup) do
+      BookMetadataLookupService.call([ "hardcover:123", "google_books:gb-123" ])
+    end
+
+    assert_equal "Recovered title", metadata[:title]
+    assert_equal "Recovered description", metadata[:description]
+  end
+
+  test "does not rescue unrelated exceptions" do
+    lookup = lambda do |_work_id|
+      raise RuntimeError, "Unrelated programming error"
+    end
+
+    assert_raises(RuntimeError) do
+      MetadataService.stub(:book_details, lookup) do
+        BookMetadataLookupService.call([ "hardcover:123" ])
+      end
+    end
+  end
+
   private
 
   def metadata_details(source:, source_id:, title:, description:)
