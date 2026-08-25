@@ -1293,10 +1293,31 @@ class DownloadJob < ApplicationJob
   end
 
   def ensure_book_available_for_direct_download!(book)
-    return unless book.reload.acquisition_blocked?
+    book.reload
+    
+    # Release stale reservations from failed downloads to allow retry
+    if book.acquisition_reserved? && !book.acquired?
+      release_failed_download_reservation!(book)
+      book.reload
+    end
+    
+    return unless book.acquisition_blocked?
 
     raise BookAcquisitionConflictError,
       "Another acquisition already claimed this title; its existing library file was preserved"
+  end
+  
+  def release_failed_download_reservation!(book)
+    return unless book.acquisition_reservation_owner_type == "Download"
+    
+    # Only release if the owning download has failed
+    owner_download = Download.find_by(id: book.acquisition_reservation_owner_id)
+    return unless owner_download&.failed?
+    
+    Rails.logger.info "[DownloadJob] Releasing stale reservation from failed download ##{owner_download.id} for book ##{book.id}"
+    DirectDownloadFileService.send(:release_reservation!, owner_download)
+  rescue => e
+    Rails.logger.warn "[DownloadJob] Could not release stale reservation for book ##{book.id}: #{e.message}"
   end
 
   def ensure_output_root!(base_path)

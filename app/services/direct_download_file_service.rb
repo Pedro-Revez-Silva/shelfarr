@@ -605,8 +605,10 @@ class DirectDownloadFileService
     end
 
     return false unless self.class.send(:valid_output_root_identity?, download)
-    return false if @publication_started && !error.is_a?(ConflictError)
-
+    
+    # Release the reservation on any error unless publication completed.
+    # Previously this skipped release when publication_started && !ConflictError,
+    # causing permanent reservation leaks on mid-publication failures.
     self.class.send(:release_reservation!, download)
     download.reload
     false

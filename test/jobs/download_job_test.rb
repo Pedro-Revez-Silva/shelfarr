@@ -2118,6 +2118,99 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal [ "audio-lib" ], scanned
   end
 
+  test "failed direct download releases acquisition reservation allowing retry" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      book = @gutenberg_request.book
+      
+      # Verify no reservation initially
+      assert_nil book.reload.acquisition_reservation_token
+      assert_not book.acquisition_blocked?
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: "PK\x03\x04" + ("test" * 256),
+            headers: { "Content-Type" => "application/epub+zip" }
+          )
+
+        # Simulate a failure during file publication (after reservation is made)
+        # This happens in publish_file_and_finalize! after reserve_book! succeeds
+        FileCopyService.stub(:cp_io_noreplace, ->(*_args, **_kwargs) {
+          raise IOError, "simulated disk failure during publication"
+        }) do
+          DownloadJob.perform_now(@gutenberg_download.id)
+        end
+      end
+
+      # Download should be failed
+      assert @gutenberg_download.reload.failed?
+      assert_nil @gutenberg_request.book.reload.file_path
+
+      # The reservation should be released, allowing retry
+      book.reload
+      assert_nil book.acquisition_reservation_token, "Expected reservation to be released after failure"
+      assert_nil book.acquisition_reservation_owner_type
+      assert_nil book.acquisition_reservation_owner_id
+      assert_not book.acquisition_blocked?, "Expected book to not be blocked after reservation release"
+
+      # Verify a retry is possible by checking the book is available
+      assert_not book.acquisition_reserved?
+    end
+  end
+
+  test "stale reservation from failed download is released when retrying" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      book = @gutenberg_request.book
+      
+      # Simulate a stale reservation from a failed download
+      # (e.g., job was killed before error handling could release it)
+      token = SecureRandom.hex(32)
+      failed_download = @gutenberg_request.downloads.create!(
+        name: "Failed Download",
+        status: :failed,
+        download_type: "direct",
+        direct_reservation_token: token
+      )
+      book.update!(
+        acquisition_reservation_token: token,
+        acquisition_reservation_owner_type: "Download",
+        acquisition_reservation_owner_id: failed_download.id
+      )
+      
+      # Verify the book is blocked initially
+      assert book.reload.acquisition_blocked?
+      assert book.acquisition_reserved?
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: "PK\x03\x04" + ("test" * 256),
+            headers: { "Content-Type" => "application/epub+zip" }
+          )
+
+        # The new download should succeed by releasing the stale reservation
+        DownloadJob.perform_now(@gutenberg_download.id)
+      end
+
+      # The new download should succeed
+      assert @gutenberg_download.reload.completed?
+      assert_equal File.dirname(gutenberg_destination_path(dir)), @gutenberg_request.book.reload.file_path
+
+      # The reservation should be released
+      book.reload
+      assert_nil book.acquisition_reservation_token
+      assert_nil book.acquisition_reservation_owner_type
+      assert_nil book.acquisition_reservation_owner_id
+      assert_not book.acquisition_blocked?
+    end
+  end
+
   private
 
   def setup_zlibrary_download
