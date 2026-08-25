@@ -419,15 +419,32 @@ class FileCopyService
           secure_pinned_library_tree!(source_directory, heartbeat: heartbeat)
 
           with_pinned_destination_parent(destination_path, root: root) do |destination_parent, basename, parent_path|
-            published = native_rename_noreplace(
-              source_parent.fileno,
-              source_path.basename.to_s,
-              destination_parent.fileno,
-              basename
-            )
+            published = begin
+              native_rename_noreplace(
+                source_parent.fileno,
+                source_path.basename.to_s,
+                destination_parent.fileno,
+                basename
+              )
+            rescue Errno::EINVAL
+              false
+            end
+
             unless published
-              raise AtomicPublicationUnsupportedError,
-                "The destination filesystem cannot atomically publish library directories"
+              begin
+                if pinned_child_identity(destination_parent, basename, directory: true)
+                  raise Errno::EEXIST, "destination directory already exists"
+                end
+              rescue SystemCallError => error
+                raise unless error.is_a?(Errno::ENOENT)
+              end
+
+              native_renameat(
+                source_parent.fileno,
+                source_path.basename.to_s,
+                destination_parent.fileno,
+                basename
+              )
             end
 
             expected_identity = [ source_root.device, source_root.inode ]
