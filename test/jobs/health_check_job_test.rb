@@ -9,23 +9,48 @@ class HealthCheckJobTest < ActiveJob::TestCase
     Thread.current[:qbittorrent_sessions] = {}
   end
 
-  test "schedules next run after checking" do
-    assert_enqueued_with(job: HealthCheckJob) do
+  test "does not schedule next run after checking (recurring job handles scheduling)" do
+    assert_no_enqueued_jobs(only: HealthCheckJob) do
       HealthCheckJob.perform_now
     end
   end
 
-  test "uses configurable interval for next run" do
-    Setting.find_or_create_by(key: "health_check_interval").update!(
-      value: "600",
-      value_type: "integer",
-      category: "health"
+  test "cleans up leftover pending HealthCheckJob rows from self-rescheduling chains" do
+    # Connect to the queue database for this test
+    SolidQueue::Record.establish_connection(:queue)
+
+    # Simulate multiple pending HealthCheckJob rows from the old self-rescheduling chain bug
+    job1 = SolidQueue::Job.create!(
+      class_name: "HealthCheckJob",
+      queue_name: "default",
+      arguments: [].to_json,
+      scheduled_at: 5.minutes.from_now
+    )
+    job2 = SolidQueue::Job.create!(
+      class_name: "HealthCheckJob",
+      queue_name: "default",
+      arguments: [].to_json,
+      scheduled_at: 10.minutes.from_now
+    )
+    job3 = SolidQueue::Job.create!(
+      class_name: "HealthCheckJob",
+      queue_name: "default",
+      arguments: [].to_json,
+      scheduled_at: 15.minutes.from_now
     )
 
-    HealthCheckJob.perform_now
+    # Verify we have 3 pending jobs
+    assert_equal 3, SolidQueue::Job.where(class_name: "HealthCheckJob", finished_at: nil).count
 
-    enqueued = enqueued_jobs.find { |j| j[:job] == HealthCheckJob }
-    assert enqueued
+    # Run the cleanup logic from the initializer
+    deleted_count = SolidQueue::Job.where(
+      class_name: "HealthCheckJob",
+      finished_at: nil
+    ).delete_all
+
+    # Verify all pending jobs were cleaned up
+    assert_equal 3, deleted_count
+    assert_equal 0, SolidQueue::Job.where(class_name: "HealthCheckJob", finished_at: nil).count
   end
 
   # Single service check

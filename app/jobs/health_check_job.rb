@@ -14,7 +14,6 @@ class HealthCheckJob < ApplicationJob
       check_output_paths
       check_audiobookshelf
       check_hardcover
-      schedule_next_run
     end
   end
 
@@ -227,10 +226,5 @@ class HealthCheckJob < ApplicationJob
   rescue => e
     health.check_failed!(message: "Error: #{e.message}")
     Rails.logger.error "[HealthCheckJob] Hardcover check failed: #{e.message}"
-  end
-
-  def schedule_next_run
-    interval = SettingsService.get(:health_check_interval, default: 300)
-    HealthCheckJob.set(wait: interval.seconds).perform_later
   end
 end
