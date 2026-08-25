@@ -576,8 +576,43 @@ class PostProcessingJob < ApplicationJob
     Rails.logger.info "[PostProcessingJob] Removing usenet download ##{download.id}"
     download.download_client.adapter.remove_torrent(download.external_id, delete_files: true)
     Rails.logger.info "[PostProcessingJob] Usenet download removed successfully"
+    
+    # SABnzbd history delete with del_files doesn't remove completed storage directories.
+    # Remove the empty job directory if it exists under an authorized download root.
+    remove_empty_download_job_directory(download)
   rescue => e
     Rails.logger.warn "[PostProcessingJob] Usenet cleanup failed for download ##{download.id}: #{e.class}"
+  end
+
+  def remove_empty_download_job_directory(download)
+    return unless download.download_path.present?
+    
+    source_path = download.download_path
+    return unless File.directory?(source_path)
+    return if File.exist?(source_path) && Dir.children(source_path).any?
+    
+    # Only remove if the directory is under an authorized download root
+    authorized_roots = [
+      SettingsService.get(:download_local_path, default: "/downloads"),
+      SettingsService.get(:download_remote_path),
+      download.download_client&.download_path
+    ].compact_blank.filter_map { |path| canonical_download_root(path) }.uniq
+    
+    # Don't remove shared download roots
+    shared_roots = shared_download_roots(download).filter_map { |path| canonical_download_root(path) }.uniq
+    canonical_source = canonical_path(source_path) rescue nil
+    
+    return unless canonical_source
+    return if shared_roots.include?(canonical_source)
+    return unless authorized_roots.any? { |root| path_inside_root?(canonical_source, root) }
+    
+    # Safe to remove the empty directory
+    Dir.rmdir(source_path)
+    Rails.logger.info "[PostProcessingJob] Removed empty download job directory: #{source_path}"
+  rescue Errno::ENOTEMPTY, Errno::ENOENT, Errno::EACCES => e
+    Rails.logger.debug "[PostProcessingJob] Could not remove download job directory: #{e.class}"
+  rescue => e
+    Rails.logger.warn "[PostProcessingJob] Unexpected error removing download job directory: #{e.class}"
   end
 
   def usenet_cleanup_requested?(download)

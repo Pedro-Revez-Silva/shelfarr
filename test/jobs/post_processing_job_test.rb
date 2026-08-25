@@ -2462,6 +2462,60 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "removes empty SABnzbd job directory after successful import and history delete" do
+    # Setup: Create a category/job directory structure like SABnzbd uses
+    category_dir = File.join(@temp_download_base, "complete", "shelfarr")
+    job_dir = File.join(category_dir, "Test Audiobook")
+    FileUtils.mkdir_p(job_dir)
+    File.write(File.join(job_dir, "audiobook.mp3"), "test audio content")
+
+    client = DownloadClient.create!(
+      name: "SABnzbd Complete",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key",
+      category: "shelfarr"
+    )
+    @download.update!(
+      download_client: client,
+      external_id: "SABnzbd_nzo_abc123",
+      download_path: job_dir
+    )
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+
+    VCR.turned_off do
+      # Mock successful SABnzbd history delete
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => false }.to_json
+        )
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "history", "name" => "delete", "del_files" => "1"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => true }.to_json
+        )
+
+      PostProcessingJob.perform_now(@download.id)
+
+      assert @request.reload.completed?
+      expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+      assert File.exist?(File.join(expected_dest, "audiobook.mp3")),
+        "File should be imported successfully"
+      assert_not File.exist?(job_dir),
+        "Empty SABnzbd job directory should be removed after successful import"
+      assert File.exist?(category_dir),
+        "Category directory should remain"
+    end
+  end
+
   test "remaps path using category when global remote_path is a sibling folder" do
     # Scenario: qBittorrent saves to /mnt/media/Torrents/shelfarr/TorrentName
     # but download_remote_path is /mnt/media/Torrents/Completed (SABnzbd path)
