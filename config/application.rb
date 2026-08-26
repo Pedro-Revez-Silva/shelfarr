@@ -27,6 +27,10 @@ module Shelfarr
     # Set RAILS_RELATIVE_URL_ROOT environment variable to configure
     config.relative_url_root = ENV.fetch("RAILS_RELATIVE_URL_ROOT", "/")
 
+    # Keep Rails-rendered timestamps aligned with the container's time zone.
+    # Active Record continues to store timestamps in UTC.
+    config.time_zone = ENV.fetch("TZ", "UTC")
+
     # Covers and store links are supplied by external catalog providers. Avoid
     # disclosing a self-hosted Shelfarr URL while retaining the origin for
     # same-origin form submissions such as the OIDC handoff.
@@ -42,7 +46,6 @@ module Shelfarr
     # These settings can be overridden in specific environments using the files
     # in config/environments, which are processed later.
     #
-    # config.time_zone = "Central Time (US & Canada)"
     # config.eager_load_paths << Rails.root.join("extras")
   end
 end

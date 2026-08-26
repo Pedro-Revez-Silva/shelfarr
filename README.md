@@ -98,6 +98,7 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `TRUST_NFS_UID_SQUASH` | `false` | Set to `true` only on an NFS export using `all_squash` (remaps every client's UID to one shared identity — most NAS UIs expose this as something like "map all users") and that no untrusted client can mount. This does not prove a file was written by this container — it tells Shelfarr to trust that the export is effectively single-tenant so its ownership safety checks aren't defeated by the squash. |
 | `SHELFARR_SETTING_ALLOW_NONATOMIC_NFS_DIRECTORY_PUBLICATION` | `false` | Allows directory imports when NFS rejects atomic no-replace renames. Enable only for a single-writer export. The fallback checks that the destination is absent before plain `rename(2)`, but NFS cannot make those two operations atomic; a concurrently created empty destination directory could be replaced. This can also be enabled under **Admin → Settings → Downloads → Output Paths**. |
 | `HTTP_PORT` | `80` | Internal container port. Change if port 80 is in use (e.g., behind gluetun) |
+| `TZ` | `UTC` | IANA time zone used for displayed timestamps (e.g., `America/New_York`) |
 | `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set |
 | `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
 | `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vYYYY.MM.DD.N`, use `YYYY.MM.DD.N`) |
