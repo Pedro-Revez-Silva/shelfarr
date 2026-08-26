@@ -179,14 +179,17 @@ class DownloadClientTest < ActiveSupport::TestCase
   end
 
   test "encrypts api_key" do
+    plaintext_api_key = "secret-api-key"
     client = DownloadClient.create!(
       name: "Test",
       client_type: "sabnzbd",
       url: "http://localhost:8080",
-      api_key: "secret-api-key"
+      api_key: plaintext_api_key
     )
     client.reload
-    assert_equal "secret-api-key", client.api_key
+    assert_equal plaintext_api_key, client.api_key
+    assert_not_equal plaintext_api_key, client.api_key_before_type_cast
+    assert_not_includes client.api_key_before_type_cast, plaintext_api_key
   end
 
   test "requires qBittorrent API keys to match the upstream key shape" do
