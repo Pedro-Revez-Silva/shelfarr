@@ -221,6 +221,74 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_nil @download.reload.direct_staging_path
   end
 
+  test "recovery releases a failed reservation with no publication state" do
+    token = SecureRandom.hex(32)
+    @book.update!(
+      acquisition_reservation_token: token,
+      acquisition_reservation_owner_type: "Download",
+      acquisition_reservation_owner_id: @download.id
+    )
+    @download.update!(
+      status: :failed,
+      direct_reservation_token: token
+    )
+
+    assert_not DirectDownloadFileService.reconcile!(@download)
+
+    assert_not @book.reload.acquisition_reserved?
+    assert_nil @download.reload.direct_reservation_token
+  end
+
+  test "recovery retains a failed reservation with ambiguous publication state" do
+    token = SecureRandom.hex(32)
+    @book.update!(
+      acquisition_reservation_token: token,
+      acquisition_reservation_owner_type: "Download",
+      acquisition_reservation_owner_id: @download.id
+    )
+    @download.update!(
+      status: :failed,
+      direct_reservation_token: token,
+      direct_destination_path: @destination
+    )
+
+    assert_not DirectDownloadFileService.reconcile!(@download)
+
+    assert @book.reload.acquisition_reserved?
+    assert_equal token, @download.reload.direct_reservation_token
+    assert_equal @destination, @download.direct_destination_path
+  end
+
+  test "reservation recovery releases an ownerless failed-download reservation" do
+    token = SecureRandom.hex(32)
+    missing_download_id = Download.maximum(:id).to_i + 10_000
+    @book.update!(
+      acquisition_reservation_token: token,
+      acquisition_reservation_owner_type: "Download",
+      acquisition_reservation_owner_id: missing_download_id
+    )
+
+    assert DirectDownloadFileService.reconcile_reservation!(@book)
+
+    assert_not @book.reload.acquisition_reserved?
+    assert_nil @book.acquisition_reservation_owner_type
+    assert_nil @book.acquisition_reservation_owner_id
+  end
+
+  test "orphan recovery preserves reservations attached to acquired books" do
+    token = SecureRandom.hex(32)
+    @book.update!(
+      file_path: File.dirname(@destination),
+      acquisition_reservation_token: token,
+      acquisition_reservation_owner_type: "Download",
+      acquisition_reservation_owner_id: Download.maximum(:id).to_i + 10_000
+    )
+
+    assert_equal 0, DirectDownloadFileService.reconcile_orphaned_reservations!
+
+    assert_equal token, @book.reload.acquisition_reservation_token
+  end
+
   test "a conflicting file is preserved and does not strand a reservation" do
     staging = @service.create_staging!
     FileUtils.mkdir_p(File.dirname(@destination))

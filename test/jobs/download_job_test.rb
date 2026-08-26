@@ -2118,6 +2118,128 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal [ "audio-lib" ], scanned
   end
 
+  test "failed publication retains its reservation until verified recovery" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      book = @gutenberg_request.book
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: "PK\x03\x04" + ("test" * 256),
+            headers: { "Content-Type" => "application/epub+zip" }
+          )
+
+        FileCopyService.stub(:cp_io_noreplace, ->(*_args, **_kwargs) {
+          raise IOError, "simulated disk failure during publication"
+        }) do
+          DownloadJob.perform_now(@gutenberg_download.id)
+        end
+      end
+
+      assert @gutenberg_download.reload.failed?
+      assert_nil @gutenberg_request.book.reload.file_path
+      assert book.reload.acquisition_reserved?
+      staging = @gutenberg_download.direct_staging_path
+      assert File.directory?(staging)
+
+      @gutenberg_download.update_columns(updated_at: 1.hour.ago)
+      assert_not DirectDownloadFileService.reconcile!(@gutenberg_download)
+
+      assert_not book.reload.acquisition_reserved?
+      assert_nil @gutenberg_download.reload.direct_staging_path
+      assert_not File.exist?(staging)
+    end
+  end
+
+  test "stale reservation from failed download is released when retrying" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      book = @gutenberg_request.book
+
+      token = SecureRandom.hex(32)
+      failed_download = @gutenberg_request.downloads.create!(
+        name: "Failed Download",
+        status: :failed,
+        download_type: "direct",
+        direct_reservation_token: token
+      )
+      book.update!(
+        acquisition_reservation_token: token,
+        acquisition_reservation_owner_type: "Download",
+        acquisition_reservation_owner_id: failed_download.id
+      )
+
+      assert book.reload.acquisition_blocked?
+      assert book.acquisition_reserved?
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: "PK\x03\x04" + ("test" * 256),
+            headers: { "Content-Type" => "application/epub+zip" }
+          )
+
+        DownloadJob.perform_now(@gutenberg_download.id)
+      end
+
+      assert @gutenberg_download.reload.completed?
+      assert_equal File.dirname(gutenberg_destination_path(dir)), @gutenberg_request.book.reload.file_path
+
+      book.reload
+      assert_nil book.acquisition_reservation_token
+      assert_nil book.acquisition_reservation_owner_type
+      assert_nil book.acquisition_reservation_owner_id
+      assert book.acquired?
+    end
+  end
+
+  test "retry explains when failed publication state must remain reserved" do
+    book = @request.book
+    token = SecureRandom.hex(32)
+    failed_download = @request.downloads.create!(
+      name: "Failed direct publication",
+      status: :failed,
+      download_type: "direct",
+      direct_reservation_token: token,
+      direct_destination_path: "/ebooks/recovery/book.epub"
+    )
+    book.update!(
+      acquisition_reservation_token: token,
+      acquisition_reservation_owner_type: "Download",
+      acquisition_reservation_owner_id: failed_download.id
+    )
+
+    error = assert_raises(DownloadJob::BookAcquisitionConflictError) do
+      DownloadJob.new.send(:ensure_book_available_for_direct_download!, book)
+    end
+
+    assert_match(/recovery state is being verified/, error.message)
+    assert_no_match(/existing library file/, error.message)
+    assert book.reload.acquisition_reserved?
+  end
+
+  test "direct retry does not describe another acquisition reservation as a library file" do
+    book = @request.book
+    book.update!(
+      acquisition_reservation_token: SecureRandom.hex(32),
+      acquisition_reservation_owner_type: "Upload",
+      acquisition_reservation_owner_id: 91_001
+    )
+
+    error = assert_raises(DownloadJob::BookAcquisitionConflictError) do
+      DownloadJob.new.send(:ensure_book_available_for_direct_download!, book)
+    end
+
+    assert_match(/Another acquisition still owns this title/, error.message)
+    assert_no_match(/existing library file/, error.message)
+    assert book.reload.acquisition_reserved?
+  end
+
   private
 
   def setup_zlibrary_download

@@ -1293,10 +1293,24 @@ class DownloadJob < ApplicationJob
   end
 
   def ensure_book_available_for_direct_download!(book)
-    return unless book.reload.acquisition_blocked?
+    book.reload
 
+    if book.acquisition_reserved? && !book.acquired?
+      DirectDownloadFileService.reconcile_reservation!(book)
+      book.reload
+    end
+
+    return unless book.acquisition_blocked?
+
+    message = if book.acquired?
+      "This title already has a library file; the existing file was preserved"
+    elsif book.acquisition_reservation_owner_type == "Download"
+      "A previous direct download still owns this title while its recovery state is being verified"
+    else
+      "Another acquisition still owns this title; no library file was replaced"
+    end
     raise BookAcquisitionConflictError,
-      "Another acquisition already claimed this title; its existing library file was preserved"
+      message
   end
 
   def ensure_output_root!(base_path)
