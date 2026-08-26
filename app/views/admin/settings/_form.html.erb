@@ -104,6 +104,9 @@
                           <% boolean_data = SettingsService.manual_save_setting_key?(key) ? { settings_form_manual_save: true } : { action: "change->settings-form#autoSave" } %>
                           <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: boolean_data }, "true", "false" %>
                         </label>
+                        <% if key.to_s == "allow_nonatomic_nfs_directory_publication" %>
+                          <p class="mt-2 text-sm text-red-400">Safety override: use only on an NFS export with no other writer. Save All is required to apply this change.</p>
+                        <% end %>
                         <% end %>
                       <% when "integer" %>
                         <% integer_constraints = case key.to_s

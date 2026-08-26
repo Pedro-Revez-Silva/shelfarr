@@ -4085,22 +4085,22 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "new", File.binread(File.join(source, "new.mp3"))
   end
 
-  test "mv_directory_noreplace uses non-atomic fallback when native_rename_noreplace returns EINVAL" do
-    # When native_rename_noreplace raises EINVAL (e.g., on NFS), the fallback
-    # should use plain rename after checking the destination doesn't exist.
+  test "mv_directory_noreplace fails closed on EINVAL unless the compatibility mode is enabled" do
     source = File.join(@tmp_dir, "staging-tree")
     destination = File.join(@dest_dir, "published-tree")
     FileUtils.mkdir_p(source)
     File.binwrite(File.join(source, "chapter.mp3"), "chapter")
-    expected_manifest = FileCopyService.directory_content_manifest(source, root: @tmp_dir)
 
     FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL }) do
-      FileCopyService.mv_directory_noreplace(source, destination, root: @dest_dir)
+      FileCopyService.stub(:native_renameat, ->(*) { flunk "plain rename must require explicit opt-in" }) do
+        assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+          FileCopyService.mv_directory_noreplace(source, destination, root: @dest_dir)
+        end
+      end
     end
 
-    assert_not File.exist?(source)
-    assert_equal expected_manifest,
-      FileCopyService.directory_content_manifest(destination, root: @dest_dir)
+    assert File.exist?(source)
+    assert_not File.exist?(destination)
   end
 
   test "mv_directory_noreplace preserves invalid descendant topology errors" do
@@ -4116,9 +4116,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(destination)
   end
 
-  test "mv_directory_noreplace uses non-atomic fallback when renameat2 returns EINVAL" do
-    # NFS does not support renameat2 with flags and returns EINVAL.
-    # The fallback should use plain rename after checking the destination.
+  test "mv_directory_noreplace uses the explicitly enabled non-atomic NFS fallback" do
     source = File.join(@tmp_dir, "staging-tree")
     destination = File.join(@dest_dir, "published-tree")
     FileUtils.mkdir_p(source)
@@ -4126,7 +4124,12 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     expected_manifest = FileCopyService.directory_content_manifest(source, root: @tmp_dir)
 
     FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
-      FileCopyService.mv_directory_noreplace(source, destination, root: @dest_dir)
+      FileCopyService.mv_directory_noreplace(
+        source,
+        destination,
+        root: @dest_dir,
+        allow_nonatomic: true
+      )
     end
 
     assert_not File.exist?(source)
@@ -4134,8 +4137,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       FileCopyService.directory_content_manifest(destination, root: @dest_dir)
   end
 
-  test "mv_directory_noreplace fallback never overwrites an existing destination" do
-    # Even when using the non-atomic fallback, existing destinations must be preserved.
+  test "mv_directory_noreplace non-atomic fallback preserves a destination found before rename" do
     source = File.join(@tmp_dir, "staging-tree")
     destination = File.join(@dest_dir, "published-tree")
     FileUtils.mkdir_p(source)
@@ -4145,7 +4147,12 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
       assert_raises(Errno::EEXIST) do
-        FileCopyService.mv_directory_noreplace(source, destination, root: @dest_dir)
+        FileCopyService.mv_directory_noreplace(
+          source,
+          destination,
+          root: @dest_dir,
+          allow_nonatomic: true
+        )
       end
     end
 
