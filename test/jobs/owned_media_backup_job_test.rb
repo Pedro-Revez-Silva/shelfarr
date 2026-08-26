@@ -580,6 +580,53 @@ class OwnedMediaBackupJobTest < ActiveJob::TestCase
     end
   end
 
+  test "uses the highest collision sequence when filesystem mtimes tie" do
+    Dir.mktmpdir("libation-import") do |root|
+      book_dir = File.join(root, "Book")
+      FileUtils.mkdir_p(book_dir)
+      canonical = File.join(book_dir, "A Title.m4b")
+      second = File.join(book_dir, "A Title (2).m4b")
+      tenth = File.join(book_dir, "A Title (10).m4b")
+      [ canonical, second, tenth ].each { |path| File.binwrite(path, File.basename(path)) }
+      timestamp = 1.minute.ago.to_time
+      [ canonical, second, tenth ].each { |path| File.utime(timestamp, timestamp, path) }
+
+      job = OwnedMediaBackupJob.new
+      with_env("SHELFARR_LIBATION_IMPORT_ROOT" => root) do
+        assert_equal Pathname(tenth), job.send(:select_audio_artifact, [ "/data/Book" ])
+      end
+    end
+  end
+
+  test "does not interpret zero or unbounded numeric suffixes as Libation collisions" do
+    Dir.mktmpdir("libation-import") do |root|
+      book_dir = File.join(root, "Book")
+      FileUtils.mkdir_p(book_dir)
+      File.binwrite(File.join(book_dir, "A Title.m4b"), "canonical")
+      File.binwrite(File.join(book_dir, "A Title (0).m4b"), "zero")
+      File.binwrite(File.join(book_dir, "A Title (1000000000).m4b"), "unbounded")
+
+      job = OwnedMediaBackupJob.new
+      with_env("SHELFARR_LIBATION_IMPORT_ROOT" => root) do
+        assert_raises(OwnedMediaBackupJob::BackupError) do
+          job.send(:select_audio_artifact, [ "/data/Book" ])
+        end
+      end
+    end
+  end
+
+  test "reports a collision candidate that disappears during metadata selection" do
+    job = OwnedMediaBackupJob.new
+    error = assert_raises(OwnedMediaBackupJob::BackupError) do
+      job.send(
+        :select_collision_copy,
+        [ Pathname("A Title.m4b"), Pathname("A Title (1).m4b") ]
+      )
+    end
+
+    assert_match(/not accessible/, error.message)
+  end
+
   test "finishes after Shelfarr upload processing completes" do
     upload = Upload.create!(
       user: users(:two),

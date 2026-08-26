@@ -17,6 +17,7 @@ class OwnedMediaBackupJob < ApplicationJob
   COMPANION_DATA_ROOT = Pathname("/data").freeze
   DEFAULT_IMPORT_ROOT = "/imports/libation"
   AUDIO_EXTENSIONS = %w[.m4b .m4a .mp3].freeze
+  LIBATION_COLLISION_SUFFIX = / \(([1-9][0-9]{0,8})\)\z/
   MAX_DIRECTORY_ENTRIES = 10_000
 
   queue_as :default
@@ -363,15 +364,33 @@ class OwnedMediaBackupJob < ApplicationJob
     return unless paths.any? { |path| duplicate_suffix?(path) }
     return unless paths.map { |path| [ path.dirname, collision_basename(path) ] }.uniq.one?
 
-    paths.max_by { |path| [ path.mtime, path.basename.to_s ] }
+    paths.max_by do |path|
+      stat = path.lstat
+      unless stat.file?
+        raise BackupError, "Libation artifact changed while Shelfarr was selecting it"
+      end
+
+      [ stat.mtime, collision_number(path), path.basename.to_s ]
+    end
+  rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
+    raise BackupError, "Libation artifact is not accessible from Shelfarr"
   end
 
   def duplicate_suffix?(path)
-    path.basename(path.extname).to_s.match?(/ \(\d+\)\z/)
+    LIBATION_COLLISION_SUFFIX.match?(collision_stem(path))
   end
 
   def collision_basename(path)
-    path.basename(path.extname).to_s.sub(/ \(\d+\)\z/, "")
+    collision_stem(path).sub(LIBATION_COLLISION_SUFFIX, "")
+  end
+
+  def collision_number(path)
+    match = LIBATION_COLLISION_SUFFIX.match(collision_stem(path))
+    match ? match[1].to_i : 0
+  end
+
+  def collision_stem(path)
+    path.basename(path.extname).to_s
   end
 
   def audio_files_in(directory)
