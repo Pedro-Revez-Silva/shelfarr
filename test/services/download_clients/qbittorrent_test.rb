@@ -545,6 +545,23 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "remove_torrent reports a rejected bearer API key as an authentication failure" do
+    VCR.turned_off do
+      @client_record.update!(api_key: QBITTORRENT_API_KEY)
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/delete")
+        .with(headers: { "Authorization" => "Bearer #{QBITTORRENT_API_KEY}" })
+        .to_return(status: 403, body: "Forbidden")
+
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.remove_torrent("rejected-hash")
+      end
+
+      assert_equal "qBittorrent authentication failed (HTTP 403) at http://localhost:8080", error.message
+      assert_not_requested(:post, "http://localhost:8080/api/v2/auth/login")
+    end
+  end
+
   test "test_connection retains cookie login for a legacy malformed API key" do
     VCR.turned_off do
       @client_record.update_column(:api_key, "legacy-client-api-key")

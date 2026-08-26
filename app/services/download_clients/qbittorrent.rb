@@ -143,7 +143,7 @@ module DownloadClients
         true
       when 401, 403
         clear_session!
-        raise Base::AuthenticationError, "qBittorrent session expired"
+        raise Base::AuthenticationError, "qBittorrent authentication failed (HTTP #{response.status}) at #{base_url}"
       else
         Rails.logger.error "[Qbittorrent] Failed to remove torrent: #{response.status}"
         false
