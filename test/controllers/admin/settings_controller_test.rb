@@ -44,6 +44,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "#settings-tabs noscript", text: /Use Save All/
     assert_select "#settings-tabs noscript style", count: 0
     assert_select "#settings-tabs [data-settings-tabs-target='tablist'].hidden [role='tablist']", count: 1
+    assert_select "input[name='settings[health_check_interval]'][min='#{SettingsService::MIN_HEALTH_CHECK_INTERVAL}']"
   end
 
   test "index shows telegram group authorization only in integrations tab" do

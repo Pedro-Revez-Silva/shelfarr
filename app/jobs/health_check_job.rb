@@ -4,21 +4,64 @@
 class HealthCheckJob < ApplicationJob
   queue_as :default
 
-  def perform(service: nil)
+  class << self
+    def discard_legacy_scheduled_chains!
+      discarded = 0
+      legacy_scheduled_jobs.find_each do |job|
+        next unless full_health_check_arguments?(job.arguments)
+        next unless job.status.in?([ :ready, :scheduled ])
+
+        job.discard
+        discarded += 1
+      rescue SolidQueue::Execution::UndiscardableError, ActiveRecord::RecordNotFound
+        next
+      end
+      discarded
+    end
+
+    private
+
+    def legacy_scheduled_jobs
+      SolidQueue::Job
+        .where(class_name: name, finished_at: nil)
+        .where('"solid_queue_jobs"."scheduled_at" > "solid_queue_jobs"."created_at"')
+        .where.missing(:recurring_execution, :claimed_execution, :failed_execution)
+    end
+
+    def full_health_check_arguments?(payload)
+      payload.is_a?(Hash) && Array(payload["arguments"]).empty?
+    end
+  end
+
+  def perform(service: nil, scheduled: false)
     if service.present?
       run_check_for(service)
     else
+      return if scheduled && !scheduled_health_check_due?
+
       check_indexer
       check_download_clients
       check_download_paths
       check_output_paths
       check_audiobookshelf
       check_hardcover
-      schedule_next_run
     end
   end
 
   private
+
+  def scheduled_health_check_due?
+    health_records = SystemHealth.where(service: SystemHealth::SERVICES)
+    return true if health_records.count < SystemHealth::SERVICES.length
+    return true if health_records.where(last_check_at: nil).exists?
+
+    interval = SettingsService.get(:health_check_interval, default: 300).to_i
+    interval = [ interval, SettingsService::MIN_HEALTH_CHECK_INTERVAL ].max
+    interval_minutes = (interval / 1.minute.to_f).ceil
+    last_full_check = health_records.minimum(:last_check_at)
+
+    last_full_check.beginning_of_minute <= interval_minutes.minutes.ago.beginning_of_minute
+  end
 
   def run_check_for(service)
     case service.to_s
@@ -227,10 +270,5 @@ class HealthCheckJob < ApplicationJob
   rescue => e
     health.check_failed!(message: "Error: #{e.message}")
     Rails.logger.error "[HealthCheckJob] Hardcover check failed: #{e.message}"
-  end
-
-  def schedule_next_run
-    interval = SettingsService.get(:health_check_interval, default: 300)
-    HealthCheckJob.set(wait: interval.seconds).perform_later
   end
 end

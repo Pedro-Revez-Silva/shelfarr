@@ -53,4 +53,15 @@ class RecurringConfigTest < ActiveSupport::TestCase
     assert_equal "default", recovery_job["queue"]
     assert_equal "every 5 minutes", recovery_job["schedule"]
   end
+
+  test "checks whether configured health monitoring is due every minute" do
+    config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
+
+    health_check_job = config.fetch("default").fetch("health_check")
+
+    assert_equal "HealthCheckJob", health_check_job["class"]
+    assert_equal "default", health_check_job["queue"]
+    assert_equal [ { "scheduled" => true } ], health_check_job["args"]
+    assert_equal "every minute", health_check_job["schedule"]
+  end
 end

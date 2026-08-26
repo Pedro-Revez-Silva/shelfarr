@@ -21,6 +21,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
       oidc_enabled oidc_auto_redirect oidc_provider_name oidc_issuer oidc_client_id oidc_client_secret oidc_scopes
       oidc_link_existing_users oidc_auto_create_users oidc_default_role
       webhook_enabled webhook_url webhook_token webhook_events webhook_topic
+      health_check_interval
     ]).delete_all
   end
 
@@ -183,6 +184,19 @@ class SettingsServiceTest < ActiveSupport::TestCase
     )
 
     assert_equal "copy", SettingsService.get(:completed_download_import_mode)
+  end
+
+  test "health check interval accepts safe values and rejects unsafe values" do
+    assert_equal 600, SettingsService.set(:health_check_interval, "600")
+
+    [ 59, 0, "invalid" ].each do |value|
+      error = assert_raises(ArgumentError) do
+        SettingsService.set(:health_check_interval, value)
+      end
+      assert_equal "Health Check Interval must be at least 60 seconds", error.message
+    end
+
+    assert_equal 600, SettingsService.get(:health_check_interval)
   end
 
   test "split audiobook bundle imports defaults to disabled" do

@@ -42,6 +42,12 @@ default: &default
     class: OwnedLibraryAutomationJob
     queue: default
     schedule: every 5 minutes
+  health_check:
+    class: HealthCheckJob
+    queue: default
+    args:
+      - scheduled: true
+    schedule: every minute
 
 development:
   <<: *default

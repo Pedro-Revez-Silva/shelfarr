@@ -1,4 +1,6 @@
 class SettingsService
+  MIN_HEALTH_CHECK_INTERVAL = 60
+
   MANUAL_SAVE_SETTING_GROUPS = {
     indexer: %w[
       indexer_provider prowlarr_url prowlarr_api_key jackett_url jackett_api_key
@@ -160,7 +162,7 @@ class SettingsService
     comic_vine_search_limit: { type: "integer", default: 10, category: "comic_vine", description: "Maximum number of Comic Vine search results to return" },
 
     # Health Monitoring
-    health_check_interval: { type: "integer", default: 300, category: "health", description: "Seconds between system health checks (default: 5 minutes)" },
+    health_check_interval: { type: "integer", default: 300, category: "health", description: "Seconds between system health checks (minimum: 60; default: 300)" },
 
     # Auto-Selection
     auto_select_enabled: { type: "boolean", default: false, category: "auto_select", description: "Automatically select the best search result without admin intervention" },
@@ -383,6 +385,8 @@ class SettingsService
       if key == :completed_download_import_mode
         return COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value) ? value : "copy"
       end
+
+      return [ value.to_i, MIN_HEALTH_CHECK_INTERVAL ].max if key == :health_check_interval && !value.nil?
       return value unless value.nil?
 
       definition = DEFINITIONS[key]
@@ -400,6 +404,14 @@ class SettingsService
         value = value.to_s
         unless COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value)
           raise ArgumentError, "#{label_for(key)} must be one of: #{COMPLETED_DOWNLOAD_IMPORT_MODES.join(', ')}"
+        end
+      end
+
+      if key == :health_check_interval
+        value = Integer(value, exception: false)
+        if value.nil? || value < MIN_HEALTH_CHECK_INTERVAL
+          raise ArgumentError,
+            "#{label_for(key)} must be at least #{MIN_HEALTH_CHECK_INTERVAL} seconds"
         end
       end
 
