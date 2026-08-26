@@ -7,7 +7,7 @@ require "stringio"
 
 module DownloadClients
   # qBittorrent WebUI API client
-  # https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1)
+  # https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0)
   class Qbittorrent < Base
     DEFAULT_TORRENT_VERIFICATION_MAX_ATTEMPTS = 10
     DEFAULT_TORRENT_VERIFICATION_WAIT_TIME = 2
@@ -143,7 +143,7 @@ module DownloadClients
         true
       when 401, 403
         clear_session!
-        raise Base::AuthenticationError, "qBittorrent session expired"
+        raise Base::AuthenticationError, "qBittorrent authentication failed (HTTP #{response.status}) at #{base_url}"
       else
         Rails.logger.error "[Qbittorrent] Failed to remove torrent: #{response.status}"
         false
@@ -389,7 +389,7 @@ module DownloadClients
         f.request :multipart
         f.request :url_encoded
         f.adapter Faraday.default_adapter
-        f.headers["Cookie"] = session_cookie_header if session_valid?
+        apply_authentication_headers(f.headers)
         f.headers["Referer"] = base_url
         f.headers["Origin"] = base_url
         f.options.timeout = 30
@@ -479,6 +479,8 @@ module DownloadClients
     end
 
     def ensure_authenticated!
+      return if api_key.present?
+
       authenticate! unless session_valid?
     end
 
@@ -539,12 +541,24 @@ module DownloadClients
       config.password
     end
 
+    def api_key
+      config.api_key if config.valid_qbittorrent_api_key?
+    end
+
+    def apply_authentication_headers(headers)
+      if api_key.present?
+        headers["Authorization"] = "Bearer #{api_key}"
+      elsif session_valid?
+        headers["Cookie"] = session_cookie_header
+      end
+    end
+
     def connection
       Faraday.new(url: base_url) do |f|
         f.request :url_encoded
         f.response :json, parser_options: { symbolize_names: false }
         f.adapter Faraday.default_adapter
-        f.headers["Cookie"] = session_cookie_header if session_valid?
+        apply_authentication_headers(f.headers)
         f.headers["Referer"] = base_url
         f.headers["Origin"] = base_url
         f.options.timeout = 15
@@ -558,8 +572,8 @@ module DownloadClients
         yield response.body
       when 401, 403
         clear_session!
-        Rails.logger.error "[Qbittorrent] Session expired or rejected (HTTP #{response.status}) for #{config.name} at #{base_url}"
-        raise Base::AuthenticationError, "qBittorrent session expired (HTTP #{response.status}) at #{base_url}"
+        Rails.logger.error "[Qbittorrent] Authentication rejected (HTTP #{response.status}) for #{config.name} at #{base_url}"
+        raise Base::AuthenticationError, "qBittorrent authentication failed (HTTP #{response.status}) at #{base_url}"
       else
         Rails.logger.error "[Qbittorrent] API error: HTTP #{response.status} from #{base_url} — #{response.body.to_s.truncate(200)}"
         raise Base::Error, "qBittorrent API error: #{response.status}"

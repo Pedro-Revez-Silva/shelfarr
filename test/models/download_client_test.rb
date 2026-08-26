@@ -187,5 +187,34 @@ class DownloadClientTest < ActiveSupport::TestCase
     )
     client.reload
     assert_equal "secret-api-key", client.api_key
+    assert_not_equal "secret-api-key", client.api_key_before_type_cast
+    assert_not_includes client.api_key_before_type_cast, "secret-api-key"
+  end
+
+  test "requires qBittorrent API keys to match the upstream key shape" do
+    client = DownloadClient.new(
+      name: "qBittorrent API key",
+      client_type: "qbittorrent",
+      url: "http://localhost:8080",
+      api_key: "legacy-client-api-key"
+    )
+
+    assert_not client.valid?
+    assert_includes client.errors[:api_key], "must start with qbt_ and contain 28 characters after the prefix"
+
+    client.api_key = "qbt_aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert client.valid?
+  end
+
+  test "allows existing legacy qBittorrent API keys on unrelated updates" do
+    client = DownloadClient.create!(
+      name: "Legacy qBittorrent API key",
+      client_type: "qbittorrent",
+      url: "http://localhost:8080"
+    )
+    client.update_column(:api_key, "legacy-client-api-key")
+
+    assert client.reload.update(name: "Renamed legacy qBittorrent")
+    assert_equal "legacy-client-api-key", client.reload.api_key
   end
 end

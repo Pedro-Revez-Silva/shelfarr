@@ -18,8 +18,10 @@ class DownloadClients::DecypharrTest < ActiveSupport::TestCase
     Thread.current[:qbittorrent_sessions] = {}
   end
 
-  test "authenticates with lowercase sid cookie" do
+  test "authenticates with lowercase sid cookie when generic API key is stored" do
     VCR.turned_off do
+      @client_record.update!(api_key: "not_supported_by_qbit_compatibility_api")
+
       stub_request(:post, "http://localhost:8282/api/v2/auth/login")
         .to_return(
           status: 200,

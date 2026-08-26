@@ -3,6 +3,8 @@
 require "test_helper"
 
 class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
+  QBITTORRENT_API_KEY = "qbt_aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
   setup do
     @client_record = DownloadClient.create!(
       name: "Test qBittorrent",
@@ -506,6 +508,79 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
         .to_return(status: 200, body: "v4.6.0")
 
       assert @client.test_connection
+    end
+  end
+
+  test "test_connection uses bearer API key without cookie login" do
+    VCR.turned_off do
+      @client_record.update!(api_key: QBITTORRENT_API_KEY)
+      Thread.current[:qbittorrent_sessions][@client_record.id] = {
+        cookie_name: "SID",
+        cookie_value: "stale_session_id"
+      }
+
+      version_stub = stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .with do |request|
+          request.headers["Authorization"] == "Bearer #{QBITTORRENT_API_KEY}" &&
+            request.headers["Cookie"].nil?
+        end
+        .to_return(status: 200, body: "v5.2.0")
+
+      assert @client.test_connection
+      assert_requested version_stub
+      assert_not_requested(:post, "http://localhost:8080/api/v2/auth/login")
+    end
+  end
+
+  test "test_connection does not fall back to cookie login when bearer API key is rejected" do
+    VCR.turned_off do
+      @client_record.update!(api_key: QBITTORRENT_API_KEY)
+
+      stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .with(headers: { "Authorization" => "Bearer #{QBITTORRENT_API_KEY}" })
+        .to_return(status: 403, body: "Forbidden")
+
+      assert_not @client.test_connection
+      assert_not_requested(:post, "http://localhost:8080/api/v2/auth/login")
+    end
+  end
+
+  test "remove_torrent reports a rejected bearer API key as an authentication failure" do
+    VCR.turned_off do
+      @client_record.update!(api_key: QBITTORRENT_API_KEY)
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/delete")
+        .with(headers: { "Authorization" => "Bearer #{QBITTORRENT_API_KEY}" })
+        .to_return(status: 403, body: "Forbidden")
+
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.remove_torrent("rejected-hash")
+      end
+
+      assert_equal "qBittorrent authentication failed (HTTP 403) at http://localhost:8080", error.message
+      assert_not_requested(:post, "http://localhost:8080/api/v2/auth/login")
+    end
+  end
+
+  test "test_connection retains cookie login for a legacy malformed API key" do
+    VCR.turned_off do
+      @client_record.update_column(:api_key, "legacy-client-api-key")
+      @client = @client_record.reload.adapter
+
+      login_stub = stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      version_stub = stub_request(:get, "http://localhost:8080/api/v2/app/version")
+        .with(headers: { "Cookie" => "SID=test_session_id" })
+        .to_return(status: 200, body: "v4.6.0")
+
+      assert @client.test_connection
+      assert_requested login_stub
+      assert_requested version_stub
     end
   end
 
@@ -1017,6 +1092,52 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       assert_equal expected_hash, result
       assert_requested(add_stub)
       assert_requested(:get, "http://prowlarr:9696/api/v1/indexer/download/123", times: 1)
+    end
+  end
+
+  test "add_torrent authenticates multipart API requests with bearer API key" do
+    VCR.turned_off do
+      @client_record.update!(api_key: QBITTORRENT_API_KEY)
+      info_dict = {
+        "name" => "API Key Book.epub",
+        "piece length" => 16384,
+        "pieces" => "s" * 20,
+        "length" => 512
+      }
+      torrent_data = { "info" => info_dict }.bencode
+      expected_hash = Digest::SHA1.hexdigest(info_dict.bencode).downcase
+
+      download_stub = stub_request(:get, "http://prowlarr:9696/api/v1/indexer/download/api-key")
+        .with { |request| request.headers["Authorization"].nil? }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/x-bittorrent" },
+          body: torrent_data
+        )
+
+      add_stub = stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .with do |request|
+          request.headers["Authorization"] == "Bearer #{QBITTORRENT_API_KEY}" &&
+            request.headers["Cookie"].nil? &&
+            request.headers["Content-Type"]&.include?("multipart/form-data")
+        end
+        .to_return(status: 200, body: "Ok.")
+
+      verification_stub = stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash}")
+        .with(headers: { "Authorization" => "Bearer #{QBITTORRENT_API_KEY}" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash, "name" => "API Key Book.epub", "progress" => 0, "state" => "downloading", "size" => 512, "content_path" => "/downloads" } ].to_json
+        )
+
+      result = @client.add_torrent("http://prowlarr:9696/api/v1/indexer/download/api-key")
+
+      assert_equal expected_hash, result
+      assert_requested download_stub
+      assert_requested add_stub
+      assert_requested verification_stub
+      assert_not_requested(:post, "http://localhost:8080/api/v2/auth/login")
     end
   end
 

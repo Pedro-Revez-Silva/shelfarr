@@ -11,5 +11,10 @@ module DownloadClients
     def default_session_cookie_name
       "sid"
     end
+
+    # Decypharr's qBittorrent compatibility API authenticates with its SID cookie.
+    def api_key
+      nil
+    end
   end
 end

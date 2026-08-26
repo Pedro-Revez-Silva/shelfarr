@@ -3,6 +3,9 @@
 require "test_helper"
 
 class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
+  QBITTORRENT_API_KEY = "qbt_aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  REPLACEMENT_QBITTORRENT_API_KEY = "qbt_bbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
   setup do
     @admin = users(:two)
     sign_in_as(@admin)
@@ -65,10 +68,11 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     assert_no_difference -> { DownloadClient.count } do
       post admin_download_clients_url, params: {
         download_client: {
-          name: "",
-          client_type: "qbittorrent",
-          url: "",
-          torrent_verification_max_attempts: "0",
+            name: "",
+            client_type: "qbittorrent",
+            url: "",
+            clear_api_key: "1",
+            torrent_verification_max_attempts: "0",
           torrent_verification_wait_time: "-1"
         }
       }
@@ -85,6 +89,80 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "form[action='#{admin_download_client_path(client)}']"
+  end
+
+  test "edit exposes API key for qBittorrent" do
+    client = create_download_client(api_key: QBITTORRENT_API_KEY)
+
+    get edit_admin_download_client_url(client)
+
+    assert_response :success
+    assert_select "#api_key_fields:not(.hidden)"
+    assert_select "input[type='password'][name='download_client[api_key]']"
+    assert_select "input[type='checkbox'][name='download_client[clear_api_key]']"
+    assert_select "#api_key_fields", text: /qBittorrent 5\.2\+/
+  end
+
+  test "edit does not offer API key authentication for Decypharr" do
+    client = create_download_client(client_type: "decypharr")
+
+    get edit_admin_download_client_url(client)
+
+    assert_response :success
+    assert_select "#api_key_fields.hidden"
+  end
+
+  test "update can clear API key and restore cookie authentication" do
+    client = create_download_client(api_key: QBITTORRENT_API_KEY)
+
+    VCR.turned_off do
+      stub_qbittorrent_connection(client.url)
+
+      patch admin_download_client_url(client), params: {
+        download_client: {
+          api_key: "",
+          clear_api_key: "1"
+        }
+      }
+
+      assert_redirected_to admin_download_clients_path
+      assert_nil client.reload.api_key
+      assert_requested(:post, "#{client.url}/api/v2/auth/login")
+    end
+  end
+
+  test "failed update retains saved API key and clear selection" do
+    client = create_download_client(api_key: QBITTORRENT_API_KEY)
+
+    patch admin_download_client_url(client), params: {
+      download_client: {
+        name: "",
+        api_key: "",
+        clear_api_key: "1"
+      }
+    }
+
+    assert_response :unprocessable_entity
+    assert_equal QBITTORRENT_API_KEY, client.reload.api_key
+    assert_select "#api_key_fields", text: /Saved/
+    assert_select "input[type='checkbox'][name='download_client[clear_api_key]'][checked]"
+  end
+
+  test "failed update restores saved API key and requires replacement re-entry" do
+    client = create_download_client(api_key: QBITTORRENT_API_KEY)
+
+    patch admin_download_client_url(client), params: {
+      download_client: {
+        name: "",
+        api_key: REPLACEMENT_QBITTORRENT_API_KEY
+      }
+    }
+
+    assert_response :unprocessable_entity
+    assert_equal QBITTORRENT_API_KEY, client.reload.api_key
+    assert_select "div[class~='bg-red-500/10']", text: /API key replacement was not saved/
+    assert_select "#api_key_fields", text: /Saved/
+    assert_select "input[type='password'][name='download_client[api_key]']:not([value])"
   end
 
   test "update renders errors for invalid client" do

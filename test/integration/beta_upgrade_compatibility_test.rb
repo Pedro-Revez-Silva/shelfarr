@@ -17,9 +17,9 @@ class BetaUpgradeCompatibilityTest < ActiveSupport::TestCase
       client_type: "qbittorrent",
       url: "https://downloads.example",
       username: "legacy-reader",
-      password: "legacy-password",
-      api_key: "legacy-client-api-key"
+      password: "legacy-password"
     )
+    download_client.update_column(:api_key, "legacy-client-api-key")
     acquisition_provider = AcquisitionProvider.create!(
       name: "Upgrade compatibility provider",
       url: "https://provider.example",
