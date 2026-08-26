@@ -17,6 +17,20 @@ class DirectDownloadFileService
   ACTIVE_TIMEOUT = 30.minutes
   HEARTBEAT_INTERVAL = 10.seconds
   MANIFEST_MAX_BYTES = 10.megabytes
+  RECOVERY_PUBLICATION_ATTRIBUTES = %w[
+    direct_staging_path
+    direct_staging_device
+    direct_staging_inode
+    direct_staging_parent_device
+    direct_staging_parent_inode
+    direct_destination_path
+    direct_book_path
+    direct_output_root
+    direct_output_root_device
+    direct_output_root_inode
+    direct_publication_kind
+    direct_content_manifest
+  ].freeze
 
   class Error < StandardError; end
   class ConflictError < Error; end
@@ -48,6 +62,11 @@ class DirectDownloadFileService
         return cleanup_completed_state!(download.reload)
       end
 
+      if detached_failed_reservation?(download) && reservation_owned?(download)
+        release_reservation!(download)
+        return false
+      end
+
       # A monitor can mark an apparently stalled worker failed while that
       # worker is paused in the kernel or on slow storage. The status change
       # itself renews this lease, so recovery must not remove its staging tree
@@ -60,6 +79,33 @@ class DirectDownloadFileService
       false
     rescue ActiveRecord::RecordNotFound
       false
+    end
+
+    def reconcile_reservation!(book)
+      book.reload
+      return false if book.acquired? || !book.acquisition_reserved?
+      return false unless book.acquisition_reservation_owner_type == "Download"
+
+      owner = Download.find_by(id: book.acquisition_reservation_owner_id)
+      return clear_orphaned_reservation!(book) unless owner
+      return false unless owner.failed? && owner.download_type == "direct"
+
+      reconcile!(owner)
+      !book.reload.acquisition_reserved?
+    rescue ActiveRecord::RecordNotFound
+      false
+    end
+
+    def reconcile_orphaned_reservations!
+      cleared = 0
+      Book.acquisition_reserved
+        .where(acquisition_reservation_owner_type: "Download")
+        .find_each do |book|
+          next if Download.where(id: book.acquisition_reservation_owner_id).exists?
+
+          cleared += 1 if clear_orphaned_reservation!(book)
+        end
+      cleared
     end
 
     def cleanup_orphans!(root:, max_age: ORPHAN_MAX_AGE.ago)
@@ -185,6 +231,11 @@ class DirectDownloadFileService
         download.updated_at > ACTIVE_TIMEOUT.ago
     end
 
+    def detached_failed_reservation?(download)
+      download.failed? && download.download_type == "direct" &&
+        download.attributes.values_at(*RECOVERY_PUBLICATION_ATTRIBUTES).all?(&:blank?)
+    end
+
     def reservation_owned?(download)
       token = download.direct_reservation_token
       return false if token.blank?
@@ -243,6 +294,24 @@ class DirectDownloadFileService
         direct_reservation_token: nil,
         updated_at: Time.current
       )
+    end
+
+    def clear_orphaned_reservation!(book)
+      token = book.acquisition_reservation_token
+      owner_id = book.acquisition_reservation_owner_id
+      return false if token.blank? || owner_id.blank? || book.acquired?
+
+      Book.where(
+        id: book.id,
+        acquisition_reservation_token: token,
+        acquisition_reservation_owner_type: "Download",
+        acquisition_reservation_owner_id: owner_id
+      ).where("file_path IS NULL OR TRIM(file_path) = ''").update_all(
+        acquisition_reservation_token: nil,
+        acquisition_reservation_owner_type: nil,
+        acquisition_reservation_owner_id: nil,
+        updated_at: Time.current
+      ) == 1
     end
 
     def cleanup_completed_state!(download)
@@ -605,10 +674,8 @@ class DirectDownloadFileService
     end
 
     return false unless self.class.send(:valid_output_root_identity?, download)
-    
-    # Release the reservation on any error unless publication completed.
-    # Previously this skipped release when publication_started && !ConflictError,
-    # causing permanent reservation leaks on mid-publication failures.
+    return false if @publication_started && !error.is_a?(ConflictError)
+
     self.class.send(:release_reservation!, download)
     download.reload
     false
