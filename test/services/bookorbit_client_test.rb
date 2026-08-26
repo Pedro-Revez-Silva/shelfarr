@@ -626,6 +626,128 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "library_items maps audibleId to asin when present" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "items" => [
+              {
+                "id" => 101,
+                "title" => "Project Hail Mary",
+                "authors" => [ "Andy Weir" ],
+                "isbn13" => "9780593135204",
+                "audibleId" => "B08G9PRS1K",
+                "description" => "Ryland Grace is the sole survivor on a desperate mission."
+              }
+            ],
+            "total" => 1,
+            "page" => 0,
+            "size" => 200
+          }.to_json
+        )
+
+      items = BookOrbitClient.library_items("42")
+
+      assert_equal 1, items.size
+      assert_equal "B08G9PRS1K", items.first["asin"]
+      assert_equal "9780593135204", items.first["isbn"]
+      assert_equal "Ryland Grace is the sole survivor on a desperate mission.", items.first["description"]
+    end
+  end
+
+  test "library_items falls back to isbn10 when isbn13 is absent" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "items" => [
+              {
+                "id" => 102,
+                "title" => "Old Book",
+                "authors" => [ "Classic Author" ],
+                "isbn10" => "0441478123"
+              }
+            ],
+            "total" => 1,
+            "page" => 0,
+            "size" => 200
+          }.to_json
+        )
+
+      items = BookOrbitClient.library_items("42")
+
+      assert_equal 1, items.size
+      assert_equal "0441478123", items.first["isbn"]
+    end
+  end
+
+  test "library_items prefers isbn13 over isbn10 when both present" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "items" => [
+              {
+                "id" => 103,
+                "title" => "Book With Both ISBNs",
+                "authors" => [ "Test Author" ],
+                "isbn13" => "9780441478125",
+                "isbn10" => "0441478123"
+              }
+            ],
+            "total" => 1,
+            "page" => 0,
+            "size" => 200
+          }.to_json
+        )
+
+      items = BookOrbitClient.library_items("42")
+
+      assert_equal 1, items.size
+      assert_equal "9780441478125", items.first["isbn"]
+    end
+  end
+
+  test "library_items handles missing identifier fields gracefully" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(
+          status: 201,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "items" => [
+              {
+                "id" => 104,
+                "title" => "Book Without Identifiers",
+                "authors" => [ "Unknown" ]
+              }
+            ],
+            "total" => 1,
+            "page" => 0,
+            "size" => 200
+          }.to_json
+        )
+
+      items = BookOrbitClient.library_items("42")
+
+      assert_equal 1, items.size
+      assert_nil items.first["asin"]
+      assert_nil items.first["isbn"]
+      assert_nil items.first["description"]
+    end
+  end
+
   private
 
   def stub_login

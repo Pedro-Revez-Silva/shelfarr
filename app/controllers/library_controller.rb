@@ -146,6 +146,8 @@ class LibraryController < ApplicationController
           ON normalized_library_identifiers.asin_key = normalized_owned_identifiers.asin_key
         INNER JOIN normalized_book_identifiers
           ON normalized_book_identifiers.isbn_key = normalized_library_identifiers.isbn_key
+        WHERE normalized_library_identifiers.asin_key <> ''
+          AND normalized_library_identifiers.isbn_key <> ''
         GROUP BY normalized_owned_identifiers.owned_item_id
       SQL
     end
@@ -160,8 +162,10 @@ class LibraryController < ApplicationController
         FROM library_items
         WHERE library_items.library_platform = #{quote(SettingsService.active_library_platform)}
           AND library_items.missing = 0
-          AND shelfarr_catalog_asin(library_items.asin) <> ''
-          AND shelfarr_catalog_isbn(library_items.isbn) <> ''
+          AND (
+            shelfarr_catalog_asin(library_items.asin) <> ''
+            OR shelfarr_catalog_isbn(library_items.isbn) <> ''
+          )
       SQL
     end
 
