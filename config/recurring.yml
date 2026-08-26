@@ -48,6 +48,12 @@ default: &default
     args:
       - scheduled: true
     schedule: every minute
+  audiobookshelf_library_sync:
+    class: AudiobookshelfLibrarySyncJob
+    queue: default
+    args:
+      - scheduled: true
+    schedule: every hour
 
 development:
   <<: *default

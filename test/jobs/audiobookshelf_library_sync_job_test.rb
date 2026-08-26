@@ -11,7 +11,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_library_sync_interval, 3600)
   end
 
-  test "schedules next run after syncing" do
+  test "does not schedule next run after syncing (recurring job handles scheduling)" do
     LibraryItem.destroy_all
 
     VCR.turned_off do
@@ -35,7 +35,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
           }.to_json
         )
 
-      assert_enqueued_with(job: AudiobookshelfLibrarySyncJob) do
+      assert_no_enqueued_jobs(only: AudiobookshelfLibrarySyncJob) do
         AudiobookshelfLibrarySyncJob.perform_now
       end
     end
@@ -44,64 +44,82 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     assert_equal "The Hobbit", LibraryItem.first.title
   end
 
-  test "does not reschedule when interval is zero" do
-    SettingsService.set(:audiobookshelf_url, "")
-    SettingsService.set(:audiobookshelf_api_key, "")
-    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
-    SettingsService.set(:audiobookshelf_ebook_library_id, "")
-    SettingsService.set(:audiobookshelf_library_sync_interval, 0)
+  test "cleanup discards only identifiable legacy delayed periodic jobs" do
+    SolidQueue::Record.establish_connection(:queue)
+    
+    legacy_no_args = create_queue_abs_sync_job(scheduled_at: 1.hour.from_now)
+    legacy_with_schedule_next_true = create_queue_abs_sync_job(
+      scheduled_at: 1.hour.from_now,
+      arguments: { schedule_next: true }
+    )
+    manual = create_queue_abs_sync_job(scheduled_at: Time.current)
+    post_scan = create_queue_abs_sync_job(
+      scheduled_at: 90.seconds.from_now,
+      arguments: { schedule_next: false }
+    )
+    recurring = create_queue_abs_sync_job(
+      scheduled_at: 1.hour.from_now,
+      arguments: { scheduled: true }
+    )
+    SolidQueue::RecurringExecution.create!(
+      job: recurring,
+      task_key: "audiobookshelf_library_sync",
+      run_at: 1.hour.from_now
+    )
+    claimed = create_queue_abs_sync_job(scheduled_at: 1.hour.from_now)
+    claimed.scheduled_execution.destroy!
+    process = SolidQueue::Process.register(
+      kind: "Worker",
+      name: "abs-sync-cleanup-test-#{SecureRandom.hex(4)}",
+      pid: Process.pid,
+      hostname: "test",
+      metadata: {}
+    )
+    SolidQueue::ClaimedExecution.create!(job: claimed, process: process)
 
-    clear_enqueued_jobs
+    assert_equal 2, AudiobookshelfLibrarySyncJob.discard_legacy_scheduled_chains!
 
-    with_sync_interval_stub(0) do
-      assert_no_enqueued_jobs(only: AudiobookshelfLibrarySyncJob) do
-        assert_nothing_raised do
-          AudiobookshelfLibrarySyncJob.perform_now
-        end
-      end
+    assert_not SolidQueue::Job.exists?(legacy_no_args.id)
+    assert_not SolidQueue::Job.exists?(legacy_with_schedule_next_true.id)
+    [ manual, post_scan, recurring, claimed ].each do |preserved|
+      assert SolidQueue::Job.exists?(preserved.id), "expected job #{preserved.id} to be preserved"
     end
   end
 
-  test "one-shot post-scan refresh does not reschedule the periodic job" do
+  test "scheduled syncs honor the configured interval on minute boundaries" do
+    SettingsService.set(:audiobookshelf_library_sync_interval, 600)
     LibraryItem.destroy_all
-    clear_enqueued_jobs
 
-    VCR.turned_off do
-      stub_request(:get, "http://localhost:13378/api/libraries/lib-audio/items")
-        .with(
-          headers: { "Authorization" => "Bearer test-api-key" },
-          query: hash_including("limit" => "500", "page" => "0")
-        )
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: {
-            "results" => [
-              {
-                "id" => "ab-1",
-                "title" => "The Hobbit",
-                "author" => "J.R.R. Tolkien"
-              }
-            ],
-            "total" => 1
-          }.to_json
-        )
+    travel_to Time.zone.parse("2026-08-26 12:00:00") do
+      LibraryItem.create!(
+        title: "Test Book",
+        author: "Test Author",
+        external_id: "test-1",
+        library_type: "audiobook",
+        updated_at: 9.minutes.ago
+      )
 
-      assert_no_enqueued_jobs(only: AudiobookshelfLibrarySyncJob) do
-        AudiobookshelfLibrarySyncJob.perform_now(schedule_next: false)
-      end
+      job = AudiobookshelfLibrarySyncJob.new
+      assert_not job.send(:sync_due?)
+
+      LibraryItem.update_all(updated_at: 10.minutes.ago)
+      assert job.send(:sync_due?)
     end
-
-    assert_equal 1, LibraryItem.count
   end
 
-  test "schedule_post_scan_refresh! enqueues a delayed one-shot sync" do
+  test "scheduled syncs run when no library items exist yet" do
+    LibraryItem.destroy_all
+
+    assert AudiobookshelfLibrarySyncJob.new.send(:sync_due?)
+  end
+
+  test "post-scan refresh enqueues a delayed one-shot sync" do
     clear_enqueued_jobs
 
     with_post_scan_refresh_cache do
       assert_enqueued_with(
         job: AudiobookshelfLibrarySyncJob,
-        args: [ { schedule_next: false } ],
+        args: [],
         at: AudiobookshelfLibrarySyncJob::POST_SCAN_REFRESH_WAIT.from_now
       ) do
         AudiobookshelfLibrarySyncJob.schedule_post_scan_refresh!
@@ -109,7 +127,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     end
   end
 
-  test "schedule_post_scan_refresh! coalesces repeated calls into one delayed job" do
+  test "post-scan refresh coalesces repeated calls into one delayed job" do
     clear_enqueued_jobs
 
     with_post_scan_refresh_cache do
@@ -119,7 +137,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     end
   end
 
-  test "schedule_post_scan_refresh! is a no-op when no platform is configured" do
+  test "post-scan refresh is a no-op when no platform is configured" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobookshelf_api_key, "")
     SettingsService.set(:bookorbit_url, "")
@@ -133,15 +151,15 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
 
   private
 
-  def with_sync_interval_stub(interval)
-    singleton = class << SettingsService; self; end
-    original_get = singleton.instance_method(:get)
-    singleton.define_method(:get) do |key, default: nil|
-      key.to_sym == :audiobookshelf_library_sync_interval ? interval : original_get.bind_call(self, key, default: default)
-    end
-    yield
-  ensure
-    singleton.define_method(:get, original_get)
+  def create_queue_abs_sync_job(scheduled_at:, arguments: {})
+    active_job = arguments.empty? ? AudiobookshelfLibrarySyncJob.new : AudiobookshelfLibrarySyncJob.new(**arguments)
+    SolidQueue::Job.create!(
+      active_job_id: active_job.job_id,
+      class_name: "AudiobookshelfLibrarySyncJob",
+      queue_name: "default",
+      arguments: active_job.serialize,
+      scheduled_at: scheduled_at
+    )
   end
 
   def with_post_scan_refresh_cache
