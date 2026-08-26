@@ -33,7 +33,7 @@ module Admin
 
     def update
       update_params = download_client_params
-      original_api_key = @download_client.api_key
+      @api_key_saved = @download_client.api_key.present?
       api_key_submitted = update_params[:api_key].present?
       # Don't overwrite password/api_key if left blank
       update_params = update_params.except(:password) if update_params[:password].blank?
@@ -49,7 +49,9 @@ module Admin
         sync_download_monitor
         redirect_to admin_download_clients_path, notice: "Download client was successfully updated."
       else
-        @download_client.api_key = original_api_key
+        # The rejected replacement must not remain in controller/view state.
+        # The persisted encrypted value was never changed because the save failed.
+        @download_client.api_key = nil
         if api_key_submitted && !@clear_api_key
           @download_client.errors.add(:api_key, "replacement was not saved; re-enter it after correcting the other errors")
         end

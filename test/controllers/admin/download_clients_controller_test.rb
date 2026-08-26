@@ -162,6 +162,7 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     assert_equal QBITTORRENT_API_KEY, client.reload.api_key
     assert_select "div[class~='bg-red-500/10']", text: /API key replacement was not saved/
     assert_select "#api_key_fields", text: /Saved/
+    assert_select "input[type='password'][name='download_client[api_key]']:not([value])"
   end
 
   test "update renders errors for invalid client" do

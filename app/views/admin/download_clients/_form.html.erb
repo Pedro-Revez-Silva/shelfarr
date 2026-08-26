@@ -1,3 +1,4 @@
+<% api_key_saved = download_client.persisted? && (@api_key_saved.nil? ? download_client.api_key.present? : @api_key_saved) %>
 <%= form_with model: [:admin, download_client], class: "contents" do |form| %>
   <% if download_client.errors.any? %>
     <div class="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 font-medium rounded-lg mt-3">
@@ -52,8 +53,8 @@
     <div class="my-5">
       <%= form.label :api_key, "API Key", class: "block text-gray-300 font-medium" %>
       <div class="flex items-center gap-3 mt-2">
-        <%= form.password_field :api_key, placeholder: download_client.persisted? && download_client.api_key.present? ? "Leave blank to keep current" : "Enter API key", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 flex-grow" %>
-        <% if download_client.persisted? && download_client.api_key.present? %>
+        <%= form.password_field :api_key, placeholder: api_key_saved ? "Leave blank to keep current" : "Enter API key", class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 flex-grow" %>
+        <% if api_key_saved %>
           <span class="text-green-400 text-sm flex items-center gap-1 whitespace-nowrap">
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
@@ -62,7 +63,7 @@
           </span>
         <% end %>
       </div>
-      <% if download_client.persisted? && download_client.api_key.present? %>
+      <% if api_key_saved %>
         <label class="mt-3 flex items-center gap-2 text-sm text-gray-400">
           <%= check_box_tag "download_client[clear_api_key]", "1", @clear_api_key == true, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900" %>
           Clear saved API key
