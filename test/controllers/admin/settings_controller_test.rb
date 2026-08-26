@@ -259,6 +259,16 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /Hardlinked names share content, ownership, and permissions; edits through either name affect both/
   end
 
+  test "index shows the non-atomic NFS publication safety override with a manual-save warning" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label[for='settings_allow_nonatomic_nfs_directory_publication']",
+      text: "Allow Non-Atomic NFS Directory Publication"
+    assert_select "input[name='settings[allow_nonatomic_nfs_directory_publication]'][data-settings-form-manual-save='true']"
+    assert_select "p.text-red-400", text: /Safety override: use only on an NFS export with no other writer/
+  end
+
   test "index shows OIDC auto redirect setting" do
     get admin_settings_url
 

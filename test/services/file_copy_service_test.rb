@@ -4085,15 +4085,17 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "new", File.binread(File.join(source, "new.mp3"))
   end
 
-  test "mv_directory_noreplace preserves an EINVAL publication error" do
+  test "mv_directory_noreplace fails closed on EINVAL unless the compatibility mode is enabled" do
     source = File.join(@tmp_dir, "staging-tree")
     destination = File.join(@dest_dir, "published-tree")
     FileUtils.mkdir_p(source)
     File.binwrite(File.join(source, "chapter.mp3"), "chapter")
 
     FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL }) do
-      assert_raises(Errno::EINVAL) do
-        FileCopyService.mv_directory_noreplace(source, destination, root: @dest_dir)
+      FileCopyService.stub(:native_renameat, ->(*) { flunk "plain rename must require explicit opt-in" }) do
+        assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+          FileCopyService.mv_directory_noreplace(source, destination, root: @dest_dir)
+        end
       end
     end
 
@@ -4112,6 +4114,49 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     assert File.exist?(source)
     assert_not File.exist?(destination)
+  end
+
+  test "mv_directory_noreplace uses the explicitly enabled non-atomic NFS fallback" do
+    source = File.join(@tmp_dir, "staging-tree")
+    destination = File.join(@dest_dir, "published-tree")
+    FileUtils.mkdir_p(source)
+    File.binwrite(File.join(source, "chapter.mp3"), "chapter")
+    expected_manifest = FileCopyService.directory_content_manifest(source, root: @tmp_dir)
+
+    FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+      FileCopyService.mv_directory_noreplace(
+        source,
+        destination,
+        root: @dest_dir,
+        allow_nonatomic: true
+      )
+    end
+
+    assert_not File.exist?(source)
+    assert_equal expected_manifest,
+      FileCopyService.directory_content_manifest(destination, root: @dest_dir)
+  end
+
+  test "mv_directory_noreplace non-atomic fallback preserves a destination found before rename" do
+    source = File.join(@tmp_dir, "staging-tree")
+    destination = File.join(@dest_dir, "published-tree")
+    FileUtils.mkdir_p(source)
+    FileUtils.mkdir_p(destination)
+    File.binwrite(File.join(source, "new.mp3"), "new")
+    File.binwrite(File.join(destination, "winner.mp3"), "winner")
+
+    FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+      assert_raises(Errno::EEXIST) do
+        FileCopyService.mv_directory_noreplace(
+          source,
+          destination,
+          root: @dest_dir,
+          allow_nonatomic: true
+        )
+      end
+    end
+
+    assert_equal [ "winner.mp3" ], Dir.children(destination)
   end
 
   test "mv_directory_noreplace retains publication when destination parent is swapped" do

@@ -118,7 +118,8 @@ class UploadZipImportFileService
           temporary,
           destination,
           root: root,
-          source_root: snapshot
+          source_root: snapshot,
+          allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
         )
         remove_manifest_by_path!(destination, root)
         destination.to_s
@@ -447,7 +448,8 @@ class UploadZipImportFileService
           staging_path(root),
           destination,
           root: root,
-          source_root: snapshot
+          source_root: snapshot,
+          allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
         )
       rescue Errno::EEXIST
         if self.class.publication_complete?(upload, destination, root)

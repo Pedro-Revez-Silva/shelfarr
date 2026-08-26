@@ -539,7 +539,8 @@ class DirectDownloadFileService
         destination_path,
         root: output_root,
         source_root: source_snapshot,
-        heartbeat: method(:refresh_heartbeat!)
+        heartbeat: method(:refresh_heartbeat!),
+        allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
       )
     rescue Errno::EEXIST
       unless FileCopyService.directory_content_manifest(

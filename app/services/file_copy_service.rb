@@ -393,10 +393,19 @@ class FileCopyService
       dest
     end
 
-    # Atomically publish a complete, regular-only directory tree. Unlike a
-    # recursive copy this makes the tree visible at one instant and refuses to
-    # merge with or replace any pre-existing destination.
-    def mv_directory_noreplace(source, destination, root:, source_root: nil, heartbeat: nil)
+    # Publish a complete, regular-only directory tree. The default path is an
+    # atomic no-replace rename: the tree becomes visible at one instant and no
+    # pre-existing destination can be replaced. Some NFS servers reject
+    # RENAME_NOREPLACE. Operators may explicitly allow the weaker, non-atomic
+    # check-then-rename compatibility path when the export has a single writer.
+    def mv_directory_noreplace(
+      source,
+      destination,
+      root:,
+      source_root: nil,
+      heartbeat: nil,
+      allow_nonatomic: false
+    )
       source_root ||= snapshot_source_root(source, heartbeat: heartbeat)
       source_path = Pathname(source).expand_path
       destination_path = Pathname(destination).expand_path
@@ -419,15 +428,42 @@ class FileCopyService
           secure_pinned_library_tree!(source_directory, heartbeat: heartbeat)
 
           with_pinned_destination_parent(destination_path, root: root) do |destination_parent, basename, parent_path|
-            published = native_rename_noreplace(
-              source_parent.fileno,
-              source_path.basename.to_s,
-              destination_parent.fileno,
-              basename
-            )
+            published = begin
+              native_rename_noreplace(
+                source_parent.fileno,
+                source_path.basename.to_s,
+                destination_parent.fileno,
+                basename
+              )
+            rescue Errno::EINVAL
+              false
+            end
+
             unless published
-              raise AtomicPublicationUnsupportedError,
-                "The destination filesystem cannot atomically publish library directories"
+              unless allow_nonatomic
+                raise AtomicPublicationUnsupportedError,
+                  "The destination filesystem cannot atomically publish library directories. " \
+                    "Enable non-atomic NFS directory publication only for a single-writer export."
+              end
+
+              Rails.logger.warn(
+                "[FileCopyService] Using operator-authorized non-atomic directory publication for #{destination_path}"
+              )
+              begin
+                if pinned_child_identity(destination_parent, basename, directory: true)
+                  raise Errno::EEXIST, "destination directory already exists"
+                end
+              rescue SystemCallError => error
+                raise unless error.is_a?(Errno::ENOENT)
+              end
+
+              validate_current_directory_identity!(parent_path, destination_parent)
+              native_renameat(
+                source_parent.fileno,
+                source_path.basename.to_s,
+                destination_parent.fileno,
+                basename
+              )
             end
 
             expected_identity = [ source_root.device, source_root.inode ]

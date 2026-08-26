@@ -362,6 +362,27 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert service.cleanup_after_run!
   end
 
+  test "directory publication forwards the configured non-atomic NFS opt-in" do
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, true)
+    service = directory_service
+    staging = service.create_staging!
+    source = File.join(staging, "extracted")
+    FileUtils.mkdir_p(source)
+    File.binwrite(File.join(source, "chapter.mp3"), "chapter")
+    original_publish = FileCopyService.method(:mv_directory_noreplace)
+    observed_opt_in = nil
+
+    FileCopyService.stub(:mv_directory_noreplace, lambda { |source_path, destination, **options|
+      observed_opt_in = options[:allow_nonatomic]
+      original_publish.call(source_path, destination, **options)
+    }) do
+      assert service.publish_directory_and_finalize!(source)
+    end
+
+    assert_equal true, observed_opt_in
+    assert_equal "chapter", File.binread(File.join(directory_destination, "chapter.mp3"))
+  end
+
   test "a late directory conflict leaves no newly merged entries" do
     service = directory_service
     staging = service.create_staging!

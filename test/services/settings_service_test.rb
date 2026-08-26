@@ -41,7 +41,8 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
   test "manual save settings include secrets and account identities" do
     grouped_keys = %w[
-      anna_archive_api_key anna_archive_enabled anna_archive_url audiobookshelf_api_key
+      allow_nonatomic_nfs_directory_publication anna_archive_api_key anna_archive_enabled
+      anna_archive_url audiobookshelf_api_key
       audiobookshelf_audiobook_library_id audiobookshelf_audiobook_scan_library_ids
       audiobookshelf_comicbook_library_id audiobookshelf_comicbook_scan_library_ids
       audiobookshelf_ebook_library_id audiobookshelf_ebook_scan_library_ids audiobookshelf_url
@@ -453,6 +454,16 @@ class SettingsServiceTest < ActiveSupport::TestCase
     ) do
       assert_equal true, SettingsService.get(:oidc_enabled)
       assert_equal false, SettingsService.get(:oidc_auto_create_users)
+    end
+  end
+
+  test "non-atomic NFS directory publication is an explicit env-overridable safety setting" do
+    assert_equal false, SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+    assert SettingsService.manual_save_setting_key?(:allow_nonatomic_nfs_directory_publication)
+
+    with_env("SHELFARR_SETTING_ALLOW_NONATOMIC_NFS_DIRECTORY_PUBLICATION" => "true") do
+      assert_equal true, SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+      assert SettingsService.env_managed?(:allow_nonatomic_nfs_directory_publication)
     end
   end
 
