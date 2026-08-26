@@ -17,19 +17,16 @@ Rails.application.config.after_initialize do
       Rails.logger.warn "[Shelfarr] Could not seed SystemHealth records: #{e.message}"
     end
 
-    # Clean up leftover pending HealthCheckJob rows from the self-rescheduling chain bug
-    # This allows existing installs to heal on next deploy
     begin
-      deleted_count = SolidQueue::Job.where(
-        class_name: "HealthCheckJob",
-        finished_at: nil
-      ).delete_all
+      discarded_count = HealthCheckJob.discard_legacy_scheduled_chains!
 
-      if deleted_count > 0
-        Rails.logger.info "[Shelfarr] Cleaned up #{deleted_count} pending HealthCheckJob(s) from previous install"
+      if discarded_count.positive?
+        Rails.logger.info(
+          "[Shelfarr] Discarded #{discarded_count} legacy scheduled HealthCheckJob chain entries"
+        )
       end
     rescue => e
-      Rails.logger.warn "[Shelfarr] Could not clean up pending HealthCheckJob rows: #{e.message}"
+      Rails.logger.warn "[Shelfarr] Could not clean up legacy HealthCheckJob chains: #{e.message}"
     end
   end
 rescue => e

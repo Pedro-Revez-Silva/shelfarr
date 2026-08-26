@@ -868,7 +868,7 @@
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td class="key"><code>health_check_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>300</code></td><td class="desc">Seconds between system health checks (default: 5 minutes).</td></tr>
+              <tr><td class="key"><code>health_check_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>300</code></td><td class="desc">Seconds between system health checks (minimum: 60; default: 300). Scheduled checks are evaluated once per minute.</td></tr>
               <tr><td class="key"><code>github_repo</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>Pedro-Revez-Silva/shelfarr</code></td><td class="desc">Repository used for update-availability checks.</td></tr>
             </tbody>
           </table>

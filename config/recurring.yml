@@ -45,7 +45,9 @@ default: &default
   health_check:
     class: HealthCheckJob
     queue: default
-    schedule: every 5 minutes
+    args:
+      - scheduled: true
+    schedule: every minute
 
 development:
   <<: *default

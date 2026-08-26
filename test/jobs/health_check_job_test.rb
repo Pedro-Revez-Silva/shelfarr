@@ -6,6 +6,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
   setup do
     SystemHealth.destroy_all
     DownloadClient.destroy_all
+    Setting.where(key: "health_check_interval").delete_all
     Thread.current[:qbittorrent_sessions] = {}
   end
 
@@ -15,42 +16,69 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
-  test "cleans up leftover pending HealthCheckJob rows from self-rescheduling chains" do
-    # Connect to the queue database for this test
+  test "cleanup discards only identifiable legacy delayed full-check jobs" do
     SolidQueue::Record.establish_connection(:queue)
-
-    # Simulate multiple pending HealthCheckJob rows from the old self-rescheduling chain bug
-    job1 = SolidQueue::Job.create!(
-      class_name: "HealthCheckJob",
-      queue_name: "default",
-      arguments: [].to_json,
-      scheduled_at: 5.minutes.from_now
+    legacy = create_queue_health_job(scheduled_at: 5.minutes.from_now)
+    manual = create_queue_health_job(scheduled_at: Time.current)
+    targeted = create_queue_health_job(
+      scheduled_at: 5.minutes.from_now,
+      arguments: { service: "hardcover" }
     )
-    job2 = SolidQueue::Job.create!(
-      class_name: "HealthCheckJob",
-      queue_name: "default",
-      arguments: [].to_json,
-      scheduled_at: 10.minutes.from_now
+    recurring = create_queue_health_job(
+      scheduled_at: 5.minutes.from_now,
+      arguments: { scheduled: true }
     )
-    job3 = SolidQueue::Job.create!(
-      class_name: "HealthCheckJob",
-      queue_name: "default",
-      arguments: [].to_json,
-      scheduled_at: 15.minutes.from_now
+    SolidQueue::RecurringExecution.create!(
+      job: recurring,
+      task_key: "health_check",
+      run_at: 5.minutes.from_now
     )
+    claimed = create_queue_health_job(scheduled_at: 5.minutes.from_now)
+    claimed.scheduled_execution.destroy!
+    process = SolidQueue::Process.register(
+      kind: "Worker",
+      name: "health-check-cleanup-test-#{SecureRandom.hex(4)}",
+      pid: Process.pid,
+      hostname: "test",
+      metadata: {}
+    )
+    SolidQueue::ClaimedExecution.create!(job: claimed, process: process)
 
-    # Verify we have 3 pending jobs
-    assert_equal 3, SolidQueue::Job.where(class_name: "HealthCheckJob", finished_at: nil).count
+    assert_equal 1, HealthCheckJob.discard_legacy_scheduled_chains!
 
-    # Run the cleanup logic from the initializer
-    deleted_count = SolidQueue::Job.where(
-      class_name: "HealthCheckJob",
-      finished_at: nil
-    ).delete_all
+    assert_not SolidQueue::Job.exists?(legacy.id)
+    [ manual, targeted, recurring, claimed ].each do |preserved|
+      assert SolidQueue::Job.exists?(preserved.id), "expected job #{preserved.id} to be preserved"
+    end
+  end
 
-    # Verify all pending jobs were cleaned up
-    assert_equal 3, deleted_count
-    assert_equal 0, SolidQueue::Job.where(class_name: "HealthCheckJob", finished_at: nil).count
+  test "scheduled checks honor the configured interval on minute boundaries" do
+    SettingsService.set(:health_check_interval, 600)
+
+    travel_to Time.zone.parse("2026-08-26 12:00:00") do
+      SystemHealth::SERVICES.each do |service|
+        SystemHealth.create!(
+          service: service,
+          status: :not_configured,
+          last_check_at: 9.minutes.ago
+        )
+      end
+
+      job = HealthCheckJob.new
+      assert_not job.send(:scheduled_health_check_due?)
+
+      SystemHealth.update_all(last_check_at: 10.minutes.ago)
+      assert job.send(:scheduled_health_check_due?)
+    end
+  end
+
+  test "scheduled checks run when a service has never been checked" do
+    SystemHealth::SERVICES.each do |service|
+      SystemHealth.create!(service: service, status: :not_configured, last_check_at: 1.minute.ago)
+    end
+    SystemHealth.find_by!(service: "hardcover").update_column(:last_check_at, nil)
+
+    assert HealthCheckJob.new.send(:scheduled_health_check_due?)
   end
 
   # Single service check
@@ -498,6 +526,17 @@ class HealthCheckJobTest < ActiveJob::TestCase
   end
 
   private
+
+  def create_queue_health_job(scheduled_at:, arguments: {})
+    active_job = arguments.empty? ? HealthCheckJob.new : HealthCheckJob.new(**arguments)
+    SolidQueue::Job.create!(
+      active_job_id: active_job.job_id,
+      class_name: "HealthCheckJob",
+      queue_name: "default",
+      arguments: active_job.serialize,
+      scheduled_at: scheduled_at
+    )
+  end
 
   def create_download_client(name: "Test Client", url: "http://localhost:8080")
     DownloadClient.create!(
