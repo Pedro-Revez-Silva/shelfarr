@@ -232,30 +232,11 @@ class OwnedMediaImportFileService
     end
 
     def with_lock(root, key)
-      lock_directory = Pathname(root).join(STAGING_DIRECTORY, LOCKS_DIRECTORY)
-      shard = Digest::SHA256.hexdigest(key.to_s).to_i(16) % LOCK_SHARDS
-      secure_directory!(lock_directory) do |locks|
-        descriptor = class_native_openat(
-          locks.fileno,
-          format("lock-%04d", shard),
-          flags: File::RDWR | File::CREAT | File::NOFOLLOW | File::NONBLOCK,
-          mode: 0o600
-        )
-        lock = File.for_fd(descriptor, "r+", autoclose: true)
-        begin
-          raise Error, "Shelfarr's audiobook lock is not a regular file" unless lock.stat.file?
-
-          class_native_fchmod(lock.fileno, 0o600)
-          unless lock.flock(File::LOCK_EX)
-            raise Error, "The audiobook filesystem does not support Shelfarr's required lock"
-          end
-          yield
-        ensure
-          lock.close unless lock.closed?
-        end
-      end
-    rescue Errno::ELOOP, Errno::EACCES, Errno::ENOENT => e
-      raise Error, "Shelfarr could not lock the audiobook destination: #{e.message}"
+      lock = nil
+      lock = acquire_audiobook_lock(root, key)
+      yield
+    ensure
+      lock&.close unless lock&.closed?
     end
 
     # Audible backups rely on an advisory filesystem lock and a same-volume
@@ -300,6 +281,34 @@ class OwnedMediaImportFileService
     end
 
     private
+
+    def acquire_audiobook_lock(root, key)
+      lock = nil
+      lock_directory = Pathname(root).join(STAGING_DIRECTORY, LOCKS_DIRECTORY)
+      shard = Digest::SHA256.hexdigest(key.to_s).to_i(16) % LOCK_SHARDS
+      secure_directory!(lock_directory) do |locks|
+        descriptor = class_native_openat(
+          locks.fileno,
+          format("lock-%04d", shard),
+          flags: File::RDWR | File::CREAT | File::NOFOLLOW | File::NONBLOCK,
+          mode: 0o600
+        )
+        lock = File.for_fd(descriptor, "r+", autoclose: true)
+        raise Error, "Shelfarr's audiobook lock is not a regular file" unless lock.stat.file?
+
+        class_native_fchmod(lock.fileno, 0o600)
+        unless lock.flock(File::LOCK_EX)
+          raise Error, "The audiobook filesystem does not support Shelfarr's required lock"
+        end
+        return lock
+      end
+    rescue Errno::ELOOP, Errno::EACCES, Errno::ENOENT => e
+      lock&.close unless lock&.closed?
+      raise Error, "Shelfarr could not lock the audiobook destination: #{e.message}"
+    rescue
+      lock&.close unless lock&.closed?
+      raise
+    end
 
     def staging_components(raw_path)
       return if raw_path.blank?

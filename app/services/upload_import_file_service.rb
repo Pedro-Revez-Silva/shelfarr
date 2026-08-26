@@ -303,26 +303,11 @@ class UploadImportFileService
     end
 
     def with_lock(root, key)
-      canonical_root = Pathname(root).realpath
-      with_pinned_absolute_directory(canonical_root) do |root_directory|
-        relative = Pathname(PRIVATE_DIRECTORY).join(database_fingerprint, LOCKS_DIRECTORY)
-        with_pinned_relative_directory(root_directory, relative, create: true, mode: 0o700) do |locks|
-          shard = Digest::SHA256.hexdigest(key.to_s).to_i(16) % LOCK_SHARDS
-          descriptor = open_or_create_lock(locks, format("lock-%04d", shard))
-          lock = File.for_fd(descriptor, "r+", autoclose: true)
-          begin
-            raise Error, "Upload recovery lock is not a regular file" unless lock.stat.file?
-            native_fchmod(lock.fileno, 0o600)
-            raise Error, "Upload recovery lock could not be acquired" unless lock.flock(File::LOCK_EX)
-
-            yield
-          ensure
-            lock.close unless lock.closed?
-          end
-        end
-      end
-    rescue Errno::ELOOP, Errno::EACCES, Errno::ENOENT, Errno::ENOTDIR => error
-      raise Error, "Shelfarr could not lock the upload destination: #{error.message}"
+      lock = nil
+      lock = acquire_upload_lock(root, key)
+      yield
+    ensure
+      lock&.close unless lock&.closed?
     end
 
     # Resolve the longest existing configured prefix once, then create only the
@@ -373,6 +358,29 @@ class UploadImportFileService
     end
 
     private
+
+    def acquire_upload_lock(root, key)
+      lock = nil
+      canonical_root = Pathname(root).realpath
+      with_pinned_absolute_directory(canonical_root) do |root_directory|
+        relative = Pathname(PRIVATE_DIRECTORY).join(database_fingerprint, LOCKS_DIRECTORY)
+        with_pinned_relative_directory(root_directory, relative, create: true, mode: 0o700) do |locks|
+          shard = Digest::SHA256.hexdigest(key.to_s).to_i(16) % LOCK_SHARDS
+          descriptor = open_or_create_lock(locks, format("lock-%04d", shard))
+          lock = File.for_fd(descriptor, "r+", autoclose: true)
+          raise Error, "Upload recovery lock is not a regular file" unless lock.stat.file?
+          native_fchmod(lock.fileno, 0o600)
+          raise Error, "Upload recovery lock could not be acquired" unless lock.flock(File::LOCK_EX)
+          return lock
+        end
+      end
+    rescue Errno::ELOOP, Errno::EACCES, Errno::ENOENT, Errno::ENOTDIR => error
+      lock&.close unless lock&.closed?
+      raise Error, "Shelfarr could not lock the upload destination: #{error.message}"
+    rescue
+      lock&.close unless lock&.closed?
+      raise
+    end
 
     def open_or_create_lock(directory, basename)
       loop do
