@@ -580,6 +580,24 @@ class OwnedMediaBackupJobTest < ActiveJob::TestCase
     end
   end
 
+  test "rejects suffix-only M4Bs without a canonical Libation artifact" do
+    Dir.mktmpdir("libation-import") do |root|
+      book_dir = File.join(root, "Book")
+      FileUtils.mkdir_p(book_dir)
+      File.binwrite(File.join(book_dir, "A Title (1).m4b"), "part one")
+      File.binwrite(File.join(book_dir, "A Title (2).m4b"), "part two")
+
+      job = OwnedMediaBackupJob.new
+      with_env("SHELFARR_LIBATION_IMPORT_ROOT" => root) do
+        error = assert_raises(OwnedMediaBackupJob::BackupError) do
+          job.send(:select_audio_artifact, [ "/data/Book" ])
+        end
+
+        assert_match(/single primary artifact/, error.message)
+      end
+    end
+  end
+
   test "uses the highest collision sequence when filesystem mtimes tie" do
     Dir.mktmpdir("libation-import") do |root|
       book_dir = File.join(root, "Book")

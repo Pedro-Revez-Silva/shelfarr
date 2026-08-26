@@ -358,10 +358,12 @@ class OwnedMediaBackupJob < ApplicationJob
 
   # Libation can retain a previous completed file and write a retry using its
   # usual " (1)" collision suffix. Its current file can differ in metadata, so
-  # use the newest member of that one collision family. Distinct multipart
-  # filenames remain ambiguous and must be rejected.
+  # use the newest member of that one collision family. Require the unsuffixed
+  # canonical file as evidence that the numbered files are collision copies;
+  # otherwise parenthetically numbered multipart files remain ambiguous.
   def select_collision_copy(paths)
     return unless paths.any? { |path| duplicate_suffix?(path) }
+    return unless paths.any? { |path| !duplicate_suffix?(path) }
     return unless paths.map { |path| [ path.dirname, collision_basename(path) ] }.uniq.one?
 
     paths.max_by do |path|
