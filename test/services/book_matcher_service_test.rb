@@ -115,4 +115,44 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
 
     assert result.no_match?
   end
+
+  test "does not match different books in same series by same author" do
+    # Create a book from the German Harry Potter series (Chamber of Secrets)
+    existing_book = Book.create!(
+      title: "Harry Potter und die Kammer des Schreckens (Die Harry-Potter-Buchreihe) (German Edition)",
+      author: "J.K. Rowling",
+      book_type: :ebook
+    )
+
+    # Try to match a different book in the same series (Prisoner of Azkaban)
+    result = BookMatcherService.match(
+      title: "Harry Potter und der Gefangene von Askaban (Die Harry-Potter-Buchreihe) (German Edition)",
+      author: "J.K. Rowling",
+      book_type: :ebook
+    )
+
+    # Should not match - these are different books despite sharing author and series text
+    assert result.no_match?, "Different books in the same series should not match (got #{result.match_type} with score #{result.score})"
+    assert_nil result.book
+  end
+
+  test "does not match books with shared series suffix but different titles" do
+    # Create a book with a series tag
+    existing_book = Book.create!(
+      title: "The Shadow Rising (The Wheel of Time Book 4)",
+      author: "Robert Jordan",
+      book_type: :ebook
+    )
+
+    # Try to match a different book in the same series
+    result = BookMatcherService.match(
+      title: "The Fires of Heaven (The Wheel of Time Book 5)",
+      author: "Robert Jordan",
+      book_type: :ebook
+    )
+
+    # Should not match - these are different books
+    assert result.no_match?, "Different books in the same series should not match (got #{result.match_type} with score #{result.score})"
+    assert_nil result.book
+  end
 end

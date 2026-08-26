@@ -20,6 +20,12 @@ class BookMatcherService
   # Minimum score to consider a fuzzy match
   FUZZY_THRESHOLD = 70
 
+  # Minimum title-only similarity required before author similarity can contribute to score
+  # This prevents false positives when books share author + series text but have different core titles
+  # Example: "Harry Potter und die Kammer des Schreckens" vs "Harry Potter und der Gefangene von Askaban"
+  # should not match despite sharing author and series metadata
+  MIN_TITLE_SIMILARITY = 65
+
   class << self
     # Find best matching book for the given title/author and book type
     # Returns Result with matched book (or nil), score, and match type
@@ -92,6 +98,13 @@ class BookMatcherService
       end
 
       author_score = string_similarity(normalize(query_author), normalize(book_author))
+
+      # Require minimum title similarity to prevent false positives when
+      # books share author + series/edition text but have different core titles
+      # (e.g., "Harry Potter und die Kammer des Schreckens" vs "Harry Potter und der Gefangene von Askaban")
+      if title_score < MIN_TITLE_SIMILARITY
+        return title_score
+      end
 
       # Weight: 60% title, 40% author
       (title_score * 0.6 + author_score * 0.4).round
