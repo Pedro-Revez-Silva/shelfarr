@@ -159,7 +159,9 @@ class DirectDownloadFileService
         # and locks/ subdirectories. Only warn if there are other entries that
         # could be leftover direct-download data.
         children = Dir.children(legacy)
-        owned_media_structure = children.all? { |name| name.in?([ "uploads", "locks" ]) }
+        owned_media_structure = children.all? do |name|
+          name.in?([ "uploads", "locks" ]) && File.lstat(legacy.join(name)).directory?
+        end
         return if owned_media_structure
 
         return "legacy direct-download staging contains retained entries; new downloads use " \

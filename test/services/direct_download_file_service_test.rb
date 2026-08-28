@@ -168,6 +168,29 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_match(/contains retained entries/, diagnostic)
   end
 
+  test "legacy staging diagnostic rejects an allowed basename that is a file" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    FileUtils.mkdir_p(legacy)
+    File.write(File.join(legacy, "uploads"), "retained data")
+    File.chmod(0o700, legacy)
+
+    diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+
+    assert_match(/contains retained entries/, diagnostic)
+  end
+
+  test "legacy staging diagnostic rejects an allowed basename that is a symlink" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    target = File.join(@output_root, "external-locks")
+    FileUtils.mkdir_p([ legacy, target ])
+    File.symlink(target, File.join(legacy, "locks"))
+    File.chmod(0o700, legacy)
+
+    diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+
+    assert_match(/contains retained entries/, diagnostic)
+  end
+
   test "rejects destinations in every internal library namespace" do
     LibraryPathSafety::INTERNAL_DIRECTORIES.each do |directory|
       internal = File.join(@output_root, directory, "book.epub")
