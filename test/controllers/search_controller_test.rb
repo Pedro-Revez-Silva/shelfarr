@@ -12,6 +12,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     @original_hardcover_enabled = SettingsService.get(:hardcover_enabled)
     @original_google_books_enabled = SettingsService.get(:google_books_enabled)
     @original_open_library_enabled = SettingsService.get(:open_library_enabled)
+    @original_min_match_confidence = SettingsService.get(:min_match_confidence)
     MetadataProviderStatus.delete_all
     HardcoverClient.reset_connection!
     GoogleBooksClient.reset_connection!
@@ -25,6 +26,7 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:hardcover_enabled, @original_hardcover_enabled.nil? ? true : @original_hardcover_enabled)
     SettingsService.set(:google_books_enabled, @original_google_books_enabled.nil? ? true : @original_google_books_enabled)
     SettingsService.set(:open_library_enabled, @original_open_library_enabled.nil? ? true : @original_open_library_enabled)
+    SettingsService.set(:min_match_confidence, @original_min_match_confidence || 50)
     MetadataProviderStatus.delete_all
     HardcoverClient.reset_connection!
     GoogleBooksClient.reset_connection!
@@ -313,6 +315,34 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_equal "text/vnd.turbo-stream.html", response.media_type
     assert_match %r{href="/search/details\?}, response.body
     assert_no_match %r{href="//search/details\?}, response.body
+  end
+
+  test "stream_results renders a Hardcover-only result above the unrelated indexer threshold" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_enabled, true)
+    SettingsService.set(:hardcover_api_token, "test-token")
+    SettingsService.set(:open_library_enabled, false)
+    SettingsService.set(:google_books_enabled, false)
+    SettingsService.set(:min_match_confidence, 80)
+    HardcoverClient.reset_connection!
+
+    VCR.turned_off do
+      stub_hardcover_search([
+        {
+          "id" => 303,
+          "title" => "Hardcover Only Result",
+          "author_names" => [ "Ada Writer" ],
+          "release_year" => 2026
+        }
+      ])
+
+      get search_results_stream_path, params: { q: "hardcover only" }
+    end
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html", response.media_type
+    assert_match "Hardcover Only Result", response.body
+    assert_no_match "No results found", response.body
   end
 
   test "stream_results applies the normalized content filter to partial results" do

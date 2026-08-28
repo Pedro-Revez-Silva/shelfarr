@@ -565,11 +565,11 @@ class MetadataServiceTest < ActiveSupport::TestCase
     assert_equal 2, results.size
     hardcover_result = results.find { |r| r.title == "Hardcover Only Result" }
     multi_provider_result = results.find { |r| r.title == "High Confidence" }
-    
+
     assert_not_nil hardcover_result, "Hardcover-only result should not be filtered"
     assert_equal "hardcover", hardcover_result.source
     assert_equal 70, hardcover_result.confidence
-    
+
     assert_not_nil multi_provider_result
     assert_equal 90, multi_provider_result.confidence
   end
