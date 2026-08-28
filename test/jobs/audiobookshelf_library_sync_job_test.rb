@@ -4,11 +4,17 @@ require "test_helper"
 
 class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
   setup do
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
     SettingsService.set(:audiobookshelf_ebook_library_id, "")
     SettingsService.set(:audiobookshelf_library_sync_interval, 3600)
+  end
+
+  teardown do
+    Rails.cache = @original_cache
   end
 
   test "does not schedule next run after syncing (recurring job handles scheduling)" do
@@ -46,7 +52,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
 
   test "cleanup discards only identifiable legacy delayed periodic jobs" do
     SolidQueue::Record.establish_connection(:queue)
-    
+
     legacy_no_args = create_queue_abs_sync_job(scheduled_at: 1.hour.from_now)
     legacy_with_schedule_next_true = create_queue_abs_sync_job(
       scheduled_at: 1.hour.from_now,
@@ -56,6 +62,10 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     post_scan = create_queue_abs_sync_job(
       scheduled_at: 90.seconds.from_now,
       arguments: { schedule_next: false }
+    )
+    current_post_scan = create_queue_abs_sync_job(
+      scheduled_at: 90.seconds.from_now,
+      arguments: { post_scan: true }
     )
     recurring = create_queue_abs_sync_job(
       scheduled_at: 1.hour.from_now,
@@ -81,36 +91,62 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
 
     assert_not SolidQueue::Job.exists?(legacy_no_args.id)
     assert_not SolidQueue::Job.exists?(legacy_with_schedule_next_true.id)
-    [ manual, post_scan, recurring, claimed ].each do |preserved|
+    [ manual, post_scan, current_post_scan, recurring, claimed ].each do |preserved|
       assert SolidQueue::Job.exists?(preserved.id), "expected job #{preserved.id} to be preserved"
     end
   end
 
+  test "pre-migration post-scan jobs still execute as one-shots" do
+    sync_service = Minitest::Mock.new
+    sync_service.expect(:sync!, true)
+
+    AudiobookshelfLibrarySyncService.stub(:new, sync_service) do
+      assert_no_enqueued_jobs(only: AudiobookshelfLibrarySyncJob) do
+        AudiobookshelfLibrarySyncJob.perform_now(schedule_next: false)
+      end
+    end
+
+    sync_service.verify
+  end
+
   test "scheduled syncs honor the configured interval on minute boundaries" do
     SettingsService.set(:audiobookshelf_library_sync_interval, 600)
-    LibraryItem.destroy_all
 
     travel_to Time.zone.parse("2026-08-26 12:00:00") do
-      LibraryItem.create!(
-        title: "Test Book",
-        author: "Test Author",
-        external_id: "test-1",
-        library_type: "audiobook",
-        updated_at: 9.minutes.ago
-      )
-
       job = AudiobookshelfLibrarySyncJob.new
+      Rails.cache.write(
+        AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY,
+        9.minutes.ago
+      )
       assert_not job.send(:sync_due?)
 
-      LibraryItem.update_all(updated_at: 10.minutes.ago)
+      Rails.cache.write(
+        AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY,
+        10.minutes.ago
+      )
       assert job.send(:sync_due?)
     end
   end
 
-  test "scheduled syncs run when no library items exist yet" do
-    LibraryItem.destroy_all
+  test "zero interval disables scheduled syncs" do
+    SettingsService.set(:audiobookshelf_library_sync_interval, 0)
 
-    assert AudiobookshelfLibrarySyncJob.new.send(:sync_due?)
+    assert_not AudiobookshelfLibrarySyncJob.new.send(:sync_due?)
+  end
+
+  test "scheduled syncs record an attempt even when the remote library is empty" do
+    SettingsService.set(:audiobookshelf_library_sync_interval, 86_400)
+    LibraryItem.destroy_all
+    sync_service = Minitest::Mock.new
+    sync_service.expect(:sync!, true)
+
+    AudiobookshelfLibrarySyncService.stub(:new, sync_service) do
+      AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
+    end
+
+    sync_service.verify
+    assert_empty LibraryItem.all
+    assert_not AudiobookshelfLibrarySyncJob.new.send(:sync_due?)
   end
 
   test "post-scan refresh enqueues a delayed one-shot sync" do
@@ -119,7 +155,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     with_post_scan_refresh_cache do
       assert_enqueued_with(
         job: AudiobookshelfLibrarySyncJob,
-        args: [],
+        args: [ { post_scan: true } ],
         at: AudiobookshelfLibrarySyncJob::POST_SCAN_REFRESH_WAIT.from_now
       ) do
         AudiobookshelfLibrarySyncJob.schedule_post_scan_refresh!
@@ -163,11 +199,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
   end
 
   def with_post_scan_refresh_cache
-    previous = Rails.cache
-    Rails.cache = ActiveSupport::Cache::MemoryStore.new
     Rails.cache.clear
     yield
-  ensure
-    Rails.cache = previous
   end
 end

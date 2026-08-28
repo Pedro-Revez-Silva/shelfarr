@@ -13,6 +13,7 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   # Shelfarr's inventory cache used for duplicate detection.
   POST_SCAN_REFRESH_WAIT = 90.seconds
   POST_SCAN_REFRESH_CACHE_KEY = "library-platform-post-scan-refresh"
+  LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY = "library-platform-last-scheduled-sync-at"
 
   class << self
     def discard_legacy_scheduled_chains!
@@ -47,14 +48,20 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
       first_arg = args.first
       return false unless first_arg.is_a?(Hash)
 
-      first_arg["schedule_next"] != false && first_arg["scheduled"] != true
+      first_arg["schedule_next"] != false &&
+        first_arg["scheduled"] != true &&
+        first_arg["post_scan"] != true
     end
   end
 
-  def perform(scheduled: false)
+  # Extra one-shot metadata accepts both the pre-migration schedule_next flag
+  # and the explicit post_scan marker without letting either establish a new
+  # recurring chain.
+  def perform(scheduled: false, **_one_shot_metadata)
     return unless LibraryPlatformClient.configured?
     return if scheduled && !sync_due?
 
+    record_scheduled_attempt! if scheduled
     AudiobookshelfLibrarySyncService.new.sync!
   end
 
@@ -71,19 +78,25 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
     )
     return unless claimed
 
-    set(wait: POST_SCAN_REFRESH_WAIT).perform_later
+    set(wait: POST_SCAN_REFRESH_WAIT).perform_later(post_scan: true)
   end
 
   private
 
   def sync_due?
-    last_sync = LibraryItem.maximum(:updated_at)
-    return true if last_sync.nil?
-
     interval = SettingsService.get(:audiobookshelf_library_sync_interval, default: 3600).to_i
+    return false if interval <= 0
+
+    last_attempt = Rails.cache.read(LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY)
+    return true unless last_attempt.respond_to?(:beginning_of_minute)
+
     interval = [ interval, 60 ].max
     interval_minutes = (interval / 1.minute.to_f).ceil
 
-    last_sync.beginning_of_minute <= interval_minutes.minutes.ago.beginning_of_minute
+    last_attempt.beginning_of_minute <= interval_minutes.minutes.ago.beginning_of_minute
+  end
+
+  def record_scheduled_attempt!
+    Rails.cache.write(LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY, Time.current)
   end
 end

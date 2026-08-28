@@ -3323,7 +3323,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     LibraryPlatformClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
       assert_enqueued_with(
         job: AudiobookshelfLibrarySyncJob,
-        args: []
+        args: [ { post_scan: true } ]
       ) do
         PostProcessingJob.new.send(:trigger_library_scan, @book)
       end

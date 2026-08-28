@@ -53,7 +53,7 @@ default: &default
     queue: default
     args:
       - scheduled: true
-    schedule: every hour
+    schedule: every minute
 
 development:
   <<: *default
