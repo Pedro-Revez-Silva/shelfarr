@@ -268,9 +268,9 @@ class BookOrbitClient
           "series_position" => raw_item["seriesIndex"]&.to_s,
           "publisher" => raw_item["publisher"],
           "language" => raw_item["language"],
-          "description" => nil,
-          "isbn" => raw_item["isbn13"],
-          "asin" => nil,
+          "description" => raw_item["description"].presence,
+          "isbn" => raw_item["isbn13"].presence || raw_item["isbn10"].presence,
+          "asin" => raw_item["audibleId"].presence,
           "published_year" => raw_item["publishedYear"],
           "missing" => raw_item["status"] == "missing"
         }
