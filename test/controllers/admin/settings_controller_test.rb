@@ -2201,6 +2201,25 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_match /hard boom/, flash[:alert]
   end
 
+  test "test_hardcover reports rate limiting as degraded and preserves the retry deadline" do
+    SettingsService.set(:hardcover_enabled, true)
+    SettingsService.set(:hardcover_api_token, "token")
+    MetadataProviderStatus.where(provider: "hardcover").delete_all
+    SystemHealth.where(service: "hardcover").delete_all
+    error = HardcoverClient::RateLimitError.new("retry later", retry_after: 120)
+
+    HardcoverClient.stub(:test_connection, -> { raise error }) do
+      post test_hardcover_admin_settings_url
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_match(/rate limited/i, flash[:alert])
+    assert SystemHealth.for_service("hardcover").degraded?
+    provider = MetadataProviderStatus.for_provider("hardcover")
+    assert_equal "rate_limited", provider.status
+    assert_in_delta error.retry_at, provider.rate_limited_until, 1.second
+  end
+
   test "test_google_books fails when disabled" do
     SettingsService.set(:google_books_enabled, false)
 

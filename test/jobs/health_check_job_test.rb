@@ -5,6 +5,7 @@ require "test_helper"
 class HealthCheckJobTest < ActiveJob::TestCase
   setup do
     SystemHealth.destroy_all
+    MetadataProviderStatus.destroy_all
     DownloadClient.destroy_all
     Setting.where(key: "health_check_interval").delete_all
     Thread.current[:qbittorrent_sessions] = {}
@@ -523,6 +524,40 @@ class HealthCheckJobTest < ActiveJob::TestCase
       health = SystemHealth.for_service("audiobookshelf")
       assert health.down?
     end
+  end
+
+  test "records a successful Hardcover health check for provider availability" do
+    HardcoverClient.stub(:configured?, true) do
+      HardcoverClient.stub(:test_connection, true) do
+        HealthCheckJob.perform_now(service: "hardcover")
+      end
+    end
+
+    health = SystemHealth.for_service("hardcover")
+    provider = MetadataProviderStatus.for_provider("hardcover")
+    assert health.healthy?
+    assert health.last_check_at.present?
+    assert_equal "healthy", provider.status
+    assert provider.last_success_at.present?
+  end
+
+  test "reports Hardcover rate limiting without treating the token as invalid" do
+    error = HardcoverClient::RateLimitError.new("limited for 2 minutes", retry_after: 120)
+
+    HardcoverClient.stub(:configured?, true) do
+      HardcoverClient.stub(:test_connection, -> { raise error }) do
+        HealthCheckJob.perform_now(service: "hardcover")
+      end
+    end
+
+    health = SystemHealth.for_service("hardcover")
+    provider = MetadataProviderStatus.for_provider("hardcover")
+    assert health.degraded?
+    assert health.last_check_at.present?
+    assert_includes health.message, "limited"
+    assert_equal "rate_limited", provider.status
+    assert_in_delta error.retry_at, provider.rate_limited_until, 1.second
+    assert_nil provider.last_success_at
   end
 
   private

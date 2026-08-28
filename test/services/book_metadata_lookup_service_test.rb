@@ -172,6 +172,28 @@ class BookMetadataLookupServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "continues to swallow provider errors by default for interactive fallbacks" do
+    error = HardcoverClient::RateLimitError.new("limited", retry_after: 120)
+
+    metadata = MetadataService.stub(:book_details, ->(*) { raise error }) do
+      BookMetadataLookupService.call([ "hardcover:123" ])
+    end
+
+    assert_equal({}, metadata)
+  end
+
+  test "can surface provider errors so batch jobs know when to stop" do
+    error = HardcoverClient::RateLimitError.new("limited", retry_after: 120)
+
+    raised = assert_raises(HardcoverClient::RateLimitError) do
+      MetadataService.stub(:book_details, ->(*) { raise error }) do
+        BookMetadataLookupService.call([ "hardcover:123" ], raise_lookup_errors: true)
+      end
+    end
+
+    assert_same error, raised
+  end
+
   private
 
   def metadata_details(source:, source_id:, title:, description:)

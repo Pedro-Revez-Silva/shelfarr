@@ -4,11 +4,19 @@
 # without overwriting values that are already present.
 class BookMetadataBackfillService
   class << self
-    def apply!(book, work_id:, source_work_ids: [], fallback_attrs: {}, lookup_details: true)
+    def apply!(
+      book,
+      work_id:,
+      source_work_ids: [],
+      fallback_attrs: {},
+      lookup_details: true,
+      raise_lookup_errors: false
+    )
       metadata = if lookup_details
         BookMetadataLookupService.call(
           [ work_id, *Array(source_work_ids) ],
-          fallback: fallback_attrs
+          fallback: fallback_attrs,
+          raise_lookup_errors: raise_lookup_errors
         )
       else
         {}

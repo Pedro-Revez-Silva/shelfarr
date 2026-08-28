@@ -40,6 +40,31 @@ class MetadataProviderStatusTest < ActiveSupport::TestCase
     assert_not status.available?
   end
 
+  test "record_failure honors a server-provided rate limit deadline beyond generic backoff" do
+    status = MetadataProviderStatus.create!(provider: "hardcover", status: "healthy")
+    error = HardcoverClient::RateLimitError.new("daily quota exhausted", retry_after: 8.hours.to_i)
+
+    status.record_failure!(error)
+
+    assert_equal "rate_limited", status.status
+    assert_in_delta error.retry_at, status.rate_limited_until, 1.second
+  end
+
+  test "a repeated rate limit failure cannot shorten an existing cooldown" do
+    existing_deadline = 30.minutes.from_now
+    status = MetadataProviderStatus.create!(
+      provider: "hardcover",
+      status: "rate_limited",
+      rate_limited_until: existing_deadline
+    )
+    error = HardcoverClient::RateLimitError.new("still limited", retry_after: 60)
+
+    status.record_failure!(error)
+
+    assert_in_delta existing_deadline, status.rate_limited_until, 1.second
+    assert_equal 1, status.failure_count
+  end
+
   test "record_failure classifies auth errors without retry backoff" do
     status = MetadataProviderStatus.create!(provider: "hardcover", status: "healthy")
 
