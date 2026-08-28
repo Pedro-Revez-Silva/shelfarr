@@ -6,11 +6,14 @@ class HardcoverClientTest < ActiveSupport::TestCase
   setup do
     @original_token = SettingsService.get(:hardcover_api_token)
     HardcoverClient.reset_connection!
+    # Clear quota cache before each test
+    Rails.cache.clear
   end
 
   teardown do
     SettingsService.set(:hardcover_api_token, @original_token || "")
     HardcoverClient.reset_connection!
+    Rails.cache.clear
   end
 
   test "configured? returns false without token" do
@@ -281,6 +284,69 @@ class HardcoverClientTest < ActiveSupport::TestCase
     )
 
     assert_equal "hardcover:12345", result.work_id
+  end
+
+  test "tracks API requests for quota monitoring" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_hardcover_search("test", [])
+
+      initial_count = HardcoverClient.daily_request_count
+      HardcoverClient.search("test")
+      
+      assert_equal initial_count + 1, HardcoverClient.daily_request_count,
+        "Should increment daily request counter"
+    end
+  end
+
+  test "blocks requests when daily quota is exceeded" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    # Simulate quota exceeded
+    today_key = "#{HardcoverClient::DAILY_QUOTA_CACHE_KEY}:#{Time.current.to_date.iso8601}"
+    Rails.cache.write(today_key, HardcoverClient::FREE_PLAN_DAILY_LIMIT + 1)
+    Rails.cache.write(HardcoverClient::DAILY_QUOTA_CACHE_KEY, HardcoverClient::FREE_PLAN_DAILY_LIMIT + 1)
+
+    VCR.turned_off do
+      assert_raises HardcoverClient::QuotaExceededError do
+        HardcoverClient.search("test")
+      end
+    end
+  end
+
+  test "quota_exceeded? returns true when over limit" do
+    today_key = "#{HardcoverClient::DAILY_QUOTA_CACHE_KEY}:#{Time.current.to_date.iso8601}"
+    Rails.cache.write(today_key, HardcoverClient::FREE_PLAN_DAILY_LIMIT + 1)
+    Rails.cache.write(HardcoverClient::DAILY_QUOTA_CACHE_KEY, HardcoverClient::FREE_PLAN_DAILY_LIMIT + 1)
+
+    assert HardcoverClient.quota_exceeded?
+  end
+
+  test "quota_exceeded? returns false when under limit" do
+    today_key = "#{HardcoverClient::DAILY_QUOTA_CACHE_KEY}:#{Time.current.to_date.iso8601}"
+    Rails.cache.write(today_key, 100)
+    Rails.cache.write(HardcoverClient::DAILY_QUOTA_CACHE_KEY, 100)
+
+    assert_not HardcoverClient.quota_exceeded?
+  end
+
+  test "should_backoff? returns true when approaching quota" do
+    # Set to 91% of daily limit
+    approaching_limit = (HardcoverClient::FREE_PLAN_DAILY_LIMIT * 0.91).to_i
+    today_key = "#{HardcoverClient::DAILY_QUOTA_CACHE_KEY}:#{Time.current.to_date.iso8601}"
+    Rails.cache.write(today_key, approaching_limit)
+    Rails.cache.write(HardcoverClient::DAILY_QUOTA_CACHE_KEY, approaching_limit)
+
+    assert HardcoverClient.should_backoff?
+  end
+
+  test "should_backoff? returns false when well under quota" do
+    today_key = "#{HardcoverClient::DAILY_QUOTA_CACHE_KEY}:#{Time.current.to_date.iso8601}"
+    Rails.cache.write(today_key, 100)
+    Rails.cache.write(HardcoverClient::DAILY_QUOTA_CACHE_KEY, 100)
+
+    assert_not HardcoverClient.should_backoff?
   end
 
   private

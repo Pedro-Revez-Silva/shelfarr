@@ -258,13 +258,32 @@ class HealthCheckJob < ApplicationJob
       return
     end
 
+    # Skip health check if we've exceeded or are approaching the daily quota
+    if HardcoverClient.quota_exceeded?
+      daily_count = HardcoverClient.daily_request_count
+      health.check_failed!(
+        message: "Daily API quota exceeded (#{daily_count}/#{HardcoverClient::FREE_PLAN_DAILY_LIMIT})",
+        degraded: false
+      )
+      return
+    elsif HardcoverClient.should_backoff?
+      daily_count = HardcoverClient.daily_request_count
+      Rails.logger.info "[HealthCheckJob] Skipping Hardcover health check (approaching quota: #{daily_count}/#{HardcoverClient::FREE_PLAN_DAILY_LIMIT})"
+      # Don't fail the health check, just skip it
+      return
+    end
+
     if HardcoverClient.test_connection
       health.check_succeeded!(message: "Connection successful")
     else
       health.check_failed!(message: "Failed to connect to Hardcover")
     end
+  rescue HardcoverClient::QuotaExceededError => e
+    health.check_failed!(message: "API quota exceeded", degraded: false)
   rescue HardcoverClient::AuthenticationError => e
     health.check_failed!(message: "Authentication failed: #{e.message}")
+  rescue HardcoverClient::RateLimitError => e
+    health.check_failed!(message: "Rate limit exceeded", degraded: true)
   rescue HardcoverClient::ConnectionError => e
     health.check_failed!(message: "Connection error: #{e.message}")
   rescue => e

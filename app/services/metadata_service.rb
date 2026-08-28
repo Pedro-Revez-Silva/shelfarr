@@ -201,7 +201,7 @@ class MetadataService
     def provider_errors(provider)
       errors = case provider.to_s
       when "hardcover"
-        [ HardcoverClient::Error ]
+        [ HardcoverClient::Error, HardcoverClient::QuotaExceededError ]
       when "google_books"
         [ GoogleBooksClient::Error ]
       when "openlibrary"

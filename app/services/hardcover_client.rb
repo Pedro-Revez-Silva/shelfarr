@@ -5,11 +5,19 @@
 class HardcoverClient
   BASE_URL = "https://api.hardcover.app/v1/graphql"
 
+  # Hardcover free plan limits (as of 2026)
+  FREE_PLAN_REQUESTS_PER_MINUTE = 60
+  FREE_PLAN_DAILY_LIMIT = 5000
+  RATE_LIMIT_CACHE_KEY = "hardcover_client_rate_limit"
+  DAILY_QUOTA_CACHE_KEY = "hardcover_client_daily_quota"
+  RATE_LIMIT_BACKOFF_SECONDS = 65 # Wait just over 1 minute to reset the per-minute limit
+
   # Custom error classes
   class Error < StandardError; end
   class ConnectionError < Error; end
   class AuthenticationError < Error; end
   class RateLimitError < Error; end
+  class QuotaExceededError < RateLimitError; end
   class NotFoundError < Error; end
   class NotConfiguredError < Error; end
 
@@ -44,6 +52,50 @@ class HardcoverClient
   class << self
     def configured?
       SettingsService.hardcover_configured?
+    end
+
+    # Check if we've hit the daily quota limit
+    def quota_exceeded?
+      daily_count = Rails.cache.read(DAILY_QUOTA_CACHE_KEY).to_i
+      daily_count >= FREE_PLAN_DAILY_LIMIT
+    end
+
+    # Get current daily request count
+    def daily_request_count
+      Rails.cache.read(DAILY_QUOTA_CACHE_KEY).to_i
+    end
+
+    # Track an API request for rate limiting and quota purposes
+    def track_request!
+      now = Time.current
+      today_key = "#{DAILY_QUOTA_CACHE_KEY}:#{now.to_date.iso8601}"
+      
+      # Increment daily counter
+      daily_count = Rails.cache.read(today_key).to_i
+      Rails.cache.write(today_key, daily_count + 1, expires_in: 25.hours)
+
+      # Also track in a rolling counter for monitoring
+      Rails.cache.write(DAILY_QUOTA_CACHE_KEY, daily_count + 1, expires_in: 25.hours)
+      
+      # Track per-minute rate limit
+      minute_key = "#{RATE_LIMIT_CACHE_KEY}:#{now.beginning_of_minute.to_i}"
+      minute_count = Rails.cache.read(minute_key).to_i
+      Rails.cache.write(minute_key, minute_count + 1, expires_in: 90.seconds)
+
+      Rails.logger.info "[HardcoverClient] Request tracked: daily #{daily_count + 1}, minute #{minute_count + 1}"
+    end
+
+    # Check if we should back off due to approaching limits
+    def should_backoff?
+      daily_count = daily_request_count
+      
+      # Back off if we're close to the daily limit (90% threshold)
+      if daily_count >= (FREE_PLAN_DAILY_LIMIT * 0.9)
+        Rails.logger.warn "[HardcoverClient] Approaching daily quota: #{daily_count}/#{FREE_PLAN_DAILY_LIMIT}"
+        return true
+      end
+
+      false
     end
 
     # Search for books by query
@@ -217,7 +269,17 @@ class HardcoverClient
       raise NotConfiguredError, "Hardcover API token not configured" unless configured?
     end
 
+    def check_quota_and_track!
+      if quota_exceeded?
+        raise QuotaExceededError, "Daily API quota exceeded (#{FREE_PLAN_DAILY_LIMIT} requests/day)"
+      end
+
+      track_request!
+    end
+
     def execute_query(query, variables)
+      check_quota_and_track!
+      
       response = connection.post do |req|
         req.body = { query: query, variables: variables }.to_json
       end
@@ -264,8 +326,9 @@ class HardcoverClient
         Rails.logger.error "[HardcoverClient] Authentication failed (status #{response.status})"
         raise AuthenticationError, "Invalid API token"
       when 429
-        Rails.logger.warn "[HardcoverClient] Rate limit exceeded"
-        raise RateLimitError, "Rate limit exceeded (60 requests/minute)"
+        daily_count = daily_request_count
+        Rails.logger.warn "[HardcoverClient] Rate limit exceeded (daily: #{daily_count}/#{FREE_PLAN_DAILY_LIMIT})"
+        raise RateLimitError, "Rate limit exceeded (60 requests/minute, #{FREE_PLAN_DAILY_LIMIT}/day limit)"
       else
         Rails.logger.error "[HardcoverClient] API error (status #{response.status})"
         raise Error, "API request failed with status #{response.status}"
