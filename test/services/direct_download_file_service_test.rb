@@ -123,6 +123,74 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_not_includes chmod_identities, legacy_identity
   end
 
+  test "legacy staging diagnostic recognizes current owned-media directories" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    uploads = File.join(legacy, "uploads")
+    locks = File.join(legacy, "locks")
+    FileUtils.mkdir_p(uploads)
+    FileUtils.mkdir_p(locks)
+    File.chmod(0o700, legacy)
+    File.chmod(0o700, uploads)
+    File.chmod(0o700, locks)
+
+    # Create nested structure that owned-media uses
+    database_fingerprint = Digest::SHA256.hexdigest(
+      ActiveRecord::Base.connection_db_config.database.to_s
+    ).first(12)
+    upload_staging = File.join(uploads, database_fingerprint)
+    FileUtils.mkdir_p(upload_staging)
+    File.chmod(0o700, upload_staging)
+
+    # Should not warn when only uploads/ and locks/ are present
+    assert_nil DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+  end
+
+  test "legacy staging diagnostic accepts only uploads directory" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    uploads = File.join(legacy, "uploads")
+    FileUtils.mkdir_p(uploads)
+    File.chmod(0o700, legacy)
+
+    # Should not warn when only uploads/ is present (locks/ is optional)
+    assert_nil DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+  end
+
+  test "legacy staging diagnostic warns about actual leftover direct-download data" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    uploads = File.join(legacy, "uploads")
+    direct_downloads = File.join(legacy, "direct-downloads")
+    FileUtils.mkdir_p(uploads)
+    FileUtils.mkdir_p(direct_downloads)
+    File.chmod(0o700, legacy)
+
+    # Should warn when there are entries other than uploads/locks
+    diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+    assert_match(/contains retained entries/, diagnostic)
+  end
+
+  test "legacy staging diagnostic rejects an allowed basename that is a file" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    FileUtils.mkdir_p(legacy)
+    File.write(File.join(legacy, "uploads"), "retained data")
+    File.chmod(0o700, legacy)
+
+    diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+
+    assert_match(/contains retained entries/, diagnostic)
+  end
+
+  test "legacy staging diagnostic rejects an allowed basename that is a symlink" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    target = File.join(@output_root, "external-locks")
+    FileUtils.mkdir_p([ legacy, target ])
+    File.symlink(target, File.join(legacy, "locks"))
+    File.chmod(0o700, legacy)
+
+    diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+
+    assert_match(/contains retained entries/, diagnostic)
+  end
+
   test "rejects destinations in every internal library namespace" do
     LibraryPathSafety::INTERNAL_DIRECTORIES.each do |directory|
       internal = File.join(@output_root, directory, "book.epub")

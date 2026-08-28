@@ -154,6 +154,16 @@ class DirectDownloadFileService
       if stat.directory? && mode == 0o700
         return if Dir.empty?(legacy)
 
+        # Check if the directory only contains current owned-media structure.
+        # OwnedMediaImportFileService still uses .shelfarr-staging with uploads/
+        # and locks/ subdirectories. Only warn if there are other entries that
+        # could be leftover direct-download data.
+        children = Dir.children(legacy)
+        owned_media_structure = children.all? do |name|
+          name.in?([ "uploads", "locks" ]) && File.lstat(legacy.join(name)).directory?
+        end
+        return if owned_media_structure
+
         return "legacy direct-download staging contains retained entries; new downloads use " \
           "#{STAGING_DIRECTORY}, and the legacy entry requires manual review"
       end
