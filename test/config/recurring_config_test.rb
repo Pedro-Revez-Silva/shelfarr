@@ -64,4 +64,15 @@ class RecurringConfigTest < ActiveSupport::TestCase
     assert_equal [ { "scheduled" => true } ], health_check_job["args"]
     assert_equal "every minute", health_check_job["schedule"]
   end
+
+  test "checks whether library inventory sync is due every minute" do
+    config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
+
+    sync_job = config.fetch("default").fetch("audiobookshelf_library_sync")
+
+    assert_equal "AudiobookshelfLibrarySyncJob", sync_job["class"]
+    assert_equal "default", sync_job["queue"]
+    assert_equal [ { "scheduled" => true } ], sync_job["args"]
+    assert_equal "every minute", sync_job["schedule"]
+  end
 end

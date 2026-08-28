@@ -2109,7 +2109,7 @@ class DownloadJobTest < ActiveJob::TestCase
     LibraryPlatformClient.stub(:scan_library, ->(library_id) { scanned << library_id }) do
       assert_enqueued_with(
         job: AudiobookshelfLibrarySyncJob,
-        args: [ { schedule_next: false } ]
+        args: [ { post_scan: true } ]
       ) do
         DownloadJob.new.send(:trigger_library_scan, book)
       end
