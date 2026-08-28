@@ -281,13 +281,14 @@ class PostProcessingJob < ApplicationJob
 
     trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(request)
+    UserLibraryRoutingService.call(book: book, request: request)
 
-    Rails.logger.info "[PostProcessingJob] Completed processing for download #{download.id}"
+    Rails.logger.info "[PostProcessingJob] Completed processing for download #{download&.id}"
   rescue => error
     # These are post-commit conveniences. Their failure must never reopen or
     # overwrite the completed acquisition state.
     Rails.logger.warn(
-      "[PostProcessingJob] Completion side effect failed for download #{download.id}: #{error.class}"
+      "[PostProcessingJob] Completion side effect failed for download #{download&.id}: #{error.class}"
     )
   end
 

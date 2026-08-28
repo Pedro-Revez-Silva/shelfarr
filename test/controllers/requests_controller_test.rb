@@ -1246,7 +1246,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "create blocks duplicate for acquired book" do
+  test "create immediately completes a request for an already-acquired book" do
     book = Book.create!(
       title: "Acquired",
       book_type: :audiobook,
@@ -1254,16 +1254,20 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       file_path: "/audiobooks/Author/Acquired"
     )
 
-    assert_no_difference [ "Book.count", "Request.count" ] do
-      post requests_path, params: {
-        work_id: "OL_ACQUIRED_W",
-        title: "Acquired",
-        book_type: "audiobook"
-      }
+    assert_no_difference "Book.count" do
+      assert_difference "Request.count", 1 do
+        post requests_path, params: {
+          work_id: "OL_ACQUIRED_W",
+          title: "Acquired",
+          book_type: "audiobook"
+        }
+      end
     end
 
-    assert_redirected_to search_path
-    assert_includes flash[:alert], "already in your library"
+    request = Request.order(:created_at).last
+    assert_equal "completed", request.status
+    assert_redirected_to request_path(request)
+    assert_includes flash[:notice], "Request created for"
   end
 
   test "destroy cancels pending request" do

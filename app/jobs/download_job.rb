@@ -427,6 +427,7 @@ class DownloadJob < ApplicationJob
 
     trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
+    UserLibraryRoutingService.call(book: book, request: download.request)
     track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
 
     Rails.logger.info "[DownloadJob] #{source_name} download completed: #{destination_dir}"
@@ -484,6 +485,7 @@ class DownloadJob < ApplicationJob
 
     trigger_library_scan(book) if LibraryPlatformClient.configured?
     NotificationService.request_completed(download.request)
+    UserLibraryRoutingService.call(book: book, request: download.request)
     track_request_event(download.request, "completed", download: download, message: "#{source_name} download completed")
 
     Rails.logger.info "[DownloadJob] #{source_name} download completed: #{destination_path}"
@@ -551,6 +553,7 @@ class DownloadJob < ApplicationJob
 
     # Send notification
     NotificationService.request_completed(download.request)
+    UserLibraryRoutingService.call(book: book, request: download.request)
     track_request_event(download.request, "completed", download: download, message: "Direct download completed")
 
     Rails.logger.info "[DownloadJob] Direct download completed: #{destination_path}"

@@ -134,4 +134,68 @@ class Admin::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "You cannot delete yourself.", flash[:alert]
     assert_nil @admin.reload.deleted_at
   end
+
+  # ── Directory Routing ──────────────────────────────────────────────────────
+
+  test "directory_routing renders the form for an admin" do
+    get directory_routing_admin_user_url(@user)
+
+    assert_response :success
+    assert_select "h1", "Directory Routing"
+    assert_select "form[action='#{update_directory_routing_admin_user_path(@user)}']"
+  end
+
+  test "update_directory_routing saves path and mode and redirects" do
+    patch update_directory_routing_admin_user_url(@user), params: {
+      user: {
+        preferred_output_path: "/srv/media/userone",
+        library_routing_mode: "copy"
+      }
+    }
+
+    assert_redirected_to admin_users_path
+    assert_equal "Directory routing updated for #{@user.name}.", flash[:notice]
+
+    @user.reload
+    assert_equal "/srv/media/userone", @user.preferred_output_path
+    assert_equal "copy", @user.library_routing_mode
+  end
+
+  test "update_directory_routing clears routing when mode is blank" do
+    @user.update!(preferred_output_path: "/old/path", library_routing_mode: "copy")
+
+    patch update_directory_routing_admin_user_url(@user), params: {
+      user: {
+        preferred_output_path: "",
+        library_routing_mode: ""
+      }
+    }
+
+    assert_redirected_to admin_users_path
+    @user.reload
+    assert_nil @user.preferred_output_path.presence
+    assert_nil @user.library_routing_mode.presence
+  end
+
+  test "directory_routing requires admin" do
+    sign_out
+    sign_in_as(@user)
+
+    get directory_routing_admin_user_url(@user)
+
+    assert_redirected_to root_path
+    assert_equal "You must be an admin to access this area.", flash[:alert]
+  end
+
+  test "update_directory_routing requires admin" do
+    sign_out
+    sign_in_as(@user)
+
+    patch update_directory_routing_admin_user_url(@user), params: {
+      user: { preferred_output_path: "/srv/media/userone", library_routing_mode: "copy" }
+    }
+
+    assert_redirected_to root_path
+    assert_equal "You must be an admin to access this area.", flash[:alert]
+  end
 end

@@ -557,4 +557,67 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_not result.success?
     assert_includes result.errors.join, "Collection requests are not supported"
   end
+
+  # ── Already-acquired book intercept (directory routing) ───────────────────
+
+  test "request for already-downloaded book is marked completed immediately" do
+    book = books(:audiobook_acquired)
+
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "openlibrary:OL_AUDIOBOOK_1",
+      book_types: [ "audiobook" ],
+      metadata_attrs: { title: book.title, author: book.author }
+    )
+
+    assert result.success?
+    request = result.created_requests.first
+    assert_equal "completed", request.status
+  end
+
+  test "SearchJob is not enqueued for already-downloaded book" do
+    SettingsService.set(:auto_approve_requests, true)
+    book = books(:audiobook_acquired)
+
+    assert_no_enqueued_jobs only: SearchJob do
+      RequestCreationService.call(
+        user: @user,
+        work_id: "openlibrary:OL_AUDIOBOOK_1",
+        book_types: [ "audiobook" ],
+        metadata_attrs: { title: book.title, author: book.author }
+      )
+    end
+  end
+
+  test "UserLibraryRoutingService is called for already-downloaded book" do
+    book = books(:audiobook_acquired)
+    routing_called = false
+
+    UserLibraryRoutingService.stub(:call, ->(**_kwargs) { routing_called = true }) do
+      RequestCreationService.call(
+        user: @user,
+        work_id: "openlibrary:OL_AUDIOBOOK_1",
+        book_types: [ "audiobook" ],
+        metadata_attrs: { title: book.title, author: book.author }
+      )
+    end
+
+    assert routing_called, "Expected UserLibraryRoutingService.call to be invoked"
+  end
+
+  test "UserLibraryRoutingService is not called for a new pending request" do
+    SettingsService.set(:auto_approve_requests, false)
+    routing_called = false
+
+    UserLibraryRoutingService.stub(:call, ->(**_kwargs) { routing_called = true }) do
+      RequestCreationService.call(
+        user: @user,
+        work_id: "openlibrary:OL_NEW_PENDING_W",
+        book_types: [ "ebook" ],
+        metadata_attrs: { title: "A Brand New Ebook" }
+      )
+    end
+
+    assert_not routing_called, "Expected UserLibraryRoutingService.call NOT to be invoked for a fresh request"
+  end
 end

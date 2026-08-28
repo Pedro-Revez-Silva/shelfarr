@@ -141,6 +141,13 @@
                   <%= book.audiobook? ? "Audio" : book.book_type_label %>
                 </span>
 
+                <%# In-your-library badge %>
+                <% if @routed_book_ids.include?(book.id) %>
+                  <span class="absolute top-2 left-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm text-white bg-green-500/90">
+                    ✓ Yours
+                  </span>
+                <% end %>
+
                 <%# Hover Overlay %>
                 <div class="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-2">
                   <span class="text-white text-xs font-medium">View Details</span>

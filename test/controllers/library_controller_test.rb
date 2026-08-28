@@ -703,6 +703,30 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_select "a[href*='download']", false
   end
 
+  test "show does not display add to library controls when user has no routing configured" do
+    get library_path(@acquired_audiobook)
+    assert_response :success
+    assert_select "form[action='#{add_to_my_library_library_path(@acquired_audiobook)}']", false
+  end
+
+  test "show displays add to library button when user has routing configured" do
+    @user.update!(preferred_output_path: "/tmp/user-library", library_routing_mode: "copy")
+
+    get library_path(@acquired_audiobook)
+    assert_response :success
+    assert_select "form[action='#{add_to_my_library_library_path(@acquired_audiobook)}'] button", text: "Add to My Library"
+  end
+
+  test "show displays already-in-library badge instead of button when routed" do
+    @user.update!(preferred_output_path: "/tmp/user-library", library_routing_mode: "copy")
+    UserBookPath.create!(user: @user, book: @acquired_audiobook, file_path: "/tmp/user-library/book.m4b")
+
+    get library_path(@acquired_audiobook)
+    assert_response :success
+    assert_select "form[action='#{add_to_my_library_library_path(@acquired_audiobook)}']", false
+    assert_select "span", text: "Already in your library"
+  end
+
   test "show displays file path for admin" do
     sign_out
     sign_in_as(@admin)
@@ -792,6 +816,71 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_not request.reload.attention_needed?
     assert_nil request.issue_description
     assert_equal failed_job.job_id, download.reload.post_processing_job_id
+  end
+
+  test "add to my library requires routing to be configured" do
+    post add_to_my_library_library_path(@acquired_audiobook)
+
+    assert_redirected_to library_path(@acquired_audiobook)
+    assert_equal "Set a personal library folder in your profile before adding titles.", flash[:alert]
+    assert_not UserBookPath.exists?(user: @user, book: @acquired_audiobook)
+  end
+
+  test "add to my library routes the book into the user's directory" do
+    Dir.mktmpdir("shelfarr-add-to-library-src") do |lib_dir|
+      Dir.mktmpdir("shelfarr-add-to-library-dest") do |user_dir|
+        book_dir = File.join(lib_dir, "Test Author", "The Acquired Audiobook")
+        FileUtils.mkdir_p(book_dir)
+        File.write(File.join(book_dir, "chapter1.mp3"), "audio data")
+        @acquired_audiobook.update!(file_path: book_dir)
+        @user.update!(preferred_output_path: user_dir, library_routing_mode: "copy")
+        SettingsService.set(:audiobook_output_path, lib_dir)
+
+        assert_difference -> { UserBookPath.count }, 1 do
+          post add_to_my_library_library_path(@acquired_audiobook)
+        end
+
+        assert_redirected_to library_path(@acquired_audiobook)
+        assert_equal "Added to your library.", flash[:notice]
+        ubp = UserBookPath.find_by(user: @user, book: @acquired_audiobook)
+        assert_not_nil ubp
+        assert File.exist?(File.join(ubp.file_path, "chapter1.mp3"))
+      end
+    end
+  end
+
+  test "add to my library is idempotent when already added" do
+    @user.update!(preferred_output_path: "/tmp/user-library", library_routing_mode: "copy")
+    UserBookPath.create!(user: @user, book: @acquired_audiobook, file_path: "/tmp/user-library/book.m4b")
+
+    assert_no_difference -> { UserBookPath.count } do
+      post add_to_my_library_library_path(@acquired_audiobook)
+    end
+
+    assert_redirected_to library_path(@acquired_audiobook)
+    assert_equal "This title is already in your library.", flash[:notice]
+  end
+
+  test "add to my library rejects books without a linked metadata source" do
+    @user.update!(preferred_output_path: "/tmp/user-library", library_routing_mode: "copy")
+    @acquired_audiobook.update_columns(
+      open_library_work_id: nil, hardcover_id: nil, google_books_id: nil, comic_vine_id: nil
+    )
+
+    post add_to_my_library_library_path(@acquired_audiobook)
+
+    assert_redirected_to library_path(@acquired_audiobook)
+    assert_match(/no linked metadata source/, flash[:alert])
+    assert_not UserBookPath.exists?(user: @user, book: @acquired_audiobook)
+  end
+
+  test "add to my library returns 404 for non-acquired book" do
+    pending_book = books(:ebook_pending)
+    @user.update!(preferred_output_path: "/tmp/user-library", library_routing_mode: "copy")
+
+    post add_to_my_library_library_path(pending_book)
+
+    assert_response :not_found
   end
 
   test "destroy requires admin" do

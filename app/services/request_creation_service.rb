@@ -65,7 +65,22 @@ class RequestCreationService
         )
 
         if duplicate_check.block?
-          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate_check.message}"
+          # Special case: block because the book is already acquired (on disk).
+          # Route it to the requesting user's directory rather than returning an error.
+          # All other BLOCK reasons (active request in progress, etc.) still error.
+          if duplicate_check.existing_book&.acquired?
+            book = duplicate_check.existing_book
+            request = build_request(book, input.metadata_attrs)
+            if request.save
+              after_create_for_acquired_book(request)
+              created_requests << request
+              input.source_work_ids.each { |id| existing_books_lookup[id.to_s][book.book_type] = book }
+            else
+              errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{request.errors.full_messages.join(', ')}"
+            end
+          else
+            errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate_check.message}"
+          end
           next
         end
 
@@ -75,7 +90,11 @@ class RequestCreationService
         request = build_request(book, input.metadata_attrs)
 
         if request.save
-          after_create(request)
+          if book.file_path.present?
+            after_create_for_acquired_book(request)
+          else
+            after_create(request)
+          end
           created_requests << request
           input.source_work_ids.each { |source_work_id| existing_books_lookup[source_work_id.to_s][book.book_type] = book }
         else
@@ -232,6 +251,20 @@ class RequestCreationService
       request.collection_id = attrs[:collection_id]
       request.collection_title = attrs[:collection_title]
     end
+  end
+
+  def after_create_for_acquired_book(request)
+    # The book is already on disk — skip search and download entirely.
+    # Mark the request complete immediately, then route to the user's directory.
+    request.update!(status: :completed)
+    ActivityTracker.track(
+      "request.created",
+      trackable: request,
+      user: user,
+      details: { created_via: request.created_via, external_source: request.external_source }.compact
+    )
+    NotificationService.request_completed(request)
+    UserLibraryRoutingService.call(book: request.book, request: request)
   end
 
   def after_create(request)

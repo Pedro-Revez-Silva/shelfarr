@@ -1,0 +1,55 @@
+<div class="mx-auto max-w-2xl">
+  <div class="flex justify-between items-center mb-8">
+    <h1 class="font-bold text-4xl text-white">Directory Routing</h1>
+    <span class="text-gray-400"><%= @user.name %></span>
+  </div>
+
+  <div class="bg-gray-900 rounded-lg border border-gray-800 p-6">
+    <p class="text-gray-400 text-sm mb-6">
+      Assign a personal output directory for this user. When a book is downloaded or already
+      exists on disk, it will be copied or hard-linked into their directory in addition to the
+      system library. Leave the path blank to use the system default only.
+    </p>
+
+    <% if @user.errors.any? %>
+      <div class="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 font-medium rounded-lg mb-6">
+        <ul class="list-disc list-inside">
+          <% @user.errors.each do |error| %>
+            <li><%= error.full_message %></li>
+          <% end %>
+        </ul>
+      </div>
+    <% end %>
+
+    <%= form_with model: [:admin, @user], url: update_directory_routing_admin_user_path(@user), method: :patch do |form| %>
+      <div class="my-5">
+        <%= form.label :preferred_output_path, "Output Directory Path", class: "block text-gray-300 font-medium" %>
+        <%= form.text_field :preferred_output_path,
+              placeholder: "/media/#{@user.username}",
+              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+        <p class="mt-1 text-sm text-gray-500">Absolute path on the server where this user's books will be placed.</p>
+      </div>
+
+      <div class="my-5">
+        <%= form.label :library_routing_mode, "Routing Mode", class: "block text-gray-300 font-medium" %>
+        <%= form.select :library_routing_mode,
+              [
+                ["System default (no personal routing)", ""],
+                ["Copy — duplicate files into user's directory", "copy"],
+                ["Hard Link — zero-storage link to the system copy", "hardlink"]
+              ],
+              { selected: @user.library_routing_mode.to_s },
+              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+        <p class="mt-1 text-sm text-gray-500">
+          Hard link uses zero extra disk space but requires both paths to be on the same filesystem.
+          Copy works across filesystems but duplicates storage.
+        </p>
+      </div>
+
+      <div class="flex items-center gap-4 mt-6">
+        <%= form.submit "Save Routing Settings", class: "rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+        <%= link_to "Cancel", admin_users_path, class: "text-gray-400 hover:text-gray-300" %>
+      </div>
+    <% end %>
+  </div>
+</div>

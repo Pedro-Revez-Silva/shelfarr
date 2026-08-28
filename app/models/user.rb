@@ -9,6 +9,7 @@ class User < ApplicationRecord
   has_many :uploads, dependent: :destroy
   has_many :notifications, dependent: :destroy
   has_many :activity_logs, dependent: :destroy
+  has_many :user_book_paths, dependent: :destroy
 
   scope :active, -> { where(deleted_at: nil) }
 
@@ -161,6 +162,10 @@ class User < ApplicationRecord
 
   def deleted?
     deleted_at.present?
+  end
+
+  def routing_configured?
+    preferred_output_path.present? && UserLibraryRoutingService::VALID_MODES.include?(library_routing_mode.to_s)
   end
 
   # OIDC/SSO methods

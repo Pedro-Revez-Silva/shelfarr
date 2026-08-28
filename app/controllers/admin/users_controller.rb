@@ -1,6 +1,6 @@
 module Admin
   class UsersController < BaseController
-    before_action :set_user, only: [:show, :edit, :update, :destroy]
+    before_action :set_user, only: [:show, :edit, :update, :destroy, :directory_routing, :update_directory_routing]
 
     def index
       @users = User.active.order(created_at: :desc)
@@ -37,6 +37,17 @@ module Admin
       end
     end
 
+    def directory_routing
+    end
+
+    def update_directory_routing
+      if @user.update(directory_routing_params)
+        redirect_to admin_users_path, notice: "Directory routing updated for #{@user.name}."
+      else
+        render :directory_routing, status: :unprocessable_entity
+      end
+    end
+
     def destroy
       if @user == Current.user
         redirect_to admin_users_path, alert: "You cannot delete yourself."
@@ -54,6 +65,10 @@ module Admin
 
     def user_params
       params.require(:user).permit(:name, :username, :password, :password_confirmation, :role)
+    end
+
+    def directory_routing_params
+      params.require(:user).permit(:preferred_output_path, :library_routing_mode)
     end
   end
 end

@@ -8,6 +8,11 @@ class DashboardController < ApplicationController
 
     # Recent activity for dashboard cards
     @recent_books = Book.acquired.order(updated_at: :desc).limit(10)
+    @routed_book_ids = if Current.user.routing_configured?
+      Current.user.user_book_paths.where(book_id: @recent_books.map(&:id)).pluck(:book_id).to_set
+    else
+      Set.new
+    end
     @recent_requests = if Current.user.admin?
       Request.includes(:book, :user).order(created_at: :desc).limit(8)
     else

@@ -420,6 +420,41 @@ class LibraryController < ApplicationController
     @book = Book.acquired.find(params[:id])
     @user_request = @book.requests.completed.first
     @attention_request = @book.requests.where(attention_needed: true).first
+    @already_in_user_library = UserBookPath.exists?(user: Current.user, book: @book)
+  end
+
+  def add_to_my_library
+    @book = Book.acquired.find(params[:id])
+    user = Current.user
+
+    unless user.routing_configured?
+      redirect_to library_path(@book), alert: "Set a personal library folder in your profile before adding titles."
+      return
+    end
+
+    if UserBookPath.exists?(user: user, book: @book)
+      redirect_to library_path(@book), notice: "This title is already in your library."
+      return
+    end
+
+    work_id = @book.unified_work_id
+    if work_id.blank?
+      redirect_to library_path(@book), alert: "This title can't be added automatically — it has no linked metadata source."
+      return
+    end
+
+    result = RequestCreationService.call(
+      user: user,
+      work_id: work_id,
+      book_types: [ @book.book_type ],
+      metadata_attrs: { title: @book.title, author: @book.author }
+    )
+
+    if result.success?
+      redirect_to library_path(@book), notice: "Added to your library."
+    else
+      redirect_to library_path(@book), alert: result.errors.to_sentence
+    end
   end
 
   def retry_post_processing
