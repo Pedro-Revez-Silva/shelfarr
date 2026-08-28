@@ -195,6 +195,10 @@ module Admin
         health.check_failed!(message: "Failed to connect to Hardcover")
         respond_with_flash(alert: "Hardcover connection failed.")
       end
+    rescue HardcoverClient::RateLimitError => e
+      MetadataProviderStatus.for_provider("hardcover").record_failure!(e)
+      health&.check_failed!(message: e.message, degraded: true)
+      respond_with_flash(alert: "Hardcover is rate limited. #{e.message}")
     rescue HardcoverClient::Error => e
       health&.check_failed!(message: e.message)
       respond_with_flash(alert: "Hardcover error: #{e.message}")

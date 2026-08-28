@@ -259,10 +259,14 @@ class HealthCheckJob < ApplicationJob
     end
 
     if HardcoverClient.test_connection
+      MetadataProviderStatus.for_provider("hardcover").record_success!
       health.check_succeeded!(message: "Connection successful")
     else
       health.check_failed!(message: "Failed to connect to Hardcover")
     end
+  rescue HardcoverClient::RateLimitError => e
+    MetadataProviderStatus.for_provider("hardcover").record_failure!(e)
+    health.check_failed!(message: e.message, degraded: true)
   rescue HardcoverClient::AuthenticationError => e
     health.check_failed!(message: "Authentication failed: #{e.message}")
   rescue HardcoverClient::ConnectionError => e

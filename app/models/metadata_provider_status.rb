@@ -72,9 +72,14 @@ class MetadataProviderStatus < ApplicationRecord
   end
 
   def record_failure!(error)
+    retry_at = backoff_until_for(error)
+    if rate_limit_error?(error)
+      retry_at = [ rate_limited_until, retry_at ].compact.max
+    end
+
     update!(
       status: status_for(error),
-      rate_limited_until: backoff_until_for(error),
+      rate_limited_until: retry_at,
       last_error: error.message,
       last_failure_at: Time.current,
       failure_count: failure_count.to_i + 1
@@ -93,6 +98,9 @@ class MetadataProviderStatus < ApplicationRecord
 
   def backoff_until_for(error)
     return nil if auth_error?(error)
+
+    server_retry_at = error.retry_at if rate_limit_error?(error) && error.respond_to?(:retry_at)
+    return server_retry_at if server_retry_at&.future?
 
     seconds = if rate_limit_error?(error)
       15.minutes.to_i

@@ -200,4 +200,27 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
 
     assert_equal "9", book.reload.series_position
   end
+
+  test "passes strict lookup handling through for quota-aware batch jobs" do
+    book = Book.new(book_type: :ebook)
+    error = HardcoverClient::RateLimitError.new("limited", retry_after: 120)
+    lookup = lambda do |work_ids, fallback:, raise_lookup_errors:|
+      assert_equal [ "hardcover:123" ], work_ids
+      assert_equal({}, fallback)
+      assert raise_lookup_errors
+      raise error
+    end
+
+    raised = assert_raises(HardcoverClient::RateLimitError) do
+      BookMetadataLookupService.stub(:call, lookup) do
+        BookMetadataBackfillService.apply!(
+          book,
+          work_id: "hardcover:123",
+          raise_lookup_errors: true
+        )
+      end
+    end
+
+    assert_same error, raised
+  end
 end
