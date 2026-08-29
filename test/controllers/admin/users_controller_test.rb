@@ -161,6 +161,20 @@ class Admin::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "copy", @user.library_routing_mode
   end
 
+  test "update_directory_routing saves nested layout" do
+    patch update_directory_routing_admin_user_url(@user), params: {
+      user: {
+        library_routing_mode: "copy",
+        routing_layout: "nested"
+      }
+    }
+
+    assert_redirected_to admin_users_path
+    @user.reload
+    assert_equal "nested", @user.routing_layout
+    assert @user.routing_configured?
+  end
+
   test "update_directory_routing clears routing when mode is blank" do
     @user.update!(preferred_output_path: "/old/path", library_routing_mode: "copy")
 

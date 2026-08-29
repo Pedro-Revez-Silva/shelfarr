@@ -10,6 +10,7 @@
 # Directories cannot be hard-linked; we walk each file individually instead.
 class UserLibraryRoutingService
   VALID_MODES = %w[copy hardlink].freeze
+  VALID_LAYOUTS = %w[single_path nested].freeze
 
   def self.call(book:, request:)
     new(book: book, request: request).call
@@ -51,15 +52,24 @@ class UserLibraryRoutingService
 
   # Figures out where the book should go under the user's directory by
   # preserving the same sub-path structure that exists under the global base.
-  # Example: canonical /audiobooks/Author/Title → user's /media/alice/Author/Title
+  # Single-path layout: canonical /audiobooks/Author/Title → /media/alice/Author/Title
+  # Nested layout: canonical /audiobooks/Author/Title → /audiobooks/alice/Author/Title
   def build_user_destination(source)
     relative = Pathname(source).expand_path
       .relative_path_from(Pathname(global_base_path).expand_path)
-    File.join(@user.preferred_output_path, relative.to_s)
+    File.join(user_root_path, relative.to_s)
   rescue ArgumentError
     # Relative path failed (e.g. source is on a different root).
     # Fall back to placing by basename so the file still lands somewhere useful.
-    File.join(@user.preferred_output_path, File.basename(source))
+    File.join(user_root_path, File.basename(source))
+  end
+
+  def user_root_path
+    if @user.nested_routing_layout?
+      File.join(global_base_path, @user.username)
+    else
+      @user.preferred_output_path
+    end
   end
 
   # Mirrors PostProcessingJob#get_base_path — returns the configured system

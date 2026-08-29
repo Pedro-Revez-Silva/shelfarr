@@ -5,11 +5,14 @@
   </div>
 
   <div class="bg-gray-900 rounded-lg border border-gray-800 p-6">
-    <p class="text-gray-400 text-sm mb-6">
-      Assign a personal output directory for this user. When a book is downloaded or already
-      exists on disk, it will be copied or hard-linked into their directory in addition to the
-      system library. Leave the path blank to use the system default only.
-    </p>
+    <div class="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-3 mb-6">
+      <p class="text-gray-300 text-sm font-medium mb-2">How this works</p>
+      <ol class="list-decimal list-inside text-gray-400 text-sm space-y-1">
+        <li>Choose a <strong class="text-gray-300">Routing Mode</strong>. Leave it as System default and nothing else needs to be set.</li>
+        <li>Copy or Hard Link reveals <strong class="text-gray-300">Personal Library Layout</strong>.</li>
+        <li>Single Path reveals the <strong class="text-gray-300">Output Directory Path</strong> to fill in. Nested needs nothing further — paths are derived automatically.</li>
+      </ol>
+    </div>
 
     <% if @user.errors.any? %>
       <div class="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 font-medium rounded-lg mb-6">
@@ -21,15 +24,7 @@
       </div>
     <% end %>
 
-    <%= form_with model: [:admin, @user], url: update_directory_routing_admin_user_path(@user), method: :patch do |form| %>
-      <div class="my-5">
-        <%= form.label :preferred_output_path, "Output Directory Path", class: "block text-gray-300 font-medium" %>
-        <%= form.text_field :preferred_output_path,
-              placeholder: "/media/#{@user.username}",
-              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
-        <p class="mt-1 text-sm text-gray-500">Absolute path on the server where this user's books will be placed.</p>
-      </div>
-
+    <%= form_with model: [:admin, @user], url: update_directory_routing_admin_user_path(@user), method: :patch, data: { controller: "directory-routing-form" } do |form| %>
       <div class="my-5">
         <%= form.label :library_routing_mode, "Routing Mode", class: "block text-gray-300 font-medium" %>
         <%= form.select :library_routing_mode,
@@ -39,11 +34,37 @@
                 ["Hard Link — zero-storage link to the system copy", "hardlink"]
               ],
               { selected: @user.library_routing_mode.to_s },
-              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full",
+              data: { directory_routing_form_target: "mode", action: "change->directory-routing-form#refresh" } %>
         <p class="mt-1 text-sm text-gray-500">
           Hard link uses zero extra disk space but requires both paths to be on the same filesystem.
           Copy works across filesystems but duplicates storage.
         </p>
+      </div>
+
+      <div class="my-5" data-directory-routing-form-target="layoutSection">
+        <%= form.label :routing_layout, "Personal Library Layout", class: "block text-gray-300 font-medium" %>
+        <%= form.select :routing_layout,
+              [
+                ["Single path — all content in one personal directory", "single_path"],
+                ["Nested — a subfolder under each system library path", "nested"]
+              ],
+              { selected: @user.routing_layout.presence || "single_path" },
+              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full",
+              data: { directory_routing_form_target: "layout", action: "change->directory-routing-form#refresh" } %>
+        <p class="mt-1 text-sm text-gray-500">
+          Single path uses the directory below for everything, e.g. <code class="text-gray-400">/media/<%= @user.username %></code>.
+          Nested derives one automatically per content type,
+          e.g. <code class="text-gray-400">/audiobooks/<%= @user.username %></code>, <code class="text-gray-400">/ebooks/<%= @user.username %></code>.
+        </p>
+      </div>
+
+      <div class="my-5" data-directory-routing-form-target="pathSection">
+        <%= form.label :preferred_output_path, "Output Directory Path", class: "block text-gray-300 font-medium" %>
+        <%= form.text_field :preferred_output_path,
+              placeholder: "/media/#{@user.username}",
+              class: "block rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-4 py-3 mt-2 w-full" %>
+        <p class="mt-1 text-sm text-gray-500">Absolute path on the server where this user's books will be placed.</p>
       </div>
 
       <div class="flex items-center gap-4 mt-6">

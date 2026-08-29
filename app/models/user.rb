@@ -165,7 +165,15 @@ class User < ApplicationRecord
   end
 
   def routing_configured?
-    preferred_output_path.present? && UserLibraryRoutingService::VALID_MODES.include?(library_routing_mode.to_s)
+    return false unless UserLibraryRoutingService::VALID_MODES.include?(library_routing_mode.to_s)
+
+    nested_routing_layout? || preferred_output_path.present?
+  end
+
+  # Nested layout derives the destination from each system output path plus
+  # the username, so no explicit preferred_output_path is required.
+  def nested_routing_layout?
+    routing_layout.to_s == "nested"
   end
 
   # OIDC/SSO methods

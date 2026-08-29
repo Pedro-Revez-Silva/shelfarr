@@ -194,6 +194,51 @@ class UserLibraryRoutingServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # ── Nested layout ──────────────────────────────────────────────────────────
+
+  test "nested layout places files under the system path plus username, ignoring preferred_output_path" do
+    source_file = File.join(@global_base, "author", "book.epub")
+    FileUtils.mkdir_p(File.dirname(source_file))
+    File.write(source_file, "epub content")
+    set_book_file_path(source_file)
+    @user.update!(preferred_output_path: nil, library_routing_mode: "copy", routing_layout: "nested")
+
+    SettingsService.stub(:get, ->(*_args, **_kwargs) { @global_base }) do
+      UserLibraryRoutingService.call(book: @book, request: build_request)
+    end
+
+    expected_dest = File.join(@global_base, @user.username, "author", "book.epub")
+    assert File.exist?(expected_dest), "Expected nested copy at #{expected_dest}"
+    assert_equal "epub content", File.read(expected_dest)
+
+    record = UserBookPath.find_by(user: @user, book: @book)
+    assert_equal expected_dest, record.file_path
+  end
+
+  test "nested layout hard-links under the system path plus username" do
+    source_file = File.join(@global_base, "book.epub")
+    File.write(source_file, "epub bytes")
+    set_book_file_path(source_file)
+    @user.update!(preferred_output_path: nil, library_routing_mode: "hardlink", routing_layout: "nested")
+
+    SettingsService.stub(:get, ->(*_args, **_kwargs) { @global_base }) do
+      UserLibraryRoutingService.call(book: @book, request: build_request)
+    end
+
+    dest_file = File.join(@global_base, @user.username, "book.epub")
+    assert File.exist?(dest_file)
+    assert_equal File.stat(source_file).ino, File.stat(dest_file).ino
+  end
+
+  test "nested layout still requires a routing mode" do
+    set_book_file_path(File.join(@global_base, "book.epub"))
+    @user.update!(preferred_output_path: nil, library_routing_mode: nil, routing_layout: "nested")
+
+    assert_no_difference "UserBookPath.count" do
+      UserLibraryRoutingService.call(book: @book, request: build_request)
+    end
+  end
+
   # ── Error resilience ───────────────────────────────────────────────────────
 
   test "does not raise when a filesystem error occurs" do

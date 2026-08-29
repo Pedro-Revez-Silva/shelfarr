@@ -68,7 +68,7 @@ module Admin
     end
 
     def directory_routing_params
-      params.require(:user).permit(:preferred_output_path, :library_routing_mode)
+      params.require(:user).permit(:preferred_output_path, :library_routing_mode, :routing_layout)
     end
   end
 end
