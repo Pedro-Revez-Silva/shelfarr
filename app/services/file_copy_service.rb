@@ -3831,18 +3831,34 @@ class FileCopyService
     end
 
     def filesystem_mount_for(entry, mounts, mount_parents)
-      expanded, stat = if entry.respond_to?(:fileno) && entry.respond_to?(:stat)
+      expanded, stat, descriptor_mount_id = if entry.respond_to?(:fileno) && entry.respond_to?(:stat)
         descriptor_path = File.readlink("/proc/self/fd/#{entry.fileno}").delete_suffix(" (deleted)")
-        [ Pathname(descriptor_path).expand_path.to_s.b, entry.stat ]
+        fdinfo_mount_id = begin
+          fdinfo_content = File.binread("/proc/self/fdinfo/#{entry.fileno}")
+          fdinfo_content[/^mnt_id:\s*(\d+)$/, 1]&.then { |id| Integer(id, exception: false) }
+        rescue IOError, SystemCallError
+          nil
+        end
+        [ Pathname(descriptor_path).expand_path.to_s.b, entry.stat, fdinfo_mount_id ]
       else
         path = Pathname(entry).expand_path.realpath
-        [ path.to_s.b, File.stat(path) ]
+        [ path.to_s.b, File.stat(path), nil ]
       end
-      device = "#{stat.dev_major}:#{stat.dev_minor}"
-      mounts.select do |_mount_id, _parent_id, mount_device, mountpoint, *|
-        mount_device == device &&
-          (expanded == mountpoint || expanded.start_with?("#{mountpoint.delete_suffix("/")}/"))
-      end.max_by do |mount_id, _parent_id, _mount_device, mountpoint, *|
+
+      candidates = if descriptor_mount_id
+        mounts.select do |mount_id, _parent_id, _mount_device, mountpoint, *|
+          mount_id == descriptor_mount_id &&
+            (expanded == mountpoint || expanded.start_with?("#{mountpoint.delete_suffix("/")}/"))
+        end
+      else
+        device = "#{stat.dev_major}:#{stat.dev_minor}"
+        mounts.select do |_mount_id, _parent_id, mount_device, mountpoint, *|
+          mount_device == device &&
+            (expanded == mountpoint || expanded.start_with?("#{mountpoint.delete_suffix("/")}/"))
+        end
+      end
+
+      candidates.max_by do |mount_id, _parent_id, _mount_device, mountpoint, *|
         depth = 0
         seen = Set.new
         current = mount_id
