@@ -1209,13 +1209,31 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       "/dev/mapper/ug_A9FF7B_1786012497_pool2-volume1 rw,ugacl,space_cache=v2,subvolid=5,subvol=/\n"
 
     Dir.open(@dest_dir) do |directory|
-      real_stat = directory.method(:stat)
-      descriptor_stat = lambda do
-        stat_result = real_stat.call
-        stat_result.define_singleton_method(:dev_major) { descriptor_device_major }
-        stat_result.define_singleton_method(:dev_minor) { descriptor_device_minor }
-        stat_result
-      end
+      real_stat = stat.dup
+      descriptor_stat_result = Class.new do
+        def initialize(stat, major, minor)
+          @stat = stat
+          @major = major
+          @minor = minor
+        end
+
+        def dev_major
+          @major
+        end
+
+        def dev_minor
+          @minor
+        end
+
+        def method_missing(name, *args, &block)
+          @stat.send(name, *args, &block)
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          @stat.respond_to?(name, include_private) || super
+        end
+      end.new(real_stat, descriptor_device_major, descriptor_device_minor)
+
       fdinfo_content = "pos:\t0\nflags:\t018000\nmnt_id:\t#{mount_id}\n"
 
       real_binread = File.method(:binread)
@@ -1231,7 +1249,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       end
 
       File.stub(:binread, custom_binread) do
-        directory.stub(:stat, descriptor_stat) do
+        directory.stub(:stat, descriptor_stat_result) do
           assert_not FileCopyService.send(:hardlink_identity_unreliable?, directory)
         end
       end
