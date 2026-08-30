@@ -1195,6 +1195,86 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "Btrfs mounts are recognized when stat device differs from mountinfo device" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    stat = File.stat(@dest_dir)
+    mountinfo_device = "#{stat.dev_major}:#{stat.dev_minor}"
+    descriptor_device_major = 0
+    descriptor_device_minor = stat.dev_minor + 2
+    mountpoint = @tmp_dir.gsub(" ", "\\040")
+    mount_id = 1452
+    btrfs_mountinfo =
+      "#{mount_id} 2192 #{mountinfo_device} /Audiobooks #{mountpoint} rw,relatime - btrfs " \
+      "/dev/mapper/ug_A9FF7B_1786012497_pool2-volume1 rw,ugacl,space_cache=v2,subvolid=5,subvol=/\n"
+
+    # Create a wrapper class that behaves like a Dir with custom stat
+    descriptor_wrapper = Class.new do
+      attr_reader :fileno, :path
+
+      def initialize(dir, custom_stat_result)
+        @dir = dir
+        @fileno = dir.fileno
+        @path = dir.path
+        @custom_stat_result = custom_stat_result
+      end
+
+      def stat
+        @custom_stat_result
+      end
+
+      def respond_to?(method, include_private = false)
+        method.in?([ :fileno, :stat ]) || super
+      end
+    end
+
+    Dir.open(@dest_dir) do |directory|
+      real_stat = File.stat(@dest_dir)
+      custom_stat_result = Class.new do
+        def initialize(stat, major, minor)
+          @stat = stat
+          @major = major
+          @minor = minor
+        end
+
+        def dev_major
+          @major
+        end
+
+        def dev_minor
+          @minor
+        end
+
+        def method_missing(name, *args, &block)
+          @stat.send(name, *args, &block)
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          @stat.respond_to?(name, include_private) || super
+        end
+      end.new(real_stat, descriptor_device_major, descriptor_device_minor)
+
+      wrapped_directory = descriptor_wrapper.new(directory, custom_stat_result)
+      fdinfo_content = "pos:\t0\nflags:\t018000\nmnt_id:\t#{mount_id}\n"
+
+      real_binread = File.method(:binread)
+      custom_binread = lambda do |path, *args|
+        case path.to_s
+        when "/proc/self/mountinfo"
+          btrfs_mountinfo.b
+        when "/proc/self/fdinfo/#{directory.fileno}"
+          fdinfo_content.b
+        else
+          real_binread.call(path, *args)
+        end
+      end
+
+      File.stub(:binread, custom_binread) do
+        assert_not FileCopyService.send(:hardlink_identity_unreliable?, wrapped_directory)
+      end
+    end
+  end
+
   test "DrvFS cleanup never quarantines an entry whose rename can change identity" do
     target = File.join(@dest_dir, "drvfs-cleanup-target")
     File.binwrite(target, "retain me")
