@@ -479,7 +479,7 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     assert_not ZLibraryClient.test_connection
   end
 
-  test "test_connection surfaces specific error when Z-Library returns success: 0 with error message" do
+  test "test_connection! raises the specific error returned by Z-Library" do
     VCR.turned_off do
       stub_request(:post, "https://z-library.sk/eapi/user/login")
         .with(body: "email=reader%40example.com&password=secret")
@@ -489,7 +489,11 @@ class ZLibraryClientTest < ActiveSupport::TestCase
           headers: { "Content-Type" => "application/json" }
         )
 
-      assert_not ZLibraryClient.test_connection
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.test_connection!
+      end
+
+      assert_match /Invalid credentials/, error.message
     end
   end
 
@@ -526,6 +530,42 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       end
 
       assert_match /incomplete|missing.*remix_userkey/i, error.message
+    end
+  end
+
+  test "test_connection! reports a non-object login response without crashing" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(
+          status: 200,
+          body: [ "unexpected" ].to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.test_connection!
+      end
+
+      assert_match /invalid response/, error.message
+    end
+  end
+
+  test "test_connection! bounds and normalizes an upstream login error" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(
+          status: 200,
+          body: { success: 0, error: "Invalid\ncredentials #{'x' * 300}" }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.test_connection!
+      end
+
+      assert_includes error.message, "Invalid credentials"
+      assert_not_includes error.message, "\n"
+      assert_operator error.message.length, :<=, 260
     end
   end
 

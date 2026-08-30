@@ -27,6 +27,7 @@ class ZLibraryClient
 
   AUTH_TTL_SECONDS = 30.minutes
   ALLOWED_DOWNLOAD_SCHEMES = %w[http https].freeze
+  MAX_LOGIN_ERROR_LENGTH = 200
 
   class << self
     def configured?
@@ -34,11 +35,16 @@ class ZLibraryClient
     end
 
     def test_connection
-      ensure_configured!
-      login.present?
+      test_connection!
     rescue Error => e
       Rails.logger.error "[ZLibraryClient] Connection test failed: #{e.message}"
       false
+    end
+
+    def test_connection!
+      ensure_configured!
+      login
+      true
     end
 
     def search(query, file_types: %w[epub pdf], limit: 50, language: nil, after_attempt: nil)
@@ -122,7 +128,8 @@ class ZLibraryClient
       @last_auth_from_cache = false
       auth = perform_login(signature, after_attempt: after_attempt)
 
-      if auth.nil? || (auth.is_a?(Hash) && auth[:errors].present?)
+      login_failed = auth.nil? || (auth.is_a?(Hash) && auth.key?(:errors))
+      if login_failed
         error_details = auth.is_a?(Hash) && auth[:errors].present? ? " (#{auth[:errors].join('; ')})" : ""
         raise AuthenticationError, "Z-Library login failed#{error_details}"
       end
@@ -131,12 +138,9 @@ class ZLibraryClient
     end
 
     def perform_login(signature, after_attempt: nil)
-      email = SettingsService.get(:zlibrary_email).to_s.strip
-      password = SettingsService.get(:zlibrary_password).to_s
       errors = []
 
       configured_uris.each do |uri|
-        base_url = uri.to_s.delete_suffix("/")
         domain = uri.host
 
         auth = authenticate_uri(uri, after_attempt: after_attempt)
@@ -180,16 +184,21 @@ class ZLibraryClient
       end
 
       data = parse_json_body(response)
+      unless data.is_a?(Hash)
+        Rails.logger.debug "[ZLibraryClient] Login failed on #{uri.host}: invalid response"
+        return { error: "invalid response" }
+      end
 
       unless data["success"] == 1
-        error_message = data["error"].presence || "login rejected"
+        error_message = normalized_login_error(data["error"]) || "login rejected"
         Rails.logger.debug "[ZLibraryClient] Login failed on #{uri.host}: #{error_message}"
         return { error: error_message }
       end
 
+      user = data["user"].is_a?(Hash) ? data["user"] : {}
       auth = {
-        remix_userid: data.dig("user", "id")&.to_s,
-        remix_userkey: data.dig("user", "remix_userkey")&.to_s,
+        remix_userid: user["id"]&.to_s,
+        remix_userkey: user["remix_userkey"]&.to_s,
         domain: uri.host,
         base_url: base_url
       }
@@ -204,6 +213,11 @@ class ZLibraryClient
       end
 
       auth
+    end
+
+    def normalized_login_error(error)
+      error.to_s.scrub("?").gsub(/[[:cntrl:]]+/, " ").squish
+        .truncate(MAX_LOGIN_ERROR_LENGTH, omission: "...").presence
     end
 
     def cache_auth(signature, auth)
@@ -326,6 +340,9 @@ class ZLibraryClient
       case response.status
       when 200
         data = parse_json_body(response)
+        unless data.is_a?(Hash)
+          raise Error, "Z-Library #{context} returned an invalid response"
+        end
         if data["success"] == 0
           error_message = data["error"].presence || "unknown Z-Library error"
           raise Error, "Z-Library #{context} failed: #{error_message}"
@@ -341,7 +358,7 @@ class ZLibraryClient
     end
 
     def parse_json_body(response)
-      return response.body if response.body.is_a?(Hash)
+      return response.body unless response.body.is_a?(String)
 
       JSON.parse(response.body)
     end
