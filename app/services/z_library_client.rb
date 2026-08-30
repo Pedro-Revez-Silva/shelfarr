@@ -121,7 +121,11 @@ class ZLibraryClient
 
       @last_auth_from_cache = false
       auth = perform_login(signature, after_attempt: after_attempt)
-      raise AuthenticationError, "Z-Library login failed" unless auth
+
+      if auth.nil? || (auth.is_a?(Hash) && auth[:errors].present?)
+        error_details = auth.is_a?(Hash) && auth[:errors].present? ? " (#{auth[:errors].join('; ')})" : ""
+        raise AuthenticationError, "Z-Library login failed#{error_details}"
+      end
 
       auth
     end
@@ -129,22 +133,34 @@ class ZLibraryClient
     def perform_login(signature, after_attempt: nil)
       email = SettingsService.get(:zlibrary_email).to_s.strip
       password = SettingsService.get(:zlibrary_password).to_s
+      errors = []
 
       configured_uris.each do |uri|
         base_url = uri.to_s.delete_suffix("/")
         domain = uri.host
 
         auth = authenticate_uri(uri, after_attempt: after_attempt)
-        next unless auth
+
+        if auth.nil?
+          next
+        elsif auth.is_a?(Hash) && auth[:error].present?
+          errors << "#{domain}: #{auth[:error]}"
+          next
+        end
 
         Rails.logger.info "[ZLibraryClient] Login succeeded via #{domain}"
         cache_auth(signature, auth)
         return auth
       rescue JSON::ParserError, Faraday::Error => e
         Rails.logger.debug "[ZLibraryClient] Login failed on #{domain}: #{e.message}"
+        errors << "#{domain}: #{e.class.name.split('::').last}"
       end
 
-      nil
+      unless errors.empty?
+        Rails.logger.error "[ZLibraryClient] Login failed on all configured domains: #{errors.join('; ')}"
+      end
+
+      { errors: errors }
     end
 
     def authenticate_uri(uri, after_attempt: nil)
@@ -158,10 +174,18 @@ class ZLibraryClient
         end
       end
 
-      return unless response.status == 200
+      unless response.status == 200
+        Rails.logger.debug "[ZLibraryClient] Login failed on #{uri.host}: HTTP #{response.status}"
+        return { error: "HTTP #{response.status}" }
+      end
 
       data = parse_json_body(response)
-      return unless data["success"] == 1
+
+      unless data["success"] == 1
+        error_message = data["error"].presence || "login rejected"
+        Rails.logger.debug "[ZLibraryClient] Login failed on #{uri.host}: #{error_message}"
+        return { error: error_message }
+      end
 
       auth = {
         remix_userid: data.dig("user", "id")&.to_s,
@@ -170,7 +194,16 @@ class ZLibraryClient
         base_url: base_url
       }
 
-      auth if auth[:remix_userid].present? && auth[:remix_userkey].present?
+      unless auth[:remix_userid].present? && auth[:remix_userkey].present?
+        missing = []
+        missing << "user id" unless auth[:remix_userid].present?
+        missing << "remix_userkey" unless auth[:remix_userkey].present?
+        error_message = "incomplete response (missing #{missing.join(' and ')})"
+        Rails.logger.debug "[ZLibraryClient] Login failed on #{uri.host}: #{error_message}"
+        return { error: error_message }
+      end
+
+      auth
     end
 
     def cache_auth(signature, auth)
@@ -349,7 +382,7 @@ class ZLibraryClient
         next if base_url == current_auth[:base_url]
 
         auth = authenticate_uri(uri, after_attempt: after_attempt)
-        next unless auth
+        next if auth.nil? || (auth.is_a?(Hash) && auth[:error].present?)
 
         Rails.logger.info "[ZLibraryClient] Retrying eAPI via #{auth[:domain]}"
         cache_auth(signature, auth)
