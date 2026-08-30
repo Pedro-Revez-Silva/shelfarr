@@ -258,11 +258,13 @@ module Admin
         return
       end
 
-      if ZLibraryClient.test_connection
+      if ZLibraryClient.test_connection!
         respond_with_flash(notice: "Z-Library connection successful!")
       else
         respond_with_flash(alert: "Z-Library connection failed.")
       end
+    rescue ZLibraryClient::Error => e
+      respond_with_flash(alert: "Z-Library error: #{e.message}")
     end
 
     def test_librivox

@@ -1508,7 +1508,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:zlibrary_email, "reader@example.com")
     SettingsService.set(:zlibrary_password, "secret")
 
-    ZLibraryClient.stub :test_connection, true do
+    ZLibraryClient.stub :test_connection!, true do
       post test_zlibrary_admin_settings_url
     end
 
@@ -1522,12 +1522,36 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:zlibrary_email, "reader@example.com")
     SettingsService.set(:zlibrary_password, "secret")
 
-    ZLibraryClient.stub :test_connection, false do
+    ZLibraryClient.stub :test_connection!, false do
       post test_zlibrary_admin_settings_url
     end
 
     assert_redirected_to admin_settings_path
     assert_match /failed/i, flash[:alert]
+  end
+
+  test "test_zlibrary shows the login failure returned by Z-Library" do
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "reader@example.com")
+    SettingsService.set(:zlibrary_password, "secret")
+
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(
+          status: 200,
+          body: { success: 0, error: "Invalid email or password" }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      post test_zlibrary_admin_settings_url,
+        headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    end
+
+    assert_response :success
+    assert_select "turbo-stream[target='flash']", count: 1
+    assert_includes response.body, "Invalid email or password"
   end
 
   test "test_librivox fails when disabled" do

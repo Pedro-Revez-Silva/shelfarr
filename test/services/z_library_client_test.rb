@@ -479,6 +479,96 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     assert_not ZLibraryClient.test_connection
   end
 
+  test "test_connection! raises the specific error returned by Z-Library" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(
+          status: 200,
+          body: { success: 0, error: "Invalid credentials" }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.test_connection!
+      end
+
+      assert_match /Invalid credentials/, error.message
+    end
+  end
+
+  test "login raises AuthenticationError with specific message when Z-Library returns error" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(
+          status: 200,
+          body: { success: 0, error: "Invalid email or password" }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.send(:login)
+      end
+
+      assert_match /Invalid email or password/, error.message
+    end
+  end
+
+  test "login raises AuthenticationError when Z-Library returns incomplete user data" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(
+          status: 200,
+          body: { success: 1, user: { id: "12345" } }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.send(:login)
+      end
+
+      assert_match /incomplete|missing.*remix_userkey/i, error.message
+    end
+  end
+
+  test "test_connection! reports a non-object login response without crashing" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(
+          status: 200,
+          body: [ "unexpected" ].to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.test_connection!
+      end
+
+      assert_match /invalid response/, error.message
+    end
+  end
+
+  test "test_connection! bounds and normalizes an upstream login error" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(
+          status: 200,
+          body: { success: 0, error: "Invalid\ncredentials #{'x' * 300}" }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.test_connection!
+      end
+
+      assert_includes error.message, "Invalid credentials"
+      assert_not_includes error.message, "\n"
+      assert_operator error.message.length, :<=, 260
+    end
+  end
+
   private
 
   def stub_zlibrary_login_success(domain = "z-library.sk")
