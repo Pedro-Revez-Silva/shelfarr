@@ -88,6 +88,7 @@ module IndexerClients
         response = connection.get("api/v1/indexer")
         response.status == 200
       rescue IndexerClients::Base::Error, Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError
+        reset_connection!
         false
       end
 
@@ -164,6 +165,7 @@ module IndexerClients
           raise Base::Error, "Prowlarr API error: #{response.status}"
         end
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+        reset_connection!
         raise Base::ConnectionError, "Failed to connect to Prowlarr: #{e.message}"
       end
 

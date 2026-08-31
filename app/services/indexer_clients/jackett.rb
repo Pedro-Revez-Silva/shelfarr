@@ -41,6 +41,7 @@ module IndexerClients
         response = connection.get(search_path, { apikey: api_key, t: "caps" })
         response.status == 200
       rescue IndexerClients::Base::Error, Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError
+        reset_connection!
         false
       end
 
@@ -87,6 +88,7 @@ module IndexerClients
           raise Base::Error, "#{display_name} API error: #{response.status}"
         end
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+        reset_connection!
         raise Base::ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
       end
 

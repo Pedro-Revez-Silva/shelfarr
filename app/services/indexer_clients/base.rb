@@ -49,6 +49,7 @@ module IndexerClients
       def request
         yield
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
+        reset_connection!
         raise ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
       rescue InvalidUrlError => e
         # Preserve connection-error classification for malformed stored URLs so
