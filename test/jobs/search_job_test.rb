@@ -2796,6 +2796,118 @@ class SearchJobTest < ActiveJob::TestCase
     }
   end
 
+  test "uses only localized title from combined title/original pattern in indexer search" do
+    VCR.turned_off do
+      # Create a book with a combined localized/original title
+      book = Book.create!(
+        title: "La Nena / The Girl",
+        author: "Carmen Mola",
+        book_type: :ebook
+      )
+      request = Request.create!(
+        book: book,
+        status: :pending,
+        requested_by: users(:default_user)
+      )
+
+      # Stub the indexer to capture the search query
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req|
+          # Verify the search query uses "La Nena" not "La Nena / The Girl"
+          query_params = req.uri.query_values
+          title_param = query_params["title"] || query_params["q"]
+          title_param&.include?("La Nena") && !title_param&.include?(" / ")
+        }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            prowlarr_result_payload.merge(
+              "guid" => "combined-title-test",
+              "title" => "La Nena by Carmen Mola [EPUB]"
+            )
+          ].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+
+      # Verify the stub was called (search was made with correct title)
+      assert_requested search_stub, at_least_once: true
+
+      # Verify a result was found
+      request.reload
+      assert request.search_results.any?, "Expected search results to be found with localized title"
+    end
+  end
+
+  test "preserves original title when no slash separator is present" do
+    VCR.turned_off do
+      # Create a book with a normal title (no slash separator)
+      book = Book.create!(
+        title: "The Girl with the Dragon Tattoo",
+        author: "Stieg Larsson",
+        book_type: :ebook
+      )
+      request = Request.create!(
+        book: book,
+        status: :pending,
+        requested_by: users(:default_user)
+      )
+
+      # Stub the indexer to capture the search query
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req|
+          query_params = req.uri.query_values
+          title_param = query_params["title"] || query_params["q"]
+          title_param&.include?("The Girl with the Dragon Tattoo")
+        }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+
+      # Verify the stub was called (search was made with full title)
+      assert_requested search_stub, at_least_once: true
+    end
+  end
+
+  test "handles titles with slashes that are not combined title separators" do
+    VCR.turned_off do
+      # Create a book with a slash that's not a title separator (no spaces around it)
+      book = Book.create!(
+        title: "AC/DC: The Stories Behind the Songs",
+        author: "Susan Masino",
+        book_type: :ebook
+      )
+      request = Request.create!(
+        book: book,
+        status: :pending,
+        requested_by: users(:default_user)
+      )
+
+      # Stub the indexer to verify the full title is used (slash without spaces is kept)
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req|
+          query_params = req.uri.query_values
+          title_param = query_params["title"] || query_params["q"]
+          title_param&.include?("AC/DC")
+        }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [].to_json
+        )
+
+      SearchJob.perform_now(request.id)
+
+      # Verify the stub was called with full title including AC/DC
+      assert_requested search_stub, at_least_once: true
+    end
+  end
+
   def stub_prowlarr_indexers(indexers = STRUCTURED_INDEXERS)
     stub_request(:get, %r{localhost:9696/api/v1/indexer})
       .to_return(

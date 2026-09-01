@@ -302,7 +302,7 @@ class SearchJob < ApplicationJob
     query = indexer_language_hint(request)
     categories = primary_indexer_categories(request)
     issue_queries = comic_issue_search_queries(book)
-    structured_title = issue_queries.second || book.title
+    structured_title = issue_queries.second || search_title(book)
     structured_author = issue_queries.any? ? nil : book.author
 
     Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for request ##{request.id} (type: #{book.book_type})"
@@ -344,7 +344,7 @@ class SearchJob < ApplicationJob
   end
 
   def generic_indexer_query(request)
-    [ request.book.title, indexer_language_hint(request) ].reject(&:blank?).join(" ")
+    [ search_title(request.book), indexer_language_hint(request) ].reject(&:blank?).join(" ")
   end
 
   def indexer_language_hint(request)
@@ -353,10 +353,26 @@ class SearchJob < ApplicationJob
     language_search_term(request)
   end
 
+  # Extract the appropriate search title from a book title that may contain
+  # combined localized/original titles (e.g., "La Nena / The Girl").
+  # Returns the first part before the slash separator to avoid sending
+  # the combined string as a literal search query.
+  def search_title(book)
+    title = book.title.to_s
+    # Match pattern: "Text / Text" where the slash is surrounded by spaces
+    # and separates what appears to be a localized title from an English/original title
+    if title.match?(/\s+\/\s+/)
+      # Return the first part (localized title) for better search results
+      title.split(/\s+\/\s+/, 2).first.to_s.strip
+    else
+      title
+    end
+  end
+
   def search_anna_archive(request, search_generation)
     book = request.book
 
-    query_parts = [ book.title ]
+    query_parts = [ search_title(book) ]
     query_parts << book.author if book.author.present?
     query_parts << "audiobook" if book.audiobook?
     query = query_parts.join(" ")
@@ -391,7 +407,7 @@ class SearchJob < ApplicationJob
 
   def search_zlibrary(request, search_generation)
     book = request.book
-    query = [ book.title, book.author ].compact.join(" ")
+    query = [ search_title(book), book.author ].compact.join(" ")
     language = zlibrary_language_filter(request)
     Rails.logger.debug "[SearchJob] Searching Z-Library for request ##{request.id}"
 
@@ -414,7 +430,7 @@ class SearchJob < ApplicationJob
     language = request.effective_language
     Rails.logger.debug "[SearchJob] Searching LibriVox for request ##{request.id}"
 
-    LibrivoxClient.search(title: book.title, author: book.author, language: language).map do |result|
+    LibrivoxClient.search(title: search_title(book), author: book.author, language: language).map do |result|
       { result: result, source: SearchResult::SOURCE_LIBRIVOX }
     end
   rescue LibrivoxClient::Error => e
@@ -427,7 +443,7 @@ class SearchJob < ApplicationJob
     language = request.effective_language
     Rails.logger.debug "[SearchJob] Searching Project Gutenberg for request ##{request.id}"
 
-    GutenbergClient.search(title: book.title, author: book.author, language: language).map do |result|
+    GutenbergClient.search(title: search_title(book), author: book.author, language: language).map do |result|
       { result: result, source: SearchResult::SOURCE_GUTENBERG }
     end
   rescue GutenbergClient::Error => e
@@ -447,7 +463,7 @@ class SearchJob < ApplicationJob
   def search_store_provider(request, provider)
     book = request.book
     provider.client.search(
-      title: book.title,
+      title: search_title(book),
       author: book.author,
       isbn: book.isbn,
       language: request.effective_language
@@ -930,18 +946,19 @@ class SearchJob < ApplicationJob
       return deduplicate_search_attempts(attempts)
     end
 
+    title = search_title(book)
     attempts = [
-      build_search_attempt(:exact_title, [ book.title, language_hint ]),
-      build_search_attempt(:title_author, [ book.title, book.author, language_hint ])
+      build_search_attempt(:exact_title, [ title, language_hint ]),
+      build_search_attempt(:title_author, [ title, book.author, language_hint ])
     ]
 
-    short_title = short_search_title(book.title)
+    short_title = short_search_title(title)
     attempts << build_search_attempt(:short_title, [ short_title, book.author, language_hint ]) if short_title.present?
 
-    attempts << build_search_attempt(:author_title, [ book.author, book.title, language_hint ])
-    attempts << build_search_attempt(:normalized_title, [ normalized_search_title(book.title), language_hint ])
+    attempts << build_search_attempt(:author_title, [ book.author, title, language_hint ])
+    attempts << build_search_attempt(:normalized_title, [ normalized_search_title(title), language_hint ])
 
-    numeric_title_variants(book.title).each do |title_variant|
+    numeric_title_variants(title).each do |title_variant|
       attempts << build_search_attempt(:number_variant, [ title_variant, language_hint ])
       attempts << build_search_attempt(:number_variant, [ title_variant, book.author, language_hint ]) if book.author.present?
     end
@@ -950,8 +967,8 @@ class SearchJob < ApplicationJob
     # Scene releases may be untagged or use different language markers than the hint,
     # and matches_language already accepts untagged results ([lang, nil]).
     if language_hint.present?
-      attempts << build_search_attempt(:exact_title, [ book.title ])
-      attempts << build_search_attempt(:title_author, [ book.title, book.author ])
+      attempts << build_search_attempt(:exact_title, [ title ])
+      attempts << build_search_attempt(:title_author, [ title, book.author ])
     end
 
     deduplicate_search_attempts(attempts)
