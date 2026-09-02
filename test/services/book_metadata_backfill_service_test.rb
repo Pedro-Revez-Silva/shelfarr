@@ -223,4 +223,38 @@ class BookMetadataBackfillServiceTest < ActiveSupport::TestCase
 
     assert_same error, raised
   end
+
+  test "backfills language from fallback_attrs" do
+    book = Book.new(
+      title: "El Quijote",
+      book_type: :ebook,
+      language: nil
+    )
+
+    BookMetadataBackfillService.apply!(
+      book,
+      work_id: "hardcover:123",
+      fallback_attrs: { language: "es" },
+      lookup_details: false
+    )
+
+    assert_equal "es", book.language
+  end
+
+  test "does not overwrite existing language" do
+    book = Book.create!(
+      title: "Don Quixote",
+      book_type: :ebook,
+      language: "en"
+    )
+
+    BookMetadataBackfillService.apply!(
+      book,
+      work_id: "hardcover:123",
+      fallback_attrs: { language: "es" },
+      lookup_details: false
+    )
+
+    assert_equal "en", book.language
+  end
 end

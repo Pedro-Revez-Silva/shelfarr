@@ -47,6 +47,18 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "Unknown Publisher/The Shining", result
   end
 
+  test "builds path with language template for non-default language" do
+    @book.update!(language: "es")
+    result = PathTemplateService.build_path(@book, "{language}/{author}/{title}")
+    assert_equal "es/Stephen King/The Shining", result
+  end
+
+  test "builds path with language template defaults to en for missing language" do
+    @book.update!(language: nil)
+    result = PathTemplateService.build_path(@book, "{language}/{author}/{title}")
+    assert_equal "en/Stephen King/The Shining", result
+  end
+
   test "builds path with series variable" do
     @book.update!(series: "The Dark Tower")
     result = PathTemplateService.build_path(@book, "{author}/{series}/{title}")
