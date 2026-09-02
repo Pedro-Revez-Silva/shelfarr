@@ -2160,6 +2160,19 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "imports under request language when the path template uses {language}" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_path_template, "{language}/{author}/{title}")
+    @book.update!(language: "en")
+    @request.update!(language: "es")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_path = File.join(@temp_dest_base, "es", @book.author, @book.title)
+    assert_equal expected_path, @book.reload.file_path
+    assert File.exist?(File.join(expected_path, "audiobook.mp3"))
+  end
+
   test "updates request status to completed after processing" do
     VCR.turned_off do
       stub_audiobookshelf_library(@temp_dest_base)

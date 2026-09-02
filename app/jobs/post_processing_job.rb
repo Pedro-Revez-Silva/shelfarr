@@ -91,7 +91,12 @@ class PostProcessingJob < ApplicationJob
       end
 
       base_path = get_base_path(book)
-      destination = build_destination_path(book, base_path: base_path)
+      destination = build_destination_path(
+        book,
+        base_path: base_path,
+        request: request,
+        search_result: download.search_result
+      )
       source_resolution = remap_download_path(download.download_path, download)
       source_path = source_resolution[:path]
       if source_path_unavailable?(source_path)
@@ -622,9 +627,14 @@ class PostProcessingJob < ApplicationJob
       download.external_id.present?
   end
 
-  def build_destination_path(book, base_path: nil)
+  def build_destination_path(book, base_path: nil, request: nil, search_result: nil)
     base_path ||= get_base_path(book)
-    PathTemplateService.build_destination(book, base_path: base_path)
+    PathTemplateService.build_destination(
+      book,
+      base_path: base_path,
+      request: request,
+      search_result: search_result
+    )
   end
 
   # Flat imports write into the shared output root, so the root must not be

@@ -90,7 +90,8 @@ class AudiobookBundleImportPlanner
       narrator: metadata.narrator,
       publisher: nil,
       series_position: nil,
-      file_path: nil
+      file_path: nil,
+      language: PathTemplateService.language_code_for(book)
     )
     virtual_book
   end

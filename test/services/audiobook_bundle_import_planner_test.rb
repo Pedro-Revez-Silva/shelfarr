@@ -26,6 +26,25 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     assert_equal File.join(@destination, "Original Author", "Book Two"), plan.tracked_entry.destination
   end
 
+  test "uses request language for split destinations when the template includes {language}" do
+    SettingsService.set(:audiobook_path_template, "{language}/{author}/{title}")
+    @book = Book.create!(title: "Book Two", author: "Original Author", book_type: :audiobook, language: "en")
+    Request.create!(book: @book, user: users(:one), language: "es", status: :downloading)
+    write_file("Book One.m4b")
+    write_file("Book Two.m4b")
+
+    plan = build_plan
+
+    assert plan
+    assert_equal(
+      [
+        File.join(@destination, "es", "Original Author", "Book One"),
+        File.join(@destination, "es", "Original Author", "Book Two")
+      ],
+      plan.entries.map(&:destination)
+    )
+  end
+
   test "does not split MP3 or FLAC chapter sets" do
     write_file("01.mp3")
     write_file("02.mp3")

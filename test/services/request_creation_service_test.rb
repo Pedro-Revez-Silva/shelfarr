@@ -557,34 +557,4 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_not result.success?
     assert_includes result.errors.join, "Collection requests are not supported"
   end
-
-  test "sets book language from request language" do
-    result = RequestCreationService.call(
-      user: @user,
-      work_id: "hardcover:spanish-book",
-      book_types: [ "audiobook" ],
-      metadata_attrs: { title: "El Quijote", author: "Cervantes" },
-      language: "es"
-    )
-
-    assert result.success?
-    assert_equal 1, result.created_requests.length
-
-    request = result.created_requests.first
-    assert_equal "es", request.language
-    assert_equal "es", request.book.language
-  end
-
-  test "book language defaults to en when request language is not set" do
-    result = RequestCreationService.call(
-      user: @user,
-      work_id: "hardcover:english-book",
-      book_types: [ "ebook" ],
-      metadata_attrs: { title: "The Book", author: "Author" }
-    )
-
-    assert result.success?
-    request = result.created_requests.first
-    assert_equal "en", request.book.language
-  end
 end

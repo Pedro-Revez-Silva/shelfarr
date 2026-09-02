@@ -59,6 +59,134 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "en/Stephen King/The Shining", result
   end
 
+  test "uses configured default language when book language is blank" do
+    SettingsService.set(:default_language, "de")
+    @book.update!(language: nil)
+
+    result = PathTemplateService.build_path(@book, "{language}/{author}/{title}")
+    assert_equal "de/Stephen King/The Shining", result
+  end
+
+  test "uses a completed request language when no open request exists" do
+    @book.update!(language: "en")
+    Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "es",
+      status: :completed
+    )
+
+    result = PathTemplateService.build_path(@book, "{language}/{author}/{title}")
+    assert_equal "es/Stephen King/The Shining", result
+  end
+
+  test "uses associated request language when book language is the column default" do
+    @book.update!(language: "en")
+    Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "es",
+      status: :downloading
+    )
+
+    result = PathTemplateService.build_path(@book, "{language}/{author}/{title}")
+    assert_equal "es/Stephen King/The Shining", result
+  end
+
+  test "uses passed request language over book language" do
+    @book.update!(language: "en")
+    request = Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "es",
+      status: :downloading
+    )
+
+    result = PathTemplateService.build_path(@book, "{language}/{author}/{title}", request: request)
+    assert_equal "es/Stephen King/The Shining", result
+  end
+
+  test "uses download language when no request language is available" do
+    @book.update!(language: "en")
+    search_result = Struct.new(:detected_language).new("es")
+
+    result = PathTemplateService.build_path(
+      @book,
+      "{language}/{author}/{title}",
+      search_result: search_result
+    )
+    assert_equal "es/Stephen King/The Shining", result
+  end
+
+  test "prefers request language over download language" do
+    @book.update!(language: "en")
+    request = Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "es",
+      status: :downloading
+    )
+    search_result = Struct.new(:detected_language).new("en")
+
+    result = PathTemplateService.build_path(
+      @book,
+      "{language}/{author}/{title}",
+      request: request,
+      search_result: search_result
+    )
+    assert_equal "es/Stephen King/The Shining", result
+  end
+
+  test "uses explicit language override over request and download language" do
+    request = Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "es",
+      status: :downloading
+    )
+    search_result = Struct.new(:detected_language).new("de")
+
+    result = PathTemplateService.build_path(
+      @book,
+      "{language}/{title}",
+      language: "fr",
+      request: request,
+      search_result: search_result
+    )
+    assert_equal "fr/The Shining", result
+  end
+
+  test "prefers an open request language over a completed request on the same book" do
+    @book.update!(language: "en")
+    Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "fr",
+      status: :completed
+    )
+    Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "es",
+      status: :downloading
+    )
+
+    result = PathTemplateService.build_path(@book, "{language}/{title}")
+    assert_equal "es/The Shining", result
+  end
+
+  test "build_filename uses request language in {language}" do
+    Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "es",
+      status: :downloading
+    )
+
+    result = PathTemplateService.build_filename(@book, ".m4b", template: "{language} - {title}")
+    assert_equal "es - The Shining.m4b", result
+  end
+
   test "builds path with series variable" do
     @book.update!(series: "The Dark Tower")
     result = PathTemplateService.build_path(@book, "{author}/{series}/{title}")

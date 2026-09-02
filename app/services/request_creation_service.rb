@@ -216,9 +216,6 @@ class RequestCreationService
       :series_start_year
     )
     attrs[:year] ||= attrs.delete(:first_publish_year)
-    # Pass the request's language to book metadata backfill so {language}
-    # template resolves to the requested language rather than the default
-    attrs[:language] = language if language.present?
     attrs
   end
 

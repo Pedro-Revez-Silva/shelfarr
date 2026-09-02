@@ -358,7 +358,12 @@ class DownloadJob < ApplicationJob
   def handle_direct_audiobook_archive_download(download, search_result, download_url, source_name:)
     book = download.request.book
     base_path = SettingsService.get(:audiobook_output_path, default: "/audiobooks")
-    destination_dir = direct_audiobook_archive_destination(book, base_path)
+    destination_dir = direct_audiobook_archive_destination(
+      book,
+      base_path,
+      request: download.request,
+      search_result: search_result
+    )
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook to: #{destination_dir}"
     ensure_book_available_for_direct_download!(book)
@@ -436,7 +441,12 @@ class DownloadJob < ApplicationJob
     finalized = false
     book = download.request.book
     base_path = SettingsService.get(:audiobook_output_path, default: "/audiobooks")
-    destination_dir = PathTemplateService.build_destination(book, base_path: base_path)
+    destination_dir = PathTemplateService.build_destination(
+      book,
+      base_path: base_path,
+      request: download.request,
+      search_result: search_result
+    )
     filename = infer_audiobook_filename_from_url(download_url, search_result, extension)
     destination_path = File.join(destination_dir, filename)
 
@@ -502,7 +512,12 @@ class DownloadJob < ApplicationJob
 
     # Build destination path similar to how PostProcessingJob does it
     base_path = SettingsService.get(:ebook_output_path, default: "/ebooks")
-    destination_dir = PathTemplateService.build_destination(book, base_path: base_path)
+    destination_dir = PathTemplateService.build_destination(
+      book,
+      base_path: base_path,
+      request: download.request,
+      search_result: search_result
+    )
 
     # Infer filename from URL or search result
     filename = infer_filename_from_url(download_url, search_result)
@@ -632,8 +647,13 @@ class DownloadJob < ApplicationJob
     sanitize_filename("#{author} - #{title}.#{extension}")
   end
 
-  def direct_audiobook_archive_destination(book, base_path)
-    destination = PathTemplateService.build_destination(book, base_path: base_path)
+  def direct_audiobook_archive_destination(book, base_path, request: nil, search_result: nil)
+    destination = PathTemplateService.build_destination(
+      book,
+      base_path: base_path,
+      request: request,
+      search_result: search_result
+    )
     return destination unless PathTemplateService.flat_output?(book)
 
     # A multi-file archive cannot be atomically merged into a shared flat

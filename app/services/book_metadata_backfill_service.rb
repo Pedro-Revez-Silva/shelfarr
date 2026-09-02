@@ -43,7 +43,6 @@ class BookMetadataBackfillService
         series: value_for(book.series, metadata[:series], fallback_attrs[:series]),
         series_position: value_for(book.series_position, metadata[:series_position], fallback_attrs[:series_position]),
         publisher: value_for(book.publisher, metadata[:publisher], fallback_attrs[:publisher]),
-        language: value_for(book.language, metadata[:language], fallback_attrs[:language]),
         content_kind: content_kind_value_for(book, metadata[:content_kind], fallback_attrs[:content_kind]),
         issue_number: value_for(book.issue_number, metadata[:issue_number], fallback_attrs[:issue_number]),
         release_date: value_for(book.release_date, metadata[:release_date], fallback_attrs[:release_date]),
