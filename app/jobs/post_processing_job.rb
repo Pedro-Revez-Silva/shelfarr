@@ -263,11 +263,17 @@ class PostProcessingJob < ApplicationJob
   end
 
   def run_completion_side_effects(request, download, book, book_path)
-    # Pre-create zip for directories (audiobooks) so download is instant.
-    # Flat imports share the output root, which must never be zipped whole.
-    # This is opt-in to avoid writing a full copy of every imported book into
-    # tmp/downloads, which can OOM-kill the worker when tmp is tmpfs.
-    if SettingsService.get(:precreate_download_archives, default: false) &&
+    # Library scan and completion notifications must run before optional
+    # archive pre-creation. A full ZIP into tmp/downloads can OOM-kill the
+    # worker (SIGKILL) when tmp is tmpfs; that cannot be rescued and must
+    # not skip these post-commit conveniences after a successful import.
+    trigger_library_scan(book) if LibraryPlatformClient.configured?
+    NotificationService.request_completed(request)
+
+    # Pre-create is opt-in. Flat imports share the output root, which must
+    # never be zipped whole. RequestsController builds the archive lazily
+    # on first download when this setting is off.
+    if SettingsService.get(:precreate_download_archives) &&
         File.directory?(book_path) &&
         (!PathTemplateService.flat_output?(book) || @imported_book_path_override.present?)
       begin
@@ -282,9 +288,6 @@ class PostProcessingJob < ApplicationJob
         )
       end
     end
-
-    trigger_library_scan(book) if LibraryPlatformClient.configured?
-    NotificationService.request_completed(request)
 
     Rails.logger.info "[PostProcessingJob] Completed processing for download #{download.id}"
   rescue => error

@@ -11,7 +11,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
       indexer_provider indexer_search_scope indexer_custom_audiobook_categories indexer_custom_ebook_categories
       prowlarr_url prowlarr_api_key jackett_url jackett_api_key newznab_url newznab_api_key
       preferred_download_type preferred_download_types completed_download_import_mode move_completed_downloads
-      split_audiobook_bundle_imports audiobook_path_template api_token
+      split_audiobook_bundle_imports precreate_download_archives audiobook_path_template api_token
       zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password gutenberg_enabled gutenberg_url librivox_enabled librivox_url
       ebooks_com_enabled ebooks_com_country_code ebooks_com_search_limit
       metadata_source metadata_provider_priority hardcover_enabled hardcover_api_token open_library_enabled google_books_enabled
@@ -202,6 +202,15 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
   test "split audiobook bundle imports defaults to disabled" do
     assert_equal false, SettingsService.get(:split_audiobook_bundle_imports)
+  end
+
+  test "precreate download archives defaults to disabled" do
+    assert_equal false, SettingsService.get(:precreate_download_archives)
+    assert_equal "Pre-create Download Archives", SettingsService.label_for(:precreate_download_archives)
+
+    SettingsService.set(:precreate_download_archives, true)
+
+    assert_equal true, SettingsService.get(:precreate_download_archives)
   end
 
   test "zlibrary_configured? requires enabled flag and credentials" do

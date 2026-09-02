@@ -105,7 +105,7 @@ class SettingsService
     completed_download_import_mode: { type: "string", default: "copy", category: "download", description: "Choose Copy, Move, Hardlink, or Reference. Hardlink requires one container-visible filesystem; unsupported or cross-filesystem links fall back to copy. Reference creates a library symlink to the download path (for debrid/rclone mounts) and never copies bytes." },
     split_audiobook_bundle_imports: { type: "boolean", default: false, category: "download", description: "Split releases containing multiple self-contained M4B/AAX books into per-book folders. MP3, FLAC, and other chapter-based releases stay together." },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
-    precreate_download_archives: { type: "boolean", default: false, category: "download", description: "Pre-create download archives for directory-backed imports so the first download is instant. When disabled, archives are created lazily on first download request. Warning: pre-creation writes a full copy of each imported book into the container's tmp/downloads directory." },
+    precreate_download_archives: { type: "boolean", default: false, category: "download", description: "Pre-create ZIP archives for directory-backed imports after library scan and completion notification so the first download is instant. When disabled, archives are created lazily on first download request. Warning: pre-creation writes a full copy of each imported book into tmp/downloads and can OOM-kill the worker when that directory is tmpfs." },
 
     # Library Platform Integration
     library_platform: { type: "string", default: "audiobookshelf", category: "audiobookshelf", description: "Library platform to sync and scan: audiobookshelf, bookorbit, or grimmory" },
@@ -317,6 +317,7 @@ class SettingsService
     ebooks_com_country_code: "Buyer Country Code",
     ebooks_com_search_limit: "Offer Limit",
     allow_nonatomic_nfs_directory_publication: "Allow Non-Atomic NFS Directory Publication",
+    precreate_download_archives: "Pre-create Download Archives",
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
     audiobookshelf_comicbook_library_id: "Comics & Manga Library",

@@ -107,6 +107,9 @@
                         <% if key.to_s == "allow_nonatomic_nfs_directory_publication" %>
                           <p class="mt-2 text-sm text-red-400">Safety override: use only on an NFS export with no other writer. Save All is required to apply this change.</p>
                         <% end %>
+                        <% if key.to_s == "precreate_download_archives" %>
+                          <p class="mt-2 text-sm text-yellow-500">Writes a full ZIP of each imported book into tmp/downloads. Leave off unless tmp is on disk; tmpfs plus a large book can OOM-kill the worker after import.</p>
+                        <% end %>
                         <% end %>
                       <% when "integer" %>
                         <% integer_constraints = case key.to_s

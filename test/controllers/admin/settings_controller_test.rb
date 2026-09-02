@@ -241,6 +241,15 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /MP3, FLAC, and other chapter-based releases stay together/
   end
 
+  test "index shows precreate download archives setting as disabled by default" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label", text: "Pre-create Download Archives"
+    assert_select "input[name='settings[precreate_download_archives]']"
+    assert_select "p", text: /tmpfs plus a large book can OOM-kill the worker/
+  end
+
   test "index shows completed download import mode options and hardlink guidance" do
     SettingsService.set(:completed_download_import_mode, "hardlink")
 
@@ -329,6 +338,17 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal true, SettingsService.get(:split_audiobook_bundle_imports)
+  end
+
+  test "bulk_update stores precreate download archives setting" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        precreate_download_archives: "true"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal true, SettingsService.get(:precreate_download_archives)
   end
 
   test "bulk_update stores a valid completed download import mode" do
