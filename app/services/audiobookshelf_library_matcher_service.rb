@@ -20,8 +20,7 @@ class AudiobookshelfLibraryMatcherService
 
   def initialize(cache_library_items: true)
     @cache_library_items = cache_library_items
-    @normalized_text_cache = {}
-    @trigram_cache = {}
+    @prepared_items = {}
   end
 
   def self.matches_for_many(results, limit_per_result: 3)
@@ -39,44 +38,29 @@ class AudiobookshelfLibraryMatcherService
   end
 
   def matches_for(title:, author:, limit: 3, library_ids: nil)
-    query_title = normalize_text(title)
-    query_author = normalize_text(author)
+    query = prepare_query(title, author)
     limit = limit.to_i
-    return [] if query_title.blank? || limit <= 0
-
-    query_title_trigrams = trigrams(query_title)
-    query_author_trigrams = query_author.present? ? trigrams(query_author) : nil
+    return [] if query.title.blank? || limit <= 0
 
     matches = []
     each_library_item(library_ids) do |item|
-      next if oversized_match_text?(item.title)
+      prepared = prepared_item(item)
+      next unless prepared
 
-      item_title = cached_normalized_text(item, :title)
-      item_subtitle = oversized_match_text?(item.subtitle) ? "" : cached_normalized_text(item, :subtitle)
-      item_display_title = [ item_title, item_subtitle ].compact_blank.join(" ")
-      item_author = oversized_match_text?(item.author) ? "" : cached_normalized_text(item, :author)
-      next if item_title.blank? && item_display_title.blank? && item_author.blank?
-      item_titles = [ item_title, item_display_title ].uniq
-
-      item_title_trigrams = cached_trigrams(item, :title)
-      item_display_title_trigrams = item_subtitle.present? ? trigrams(item_display_title) : item_title_trigrams
-      item_author_trigrams = item_author.present? ? cached_trigrams(item, :author) : nil
-
-      score = match_score_precomputed(
-        query_title: query_title,
-        query_author: query_author,
-        item_titles: item_titles,
-        item_author: item_author,
-        query_title_trigrams: query_title_trigrams,
-        query_author_trigrams: query_author_trigrams,
-        item_title_trigrams: item_title_trigrams,
-        item_display_title_trigrams: item_display_title_trigrams,
-        item_author_trigrams: item_author_trigrams
+      score = match_score(
+        query_title: query.title,
+        query_author: query.author,
+        item_titles: prepared.titles,
+        item_author: prepared.author,
+        query_title_trigrams: query.title_trigrams,
+        query_author_trigrams: query.author_trigrams,
+        item_title_trigrams_by_title: prepared.title_trigrams_by_title,
+        item_author_trigrams: prepared.author_trigrams
       )
       next if score < FuzzyThreshold
 
-      exact_author = query_author.present? && item_author == query_author
-      match_type = item_titles.include?(query_title) && exact_author ? :likely : :possible
+      exact_author = query.author.present? && prepared.author == query.author
+      match_type = prepared.titles.include?(query.title) && exact_author ? :likely : :possible
       matches << Match.new(item: item, score: score, match_type: match_type)
       matches.sort_by! { |match| match_sort_key(match) }
       matches.pop if matches.size > limit
@@ -86,6 +70,10 @@ class AudiobookshelfLibraryMatcherService
   end
 
   private
+
+  PreparedQuery = Data.define(:title, :author, :title_trigrams, :author_trigrams)
+  PreparedItem = Data.define(:title, :titles, :author, :title_trigrams_by_title, :author_trigrams)
+  private_constant :PreparedQuery, :PreparedItem
 
   def library_ids_for_scope(library_ids)
     @library_items_by_ids ||= {}
@@ -112,48 +100,79 @@ class AudiobookshelfLibraryMatcherService
 
   def match_sort_key(match)
     synced_at = match.item.effective_synced_at || Time.at(0)
-    [ -match.score, match.likely? ? 0 : 1, -synced_at.to_f, normalize_text(match.item.title), match.item.id || 0 ]
+    prepared = prepared_item(match.item)
+    normalized_title = prepared ? prepared.title : normalize_text(match.item.title)
+    [ -match.score, match.likely? ? 0 : 1, -synced_at.to_f, normalized_title, match.item.id || 0 ]
   end
 
   def oversized_match_text?(text)
     text.is_a?(String) && text.length > MaxMatchTextLength
   end
 
-  def match_score(query_title:, query_author:, item_titles:, item_author:)
-    return 0 if item_titles.blank?
-    return 100 if item_titles.include?(query_title) && query_author == item_author
-
-    title_score = item_titles.map { |item_title| trigram_similarity(query_title, item_title) }.max || 0
-    return title_score if query_author.blank? || item_author.blank?
-
-    author_score = trigram_similarity(query_author, item_author)
-    ((title_score * 0.7) + (author_score * 0.3)).round
+  def prepare_query(title, author)
+    query_title = normalize_text(title)
+    query_author = normalize_text(author)
+    PreparedQuery.new(
+      title: query_title,
+      author: query_author,
+      title_trigrams: query_title.present? ? trigrams(query_title) : Set.new,
+      author_trigrams: query_author.present? ? trigrams(query_author) : nil
+    )
   end
 
-  def match_score_precomputed(query_title:, query_author:, item_titles:, item_author:,
-    query_title_trigrams:, query_author_trigrams:, item_title_trigrams:,
-    item_display_title_trigrams:, item_author_trigrams:)
+  def prepared_item(item)
+    key = item_prep_cache_key(item)
+    return @prepared_items[key] if @prepared_items.key?(key)
+
+    @prepared_items[key] = build_prepared_item(item)
+  end
+
+  def item_prep_cache_key(item)
+    [ item.id, item.title, item.subtitle, item.author ]
+  end
+
+  def build_prepared_item(item)
+    return nil if oversized_match_text?(item.title)
+
+    item_title = normalize_text(item.title)
+    item_subtitle = oversized_match_text?(item.subtitle) ? "" : normalize_text(item.subtitle)
+    item_display_title = [ item_title, item_subtitle ].compact_blank.join(" ")
+    item_author = oversized_match_text?(item.author) ? "" : normalize_text(item.author)
+    return nil if item_title.blank? && item_display_title.blank? && item_author.blank?
+
+    titles = [ item_title, item_display_title ].uniq
+    PreparedItem.new(
+      title: item_title,
+      titles: titles,
+      author: item_author,
+      title_trigrams_by_title: titles.to_h { |title| [ title, title.present? ? trigrams(title) : Set.new ] },
+      author_trigrams: item_author.present? ? trigrams(item_author) : nil
+    )
+  end
+
+  def match_score(query_title:, query_author:, item_titles:, item_author:,
+    query_title_trigrams: nil, query_author_trigrams: nil,
+    item_title_trigrams_by_title: nil, item_author_trigrams: nil)
     return 0 if item_titles.blank?
     return 100 if item_titles.include?(query_title) && query_author == item_author
 
-    title_trigrams = [ item_title_trigrams, item_display_title_trigrams ].uniq
-    title_score = title_trigrams.map { |item_trigrams|
-      trigram_similarity_precomputed(query_title_trigrams, item_trigrams)
+    title_score = item_titles.map { |item_title|
+      trigram_similarity(
+        query_title,
+        item_title,
+        left_trigrams: query_title_trigrams,
+        right_trigrams: item_title_trigrams_by_title&.[](item_title)
+      )
     }.max || 0
     return title_score if query_author.blank? || item_author.blank?
 
-    author_score = trigram_similarity_precomputed(query_author_trigrams, item_author_trigrams)
+    author_score = trigram_similarity(
+      query_author,
+      item_author,
+      left_trigrams: query_author_trigrams,
+      right_trigrams: item_author_trigrams
+    )
     ((title_score * 0.7) + (author_score * 0.3)).round
-  end
-
-  def cached_normalized_text(item, field)
-    cache_key = [ item.id, field, item.public_send(field) ]
-    @normalized_text_cache[cache_key] ||= normalize_text(item.public_send(field))
-  end
-
-  def cached_trigrams(item, field)
-    cache_key = [ item.id, field, item.public_send(field) ]
-    @trigram_cache[cache_key] ||= trigrams(cached_normalized_text(item, field))
   end
 
   def normalize_text(text)
@@ -170,28 +189,23 @@ class AudiobookshelfLibraryMatcherService
       .strip
   end
 
-  def trigram_similarity(left, right)
+  def trigram_similarity(left, right, left_trigrams: nil, right_trigrams: nil)
     return 0 if left.blank? || right.blank?
     return 100 if left == right
 
-    trigrams_left = trigrams(left)
-    trigrams_right = trigrams(right)
+    trigrams_left = left_trigrams || trigrams(left)
+    trigrams_right = right_trigrams || trigrams(right)
 
     return 0 if trigrams_left.empty? || trigrams_right.empty?
 
-    intersection = (trigrams_left & trigrams_right).size
-    union = (trigrams_left | trigrams_right).size
+    intersection = trigram_overlap_size(trigrams_left, trigrams_right)
+    union = trigrams_left.size + trigrams_right.size - intersection
     ((intersection.to_f / union) * 100).round
   end
 
-  def trigram_similarity_precomputed(left_trigrams, right_trigrams)
-    return 0 if left_trigrams.nil? || right_trigrams.nil?
-    return 0 if left_trigrams.empty? || right_trigrams.empty?
-    return 100 if left_trigrams == right_trigrams
-
-    intersection_count = (left_trigrams & right_trigrams).size
-    union_count = left_trigrams.size + right_trigrams.size - intersection_count
-    ((intersection_count.to_f / union_count) * 100).round
+  def trigram_overlap_size(left, right)
+    smaller, larger = left.size <= right.size ? [ left, right ] : [ right, left ]
+    smaller.count { |trigram| larger.include?(trigram) }
   end
 
   def trigrams(text)
