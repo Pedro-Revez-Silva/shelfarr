@@ -338,4 +338,88 @@ class AudiobookshelfLibraryMatcherServiceTest < ActiveSupport::TestCase
 
     assert_empty matches
   end
+
+  test "reuses item preprocessing across multiple queries with same matcher instance" do
+    LibraryItem.create!(
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-ender",
+      title: "Ender's Game",
+      author: "Orson Scott Card",
+      synced_at: Time.current
+    )
+
+    matcher = AudiobookshelfLibraryMatcherService.new
+
+    first_matches = matcher.matches_for(
+      title: "Ender's Game",
+      author: "Orson Scott Card",
+      limit: 3
+    )
+
+    second_matches = matcher.matches_for(
+      title: "Dune",
+      author: "Frank Herbert",
+      limit: 3
+    )
+
+    assert_equal 1, first_matches.size
+    assert_equal "ab-ender", first_matches.first.item.audiobookshelf_id
+    assert_equal 1, second_matches.size
+    assert_equal "ab-2", second_matches.first.item.audiobookshelf_id
+  end
+
+  test "produces identical scores with optimized trigram computation" do
+    matcher = AudiobookshelfLibraryMatcherService.new
+
+    first_pass = matcher.matches_for(
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      limit: 5
+    )
+
+    second_pass = matcher.matches_for(
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      limit: 5
+    )
+
+    assert_equal first_pass.size, second_pass.size
+    first_pass.zip(second_pass).each do |first, second|
+      assert_equal first.item.id, second.item.id
+      assert_equal first.score, second.score
+      assert_equal first.match_type, second.match_type
+    end
+  end
+
+  test "handles updated library items with fresh preprocessing" do
+    item = LibraryItem.create!(
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-foundation",
+      title: "Foundation",
+      author: "Isaac Asimov",
+      synced_at: Time.current
+    )
+
+    matcher = AudiobookshelfLibraryMatcherService.new
+
+    first_matches = matcher.matches_for(
+      title: "Foundation",
+      author: "Isaac Asimov",
+      limit: 3
+    )
+
+    assert_equal 1, first_matches.size
+    assert_equal 100, first_matches.first.score
+
+    item.update!(title: "Foundation and Empire")
+
+    second_matches = AudiobookshelfLibraryMatcherService.new.matches_for(
+      title: "Foundation and Empire",
+      author: "Isaac Asimov",
+      limit: 3
+    )
+
+    assert_equal 1, second_matches.size
+    assert_equal 100, second_matches.first.score
+  end
 end

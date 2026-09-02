@@ -20,6 +20,8 @@ class AudiobookshelfLibraryMatcherService
 
   def initialize(cache_library_items: true)
     @cache_library_items = cache_library_items
+    @normalized_text_cache = {}
+    @trigram_cache = {}
   end
 
   def self.matches_for_many(results, limit_per_result: 3)
@@ -42,22 +44,34 @@ class AudiobookshelfLibraryMatcherService
     limit = limit.to_i
     return [] if query_title.blank? || limit <= 0
 
+    query_title_trigrams = trigrams(query_title)
+    query_author_trigrams = query_author.present? ? trigrams(query_author) : nil
+
     matches = []
     each_library_item(library_ids) do |item|
       next if oversized_match_text?(item.title)
 
-      item_title = normalize_text(item.title)
-      item_subtitle = oversized_match_text?(item.subtitle) ? "" : normalize_text(item.subtitle)
+      item_title = cached_normalized_text(item, :title)
+      item_subtitle = oversized_match_text?(item.subtitle) ? "" : cached_normalized_text(item, :subtitle)
       item_display_title = [ item_title, item_subtitle ].compact_blank.join(" ")
-      item_author = oversized_match_text?(item.author) ? "" : normalize_text(item.author)
+      item_author = oversized_match_text?(item.author) ? "" : cached_normalized_text(item, :author)
       next if item_title.blank? && item_display_title.blank? && item_author.blank?
       item_titles = [ item_title, item_display_title ].uniq
 
-      score = match_score(
+      item_title_trigrams = cached_trigrams(item, :title)
+      item_display_title_trigrams = item_subtitle.present? ? trigrams(item_display_title) : item_title_trigrams
+      item_author_trigrams = item_author.present? ? cached_trigrams(item, :author) : nil
+
+      score = match_score_precomputed(
         query_title: query_title,
         query_author: query_author,
         item_titles: item_titles,
-        item_author: item_author
+        item_author: item_author,
+        query_title_trigrams: query_title_trigrams,
+        query_author_trigrams: query_author_trigrams,
+        item_title_trigrams: item_title_trigrams,
+        item_display_title_trigrams: item_display_title_trigrams,
+        item_author_trigrams: item_author_trigrams
       )
       next if score < FuzzyThreshold
 
@@ -116,6 +130,32 @@ class AudiobookshelfLibraryMatcherService
     ((title_score * 0.7) + (author_score * 0.3)).round
   end
 
+  def match_score_precomputed(query_title:, query_author:, item_titles:, item_author:,
+    query_title_trigrams:, query_author_trigrams:, item_title_trigrams:,
+    item_display_title_trigrams:, item_author_trigrams:)
+    return 0 if item_titles.blank?
+    return 100 if item_titles.include?(query_title) && query_author == item_author
+
+    title_trigrams = [ item_title_trigrams, item_display_title_trigrams ].uniq
+    title_score = title_trigrams.map { |item_trigrams|
+      trigram_similarity_precomputed(query_title_trigrams, item_trigrams)
+    }.max || 0
+    return title_score if query_author.blank? || item_author.blank?
+
+    author_score = trigram_similarity_precomputed(query_author_trigrams, item_author_trigrams)
+    ((title_score * 0.7) + (author_score * 0.3)).round
+  end
+
+  def cached_normalized_text(item, field)
+    cache_key = [ item.id, field, item.public_send(field) ]
+    @normalized_text_cache[cache_key] ||= normalize_text(item.public_send(field))
+  end
+
+  def cached_trigrams(item, field)
+    cache_key = [ item.id, field, item.public_send(field) ]
+    @trigram_cache[cache_key] ||= trigrams(cached_normalized_text(item, field))
+  end
+
   def normalize_text(text)
     return "" unless text.is_a?(String)
     return "" if text.length > MaxMatchTextLength
@@ -142,6 +182,16 @@ class AudiobookshelfLibraryMatcherService
     intersection = (trigrams_left & trigrams_right).size
     union = (trigrams_left | trigrams_right).size
     ((intersection.to_f / union) * 100).round
+  end
+
+  def trigram_similarity_precomputed(left_trigrams, right_trigrams)
+    return 0 if left_trigrams.nil? || right_trigrams.nil?
+    return 0 if left_trigrams.empty? || right_trigrams.empty?
+    return 100 if left_trigrams == right_trigrams
+
+    intersection_count = (left_trigrams & right_trigrams).size
+    union_count = left_trigrams.size + right_trigrams.size - intersection_count
+    ((intersection_count.to_f / union_count) * 100).round
   end
 
   def trigrams(text)
