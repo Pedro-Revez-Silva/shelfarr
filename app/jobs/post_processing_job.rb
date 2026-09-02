@@ -265,7 +265,11 @@ class PostProcessingJob < ApplicationJob
   def run_completion_side_effects(request, download, book, book_path)
     # Pre-create zip for directories (audiobooks) so download is instant.
     # Flat imports share the output root, which must never be zipped whole.
-    if File.directory?(book_path) && (!PathTemplateService.flat_output?(book) || @imported_book_path_override.present?)
+    # This is opt-in to avoid writing a full copy of every imported book into
+    # tmp/downloads, which can OOM-kill the worker when tmp is tmpfs.
+    if SettingsService.get(:precreate_download_archives, default: false) &&
+        File.directory?(book_path) &&
+        (!PathTemplateService.flat_output?(book) || @imported_book_path_override.present?)
       begin
         LibraryDownloadArchiveService.call(
           book: book,

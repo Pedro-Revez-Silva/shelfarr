@@ -75,10 +75,35 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
-  test "archive precreation failure does not skip later completion side effects" do
+  test "archive precreation is skipped when disabled and completion side effects still happen" do
+    completed_notifications = []
+    library_scans = []
+    archive_calls = []
+    job = PostProcessingJob.new
+
+    # Default setting is false, so archive should not be called
+    SettingsService.set(:precreate_download_archives, false)
+
+    LibraryDownloadArchiveService.stub(:call, ->(**args) { archive_calls << args }) do
+      job.stub(:trigger_library_scan, ->(book) { library_scans << book.id }) do
+        NotificationService.stub(:request_completed, ->(request) { completed_notifications << request.id }) do
+          job.send(:run_completion_side_effects, @request, @download, @book, @temp_source)
+        end
+      end
+    end
+
+    assert_empty archive_calls, "Archive should not be called when precreate_download_archives is false"
+    assert_equal [ @book.id ], library_scans
+    assert_equal [ @request.id ], completed_notifications
+  end
+
+  test "archive precreation failure does not skip later completion side effects when enabled" do
     completed_notifications = []
     library_scans = []
     job = PostProcessingJob.new
+
+    # Enable archive pre-creation
+    SettingsService.set(:precreate_download_archives, true)
 
     LibraryDownloadArchiveService.stub(:call, ->(**) { raise LibraryDownloadArchiveService::Error, "archive failed" }) do
       job.stub(:trigger_library_scan, ->(book) { library_scans << book.id }) do
