@@ -199,34 +199,36 @@ class HealthCheckJob < ApplicationJob
 
   def check_output_paths
     health = SystemHealth.for_service("output_paths")
-    issues = []
+    findings = [
+      check_path("Audiobook", SettingsService.get(:audiobook_output_path)),
+      check_path("Ebook", SettingsService.get(:ebook_output_path))
+    ].compact
 
-    audiobook_path = SettingsService.get(:audiobook_output_path)
-    ebook_path = SettingsService.get(:ebook_output_path)
-
-    issues << check_path("Audiobook", audiobook_path)
-    issues << check_path("Ebook", ebook_path)
-    issues.compact!
-
-    if issues.empty?
+    if findings.empty?
       health.check_succeeded!(message: "All output paths accessible")
-    elsif issues.size == 1
-      health.check_failed!(message: issues.first, degraded: true)
-    else
-      health.check_failed!(message: issues.join("; "))
+      return
     end
-  rescue => e
-    health.check_failed!(message: "Error: #{e.message}")
-    Rails.logger.error "[HealthCheckJob] Output paths check failed: #{e.message}"
+
+    hard_failures = findings.count { |finding| finding[:severity] == :hard }
+    health.check_failed!(
+      message: findings.map { |finding| finding[:message] }.join("; "),
+      degraded: hard_failures == 0 || findings.size == 1
+    )
   end
 
   def check_path(name, path)
-    return "#{name} path not configured" if path.blank?
-    return "#{name} path does not exist" unless Dir.exist?(path)
-    return "#{name} path not writable" unless File.writable?(path)
+    return { severity: :hard, message: "#{name} path not configured" } if path.blank?
 
+    begin
+      return { severity: :hard, message: "#{name} path does not exist" } unless Dir.exist?(path)
+      return { severity: :hard, message: "#{name} path not writable" } unless File.writable?(path)
+    rescue SystemCallError => error
+      return { severity: :hard, message: "#{name} path could not be checked: #{error.message}" }
+    end
+
+    # Leave leftover-staging diagnostics intact; they already carry their own inspect failures.
     legacy_diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: path)
-    return "#{name} #{legacy_diagnostic}" if legacy_diagnostic
+    return { severity: :legacy, message: "#{name} #{legacy_diagnostic}" } if legacy_diagnostic
 
     nil
   end

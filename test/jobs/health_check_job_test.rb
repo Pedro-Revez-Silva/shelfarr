@@ -482,36 +482,152 @@ class HealthCheckJobTest < ActiveJob::TestCase
     assert_includes health.message, "not configured"
   end
 
-  test "marks output_paths as down when filesystem check raises an exception" do
-    Dir.mktmpdir do |valid_dir|
-      setup_output_paths(valid_dir, "/another/valid/path")
+  test "does not treat current owned-media staging as leftover on either output root" do
+    Dir.mktmpdir("owned-audiobooks") do |audiobook_dir|
+      Dir.mktmpdir("owned-ebooks") do |ebook_dir|
+        setup_output_paths(audiobook_dir, ebook_dir)
+        [ audiobook_dir, ebook_dir ].each do |root|
+          staging = File.join(root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+          FileUtils.mkdir_p(File.join(staging, "uploads"))
+          FileUtils.mkdir_p(File.join(staging, "locks"))
+          File.chmod(0o700, staging)
+        end
 
-      # Simulate a filesystem error during checks
-      Dir.stub(:exist?, -> (path) { raise Errno::EACCES, "Permission denied" }) do
         HealthCheckJob.perform_now(service: "output_paths")
 
         health = SystemHealth.for_service("output_paths")
-        assert health.down?
-        assert_includes health.message, "Error"
+        assert health.healthy?
+        assert_includes health.message, "accessible"
+        refute_includes health.message, "legacy"
       end
     end
   end
 
-  test "marks output_paths as down when legacy_staging_diagnostic raises an exception" do
-    Dir.mktmpdir do |audiobook_dir|
-      Dir.mktmpdir do |ebook_dir|
+  test "still reports leftover direct-download data beside owned-media staging" do
+    Dir.mktmpdir("owned-audiobooks") do |audiobook_dir|
+      Dir.mktmpdir("legacy-ebooks") do |ebook_dir|
         setup_output_paths(audiobook_dir, ebook_dir)
 
-        # Simulate an error in legacy_staging_diagnostic
-        DirectDownloadFileService.stub(:legacy_staging_diagnostic, -> (root:) {
-          raise Errno::EIO, "Input/output error"
+        owned = File.join(audiobook_dir, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+        FileUtils.mkdir_p(File.join(owned, "uploads"))
+        FileUtils.mkdir_p(File.join(owned, "locks"))
+        File.chmod(0o700, owned)
+
+        leftover = File.join(ebook_dir, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+        FileUtils.mkdir_p(File.join(leftover, "uploads"))
+        FileUtils.mkdir_p(File.join(leftover, "locks"))
+        FileUtils.mkdir_p(File.join(leftover, DirectDownloadFileService::DIRECT_DOWNLOADS_DIRECTORY))
+        File.chmod(0o700, leftover)
+
+        HealthCheckJob.perform_now(service: "output_paths")
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.degraded?
+        assert_includes health.message, "Ebook legacy direct-download staging"
+        assert_includes health.message, "contains retained entries"
+        refute_includes health.message, "Audiobook legacy"
+        refute_includes health.message, ebook_dir
+      end
+    end
+  end
+
+  test "reports leftover staging on both roots as degraded without hiding either warning" do
+    Dir.mktmpdir("legacy-audiobooks") do |audiobook_dir|
+      Dir.mktmpdir("legacy-ebooks") do |ebook_dir|
+        setup_output_paths(audiobook_dir, ebook_dir)
+        [ audiobook_dir, ebook_dir ].each do |root|
+          leftover = File.join(root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+          FileUtils.mkdir_p(File.join(leftover, DirectDownloadFileService::DIRECT_DOWNLOADS_DIRECTORY))
+          File.chmod(0o700, leftover)
+        end
+
+        HealthCheckJob.perform_now(service: "output_paths")
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.degraded?
+        assert_includes health.message, "Audiobook legacy direct-download staging"
+        assert_includes health.message, "Ebook legacy direct-download staging"
+        assert_includes health.message, "contains retained entries"
+        assert_includes health.message, DirectDownloadFileService::STAGING_DIRECTORY
+        refute_includes health.message, audiobook_dir
+        refute_includes health.message, ebook_dir
+      end
+    end
+  end
+
+  test "keeps leftover staging text when the other output path cannot be checked" do
+    Dir.mktmpdir("legacy-audiobooks") do |audiobook_dir|
+      Dir.mktmpdir("legacy-ebooks") do |ebook_dir|
+        setup_output_paths(audiobook_dir, ebook_dir)
+        leftover = File.join(ebook_dir, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+        FileUtils.mkdir_p(File.join(leftover, DirectDownloadFileService::DIRECT_DOWNLOADS_DIRECTORY))
+        File.chmod(0o700, leftover)
+
+        exist = Dir.method(:exist?)
+        Dir.stub(:exist?, ->(path) {
+          raise Errno::EACCES, "Permission denied" if path == audiobook_dir
+
+          exist.call(path)
         }) do
           HealthCheckJob.perform_now(service: "output_paths")
-
-          health = SystemHealth.for_service("output_paths")
-          assert health.down?
-          assert_includes health.message, "Error"
         end
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.down?
+        assert_includes health.message, "Audiobook path could not be checked"
+        assert_includes health.message, "Ebook legacy direct-download staging"
+        assert_includes health.message, "contains retained entries"
+        refute_includes health.message, "Error:"
+        refute_includes health.message, ebook_dir
+      end
+    end
+  end
+
+  test "records a filesystem error for one output path without failing the job" do
+    Dir.mktmpdir do |ebook_dir|
+      missing_audiobook = File.join(ebook_dir, "audiobooks")
+      setup_output_paths(missing_audiobook, ebook_dir)
+
+      exist = Dir.method(:exist?)
+      Dir.stub(:exist?, ->(path) {
+        raise Errno::EACCES, "Permission denied" if path == missing_audiobook
+
+        exist.call(path)
+      }) do
+        HealthCheckJob.perform_now(service: "output_paths")
+      end
+
+      health = SystemHealth.for_service("output_paths")
+      assert health.degraded?
+      assert_includes health.message, "Audiobook path could not be checked"
+      refute_includes health.message, "Error:"
+    end
+  end
+
+  test "keeps leftover inspect failures from the diagnostic instead of a generic error" do
+    Dir.mktmpdir("legacy-audiobooks") do |audiobook_dir|
+      Dir.mktmpdir("legacy-ebooks") do |ebook_dir|
+        setup_output_paths(audiobook_dir, ebook_dir)
+
+        original_lstat = File.method(:lstat)
+        File.stub(:lstat, ->(path) {
+          if File.basename(path.to_s) == DirectDownloadFileService::LEGACY_STAGING_DIRECTORY
+            raise Errno::EIO, "Input/output error"
+          end
+
+          original_lstat.call(path)
+        }) do
+          HealthCheckJob.perform_now(service: "output_paths")
+        end
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.degraded?
+        assert_includes health.message, "Audiobook legacy direct-download staging"
+        assert_includes health.message, "Ebook legacy direct-download staging"
+        assert_includes health.message, "could not be safely inspected"
+        refute_includes health.message, "Error:"
+        refute_includes health.message, audiobook_dir
+        refute_includes health.message, ebook_dir
       end
     end
   end
