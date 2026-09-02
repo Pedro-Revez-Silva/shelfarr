@@ -215,6 +215,9 @@ class HealthCheckJob < ApplicationJob
     else
       health.check_failed!(message: issues.join("; "))
     end
+  rescue => e
+    health.check_failed!(message: "Error: #{e.message}")
+    Rails.logger.error "[HealthCheckJob] Output paths check failed: #{e.message}"
   end
 
   def check_path(name, path)

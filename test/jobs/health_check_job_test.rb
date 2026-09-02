@@ -482,6 +482,40 @@ class HealthCheckJobTest < ActiveJob::TestCase
     assert_includes health.message, "not configured"
   end
 
+  test "marks output_paths as down when filesystem check raises an exception" do
+    Dir.mktmpdir do |valid_dir|
+      setup_output_paths(valid_dir, "/another/valid/path")
+
+      # Simulate a filesystem error during checks
+      Dir.stub(:exist?, -> (path) { raise Errno::EACCES, "Permission denied" }) do
+        HealthCheckJob.perform_now(service: "output_paths")
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.down?
+        assert_includes health.message, "Error"
+      end
+    end
+  end
+
+  test "marks output_paths as down when legacy_staging_diagnostic raises an exception" do
+    Dir.mktmpdir do |audiobook_dir|
+      Dir.mktmpdir do |ebook_dir|
+        setup_output_paths(audiobook_dir, ebook_dir)
+
+        # Simulate an error in legacy_staging_diagnostic
+        DirectDownloadFileService.stub(:legacy_staging_diagnostic, -> (root:) {
+          raise Errno::EIO, "Input/output error"
+        }) do
+          HealthCheckJob.perform_now(service: "output_paths")
+
+          health = SystemHealth.for_service("output_paths")
+          assert health.down?
+          assert_includes health.message, "Error"
+        end
+      end
+    end
+  end
+
   # Audiobookshelf tests
   test "marks audiobookshelf as not_configured when not configured" do
     Setting.where(key: %w[audiobookshelf_url audiobookshelf_api_key]).destroy_all
