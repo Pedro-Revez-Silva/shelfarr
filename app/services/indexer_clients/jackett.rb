@@ -27,7 +27,7 @@ module IndexerClients
         cats = categories || categories_for_type(book_type)
         params[:cat] = Array(cats).join(",") if cats.present?
 
-        response = request { connection.get(search_path, params) }
+        response = request(idempotent: true) { connection.get(search_path, params) }
         handle_response(response) { |body| parse_results(body, limit: limit) }
       end
 
@@ -38,9 +38,11 @@ module IndexerClients
       def test_connection
         ensure_configured!
 
-        response = connection.get(search_path, { apikey: api_key, t: "caps" })
+        response = request(idempotent: true) do
+          connection.get(search_path, { apikey: api_key, t: "caps" })
+        end
         response.status == 200
-      rescue IndexerClients::Base::Error, Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError
+      rescue IndexerClients::Base::Error
         false
       end
 
@@ -86,8 +88,6 @@ module IndexerClients
         else
           raise Base::Error, "#{display_name} API error: #{response.status}"
         end
-      rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-        raise Base::ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
       end
 
       def parse_results(xml, limit:)

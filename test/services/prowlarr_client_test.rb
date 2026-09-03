@@ -655,10 +655,11 @@ class ProwlarrClientTest < ActiveSupport::TestCase
   # SSL error handling tests
   test "test_connection returns false on SSL error" do
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/indexer")
+      request = stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
 
       assert_not ProwlarrClient.test_connection
+      assert_requested request, times: 1
     end
   end
 
@@ -670,6 +671,55 @@ class ProwlarrClientTest < ActiveSupport::TestCase
       assert_raises ProwlarrClient::ConnectionError do
         ProwlarrClient.search("test query")
       end
+    end
+  end
+
+  test "test_connection retries one transient connection failure" do
+    VCR.turned_off do
+      request = stub_request(:get, "http://localhost:9696/api/v1/indexer")
+        .to_raise(Faraday::ConnectionFailed.new("Connection refused"))
+        .then
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert ProwlarrClient.test_connection
+      assert_requested request, times: 2
+    end
+  end
+
+  test "search retries one transient timeout" do
+    VCR.turned_off do
+      request = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_raise(Faraday::TimeoutError.new("execution expired"))
+        .then
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert_equal [], ProwlarrClient.search("test")
+      assert_requested request, times: 2
+    end
+  end
+
+  test "search stops after one retry when connection failures persist" do
+    VCR.turned_off do
+      request = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_raise(Faraday::ConnectionFailed.new("Connection reset by peer"))
+
+      assert_raises ProwlarrClient::ConnectionError do
+        ProwlarrClient.search("test")
+      end
+      assert_requested request, times: 2
+    end
+  end
+
+  test "search does not retry API responses" do
+    VCR.turned_off do
+      request = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return(status: 503, body: { error: "unavailable" }.to_json,
+          headers: { "Content-Type" => "application/json" })
+
+      assert_raises ProwlarrClient::Error do
+        ProwlarrClient.search("test")
+      end
+      assert_requested request, times: 1
     end
   end
 

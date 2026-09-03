@@ -110,4 +110,21 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
       assert IndexerClients::Jackett.test_connection
     end
   end
+
+  test "search retries one transient connection failure" do
+    VCR.turned_off do
+      request = stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "jackett-api-key", "t" => "search"))
+        .to_raise(Faraday::ConnectionFailed.new("connection reset"))
+        .then
+        .to_return(
+          status: 200,
+          body: "<rss><channel></channel></rss>",
+          headers: { "Content-Type" => "application/xml" }
+        )
+
+      assert_equal [], IndexerClients::Jackett.search("test", book_type: :ebook)
+      assert_requested request, times: 2
+    end
+  end
 end

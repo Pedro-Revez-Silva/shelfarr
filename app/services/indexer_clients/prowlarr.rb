@@ -33,7 +33,7 @@ module IndexerClients
       def indexers
         ensure_configured!
 
-        response = request { connection.get("api/v1/indexer") }
+        response = request(idempotent: true) { connection.get("api/v1/indexer") }
         handle_response(response) { |data| Array(data) }
       end
 
@@ -85,9 +85,9 @@ module IndexerClients
       def test_connection
         ensure_configured!
 
-        response = connection.get("api/v1/indexer")
+        response = request(idempotent: true) { connection.get("api/v1/indexer") }
         response.status == 200
-      rescue IndexerClients::Base::Error, Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError
+      rescue IndexerClients::Base::Error
         false
       end
 
@@ -100,7 +100,7 @@ module IndexerClients
       def configured_tag_ids_for_names(tag_names)
         return [] if tag_names.empty?
 
-        response = request { connection.get("api/v1/tag") }
+        response = request(idempotent: true) { connection.get("api/v1/tag") }
         handle_response(response) do |tags|
           tag_lookup = {}
 
@@ -163,8 +163,6 @@ module IndexerClients
         else
           raise Base::Error, "Prowlarr API error: #{response.status}"
         end
-      rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-        raise Base::ConnectionError, "Failed to connect to Prowlarr: #{e.message}"
       end
 
       def parse_result(item)
@@ -219,7 +217,7 @@ module IndexerClients
         params[:categories] = Array(categories) if categories.present?
         params[:indexerIds] = indexer_ids if indexer_ids.present?
 
-        response = request { connection.get("api/v1/search", params) }
+        response = request(idempotent: true) { connection.get("api/v1/search", params) }
 
         handle_response(response) { |data| Array(data) }
       end
