@@ -655,10 +655,11 @@ class ProwlarrClientTest < ActiveSupport::TestCase
   # SSL error handling tests
   test "test_connection returns false on SSL error" do
     VCR.turned_off do
-      stub_request(:get, "http://localhost:9696/api/v1/indexer")
+      request = stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
 
       assert_not ProwlarrClient.test_connection
+      assert_requested request, times: 1
     end
   end
 
@@ -673,77 +674,52 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "test_connection resets memoized connection on connection failure to allow recovery" do
+  test "test_connection retries one transient connection failure" do
     VCR.turned_off do
-      # First test_connection succeeds
-      stub_request(:get, "http://localhost:9696/api/v1/indexer")
-        .to_return(status: 200, body: "[]")
-
-      assert ProwlarrClient.test_connection, "Initial connection should succeed"
-
-      # Simulate remote closing the connection (e.g., Kestrel keep-alive idle timeout)
-      # The memoized Faraday connection becomes stale and raises ConnectionFailed
-      stub_request(:get, "http://localhost:9696/api/v1/indexer")
+      request = stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .to_raise(Faraday::ConnectionFailed.new("Connection refused"))
-
-      # Without the fix, this would return false but leave the stale connection
-      assert_not ProwlarrClient.test_connection, "Connection failure should be detected"
-
-      # Now the remote is back online
-      stub_request(:get, "http://localhost:9696/api/v1/indexer")
-        .to_return(status: 200, body: "[]")
-
-      # With the fix, this should succeed because the stale connection was reset
-      # Without the fix, this would continue to fail because it reuses the dead connection
-      assert ProwlarrClient.test_connection, "Connection should recover after reset"
-    end
-  end
-
-  test "test_connection resets memoized connection on timeout to allow recovery" do
-    VCR.turned_off do
-      # First connection succeeds
-      stub_request(:get, "http://localhost:9696/api/v1/indexer")
-        .to_return(status: 200, body: "[]")
-
-      assert ProwlarrClient.test_connection, "Initial connection should succeed"
-
-      # Simulate timeout on the memoized connection
-      stub_request(:get, "http://localhost:9696/api/v1/indexer")
-        .to_raise(Faraday::TimeoutError.new("execution expired"))
-
-      assert_not ProwlarrClient.test_connection, "Timeout should be detected"
-
-      # Remote is responsive again
-      stub_request(:get, "http://localhost:9696/api/v1/indexer")
-        .to_return(status: 200, body: "[]")
-
-      # Should recover after timeout clears the memoized connection
-      assert ProwlarrClient.test_connection, "Connection should recover after timeout"
-    end
-  end
-
-  test "search resets memoized connection on connection error to allow recovery" do
-    VCR.turned_off do
-      # First search succeeds
-      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .then
         .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
 
-      assert_equal [], ProwlarrClient.search("test"), "Initial search should succeed"
+      assert ProwlarrClient.test_connection
+      assert_requested request, times: 2
+    end
+  end
 
-      # Connection fails
-      stub_request(:get, %r{localhost:9696/api/v1/search})
+  test "search retries one transient timeout" do
+    VCR.turned_off do
+      request = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_raise(Faraday::TimeoutError.new("execution expired"))
+        .then
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert_equal [], ProwlarrClient.search("test")
+      assert_requested request, times: 2
+    end
+  end
+
+  test "search stops after one retry when connection failures persist" do
+    VCR.turned_off do
+      request = stub_request(:get, %r{localhost:9696/api/v1/search})
         .to_raise(Faraday::ConnectionFailed.new("Connection reset by peer"))
 
       assert_raises ProwlarrClient::ConnectionError do
         ProwlarrClient.search("test")
       end
+      assert_requested request, times: 2
+    end
+  end
 
-      # Remote is back online
-      stub_request(:get, %r{localhost:9696/api/v1/search})
-        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+  test "search does not retry API responses" do
+    VCR.turned_off do
+      request = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return(status: 503, body: { error: "unavailable" }.to_json,
+          headers: { "Content-Type" => "application/json" })
 
-      # Should recover after connection error cleared the memoized connection
-      assert_equal [], ProwlarrClient.search("test"), "Search should recover after connection reset"
+      assert_raises ProwlarrClient::Error do
+        ProwlarrClient.search("test")
+      end
+      assert_requested request, times: 1
     end
   end
 

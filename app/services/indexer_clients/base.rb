@@ -46,10 +46,22 @@ module IndexerClients
         raise NotConfiguredError, "#{display_name} is not configured" unless configured?
       end
 
-      def request
-        yield
-      rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-        reset_connection!
+      def request(idempotent: false)
+        retried = false
+
+        begin
+          yield
+        rescue Faraday::SSLError => e
+          raise ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
+        rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
+          unless idempotent && !retried
+            raise ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
+          end
+
+          retried = true
+          retry
+        end
+      rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
         raise ConnectionError, "Failed to connect to #{display_name}: #{e.message}"
       rescue InvalidUrlError => e
         # Preserve connection-error classification for malformed stored URLs so

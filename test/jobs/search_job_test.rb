@@ -1822,7 +1822,7 @@ class SearchJobTest < ActiveJob::TestCase
 
       assert_requested structured_stub
       assert_requested categorized_generic_stub
-      assert_requested broad_stub
+      assert_requested broad_stub, times: 2
       assert_equal [ payload["title"] ], @request.search_results.pluck(:title)
     end
   end
