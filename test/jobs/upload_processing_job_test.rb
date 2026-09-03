@@ -719,6 +719,43 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     assert request.request_events.exists?(event_type: "upload_fulfilled")
   end
 
+  test "targeted upload uses its request language for both directory and filename" do
+    request = requests(:pending_request)
+    request.update!(language: "es")
+    request.book.update!(language: "en")
+    Request.create!(
+      book: request.book,
+      user: users(:two),
+      language: "fr",
+      status: :downloading
+    )
+    SettingsService.set(:ebook_path_template, "{language}/{author}/{title}")
+    SettingsService.set(:ebook_filename_template, "{language}-{title}")
+    ebook_file = File.join(@temp_source, "Localized Ebook.epub")
+    File.binwrite(ebook_file, "localized ebook content")
+    upload = Upload.create!(
+      user: @user,
+      request: request,
+      original_filename: "Localized Ebook.epub",
+      file_path: ebook_file,
+      file_size: File.size(ebook_file),
+      status: :pending
+    )
+
+    UploadProcessingJob.perform_now(upload.id)
+
+    expected_directory = File.join(
+      @temp_ebook_dest,
+      "es",
+      request.book.author,
+      request.book.title
+    )
+    assert upload.reload.completed?
+    assert_equal expected_directory, request.book.reload.file_path
+    assert File.exist?(File.join(expected_directory, "es-#{request.book.title}.epub"))
+    refute File.exist?(File.join(expected_directory, "fr-#{request.book.title}.epub"))
+  end
+
   test "targeted upload completes an awaiting purchase request" do
     request = requests(:pending_request)
     request.update!(status: :awaiting_purchase)

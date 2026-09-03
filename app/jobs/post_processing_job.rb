@@ -91,7 +91,15 @@ class PostProcessingJob < ApplicationJob
       end
 
       base_path = get_base_path(book)
-      destination = build_destination_path(book, base_path: base_path)
+      import_language = PathTemplateService.language_code_for(
+        book,
+        request: request
+      )
+      destination = build_destination_path(
+        book,
+        base_path: base_path,
+        language: import_language
+      )
       source_resolution = remap_download_path(download.download_path, download)
       source_path = source_resolution[:path]
       if source_path_unavailable?(source_path)
@@ -116,6 +124,7 @@ class PostProcessingJob < ApplicationJob
           destination,
           book: book,
           base_path: base_path,
+          language: import_language,
           require_durable: move_completed_downloads? || remove_usenet_download,
           source_authorization: source_authorization
         )
@@ -629,9 +638,15 @@ class PostProcessingJob < ApplicationJob
       download.external_id.present?
   end
 
-  def build_destination_path(book, base_path: nil)
+  def build_destination_path(book, base_path: nil, language: nil, request: nil, search_result: nil)
     base_path ||= get_base_path(book)
-    PathTemplateService.build_destination(book, base_path: base_path)
+    PathTemplateService.build_destination(
+      book,
+      base_path: base_path,
+      language: language,
+      request: request,
+      search_result: search_result
+    )
   end
 
   # Flat imports write into the shared output root, so the root must not be
@@ -667,6 +682,7 @@ class PostProcessingJob < ApplicationJob
     destination,
     book: nil,
     base_path: nil,
+    language: nil,
     require_durable: false,
     source_authorization: nil
   )
@@ -713,7 +729,7 @@ class PostProcessingJob < ApplicationJob
     source_cleanup = nil
 
     if directory_source
-      import_directory(source, destination, book: book, base_path: base_path)
+      import_directory(source, destination, book: book, base_path: base_path, language: language)
       source_root = @import_source_root
       imported_source_files = @imported_source_files.dup.freeze
       destination_snapshots = @verified_library_snapshots.values.flatten.freeze
@@ -735,7 +751,7 @@ class PostProcessingJob < ApplicationJob
     else
       # Import single file with renamed filename based on template
       ensure_real_import_directory!(destination)
-      import_renamed_file(source, destination, book)
+      import_renamed_file(source, destination, book, language: language)
       source_snapshot = @import_source_file_snapshot
       if source_snapshot && move_completed_downloads?
         destination_snapshot = @verified_library_snapshots.fetch(Pathname(source).expand_path.to_s).sole
@@ -821,8 +837,8 @@ class PostProcessingJob < ApplicationJob
       right.start_with?("#{left}#{File::SEPARATOR}")
   end
 
-  def import_directory(source, destination, book:, base_path:)
-    bundle_plan = audiobook_bundle_import_plan(source, book, base_path: base_path)
+  def import_directory(source, destination, book:, base_path:, language: nil)
+    bundle_plan = audiobook_bundle_import_plan(source, book, base_path: base_path, language: language)
     if bundle_plan
       import_split_audiobook_bundle(bundle_plan)
       return
@@ -839,21 +855,22 @@ class PostProcessingJob < ApplicationJob
       source_file = File.join(source, file)
 
       if readable_file_import?(book)
-        import_ebook_directory_entry(source_file, destination, book)
+        import_ebook_directory_entry(source_file, destination, book, language: language)
       else
         import_directory_entry(source_file, destination)
       end
     end
   end
 
-  def audiobook_bundle_import_plan(source, book, base_path:)
+  def audiobook_bundle_import_plan(source, book, base_path:, language: nil)
     return unless book&.audiobook?
     return unless SettingsService.get(:split_audiobook_bundle_imports, default: false)
 
     AudiobookBundleImportPlanner.call(
       source: source,
       book: book,
-      base_path: base_path || get_base_path(book)
+      base_path: base_path || get_base_path(book),
+      language: language
     )
   end
 
@@ -881,13 +898,13 @@ class PostProcessingJob < ApplicationJob
     import_file_without_duplicate_content(source_file, destination_file)
   end
 
-  def import_ebook_directory_entry(source_file, destination, book)
+  def import_ebook_directory_entry(source_file, destination, book, language: nil)
     if File.directory?(source_file) && !File.symlink?(source_file)
       source_manifest_children(source_file).reject { |file| file.start_with?(".") }.each do |file|
-        import_ebook_directory_entry(File.join(source_file, file), destination, book)
+        import_ebook_directory_entry(File.join(source_file, file), destination, book, language: language)
       end
     elsif allowed_ebook_import_file?(source_file) && ebook_file?(source_file)
-      import_renamed_file(source_file, destination, book)
+      import_renamed_file(source_file, destination, book, language: language)
     elsif allowed_ebook_import_file?(source_file)
       import_sidecar_file(source_file, destination)
     else
@@ -1018,8 +1035,8 @@ class PostProcessingJob < ApplicationJob
     import_file_without_duplicate_content(source_file, destination_file)
   end
 
-  def import_renamed_file(source, destination, book)
-    destination_file = renamed_destination_file(source, destination, book)
+  def import_renamed_file(source, destination, book, language: nil)
+    destination_file = renamed_destination_file(source, destination, book, language: language)
     Rails.logger.info "[PostProcessingJob] Applying the configured library filename template"
     destination_file = import_file_without_duplicate_content(source, destination_file)
     @imported_renamed_files << destination_file
@@ -1373,9 +1390,13 @@ class PostProcessingJob < ApplicationJob
     nil
   end
 
-  def renamed_destination_file(source, destination, book)
+  def renamed_destination_file(source, destination, book, language: nil)
     extension = File.extname(source)
-    new_filename = book ? PathTemplateService.build_filename(book, extension) : File.basename(source)
+    new_filename = if book
+      PathTemplateService.build_filename(book, extension, language: language)
+    else
+      File.basename(source)
+    end
     destination_file = File.join(destination, new_filename)
 
     destination_file

@@ -765,7 +765,7 @@ class UploadImportFileService
     end
   end
 
-  def initialize(upload:, book:)
+  def initialize(upload:, book:, language: nil)
     raise Error, "Archive uploads do not support crash-safe single-file publication" if self.class.archive_upload?(upload)
 
     @upload = upload
@@ -784,12 +784,13 @@ class UploadImportFileService
     end
     @flat_output = PathTemplateService.flat_output?(book)
     @planned_directory = Pathname(
-      PathTemplateService.build_destination(book, base_path: @root.to_s)
+      PathTemplateService.build_destination(book, base_path: @root.to_s, language: language)
     ).expand_path
     self.class.send(:validate_path_within_root!, @planned_directory, @root) unless @flat_output
     @planned_filename = PathTemplateService.build_filename(
       book,
-      File.extname(upload.original_filename)
+      File.extname(upload.original_filename),
+      language: language
     )
   end
 

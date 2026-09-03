@@ -25,10 +25,11 @@ class AudiobookBundleImportPlanner
     new(...).call
   end
 
-  def initialize(source:, book:, base_path:)
+  def initialize(source:, book:, base_path:, language: nil)
     @source = source
     @book = book
     @base_path = base_path
+    @language = language
   end
 
   def call
@@ -63,7 +64,7 @@ class AudiobookBundleImportPlanner
 
   private
 
-  attr_reader :source, :book, :base_path
+  attr_reader :source, :book, :base_path, :language
 
   def immediate_source_paths
     Dir.children(source).map { |entry| File.join(source, entry) }
@@ -109,7 +110,9 @@ class AudiobookBundleImportPlanner
   end
 
   def destination_for(virtual_book)
-    return PathTemplateService.build_destination(virtual_book, base_path: base_path) unless PathTemplateService.flat_output?(book)
+    unless PathTemplateService.flat_output?(book)
+      return PathTemplateService.build_destination(virtual_book, base_path: base_path, language: language)
+    end
 
     File.join(base_path, sanitize_path_segment(virtual_book.title))
   end

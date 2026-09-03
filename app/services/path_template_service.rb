@@ -16,8 +16,31 @@ class PathTemplateService
 
   class << self
     # Build a relative path from a template and book metadata
-    def build_path(book, template)
-      render_path_template(book, template)
+    def build_path(book, template, language: nil, request: nil, search_result: nil)
+      resolved_language = language_for_template(
+        book,
+        template,
+        language: language,
+        request: request,
+        search_result: search_result
+      )
+      render_path_template(
+        book,
+        template,
+        language: resolved_language
+      )
+    end
+
+    # ISO language code for {language}: request or download when available,
+    # then the book column, then the configured default.
+    def language_code_for(book, language: nil, request: nil, search_result: nil)
+      normalize_language_code(language).presence ||
+        request_language_code(request) ||
+        search_result_language_code(search_result) ||
+        associated_request_language_code(book) ||
+        book_language_code(book) ||
+        normalize_language_code(SettingsService.get(:default_language)) ||
+        "en"
     end
 
     # True when the book's path template is blank, meaning files are written
@@ -87,10 +110,16 @@ class PathTemplateService
     end
 
     # Build the full destination path for a book
-    def build_destination(book, base_path: nil)
+    def build_destination(book, base_path: nil, language: nil, request: nil, search_result: nil)
       base = base_path || default_base_path(book)
       template = template_for(book)
-      relative_path = build_path(book, template)
+      relative_path = build_path(
+        book,
+        template,
+        language: language,
+        request: request,
+        search_result: search_result
+      )
 
       relative_path.present? ? File.join(base, relative_path) : base
     end
@@ -100,9 +129,21 @@ class PathTemplateService
     # @param extension [String] the file extension (e.g., ".epub", ".m4b")
     # @param template [String, nil] optional template override
     # @return [String] the sanitized filename with extension
-    def build_filename(book, extension, template: nil)
+    def build_filename(book, extension, template: nil, language: nil, request: nil, search_result: nil)
       template ||= filename_template_for(book)
-      result = render_filename_template(book, sanitize_filename_template(template))
+      template = sanitize_filename_template(template)
+      resolved_language = language_for_template(
+        book,
+        template,
+        language: language,
+        request: request,
+        search_result: search_result
+      )
+      result = render_filename_template(
+        book,
+        template,
+        language: resolved_language
+      )
       result = "Unknown" if result.blank?
 
       # Ensure extension starts with a dot
@@ -168,10 +209,10 @@ class PathTemplateService
         .join("/")
     end
 
-    def render_path_template(book, template)
+    def render_path_template(book, template, language:)
       return "" if template.blank?
 
-      result = render_template(book, template, variant: :path)
+      result = render_template(book, template, variant: :path, language: language)
       sanitized = sanitize_path(cleanup_path_result(result))
       if LibraryPathSafety.internal_relative_path?(sanitized)
         raise UnsafePathError, "Rendered library path uses a Shelfarr internal staging directory"
@@ -180,23 +221,24 @@ class PathTemplateService
       sanitized
     end
 
-    def render_filename_template(book, template)
-      result = render_template(book, template, variant: :filename)
+    def render_filename_template(book, template, language:)
+      result = render_template(book, template, variant: :filename, language: language)
       cleanup_filename_result(sanitize_filename(result))
     end
 
-    def render_template(book, template, variant:)
+    def render_template(book, template, variant:, language:)
+      values = template_values(book, language: language)
       template.to_s.gsub(TOKEN_PATTERN) do
         expression = Regexp.last_match(1)
-        render_expression(book, expression, variant: variant)
+        render_expression(expression, values, variant: variant)
       end
     end
 
-    def render_expression(book, expression, variant:)
+    def render_expression(expression, values, variant:)
       token = parse_expression(expression)
       return "{#{expression}}" if token.nil?
 
-      value_definition = template_values(book)[token[:name]]
+      value_definition = values[token[:name]]
       return "{#{expression}}" if value_definition.nil?
 
       rendered_value = formatted_value(
@@ -228,7 +270,7 @@ class PathTemplateService
       value.to_s
     end
 
-    def template_values(book)
+    def template_values(book, language:)
       {
         "author" => {
           value: book.author,
@@ -251,7 +293,7 @@ class PathTemplateService
           filename: ""
         },
         "language" => {
-          value: book.language.presence || "en",
+          value: language,
           path: "en",
           filename: "en"
         },
@@ -293,6 +335,83 @@ class PathTemplateService
 
     def fallback_value(value_definition, variant)
       value_definition.fetch(variant)
+    end
+
+    def search_result_language_code(search_result)
+      return unless search_result
+
+      if search_result.respond_to?(:detected_language)
+        normalize_language_code(search_result.detected_language)
+      elsif search_result.respond_to?(:language)
+        normalize_language_code(search_result.language)
+      end
+    end
+
+    def language_for_template(book, template, language:, request:, search_result:)
+      return unless template_uses_language?(template)
+
+      language_code_for(book, language: language, request: request, search_result: search_result)
+    end
+
+    def template_uses_language?(template)
+      extract_template_expressions(template).any? do |expression|
+        parse_expression(expression)&.fetch(:name) == "language"
+      end
+    end
+
+    def request_language_code(request)
+      return unless request
+
+      if request.respond_to?(:effective_language)
+        normalize_language_code(request.effective_language)
+      elsif request.respond_to?(:language)
+        normalize_language_code(request.language)
+      end
+    end
+
+    def associated_request_language_code(book)
+      request_language_code(associated_request(book))
+    end
+
+    def associated_request(book)
+      return unless book.respond_to?(:persisted?) && book.persisted?
+      return unless book.respond_to?(:requests)
+
+      if book.respond_to?(:association) && book.association(:requests).loaded?
+        return prefer_request(book.requests.to_a)
+      end
+
+      book.requests.open.order(updated_at: :desc, id: :desc).first ||
+        book.requests.order(updated_at: :desc, id: :desc).first
+    end
+
+    def prefer_request(requests)
+      return if requests.blank?
+
+      requests.min_by do |request|
+        [
+          open_request?(request) ? 0 : 1,
+          -request.updated_at.to_f,
+          -request.id.to_i
+        ]
+      end
+    end
+
+    def open_request?(request)
+      Request::OPEN_STATUSES.include?(request.status.to_s)
+    end
+
+    def book_language_code(book)
+      return unless book.respond_to?(:language)
+
+      normalize_language_code(book.language)
+    end
+
+    def normalize_language_code(value)
+      code = value.to_s.strip.presence
+      return unless code
+
+      ReleaseParserService.supported_language_codes.find { |canonical| canonical.casecmp?(code) } || code
     end
 
     def parse_expression(expression)

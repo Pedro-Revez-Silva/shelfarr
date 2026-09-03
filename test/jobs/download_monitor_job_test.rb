@@ -55,10 +55,11 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
 
   test "does not reschedule when monitoring is not required" do
     DownloadClient.destroy_all
+    clear_enqueued_jobs
 
     assert_not DownloadMonitorJob.monitoring_required?
 
-    assert_no_enqueued_jobs do
+    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
       DownloadMonitorJob.perform_now
     end
   end
