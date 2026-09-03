@@ -187,6 +187,34 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "es - The Shining.m4b", result
   end
 
+  test "preserves canonical regional language case for {language}" do
+    @book.update!(language: "en")
+    request = Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "pt-BR",
+      status: :downloading
+    )
+
+    path = PathTemplateService.build_path(@book, "{language}/{title}", request: request)
+    filename = PathTemplateService.build_filename(
+      @book,
+      ".m4b",
+      template: "{language} - {title}",
+      request: request
+    )
+
+    assert_equal "pt-BR/The Shining", path
+    assert_equal "pt-BR - The Shining.m4b", filename
+  end
+
+  test "maps a case-insensitive language code to the canonical key" do
+    @book.update!(language: "pt-br")
+
+    result = PathTemplateService.build_path(@book, "{language}/{title}")
+    assert_equal "pt-BR/The Shining", result
+  end
+
   test "explicit request language is consistent across path and filename with a newer competing request" do
     request = Request.create!(
       book: @book,

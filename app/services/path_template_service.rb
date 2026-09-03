@@ -408,7 +408,10 @@ class PathTemplateService
     end
 
     def normalize_language_code(value)
-      value.to_s.strip.downcase.presence
+      code = value.to_s.strip.presence
+      return unless code
+
+      ReleaseParserService.supported_language_codes.find { |canonical| canonical.casecmp?(code) } || code
     end
 
     def parse_expression(expression)
