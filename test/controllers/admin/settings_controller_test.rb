@@ -247,7 +247,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "label", text: "Pre-create Download Archives"
     assert_select "input[name='settings[precreate_download_archives]']"
-    assert_select "p", text: /tmpfs plus a large book can OOM-kill the worker/
+    assert_select "p", text: /Cached archives use tmp\/downloads/
+    assert_select "p", text: /reference-mode directory downloads use the container's OS temp directory/
   end
 
   test "index shows completed download import mode options and hardlink guidance" do
