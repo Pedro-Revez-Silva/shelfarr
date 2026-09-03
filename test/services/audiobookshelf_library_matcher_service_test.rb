@@ -440,6 +440,8 @@ class AudiobookshelfLibraryMatcherServiceTest < ActiveSupport::TestCase
     assert_equal [ item.id ], renamed.map { |match| match.item.id }
     assert_equal 100, renamed.first.score
     assert stale.none? { |match| match.item.id == item.id }
+    assert_empty matcher.instance_variable_get(:@prepared_items)
+    assert_equal 0, matcher.instance_variable_get(:@cached_item_trigram_count)
   end
 
   test "optimized scoring stays equivalent to the original algorithm" do
@@ -506,6 +508,26 @@ class AudiobookshelfLibraryMatcherServiceTest < ActiveSupport::TestCase
       assert_equal reference, computed, [ left, right ].inspect
       assert_equal reference, precomputed, [ left, right ].inspect
     end
+  end
+
+  test "falls back to uncached scoring after the item trigram budget is exhausted" do
+    matcher = AudiobookshelfLibraryMatcherService.new
+    matcher.singleton_class.define_method(:max_cached_trigrams) { 1 }
+    counts = Hash.new(0)
+    instrument_matcher_prep(matcher, counts)
+    item = LibraryItem.find_by!(audiobookshelf_id: "ab-1")
+
+    prepared = matcher.send(:prepared_item, item)
+    first = serialize_matches(matcher.matches_for(title: "The Hobbit", author: "Tolkien", limit: 3))
+    after_first = counts[:trigrams]
+    second = serialize_matches(matcher.matches_for(title: "The Hobbit", author: "Tolkien", limit: 3))
+
+    assert_nil prepared.title_trigrams_by_title
+    assert_nil prepared.author_trigrams
+    assert_equal first, second
+    assert_equal [ [ item.id, 86, :possible ] ], first
+    assert_operator counts[:trigrams] - after_first, :>, 2
+    assert_operator matcher.instance_variable_get(:@cached_item_trigram_count), :<=, 1
   end
 
   private

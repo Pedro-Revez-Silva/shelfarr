@@ -17,10 +17,18 @@ class AudiobookshelfLibraryMatcherService
 
   FuzzyThreshold = 85
   MaxMatchTextLength = 500
+  TrigramCodepointBase = 0x110000
+  EmptyTrigrams = [].freeze
+  # A matcher can scan thousands of externally sourced records. Bound retained
+  # trigram entries so pathological metadata cannot turn this speed cache into
+  # a per-request memory spike; uncached entries still use identical scoring.
+  MaxCachedTrigrams = 1_000_000
+  private_constant :TrigramCodepointBase, :EmptyTrigrams, :MaxCachedTrigrams
 
   def initialize(cache_library_items: true)
     @cache_library_items = cache_library_items
     @prepared_items = {}
+    @cached_item_trigram_count = 0
   end
 
   def self.matches_for_many(results, limit_per_result: 3)
@@ -121,6 +129,8 @@ class AudiobookshelfLibraryMatcherService
   end
 
   def prepared_item(item)
+    return build_prepared_item(item, retain_trigrams: false) unless @cache_library_items
+
     key = item_prep_cache_key(item)
     return @prepared_items[key] if @prepared_items.key?(key)
 
@@ -131,7 +141,7 @@ class AudiobookshelfLibraryMatcherService
     [ item.id, item.title, item.subtitle, item.author ]
   end
 
-  def build_prepared_item(item)
+  def build_prepared_item(item, retain_trigrams: true)
     return nil if oversized_match_text?(item.title)
 
     item_title = normalize_text(item.title)
@@ -141,13 +151,43 @@ class AudiobookshelfLibraryMatcherService
     return nil if item_title.blank? && item_display_title.blank? && item_author.blank?
 
     titles = [ item_title, item_display_title ].uniq
+    title_trigrams_by_title, author_trigrams = if retain_trigrams
+      cacheable_item_trigrams(titles, item_author)
+    else
+      item_trigrams(titles, item_author)
+    end
     PreparedItem.new(
       title: item_title,
       titles: titles,
       author: item_author,
-      title_trigrams_by_title: titles.to_h { |title| [ title, title.present? ? trigrams(title) : Set.new ] },
-      author_trigrams: item_author.present? ? trigrams(item_author) : nil
+      title_trigrams_by_title: title_trigrams_by_title,
+      author_trigrams: author_trigrams
     )
+  end
+
+  def cacheable_item_trigrams(titles, author)
+    estimated_count = titles.sum { |title| estimated_trigram_count(title) } + estimated_trigram_count(author)
+    return [ nil, nil ] if @cached_item_trigram_count + estimated_count > max_cached_trigrams
+
+    title_trigrams, author_trigrams = item_trigrams(titles, author)
+    @cached_item_trigram_count += title_trigrams.sum { |_title, values| values.size }
+    @cached_item_trigram_count += author_trigrams.size if author_trigrams
+    [ title_trigrams, author_trigrams ]
+  end
+
+  def item_trigrams(titles, author)
+    [
+      titles.to_h { |title| [ title, title.present? ? trigrams(title) : EmptyTrigrams ] },
+      author.present? ? trigrams(author) : nil
+    ]
+  end
+
+  def estimated_trigram_count(text)
+    text.present? ? text.length + 2 : 0
+  end
+
+  def max_cached_trigrams
+    MaxCachedTrigrams
   end
 
   def match_score(query_title:, query_author:, item_titles:, item_author:,
@@ -204,14 +244,36 @@ class AudiobookshelfLibraryMatcherService
   end
 
   def trigram_overlap_size(left, right)
-    smaller, larger = left.size <= right.size ? [ left, right ] : [ right, left ]
-    smaller.count { |trigram| larger.include?(trigram) }
+    left_index = 0
+    right_index = 0
+    overlap = 0
+
+    while left_index < left.size && right_index < right.size
+      comparison = left[left_index] <=> right[right_index]
+      if comparison.negative?
+        left_index += 1
+      elsif comparison.positive?
+        right_index += 1
+      else
+        overlap += 1
+        left_index += 1
+        right_index += 1
+      end
+    end
+
+    overlap
   end
 
   def trigrams(text)
-    return Set.new if text.blank?
+    return EmptyTrigrams if text.blank?
 
-    padded = "  #{text}  "
-    (0..padded.length - 3).map { |i| padded[i, 3] }.to_set
+    codepoints = "  #{text}  ".codepoints
+    values = Array.new(codepoints.length - 2) do |index|
+      ((codepoints[index] * TrigramCodepointBase) + codepoints[index + 1]) * TrigramCodepointBase +
+        codepoints[index + 2]
+    end
+    values.sort!
+    values.uniq!
+    values.freeze
   end
 end
