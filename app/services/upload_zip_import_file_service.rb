@@ -350,7 +350,7 @@ class UploadZipImportFileService
     end
   end
 
-  def initialize(upload:, book:, max_bytes:, max_files:)
+  def initialize(upload:, book:, max_bytes:, max_files:, language: nil)
     raise Error, "Only audiobook ZIP uploads use this importer" unless self.class.archive_upload?(upload)
     if upload.destination_root.blank? && PathTemplateService.flat_output?(book)
       raise Error, "Audiobook ZIP uploads require a per-book path template"
@@ -375,7 +375,9 @@ class UploadZipImportFileService
     @planned_directory = if upload.library_path.present?
       Pathname(upload.library_path).expand_path
     else
-      Pathname(PathTemplateService.build_destination(book, base_path: @root.to_s)).expand_path
+      Pathname(
+        PathTemplateService.build_destination(book, base_path: @root.to_s, language: language)
+      ).expand_path
     end
     self.class.send(:validate_within_root!, @planned_directory, @root)
   end

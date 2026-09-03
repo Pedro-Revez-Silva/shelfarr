@@ -17,10 +17,17 @@ class PathTemplateService
   class << self
     # Build a relative path from a template and book metadata
     def build_path(book, template, language: nil, request: nil, search_result: nil)
+      resolved_language = language_for_template(
+        book,
+        template,
+        language: language,
+        request: request,
+        search_result: search_result
+      )
       render_path_template(
         book,
         template,
-        language: language_code_for(book, language: language, request: request, search_result: search_result)
+        language: resolved_language
       )
     end
 
@@ -124,10 +131,18 @@ class PathTemplateService
     # @return [String] the sanitized filename with extension
     def build_filename(book, extension, template: nil, language: nil, request: nil, search_result: nil)
       template ||= filename_template_for(book)
+      template = sanitize_filename_template(template)
+      resolved_language = language_for_template(
+        book,
+        template,
+        language: language,
+        request: request,
+        search_result: search_result
+      )
       result = render_filename_template(
         book,
-        sanitize_filename_template(template),
-        language: language_code_for(book, language: language, request: request, search_result: search_result)
+        template,
+        language: resolved_language
       )
       result = "Unknown" if result.blank?
 
@@ -329,6 +344,18 @@ class PathTemplateService
         normalize_language_code(search_result.detected_language)
       elsif search_result.respond_to?(:language)
         normalize_language_code(search_result.language)
+      end
+    end
+
+    def language_for_template(book, template, language:, request:, search_result:)
+      return unless template_uses_language?(template)
+
+      language_code_for(book, language: language, request: request, search_result: search_result)
+    end
+
+    def template_uses_language?(template)
+      extract_template_expressions(template).any? do |expression|
+        parse_expression(expression)&.fetch(:name) == "language"
       end
     end
 

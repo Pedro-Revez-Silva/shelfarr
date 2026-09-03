@@ -575,7 +575,7 @@ class OwnedMediaImportFileService
     end
   end
 
-  def initialize(media_import:, upload:, book:)
+  def initialize(media_import:, upload:, book:, language: nil)
     @media_import = media_import
     @upload = upload
     @book = book
@@ -596,14 +596,15 @@ class OwnedMediaImportFileService
 
     path_template = PathTemplateService.template_for(book)
     @flat_output = path_template.blank?
-    relative_directory = PathTemplateService.build_path(book, path_template)
+    relative_directory = PathTemplateService.build_path(book, path_template, language: language)
     @planned_directory = relative_directory.present? ?
       @output_root.join(relative_directory) : @output_root
     filename_template = PathTemplateService.filename_template_for(book)
     @planned_filename = PathTemplateService.build_filename(
       book,
       File.extname(upload.original_filename),
-      template: filename_template
+      template: filename_template,
+      language: language
     )
   end
 

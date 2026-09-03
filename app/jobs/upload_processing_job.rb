@@ -44,6 +44,7 @@ class UploadProcessingJob < ApplicationJob
     ordinary_file_service = nil
     zip_file_service = nil
     target_request = upload.request
+    target_language = target_request&.effective_language
     target_request_original_status = nil
     target_request_claimed = false
 
@@ -59,7 +60,8 @@ class UploadProcessingJob < ApplicationJob
           file_service = OwnedMediaImportFileService.new(
             media_import: owned_media_import,
             upload: upload,
-            book: upload.book
+            book: upload.book,
+            language: target_language
           )
         end
       end
@@ -130,7 +132,8 @@ class UploadProcessingJob < ApplicationJob
         OwnedMediaImportFileService.new(
           media_import: owned_media_import,
           upload: upload,
-          book: book
+          book: book,
+          language: target_language
         )
       end
 
@@ -145,7 +148,8 @@ class UploadProcessingJob < ApplicationJob
         apply_reserved_upload_metadata!(book, metadata:, extracted:, parsed:)
         ordinary_file_service = UploadImportFileService.new(
           upload: upload,
-          book: book
+          book: book,
+          language: target_language
         )
         ordinary_file_service.reserve!
         published_destination = ordinary_file_service.publish!
@@ -165,6 +169,7 @@ class UploadProcessingJob < ApplicationJob
         zip_file_service = UploadZipImportFileService.new(
           upload: upload,
           book: book,
+          language: target_language,
           max_bytes: MAX_AUDIOBOOK_ZIP_EXTRACTED_BYTES,
           max_files: MAX_AUDIOBOOK_ZIP_FILES
         )
@@ -218,7 +223,7 @@ class UploadProcessingJob < ApplicationJob
           elsif zip_file_service
             published_destination
           else
-            move_to_library(upload, book)
+            move_to_library(upload, book, language: target_language)
           end
 
           # Step 7: Update book with file path
@@ -896,14 +901,14 @@ class UploadProcessingJob < ApplicationJob
     )
   end
 
-  def move_to_library(upload, book)
+  def move_to_library(upload, book, language: nil)
     source_path = upload.file_path
 
     unless File.exist?(source_path)
       raise "Source file not found: #{source_path}"
     end
 
-    destination_dir = build_destination_path(book)
+    destination_dir = build_destination_path(book, language: language)
     if book.audiobook? && File.extname(upload.original_filename).casecmp?(".zip")
       raise "Audiobook ZIP upload was not initialized with its crash-safe importer"
     end
@@ -912,7 +917,7 @@ class UploadProcessingJob < ApplicationJob
 
     # Rename file to standardized format: "Author - Title.ext"
     extension = File.extname(upload.original_filename)
-    new_filename = build_filename(book, extension)
+    new_filename = build_filename(book, extension, language: language)
     original_destination_file = File.join(destination_dir, new_filename)
     destination_file = original_destination_file
 
@@ -950,8 +955,8 @@ class UploadProcessingJob < ApplicationJob
     raise error.message
   end
 
-  def build_filename(book, extension)
-    PathTemplateService.build_filename(book, extension)
+  def build_filename(book, extension, language: nil)
+    PathTemplateService.build_filename(book, extension, language: language)
   end
 
   def handle_duplicate_filename(path)
@@ -972,8 +977,8 @@ class UploadProcessingJob < ApplicationJob
     File.exist?(path) || File.symlink?(path)
   end
 
-  def build_destination_path(book)
-    PathTemplateService.build_destination(book)
+  def build_destination_path(book, language: nil)
+    PathTemplateService.build_destination(book, language: language)
   end
 
   def trigger_library_scan(book)

@@ -187,6 +187,46 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "es - The Shining.m4b", result
   end
 
+  test "explicit request language is consistent across path and filename with a newer competing request" do
+    request = Request.create!(
+      book: @book,
+      user: users(:one),
+      language: "es",
+      status: :downloading
+    )
+    Request.create!(
+      book: @book,
+      user: users(:two),
+      language: "fr",
+      status: :downloading
+    )
+
+    path = PathTemplateService.build_path(@book, "{language}/{title}", request: request)
+    filename = PathTemplateService.build_filename(
+      @book,
+      ".m4b",
+      template: "{language}-{title}",
+      request: request
+    )
+
+    assert_equal "es/The Shining", path
+    assert_equal "es-The Shining.m4b", filename
+  end
+
+  test "templates without language do not query associated requests" do
+    request_queries = []
+    callback = lambda do |_name, _start, _finish, _id, payload|
+      request_queries << payload[:sql] if payload[:sql].match?(/FROM \"requests\"/i)
+    end
+
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+      PathTemplateService.build_path(@book, "{author}/{title}")
+      PathTemplateService.build_filename(@book, ".m4b", template: "{author}-{title}")
+    end
+
+    assert_empty request_queries
+  end
+
   test "builds path with series variable" do
     @book.update!(series: "The Dark Tower")
     result = PathTemplateService.build_path(@book, "{author}/{series}/{title}")

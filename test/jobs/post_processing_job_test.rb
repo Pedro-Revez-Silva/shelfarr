@@ -2173,6 +2173,23 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(expected_path, "audiobook.mp3"))
   end
 
+  test "uses the processing request language for a renamed file when another request is newer" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_path_template, "{language}/{author}/{title}")
+    SettingsService.set(:audiobook_filename_template, "{language}-{title}")
+    @book.update!(language: "en")
+    @request.update!(language: "es")
+    Request.create!(book: @book, user: users(:two), language: "fr", status: :downloading)
+    @download.update!(download_path: File.join(@temp_source, "audiobook.mp3"))
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_path = File.join(@temp_dest_base, "es", @book.author, @book.title)
+    assert_equal expected_path, @book.reload.file_path
+    assert File.exist?(File.join(expected_path, "es-Test Audiobook.mp3"))
+    refute File.exist?(File.join(expected_path, "fr-Test Audiobook.mp3"))
+  end
+
   test "updates request status to completed after processing" do
     VCR.turned_off do
       stub_audiobookshelf_library(@temp_dest_base)

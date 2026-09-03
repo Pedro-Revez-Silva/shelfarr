@@ -29,11 +29,12 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
   test "uses request language for split destinations when the template includes {language}" do
     SettingsService.set(:audiobook_path_template, "{language}/{author}/{title}")
     @book = Book.create!(title: "Book Two", author: "Original Author", book_type: :audiobook, language: "en")
-    Request.create!(book: @book, user: users(:one), language: "es", status: :downloading)
+    request = Request.create!(book: @book, user: users(:one), language: "es", status: :downloading)
+    Request.create!(book: @book, user: users(:two), language: "fr", status: :downloading)
     write_file("Book One.m4b")
     write_file("Book Two.m4b")
 
-    plan = build_plan
+    plan = build_plan(language: request.effective_language)
 
     assert plan
     assert_equal(
@@ -450,8 +451,8 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
 
   private
 
-  def build_plan(base_path: @destination)
-    AudiobookBundleImportPlanner.call(source: @source, book: @book, base_path: base_path)
+  def build_plan(base_path: @destination, language: nil)
+    AudiobookBundleImportPlanner.call(source: @source, book: @book, base_path: base_path, language: language)
   end
 
   def write_file(name)
