@@ -1052,6 +1052,9 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal [ "Saga 7", "Saga #7", "Saga 007" ], attempts.map(&:query)
     assert attempts.none? { |attempt| attempt.query.include?(book.author) }
     assert_not_includes attempts.map(&:query), book.series
+
+    broad_attempts = SearchJob.new.send(:broad_generic_indexer_attempts, request)
+    assert_equal [ "Saga 7", "Saga #7", "Saga 007" ], broad_attempts.map(&:query)
   end
 
   test "falls back to series position only for confirmed Comic Vine issues" do
@@ -2794,6 +2797,95 @@ class SearchJobTest < ActiveJob::TestCase
         published_at: Time.current
       )
     }
+  end
+
+  test "uses only localized title from combined title/original pattern in indexer search" do
+    book = Book.new(title: "La Nena / The Girl")
+
+    assert_equal "La Nena", SearchJob.new.send(:search_title, book)
+  end
+
+  test "preserves original title when no slash separator is present" do
+    book = Book.new(title: "The Girl with the Dragon Tattoo")
+
+    assert_equal "The Girl with the Dragon Tattoo", SearchJob.new.send(:search_title, book)
+  end
+
+  test "handles titles with slashes that are not combined title separators" do
+    book = Book.new(title: "AC/DC: The Stories Behind the Songs")
+
+    assert_equal "AC/DC: The Stories Behind the Songs", SearchJob.new.send(:search_title, book)
+  end
+
+  test "retains both components and the combined title in generic indexer fallback attempts" do
+    book = Book.create!(title: "La Nena / The Girl", author: "Carmen Mola", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+
+    queries = SearchJob.new.send(:generic_indexer_attempts, request).map(&:query)
+
+    assert queries.any? { |query| query.include?("La Nena") && !query.include?(" / ") }
+    assert queries.any? { |query| query.include?("The Girl") && !query.include?(" / ") }
+    assert queries.any? { |query| query.include?("La Nena / The Girl") }
+  end
+
+  test "bounds combined-title indexer attempts and prioritizes exact aliases" do
+    book = Book.create!(
+      title: "Saga XII / Saga 12",
+      author: "Example Author",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "de")
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_operator attempts.size, :<=, SearchJob::MAX_GENERIC_SEARCH_ATTEMPTS
+    assert_equal(
+      [
+        "Saga XII DE",
+        "Saga XII Example Author DE",
+        "Saga 12 DE",
+        "Saga 12 Example Author DE",
+        "Saga XII / Saga 12 DE",
+        "Saga XII / Saga 12 Example Author DE"
+      ],
+      attempts.first(6).map(&:query)
+    )
+
+    broad_attempts = SearchJob.new.send(:broad_generic_indexer_attempts, request)
+    assert_operator broad_attempts.size, :<=, SearchJob::MAX_BROAD_SEARCH_ATTEMPTS
+    assert_includes broad_attempts.map(&:query), "Saga 12"
+  end
+
+  test "tries the original title with single-query providers after an empty localized result" do
+    book = Book.create!(
+      title: "La Nena / The Girl",
+      author: "Carmen Mola",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+    result = LibrivoxClient::Result.new(
+      id: "combined-title",
+      title: "The Girl",
+      author: book.author,
+      language: "en",
+      year: "2022",
+      file_type: "audiobook zip",
+      download_url: "https://example.com/the-girl.zip",
+      info_url: "https://example.com/the-girl",
+      duration: "01:00:00"
+    )
+    searched_titles = []
+    search = lambda do |title:, **|
+      searched_titles << title
+      title == "The Girl" ? [ result ] : []
+    end
+
+    tagged = LibrivoxClient.stub(:search, search) do
+      SearchJob.new.send(:search_librivox, request)
+    end
+
+    assert_equal [ "La Nena", "The Girl" ], searched_titles
+    assert_equal [ result ], tagged.map { |entry| entry[:result] }
   end
 
   def stub_prowlarr_indexers(indexers = STRUCTURED_INDEXERS)
