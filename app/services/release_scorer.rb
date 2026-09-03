@@ -63,6 +63,7 @@ class ReleaseScorer
     format_score = calculate_format_score
     auto_select_allowed = @format_preferences.auto_select_allowed &&
       !explicit_format_conflict? &&
+      !ambiguous_title_alias_match? &&
       (@comic_issue_match.nil? || issue_status == :exact)
     breakdown = {
       title: calculate_title_score,
@@ -121,16 +122,37 @@ class ReleaseScorer
     return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
 
     release_title = normalize_for_matching(@search_result.title)
-    book_title = normalize_for_matching(@book.title)
+    book_titles = SearchTitleVariantService.call(@book.title)
+      .map { |title| normalize_for_matching(title) }
+      .reject(&:blank?)
 
-    return 0 if release_title.blank? || book_title.blank?
+    return 0 if release_title.blank? || book_titles.empty?
 
-    # Check if book title appears in release title
-    if release_title.include?(book_title)
+    # Localized/original title aliases are equivalent only as complete phrases.
+    # Very short inferred titles are too collision-prone unless they lead the
+    # release name (for example, "It" must not match "The Institute").
+    if book_titles.any? { |title| exact_title_phrase_match?(release_title, title) }
       100
     else
-      trigram_similarity(release_title, book_title)
+      book_titles.map { |title| trigram_similarity(release_title, title) }.max
     end
+  end
+
+  def exact_title_phrase_match?(release_title, book_title)
+    phrase = /(?:\A|\s)#{Regexp.escape(book_title)}(?:\z|\s)/
+    return false unless release_title.match?(phrase)
+    return true if book_title.length >= 4
+
+    release_title == book_title || release_title.start_with?("#{book_title} ")
+  end
+
+  def ambiguous_title_alias_match?
+    variants = SearchTitleVariantService.call(@book.title)
+    return false if variants.length < 3
+
+    release_title = normalize_for_matching(@search_result.title)
+    full_title = normalize_for_matching(@book.title)
+    !exact_title_phrase_match?(release_title, full_title)
   end
 
   # Author matching score (0-100)

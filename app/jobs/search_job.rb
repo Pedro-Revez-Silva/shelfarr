@@ -18,6 +18,8 @@ class SearchJob < ApplicationJob
   # otherwise come back empty, so users see low-confidence candidates
   # instead of no results at all.
   LOW_CONFIDENCE_FALLBACK_LIMIT = 5
+  MAX_GENERIC_SEARCH_ATTEMPTS = 18
+  MAX_BROAD_SEARCH_ATTEMPTS = 6
 
   ROMAN_NUMERALS = {
     "I" => "1",
@@ -353,41 +355,33 @@ class SearchJob < ApplicationJob
     language_search_term(request)
   end
 
-  # Extract the appropriate search title from a book title that may contain
-  # combined localized/original titles (e.g., "La Nena / The Girl").
-  # Returns the first part before the slash separator to avoid sending
-  # the combined string as a literal search query.
+  # Prefer the localized component for providers that accept only one title.
+  # Generic indexer attempts retain every alias as a fallback.
   def search_title(book)
-    title = book.title.to_s
-    # Match pattern: "Text / Text" where the slash is surrounded by spaces
-    # and separates what appears to be a localized title from an English/original title
-    if title.match?(/\s+\/\s+/)
-      # Return the first part (localized title) for better search results
-      title.split(/\s+\/\s+/, 2).first.to_s.strip
-    else
-      title
-    end
+    search_titles(book).first.to_s
+  end
+
+  def search_titles(book)
+    SearchTitleVariantService.call(book.title)
   end
 
   def search_anna_archive(request, search_generation)
     book = request.book
-
-    query_parts = [ search_title(book) ]
-    query_parts << book.author if book.author.present?
-    query_parts << "audiobook" if book.audiobook?
-    query = query_parts.join(" ")
-
-    # Pass language to Anna's Archive for better filtering
     language = request.effective_language
     Rails.logger.debug "[SearchJob] Searching Anna's Archive for request ##{request.id}"
 
-    results = AnnaArchiveClient.search(
-      query,
-      file_types: book.audiobook? ? AnnaArchiveClient::AUDIOBOOK_FILE_TYPES : AnnaArchiveClient::EBOOK_FILE_TYPES,
-      content_types: book.audiobook? ? [] : AnnaArchiveClient::BOOK_CONTENT_TYPES,
-      language: language,
-      after_attempt: -> { heartbeat_search!(request, search_generation) }
-    )
+    results = first_title_variant_results(book) do |title|
+      query_parts = [ title ]
+      query_parts << book.author if book.author.present?
+      query_parts << "audiobook" if book.audiobook?
+      AnnaArchiveClient.search(
+        query_parts.join(" "),
+        file_types: book.audiobook? ? AnnaArchiveClient::AUDIOBOOK_FILE_TYPES : AnnaArchiveClient::EBOOK_FILE_TYPES,
+        content_types: book.audiobook? ? [] : AnnaArchiveClient::BOOK_CONTENT_TYPES,
+        language: language,
+        after_attempt: -> { heartbeat_search!(request, search_generation) }
+      )
+    end
 
     # Tag results with source
     results.map do |r|
@@ -407,15 +401,16 @@ class SearchJob < ApplicationJob
 
   def search_zlibrary(request, search_generation)
     book = request.book
-    query = [ search_title(book), book.author ].compact.join(" ")
     language = zlibrary_language_filter(request)
     Rails.logger.debug "[SearchJob] Searching Z-Library for request ##{request.id}"
 
-    ZLibraryClient.search(
-      query,
-      language: language,
-      after_attempt: -> { heartbeat_search!(request, search_generation) }
-    ).map do |result|
+    first_title_variant_results(book) do |title|
+      ZLibraryClient.search(
+        [ title, book.author ].compact.join(" "),
+        language: language,
+        after_attempt: -> { heartbeat_search!(request, search_generation) }
+      )
+    end.map do |result|
       { result: result, source: SearchResult::SOURCE_ZLIBRARY }
     end
   rescue ZLibraryClient::SearchCancelled
@@ -430,7 +425,9 @@ class SearchJob < ApplicationJob
     language = request.effective_language
     Rails.logger.debug "[SearchJob] Searching LibriVox for request ##{request.id}"
 
-    LibrivoxClient.search(title: search_title(book), author: book.author, language: language).map do |result|
+    first_title_variant_results(book) do |title|
+      LibrivoxClient.search(title: title, author: book.author, language: language)
+    end.map do |result|
       { result: result, source: SearchResult::SOURCE_LIBRIVOX }
     end
   rescue LibrivoxClient::Error => e
@@ -443,7 +440,9 @@ class SearchJob < ApplicationJob
     language = request.effective_language
     Rails.logger.debug "[SearchJob] Searching Project Gutenberg for request ##{request.id}"
 
-    GutenbergClient.search(title: search_title(book), author: book.author, language: language).map do |result|
+    first_title_variant_results(book) do |title|
+      GutenbergClient.search(title: title, author: book.author, language: language)
+    end.map do |result|
       { result: result, source: SearchResult::SOURCE_GUTENBERG }
     end
   rescue GutenbergClient::Error => e
@@ -462,12 +461,14 @@ class SearchJob < ApplicationJob
 
   def search_store_provider(request, provider)
     book = request.book
-    provider.client.search(
-      title: search_title(book),
-      author: book.author,
-      isbn: book.isbn,
-      language: request.effective_language
-    ).map do |result|
+    first_title_variant_results(book) do |title|
+      provider.client.search(
+        title: title,
+        author: book.author,
+        isbn: book.isbn,
+        language: request.effective_language
+      )
+    end.map do |result|
       { result: result, provider: provider }
     end
   rescue StoreProviderError => e
@@ -798,7 +799,7 @@ class SearchJob < ApplicationJob
   def supplement_with_broad_search(request, results)
     return results unless SettingsService.broad_indexer_search_scope?
 
-    attempts = generic_indexer_attempts(request)
+    attempts = broad_generic_indexer_attempts(request)
     return results if attempts.empty?
 
     Rails.logger.info "[SearchJob] Supplementing #{IndexerClient.display_name} search for request ##{request.id} without category restrictions"
@@ -946,32 +947,84 @@ class SearchJob < ApplicationJob
       return deduplicate_search_attempts(attempts)
     end
 
-    title = search_title(book)
-    attempts = [
-      build_search_attempt(:exact_title, [ title, language_hint ]),
-      build_search_attempt(:title_author, [ title, book.author, language_hint ])
-    ]
-
-    short_title = short_search_title(title)
-    attempts << build_search_attempt(:short_title, [ short_title, book.author, language_hint ]) if short_title.present?
-
-    attempts << build_search_attempt(:author_title, [ book.author, title, language_hint ])
-    attempts << build_search_attempt(:normalized_title, [ normalized_search_title(title), language_hint ])
-
-    numeric_title_variants(title).each do |title_variant|
-      attempts << build_search_attempt(:number_variant, [ title_variant, language_hint ])
-      attempts << build_search_attempt(:number_variant, [ title_variant, book.author, language_hint ]) if book.author.present?
+    titles = search_titles(book)
+    preferred_title = titles.first
+    attempts = titles.flat_map do |title|
+      [
+        build_search_attempt(:exact_title, [ title, language_hint ]),
+        build_search_attempt(:title_author, [ title, book.author, language_hint ])
+      ]
     end
 
-    # For non-English requests, add hint-free fallback attempts after all language-tagged attempts.
-    # Scene releases may be untagged or use different language markers than the hint,
-    # and matches_language already accepts untagged results ([lang, nil]).
+    # Untagged releases are common, so try every exact alias without the
+    # language hint before broadening or rewriting any one title.
     if language_hint.present?
-      attempts << build_search_attempt(:exact_title, [ title ])
-      attempts << build_search_attempt(:title_author, [ title, book.author ])
+      titles.each do |title|
+        attempts << build_search_attempt(:exact_title, [ title ])
+        attempts << build_search_attempt(:title_author, [ title, book.author ])
+      end
     end
 
-    deduplicate_search_attempts(attempts)
+    if preferred_title.present?
+      short_title = short_search_title(preferred_title)
+      if short_title.present?
+        attempts << build_search_attempt(:short_title, [ short_title, book.author, language_hint ])
+      end
+
+      attempts << build_search_attempt(:author_title, [ book.author, preferred_title, language_hint ])
+      attempts << build_search_attempt(:normalized_title, [ normalized_search_title(preferred_title), language_hint ])
+
+      numeric_title_variants(preferred_title).each do |title_variant|
+        attempts << build_search_attempt(:number_variant, [ title_variant, language_hint ])
+        if book.author.present?
+          attempts << build_search_attempt(:number_variant, [ title_variant, book.author, language_hint ])
+        end
+      end
+    end
+
+    deduplicate_search_attempts(attempts).first(MAX_GENERIC_SEARCH_ATTEMPTS)
+  end
+
+  def broad_generic_indexer_attempts(request)
+    book = request.book
+    language_hint = indexer_language_hint(request)
+    issue_queries = comic_issue_search_queries(book)
+    if issue_queries.any?
+      attempts = issue_queries.flat_map do |query|
+        values = [ build_search_attempt(:comic_issue, [ query, language_hint ]) ]
+        values << build_search_attempt(:comic_issue, [ query ]) if language_hint.present?
+        values
+      end
+      return deduplicate_search_attempts(attempts).first(MAX_BROAD_SEARCH_ATTEMPTS)
+    end
+
+    titles = search_titles(book)
+    attempts = []
+
+    # Category-free search is the last recall fallback. Interleave tagged and
+    # untagged exact aliases before applying the small cap so an untagged
+    # original-language release is never crowded out by expanded queries.
+    titles.each do |title|
+      attempts << build_search_attempt(:exact_title, [ title, language_hint ])
+      attempts << build_search_attempt(:exact_title, [ title ]) if language_hint.present?
+    end
+    titles.each do |title|
+      attempts << build_search_attempt(:title_author, [ title, book.author, language_hint ])
+      if language_hint.present?
+        attempts << build_search_attempt(:title_author, [ title, book.author ])
+      end
+    end
+
+    deduplicate_search_attempts(attempts).first(MAX_BROAD_SEARCH_ATTEMPTS)
+  end
+
+  def first_title_variant_results(book)
+    search_titles(book).each do |title|
+      results = Array(yield(title))
+      return results if results.any?
+    end
+
+    []
   end
 
   def comic_issue_search_queries(book)
