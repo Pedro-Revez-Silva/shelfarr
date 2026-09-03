@@ -47,6 +47,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobook_output_path, @temp_dest_base)
     SettingsService.set(:download_local_path, @temp_download_base)
     SettingsService.set(:completed_download_import_mode, "copy")
+    Setting.where(key: "precreate_download_archives").delete_all
 
     # Update download path to temp source
     @download.update!(download_path: @temp_source)
@@ -75,21 +76,81 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
-  test "archive precreation failure does not skip later completion side effects" do
-    completed_notifications = []
-    library_scans = []
-    job = PostProcessingJob.new
+  test "directory import skips archive precreation by default and still scans and completes" do
+    events = []
+    imported_dir = File.join(@temp_dest_base, @book.author, @book.title)
 
-    LibraryDownloadArchiveService.stub(:call, ->(**) { raise LibraryDownloadArchiveService::Error, "archive failed" }) do
-      job.stub(:trigger_library_scan, ->(book) { library_scans << book.id }) do
-        NotificationService.stub(:request_completed, ->(request) { completed_notifications << request.id }) do
-          job.send(:run_completion_side_effects, @request, @download, @book, @temp_source)
+    LibraryDownloadArchiveService.stub(:call, ->(**) { events << :archive }) do
+      LibraryPlatformClient.stub(:configured?, true) do
+        LibraryPlatformClient.stub(:scan_library, ->(_library_id) { events << :scan }) do
+          NotificationService.stub(:request_completed, ->(request) { events << :notify; request.id }) do
+            PostProcessingJob.perform_now(@download.id)
+          end
         end
       end
     end
 
-    assert_equal [ @book.id ], library_scans
-    assert_equal [ @request.id ], completed_notifications
+    assert @request.reload.completed?
+    assert_not @request.attention_needed?
+    assert File.exist?(File.join(imported_dir, "audiobook.mp3"))
+    assert_equal [ :scan, :notify ], events
+  end
+
+  test "enabled archive precreation runs after scan and cannot strand a successful import" do
+    SettingsService.set(:precreate_download_archives, true)
+    events = []
+    archive_calls = []
+    imported_dir = File.join(@temp_dest_base, @book.author, @book.title)
+
+    failing_archive = lambda do |**args|
+      events << :archive
+      archive_calls << args
+      raise LibraryDownloadArchiveService::Error, "archive failed"
+    end
+
+    LibraryDownloadArchiveService.stub(:call, failing_archive) do
+      LibraryPlatformClient.stub(:configured?, true) do
+        LibraryPlatformClient.stub(:scan_library, ->(_library_id) { events << :scan }) do
+          NotificationService.stub(:request_completed, ->(request) { events << :notify; request.id }) do
+            PostProcessingJob.perform_now(@download.id)
+          end
+        end
+      end
+    end
+
+    assert @request.reload.completed?
+    assert_not @request.attention_needed?
+    assert_nil @download.reload.post_processing_job_id
+    assert File.exist?(File.join(imported_dir, "audiobook.mp3"))
+    assert_equal [ :scan, :notify, :archive ], events
+    assert_equal 1, archive_calls.size
+    assert_equal @book, archive_calls.first[:book]
+    assert_equal imported_dir, archive_calls.first[:source_path]
+    assert_equal @temp_dest_base, archive_calls.first[:output_root]
+  end
+
+  test "enabled archive precreation SystemCallError still leaves scan and completion in place" do
+    SettingsService.set(:precreate_download_archives, true)
+    events = []
+
+    failing_archive = lambda do |**|
+      events << :archive
+      raise Errno::ENOSPC, "tmp/downloads"
+    end
+
+    LibraryDownloadArchiveService.stub(:call, failing_archive) do
+      LibraryPlatformClient.stub(:configured?, true) do
+        LibraryPlatformClient.stub(:scan_library, ->(_library_id) { events << :scan }) do
+          NotificationService.stub(:request_completed, ->(*) { events << :notify }) do
+            PostProcessingJob.perform_now(@download.id)
+          end
+        end
+      end
+    end
+
+    assert @request.reload.completed?
+    assert_not @request.attention_needed?
+    assert_equal [ :scan, :notify, :archive ], events
   end
 
   test "refuses to import a shared download client root" do
