@@ -29,7 +29,16 @@ module Shelfarr
 
     # Keep Rails-rendered timestamps aligned with the container's time zone.
     # Active Record continues to store timestamps in UTC.
-    config.time_zone = ENV.fetch("TZ", "UTC")
+    # Validate TZ before applying to avoid initialization failures
+    tz_value = ENV.fetch("TZ", "UTC")
+    begin
+      Time.find_zone!(tz_value) if tz_value != "UTC"
+      config.time_zone = tz_value
+    rescue ArgumentError
+      # Invalid timezone identifier, fall back to UTC
+      warn "Warning: Invalid TZ environment variable '#{tz_value}'. Falling back to UTC."
+      config.time_zone = "UTC"
+    end
 
     # Covers and store links are supplied by external catalog providers. Avoid
     # disclosing a self-hosted Shelfarr URL while retaining the origin for
