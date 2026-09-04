@@ -28,14 +28,14 @@ development:
 test:
   primary:
     <<: *default
-    database: storage/test.sqlite3
+    database: storage/<%= ENV.fetch("SHELFARR_TEST_DB", "test") %>.sqlite3
   queue:
     <<: *default
-    database: storage/test_queue.sqlite3
+    database: storage/<%= ENV.fetch("SHELFARR_TEST_QUEUE_DB", "test_queue") %>.sqlite3
     migrations_paths: db/queue_migrate
   cable:
     <<: *default
-    database: storage/test_cable.sqlite3
+    database: storage/<%= ENV.fetch("SHELFARR_TEST_CABLE_DB", "test_cable") %>.sqlite3
     migrations_paths: db/cable_migrate
 
 
