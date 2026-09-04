@@ -19,7 +19,11 @@ begin
     sleep 0.2
   end
 
-  raise "solid_queue_processes stayed empty" if process_count.zero?
+  if process_count.zero?
+    raise "solid_queue_processes stayed empty " \
+      "(supervisor_alive=#{Shelfarr::SolidQueueInPuma.running?} " \
+      "pid=#{Shelfarr::SolidQueueInPuma.current_pid})"
+  end
 
   user = User.create!(
     username: "sqip#{SecureRandom.hex(4)}",

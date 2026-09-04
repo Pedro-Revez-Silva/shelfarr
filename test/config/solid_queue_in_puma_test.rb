@@ -53,8 +53,10 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     env = probe_env(prefix)
     databases = probe_database_paths(prefix)
 
+    command_env = probe_command_env(prefix)
+
     prepare_output, prepare_status = Open3.capture2e(
-      env,
+      command_env,
       RbConfig.ruby,
       "bin/rails",
       "db:prepare",
@@ -63,7 +65,7 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     assert prepare_status.success?, prepare_output
 
     output, error, status = Open3.capture3(
-      env,
+      command_env,
       RbConfig.ruby,
       "bin/rails",
       "runner",
@@ -95,9 +97,12 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
       "SHELFARR_TEST_DB" => "#{prefix}_primary",
       "SHELFARR_TEST_QUEUE_DB" => "#{prefix}_queue",
       "SHELFARR_TEST_CABLE_DB" => "#{prefix}_cable",
-      "SOLID_QUEUE_IN_PUMA_PIDFILE" => Rails.root.join("tmp/pids/#{prefix}.pid").to_s,
-      "COVERAGE" => nil
+      "SOLID_QUEUE_IN_PUMA_PIDFILE" => Rails.root.join("tmp/pids/#{prefix}.pid").to_s
     }
+  end
+
+  def probe_command_env(prefix)
+    ENV.to_h.merge(probe_env(prefix)).tap { |environment| environment.delete("COVERAGE") }
   end
 
   def probe_database_paths(prefix)

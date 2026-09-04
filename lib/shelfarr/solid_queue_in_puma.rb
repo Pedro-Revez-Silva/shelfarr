@@ -11,8 +11,9 @@ module Shelfarr
   # opened the SQLite queue database. That fork can die or deadlock before
   # `solid_queue_processes` is written, so jobs stay enqueued forever.
   #
-  # Spawning `bin/jobs` execs a fresh process instead, which is safe with
-  # jemalloc, gosu/PUID, and SQLite.
+  # This helper forks from Rails server boot (before Puma becomes multi-threaded)
+  # and disconnects Active Record first so the supervisor child does not inherit
+  # live SQLite handles.
   module SolidQueueInPuma
     class << self
       def enabled?
@@ -31,21 +32,31 @@ module Shelfarr
         return false if test_guard_blocks?(force)
         return false if !force && !server_process?
         return false if running?
+        unless Process.respond_to?(:fork)
+          log("SOLID_QUEUE_IN_PUMA requires Process.fork")
+          return false
+        end
 
         FileUtils.mkdir_p(pid_path.dirname)
         disconnect_connections!
 
-        pid = Process.spawn(
-          Gem.ruby,
-          jobs_executable,
-          out: $stdout,
-          err: $stderr,
-          close_others: true
-        )
+        pid = fork do
+          disconnect_connections!
+          SolidQueue::Supervisor.start
+        end
+
         @pid = pid
         File.write(pid_path, "#{pid}\n")
         install_at_exit_hook!
-        log("Started Solid Queue supervisor via bin/jobs (pid #{pid})")
+
+        if supervisor_exited_immediately?(pid)
+          log("Solid Queue supervisor exited immediately (pid #{pid})")
+          @pid = nil
+          File.delete(pid_path) if File.exist?(pid_path)
+          return false
+        end
+
+        log("Started Solid Queue supervisor (pid #{pid})")
         true
       end
 
@@ -86,9 +97,11 @@ module Shelfarr
         ENV["SOLID_QUEUE_IN_PUMA_TEST"].to_s.empty?
       end
 
-      def jobs_executable
-        root = defined?(Rails) ? Rails.root : Pathname.new(File.expand_path("../..", __dir__))
-        root.join("bin/jobs").to_s
+      def supervisor_exited_immediately?(pid)
+        exited = Process.waitpid(pid, Process::WNOHANG)
+        !exited.nil?
+      rescue Errno::ECHILD, Errno::ESRCH
+        true
       end
 
       def pid_path
