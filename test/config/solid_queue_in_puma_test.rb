@@ -46,8 +46,16 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     end
   end
 
+  test "helper starts a fresh bin/jobs process instead of forking the supervisor" do
+    source = Rails.root.join("lib/shelfarr/solid_queue_in_puma.rb").read
+
+    assert_includes source, "Process.spawn"
+    assert_includes source, "jobs_executable"
+    refute_includes source, "SolidQueue::Supervisor.start"
+  end
+
   test "SOLID_QUEUE_IN_PUMA registers processes and performs SearchJob" do
-    skip "fork/spawn is required for the in-puma supervisor probe" unless Process.respond_to?(:fork)
+    skip "Process.spawn is required for the in-puma supervisor probe" unless Process.respond_to?(:spawn)
 
     prefix = "sqip_#{SecureRandom.hex(4)}"
     env = probe_env(prefix)
@@ -73,7 +81,8 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
       chdir: Rails.root.to_s
     )
 
-    assert status.success?, [ error, output ].reject(&:empty?).join("\n")
+    jobs_output = File.exist?(env["SOLID_QUEUE_IN_PUMA_LOG"]) ? File.read(env["SOLID_QUEUE_IN_PUMA_LOG"]) : ""
+    assert status.success?, [ error, output, jobs_output ].reject(&:empty?).join("\n")
 
     result = JSON.parse(output.lines.last)
     assert result.fetch("process_count") > 0, "expected solid_queue_processes to register, got #{result.inspect}"
@@ -84,7 +93,10 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     refute result.fetch("request_still_pending"), "SearchJob never left pending: #{result.inspect}"
   ensure
     databases&.each { |path| FileUtils.rm_f(path) }
-    FileUtils.rm_f(env&.fetch("SOLID_QUEUE_IN_PUMA_PIDFILE", nil)) if env
+    if env
+      FileUtils.rm_f(env["SOLID_QUEUE_IN_PUMA_PIDFILE"])
+      FileUtils.rm_f(env["SOLID_QUEUE_IN_PUMA_LOG"])
+    end
   end
 
   private
@@ -97,7 +109,8 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
       "SHELFARR_TEST_DB" => "#{prefix}_primary",
       "SHELFARR_TEST_QUEUE_DB" => "#{prefix}_queue",
       "SHELFARR_TEST_CABLE_DB" => "#{prefix}_cable",
-      "SOLID_QUEUE_IN_PUMA_PIDFILE" => Rails.root.join("tmp/pids/#{prefix}.pid").to_s
+      "SOLID_QUEUE_IN_PUMA_PIDFILE" => Rails.root.join("tmp/pids/#{prefix}.pid").to_s,
+      "SOLID_QUEUE_IN_PUMA_LOG" => Rails.root.join("tmp/#{prefix}-jobs.log").to_s
     }
   end
 

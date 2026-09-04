@@ -8,21 +8,37 @@ require "securerandom"
 
 ActiveJob::Base.queue_adapter = :solid_queue
 
+def jobs_log_output
+  path = ENV["SOLID_QUEUE_IN_PUMA_LOG"].to_s
+  return "" if path.empty? || !File.exist?(path)
+
+  File.read(path)
+end
+
 begin
   started = Shelfarr::SolidQueueInPuma.start!(force: true)
   raise "failed to start Solid Queue supervisor" unless started || Shelfarr::SolidQueueInPuma.running?
 
-  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 45
   process_count = 0
+  last_error = nil
   until process_count.positive? || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-    process_count = SolidQueue::Process.count
-    sleep 0.2
+    ActiveRecord::Base.connection_handler.clear_all_connections!
+    begin
+      process_count = SolidQueue::Process.count
+    rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid => e
+      last_error = e
+      process_count = 0
+    end
+    sleep 0.5
   end
 
   if process_count.zero?
     raise "solid_queue_processes stayed empty " \
       "(supervisor_alive=#{Shelfarr::SolidQueueInPuma.running?} " \
-      "pid=#{Shelfarr::SolidQueueInPuma.current_pid})"
+      "pid=#{Shelfarr::SolidQueueInPuma.current_pid} " \
+      "last_error=#{last_error&.class}:#{last_error&.message})\n" \
+      "bin/jobs output:\n#{jobs_log_output}"
   end
 
   user = User.create!(

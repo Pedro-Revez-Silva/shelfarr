@@ -7,13 +7,10 @@ module Shelfarr
   # Starts Solid Queue for single-container deploys that set SOLID_QUEUE_IN_PUMA.
   #
   # The upstream Puma plugin forks the supervisor from `after_booted`, after
-  # Puma's thread pool is already running and after boot-time code may have
-  # opened the SQLite queue database. That fork can die or deadlock before
-  # `solid_queue_processes` is written, so jobs stay enqueued forever.
-  #
-  # This helper forks from Rails server boot (before Puma becomes multi-threaded)
-  # and disconnects Active Record first so the supervisor child does not inherit
-  # live SQLite handles.
+  # Rails has eager-loaded and Puma's thread pool is already running. Forking
+  # that process can hang before `solid_queue_processes` is written, so jobs
+  # stay enqueued forever. A fresh `bin/jobs` process avoids inheriting those
+  # threads and SQLite handles.
   module SolidQueueInPuma
     class << self
       def enabled?
@@ -27,24 +24,16 @@ module Shelfarr
         program == "puma" || program.end_with?("-puma")
       end
 
-      def start!(force: false)
+      def start!(force: false, log_path: nil)
         return false unless enabled?
         return false if test_guard_blocks?(force)
         return false if !force && !server_process?
         return false if running?
-        unless Process.respond_to?(:fork)
-          log("SOLID_QUEUE_IN_PUMA requires Process.fork")
-          return false
-        end
 
         FileUtils.mkdir_p(pid_path.dirname)
         disconnect_connections!
 
-        pid = fork do
-          disconnect_connections!
-          SolidQueue::Supervisor.start
-        end
-
+        pid = Process.spawn(Gem.ruby, jobs_executable, spawn_options(log_path))
         @pid = pid
         File.write(pid_path, "#{pid}\n")
         install_at_exit_hook!
@@ -56,7 +45,7 @@ module Shelfarr
           return false
         end
 
-        log("Started Solid Queue supervisor (pid #{pid})")
+        log("Started Solid Queue supervisor via bin/jobs (pid #{pid})")
         true
       end
 
@@ -98,10 +87,38 @@ module Shelfarr
       end
 
       def supervisor_exited_immediately?(pid)
-        exited = Process.waitpid(pid, Process::WNOHANG)
-        !exited.nil?
+        !Process.waitpid(pid, Process::WNOHANG).nil?
       rescue Errno::ECHILD, Errno::ESRCH
         true
+      end
+
+      def rails_root
+        defined?(Rails) ? Rails.root : Pathname.new(File.expand_path("../..", __dir__))
+      end
+
+      def jobs_executable
+        rails_root.join("bin/jobs").to_s
+      end
+
+      def spawn_options(log_path)
+        options = {
+          chdir: rails_root.to_s,
+          close_others: true
+        }
+
+        resolved_log = log_path.to_s
+        resolved_log = ENV.fetch("SOLID_QUEUE_IN_PUMA_LOG", "") if resolved_log.empty?
+
+        if resolved_log.empty?
+          options[:out] = $stdout
+          options[:err] = $stderr
+        else
+          FileUtils.mkdir_p(File.dirname(resolved_log))
+          options[:out] = [ resolved_log, "a" ]
+          options[:err] = [ :child, :out ]
+        end
+
+        options
       end
 
       def pid_path
@@ -109,8 +126,7 @@ module Shelfarr
           return Pathname.new(override)
         end
 
-        root = defined?(Rails) ? Rails.root : Pathname.new(File.expand_path("../..", __dir__))
-        root.join("tmp/pids/solid_queue_in_puma.pid")
+        rails_root.join("tmp/pids/solid_queue_in_puma.pid")
       end
 
       def read_pidfile
