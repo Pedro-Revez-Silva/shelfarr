@@ -113,5 +113,4 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
       storage/#{prefix}_cable.sqlite3-shm
     ].map { |relative| Rails.root.join(relative) }
   end
-
 end
