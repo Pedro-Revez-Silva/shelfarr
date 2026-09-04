@@ -46,6 +46,15 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     end
   end
 
+  test "probe command env unsets COVERAGE so child rails processes skip SimpleCov" do
+    with_env("COVERAGE" => "1") do
+      env = probe_command_env("sqip_example")
+
+      assert env.key?("COVERAGE")
+      assert_nil env["COVERAGE"]
+    end
+  end
+
   test "helper starts a fresh bin/jobs process instead of forking the supervisor" do
     source = Rails.root.join("lib/shelfarr/solid_queue_in_puma.rb").read
 
@@ -116,7 +125,11 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
   end
 
   def probe_command_env(prefix)
-    ENV.to_h.merge(probe_env(prefix)).tap { |environment| environment.delete("COVERAGE") }
+    # Open3/Process.spawn env hashes update the parent environment. Deleting a
+    # key leaves the parent's value in place; nil unsets it. Quality's coverage
+    # pass sets COVERAGE=1, which would otherwise start SimpleCov in db:prepare
+    # and fail the child on the global coverage floor.
+    ENV.to_h.merge(probe_env(prefix)).merge("COVERAGE" => nil)
   end
 
   def probe_database_paths(prefix)
