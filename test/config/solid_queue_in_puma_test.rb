@@ -77,6 +77,7 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
       RbConfig.ruby,
       "bin/rails",
       "runner",
+      "--skip-executor",
       "test/support/solid_queue_in_puma_probe.rb",
       chdir: Rails.root.to_s
     )

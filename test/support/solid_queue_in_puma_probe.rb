@@ -2,6 +2,10 @@
 
 # Isolated SOLID_QUEUE_IN_PUMA boot probe. Invoked via `bin/rails runner`.
 # Prints a single JSON object describing supervisor registration and SearchJob.
+#
+# `rails runner` wraps this script in the Rails executor, which enables the
+# Active Record query cache. Solid Queue writes happen in a child process, so
+# counts and job lookups must be uncached or they stay stuck at the first miss.
 
 require "json"
 require "securerandom"
@@ -25,7 +29,7 @@ begin
   until process_count.positive? || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
     ActiveRecord::Base.connection_handler.clear_all_connections!
     begin
-      process_count = SolidQueue::Process.count
+      process_count = SolidQueue::Process.uncached { SolidQueue::Process.count }
     rescue ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid => e
       last_error = e
       process_count = 0
@@ -65,7 +69,7 @@ begin
   job_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
   solid_job = nil
   until Process.clock_gettime(Process::CLOCK_MONOTONIC) > job_deadline
-    solid_job = SolidQueue::Job.find_by(active_job_id: job.job_id)
+    solid_job = SolidQueue::Job.uncached { SolidQueue::Job.find_by(active_job_id: job.job_id) }
     break if solid_job&.finished_at
 
     sleep 0.2
@@ -74,8 +78,8 @@ begin
   request.reload
   result = {
     started: started,
-    process_count: SolidQueue::Process.count,
-    process_kinds: SolidQueue::Process.distinct.pluck(:kind).sort,
+    process_count: SolidQueue::Process.uncached { SolidQueue::Process.count },
+    process_kinds: SolidQueue::Process.uncached { SolidQueue::Process.distinct.pluck(:kind).sort },
     search_job_id: job.job_id,
     search_job_finished: solid_job&.finished_at.present?,
     request_status: request.status,
