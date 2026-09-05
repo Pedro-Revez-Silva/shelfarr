@@ -87,6 +87,72 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "loads shared download clients once per polling batch" do
+    9.times do |index|
+      @request.downloads.create!(
+        name: "Additional download #{index}", status: :downloading, progress: 50,
+        external_id: "additional#{index}", download_type: "torrent", download_client: @qbittorrent
+      )
+    end
+    client_reads = []
+    capture = lambda do |_name, _start, _finish, _id, payload|
+      client_reads << payload[:sql] if payload[:sql].match?(/\ASELECT .*FROM "download_clients"/)
+    end
+
+    VCR.turned_off do
+      stub_qbittorrent_auth
+      stub_qbittorrent_torrent_info(progress: 75, state: "downloading")
+      ActiveRecord::Base.uncached do
+        ActiveSupport::Notifications.subscribed(capture, "sql.active_record") do
+          DownloadMonitorJob.new.send(:monitor_active_downloads)
+        end
+      end
+    end
+
+    assert_equal [ 75 ], @request.downloads.pluck(:progress).uniq
+    assert_equal 1, client_reads.size
+  end
+
+  test "does not start another monitor while one is claimed by a worker" do
+    with_solid_queue_monitor_jobs do |monitor_jobs|
+      DownloadMonitorJob.perform_later
+      worker = SolidQueue::Process.register(kind: "Worker", name: "monitor-test", pid: Process.pid)
+      claimed = SolidQueue::ReadyExecution.claim([ "*" ], 1, worker.id).first
+      assert claimed
+
+      assert_no_difference -> { monitor_jobs.count } do
+        DownloadMonitorJob.ensure_running!
+      end
+    ensure
+      worker&.destroy!
+    end
+  end
+
+  test "recurring watchdog restarts a failed monitor chain without duplicating its replacement" do
+    config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
+    watchdog = config.fetch("production").fetch("download_monitor_recovery")
+    assert_equal "every 5 minutes", watchdog.fetch("schedule")
+    task = SolidQueue::RecurringTask.from_configuration("download_monitor_recovery", **watchdog.symbolize_keys)
+    assert task.valid?, task.errors.full_messages.join(", ")
+
+    with_solid_queue_monitor_jobs do |monitor_jobs|
+      DownloadMonitorJob.perform_later
+      worker = SolidQueue::Process.register(kind: "Worker", name: "monitor-recovery-test", pid: Process.pid)
+      claimed = SolidQueue::ReadyExecution.claim([ "*" ], 1, worker.id).first
+      claimed.failed_with(RuntimeError.new("interrupted polling"))
+      claimed.unblock_next_job
+
+      assert_difference -> { monitor_jobs.count }, 1 do
+        SolidQueue::RecurringJob.perform_now(task.command)
+      end
+      assert_no_difference -> { monitor_jobs.count } do
+        SolidQueue::RecurringJob.perform_now(task.command)
+      end
+    ensure
+      worker&.destroy!
+    end
+  end
+
   test "handles completed download and triggers post-processing" do
     VCR.turned_off do
       stub_qbittorrent_auth

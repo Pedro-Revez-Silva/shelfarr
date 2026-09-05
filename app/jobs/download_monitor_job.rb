@@ -46,7 +46,7 @@ class DownloadMonitorJob < ApplicationJob
       scope = SolidQueue::Job
         .where(class_name: name, finished_at: nil)
         .where.not(concurrency_key: nil)
-        .where.missing(:failed_execution, :claimed_execution)
+        .where.missing(:failed_execution)
       scope = scope.where.not(active_job_id: excluding_active_job_id) if excluding_active_job_id.present?
       scope.exists?
     rescue ActiveRecord::ActiveRecordError, NameError
@@ -89,7 +89,7 @@ class DownloadMonitorJob < ApplicationJob
   private
 
   def monitor_active_downloads
-    Download.active.find_each do |download|
+    Download.active.includes(:download_client).find_each do |download|
       check_download_status(download)
     rescue => e
       Rails.logger.error "[DownloadMonitorJob] Error checking download #{download.id}: #{e.message}"

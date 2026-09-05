@@ -253,6 +253,159 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
     LibraryPlatformClient.reset_connections!
   end
 
+  test "pins the initial platform across library discovery and inventory fetches" do
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    calls = []
+    library = AudiobookshelfClient::Library.new(
+      id: "discovered-library",
+      name: "Discovered Library",
+      folders: [],
+      media_type: "book"
+    )
+
+    configured = lambda do
+      calls << :audiobookshelf_configured
+      SettingsService.set(:library_platform, "bookorbit")
+      true
+    end
+    libraries = lambda do
+      calls << :audiobookshelf_libraries
+      [ library ]
+    end
+    library_items = lambda do |library_id, page_size:|
+      calls << [ :audiobookshelf_items, library_id, page_size ]
+      [ { "audiobookshelf_id" => "pinned-item", "title" => "Pinned Item" } ]
+    end
+    unexpected_call = ->(*) { flunk "sync switched clients after its platform setting changed" }
+
+    AudiobookshelfClient.stub(:configured?, configured) do
+      AudiobookshelfClient.stub(:libraries, libraries) do
+        AudiobookshelfClient.stub(:library_items, library_items) do
+          BookOrbitClient.stub(:libraries, unexpected_call) do
+            BookOrbitClient.stub(:library_items, unexpected_call) do
+              result = AudiobookshelfLibrarySyncService.new.sync!
+
+              assert result.success?
+              assert_equal [
+                :audiobookshelf_configured,
+                :audiobookshelf_libraries,
+                [ :audiobookshelf_items, "discovered-library", 500 ]
+              ], calls
+              assert LibraryItem.exists?(
+                library_platform: "audiobookshelf",
+                library_id: "discovered-library",
+                audiobookshelf_id: "pinned-item"
+              )
+            end
+          end
+        end
+      end
+    end
+  ensure
+    SettingsService.set(:library_platform, "audiobookshelf")
+  end
+
+  test "deduplicates inventory ids and skips blank ids before writing" do
+    synced_at = Time.current
+    items = [
+      { "audiobookshelf_id" => "duplicate", "title" => "First Title" },
+      { "audiobookshelf_id" => nil, "title" => "Missing ID" },
+      { "audiobookshelf_id" => "", "title" => "Blank ID" },
+      { "audiobookshelf_id" => "duplicate", "title" => "Last Title" }
+    ]
+
+    synced_count = AudiobookshelfLibrarySyncService.new.send(
+      :sync_library_items,
+      "audiobookshelf",
+      "lib-audio",
+      items,
+      synced_at: synced_at
+    )
+
+    assert_equal 1, synced_count
+    assert_equal 1, LibraryItem.where(library_id: "lib-audio").count
+    assert_equal "Last Title", LibraryItem.find_by!(library_id: "lib-audio", audiobookshelf_id: "duplicate").title
+  end
+
+  test "batches inventory upserts at the 500 row boundary with bounded SQL" do
+    items = Array.new(501) do |index|
+      {
+        "audiobookshelf_id" => "batch-#{index}",
+        "title" => "Batch Item #{index}",
+        "author" => "Batch Author"
+      }
+    end
+    query_count = 0
+    callback = lambda do |_name, _started, _finished, _unique_id, payload|
+      query_count += 1 unless payload[:name].in?([ "SCHEMA", "TRANSACTION" ]) || payload[:cached]
+    end
+
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+      AudiobookshelfLibrarySyncService.new.send(
+        :sync_library_items,
+        "audiobookshelf",
+        "batch-library",
+        items,
+        synced_at: Time.current
+      )
+    end
+
+    assert_equal 501, LibraryItem.where(library_id: "batch-library").count
+    assert_operator query_count, :<=, 4
+  end
+
+  test "upserts preserve creation time and reject an older sync snapshot" do
+    created_at = 2.days.ago.change(usec: 0)
+    newer_synced_at = 1.hour.from_now.change(usec: 0)
+    existing = LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-audio",
+      audiobookshelf_id: "concurrent-item",
+      title: "Newer Title",
+      synced_at: newer_synced_at,
+      created_at: created_at,
+      updated_at: created_at
+    )
+
+    service = AudiobookshelfLibrarySyncService.new
+    service.send(
+      :sync_library_items,
+      "audiobookshelf",
+      "lib-audio",
+      [ { "audiobookshelf_id" => "concurrent-item", "title" => "Stale Title" } ],
+      synced_at: Time.current
+    )
+
+    assert_equal "Newer Title", existing.reload.title
+    assert_equal newer_synced_at, existing.synced_at
+    assert_equal created_at, existing.created_at
+
+    service.send(
+      :sync_library_items,
+      "audiobookshelf",
+      "lib-audio",
+      [ { "audiobookshelf_id" => "concurrent-item", "title" => "Newest Title" } ],
+      synced_at: 2.hours.from_now
+    )
+
+    assert_equal "Newest Title", existing.reload.title
+    assert_equal created_at, existing.created_at
+  end
+
+  test "bulk sync enforces library item platform and library validations" do
+    service = AudiobookshelfLibrarySyncService.new
+    item = { "audiobookshelf_id" => "validated-item", "title" => "Validated Item" }
+
+    assert_raises ActiveRecord::RecordInvalid do
+      service.send(:sync_library_items, "unsupported", "lib-audio", [ item ], synced_at: Time.current)
+    end
+    assert_raises ActiveRecord::RecordInvalid do
+      service.send(:sync_library_items, "audiobookshelf", "", [ item ], synced_at: Time.current)
+    end
+    assert_not LibraryItem.exists?(audiobookshelf_id: "validated-item")
+  end
+
   test "keeps cached BookOrbit items when a successful response is malformed" do
     SettingsService.set(:library_platform, "bookorbit")
     SettingsService.set(:bookorbit_url, "http://localhost:3000")

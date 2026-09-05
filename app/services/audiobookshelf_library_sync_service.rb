@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
 class AudiobookshelfLibrarySyncService
+  UPSERT_BATCH_SIZE = 500
+  UPSERT_UNIQUE_BY = %i[library_platform library_id audiobookshelf_id].freeze
+  UPSERT_UPDATE_COLUMNS = %i[
+    title subtitle author narrator series series_position publisher language
+    description isbn asin published_year missing synced_at updated_at
+  ].freeze
+
   Result = Data.define(:success, :items_synced, :libraries_synced, :errors) do
     def success?
       success
@@ -18,7 +25,7 @@ class AudiobookshelfLibrarySyncService
     using_auto_discovery = initial_explicit_ids.empty?
 
     library_ids = if using_auto_discovery
-      load_library_ids_from_configured_client
+      load_library_ids_from_configured_client(initial_platform)
     else
       initial_explicit_ids
     end
@@ -28,20 +35,20 @@ class AudiobookshelfLibrarySyncService
         success: false,
         items_synced: 0,
         libraries_synced: 0,
-        errors: [ "No #{LibraryPlatformClient.display_name} library IDs configured or available." ]
+        errors: [ "No #{LibraryPlatformClient.display_name(initial_platform)} library IDs configured or available." ]
       )
     end
 
     library_platform = initial_platform
     library_ids.each do |library_id|
       begin
-        items = LibraryPlatformClient.library_items(library_id)
-        sync_library_items(library_platform, library_id, items, synced_at: now)
+        items = LibraryPlatformClient.library_items(library_id, platform: library_platform)
+        synced_count = sync_library_items(library_platform, library_id, items, synced_at: now)
         libraries_synced += 1
-        items_synced += items.size
+        items_synced += synced_count
       rescue LibraryPlatformClient::Error, StandardError => e
         errors << "#{library_id}: #{e.message}"
-        Rails.logger.warn "[AudiobookshelfLibrarySyncService] Failed to sync #{LibraryPlatformClient.display_name} library #{library_id}: #{e.message}"
+        Rails.logger.warn "[AudiobookshelfLibrarySyncService] Failed to sync #{LibraryPlatformClient.display_name(library_platform)} library #{library_id}: #{e.message}"
       end
     end
 
@@ -81,52 +88,98 @@ class AudiobookshelfLibrarySyncService
   end
 
   def sync_library_items(library_platform, library_id, items, synced_at:)
-    item_ids = []
-    now = synced_at
-
-    items.each do |item|
+    validate_sync_scope!(library_platform, library_id)
+    items_by_id = items.each_with_object({}) do |item, indexed|
       audiobookshelf_id = item["audiobookshelf_id"]
       next if audiobookshelf_id.blank?
 
-      cached = LibraryItem.find_or_initialize_by(
-        library_platform: library_platform,
-        library_id: library_id,
-        audiobookshelf_id: audiobookshelf_id
-      )
-
-      if cached.persisted? && cached.synced_at.present? && cached.synced_at > now
-        item_ids << audiobookshelf_id
-        next
+      indexed[audiobookshelf_id.to_s] = item
+    end
+    item_ids = items_by_id.keys
+    written_at = Time.current
+    items_by_id.each_slice(UPSERT_BATCH_SIZE) do |batch_items|
+      batch = batch_items.map do |audiobookshelf_id, item|
+        library_item_attributes(
+          library_platform,
+          library_id,
+          audiobookshelf_id,
+          item,
+          synced_at: synced_at,
+          written_at: written_at
+        )
       end
-
-      cached.title = item["title"]
-      cached.subtitle = item["subtitle"]
-      cached.author = item["author"]
-      cached.narrator = item["narrator"]
-      cached.series = item["series"]
-      cached.series_position = item["series_position"]
-      cached.publisher = item["publisher"]
-      cached.language = item["language"]
-      cached.description = item["description"]
-      cached.isbn = item["isbn"]
-      cached.asin = item["asin"]
-      cached.published_year = item["published_year"]
-      cached.missing = item["missing"] == true
-      cached.synced_at = now
-      cached.save!
-      item_ids << audiobookshelf_id
+      LibraryItem.upsert_all(
+        batch,
+        unique_by: UPSERT_UNIQUE_BY,
+        on_duplicate: upsert_update_sql,
+        record_timestamps: false
+      )
     end
 
     LibraryItem.where(library_platform: library_platform, library_id: library_id)
                .where.not(audiobookshelf_id: item_ids)
-               .where("synced_at <= ? OR synced_at IS NULL", now)
+               .where("synced_at <= ? OR synced_at IS NULL", synced_at)
                .delete_all
+
+    item_ids.size
   end
 
-  def load_library_ids_from_configured_client
-    return [] unless LibraryPlatformClient.configured?
+  def library_item_attributes(library_platform, library_id, audiobookshelf_id, item, synced_at:, written_at:)
+    {
+      library_platform: library_platform,
+      library_id: library_id,
+      audiobookshelf_id: audiobookshelf_id,
+      title: item["title"],
+      subtitle: item["subtitle"],
+      author: item["author"],
+      narrator: item["narrator"],
+      series: item["series"],
+      series_position: item["series_position"],
+      publisher: item["publisher"],
+      language: item["language"],
+      description: item["description"],
+      isbn: item["isbn"],
+      asin: item["asin"],
+      published_year: item["published_year"],
+      missing: item["missing"] == true,
+      synced_at: synced_at,
+      created_at: written_at,
+      updated_at: written_at
+    }
+  end
 
-    libraries = LibraryPlatformClient.libraries
+  def upsert_update_sql
+    connection = LibraryItem.connection
+    assignments = UPSERT_UPDATE_COLUMNS.map do |column|
+      quoted_column = connection.quote_column_name(column)
+      "#{quoted_column}=excluded.#{quoted_column}"
+    end.join(",")
+    table = connection.quote_table_name(LibraryItem.table_name)
+    synced_at = connection.quote_column_name(:synced_at)
+
+    Arel.sql(
+      "#{assignments} WHERE #{table}.#{synced_at} IS NULL " \
+        "OR #{table}.#{synced_at} <= excluded.#{synced_at}"
+    )
+  end
+
+  def validate_sync_scope!(library_platform, library_id)
+    valid_platform = SettingsService::LIBRARY_PLATFORMS.include?(library_platform.to_s)
+    return if valid_platform && library_id.present?
+
+    invalid_item = LibraryItem.new(
+      library_platform: library_platform,
+      library_id: library_id,
+      audiobookshelf_id: "bulk-sync-validation"
+    )
+    invalid_item.validate
+    raise ActiveRecord::RecordInvalid, invalid_item
+  end
+
+  def load_library_ids_from_configured_client(platform)
+    return [] unless LibraryPlatformClient.configured?(platform: platform)
+
+    libraries = LibraryPlatformClient.libraries(platform: platform)
     libraries.select(&:audiobook_library?).map(&:id)
   end
 end

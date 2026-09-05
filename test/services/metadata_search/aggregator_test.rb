@@ -48,6 +48,47 @@ module MetadataSearch
       assert_equal 2, results.size
     end
 
+    test "equivalent isbn-10 and isbn-13 editions merge in any input order" do
+      editions = [
+        provider_result(source: "google_books", source_id: "ten", isbn_10: "0-547-92822-x"),
+        provider_result(source: "openlibrary", source_id: "both", isbn_10: "054792822X", isbn_13: "9780547928227"),
+        provider_result(source: "google_books", source_id: "thirteen", isbn_13: "9780547928227")
+      ]
+
+      editions.permutation.each do |ordered|
+        candidates = Aggregator.call(ordered)
+        assert_equal 1, candidates.size
+        assert_equal 3, candidates.first.sources.size
+      end
+      assert_equal 1, Aggregator.call([ editions.first, editions.last ]).size
+    end
+
+    test "invalid isbn-10 check digits do not acquire a matching isbn-13 identity" do
+      candidates = Aggregator.call([
+        provider_result(source: "google_books", source_id: "invalid", isbn_10: "0547928220"),
+        provider_result(source: "openlibrary", source_id: "valid", isbn_13: "9780547928227")
+      ])
+
+      assert_equal 2, candidates.size
+    end
+
+    test "an isbn-less result cannot bridge conflicting editions in any input order" do
+      editions = [
+        provider_result(source: "google_books", source_id: "paperback", isbn_13: "9780441172719"),
+        provider_result(source: "openlibrary", source_id: "unknown"),
+        provider_result(source: "google_books", source_id: "hardcover", isbn_13: "9780593099322")
+      ]
+
+      editions.permutation.each do |ordered|
+        candidates = Aggregator.call(ordered)
+        assert_equal 2, candidates.size
+        candidates.each do |candidate|
+          ids = candidate.sources.map { |source| source[:source_id] }
+          refute ids.include?("paperback") && ids.include?("hardcover")
+        end
+      end
+    end
+
     test "keeps strongly classified books and graphics separate even when identity fields match" do
       results = Aggregator.call([
         provider_result(source: "hardcover", source_id: "book", title: "Dune", author: "Frank Herbert", year: 1965,

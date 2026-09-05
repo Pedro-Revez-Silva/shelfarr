@@ -17,14 +17,14 @@ class FormatPreferenceService
   MULTI_FILE_PENALTY = -6
   PREFERRED_FORMAT_BONUSES = [ 12, 8, 4, 2 ].freeze
 
-  def self.evaluate(title:, book_type:)
-    new(title:, book_type:).evaluate
+  def self.evaluate(title:, book_type:, parsed: nil)
+    new(title:, book_type:, parsed:).evaluate
   end
 
-  def initialize(title:, book_type:)
+  def initialize(title:, book_type:, parsed: nil)
     @title = title
     @book_type = book_type.to_s
-    @parsed = ReleaseParserService.parse(title)
+    @parsed = parsed || ReleaseParserService.parse(title)
     @preferences = SettingsService.format_preferences_for(@book_type)
   end
 
