@@ -4,14 +4,12 @@ require "fileutils"
 require "pathname"
 
 module Shelfarr
-  # Starts Solid Queue for single-container deploys that set SOLID_QUEUE_IN_PUMA.
-  #
-  # The upstream Puma plugin forks the supervisor from `after_booted`, after
-  # Rails has eager-loaded and Puma's thread pool is already running. Forking
-  # that process can hang before `solid_queue_processes` is written, so jobs
-  # stay enqueued forever. A fresh `bin/jobs` process avoids inheriting those
-  # threads and SQLite handles.
+  # Puma starts a fresh supervisor after boot. Spawning bin/jobs avoids inheriting
+  # Puma's threads and database connections, while keeping the two processes'
+  # lifetimes coupled as in the upstream Solid Queue plugin.
   module SolidQueueInPuma
+    SHUTDOWN_TIMEOUT = 15
+
     class << self
       def enabled?
         !ENV["SOLID_QUEUE_IN_PUMA"].to_s.empty?
@@ -28,56 +26,132 @@ module Shelfarr
         return false unless enabled?
         return false if test_guard_blocks?(force)
         return false if !force && !server_process?
-        return false if running?
 
-        FileUtils.mkdir_p(pid_path.dirname)
-        disconnect_connections!
-
-        pid = Process.spawn(Gem.ruby, jobs_executable, spawn_options(log_path))
-        @pid = pid
-        File.write(pid_path, "#{pid}\n")
-        install_at_exit_hook!
-
-        if supervisor_exited_immediately?(pid)
-          log("Solid Queue supervisor exited immediately (pid #{pid})")
-          @pid = nil
-          File.delete(pid_path) if File.exist?(pid_path)
-          return false
-        end
-
-        log("Started Solid Queue supervisor via bin/jobs (pid #{pid})")
-        true
+        # Puma can run its shutdown hooks directly from a signal trap. Keep
+        # the startup lock off the main thread so an interrupted startup can
+        # finish and release it while shutdown waits for cleanup.
+        Thread.new { start_supervisor(log_path) }.value
       end
 
       def stop!
-        pid = current_pid
-        return false unless pid
+        return false unless @owner_pid == Process.pid
 
-        if process_alive?(pid)
-          Process.kill(:INT, pid)
-          begin
-            Process.wait(pid)
-          rescue Errno::ECHILD
-            # Reaped elsewhere
-          end
-        end
-
-        true
-      ensure
-        @pid = nil
-        File.delete(pid_path) if File.exist?(pid_path)
+        # Puma's cluster shutdown hook can run inside a signal trap, where
+        # Ruby forbids Mutex#synchronize. Do cleanup on an ordinary thread.
+        Thread.new { stop_supervisor }.value
       end
 
       def running?
-        pid = current_pid
-        pid && process_alive?(pid)
+        !!current_pid
       end
 
       def current_pid
-        @pid || read_pidfile
+        @pid if @owner_pid == Process.pid
+      end
+
+      # Called before Rails boot in bin/jobs. Remove the marker so separately
+      # launched jobs cannot accidentally inherit this ownership relationship.
+      def watch_parent!
+        parent_pid = Integer(ENV.delete("SHELFARR_QUEUE_PARENT_PID").to_s, exception: false)
+        return unless parent_pid && parent_pid.positive?
+
+        Thread.new do
+          sleep 0.5 while Process.ppid == parent_pid
+          Process.kill(:INT, Process.pid)
+          sleep SHUTDOWN_TIMEOUT
+          target = Process.getpgrp == Process.pid ? -Process.pid : Process.pid
+          Process.kill(:KILL, target)
+        end
       end
 
       private
+
+      def start_supervisor(log_path)
+        @mutex ||= Mutex.new
+        @mutex.synchronize do
+          return false if current_pid
+
+          @owner_pid = Process.pid
+          @stopping = false
+          @pidfile = pid_path
+          FileUtils.mkdir_p(@pidfile.dirname)
+          @pid = Process.spawn(
+            { "SHELFARR_QUEUE_PARENT_PID" => @owner_pid.to_s },
+            Gem.ruby, jobs_executable, spawn_options(log_path)
+          )
+          # This thread is the sole reaper. It also serializes reaping with
+          # signaling to avoid racing our own cleanup.
+          @reaper = Thread.new { monitor_supervisor }
+          File.write(@pidfile, "#{@pid}\n")
+          install_at_exit_hook!
+          log("Started Solid Queue supervisor via bin/jobs (pid #{@pid})")
+        rescue StandardError
+          @stopping = true
+          raise
+        end
+        true
+      rescue StandardError
+        stop!
+        raise
+      end
+
+      def stop_supervisor
+        reaper = @mutex.synchronize do
+          @stopping = true
+          signal_supervisor(:INT)
+          @reaper
+        end
+        return false unless reaper
+
+        unless reaper.join(SHUTDOWN_TIMEOUT)
+          # Solid Queue normally stops its workers within its own timeout. Bound
+          # Puma shutdown as well if the supervisor is stuck during boot/exit.
+          @mutex.synchronize { signal_supervisor(:KILL) }
+          reaper.join(1)
+        end
+        true
+      end
+
+      def monitor_supervisor
+        loop do
+          finished = @mutex.synchronize do
+            begin
+              exited = Process.waitpid(@pid, Process::WNOHANG)
+            rescue Errno::ECHILD
+              exited = @pid
+            end
+            if exited
+              remove_pidfile(exited)
+              @pid = nil
+              unless @stopping
+                log("Solid Queue supervisor exited; stopping Puma")
+                Process.kill(:INT, @owner_pid)
+              end
+              true
+            end
+          end
+          break if finished
+
+          sleep 0.1
+        end
+      end
+
+      def signal_supervisor(signal)
+        return unless @pid
+
+        # The supervisor owns a fresh process group. On forced shutdown, stop
+        # its workers too; orphan detection can otherwise wait for a long poll.
+        target = signal == :KILL ? -@pid : @pid
+        Process.kill(signal, target)
+      rescue Errno::ESRCH
+        # The reaper will collect the exited child.
+      end
+
+      def remove_pidfile(pid)
+        File.delete(@pidfile) if File.read(@pidfile).strip == pid.to_s
+      rescue SystemCallError => error
+        log("Could not remove supervisor pidfile: #{error.message}") unless error.is_a?(Errno::ENOENT)
+      end
 
       def test_guard_blocks?(force)
         return false if force
@@ -86,14 +160,8 @@ module Shelfarr
         ENV["SOLID_QUEUE_IN_PUMA_TEST"].to_s.empty?
       end
 
-      def supervisor_exited_immediately?(pid)
-        !Process.waitpid(pid, Process::WNOHANG).nil?
-      rescue Errno::ECHILD, Errno::ESRCH
-        true
-      end
-
       def rails_root
-        defined?(Rails) ? Rails.root : Pathname.new(File.expand_path("../..", __dir__))
+        Pathname.new(File.expand_path("../..", __dir__))
       end
 
       def jobs_executable
@@ -101,11 +169,7 @@ module Shelfarr
       end
 
       def spawn_options(log_path)
-        options = {
-          chdir: rails_root.to_s,
-          close_others: true
-        }
-
+        options = { chdir: rails_root.to_s, close_others: true, pgroup: true }
         resolved_log = log_path.to_s
         resolved_log = ENV.fetch("SOLID_QUEUE_IN_PUMA_LOG", "") if resolved_log.empty?
 
@@ -117,39 +181,14 @@ module Shelfarr
           options[:out] = [ resolved_log, "a" ]
           options[:err] = [ :child, :out ]
         end
-
         options
       end
 
       def pid_path
-        if (override = ENV["SOLID_QUEUE_IN_PUMA_PIDFILE"].to_s) && !override.empty?
-          return Pathname.new(override)
-        end
+        override = ENV["SOLID_QUEUE_IN_PUMA_PIDFILE"].to_s
+        return Pathname.new(override) unless override.empty?
 
         rails_root.join("tmp/pids/solid_queue_in_puma.pid")
-      end
-
-      def read_pidfile
-        return unless File.exist?(pid_path)
-
-        Integer(File.read(pid_path).to_s.strip, exception: false)
-      end
-
-      def process_alive?(pid)
-        Process.kill(0, pid)
-        true
-      rescue Errno::ESRCH
-        false
-      rescue Errno::EPERM
-        true
-      end
-
-      def disconnect_connections!
-        return unless defined?(ActiveRecord::Base)
-
-        ActiveRecord::Base.connection_handler.clear_all_connections!
-      rescue StandardError
-        nil
       end
 
       def install_at_exit_hook!
