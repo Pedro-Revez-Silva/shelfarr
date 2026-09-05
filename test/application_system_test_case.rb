@@ -1,12 +1,17 @@
 require "test_helper"
 
-module ChromeStaleNodeVisibilityRetry
-  def visible?
-    super
-  rescue Selenium::WebDriver::Error::UnknownError => error
-    raise unless error.message.include?("Node with given id does not belong to the document")
+module ChromeStaleNodeRetry
+  def synchronize(...)
+    # Chrome also emits this detached-node error during text reads and clicks.
+    # Translate inside Capybara's existing retry loop so it reloads the node,
+    # keeps its normal timeout, and still propagates unrelated browser errors.
+    super do
+      yield
+    rescue Selenium::WebDriver::Error::UnknownError => error
+      raise unless error.message.include?("Node with given id does not belong to the document")
 
-    raise Selenium::WebDriver::Error::StaleElementReferenceError, error.message
+      raise Selenium::WebDriver::Error::StaleElementReferenceError, error.message
+    end
   end
 end
 
@@ -27,4 +32,4 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   end
 end
 
-Capybara::Selenium::ChromeNode.prepend(ChromeStaleNodeVisibilityRetry)
+Capybara::Node::Base.prepend(ChromeStaleNodeRetry)
