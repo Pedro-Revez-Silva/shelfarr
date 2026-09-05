@@ -83,7 +83,9 @@ begin
     wait_for("two web workers") { File.exist?(worker_log) && File.readlines(worker_log).length >= 2 }
     worker_pid = File.readlines(worker_log).first.to_i
     Process.kill(:TERM, worker_pid)
-    wait_for("replacement web worker") { File.readlines(worker_log).length >= 3 }
+    # Puma allows 30 seconds to drain a worker, then checks/replaces workers
+    # on a five-second interval. Give that lifecycle time to finish on CI.
+    wait_for("replacement web worker", timeout: 60) { File.readlines(worker_log).length >= 3 }
     raise "Worker recycling stopped or duplicated the supervisor" unless supervisors == [ supervisor_pid ] && process_exists?(supervisor_pid)
   end
 
