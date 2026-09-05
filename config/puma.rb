@@ -34,8 +34,31 @@ port ENV.fetch("PORT", 3000)
 # Allow puma to be restarted by `bin/rails restart` command.
 plugin :tmp_restart
 
-# Run the Solid Queue supervisor inside of Puma for single-server deployments.
-plugin :solid_queue if ENV["SOLID_QUEUE_IN_PUMA"]
+# Start Solid Queue once in the Puma master, after worker forks.
+# Do not use `plugin :solid_queue` here: that plugin forks after Puma's thread
+# pool is already running, which can leave solid_queue_processes empty and
+# SearchJob stuck enqueued (see Shelfarr::SolidQueueInPuma).
+if ENV["SOLID_QUEUE_IN_PUMA"]
+  start_solid_queue = lambda do
+    require_relative "../lib/shelfarr/solid_queue_in_puma"
+    Shelfarr::SolidQueueInPuma.start!(force: true)
+  end
+  stop_solid_queue = lambda do |_launcher = nil|
+    require_relative "../lib/shelfarr/solid_queue_in_puma"
+    Shelfarr::SolidQueueInPuma.stop!
+  end
+
+  if respond_to?(:after_booted)
+    after_booted(&start_solid_queue)
+    after_stopped(&stop_solid_queue)
+    before_restart(&stop_solid_queue) if respond_to?(:before_restart)
+  else
+    on_booted(&start_solid_queue)
+    on_stopped(&stop_solid_queue)
+    on_restart(&stop_solid_queue)
+  end
+end
+
 
 # Specify the PID file. Defaults to tmp/pids/server.pid in development.
 # In other environments, only set the PID file if requested.

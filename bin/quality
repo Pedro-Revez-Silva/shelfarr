@@ -140,6 +140,7 @@ module Quality
   end
 
   def run(label, *command, env: {})
+    warn "Running #{label}"
     output, status = Open3.capture2e(app_bundle_env(env), *command)
     return true if status.success?
 
@@ -153,6 +154,7 @@ module Quality
   end
 
   def run_brakeman
+    warn "Running Brakeman"
     output, status = Open3.capture2e(
       app_bundle_env,
       "bin/brakeman", "--quiet", "--no-pager", "--exit-on-warn", "--exit-on-error"

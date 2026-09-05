@@ -1,5 +1,8 @@
 #!/usr/bin/env ruby
 
+require_relative "../lib/shelfarr/solid_queue_in_puma"
+Shelfarr::SolidQueueInPuma.watch_parent!
+
 require_relative "../config/environment"
 require "solid_queue/cli"
 

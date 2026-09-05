@@ -84,6 +84,13 @@ docker compose up -d
 
 A secret key is auto-generated on first run and saved to the data volume.
 
+The Compose example sets `SOLID_QUEUE_IN_PUMA=1`. Puma starts one separate
+`bin/jobs` supervisor for searches, downloads, and scheduled tasks, including
+when multiple web workers are configured. It stops the supervisor on shutdown
+or restart. If the supervisor exits unexpectedly, Puma shuts down too so the
+container's restart policy can recover job processing. Unset this variable
+when running `bin/jobs` as a separately managed service.
+
 The current Compose example also starts the internal Audible Backup companion, powered by Libation. It stays idle until an administrator enables the beta integration, exposes no host port, and requires no Audible account for users who leave it disabled. Existing installations must merge the companion service and volumes from the current Compose example once before enabling Audible Backup; see the [Audible Backup guide](docs/audible-backup.md#existing-installations).
 
 Visit `http://localhost:5056` — the first user to register becomes admin.

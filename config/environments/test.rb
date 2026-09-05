@@ -51,6 +51,10 @@ Rails.application.configure do
   # Raise error when a before_action's only/except options reference missing actions.
   config.action_controller.raise_on_missing_callback_actions = true
 
+  # Keep the in-process test adapter for most tests. Isolated supervisor
+  # probes switch the adapter to :solid_queue and need the queue DB.
+  config.solid_queue.connects_to = { database: { writing: :queue } }
+
   # Configure Active Record Encryption for tests
   config.active_record.encryption.primary_key = "test_primary_key_for_encryption_1234"
   config.active_record.encryption.deterministic_key = "test_deterministic_key_for_encrypt"
