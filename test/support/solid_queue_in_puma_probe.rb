@@ -50,6 +50,17 @@ mode = ENV.fetch("SQIP_MODE", "single")
 server = TCPServer.new("127.0.0.1", 0)
 port = server.addr[1]
 server.close
+puma_pid = nil
+watchdog = Thread.new do
+  sleep 240
+  warn "Puma lifecycle probe exceeded 240 seconds (mode=#{mode})"
+  warn File.read(puma_log) if File.exist?(puma_log)
+  warn jobs_log_output
+  Process.kill(:TERM, -puma_pid) rescue nil
+  sleep 20
+  Process.kill(:KILL, -puma_pid) rescue nil
+  Process.kill(:KILL, Process.pid)
+end
 begin
   # A stale PID must never suppress startup or be signalled at shutdown.
   File.write(ENV.fetch("SOLID_QUEUE_IN_PUMA_PIDFILE"), "#{Process.pid}\n")
@@ -159,4 +170,5 @@ ensure
   # Print the server log on failure before the outer test removes probe files.
   warn File.read(puma_log) if $! && File.exist?(puma_log)
   FileUtils.rm_f([ puma_log, "#{puma_log}.pid", worker_log ])
+  watchdog&.kill
 end
