@@ -62,6 +62,10 @@ watchdog = Thread.new do
   Process.kill(:KILL, Process.pid)
 end
 begin
+  # Parallel Puma probes share tmp_restart's marker. Create it atomically
+  # without touching an existing marker, so plugin startup cannot trigger a
+  # restart in another probe through its check-then-write initialization.
+  File.open(Rails.root.join("tmp/restart.txt"), File::WRONLY | File::CREAT, 0o644) { }
   # A stale PID must never suppress startup or be signalled at shutdown.
   File.write(ENV.fetch("SOLID_QUEUE_IN_PUMA_PIDFILE"), "#{Process.pid}\n")
   command = if mode == "single"
