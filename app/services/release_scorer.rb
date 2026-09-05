@@ -52,7 +52,7 @@ class ReleaseScorer
     @request = request
     @book = request.book
     @parsed = ReleaseParserService.parse(search_result.title)
-    @format_preferences = FormatPreferenceService.evaluate(title: search_result.title, book_type: @book.book_type)
+    @format_preferences = FormatPreferenceService.evaluate(title: search_result.title, book_type: @book.book_type, parsed: @parsed)
     @comic_issue_match = classify_comic_issue_match
   end
 

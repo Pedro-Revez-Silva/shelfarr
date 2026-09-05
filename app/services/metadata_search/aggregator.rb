@@ -16,6 +16,7 @@ module MetadataSearch
 
     def call
       @logged_disagreements = {}
+      @isbn_identities = {}.compare_by_identity
       log_provider_disagreements
 
       clusters.map { |cluster| candidate_for(cluster) }
@@ -117,7 +118,7 @@ module MetadataSearch
       results.each_with_object([]) do |result, groups|
         group = groups.find do |candidate_group|
           candidate_group.any? { |member| match?(member, result) } &&
-            candidate_group.none? { |member| classification_conflict?(member, result) }
+            candidate_group.none? { |member| classification_conflict?(member, result) || conflicting_isbn?(member, result) }
         end
         group ? group << result : groups << [ result ]
       end
@@ -134,17 +135,33 @@ module MetadataSearch
     end
 
     def shared_isbn?(left, right)
-      (isbns(left) & isbns(right)).any?
+      (isbn_identities(left) & isbn_identities(right)).any?
     end
 
     def conflicting_isbn?(left, right)
-      left_isbns = isbns(left)
-      right_isbns = isbns(right)
+      left_isbns = isbn_identities(left)
+      right_isbns = isbn_identities(right)
       left_isbns.any? && right_isbns.any? && (left_isbns & right_isbns).empty?
     end
 
     def isbns(result)
       [ result.isbn_10, result.isbn_13 ].compact.map { |isbn| isbn.to_s.delete(" -") }.reject(&:blank?)
+    end
+
+    def isbn_identities(result)
+      @isbn_identities[result] ||= isbns(result).map do |isbn|
+        identifier = isbn.upcase
+        next identifier unless identifier.match?(/\A\d{9}[\dX]\z/)
+
+        digits = identifier.chars.map { |digit| digit == "X" ? 10 : digit.to_i }
+        next identifier unless digits.each_with_index.sum { |digit, index| digit * (10 - index) } % 11 == 0
+
+        # Compare valid ISBN-10s using their ISBN-13 equivalent, while keeping
+        # the provider's original identifiers in the returned candidate.
+        body = "978#{identifier[0, 9]}"
+        checksum = body.chars.each_with_index.sum { |digit, index| digit.to_i * (index.even? ? 1 : 3) }
+        "#{body}#{(10 - checksum % 10) % 10}"
+      end
     end
 
     def normalized_text(value)

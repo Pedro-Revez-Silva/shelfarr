@@ -38,6 +38,48 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     assert_field "Audiobookshelf URL"
   end
 
+  test "settings controls recover when Chrome reports a replaced click target" do
+    sign_in_as(@admin)
+    visit admin_settings_path
+    button = find_button("Integrations")
+    native = button.base.native
+    stale_clicks = 0
+
+    native.stub(:click, -> {
+      stale_clicks += 1
+      raise Selenium::WebDriver::Error::UnknownError, "Node with given id does not belong to the document"
+    }) do
+      button.click
+    end
+
+    assert_equal 1, stale_clicks
+    assert_field "Audiobookshelf URL"
+  end
+
+  test "settings text recovers from replaced nodes but preserves unrelated browser errors" do
+    sign_in_as(@admin)
+    visit admin_settings_path
+    button = find_button("Integrations")
+    stale_reads = 0
+
+    button.base.native.stub(:text, -> {
+      stale_reads += 1
+      raise Selenium::WebDriver::Error::UnknownError, "Node with given id does not belong to the document"
+    }) do
+      assert_match(/Integrations/, button.text)
+    end
+    assert_equal 1, stale_reads
+
+    unrelated_reads = 0
+    button.base.native.stub(:text, -> {
+      unrelated_reads += 1
+      raise Selenium::WebDriver::Error::UnknownError, "unrelated browser failure"
+    }) do
+      assert_raises(Selenium::WebDriver::Error::UnknownError) { button.text }
+    end
+    assert_equal 1, unrelated_reads
+  end
+
   test "history navigation waits for a pending autosave" do
     sign_in_as(@admin)
     visit admin_root_path

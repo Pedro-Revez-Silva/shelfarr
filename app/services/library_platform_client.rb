@@ -21,32 +21,32 @@ class LibraryPlatformClient
       DISPLAY_NAMES.fetch(platform, platform.to_s.titleize)
     end
 
-    def configured?
-      client.configured?
+    def configured?(platform: active_platform)
+      client_for(platform).configured?
     end
 
-    def libraries
-      translate_errors { client.libraries }
+    def libraries(platform: active_platform)
+      translate_errors(platform) { |client| client.libraries }
     end
 
-    def library(id)
-      translate_errors { client.library(id) }
+    def library(id, platform: active_platform)
+      translate_errors(platform) { |client| client.library(id) }
     end
 
-    def library_items(id, page_size: 500)
-      translate_errors { client.library_items(id, page_size: page_size) }
+    def library_items(id, page_size: 500, platform: active_platform)
+      translate_errors(platform) { |client| client.library_items(id, page_size: page_size) }
     end
 
-    def scan_library(id)
-      translate_errors { client.scan_library(id) }
+    def scan_library(id, platform: active_platform)
+      translate_errors(platform) { |client| client.scan_library(id) }
     end
 
-    def delete_item_by_path(path)
-      translate_errors { client.delete_item_by_path(path) }
+    def delete_item_by_path(path, platform: active_platform)
+      translate_errors(platform) { |client| client.delete_item_by_path(path) }
     end
 
-    def test_connection
-      translate_errors { client.test_connection }
+    def test_connection(platform: active_platform)
+      translate_errors(platform) { |client| client.test_connection }
     end
 
     def reset_connections!
@@ -78,10 +78,6 @@ class LibraryPlatformClient
 
     private
 
-    def client
-      client_for(active_platform)
-    end
-
     def client_for(platform)
       case platform.to_s
       when "bookorbit"
@@ -104,9 +100,9 @@ class LibraryPlatformClient
       end
     end
 
-    def translate_errors
-      active_client = client
-      yield
+    def translate_errors(platform)
+      active_client = client_for(platform)
+      yield active_client
     rescue active_client::AuthenticationError => e
       raise AuthenticationError, e.message
     rescue active_client::ConnectionError => e

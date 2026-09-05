@@ -40,6 +40,22 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal :audiobook, result.detected_format
   end
 
+  test "parses each release once while preserving its complete score" do
+    search_result = @request.search_results.new(
+      title: "The Name of the Wind - Patrick Rothfuss - English Audiobook M4B 128kbps",
+      seeders: 50
+    )
+    expected = ReleaseScorer.score(search_result, @request)
+    original_parse = ReleaseParserService.method(:parse)
+    parsed_titles = []
+
+    ReleaseParserService.stub(:parse, ->(title) { parsed_titles << title; original_parse.call(title) }) do
+      assert_equal expected, ReleaseScorer.score(search_result, @request)
+    end
+
+    assert_equal [ search_result.title ], parsed_titles
+  end
+
   test "scores low for wrong language" do
     search_result = @request.search_results.create!(
       guid: "test-2",

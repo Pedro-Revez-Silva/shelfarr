@@ -22,15 +22,7 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
   setup do
     @old_queue_adapter = ActiveJob::Base.queue_adapter
     ActiveJob::Base.queue_adapter = :test
-    @request = Request.create!(
-      book: Book.create!(
-        title: "Live Update Test #{SecureRandom.hex(4)}",
-        book_type: :ebook,
-        open_library_work_id: "OL_LIVE_#{SecureRandom.hex(6)}"
-      ),
-      user: users(:one),
-      status: :pending
-    )
+    @request = create_live_update_request
   end
 
   teardown do
@@ -61,6 +53,21 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
     assert_no_refresh_broadcasts(@request) do
       @request.touch
     end
+  end
+
+  test "a delayed refresh from a rolled-back request cannot enter a later request assertion" do
+    stale_debouncer = nil
+    Request.transaction(requires_new: true) do
+      stale_request = create_live_update_request
+      with_deterministic_refresh_debouncer do |debouncer|
+        stale_request.broadcast_show_refresh_later
+        stale_debouncer = debouncer
+      end
+      raise ActiveRecord::Rollback
+    end
+    next_request = create_live_update_request
+
+    assert_no_refresh_broadcasts(next_request) { stale_debouncer.flush }
   end
 
   test "download broadcasts a refresh when progress changes" do
@@ -112,6 +119,21 @@ class RequestLiveUpdatesTest < ActiveSupport::TestCase
   end
 
   private
+
+  def create_live_update_request
+    Request.create!(
+      # Rolled-back tests reuse auto-increment IDs, but Turbo callbacks can
+      # outlive their transaction. Give each assertion its own request stream.
+      id: SecureRandom.random_number(1..(2**62)),
+      book: Book.create!(
+        title: "Live Update Test #{SecureRandom.hex(4)}",
+        book_type: :ebook,
+        open_library_work_id: "OL_LIVE_#{SecureRandom.hex(6)}"
+      ),
+      user: users(:one),
+      status: :pending
+    )
+  end
 
   def capture_refresh_broadcasts(request, &block)
     Turbo.with_request_id(SecureRandom.uuid) do
