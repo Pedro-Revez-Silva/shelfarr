@@ -142,7 +142,7 @@ app.MapPost("/v1/auth/start", async (
 
     try
     {
-        return Results.Ok(await sessions.StartAsync(account, locale, cancellationToken));
+        return Results.Ok(await sessions.StartAsync(account, locale, cancellationToken, request.Reregister));
     }
     catch (CompanionBusyException exception)
     {

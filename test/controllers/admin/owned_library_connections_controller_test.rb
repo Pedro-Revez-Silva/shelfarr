@@ -540,9 +540,10 @@ class Admin::OwnedLibraryConnectionsControllerTest < ActionDispatch::Integration
     connection = create_connection
     client = Object.new
     client.define_singleton_method(:token_file_managed?) { false }
-    client.define_singleton_method(:start_auth) do |account:, locale:|
+    client.define_singleton_method(:start_auth) do |account:, locale:, reregister: false|
       raise "missing starting claim" unless connection.reload.auth_starting?
       raise "unexpected account" unless account == "reader@example.com" && locale == "us"
+      raise "unexpected reregister" if reregister
 
       LibationCompanionClient::AuthSession.new(
         "session-1",
@@ -1015,6 +1016,45 @@ class Admin::OwnedLibraryConnectionsControllerTest < ActionDispatch::Integration
 
     assert_redirected_to admin_owned_library_connections_path(tab: "connection", anchor: "connection")
     assert_match(/already authenticated/, flash[:notice])
+  end
+
+  test "reregister starts a new login instead of accepting the stored registration" do
+    connection = create_connection
+
+    VCR.turned_off do
+      stub_accounts(connection)
+      stub_request(:post, "https://libation.test/v1/auth/start")
+        .with { |request| JSON.parse(request.body)["reregister"] == true }
+        .to_return(
+          status: 200,
+          body: {
+            sessionId: "session-reregister",
+            loginUrl: "https://www.amazon.com/ap/signin?example=1",
+            expiresAt: 10.minutes.from_now.iso8601
+          }.to_json
+        )
+
+      post auth_start_admin_owned_library_connection_url(connection),
+        params: { account: "reader@example.com", locale: "us", reregister: "true" }
+    end
+
+    assert_response :success
+    assert_select "a[href='https://www.amazon.com/ap/signin?example=1']", text: /Open secure Audible sign-in/
+    assert_not_equal "This Audible account is already authenticated in Libation.", flash[:notice]
+  end
+
+  test "connected account form exposes registration replacement" do
+    connection = create_connection
+
+    VCR.turned_off do
+      stub_accounts(connection)
+      get admin_owned_library_connections_url
+    end
+
+    assert_response :success
+    assert_select "summary", text: "Reconnect or add an Audible account"
+    assert_select "input[name='reregister'][value='true']"
+    assert_select "label", text: /Replace the stored Libation device registration/
   end
 
   test "sync queues a background job" do

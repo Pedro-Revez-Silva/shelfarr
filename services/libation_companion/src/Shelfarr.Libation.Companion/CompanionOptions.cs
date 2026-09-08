@@ -23,6 +23,7 @@ public sealed record CompanionOptions
 
     public string JobsDirectory => Path.Combine(StateDirectory, "jobs");
     public string LibraryFile => Path.Combine(StateDirectory, "library.json");
+    public string AccountsSettingsFile => Path.Combine(LibationFilesDirectory, "AccountsSettings.json");
 
     public static CompanionOptions FromEnvironment()
     {

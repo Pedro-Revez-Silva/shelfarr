@@ -114,7 +114,10 @@ environment variable.
 Audible authentication is a two-request operation:
 
 1. `POST /v1/auth/start` starts one Libation `login-external` process and
-   returns the upstream browser login URL.
+   returns the upstream browser login URL. Pass `"reregister": true` to remove
+   that email from Libation's stored accounts first; a still-valid registration
+   otherwise exits as already authenticated and never issues a new device
+   serial.
 2. The user signs in directly on Amazon/Audible, then copies the final URL from
    the browser address bar.
 3. `POST /v1/auth/complete` writes that URL into the **same** held Libation
@@ -138,7 +141,7 @@ All JSON field names use camel case.
 | `GET /health` | Liveness, pinned versions, busy state, and whether a cached library exists |
 | `GET /version` | Bridge/API/Libation versions and upstream attribution |
 | `GET /v1/accounts` | Configured account, marketplace, scan-enabled and authentication status |
-| `POST /v1/auth/start` | Begin external-browser authentication |
+| `POST /v1/auth/start` | Begin external-browser authentication; optional `reregister` removes the stored login first |
 | `POST /v1/auth/complete` | Complete the held authentication session |
 | `POST /v1/sync` | Queue a serialized Libation scan followed by a normalized JSON export |
 | `GET /v1/library` | Read the complete last successful, local normalized library snapshot; never contacts Audible (legacy compatibility) |
@@ -152,9 +155,16 @@ Start authentication:
 POST /v1/auth/start
 {
   "account": "reader@example.com",
-  "locale": "us"
+  "locale": "us",
+  "reregister": false
 }
 ```
+
+Set `reregister` to `true` after a companion upgrade that changes Libation
+device registration. The companion removes that email from
+`AccountsSettings.json` and starts a new external login so Libation can
+register again. Ordinary first-time sign-in leaves `reregister` false or
+omitted.
 
 ```json
 {

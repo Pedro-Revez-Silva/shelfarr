@@ -178,7 +178,7 @@ class LibationCompanionClient
     end
   end
 
-  def start_auth(account:, locale:)
+  def start_auth(account:, locale:, reregister: false)
     account = account.to_s.strip
     locale = locale.to_s.strip.downcase
     raise ArgumentError, "Audible account is required" if account.blank? || account.length > 320
@@ -186,7 +186,7 @@ class LibationCompanionClient
 
     payload = post_json(
       "/v1/auth/start",
-      { "account" => account, "locale" => locale }
+      { "account" => account, "locale" => locale, "reregister" => reregister }
     )
 
     if payload["status"].to_s.casecmp("authenticated").zero?

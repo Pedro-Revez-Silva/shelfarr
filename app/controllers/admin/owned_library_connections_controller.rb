@@ -119,7 +119,8 @@ module Admin
 
       auth_session = @connection.client.start_auth(
         account: params[:account],
-        locale: params[:locale]
+        locale: params[:locale],
+        reregister: ActiveModel::Type::Boolean.new.cast(params[:reregister])
       )
       if auth_session.authenticated
         clear_auth_start_claim(auth_request_token)
