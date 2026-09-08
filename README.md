@@ -167,6 +167,8 @@ The save bar stays visible as you scroll. Preferences save automatically and sho
 
 Only the selected indexer and library platform's credentials are shown. Switching providers preserves stored credentials and any unfinished draft for the other provider. **Save All** saves the active provider's draft; switch back to save a draft for another provider. Custom indexer categories appear when Search Scope is **Custom**. Without JavaScript, provider fields and settings sections remain available and all changes require **Save All**.
 
+See the [settings overview](docs/screenshot-settings.jpg) and [mobile save feedback](docs/screenshot-settings-mobile.jpg).
+
 📖 **[Read the docs](https://shelfarr.org/getting-started.html)** for a full install and setup walkthrough, plus a **[settings reference](https://shelfarr.org/configuration.html)** describing every option, its type and default.
 
 ### OIDC/SSO Setup
