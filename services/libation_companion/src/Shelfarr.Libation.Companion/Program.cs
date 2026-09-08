@@ -109,7 +109,7 @@ app.MapGet("/v1/accounts", async (CliCoordinator cli, CompanionOptions options, 
 
             var accounts = result.StandardOutput
                 .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(ParseAccount)
+                .Select(AccountListParser.TryParse)
                 .Where(account => account is not null)
                 .Cast<AccountStatus>()
                 .ToArray();
@@ -278,19 +278,6 @@ static string Version()
         return informational.Split('+', 2)[0];
 
     return Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
-}
-
-static AccountStatus? ParseAccount(string line)
-{
-    var fields = line.Split('\t');
-    return fields.Length == 5
-        ? new AccountStatus(
-            fields[0],
-            fields[1],
-            fields[2],
-            fields[3].Equals("yes", StringComparison.OrdinalIgnoreCase),
-            fields[4].Equals("yes", StringComparison.OrdinalIgnoreCase))
-        : null;
 }
 
 public partial class Program { }

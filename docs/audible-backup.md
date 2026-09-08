@@ -314,7 +314,7 @@ Shelfarr keeps the already validated **Open secure Audible sign-in** link only i
 
 The first beta accepts these marketplace choices: United States, United Kingdom, Australia, Canada, France, Germany, India, Italy, Japan, and Spain. Choose the marketplace where the account's Audible library is registered; it is not a display-language preference.
 
-An account may need to be reconnected if Audible expires its authorization or requires a new challenge. Shelfarr stops automatic authentication retries in that state so it does not repeatedly trigger account security controls.
+An account may need to be reconnected if Audible expires its authorization or requires a new challenge. After a companion upgrade that changes Libation's device registration, complete sign-in again even if the stored account still looks authenticated; updating the image alone does not replace the old registration. Shelfarr stops automatic authentication retries in that state so it does not repeatedly trigger account security controls.
 
 ## Sync and back up the library
 
@@ -437,11 +437,13 @@ Every endpoint except `/health` requires the generated bearer token. The compani
 
 ## Version pinning and upgrades
 
-The first companion beta pins Libation `13.5.1` using the immutable image reference:
+The companion pins Libation `14.2.0` using the immutable image reference:
 
 ```text
-rmcrackan/libation:13.5.1@sha256:71b9db4bbda7d7e14bb9f5efcdcfe980915c90867599bc0d512d958069fb3da0
+rmcrackan/libation:14.2.0@sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db
 ```
+
+Libation 14.2 fixes widespread license-denied and `CustomerThrottled` failures caused by registering Android devices with a serial number twice the expected length. Updating the companion image does not replace an already stored device registration. After this upgrade, complete Audible sign-in again from **Admin > Audible Backup** so Libation can register a corrected device serial. If Audible is still rate-limiting the account, wait 24 to 48 hours and retry one title.
 
 The upstream Libation base never follows `latest`; its exact tag and digest are part of the companion build. The Compose example uses the same Shelfarr release selector for both application images:
 
@@ -471,11 +473,11 @@ Shelfarr's integration pages and companion releases include:
 
 - the exact Libation version and source release;
 - links to the [Libation project](https://github.com/rmcrackan/Libation) and [documentation](https://getlibation.com/docs);
-- Libation's [GPL-3.0 license](https://github.com/rmcrackan/Libation/blob/v13.5.1/LICENSE);
+- Libation's [GPL-3.0 license](https://github.com/rmcrackan/Libation/blob/v14.2.0/LICENSE);
 - the Shelfarr bridge source and a description of what Shelfarr adds;
 - preserved upstream notices and source-availability information.
 
-The exact image, digest, source commit, license, and source locations are recorded in the companion's [third-party notices](../services/libation_companion/THIRD_PARTY_NOTICES.md). Every distributed companion image also contains a machine-readable snapshot at `/companion/SOURCES/Libation-13.5.1-source.tar.gz`, so recipients do not depend solely on the continued availability of an upstream tag.
+The exact image, digest, source commit, license, and source locations are recorded in the companion's [third-party notices](../services/libation_companion/THIRD_PARTY_NOTICES.md). Every distributed companion image also contains a machine-readable snapshot at `/companion/SOURCES/Libation-14.2.0-source.tar.gz`, so recipients do not depend solely on the continued availability of an upstream tag.
 
 Report Shelfarr UI, packaging, or bridge problems to Shelfarr. Reproduce a problem against Libation itself before reporting it upstream, so Shelfarr-specific issues do not create support work for Libation's maintainers.
 

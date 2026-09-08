@@ -23,13 +23,22 @@ internal static class BackupCliDiagnostics
                 "Audible did not offer an ADRM download for this title. Libation recommends Widevine for this title.");
         }
 
+        if (Contains(output, "account is being throttled")
+            || Contains(output, "CustomerThrottled")
+            || Contains(output, "Customer id being throttled"))
+        {
+            return new BackupCliFailure(
+                "customer_throttled",
+                "Audible is rate-limiting downloads for this account. Wait 24 to 48 hours, then retry. After upgrading the companion to Libation 14.2, reconnect the Audible account so Libation can register a corrected device serial.");
+        }
+
         if (Contains(output, "Audible denied a content license")
             || Contains(output, "content license denied")
             || Contains(output, "download not allowed for this account/title"))
         {
             return new BackupCliFailure(
                 "content_license_denied",
-                "Audible denied the download license for this account and title. Confirm that it is still downloadable in the connected marketplace.");
+                "Audible denied the download license for this account and title. Confirm that it is still downloadable in the connected marketplace. After a companion upgrade to Libation 14.2, reconnect the account if backups that previously worked now fail.");
         }
 
         if (Contains(output, "Cannot find decrypt. Final audio file already exists"))
@@ -81,10 +90,11 @@ internal static class BackupCliDiagnostics
                 "Libation cancelled the title backup before it completed.");
         }
 
-        // Libation 13.5.1 returns exit code 0 for per-title failures. Its
-        // actionable failures are written to stderr instead. Never expose that
-        // arbitrary text because upstream exception output may include URLs or
-        // account details, but do retain that the CLI itself reported a failure.
+        // Libation still returns exit code 0 for per-title failures as of
+        // 14.2.0. Its actionable failures are written to stderr instead. Never
+        // expose that arbitrary text because upstream exception output may
+        // include URLs or account details, but do retain that the CLI itself
+        // reported a failure.
         if (!string.IsNullOrWhiteSpace(result.StandardError))
         {
             return new BackupCliFailure(

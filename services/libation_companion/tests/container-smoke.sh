@@ -131,15 +131,15 @@ image_license="$(docker exec -u 0 "${container}" sha256sum /companion/LICENSES/L
 test "${image_license}" = "${expected_license}"
 shelfarr_license="$(docker exec -u 0 "${container}" sha256sum /companion/LICENSES/Shelfarr-GPL-3.0.txt | sed 's/ .*//')"
 test "${shelfarr_license}" = "${expected_license}"
-docker exec -u 23456:23456 "${container}" test -r /companion/SOURCES/Libation-13.5.1-source.tar.gz
+docker exec -u 23456:23456 "${container}" test -r /companion/SOURCES/Libation-14.2.0-source.tar.gz
 source_archive_sha="$(docker exec -u 23456:23456 "${container}" \
-  sha256sum /companion/SOURCES/Libation-13.5.1-source.tar.gz | sed 's/ .*//')"
-test "${source_archive_sha}" = "7391b9e4e34375e5d134932246ce0a50e0561efe1a24c2a3aa8f32a1217fac9f"
-docker exec -u 23456:23456 "${container}" tar -tzf /companion/SOURCES/Libation-13.5.1-source.tar.gz \
-  Libation-13.5.1/Source/LibationCli/LibationCli.csproj >/dev/null
+  sha256sum /companion/SOURCES/Libation-14.2.0-source.tar.gz | sed 's/ .*//')"
+test "${source_archive_sha}" = "662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6"
+docker exec -u 23456:23456 "${container}" tar -tzf /companion/SOURCES/Libation-14.2.0-source.tar.gz \
+  Libation-14.2.0/Source/LibationCli/LibationCli.csproj >/dev/null
 libation_output="$(docker exec -u 23456:23456 "${container}" /libation/LibationCli 2>&1 || true)"
 libation_version="$(printf '%s\n' "${libation_output}" | sed -n '1s/^LibationCli v//p')"
-test "${libation_version}" = "13.5.1"
+test "${libation_version}" = "14.2.0"
 
 unauthorized="$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${port}/version")"
 test "${unauthorized}" = "401"
@@ -147,7 +147,7 @@ test "${unauthorized}" = "401"
 token="$(docker exec -u 23456:23456 "${container}" sed -n '1p' /control/token)"
 version_response="$(curl --fail --silent -H "Authorization: Bearer ${token}" "http://127.0.0.1:${port}/version")"
 printf '%s' "${version_response}" | grep -q '"companionVersion":"0.0.0"'
-printf '%s' "${version_response}" | grep -q '"libationVersion":"13.5.1"'
+printf '%s' "${version_response}" | grep -q '"libationVersion":"14.2.0"'
 accounts_response="$(curl --fail --silent -H "Authorization: Bearer ${token}" "http://127.0.0.1:${port}/v1/accounts")"
 printf '%s' "${accounts_response}" | grep -q '"accounts":\[\]'
 
@@ -287,7 +287,7 @@ docker exec -u 23456:23456 \
   umask 077
   mkdir -p /config/shelfarr-companion/jobs /config/in-progress/example /data/Example\ Book
   printf "%s" "{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"sync\",\"status\":\"succeeded\",\"createdAt\":\"${JOB_CREATED_AT}\",\"completedAt\":\"${JOB_COMPLETED_AT}\"}" > /config/shelfarr-companion/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json
-  printf "%s" "{\"schemaVersion\":1,\"generatedAt\":\"2026-07-18T00:00:00Z\",\"libationVersion\":\"13.5.1\",\"skippedItems\":0,\"items\":[]}" > /config/shelfarr-companion/library.json
+  printf "%s" "{\"schemaVersion\":1,\"generatedAt\":\"2026-07-18T00:00:00Z\",\"libationVersion\":\"14.2.0\",\"skippedItems\":0,\"items\":[]}" > /config/shelfarr-companion/library.json
   printf chunk > /config/in-progress/example/chunk.partial
   printf sidecar > /config/LibationContext.db-wal.audit
   printf audio > "/data/Example Book/example.m4b"

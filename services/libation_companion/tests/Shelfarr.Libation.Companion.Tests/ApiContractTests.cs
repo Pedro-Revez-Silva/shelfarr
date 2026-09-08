@@ -9,6 +9,12 @@ public sealed class ApiContractTests
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void PinsTheLibationReleaseThatFixesDeviceSerialThrottling()
+    {
+        Assert.Equal("14.2.0", CompanionOptions.PinnedLibationVersion);
+    }
+
+    [Fact]
     public void BackupJobUsesArtifactPathsAndStringEnums()
     {
         var job = new CompanionJob(

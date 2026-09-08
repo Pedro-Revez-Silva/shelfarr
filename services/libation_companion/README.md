@@ -12,12 +12,12 @@ The Shelfarr UI and documentation must describe the feature as **Audible Backup
 ## Packaging model
 
 The image is built from the unmodified multi-architecture
-`rmcrackan/libation:13.5.1` image at the manifest digest recorded in the
+`rmcrackan/libation:14.2.0` image at the manifest digest recorded in the
 [third-party notice](THIRD_PARTY_NOTICES.md). Do not replace the digest with a
 floating `latest` tag. The bridge is published as a self-contained .NET 10
 minimal API and the upstream Libation CLI remains a separate process.
 The build also places a machine-readable snapshot of the exact upstream source
-at `/companion/SOURCES/Libation-13.5.1-source.tar.gz`, beside the license and
+at `/companion/SOURCES/Libation-14.2.0-source.tar.gz`, beside the license and
 third-party notice in the distributed image. The independently licensed
 Shelfarr bridge has its own named license copy at
 `/companion/LICENSES/Shelfarr-GPL-3.0.txt`; OCI source and revision labels map
@@ -124,7 +124,7 @@ Audible authentication is a two-request operation:
 The session expires after ten minutes by default. It holds the global Libation
 operation lock because Libation state must not be mutated concurrently.
 
-Supported marketplace values for Libation 13.5.1 are:
+Supported marketplace values for Libation 14.2.0 are:
 
 `us`, `uk`, `australia`, `canada`, `france`, `germany`, `india`, `italy`,
 `japan`, and `spain`.
@@ -264,6 +264,9 @@ their image defaults.
   Libation and can require maintenance when Audible changes its service.
 - The pinned Libation release must be upgraded deliberately and tested against
   an existing state-volume copy. Never use an automatic `latest` updater.
+  Libation 14.2.0 also requires a fresh Audible sign-in after upgrade so the
+  corrected Android device serial can be registered; updating the image alone
+  does not replace an already stored registration.
 
 ## Development
 
