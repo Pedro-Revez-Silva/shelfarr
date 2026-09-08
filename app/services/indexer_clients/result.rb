@@ -2,15 +2,17 @@
 
 module IndexerClients
   Result = Data.define(
-    :guid, :title, :indexer, :size_bytes, :seeders, :leechers,
+    :guid, :title, :indexer, :indexer_id, :size_bytes, :seeders, :leechers,
     :download_url, :magnet_url, :info_url, :published_at, :category_ids
   ) do
     def initialize(
       guid:, title:, indexer:, size_bytes:, seeders:, leechers:,
-      download_url:, magnet_url:, info_url:, published_at:, category_ids: []
+      download_url:, magnet_url:, info_url:, published_at:, category_ids: [], indexer_id: nil
     )
       super(
-        guid:, title:, indexer:, size_bytes:, seeders:, leechers:,
+        guid:, title:, indexer:,
+        indexer_id: Integer(indexer_id, exception: false),
+        size_bytes:, seeders:, leechers:,
         download_url:, magnet_url:, info_url:, published_at:,
         category_ids: Array(category_ids).filter_map { |id| Integer(id, exception: false) }.uniq
       )

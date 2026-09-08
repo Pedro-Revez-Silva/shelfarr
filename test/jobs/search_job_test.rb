@@ -93,6 +93,7 @@ class SearchJobTest < ActiveJob::TestCase
       assert @request.searching?
       assert @request.search_results.any?
       assert_equal "Test Result Book", @request.search_results.first.title
+      assert_equal 7, @request.search_results.first.indexer_id
     end
   end
 
@@ -407,6 +408,29 @@ class SearchJobTest < ActiveJob::TestCase
     assert carried.blocklisted?
     assert_equal "Bad release", carried.blocklist_reason
     assert carried.rejected?
+  end
+
+  test "save_results persists the Prowlarr indexer id from the search result" do
+    tagged_result = tagged_indexer_result(guid: "indexer-id-guid", title: "The Pending Ebook Another Author EPUB")
+    tagged_result[:result] = IndexerClients::Result.new(
+      guid: "indexer-id-guid",
+      title: "The Pending Ebook Another Author EPUB",
+      indexer: "PrivateTracker",
+      indexer_id: 11,
+      size_bytes: 1.megabyte,
+      seeders: 10,
+      leechers: 0,
+      download_url: nil,
+      magnet_url: "magnet:?xt=urn:btih:indexerid",
+      info_url: nil,
+      published_at: nil
+    )
+
+    SearchJob.new.send(:save_results, @request, [ tagged_result ])
+
+    stored = @request.search_results.find_by!(guid: "indexer-id-guid")
+    assert_equal 11, stored.indexer_id
+    assert_equal "PrivateTracker", stored.indexer
   end
 
   test "schedules retry when no results found" do
@@ -2961,6 +2985,7 @@ class SearchJobTest < ActiveJob::TestCase
       "guid" => "test-guid-123",
       "title" => "Test Result Book",
       "indexer" => "TestIndexer",
+      "indexerId" => 7,
       "size" => 52_428_800,
       "seeders" => 25,
       "leechers" => 5,

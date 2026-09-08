@@ -62,6 +62,7 @@ class ProwlarrClientTest < ActiveSupport::TestCase
               "guid" => "abc123",
               "title" => "Harry Potter Audiobook Collection",
               "indexer" => "TestIndexer",
+              "indexerId" => 11,
               "size" => 1073741824,
               "seeders" => 50,
               "leechers" => 10,
@@ -84,6 +85,7 @@ class ProwlarrClientTest < ActiveSupport::TestCase
       assert_equal "abc123", result.guid
       assert_equal "Harry Potter Audiobook Collection", result.title
       assert_equal "TestIndexer", result.indexer
+      assert_equal 11, result.indexer_id
       assert_equal 50, result.seeders
       assert_equal "magnet:?xt=urn:btih:abc123", result.download_link
       assert_equal [ 7020 ], result.category_ids

@@ -56,6 +56,7 @@ class DownloadJobTest < ActiveJob::TestCase
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     GutenbergClient.reset_connection! if defined?(GutenbergClient)
+    IndexerClients::Prowlarr.reset_connection!
   end
 
   test "updates download status to downloading on success" do
@@ -791,7 +792,7 @@ class DownloadJobTest < ActiveJob::TestCase
     removed_ids = []
     claimed_download = @download
     client = Object.new
-    client.define_singleton_method(:add_torrent) do |_url|
+    client.define_singleton_method(:add_torrent) do |_url, _options = {}|
       claimed_download.update!(status: :failed)
       "stale-torrent-hash"
     end
@@ -2029,7 +2030,7 @@ class DownloadJobTest < ActiveJob::TestCase
   test "send_to_torrent_client marks attention when client returns no hash" do
     @download.update!(status: :downloading, download_type: "dispatching")
     client = Object.new
-    def client.add_torrent(_url)
+    def client.add_torrent(_url, _options = {})
       nil
     end
 
@@ -2041,6 +2042,156 @@ class DownloadJobTest < ActiveJob::TestCase
 
     assert @download.reload.failed?
     assert @request.reload.attention_needed?
+  end
+
+  test "forwards indexer seed criteria to qBittorrent as ratioLimit and seedingTimeLimit" do
+    configure_prowlarr!
+    magnet = assign_magnet_result!(indexer_id: 11)
+
+    VCR.turned_off do
+      stub_prowlarr_indexers([
+        {
+          "id" => 11,
+          "name" => "PrivateTracker",
+          "fields" => [
+            { "name" => "torrentBaseSettings.seedRatio", "value" => 1.5 },
+            { "name" => "torrentBaseSettings.seedTime", "value" => 72 }
+          ]
+        }
+      ])
+      captured = stub_qbittorrent_magnet_add(magnet)
+
+      DownloadJob.perform_now(@download.id)
+
+      assert @download.reload.downloading?
+      assert_in_delta 1.5, captured[:body]["ratioLimit"].to_f, 0.0001
+      assert_equal 72, captured[:body]["seedingTimeLimit"].to_i
+    end
+  end
+
+  test "omits seed limits when the indexer has no criteria configured" do
+    configure_prowlarr!
+    magnet = assign_magnet_result!(indexer_id: 11)
+
+    VCR.turned_off do
+      stub_prowlarr_indexers([
+        {
+          "id" => 11,
+          "name" => "PublicTracker",
+          "fields" => [
+            { "name" => "torrentBaseSettings.seedRatio" },
+            { "name" => "torrentBaseSettings.seedTime" }
+          ]
+        }
+      ])
+      captured = stub_qbittorrent_magnet_add(magnet)
+
+      DownloadJob.perform_now(@download.id)
+
+      assert @download.reload.downloading?
+      assert_not captured[:body].key?("ratioLimit")
+      assert_not captured[:body].key?("seedingTimeLimit")
+    end
+  end
+
+  [ 0, -1, -2 ].each do |limit|
+    test "forwards explicit seed limit #{limit} from Prowlarr through torrent dispatch" do
+      configure_prowlarr!
+      magnet = assign_magnet_result!(indexer_id: 11)
+
+      VCR.turned_off do
+        stub_prowlarr_indexers([
+          { "id" => 11, "fields" => [
+            { "name" => "torrentBaseSettings.seedRatio", "value" => limit },
+            { "name" => "torrentBaseSettings.seedTime", "value" => limit }
+          ] }
+        ])
+        captured = stub_qbittorrent_magnet_add(magnet)
+
+        DownloadJob.perform_now(@download.id)
+
+        assert_equal "torrent", @download.reload.download_type
+        assert_equal limit.to_f, Float(captured[:body].fetch("ratioLimit"))
+        assert_equal limit, Integer(captured[:body].fetch("seedingTimeLimit"))
+      end
+    end
+  end
+
+  test "omits seed limits when the search result indexer id is blank" do
+    configure_prowlarr!
+    magnet = assign_magnet_result!(indexer_id: nil)
+    indexer_stub = stub_prowlarr_indexers([ { "id" => 11, "name" => "PrivateTracker" } ])
+
+    VCR.turned_off do
+      captured = stub_qbittorrent_magnet_add(magnet)
+
+      DownloadJob.perform_now(@download.id)
+
+      assert @download.reload.downloading?
+      assert_not captured[:body].key?("ratioLimit")
+      assert_not captured[:body].key?("seedingTimeLimit")
+      assert_not_requested indexer_stub
+    end
+  end
+
+  test "omits seed limits when the indexer id is unknown" do
+    configure_prowlarr!
+    magnet = assign_magnet_result!(indexer_id: 99)
+
+    VCR.turned_off do
+      stub_prowlarr_indexers([
+        {
+          "id" => 11,
+          "name" => "PrivateTracker",
+          "fields" => [
+            { "name" => "torrentBaseSettings.seedRatio", "value" => 1.5 },
+            { "name" => "torrentBaseSettings.seedTime", "value" => 72 }
+          ]
+        }
+      ])
+      captured = stub_qbittorrent_magnet_add(magnet)
+
+      DownloadJob.perform_now(@download.id)
+
+      assert @download.reload.downloading?
+      assert_not captured[:body].key?("ratioLimit")
+      assert_not captured[:body].key?("seedingTimeLimit")
+    end
+  end
+
+  test "still dispatches when Prowlarr seed criteria lookup fails" do
+    configure_prowlarr!
+    magnet = assign_magnet_result!(indexer_id: 11)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/indexer})
+        .to_raise(Faraday::ConnectionFailed.new("Connection refused"))
+      captured = stub_qbittorrent_magnet_add(magnet)
+
+      DownloadJob.perform_now(@download.id)
+
+      assert @download.reload.downloading?
+      assert_not captured[:body].key?("ratioLimit")
+      assert_not captured[:body].key?("seedingTimeLimit")
+    end
+  end
+
+  test "still dispatches when Prowlarr seed criteria response contains invalid JSON" do
+    configure_prowlarr!
+    magnet = assign_magnet_result!(indexer_id: 11)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/indexer})
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: '[{"id":11,"fields":[')
+      captured = stub_qbittorrent_magnet_add(magnet)
+
+      DownloadJob.perform_now(@download.id)
+
+      assert_equal "torrent", @download.reload.download_type
+      assert_equal magnet, captured[:body]["urls"]
+      assert_not captured[:body].key?("ratioLimit")
+      assert_not captured[:body].key?("seedingTimeLimit")
+    end
   end
 
   test "check_for_duplicate_external_id logs duplicates without raising" do
@@ -2444,6 +2595,56 @@ class DownloadJobTest < ActiveJob::TestCase
     ftyp = [ 24 ].pack("N") + "ftyp" + "M4B \x00\x00\x00\x00M4B mp42".b
     payload = SecureRandom.random_bytes(2.kilobytes)
     ftyp + [ payload.bytesize + 8 ].pack("N") + "mdat" + payload
+  end
+
+  def configure_prowlarr!
+    SettingsService.set(:prowlarr_url, "http://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-api-key-12345")
+    IndexerClients::Prowlarr.reset_connection!
+  end
+
+  def assign_magnet_result!(indexer_id:)
+    hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    magnet = "magnet:?xt=urn:btih:#{hash}"
+    @selected_result.update!(
+      indexer_id: indexer_id,
+      source: SearchResult::SOURCE_PROWLARR,
+      download_url: nil,
+      magnet_url: magnet
+    )
+    magnet
+  end
+
+  def stub_prowlarr_indexers(indexers)
+    stub_request(:get, %r{localhost:9696/api/v1/indexer})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: indexers.to_json
+      )
+  end
+
+  def stub_qbittorrent_magnet_add(magnet)
+    hash = MagnetLink.info_hash(magnet)
+    captured = { body: {} }
+
+    stub_qbittorrent_connection("http://localhost:8080")
+
+    stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+      .with { |request|
+        captured[:body] = request.body.is_a?(Hash) ? request.body : URI.decode_www_form(request.body.to_s).to_h
+        true
+      }
+      .to_return(status: 200, body: "Ok.")
+
+    stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{hash}")
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: [ { "hash" => hash, "name" => "Test Torrent", "progress" => 0, "state" => "downloading", "size" => 1000, "content_path" => "/downloads/Test Torrent" } ].to_json
+      )
+
+    captured
   end
 
   def stub_qbittorrent_success(torrent_url: "http://example.com/download/test.torrent")

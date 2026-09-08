@@ -1367,11 +1367,7 @@ class DownloadJob < ApplicationJob
     Rails.logger.info "[DownloadJob] Using client '#{client_record.name}' for download ##{download.id}"
 
     # add_torrent now returns the hash directly (or nil on failure)
-    torrent_hash = if search_result.from_anna_archive?
-      client.add_torrent(download_url, validate_source_url: true)
-    else
-      client.add_torrent(download_url)
-    end
+    torrent_hash = client.add_torrent(download_url, torrent_client_options(search_result))
 
     if torrent_hash.present?
       finalize_standard_dispatch!(
@@ -1385,6 +1381,19 @@ class DownloadJob < ApplicationJob
     else
       fail_standard_dispatch!(download, search_result, client_record, download_type: "torrent")
     end
+  end
+
+  def torrent_client_options(search_result)
+    options = {}
+    options[:validate_source_url] = true if search_result.from_anna_archive?
+    options.merge!(seed_criteria_for(search_result))
+    options
+  end
+
+  def seed_criteria_for(search_result)
+    return {} unless search_result.from_prowlarr?
+
+    IndexerClients::Prowlarr.seed_criteria(search_result.indexer_id)
   end
 
   def send_to_usenet_client(download, search_result, nzb_url)
@@ -1448,7 +1457,7 @@ class DownloadJob < ApplicationJob
       success = external_id.present?
     else
       # qBittorrent now returns the torrent hash directly
-      external_id = client.add_torrent(download_link)
+      external_id = client.add_torrent(download_link, torrent_client_options(search_result))
       success = external_id.present?
     end
 

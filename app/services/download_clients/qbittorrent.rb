@@ -624,8 +624,17 @@ module DownloadClients
       params[:category] = config.category if config.category.present?
       params[:savepath] = options[:save_path] if options[:save_path].present?
       params[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
+      apply_seed_limits!(params, options)
       params.merge!(adapter_specific_add_torrent_params)
       params
+    end
+
+    def apply_seed_limits!(params, options)
+      ratio = Float(options[:seed_ratio], exception: false)
+      params[:ratioLimit] = ratio if ratio&.finite? && (ratio >= 0 || [ -1, -2 ].include?(ratio))
+
+      time = Integer(options[:seed_time], exception: false)
+      params[:seedingTimeLimit] = time if time && time >= -2
     end
 
     def adapter_specific_add_torrent_params
