@@ -38,20 +38,20 @@ RUN case "${TARGETARCH}" in \
 RUN git init --quiet /tmp/libation-source \
     && install -d /source-artifacts \
     && git -C /tmp/libation-source remote add origin https://github.com/rmcrackan/Libation.git \
-    && git -C /tmp/libation-source fetch --quiet --depth 1 origin 07c2f2b2a1deb8c57601c2b131aba30c95be3097 \
-    && test "$(git -C /tmp/libation-source rev-parse FETCH_HEAD)" = "07c2f2b2a1deb8c57601c2b131aba30c95be3097" \
+    && git -C /tmp/libation-source fetch --quiet --depth 1 origin 087c1076850d63f2ad172417535f3f0b025e722a \
+    && test "$(git -C /tmp/libation-source rev-parse FETCH_HEAD)" = "087c1076850d63f2ad172417535f3f0b025e722a" \
     && git -C /tmp/libation-source archive \
       --format=tar.gz \
-      --prefix=Libation-13.5.1/ \
-      --output=/source-artifacts/Libation-13.5.1-source.tar.gz \
+      --prefix=Libation-14.2.0/ \
+      --output=/source-artifacts/Libation-14.2.0-source.tar.gz \
       FETCH_HEAD \
     && printf '%s  %s\n' \
-      7391b9e4e34375e5d134932246ce0a50e0561efe1a24c2a3aa8f32a1217fac9f \
-      /source-artifacts/Libation-13.5.1-source.tar.gz \
+      662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6 \
+      /source-artifacts/Libation-14.2.0-source.tar.gz \
       | sha256sum --check --strict
 
 # Keep this exact tag and manifest digest in sync with THIRD_PARTY_NOTICES.md.
-FROM rmcrackan/libation:13.5.1@sha256:71b9db4bbda7d7e14bb9f5efcdcfe980915c90867599bc0d512d958069fb3da0
+FROM rmcrackan/libation:14.2.0@sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db
 
 USER root
 RUN test -x /libation/LibationCli \
@@ -66,7 +66,7 @@ COPY --chmod=0555 docker/entrypoint.sh /companion/entrypoint.sh
 COPY --chown=1000:1000 THIRD_PARTY_NOTICES.md /companion/THIRD_PARTY_NOTICES.md
 COPY --chown=1000:1000 LICENSES/Libation-GPL-3.0.txt /companion/LICENSES/Libation-GPL-3.0.txt
 COPY --chown=1000:1000 LICENSES/Libation-GPL-3.0.txt /companion/LICENSES/Shelfarr-GPL-3.0.txt
-COPY --from=companion-build --chown=1000:1000 /source-artifacts/Libation-13.5.1-source.tar.gz /companion/SOURCES/Libation-13.5.1-source.tar.gz
+COPY --from=companion-build --chown=1000:1000 /source-artifacts/Libation-14.2.0-source.tar.gz /companion/SOURCES/Libation-14.2.0-source.tar.gz
 
 ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
     DOTNET_EnableDiagnostics=0 \

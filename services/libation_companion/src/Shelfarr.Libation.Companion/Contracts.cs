@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 
 namespace Shelfarr.Libation.Companion;
 
-public sealed record AuthStartRequest(string? Account, string? Locale);
+public sealed record AuthStartRequest(string? Account, string? Locale, bool Reregister = false);
 public sealed record AuthCompleteRequest(string? SessionId, string? ResponseUrl);
 public sealed record AccountStatus(string Account, string Name, string Locale, bool ScanEnabled, bool Authenticated);
 

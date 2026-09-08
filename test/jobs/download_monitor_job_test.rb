@@ -115,10 +115,10 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
 
   test "does not start another monitor while one is claimed by a worker" do
     with_solid_queue_monitor_jobs do |monitor_jobs|
-      DownloadMonitorJob.perform_later
+      job = DownloadMonitorJob.perform_later
       worker = SolidQueue::Process.register(kind: "Worker", name: "monitor-test", pid: Process.pid)
-      claimed = SolidQueue::ReadyExecution.claim([ "*" ], 1, worker.id).first
-      assert claimed
+      claimed = SolidQueue::ReadyExecution.where(job_id: job.provider_job_id).claim([ "*" ], 1, worker.id).first
+      assert_equal job.job_id, claimed&.job&.active_job_id
 
       assert_no_difference -> { monitor_jobs.count } do
         DownloadMonitorJob.ensure_running!
@@ -136,9 +136,13 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     assert task.valid?, task.errors.full_messages.join(", ")
 
     with_solid_queue_monitor_jobs do |monitor_jobs|
-      DownloadMonitorJob.perform_later
+      # Other tests can leave unrelated jobs in the queue database. Claim the
+      # specific monitor rather than failing whichever job happens to be first.
+      unrelated_job = SolidQueue::RecurringJob.set(priority: -100).perform_later("nil")
+      job = DownloadMonitorJob.perform_later
       worker = SolidQueue::Process.register(kind: "Worker", name: "monitor-recovery-test", pid: Process.pid)
-      claimed = SolidQueue::ReadyExecution.claim([ "*" ], 1, worker.id).first
+      claimed = SolidQueue::ReadyExecution.where(job_id: job.provider_job_id).claim([ "*" ], 1, worker.id).first
+      assert_equal job.job_id, claimed&.job&.active_job_id
       claimed.failed_with(RuntimeError.new("interrupted polling"))
       claimed.unblock_next_job
 
@@ -148,7 +152,9 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       assert_no_difference -> { monitor_jobs.count } do
         SolidQueue::RecurringJob.perform_now(task.command)
       end
+      assert SolidQueue::ReadyExecution.exists?(job_id: unrelated_job.provider_job_id)
     ensure
+      SolidQueue::Job.find_by(active_job_id: unrelated_job.job_id)&.destroy! if unrelated_job
       worker&.destroy!
     end
   end

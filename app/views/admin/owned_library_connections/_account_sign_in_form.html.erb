@@ -14,6 +14,15 @@
       {},
       class: "mt-1 block w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
   </div>
+  <div class="sm:col-span-3">
+    <label class="flex items-start gap-2 text-sm text-gray-300">
+      <%= form.check_box :reregister, { checked: @audible_connected, class: "mt-1 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500" }, "true", "false" %>
+      <span>
+        <span class="font-medium">Replace the stored Libation device registration</span>
+        <span class="mt-1 block text-gray-500">Use once after upgrading from Libation 13 to 14.2. This replaces the saved sign-in for this email and marketplace; other accounts and scan preferences are kept.</span>
+      </span>
+    </label>
+  </div>
   <%= form.submit "Start sign-in",
     data: { turbo_submits_with: "Starting sign-in…" },
     class: "rounded-md bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>

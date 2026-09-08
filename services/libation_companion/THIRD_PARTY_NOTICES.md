@@ -19,14 +19,14 @@ companion are independent projects and are not affiliated with Audible or
 Amazon.
 
 - Project: [rmcrackan/Libation](https://github.com/rmcrackan/Libation)
-- Version: `13.5.1`
-- Image: `rmcrackan/libation:13.5.1`
-- Manifest digest: `sha256:71b9db4bbda7d7e14bb9f5efcdcfe980915c90867599bc0d512d958069fb3da0`
-- Source commit: `07c2f2b2a1deb8c57601c2b131aba30c95be3097`
-- License: [GNU General Public License v3.0](https://github.com/rmcrackan/Libation/blob/v13.5.1/LICENSE)
-- Source for the distributed version: [Libation v13.5.1](https://github.com/rmcrackan/Libation/tree/v13.5.1)
-- Source snapshot in this image: `/companion/SOURCES/Libation-13.5.1-source.tar.gz`
-- Source snapshot SHA-256: `7391b9e4e34375e5d134932246ce0a50e0561efe1a24c2a3aa8f32a1217fac9f`
+- Version: `14.2.0`
+- Image: `rmcrackan/libation:14.2.0`
+- Manifest digest: `sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db`
+- Source commit: `087c1076850d63f2ad172417535f3f0b025e722a`
+- License: [GNU General Public License v3.0](https://github.com/rmcrackan/Libation/blob/v14.2.0/LICENSE)
+- Source for the distributed version: [Libation v14.2.0](https://github.com/rmcrackan/Libation/tree/v14.2.0)
+- Source snapshot in this image: `/companion/SOURCES/Libation-14.2.0-source.tar.gz`
+- Source snapshot SHA-256: `662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6`
 - Documentation: [getlibation.com/docs](https://getlibation.com/docs)
 
 Libation is Copyright (C) its authors and contributors. The Shelfarr project

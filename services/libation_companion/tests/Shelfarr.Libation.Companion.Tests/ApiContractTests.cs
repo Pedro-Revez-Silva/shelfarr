@@ -9,6 +9,23 @@ public sealed class ApiContractTests
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void AuthStartRequestSerializesReregisterInCamelCase()
+    {
+        var request = new AuthStartRequest("reader@example.com", "us", true);
+
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(request, WebJson));
+
+        Assert.True(json.RootElement.GetProperty("reregister").GetBoolean());
+        Assert.False(json.RootElement.TryGetProperty("Reregister", out _));
+    }
+
+    [Fact]
+    public void PinsTheLibationReleaseThatFixesDeviceSerialThrottling()
+    {
+        Assert.Equal("14.2.0", CompanionOptions.PinnedLibationVersion);
+    }
+
+    [Fact]
     public void BackupJobUsesArtifactPathsAndStringEnums()
     {
         var job = new CompanionJob(

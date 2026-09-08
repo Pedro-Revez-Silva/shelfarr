@@ -9,6 +9,12 @@ public sealed class BackupCliDiagnosticsTests
         "12 Rules: Audible returned no ADRM license (Sable acr:null). Some rare titles only download with Widevine.",
         "adrm_unavailable")]
     [InlineData(
+        "Audible denied a content license because this account is being throttled. Wait 24 to 48 hours before trying again. This is not a Libation bug.",
+        "customer_throttled")]
+    [InlineData(
+        "ContentLicenseDeniedException: CustomerThrottled\nCustomer id being throttled",
+        "customer_throttled")]
+    [InlineData(
         "Audible denied a content license (download not allowed for this account/title).",
         "content_license_denied")]
     [InlineData("Cannot find decrypt. Final audio file already exists", "existing_audio_not_found")]
@@ -22,6 +28,21 @@ public sealed class BackupCliDiagnosticsTests
 
         Assert.NotNull(failure);
         Assert.Equal(expectedCode, failure.Code);
+    }
+
+    [Fact]
+    public void SurfacesThrottleGuidanceWithoutExposingUpstreamText()
+    {
+        var failure = BackupCliDiagnostics.Classify(new CliResult(
+            0,
+            "",
+            "Audible denied a content license because this account is being throttled. token=secret"));
+
+        Assert.NotNull(failure);
+        Assert.Equal("customer_throttled", failure.Code);
+        Assert.Contains("24 to 48 hours", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("reconnect", failure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret", failure.Message, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -180,19 +180,20 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert_includes dockerfile,
       "mcr.microsoft.com/dotnet/sdk:10.0.302-noble@sha256:ed034a8bf0b24ded0cbbac07e17825d8e9ebfe21e308191d0f7421eaf5ad4664"
     assert_includes dockerfile,
-      "rmcrackan/libation:13.5.1@sha256:71b9db4bbda7d7e14bb9f5efcdcfe980915c90867599bc0d512d958069fb3da0"
-    assert_includes dockerfile, "07c2f2b2a1deb8c57601c2b131aba30c95be3097"
-    assert_includes dockerfile, "Libation-13.5.1-source.tar.gz"
+      "rmcrackan/libation:14.2.0@sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db"
+    assert_includes dockerfile, "087c1076850d63f2ad172417535f3f0b025e722a"
+    assert_includes dockerfile, "Libation-14.2.0-source.tar.gz"
+    assert_includes dockerfile, "662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6"
     assert_equal "10.0.302", sdk.dig("sdk", "version")
     assert_equal "disable", sdk.dig("sdk", "rollForward")
     assert_equal Rails.root.join("LICENSE").binread, packaged_license
 
-    assert_includes notice, "Version: `13.5.1`"
+    assert_includes notice, "Version: `14.2.0`"
     assert_includes notice,
-      "Manifest digest: `sha256:71b9db4bbda7d7e14bb9f5efcdcfe980915c90867599bc0d512d958069fb3da0`"
-    assert_includes notice, "Source commit: `07c2f2b2a1deb8c57601c2b131aba30c95be3097`"
+      "Manifest digest: `sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db`"
+    assert_includes notice, "Source commit: `087c1076850d63f2ad172417535f3f0b025e722a`"
     assert_includes notice,
-      "Source snapshot SHA-256: `7391b9e4e34375e5d134932246ce0a50e0561efe1a24c2a3aa8f32a1217fac9f`"
+      "Source snapshot SHA-256: `662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6`"
   end
 
   test "release build helper images are pinned" do

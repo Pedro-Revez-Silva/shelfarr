@@ -217,7 +217,11 @@ class LibationCompanionClientTest < ActiveSupport::TestCase
     VCR.turned_off do
       stub_request(:post, "https://libation.test/v1/auth/start")
         .with do |request|
-          JSON.parse(request.body) == { "account" => "reader@example.com", "locale" => "uk" }
+          JSON.parse(request.body) == {
+            "account" => "reader@example.com",
+            "locale" => "uk",
+            "reregister" => false
+          }
         end
         .to_return(
           status: 200,
@@ -236,6 +240,31 @@ class LibationCompanionClientTest < ActiveSupport::TestCase
 
     assert_raises(ArgumentError) do
       @client.start_auth(account: "reader@example.com", locale: "brazil")
+    end
+  end
+
+  test "asks the companion to replace a stored device registration" do
+    VCR.turned_off do
+      stub_request(:post, "https://libation.test/v1/auth/start")
+        .with do |request|
+          JSON.parse(request.body) == {
+            "account" => "reader@example.com",
+            "locale" => "us",
+            "reregister" => true
+          }
+        end
+        .to_return(
+          status: 200,
+          body: {
+            sessionId: "session-2",
+            loginUrl: "https://www.amazon.com/ap/signin?example=1",
+            expiresAt: 10.minutes.from_now.iso8601
+          }.to_json
+        )
+
+      auth = @client.start_auth(account: "reader@example.com", locale: "us", reregister: true)
+      assert_equal "session-2", auth.session_id
+      assert_not auth.authenticated
     end
   end
 

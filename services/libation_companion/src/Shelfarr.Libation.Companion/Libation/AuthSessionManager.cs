@@ -31,7 +31,11 @@ public sealed partial class AuthSessionManager : IAsyncDisposable
         _coordinator = coordinator;
     }
 
-    public async Task<AuthStartResult> StartAsync(string account, string locale, CancellationToken cancellationToken)
+    public async Task<AuthStartResult> StartAsync(
+        string account,
+        string locale,
+        CancellationToken cancellationToken,
+        bool reregister = false)
     {
         var lease = await _coordinator.TryAcquireAsync(cancellationToken)
             ?? throw new CompanionBusyException();
@@ -42,6 +46,9 @@ public sealed partial class AuthSessionManager : IAsyncDisposable
 
         try
         {
+            if (reregister)
+                AccountRegistrationReset.ResetMatchingRegistration(_options.AccountsSettingsFile, account, locale);
+
             process = new Process { StartInfo = CreateStartInfo(account, locale) };
             if (!process.Start())
                 throw new InvalidOperationException("Libation login could not be started.");
