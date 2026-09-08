@@ -114,8 +114,8 @@ environment variable.
 Audible authentication is a two-request operation:
 
 1. `POST /v1/auth/start` starts one Libation `login-external` process and
-   returns the upstream browser login URL. Pass `"reregister": true` to remove
-   that email from Libation's stored accounts first; a still-valid registration
+   returns the upstream browser login URL. Pass `"reregister": true` to reset
+   that email and marketplace's stored registration first; a still-valid registration
    otherwise exits as already authenticated and never issues a new device
    serial.
 2. The user signs in directly on Amazon/Audible, then copies the final URL from
@@ -141,7 +141,7 @@ All JSON field names use camel case.
 | `GET /health` | Liveness, pinned versions, busy state, and whether a cached library exists |
 | `GET /version` | Bridge/API/Libation versions and upstream attribution |
 | `GET /v1/accounts` | Configured account, marketplace, scan-enabled and authentication status |
-| `POST /v1/auth/start` | Begin external-browser authentication; optional `reregister` removes the stored login first |
+| `POST /v1/auth/start` | Begin external-browser authentication; optional `reregister` resets the selected email and marketplace registration first |
 | `POST /v1/auth/complete` | Complete the held authentication session |
 | `POST /v1/sync` | Queue a serialized Libation scan followed by a normalized JSON export |
 | `GET /v1/library` | Read the complete last successful, local normalized library snapshot; never contacts Audible (legacy compatibility) |
@@ -161,10 +161,11 @@ POST /v1/auth/start
 ```
 
 Set `reregister` to `true` after a companion upgrade that changes Libation
-device registration. The companion removes that email from
-`AccountsSettings.json` and starts a new external login so Libation can
-register again. Ordinary first-time sign-in leaves `reregister` false or
-omitted.
+device registration. The companion resets only the identity tokens for that
+email and marketplace in `AccountsSettings.json` and starts a new external
+login so Libation can register again. Other registrations, account names, and
+scan preferences are preserved. Ordinary first-time sign-in leaves
+`reregister` false or omitted.
 
 ```json
 {

@@ -261,7 +261,7 @@ If you already use Libation independently, keep that installation until the firs
 2. Open **Admin > Audible Backup** (or `/admin/owned_library_connections`).
 3. Check **Enable Audible Backup beta**, keep **Allow local/private companion address** enabled for the bundled service, and select **Save connection**.
 4. Enter the Audible account email address and choose its marketplace or region.
-5. Select **Start sign-in**. After a companion upgrade that changes Libation's device registration, also check **Replace the stored Libation device registration** so Shelfarr removes the old login and Libation can register again. Ordinary first-time sign-in can leave that box unchecked. Shelfarr then starts Libation's external login flow and displays **Open secure Audible sign-in**.
+5. Select **Start sign-in**. After a companion upgrade that changes Libation's device registration, also check **Replace the stored Libation device registration** so Shelfarr resets the saved sign-in for that email and marketplace and Libation can register again. Other accounts and scan preferences are preserved. Ordinary first-time sign-in can leave that box unchecked. Shelfarr then starts Libation's external login flow and displays **Open secure Audible sign-in**.
 6. Complete the password, MFA, CAPTCHA, or account confirmation directly on Amazon/Audible.
 7. Copy the final redirected browser URL and paste it into Shelfarr when prompted.
 8. Select **Complete sign-in**, then run the initial library sync. After it completes, the Overview tab asks whether to queue a one-time backup of eligible existing purchases. That first snapshot is also required before automatic future-purchase backup can be enabled safely.
@@ -418,7 +418,7 @@ The bridge is an internal implementation detail and can change during beta. It i
 | `GET /health` | Unauthenticated process health check |
 | `GET /version` | Companion and pinned Libation version |
 | `GET /v1/accounts` | Configured account and authorization status |
-| `POST /v1/auth/start` | Start external login with an account email and locale. Optional `reregister` removes that stored login first so Libation can register a new device serial |
+| `POST /v1/auth/start` | Start external login with an account email and locale. Optional `reregister` resets only that email and marketplace registration first so Libation can register a new device serial |
 | `POST /v1/auth/complete` | Complete the held login session with the final response URL |
 | `POST /v1/sync` | Queue an explicit library scan and export; returns `202 Accepted` |
 | `GET /v1/library` | Return the normalized cached owned library |

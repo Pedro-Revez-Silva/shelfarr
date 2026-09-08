@@ -10,7 +10,7 @@ internal static class AccountRegistrationReset
         WriteIndented = true
     };
 
-    public static int RemoveMatchingAccounts(string accountsFile, string account)
+    public static int ResetMatchingRegistration(string accountsFile, string account, string locale)
     {
         if (!Path.Exists(accountsFile))
             return 0;
@@ -26,21 +26,36 @@ internal static class AccountRegistrationReset
         if (root["Accounts"] is not JsonArray accounts)
             return 0;
 
-        var removed = 0;
-        for (var index = accounts.Count - 1; index >= 0; index--)
+        var reset = 0;
+        foreach (var node in accounts)
         {
-            if (!AccountIdEquals(accounts[index], account))
+            if (node is not JsonObject row || !AccountIdEquals(row, account)
+                || row["IdentityTokens"] is not JsonObject identity
+                || identity["LocaleName"] is not JsonValue localeValue
+                || localeValue.GetValueKind() != JsonValueKind.String
+                || !string.Equals(localeValue.GetValue<string>(), locale, StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            accounts.RemoveAt(index);
-            removed++;
+            // AudibleApi 14.1's empty identity is invalid but retains the locale
+            // needed for Libation to upsert this row and start a fresh registration.
+            // Preserve account names, scan preferences, and other marketplaces.
+            row["IdentityTokens"] = new JsonObject
+            {
+                ["LocaleName"] = localeValue.GetValue<string>(),
+                ["ExistingAccessToken"] = new JsonObject
+                {
+                    ["TokenValue"] = "Atna|",
+                    ["Expires"] = "0001-01-01T00:00:00"
+                }
+            };
+            reset++;
         }
 
-        if (removed == 0)
+        if (reset == 0)
             return 0;
 
         WriteAtomically(accountsFile, root);
-        return removed;
+        return reset;
     }
 
     private static bool AccountIdEquals(JsonNode? node, string account)

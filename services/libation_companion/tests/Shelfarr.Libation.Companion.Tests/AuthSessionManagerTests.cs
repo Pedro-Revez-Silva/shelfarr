@@ -57,7 +57,7 @@ public sealed class AuthSessionManagerTests
     }
 
     [Fact]
-    public async Task ReregisterRemovesTheStoredAccountBeforeStartingLogin()
+    public async Task ReregisterResetsOnlyTheSelectedMarketplaceBeforeStartingLogin()
     {
         if (OperatingSystem.IsWindows() || !File.Exists("/usr/bin/script"))
             return;
@@ -84,7 +84,10 @@ public sealed class AuthSessionManagerTests
         options.EnsureDirectories();
         Directory.CreateDirectory(options.LibationFilesDirectory);
         await File.WriteAllTextAsync(options.AccountsSettingsFile, """
-            {"Accounts":[{"AccountId":"reader@example.com","AccountName":"Reader"}]}
+            {"Accounts":[
+              {"AccountId":"reader@example.com","AccountName":"Reader","IdentityTokens":{"LocaleName":"us","DeviceSerialNumber":"old-us-serial"}},
+              {"AccountId":"reader@example.com","AccountName":"Reader UK","IdentityTokens":{"LocaleName":"uk","DeviceSerialNumber":"keep-uk-serial"}}
+            ]}
             """);
 
         var coordinator = new CliCoordinator(options);
@@ -99,7 +102,12 @@ public sealed class AuthSessionManagerTests
 
         Assert.Equal("waiting_for_browser", started.Status);
         using (var accounts = JsonDocument.Parse(File.ReadAllText(options.AccountsSettingsFile)))
-            Assert.Equal(0, accounts.RootElement.GetProperty("Accounts").GetArrayLength());
+        {
+            var rows = accounts.RootElement.GetProperty("Accounts");
+            Assert.Equal(2, rows.GetArrayLength());
+            Assert.False(rows[0].GetProperty("IdentityTokens").TryGetProperty("DeviceSerialNumber", out _));
+            Assert.Equal("keep-uk-serial", rows[1].GetProperty("IdentityTokens").GetProperty("DeviceSerialNumber").GetString());
+        }
 
         var completed = await sessions.CompleteAsync(
             started.SessionId!,
@@ -108,4 +116,3 @@ public sealed class AuthSessionManagerTests
         Assert.Equal("authenticated", completed!.Status);
     }
 }
-

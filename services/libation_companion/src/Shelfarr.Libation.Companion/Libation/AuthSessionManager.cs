@@ -47,7 +47,7 @@ public sealed partial class AuthSessionManager : IAsyncDisposable
         try
         {
             if (reregister)
-                AccountRegistrationReset.RemoveMatchingAccounts(_options.AccountsSettingsFile, account);
+                AccountRegistrationReset.ResetMatchingRegistration(_options.AccountsSettingsFile, account, locale);
 
             process = new Process { StartInfo = CreateStartInfo(account, locale) };
             if (!process.Start())
