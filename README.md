@@ -52,6 +52,8 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 - **Third-Party Store Offers (Beta)** — Surface legitimate DRM-free editions from supported sellers without handling checkout or payment data
 - **Audible Backup (Beta)** — Sync purchased Audible titles, explicitly queue a one-time backup of eligible existing purchases, optionally back up future purchases automatically, and import them through the separately packaged Libation companion
 
+Manual upload recovery screenshots: [Desktop](docs/screenshot-upload-recovery.jpg) · [Mobile](docs/screenshot-upload-recovery-mobile.jpg).
+
 ### Beta integrations
 
 The following integrations are opt-in and disabled by default:
