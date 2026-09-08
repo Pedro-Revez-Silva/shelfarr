@@ -37,6 +37,25 @@ module IndexerClients
         handle_response(response) { |data| Array(data) }
       end
 
+      # Seed ratio / seed time live on the indexer definition, not on search
+      # results. Look them up by the result's indexerId. Returns only positive
+      # values so callers can omit the params and leave the download client on
+      # its global limits when nothing is configured.
+      def seed_criteria(indexer_id)
+        return {} unless configured?
+
+        id = Integer(indexer_id, exception: false)
+        return {} if id.blank? || id <= 0
+
+        indexer = indexers.find { |item| Integer(item["id"], exception: false) == id }
+        return {} unless indexer.is_a?(Hash)
+
+        extract_seed_criteria(indexer)
+      rescue Base::Error => e
+        Rails.logger.warn "[IndexerClients::Prowlarr] Failed to look up seed criteria for indexer #{id}: #{e.message}"
+        {}
+      end
+
       # Indexers Prowlarr would search on our behalf: every configured indexer,
       # or only the tagged subset when prowlarr_tags is set. Returns nil when
       # Prowlarr's indexer list cannot be read.
@@ -170,6 +189,7 @@ module IndexerClients
           guid: item["guid"],
           title: item["title"],
           indexer: item["indexer"],
+          indexer_id: item["indexerId"],
           size_bytes: item["size"],
           seeders: item["seeders"],
           leechers: item["leechers"],
@@ -179,6 +199,37 @@ module IndexerClients
           published_at: parse_date(item["publishDate"]),
           category_ids: extract_category_ids(item)
         )
+      end
+
+      def extract_seed_criteria(indexer)
+        criteria = {}
+
+        ratio = positive_number(seed_field_value(indexer, "seedRatio"))
+        criteria[:seed_ratio] = ratio if ratio
+
+        time = positive_number(seed_field_value(indexer, "seedTime"))
+        criteria[:seed_time] = time.to_i if time
+
+        criteria
+      end
+
+      def seed_field_value(indexer, field)
+        field_name = "torrentBaseSettings.#{field}"
+        fields = indexer["fields"]
+        if fields.is_a?(Array)
+          match = fields.find { |item| item.is_a?(Hash) && item["name"] == field_name }
+          return match["value"] if match&.key?("value")
+        end
+
+        nested = indexer.dig("torrentBaseSettings", field)
+        return nested["value"] if nested.is_a?(Hash) && nested.key?("value")
+
+        nested
+      end
+
+      def positive_number(value)
+        number = Float(value, exception: false)
+        number if number&.positive?
       end
 
       def extract_category_ids(item)

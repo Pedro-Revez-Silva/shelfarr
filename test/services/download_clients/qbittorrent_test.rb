@@ -1476,4 +1476,133 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       assert_equal "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result
     end
   end
+
+  test "add_torrent sends ratioLimit and seedingTimeLimit when seed criteria are supplied" do
+    VCR.turned_off do
+      captured = capture_add_torrent_request(
+        "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        seed_ratio: 1.5,
+        seed_time: 72
+      )
+
+      assert_in_delta 1.5, captured["ratioLimit"].to_f, 0.0001
+      assert_equal 72, captured["seedingTimeLimit"].to_i
+    end
+  end
+
+  test "add_torrent omits seed limits when criteria are absent" do
+    VCR.turned_off do
+      captured = capture_add_torrent_request(
+        "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+      )
+
+      assert_not captured.key?("ratioLimit")
+      assert_not captured.key?("seedingTimeLimit")
+    end
+  end
+
+  test "add_torrent omits non-positive seed limits so the client keeps global limits" do
+    VCR.turned_off do
+      captured = capture_add_torrent_request(
+        "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        seed_ratio: 0,
+        seed_time: -5
+      )
+
+      assert_not captured.key?("ratioLimit")
+      assert_not captured.key?("seedingTimeLimit")
+    end
+  end
+
+  test "add_torrent includes seed limits on the torrent file upload path" do
+    VCR.turned_off do
+      info_dict = {
+        "name" => "Seed Criteria Book.epub",
+        "piece length" => 16384,
+        "pieces" => "s" * 20,
+        "length" => 512
+      }
+      torrent_data = { "info" => info_dict }.bencode
+      expected_hash = Digest::SHA1.hexdigest(info_dict.bencode).downcase
+
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, "http://prowlarr:9696/api/v1/indexer/download/seed-criteria")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/x-bittorrent" },
+          body: torrent_data
+        )
+
+      add_stub = stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .with { |request|
+          request.headers["Content-Type"]&.include?("multipart/form-data") &&
+            request.body.include?("name=\"ratioLimit\"") &&
+            request.body.include?("1.5") &&
+            request.body.include?("name=\"seedingTimeLimit\"") &&
+            request.body.include?("72")
+        }
+        .to_return(status: 200, body: "Ok.")
+
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{expected_hash}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => expected_hash, "name" => "Seed Criteria Book.epub", "progress" => 0, "state" => "downloading", "size" => 512, "content_path" => "/downloads" } ].to_json
+        )
+
+      result = @client.add_torrent(
+        "http://prowlarr:9696/api/v1/indexer/download/seed-criteria",
+        seed_ratio: 1.5,
+        seed_time: 72
+      )
+
+      assert_equal expected_hash, result
+      assert_requested(add_stub)
+    end
+  end
+
+  private
+
+  def capture_add_torrent_request(url, **options)
+    hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    captured = nil
+
+    stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+      .to_return(
+        status: 200,
+        headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+        body: "Ok."
+      )
+
+    stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+      .with { |request|
+        captured = add_torrent_params(request)
+        true
+      }
+      .to_return(status: 200, body: "Ok.")
+
+    stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{hash}")
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: [ { "hash" => hash, "name" => "Test", "progress" => 0, "state" => "downloading", "size" => 100, "content_path" => "/downloads" } ].to_json
+      )
+
+    result = @client.add_torrent(url, options)
+    assert_equal hash, result
+    captured
+  end
+
+  def add_torrent_params(request)
+    body = request.body
+    return body if body.is_a?(Hash)
+
+    URI.decode_www_form(body.to_s).to_h
+  end
 end

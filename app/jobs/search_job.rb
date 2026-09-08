@@ -579,6 +579,7 @@ class SearchJob < ApplicationJob
     search_result.assign_attributes(
       title: result.title,
       indexer: result.indexer,
+      indexer_id: result.try(:indexer_id),
       size_bytes: result.size_bytes,
       seeders: result.seeders,
       leechers: result.leechers,
