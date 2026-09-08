@@ -415,7 +415,7 @@ GEM
     ruby-vips (2.3.0)
       ffi (~> 1.12)
       logger
-    rubyzip (3.2.2)
+    rubyzip (3.6.0)
     securerandom (0.4.1)
     selenium-webdriver (4.39.0)
       base64 (~> 0.2)
@@ -572,7 +572,7 @@ DEPENDENCIES
   rotp
   rqrcode
   rubocop-rails-omakase
-  rubyzip
+  rubyzip (>= 3.4.0)
   selenium-webdriver
   simplecov
   solid_cable

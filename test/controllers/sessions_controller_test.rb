@@ -37,6 +37,18 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='username']", count: 0
   end
 
+  test "new shows OIDC button on the local login form" do
+    SettingsService.set(:oidc_enabled, true)
+    SettingsService.set(:oidc_issuer, "https://auth.example.com")
+    SettingsService.set(:oidc_client_id, "client-id")
+    SettingsService.set(:oidc_client_secret, "client-secret")
+
+    get new_session_path
+
+    assert_response :success
+    assert_select "form[action='/auth/oidc'][method='post']"
+  end
+
   # Chromium nulls Origin on full-page POST navigations when Referrer-Policy is
   # no-referrer, which breaks Rails origin-based CSRF and the OmniAuth OIDC
   # request phase (#381 / #416). same-origin retains Origin for that handoff

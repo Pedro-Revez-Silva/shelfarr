@@ -6,7 +6,7 @@
     </p>
 
     <div class="mt-8 space-y-4">
-      <%= button_to "/auth/oidc",
+      <%= button_to oidc_auth_path,
           method: :post,
           form: { data: { oidc_redirect_target: "form", turbo: false } },
           class: "w-full rounded-lg bg-blue-600 px-5 py-3 text-center font-medium text-white transition hover:bg-blue-500" do %>

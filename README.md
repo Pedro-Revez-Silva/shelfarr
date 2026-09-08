@@ -171,6 +171,7 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 
 1. Create an OIDC client in your identity provider:
    - **Redirect URI**: `http://your-shelfarr-url/auth/oidc/callback`
+     (include the application prefix when set, for example `https://your-shelfarr-url/books/auth/oidc/callback` with `RAILS_RELATIVE_URL_ROOT=/books`)
    - **Scopes**: `openid profile email`
 
 2. In **Admin → Settings → OIDC/SSO Authentication**:
