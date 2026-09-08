@@ -35,10 +35,10 @@ module Admin
     end
 
     def match_and_retry
-      @upload.match_and_retry!(
-        book_id: params[:book_id],
-        title: params.dig(:manual_book, :title),
-        author: params.dig(:manual_book, :author)
+      attributes = manual_match_params
+      @upload.match_and_retry!(**attributes)
+      ActivityTracker.track("upload.manually_matched", user: Current.user, trackable: @upload,
+        details: { book_id: @upload.book_id, choice: attributes[:book_id] ? "existing" : "created" }
       )
 
       unless enqueue_retry(nil)
@@ -149,19 +149,36 @@ module Admin
     def prepare_manual_match
       return unless @upload.manual_match_available?
 
-      @match_query = params.fetch(:q, @upload.parsed_title).to_s.strip
+      @match_query = params.fetch(:q, @upload.parsed_title).to_s.strip.first(200)
+      @match_page = Integer(params[:page], exception: false).to_i.clamp(1, 100_000)
+      fields = params.permit(manual_book: [ :title, :author ]).fetch(:manual_book, {})
+      parsed = FilenameParserService.parse(@upload.original_filename)
       @manual_book = Book.new(
-        title: params.dig(:manual_book, :title) || @upload.book&.title || @upload.parsed_title,
-        author: params.dig(:manual_book, :author) || @upload.book&.author || @upload.parsed_author
+        title: fields[:title] || @upload.book&.title || @upload.parsed_title.presence || parsed.title,
+        author: fields[:author] || @upload.book&.author || @upload.parsed_author.presence || parsed.author
       )
       @match_books = Book.where(book_type: @upload.infer_book_type)
         .where("file_path IS NULL OR TRIM(file_path) = ''")
         .where(acquisition_reservation_token: nil)
       if @match_query.present?
         query = "%#{Book.sanitize_sql_like(@match_query)}%"
-        @match_books = @match_books.where("title LIKE :query OR author LIKE :query", query: query)
+        @match_books = @match_books.where("title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\'", query: query)
       end
-      @match_books = @match_books.order(:title, :id).limit(21).to_a
+      @match_books = @match_books.order(:title, :id).offset((@match_page - 1) * 20).limit(21).to_a
+    end
+
+    def manual_match_params
+      if params.key?(:book_id)
+        { book_id: params.expect(:book_id) }
+      else
+        fields = params.expect(manual_book: [ :title, :author ])
+        %i[title author].each do |field|
+          if params[:manual_book].key?(field) && !fields.key?(field)
+            raise ActionController::ParameterMissing, field
+          end
+        end
+        fields.to_h.symbolize_keys
+      end
     end
 
     def set_request_context

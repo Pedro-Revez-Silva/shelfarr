@@ -106,6 +106,43 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     assert_equal "test audio content", File.binread(@upload.destination_path)
   end
 
+  test "manual creation imports a different volume without changing an acquired sibling" do
+    sibling_file = File.join(@temp_source, "acquired-sibling.m4b")
+    File.binwrite(sibling_file, "acquired sibling content")
+    sibling = Book.create!(title: "Mistborn", author: "Brandon Sanderson", book_type: :audiobook, file_path: sibling_file)
+    @upload.update!(status: :failed)
+    @upload.match_and_retry!(title: "The Well of Ascension", author: sibling.author)
+    selected = @upload.book
+
+    UploadProcessingJob.perform_now(@upload.id)
+
+    assert @upload.reload.completed?, @upload.error_message
+    assert_equal selected, @upload.book
+    assert_equal "The Well of Ascension", selected.reload.title
+    assert_equal sibling_file, sibling.reload.file_path
+    assert_equal "acquired sibling content", File.binread(sibling_file)
+    assert_equal "test audio content", File.binread(@upload.destination_path)
+  end
+
+  test "manual audiobook choice does not bypass ZIP path validation" do
+    zip_file = File.join(@temp_source, "Unsafe archive.zip")
+    build_zip_archive(zip_file, "../escape.mp3" => "untrusted audio")
+    @upload.update!(status: :failed, original_filename: File.basename(zip_file), file_path: zip_file, file_size: File.size(zip_file))
+    @upload.match_and_retry!(title: "Chosen ZIP")
+    book = @upload.book
+
+    UploadProcessingJob.perform_now(@upload.id)
+
+    assert @upload.reload.failed?
+    assert_includes @upload.error_message, "unsafe path"
+    assert_equal book, @upload.book
+    assert @upload.manual_match?
+    assert_nil book.reload.file_path
+    assert_nil book.acquisition_reservation_token
+    assert File.exist?(zip_file)
+    assert_not File.exist?(File.join(@temp_audiobook_dest, "escape.mp3"))
+  end
+
   test "manual match cannot overwrite a book acquired after selection" do
     @upload.update!(status: :failed)
     @upload.match_and_retry!(title: "Chosen book", author: "Chosen author")

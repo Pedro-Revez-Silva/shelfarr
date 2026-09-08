@@ -420,8 +420,13 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "h2", "Correct the match and retry"
     assert_select "input[name='book_id']", count: 20
-    assert_select "p", text: /Showing the first 20 matches/
+    assert_select "a", text: "Next matches"
     assert_no_match(/Searchable (ebook|acquired|reserved)/, response.body)
+
+    get admin_upload_url(upload), params: { q: "Searchable", page: 2 }
+    assert_select "input[name='book_id']", count: 1
+    assert_select "a", text: "Previous matches"
+    assert_select "a", text: "Next matches", count: 0
 
     get admin_upload_url(upload), params: { q: "%" }
     assert_select "input[name='book_id']", count: 0
@@ -441,6 +446,10 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     assert upload.manual_match?
     assert_equal book, upload.book
     assert_nil upload.error_message
+    event = ActivityLog.for_action("upload.manually_matched").sole
+    assert_equal @admin, event.user
+    assert_equal upload, event.trackable
+    assert_equal({ "book_id" => book.id, "choice" => "existing" }, event.details)
 
     assert_no_enqueued_jobs do
       assert_no_difference "Book.count" do
@@ -449,6 +458,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     end
     assert_response :unprocessable_entity
     assert_equal book, upload.reload.book
+    assert_equal 1, ActivityLog.for_action("upload.manually_matched").count
   end
 
   test "manual book creation ignores format identity and file-path parameters" do
@@ -472,6 +482,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_nil upload.book.hardcover_id
     assert_nil upload.request_id
     assert_equal "/tmp/manual-upload.m4b", upload.file_path
+    assert_equal({ "book_id" => upload.book_id, "choice" => "created" }, ActivityLog.for_action("upload.manually_matched").sole.details)
   end
 
   test "invalid corrected title keeps entered details on the failure page" do
@@ -554,6 +565,57 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
       assert_equal selected_id, upload.book_id
       assert upload.manual_match?
     end
+  end
+
+  test "local match search treats percent underscores and backslashes literally" do
+    upload = create_failed_manual_upload
+    titles = [ "100% correct", "An_underlined title", "A back\\slash" ]
+    titles.each { |title| Book.create!(title: title, book_type: :audiobook) }
+
+    titles.zip([ "%", "_", "\\" ]).each do |title, query|
+      get admin_upload_url(upload), params: { q: query }
+      assert_response :success
+      assert_select "input[name='book_id']", count: 1
+      assert_select "div", text: title
+    end
+  end
+
+  test "manual correction prefills filename metadata when extraction never completed" do
+    upload = create_failed_manual_upload(original_filename: "Known Author - Known Title.m4b", parsed_title: nil)
+
+    get admin_upload_url(upload)
+
+    assert_select "input[name='manual_book[title]'][value='Known Title']"
+    assert_select "input[name='manual_book[author]'][value='Known Author']"
+  end
+
+  test "manual match rejects malformed parameter shapes without creating or queuing a book" do
+    upload = create_failed_manual_upload
+    malformed = [
+      { manual_book: "invalid" },
+      { manual_book: [ { title: "Invalid nested book" } ] },
+      { manual_book: { title: { malformed: "value" } } },
+      { manual_book: { title: [ "Invalid title" ], author: "Valid author" } },
+      { manual_book: { title: "Valid title", author: { malformed: "value" } } },
+      { manual_book: { title: "Valid title", author: [ "Invalid author" ] } },
+      { book_id: [ books(:ebook_pending).id ] },
+      { book_id: { id: books(:ebook_pending).id } }
+    ]
+
+    malformed.each do |parameters|
+      assert_no_enqueued_jobs only: UploadProcessingJob do
+        assert_no_difference [ "Book.count", "ActivityLog.count" ] do
+          post match_and_retry_admin_upload_url(upload), params: parameters
+        end
+      end
+      assert_includes [ 400, 422 ], response.status
+      assert upload.reload.failed?
+      assert_nil upload.book_id
+      assert_not upload.manual_match?
+    end
+
+    get admin_upload_url(upload), params: { manual_book: "invalid" }
+    assert_response :success
   end
 
   private

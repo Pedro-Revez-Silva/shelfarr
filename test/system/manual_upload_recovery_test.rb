@@ -60,4 +60,17 @@ class ManualUploadRecoveryTest < ApplicationSystemTestCase
     assert_no_text "Correct the match and retry"
     assert_button "Retry"
   end
+
+  test "invalid corrected metadata keeps the entered author and shows the error" do
+    visit admin_upload_path(@upload)
+    find("summary", text: "Create a book with corrected details").click
+    fill_in "Title", with: "   "
+    fill_in "Author (optional)", with: "Keep this author"
+    click_button "Create book and retry"
+
+    assert_text "Title can't be blank"
+    assert_field "Author (optional)", with: "Keep this author"
+    assert @upload.reload.failed?
+    assert_not @upload.manual_match?
+  end
 end
