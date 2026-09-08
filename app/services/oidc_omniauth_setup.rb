@@ -27,7 +27,7 @@ class OidcOmniauthSetup
     strategy.options[:client_options] = {
       identifier: client_id,
       secret: client_secret,
-      redirect_uri: OidcPaths.callback_uri(env)
+      redirect_uri: strategy.full_host + strategy.callback_path
     }
   end
 end

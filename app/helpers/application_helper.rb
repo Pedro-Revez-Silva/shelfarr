@@ -9,6 +9,6 @@ module ApplicationHelper
 
   # OmniAuth request path, including RAILS_RELATIVE_URL_ROOT when mounted
   def oidc_auth_path
-    OidcPaths.request_path(script_name: request.script_name)
+    "#{request.script_name}/auth/oidc"
   end
 end

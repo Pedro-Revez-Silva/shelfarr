@@ -7,9 +7,12 @@ class OidcOmniauthSetupTest < ActiveSupport::TestCase
 
   class FakeStrategy
     attr_reader :options
+    attr_accessor :full_host, :callback_path
 
     def initialize
       @options = {}
+      @full_host = "https://www.example.com"
+      @callback_path = "/auth/oidc/callback"
     end
   end
 
@@ -23,6 +26,8 @@ class OidcOmniauthSetupTest < ActiveSupport::TestCase
 
   test "sets the OIDC redirect_uri under the relative url root" do
     strategy = FakeStrategy.new
+    strategy.full_host = "https://shelf.example.com"
+    strategy.callback_path = "/books/auth/oidc/callback"
 
     OidcOmniauthSetup.call(
       "omniauth.strategy" => strategy,
