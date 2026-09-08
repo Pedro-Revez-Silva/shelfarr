@@ -47,7 +47,7 @@ gem "faraday-multipart"
 # Fast JSON parser
 gem "oj"
 # Create zip archives for directory downloads
-gem "rubyzip", require: "zip"
+gem "rubyzip", ">= 3.4.0", require: "zip"
 # Parse .torrent files to extract info hash
 gem "bencode"
 # Extract metadata from media files
