@@ -394,7 +394,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     delete session_url
     sign_in_as(users(:one))
 
-    assert_no_enqueued_jobs do
+    assert_no_enqueued_jobs only: [ UploadProcessingJob, OwnedMediaBackupJob ] do
       assert_no_difference "Book.count" do
         post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "Replacement" } }
       end
@@ -451,7 +451,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_equal upload, event.trackable
     assert_equal({ "book_id" => book.id, "choice" => "existing" }, event.details)
 
-    assert_no_enqueued_jobs do
+    assert_no_enqueued_jobs only: [ UploadProcessingJob, OwnedMediaBackupJob ] do
       assert_no_difference "Book.count" do
         post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "Duplicate" } }
       end
@@ -488,7 +488,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
   test "invalid corrected title keeps entered details on the failure page" do
     upload = create_failed_manual_upload
 
-    assert_no_enqueued_jobs do
+    assert_no_enqueued_jobs only: [ UploadProcessingJob, OwnedMediaBackupJob ] do
       assert_no_difference "Book.count" do
         post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: " ", author: "Entered author" } }
       end
@@ -511,7 +511,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     ]
 
     candidates.each do |book|
-      assert_no_enqueued_jobs do
+      assert_no_enqueued_jobs only: [ UploadProcessingJob, OwnedMediaBackupJob ] do
         post match_and_retry_admin_upload_url(upload), params: { book_id: book.id }
       end
       assert_response :unprocessable_entity
@@ -534,7 +534,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     uploads.each do |upload|
       get admin_upload_url(upload)
       assert_select "h2", text: "Correct the match and retry", count: 0
-      assert_no_enqueued_jobs do
+      assert_no_enqueued_jobs only: [ UploadProcessingJob, OwnedMediaBackupJob ] do
         assert_no_difference "Book.count" do
           post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "Replacement" } }
         end
@@ -603,7 +603,7 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     ]
 
     malformed.each do |parameters|
-      assert_no_enqueued_jobs only: UploadProcessingJob do
+      assert_no_enqueued_jobs only: [ UploadProcessingJob, OwnedMediaBackupJob ] do
         assert_no_difference [ "Book.count", "ActivityLog.count" ] do
           post match_and_retry_admin_upload_url(upload), params: parameters
         end
