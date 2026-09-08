@@ -39,6 +39,25 @@ class Auth::OmniauthCallbacksControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Signed in via/, flash[:notice])
   end
 
+  test "successful OIDC login under a relative url root redirects to the mounted root" do
+    user = users(:one)
+    user.update!(oidc_provider: "oidc", oidc_uid: "rel-root-uid")
+
+    OmniAuth.config.mock_auth[:oidc] = OmniAuth::AuthHash.new({
+      provider: "oidc",
+      uid: "rel-root-uid",
+      info: {
+        email: "test@example.com",
+        name: "Test User"
+      }
+    })
+
+    get "/auth/oidc/callback", env: { "SCRIPT_NAME" => "/books" }
+
+    assert_redirected_to root_path(script_name: "/books")
+    assert_match(/Signed in via/, flash[:notice])
+  end
+
   test "OIDC login fails when user not found and auto-create disabled" do
     SettingsService.set(:oidc_auto_create_users, false)
 
