@@ -163,6 +163,10 @@ After logging in, go to **Admin → Settings**:
 | Output Paths | Where to place completed audiobooks/ebooks |
 | Library Platform | Audiobookshelf URL + API key, or BookOrbit/Grimmory URL + username/password for library integration (optional) |
 
+The save bar stays visible as you scroll. Preferences save automatically and show **Saved** when complete; connection details and fields marked **Requires Save All** need **Save All**. Unused direct sources start collapsed—open their heading to configure them. Downloads lists output paths first, with polling and retry options under **Advanced download settings**.
+
+Only the selected indexer and library platform's credentials are shown. Switching providers preserves stored credentials and any unfinished draft for the other provider. **Save All** saves the active provider's draft; switch back to save a draft for another provider. Custom indexer categories appear when Search Scope is **Custom**. Without JavaScript, provider fields and settings sections remain available and all changes require **Save All**.
+
 📖 **[Read the docs](https://shelfarr.org/getting-started.html)** for a full install and setup walkthrough, plus a **[settings reference](https://shelfarr.org/configuration.html)** describing every option, its type and default.
 
 ### OIDC/SSO Setup

@@ -73,12 +73,15 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "option[value='jackett']", text: "Jackett"
     assert_select "option[value='newznab']", text: "NZBHydra2 / Newznab"
     assert_select "input[type='url'][name='settings[prowlarr_url]'][autocomplete='off']:not([disabled]):not([data-action])"
-    assert_select "input[type='url'][name='settings[jackett_url]'][autocomplete='off'][disabled]:not([data-action])"
-    assert_select "input[type='url'][name='settings[newznab_url]'][autocomplete='off'][disabled]:not([data-action])"
+    assert_select "input[type='url'][name='settings[jackett_url]'][autocomplete='off']:not([disabled]):not([data-action])"
+    assert_select "input[type='url'][name='settings[newznab_url]'][autocomplete='off']:not([disabled]):not([data-action])"
     assert_select "input[name='settings[newznab_api_key]']"
     assert_select "input[type='password'][name='settings[prowlarr_api_key]'][value=''][autocomplete='new-password']:not([data-action])"
     assert_select "input[type='password'][name='settings[jackett_api_key]'][value=''][autocomplete='new-password']:not([data-action])"
     assert_select "input[type='password'][name='settings[newznab_api_key]'][value=''][autocomplete='new-password']:not([data-action])"
+    %w[audiobook ebook comicbook].each do |book_type|
+      assert_select "input[name='settings[indexer_custom_#{book_type}_categories]']:not([disabled])"
+    end
     assert_no_match /stored-prowlarr-secret/, @response.body
   end
 
@@ -467,7 +470,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "label[for='settings_library_platform']", text: "Active Library Platform"
-    assert_select "select[name='settings[library_platform]']:not([data-action])"
+    assert_select "select[name='settings[library_platform]'][data-action='change->settings-form#toggleLibraryPlatform']"
     assert_select "label[for='settings_audiobookshelf_url']", text: "Audiobookshelf URL"
     assert_select "label[for='settings_audiobookshelf_api_key']", text: "Audiobookshelf API Key"
     assert_select "label[for='settings_bookorbit_url']", text: "BookOrbit URL"
@@ -629,9 +632,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type='hidden'][name='autosave_keys'][data-settings-form-target='autosaveKeys']"
     assert_select "input[type='hidden'][data-settings-form-target='manualKeys']:not([name])"
     assert_select "button[type='submit'][name='autosave'][value='true'][hidden][data-settings-form-target='autosaveSubmit']"
-    submit_controls = css_select("form[data-settings-form-target='form'] [type='submit']")
-    assert_equal "commit", submit_controls.first["name"]
-    assert_equal "autosave", submit_controls.last["name"]
+    assert_select "form#settings-configuration[data-settings-form-target='form']", count: 1
+    assert_select "[type='submit'][name='commit'][form='settings-configuration'][value='Save All'][data-settings-form-target='saveAll']", count: 1
     assert_select "input[type='password'][name='settings[grimmory_password]'][value=''][autocomplete='new-password']:not([data-action])"
     assert_select "input[type='password'][name='settings[discord_webhook_url]'][value=''][autocomplete='new-password']:not([data-action])"
     assert_select "input[name='settings[bookorbit_username]'][autocomplete='off']:not([data-action])"

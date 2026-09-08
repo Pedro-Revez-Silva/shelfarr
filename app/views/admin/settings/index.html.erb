@@ -2,7 +2,7 @@
   <meta name="turbo-cache-control" content="no-cache">
 <% end %>
 
-<div class="mx-auto max-w-4xl" data-controller="settings-form">
+<div class="mx-auto max-w-4xl" data-controller="settings-form" data-settings-form-library-platform-value="<%= SettingsService.get(:library_platform) %>">
   <div id="settings-form">
     <%= render "admin/settings/form" %>
   </div>
