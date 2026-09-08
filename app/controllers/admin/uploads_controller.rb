@@ -3,7 +3,7 @@
 module Admin
   class UploadsController < BaseController
     before_action :set_request_context, only: [ :new, :create ]
-    before_action :set_upload, only: [ :show, :destroy, :retry ]
+    before_action :set_upload, only: [ :show, :destroy, :retry, :match_and_retry ]
 
     def index
       @uploads = Upload.includes(:user, :book).recent
@@ -31,6 +31,33 @@ module Admin
     end
 
     def show
+      prepare_manual_match
+    end
+
+    def match_and_retry
+      @upload.match_and_retry!(
+        book_id: params[:book_id],
+        title: params.dig(:manual_book, :title),
+        author: params.dig(:manual_book, :author)
+      )
+
+      unless enqueue_retry(nil)
+        Upload.where(id: @upload.id, status: :pending).update_all(
+          status: Upload.statuses[:failed],
+          error_message: "Shelfarr could not queue the upload retry. Your manual match was saved.",
+          updated_at: Time.current
+        )
+        redirect_to admin_upload_path(@upload), alert: "Upload retry could not be queued. Your manual match was saved; try Retry again."
+        return
+      end
+
+      redirect_to admin_upload_path(@upload), notice: "Manual match saved. Upload queued for retry."
+    rescue ActiveRecord::RecordInvalid => error
+      flash.now[:alert] = error.record.errors.full_messages.to_sentence
+      prepare_manual_match
+      render :show, status: :unprocessable_entity
+    rescue ActiveRecord::RecordNotFound
+      redirect_to admin_upload_path(@upload), alert: "That book is no longer available. Choose another book."
     end
 
     def destroy
@@ -117,6 +144,24 @@ module Admin
 
     def set_upload
       @upload = Upload.find(params[:id])
+    end
+
+    def prepare_manual_match
+      return unless @upload.manual_match_available?
+
+      @match_query = params.fetch(:q, @upload.parsed_title).to_s.strip
+      @manual_book = Book.new(
+        title: params.dig(:manual_book, :title) || @upload.book&.title || @upload.parsed_title,
+        author: params.dig(:manual_book, :author) || @upload.book&.author || @upload.parsed_author
+      )
+      @match_books = Book.where(book_type: @upload.infer_book_type)
+        .where("file_path IS NULL OR TRIM(file_path) = ''")
+        .where(acquisition_reservation_token: nil)
+      if @match_query.present?
+        query = "%#{Book.sanitize_sql_like(@match_query)}%"
+        @match_books = @match_books.where("title LIKE :query OR author LIKE :query", query: query)
+      end
+      @match_books = @match_books.order(:title, :id).limit(21).to_a
     end
 
     def set_request_context

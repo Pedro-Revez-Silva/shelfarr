@@ -43,7 +43,7 @@
 
     <% if @upload.book %>
       <div class="px-6 py-4">
-        <h3 class="text-sm font-medium text-gray-500">Matched Book</h3>
+        <h3 class="text-sm font-medium text-gray-500"><%= @upload.manual_match? ? "Manually Selected Book" : "Matched Book" %></h3>
         <p class="mt-1">
           <span class="text-gray-200"><%= @upload.book.display_name %></span>
           <% if @upload.book.acquired? %>
@@ -70,6 +70,12 @@
       </div>
     <% end %>
   </div>
+
+  <% if @match_books %>
+    <%= render "manual_match" %>
+  <% elsif @upload.failed? && @upload.recovery_state? %>
+    <p class="mt-6 text-sm text-gray-400">This upload has a reserved library file. Use Retry to reconcile it before changing the matched book.</p>
+  <% end %>
 
   <div class="mt-6 flex gap-4">
     <%= link_to "Back to Uploads", admin_uploads_path, class: "text-gray-400 hover:text-gray-200" %>

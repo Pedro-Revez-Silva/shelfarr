@@ -50,6 +50,7 @@ class UploadProcessingJob < ApplicationJob
 
     begin
       raise "Request is already completed" if target_request&.completed?
+      validate_manual_match!(upload, upload.book)
 
       if owned_media_import
         claim_owned_media_processing!(owned_media_import, upload)
@@ -102,7 +103,7 @@ class UploadProcessingJob < ApplicationJob
       upload.update!(book_type: book_type)
 
       # Step 4: Search metadata sources for enrichment
-      metadata = target_request ? nil : fetch_metadata(title, author)
+      metadata = target_request || upload.manual_match? ? nil : fetch_metadata(title, author)
 
       if metadata
         Rails.logger.info "[UploadProcessingJob] Matched external metadata for upload ##{upload.id}"
@@ -145,7 +146,7 @@ class UploadProcessingJob < ApplicationJob
           book_type: book_type
         )
         book = reserve_upload_book!(upload, destination_book)
-        apply_reserved_upload_metadata!(book, metadata:, extracted:, parsed:)
+        apply_reserved_upload_metadata!(book, metadata:, extracted:, parsed:) unless upload.manual_match?
         ordinary_file_service = UploadImportFileService.new(
           upload: upload,
           book: book,
@@ -161,7 +162,7 @@ class UploadProcessingJob < ApplicationJob
           book_type: book_type
         )
         book = reserve_upload_book!(upload, planned_book)
-        apply_reserved_upload_metadata!(book, metadata:, extracted:, parsed:)
+        apply_reserved_upload_metadata!(book, metadata:, extracted:, parsed:) unless upload.manual_match?
         # The expensive, potentially multi-gigabyte extraction and content
         # verification happen outside the short Book-reservation and database
         # completion transactions. The durable destination reservation makes a
@@ -458,6 +459,8 @@ class UploadProcessingJob < ApplicationJob
         planned_book
       end
 
+      validate_manual_match!(current_upload, reserved_book)
+
       if current_upload.book_reservation_token.present?
         validate_upload_book_reservation!(current_upload, reserved_book)
         next
@@ -499,6 +502,18 @@ class UploadProcessingJob < ApplicationJob
     raise "The upload no longer owns this title's acquisition reservation"
   end
 
+  def validate_manual_match!(upload, book)
+    return unless upload.manual_match?
+
+    if upload.request_id.present? || OwnedMediaImport.exists?(upload_id: upload.id)
+      raise "Manual matching is only available for standalone uploads"
+    end
+    raise "The manually selected book no longer exists. Choose another book from Upload Details." unless book
+    unless book.book_type == upload.infer_book_type.to_s
+      raise "The manually selected book has a different format. Choose a book with the same format from Upload Details."
+    end
+  end
+
   def release_upload_book_reservation!(upload)
     released = false
     ActiveRecord::Base.transaction do
@@ -517,7 +532,7 @@ class UploadProcessingJob < ApplicationJob
       )
       created_book = current_upload.book_reservation_created_book?
       current_upload.update!(
-        book: nil,
+        book: current_upload.manual_match? ? current_book : nil,
         book_reservation_token: nil,
         book_reservation_created_book: false
       )

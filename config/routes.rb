@@ -98,6 +98,7 @@ Rails.application.routes.draw do
     resources :uploads, only: [ :index, :new, :create, :show, :destroy ] do
       member do
         post :retry
+        post :match_and_retry
       end
     end
     resources :download_clients do

@@ -3,6 +3,64 @@
 require "test_helper"
 
 class UploadTest < ActiveSupport::TestCase
+  test "manual matching creates the inferred format with only corrected metadata" do
+    %w[m4b epub cbz].zip(%w[audiobook ebook comicbook]).each do |extension, book_type|
+      upload = Upload.create!(user: users(:two), original_filename: "unrecognized.#{extension}", status: :failed)
+
+      assert_difference "Book.count", 1 do
+        upload.match_and_retry!(title: "  Corrected title  ", author: "  Corrected author  ")
+      end
+
+      assert upload.reload.pending?
+      assert upload.manual_match?
+      assert_equal book_type, upload.book_type
+      assert_equal book_type, upload.book.book_type
+      assert_equal "Corrected title", upload.book.title
+      assert_equal "Corrected author", upload.book.author
+      assert_equal extension == "cbz" ? "graphic" : "book", upload.book.content_kind
+    end
+  end
+
+  test "stale duplicate manual match cannot create a second book or replace the choice" do
+    upload = Upload.create!(user: users(:two), original_filename: "unrecognized.epub", status: :failed)
+    stale_upload = Upload.find(upload.id)
+    upload.match_and_retry!(title: "Chosen title")
+
+    assert_no_difference "Book.count" do
+      assert_raises(ActiveRecord::RecordInvalid) { stale_upload.match_and_retry!(title: "Second title") }
+    end
+    assert_equal "Chosen title", upload.reload.book.title
+    assert upload.pending?
+  end
+
+  test "every durable recovery marker blocks manual reassignment" do
+    upload = Upload.create!(user: users(:two), original_filename: "unrecognized.epub", status: :failed)
+    %i[destination_path destination_root destination_configured_root library_path content_sha256 cleanup_source_path book_reservation_token].each do |attribute|
+      upload.update!(attribute => "reserved-state")
+      assert_not upload.manual_match_available?, attribute.to_s
+      assert_no_difference "Book.count" do
+        assert_raises(ActiveRecord::RecordInvalid) { upload.match_and_retry!(title: "Replacement") }
+      end
+      upload.update!(attribute => nil)
+    end
+    assert upload.manual_match_available?
+  end
+
+  test "invalid new-book metadata rolls back the match and can be corrected" do
+    upload = Upload.create!(user: users(:two), original_filename: "unrecognized.epub", status: :failed, error_message: "Original failure")
+
+    assert_no_difference "Book.count" do
+      assert_raises(ActiveRecord::RecordInvalid) { upload.match_and_retry!(title: "  ") }
+    end
+    assert upload.reload.failed?
+    assert_not upload.manual_match?
+    assert_nil upload.book_id
+    assert_equal "Original failure", upload.error_message
+
+    upload.match_and_retry!(title: "Corrected title")
+    assert upload.reload.pending?
+  end
+
   test "destroy removes only a private browser ingress file" do
     path, size = UploadImportFileService.stage_ingress!(
       StringIO.new("temporary ingress"),

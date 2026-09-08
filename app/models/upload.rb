@@ -93,6 +93,41 @@ class Upload < ApplicationRecord
     ].any? { |attribute| public_send(attribute).present? }
   end
 
+  def manual_match_available?
+    failed? && request_id.nil? && !recovery_state? &&
+      !OwnedMediaImport.exists?(upload_id: id)
+  end
+
+  # Choose only before publication has reserved a destination. Retries with
+  # recovery state must reconcile that destination using the original Book.
+  def match_and_retry!(book_id: nil, title: nil, author: nil)
+    with_lock do
+      errors.clear
+      unless manual_match_available?
+        errors.add(:base, "Only failed standalone uploads without reserved files can be matched. Use Retry to reconcile a reserved file.")
+        raise ActiveRecord::RecordInvalid.new(self)
+      end
+
+      selected_book = if book_id.present?
+        Book.lock.find(book_id)
+      else
+        Book.new(title: title.to_s.strip, author: author.to_s.strip.presence,
+          book_type: infer_book_type, content_kind: comicbook_file? ? :graphic : :book)
+      end
+
+      if selected_book.book_type != infer_book_type.to_s
+        errors.add(:base, "Choose a book with the same format as this upload.")
+      elsif selected_book.acquisition_blocked?
+        errors.add(:base, "This book already has a library file or an acquisition in progress. Choose another book.")
+      end
+      raise ActiveRecord::RecordInvalid.new(self) if errors.any?
+
+      selected_book.save! if selected_book.new_record?
+      update!(book: selected_book, book_type: infer_book_type, manual_match: true,
+        status: :pending, error_message: nil)
+    end
+  end
+
   def destruction_blocked?
     return false if completed?
     return true if processing? || recovery_state?

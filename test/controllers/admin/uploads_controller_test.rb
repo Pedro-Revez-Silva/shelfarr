@@ -389,7 +389,181 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
   end
 
 
+  test "manual matching requires an administrator even for the uploader" do
+    upload = create_failed_manual_upload(user: users(:one))
+    delete session_url
+    sign_in_as(users(:one))
+
+    assert_no_enqueued_jobs do
+      assert_no_difference "Book.count" do
+        post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "Replacement" } }
+      end
+    end
+
+    assert_redirected_to root_path
+    assert upload.reload.failed?
+    assert_not upload.manual_match?
+    get admin_upload_url(upload)
+    assert_redirected_to root_path
+  end
+
+  test "manual match shows a bounded same-format local search without unavailable books" do
+    upload = create_failed_manual_upload
+    21.times { |index| Book.create!(title: "Searchable #{index}", book_type: :audiobook) }
+    Book.create!(title: "Searchable ebook", book_type: :ebook)
+    Book.create!(title: "Searchable acquired", book_type: :audiobook, file_path: "/library/existing")
+    Book.create!(title: "Searchable reserved", book_type: :audiobook, acquisition_reservation_token: "other-owner",
+      acquisition_reservation_owner_type: "Download", acquisition_reservation_owner_id: 99_001)
+
+    get admin_upload_url(upload), params: { q: "Searchable" }
+
+    assert_response :success
+    assert_select "h2", "Correct the match and retry"
+    assert_select "input[name='book_id']", count: 20
+    assert_select "p", text: /Showing the first 20 matches/
+    assert_no_match(/Searchable (ebook|acquired|reserved)/, response.body)
+
+    get admin_upload_url(upload), params: { q: "%" }
+    assert_select "input[name='book_id']", count: 0
+  end
+
+  test "manual matching uses the selected existing book and queues only once" do
+    upload = create_failed_manual_upload
+    book = Book.create!(title: "Correct title", book_type: :audiobook)
+
+    assert_no_difference "Book.count" do
+      assert_enqueued_with(job: UploadProcessingJob, args: [ upload.id ]) do
+        post match_and_retry_admin_upload_url(upload), params: { book_id: book.id }
+      end
+    end
+    assert_redirected_to admin_upload_path(upload)
+    assert upload.reload.pending?
+    assert upload.manual_match?
+    assert_equal book, upload.book
+    assert_nil upload.error_message
+
+    assert_no_enqueued_jobs do
+      assert_no_difference "Book.count" do
+        post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "Duplicate" } }
+      end
+    end
+    assert_response :unprocessable_entity
+    assert_equal book, upload.reload.book
+  end
+
+  test "manual book creation ignores format identity and file-path parameters" do
+    upload = create_failed_manual_upload(original_filename: "unrecognized.cbz")
+
+    assert_difference "Book.count", 1 do
+      assert_enqueued_with(job: UploadProcessingJob, args: [ upload.id ]) do
+        post match_and_retry_admin_upload_url(upload), params: {
+          manual_book: { title: "Corrected comic", author: "Artist", book_type: "ebook",
+            file_path: "/library/forged", hardcover_id: "forged", content_kind: "book" },
+          request_id: requests(:pending_request).id, file_path: "/tmp/forged"
+        }
+      end
+    end
+
+    assert_redirected_to admin_upload_path(upload)
+    assert_equal "comicbook", upload.reload.book.book_type
+    assert_equal "graphic", upload.book.content_kind
+    assert_equal "Corrected comic", upload.book.title
+    assert_nil upload.book.file_path
+    assert_nil upload.book.hardcover_id
+    assert_nil upload.request_id
+    assert_equal "/tmp/manual-upload.m4b", upload.file_path
+  end
+
+  test "invalid corrected title keeps entered details on the failure page" do
+    upload = create_failed_manual_upload
+
+    assert_no_enqueued_jobs do
+      assert_no_difference "Book.count" do
+        post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: " ", author: "Entered author" } }
+      end
+    end
+
+    assert_response :unprocessable_entity
+    assert_select "input[name='manual_book[author]'][value='Entered author']"
+    assert_select "details[open]"
+    assert upload.reload.failed?
+    assert_not upload.manual_match?
+  end
+
+  test "manual matching rejects unavailable or different-format books" do
+    upload = create_failed_manual_upload
+    candidates = [
+      Book.create!(title: "Different format", book_type: :ebook),
+      Book.create!(title: "Acquired", book_type: :audiobook, file_path: "/library/existing"),
+      Book.create!(title: "Reserved", book_type: :audiobook, acquisition_reservation_token: "other-owner",
+        acquisition_reservation_owner_type: "Download", acquisition_reservation_owner_id: 99_002)
+    ]
+
+    candidates.each do |book|
+      assert_no_enqueued_jobs do
+        post match_and_retry_admin_upload_url(upload), params: { book_id: book.id }
+      end
+      assert_response :unprocessable_entity
+      assert upload.reload.failed?
+      assert_nil upload.book_id
+      assert_not upload.manual_match?
+    end
+    assert_equal "/library/existing", candidates[1].reload.file_path
+    assert_equal "other-owner", candidates[2].reload.acquisition_reservation_token
+  end
+
+  test "manual matching cannot reassign request uploads Audible imports or reserved destinations" do
+    audible_upload, = create_failed_audible_import
+    uploads = [
+      create_failed_manual_upload(request: requests(:pending_request)),
+      audible_upload,
+      create_failed_manual_upload(destination_path: "/library/reserved")
+    ]
+
+    uploads.each do |upload|
+      get admin_upload_url(upload)
+      assert_select "h2", text: "Correct the match and retry", count: 0
+      assert_no_enqueued_jobs do
+        assert_no_difference "Book.count" do
+          post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "Replacement" } }
+        end
+      end
+      assert_response :unprocessable_entity
+      assert upload.reload.failed?
+      assert_not upload.manual_match?
+    end
+  end
+
+  test "rejected or raised enqueue preserves the manual choice for ordinary Retry" do
+    [ false, ->(*) { raise ActiveJob::EnqueueError, "queue unavailable" } ].each do |enqueue_result|
+      upload = create_failed_manual_upload
+      UploadProcessingJob.stub(:perform_later, enqueue_result) do
+        post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "Saved choice" } }
+      end
+      assert_redirected_to admin_upload_path(upload)
+      assert upload.reload.failed?
+      assert upload.manual_match?
+      assert_equal "Saved choice", upload.book.title
+      assert_match(/manual match was saved/i, flash[:alert])
+      selected_id = upload.book_id
+
+      assert_enqueued_with(job: UploadProcessingJob, args: [ upload.id ]) do
+        post retry_admin_upload_url(upload)
+      end
+      assert upload.reload.pending?
+      assert_equal selected_id, upload.book_id
+      assert upload.manual_match?
+    end
+  end
+
   private
+
+  def create_failed_manual_upload(**attributes)
+    Upload.create!({
+      user: @admin, original_filename: "unrecognized.m4b", file_path: "/tmp/manual-upload.m4b",
+      status: :failed, error_message: "Automatic match failed", parsed_title: "Unrecognized"
+    }.merge(attributes))
+  end
 
   def create_failed_audible_import
     connection = OwnedLibraryConnection.create!(enabled: true)
