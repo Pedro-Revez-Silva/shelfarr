@@ -91,6 +91,7 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     assert observed_reservation
     assert @upload.reload.failed?
     assert @upload.manual_match?
+    assert @upload.manual_match_created_book?
     assert_equal selected_book, @upload.book
     assert_not File.exist?(published_path)
     assert_equal "test audio content", File.binread(@test_file)

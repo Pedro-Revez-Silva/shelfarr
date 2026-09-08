@@ -24,6 +24,7 @@ class Upload < ApplicationRecord
   validates :status, presence: true
 
   before_destroy :prevent_unsafe_destruction
+  before_destroy :prune_manual_match_before_destroy
   before_destroy :remove_unprocessed_file
 
   scope :recent, -> { order(created_at: :desc) }
@@ -108,6 +109,7 @@ class Upload < ApplicationRecord
         raise ActiveRecord::RecordInvalid.new(self)
       end
 
+      previous_owned_book_id = self.book_id if manual_match? && manual_match_created_book?
       selected_book = if book_id.present?
         Book.lock.find(book_id)
       else
@@ -122,9 +124,11 @@ class Upload < ApplicationRecord
       end
       raise ActiveRecord::RecordInvalid.new(self) if errors.any?
 
+      owns_selected_book = selected_book.new_record? || previous_owned_book_id == selected_book.id
       selected_book.save! if selected_book.new_record?
       update!(book: selected_book, book_type: infer_book_type, manual_match: true,
-        status: :pending, error_message: nil)
+        manual_match_created_book: owns_selected_book, status: :pending, error_message: nil)
+      prune_abandoned_manual_book(previous_owned_book_id) if previous_owned_book_id != selected_book.id
     end
   end
 
@@ -146,6 +150,34 @@ class Upload < ApplicationRecord
       "This upload is processing or owns recovery state and cannot be deleted safely"
     )
     throw :abort
+  end
+
+  def prune_manual_match_before_destroy
+    return unless (failed? || pending?) && manual_match? && manual_match_created_book?
+
+    # Prune metadata before unlinking ingress. A database error must not roll
+    # back the upload deletion after its source bytes have already been removed.
+    prune_abandoned_manual_book(book_id, excluding_upload_id: id)
+  end
+
+  def prune_abandoned_manual_book(book_id, excluding_upload_id: nil)
+    return if book_id.nil?
+
+    Book.transaction do
+      candidate = Book.lock.find_by(id: book_id)
+      next unless candidate
+      next if candidate.acquisition_blocked?
+      next if candidate.requests.exists? || candidate.owned_library_items.exists?
+      next if OwnedMediaImport.exists?(created_book_id: candidate.id)
+      next if candidate.owned_media_recovery_pending? || candidate.post_processing_recovery_pending?
+
+      remaining_uploads = candidate.uploads
+      remaining_uploads = remaining_uploads.where.not(id: excluding_upload_id) if excluding_upload_id
+      next if remaining_uploads.exists?
+
+      # Book's own destruction guards may still conservatively retain it.
+      candidate.destroy
+    end
   end
 
   def remove_unprocessed_file

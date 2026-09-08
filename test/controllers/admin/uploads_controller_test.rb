@@ -589,6 +589,30 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='manual_book[author]'][value='Known Author']"
   end
 
+  test "replacing and deleting an unused manual creation removes its abandoned metadata" do
+    upload = create_failed_manual_upload
+    post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "First correction" } }
+    original_id = upload.reload.book_id
+    assert upload.manual_match_created_book?
+    upload.update!(status: :failed)
+
+    assert_no_difference "Book.count" do
+      post match_and_retry_admin_upload_url(upload), params: { manual_book: { title: "Second correction" } }
+    end
+    assert_redirected_to admin_upload_path(upload)
+    assert_not Book.exists?(original_id)
+    replacement_id = upload.reload.book_id
+    assert upload.pending?
+    assert_equal 2, ActivityLog.for_action("upload.manually_matched").count
+
+    assert_difference "Book.count", -1 do
+      delete admin_upload_url(upload)
+    end
+    assert_redirected_to admin_uploads_path
+    assert_not Upload.exists?(upload.id)
+    assert_not Book.exists?(replacement_id)
+  end
+
   test "manual match rejects malformed parameter shapes without creating or queuing a book" do
     upload = create_failed_manual_upload
     malformed = [

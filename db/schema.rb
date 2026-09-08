@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_08_130000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -530,6 +530,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_08_130000) do
     t.bigint "file_size"
     t.string "library_path"
     t.boolean "manual_match", default: false, null: false
+    t.boolean "manual_match_created_book", default: false, null: false
     t.integer "match_confidence"
     t.string "original_filename"
     t.string "parsed_author"
