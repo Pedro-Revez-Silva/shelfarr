@@ -149,9 +149,12 @@ begin
 
   if mode == "single"
     Process.kill(:USR2, puma_pid)
-    wait_for("replacement queue supervisor after hot restart") { supervisors.one? && supervisors.first != supervisor_pid }
+    replacement_pid = wait_for("replacement queue supervisor after hot restart") do
+      pids = supervisors
+      pids.first if pids.one? && pids.first != supervisor_pid
+    end
     wait_for("old supervisor exit") { !process_exists?(supervisor_pid) }
-    supervisor_pid = supervisors.first
+    supervisor_pid = replacement_pid
     Process.kill(:TERM, puma_pid)
     raise "Puma did not stop" unless puma_waiter.join(25)
     wait_for("queue shutdown") { !process_exists?(supervisor_pid) }
