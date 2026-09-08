@@ -631,10 +631,10 @@ module DownloadClients
 
     def apply_seed_limits!(params, options)
       ratio = Float(options[:seed_ratio], exception: false)
-      params[:ratioLimit] = ratio if ratio&.positive?
+      params[:ratioLimit] = ratio if ratio&.finite? && (ratio >= 0 || [ -1, -2 ].include?(ratio))
 
-      time = Float(options[:seed_time], exception: false)&.to_i
-      params[:seedingTimeLimit] = time if time&.positive?
+      time = Integer(options[:seed_time], exception: false)
+      params[:seedingTimeLimit] = time if time && time >= -2
     end
 
     def adapter_specific_add_torrent_params

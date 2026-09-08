@@ -2094,6 +2094,29 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  [ 0, -1, -2 ].each do |limit|
+    test "forwards explicit seed limit #{limit} from Prowlarr through torrent dispatch" do
+      configure_prowlarr!
+      magnet = assign_magnet_result!(indexer_id: 11)
+
+      VCR.turned_off do
+        stub_prowlarr_indexers([
+          { "id" => 11, "fields" => [
+            { "name" => "torrentBaseSettings.seedRatio", "value" => limit },
+            { "name" => "torrentBaseSettings.seedTime", "value" => limit }
+          ] }
+        ])
+        captured = stub_qbittorrent_magnet_add(magnet)
+
+        DownloadJob.perform_now(@download.id)
+
+        assert_equal "torrent", @download.reload.download_type
+        assert_equal limit.to_f, Float(captured[:body].fetch("ratioLimit"))
+        assert_equal limit, Integer(captured[:body].fetch("seedingTimeLimit"))
+      end
+    end
+  end
+
   test "omits seed limits when the search result indexer id is blank" do
     configure_prowlarr!
     magnet = assign_magnet_result!(indexer_id: nil)
@@ -2148,6 +2171,24 @@ class DownloadJobTest < ActiveJob::TestCase
       DownloadJob.perform_now(@download.id)
 
       assert @download.reload.downloading?
+      assert_not captured[:body].key?("ratioLimit")
+      assert_not captured[:body].key?("seedingTimeLimit")
+    end
+  end
+
+  test "still dispatches when Prowlarr seed criteria response contains invalid JSON" do
+    configure_prowlarr!
+    magnet = assign_magnet_result!(indexer_id: 11)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/indexer})
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: '[{"id":11,"fields":[')
+      captured = stub_qbittorrent_magnet_add(magnet)
+
+      DownloadJob.perform_now(@download.id)
+
+      assert_equal "torrent", @download.reload.download_type
+      assert_equal magnet, captured[:body]["urls"]
       assert_not captured[:body].key?("ratioLimit")
       assert_not captured[:body].key?("seedingTimeLimit")
     end

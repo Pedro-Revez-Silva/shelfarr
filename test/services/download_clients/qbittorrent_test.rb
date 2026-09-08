@@ -1501,11 +1501,11 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent omits non-positive seed limits so the client keeps global limits" do
+  test "add_torrent omits invalid seed limits so the client keeps global limits" do
     VCR.turned_off do
       captured = capture_add_torrent_request(
         "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        seed_ratio: 0,
+        seed_ratio: -5,
         seed_time: -5
       )
 

@@ -38,21 +38,21 @@ module IndexerClients
       end
 
       # Seed ratio / seed time live on the indexer definition, not on search
-      # results. Look them up by the result's indexerId. Returns only positive
-      # values so callers can omit the params and leave the download client on
-      # its global limits when nothing is configured.
+      # results. Look them up by the result's indexerId. Missing values leave
+      # the client on global limits; zero and qBittorrent's -1/-2 sentinels
+      # are explicit settings and must survive dispatch.
       def seed_criteria(indexer_id)
         return {} unless configured?
 
         id = Integer(indexer_id, exception: false)
         return {} if id.blank? || id <= 0
 
-        indexer = indexers.find { |item| Integer(item["id"], exception: false) == id }
+        indexer = indexers.find { |item| item.is_a?(Hash) && Integer(item["id"], exception: false) == id }
         return {} unless indexer.is_a?(Hash)
 
         extract_seed_criteria(indexer)
-      rescue Base::Error => e
-        Rails.logger.warn "[IndexerClients::Prowlarr] Failed to look up seed criteria for indexer #{id}: #{e.message}"
+      rescue Base::Error, Faraday::Error => e
+        Rails.logger.warn "[IndexerClients::Prowlarr] Failed to look up seed criteria for indexer #{id} (#{e.class})"
         {}
       end
 
@@ -204,10 +204,10 @@ module IndexerClients
       def extract_seed_criteria(indexer)
         criteria = {}
 
-        ratio = positive_number(seed_field_value(indexer, "seedRatio"))
+        ratio = seed_limit(seed_field_value(indexer, "seedRatio"))
         criteria[:seed_ratio] = ratio if ratio
 
-        time = positive_number(seed_field_value(indexer, "seedTime"))
+        time = seed_limit(seed_field_value(indexer, "seedTime"))
         criteria[:seed_time] = time.to_i if time
 
         criteria
@@ -216,20 +216,14 @@ module IndexerClients
       def seed_field_value(indexer, field)
         field_name = "torrentBaseSettings.#{field}"
         fields = indexer["fields"]
-        if fields.is_a?(Array)
-          match = fields.find { |item| item.is_a?(Hash) && item["name"] == field_name }
-          return match["value"] if match&.key?("value")
-        end
+        return unless fields.is_a?(Array)
 
-        nested = indexer.dig("torrentBaseSettings", field)
-        return nested["value"] if nested.is_a?(Hash) && nested.key?("value")
-
-        nested
+        fields.find { |item| item.is_a?(Hash) && item["name"] == field_name }&.fetch("value", nil)
       end
 
-      def positive_number(value)
+      def seed_limit(value)
         number = Float(value, exception: false)
-        number if number&.positive?
+        number if number&.finite? && (number >= 0 || [ -1, -2 ].include?(number))
       end
 
       def extract_category_ids(item)

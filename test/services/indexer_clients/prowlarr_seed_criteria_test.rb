@@ -29,23 +29,6 @@ class IndexerClients::ProwlarrSeedCriteriaTest < ActiveSupport::TestCase
     end
   end
 
-  test "returns seed criteria from nested torrentBaseSettings" do
-    VCR.turned_off do
-      stub_indexers(
-        {
-          "id" => 11,
-          "name" => "NestedTracker",
-          "torrentBaseSettings" => {
-            "seedRatio" => { "value" => 2.0 },
-            "seedTime" => { "value" => 1440 }
-          }
-        }
-      )
-
-      assert_equal({ seed_ratio: 2.0, seed_time: 1440 }, IndexerClients::Prowlarr.seed_criteria(11))
-    end
-  end
-
   test "omits criteria when Prowlarr fields have no value" do
     VCR.turned_off do
       stub_indexers(
@@ -119,14 +102,33 @@ class IndexerClients::ProwlarrSeedCriteriaTest < ActiveSupport::TestCase
     end
   end
 
-  test "omits non-positive seed values so the client keeps global limits" do
+  test "ignores malformed indexer entries and fields" do
+    VCR.turned_off do
+      stub_indexers(nil, 12, [ "id", 11 ], { "id" => 11, "fields" => "invalid" })
+
+      assert_equal({}, IndexerClients::Prowlarr.seed_criteria(11))
+    end
+  end
+
+  test "omits non-finite seed values" do
+    VCR.turned_off do
+      stub_indexers(indexer_definition(11, fields: [
+        { "name" => "torrentBaseSettings.seedRatio", "value" => "1e1000" },
+        { "name" => "torrentBaseSettings.seedTime", "value" => "1e1000" }
+      ]))
+
+      assert_equal({}, IndexerClients::Prowlarr.seed_criteria(11))
+    end
+  end
+
+  test "omits invalid seed values so the client keeps global limits" do
     VCR.turned_off do
       stub_indexers(
         indexer_definition(
           11,
           fields: [
-            { "name" => "torrentBaseSettings.seedRatio", "value" => 0 },
-            { "name" => "torrentBaseSettings.seedTime", "value" => -1 }
+            { "name" => "torrentBaseSettings.seedRatio", "value" => -5 },
+            { "name" => "torrentBaseSettings.seedTime", "value" => -5 }
           ]
         )
       )
