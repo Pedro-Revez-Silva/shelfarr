@@ -361,12 +361,12 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     click_button "Save All"
     assert_text "Settings updated successfully."
     assert_equal "audiobookshelf", SettingsService.get(:library_platform)
-    assert_text "Unsaved changes. Click Save All."
+    assert_text "Unsaved provider drafts. Switch providers to save them."
 
     fill_in "Max Retries", with: "24"
     find("h1", text: "Settings").click
     assert_selector "form[data-settings-form-target='form']:not([inert])[aria-busy='false']", visible: :all
-    assert_text "Unsaved changes. Click Save All."
+    assert_text "Unsaved provider drafts. Switch providers to save them."
     assert_equal 24, SettingsService.get(:max_retries)
     assert_equal "", SettingsService.get(:bookorbit_password)
     assert_no_text "Invalid manual setting manifest"

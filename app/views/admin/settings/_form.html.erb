@@ -29,18 +29,16 @@
     <h1 class="font-bold text-3xl text-white">Settings</h1>
     <div class="flex items-center gap-3">
       <span data-settings-form-target="status" role="status" aria-live="polite" class="max-w-48 text-sm text-gray-300 hidden"></span>
-      <%= submit_tag "Save All", form: "settings-configuration", class: "shrink-0 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer", data: { settings_form_target: "saveAll" } %>
+      <%= submit_tag "Save All", form: "settings-configuration", class: "shrink-0 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
     </div>
     <p class="w-full text-sm text-gray-400">Preferences save automatically. Connection details need Save All.</p>
   </div>
   <%= form_with url: bulk_update_admin_settings_path, method: :patch, html: { id: "settings-configuration", novalidate: true, autocomplete: "off", aria: { busy: "false" } }, data: { settings_form_target: "form", action: "submit->settings-form#handleSubmit" } do |form| %>
     <%= hidden_field_tag :autosave_keys, "", data: { settings_form_target: "autosaveKeys" } %>
     <%= tag.input type: "hidden", value: "", data: { settings_form_target: "manualKeys" } %>
-
-
     <noscript>
       <div class="mb-6 rounded-lg border border-blue-800 bg-blue-950/30 p-4 text-sm text-blue-200" role="status">
-        JavaScript is disabled, so all settings sections are shown below. Use Save All to apply your changes.
+        JavaScript is disabled, so all settings tabs are shown below. Expand a section to edit it. Use Save All to apply your changes.
       </div>
     </noscript>
 

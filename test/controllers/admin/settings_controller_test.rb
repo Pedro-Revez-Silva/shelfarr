@@ -633,7 +633,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type='hidden'][data-settings-form-target='manualKeys']:not([name])"
     assert_select "button[type='submit'][name='autosave'][value='true'][hidden][data-settings-form-target='autosaveSubmit']"
     assert_select "form#settings-configuration[data-settings-form-target='form']", count: 1
-    assert_select "[type='submit'][name='commit'][form='settings-configuration'][value='Save All'][data-settings-form-target='saveAll']", count: 1
+    assert_select "[type='submit'][name='commit'][form='settings-configuration'][value='Save All']", count: 1
     assert_select "input[type='password'][name='settings[grimmory_password]'][value=''][autocomplete='new-password']:not([data-action])"
     assert_select "input[type='password'][name='settings[discord_webhook_url]'][value=''][autocomplete='new-password']:not([data-action])"
     assert_select "input[name='settings[bookorbit_username]'][autocomplete='off']:not([data-action])"

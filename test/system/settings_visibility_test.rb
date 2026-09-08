@@ -50,7 +50,7 @@ class SettingsVisibilityTest < ApplicationSystemTestCase
     assert_no_submitted_settings "prowlarr_url", "prowlarr_api_key", "prowlarr_tags"
     assert_no_field "Prowlarr Api Key"
     assert_field "Jackett Api Key", with: ""
-    assert_selector SAVE_STATUS, exact_text: "Unsaved changes. Click Save All."
+    assert_selector SAVE_STATUS, exact_text: "Unsaved provider drafts. Switch providers to save them."
 
     select "Prowlarr", from: "Provider"
 
@@ -101,7 +101,7 @@ class SettingsVisibilityTest < ApplicationSystemTestCase
     assert_no_submitted_settings "bookorbit_url", "bookorbit_username", "bookorbit_password",
       "audiobookshelf_url", "audiobookshelf_api_key"
     assert_field "Grimmory Password", with: ""
-    assert_selector SAVE_STATUS, exact_text: "Unsaved changes. Click Save All."
+    assert_selector SAVE_STATUS, exact_text: "Unsaved provider drafts. Switch providers to save them."
 
     select "BookOrbit", from: "Active Library Platform"
 

@@ -16,11 +16,8 @@ export default class extends Controller {
     "libraryPlatform",
     "indexerScope",
     "customCategories",
-    "sourceSection",
-    "advancedSection",
     "indexerTestAction",
-    "indexerTestHint",
-    "saveAll"
+    "indexerTestHint"
   ];
 
   connect() {
@@ -62,11 +59,6 @@ export default class extends Controller {
     this.toggleIndexerProvider();
     this.toggleIndexerScope();
     this.toggleLibraryPlatform();
-    this.sourceSectionTargets.forEach((section) => {
-      const toggle = section.querySelector(`input[type="checkbox"][name="settings[${section.dataset.enabledKey}]"]`);
-      if (toggle) section.open = toggle.checked;
-    });
-    this.advancedSectionTargets.forEach((section) => { section.open = false; });
   }
 
   disconnect() {
@@ -548,7 +540,9 @@ export default class extends Controller {
 
   finishStatus(saved = true) {
     if (this.manualChangesPending) {
-      this.showStatus("Unsaved changes. Click Save All.");
+      const submittedKeys = this.syncManualSettingManifest();
+      const activeDrafts = [...this.manualSettingKeys].some((key) => submittedKeys.has(key));
+      this.showStatus(activeDrafts ? "Unsaved changes. Click Save All." : "Unsaved provider drafts. Switch providers to save them.");
     } else if (saved) {
       this.showStatus("Saved.");
     } else {
