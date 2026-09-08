@@ -151,7 +151,8 @@ module Admin
 
       @match_query = params.fetch(:q, @upload.parsed_title).to_s.strip.first(200)
       @match_page = Integer(params[:page], exception: false).to_i.clamp(1, 100_000)
-      fields = params.permit(manual_book: [ :title, :author ]).fetch(:manual_book, {})
+      fields = params[:manual_book]
+      fields = fields.is_a?(ActionController::Parameters) ? fields.permit(:title, :author) : {}
       parsed = FilenameParserService.parse(@upload.original_filename)
       @manual_book = Book.new(
         title: fields[:title] || @upload.book&.title || @upload.parsed_title.presence || parsed.title,

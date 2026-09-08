@@ -614,8 +614,15 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
       assert_not upload.manual_match?
     end
 
-    get admin_upload_url(upload), params: { manual_book: "invalid" }
-    assert_response :success
+    [
+      { manual_book: "invalid" },
+      { manual_book: [ { title: "Malformed" } ] },
+      { manual_book: { title: { malformed: "value" }, author: [ "Malformed" ] } }
+    ].each do |parameters|
+      get admin_upload_url(upload), params: parameters
+      assert_response :success
+      assert_select "input[name='manual_book[title]'][value='Unrecognized']"
+    end
   end
 
   private
