@@ -16,6 +16,11 @@ require "timeout"
 
 ActiveJob::Base.queue_adapter = :solid_queue
 
+# Puma allows 30 seconds to drain a web worker. A lifecycle transition can
+# also include the queue helper's 15-second shutdown and a fresh Rails boot.
+# Keep the probe bounded while allowing those legitimate phases to complete.
+PUMA_LIFECYCLE_TIMEOUT = 60
+
 def jobs_log_output
   path = ENV["SOLID_QUEUE_IN_PUMA_LOG"].to_s
   return "" if path.empty? || !File.exist?(path)
@@ -100,7 +105,7 @@ begin
     Process.kill(:TERM, worker_pid)
     # Puma allows 30 seconds to drain a worker, then checks/replaces workers
     # on a five-second interval. Give that lifecycle time to finish on CI.
-    wait_for("replacement web worker", timeout: 60) { File.readlines(worker_log).length >= 3 }
+    wait_for("replacement web worker", timeout: PUMA_LIFECYCLE_TIMEOUT) { File.readlines(worker_log).length >= 3 }
     raise "Worker recycling stopped or duplicated the supervisor" unless supervisors == [ supervisor_pid ] && process_exists?(supervisor_pid)
   end
 
@@ -149,18 +154,18 @@ begin
 
   if mode == "single"
     Process.kill(:USR2, puma_pid)
-    replacement_pid = wait_for("replacement queue supervisor after hot restart") do
+    replacement_pid = wait_for("replacement queue supervisor after hot restart", timeout: PUMA_LIFECYCLE_TIMEOUT) do
       pids = supervisors
       pids.first if pids.one? && pids.first != supervisor_pid
     end
     wait_for("old supervisor exit") { !process_exists?(supervisor_pid) }
     supervisor_pid = replacement_pid
     Process.kill(:TERM, puma_pid)
-    raise "Puma did not stop" unless puma_waiter.join(25)
+    raise "Puma did not stop" unless puma_waiter.join(PUMA_LIFECYCLE_TIMEOUT)
     wait_for("queue shutdown") { !process_exists?(supervisor_pid) }
   elsif mode == "cluster"
     Process.kill(:TERM, supervisor_pid)
-    raise "Puma kept serving after queue exit" unless puma_waiter.join(25)
+    raise "Puma kept serving after queue exit" unless puma_waiter.join(PUMA_LIFECYCLE_TIMEOUT)
   else
     Process.kill(:KILL, puma_pid)
     puma_waiter.join(5)
