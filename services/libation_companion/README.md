@@ -96,10 +96,12 @@ fails until the complete mounted trees have been pre-permissioned for the new
 identity. The image and supplied Compose service both invoke the companion with
 `--healthcheck`, which GETs the already-running process's `/health` on the
 configured listen port (from `ASPNETCORE_URLS`, otherwise `8080`) and never
-starts a second listener. HTTP `200` with `status: ok` means the companion
-process is live even when `libraryReady` is `false` because Libation is idle
-or unconfigured. The companion API should be healthy before Shelfarr is
-enabled against it.
+starts a second listener. Remap that port with `ASPNETCORE_URLS`, not a
+container `command` `--urls` override: the image healthcheck is a separate
+process and only sees environment. HTTP `200` with `status: ok` means the
+companion process is live even when `libraryReady` is `false` because Libation
+is idle or unconfigured. The companion API should be healthy before Shelfarr
+is enabled against it.
 
 ## Authentication
 

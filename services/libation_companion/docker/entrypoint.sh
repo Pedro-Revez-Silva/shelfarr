@@ -316,10 +316,14 @@ migrate_volume_tree "${token_parent}" "Companion control volume"
 migrate_volume_tree "${LIBATION_BOOKS_DIR}" "Libation books volume"
 
 export HOME="${COMPANION_STATE_DIR}/home"
+# Do not forward container command arguments. Docker HEALTHCHECK invokes the
+# companion with only --healthcheck and cannot see argv overrides such as
+# --urls. Listen-port changes must go through ASPNETCORE_URLS so the running
+# process and the probe share the same configuration.
 exec setpriv \
   --reuid="${PUID}" \
   --regid="${PGID}" \
   --clear-groups \
   --no-new-privs \
   --bounding-set=-all \
-  /companion/Shelfarr.Libation.Companion "$@"
+  /companion/Shelfarr.Libation.Companion
