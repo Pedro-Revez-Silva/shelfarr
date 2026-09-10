@@ -7,7 +7,7 @@ using Shelfarr.Libation.Companion.Security;
 
 if (CompanionHealthProbe.IsRequested(args))
 {
-    Environment.ExitCode = await CompanionHealthProbe.RunAsync();
+    Environment.ExitCode = await CompanionHealthProbe.RunAsync(arguments: args);
     return;
 }
 

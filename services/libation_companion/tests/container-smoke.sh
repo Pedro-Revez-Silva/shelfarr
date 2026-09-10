@@ -88,6 +88,13 @@ if docker run --rm -e CHOWN_ON_START=invalid "${image}" >/dev/null 2>&1; then
 fi
 
 wait_for_health
+health_json="$(curl --fail --silent "http://127.0.0.1:${port}/health")"
+printf '%s' "${health_json}" | grep -q '"status":"ok"'
+printf '%s' "${health_json}" | grep -q '"libraryReady":false'
+if ! docker exec -u 23456:23456 "${container}" /companion/Shelfarr.Libation.Companion --healthcheck; then
+  echo "The companion --healthcheck probe failed against the already-running API." >&2
+  exit 1
+fi
 assert_owner_marker 23456 /config
 assert_owner_marker 23456 /control
 assert_owner_marker 23456 /data
@@ -357,4 +364,4 @@ printf '%s' "${library_page_response}" | grep -q '"nextOffset":null'
 invalid_page_status="$(curl --silent --output /dev/null --write-out '%{http_code}' -H "Authorization: Bearer ${token}" "http://127.0.0.1:${port}/v1/library?limit=1001")"
 test "${invalid_page_status}" = "400"
 
-echo "Companion fresh/pre-owned volume, UID rotation, no-new-privileges/capability, ASIN-log privacy, private-mode, ownership policy, no-symlink-follow, token, health, and bearer-auth smoke checks passed."
+echo "Companion fresh/pre-owned volume, UID rotation, no-new-privileges/capability, ASIN-log privacy, private-mode, ownership policy, no-symlink-follow, token, live --healthcheck probe, and bearer-auth smoke checks passed."
