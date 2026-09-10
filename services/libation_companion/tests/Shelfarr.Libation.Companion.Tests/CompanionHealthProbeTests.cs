@@ -52,6 +52,28 @@ public sealed class CompanionHealthProbeTests
                 {
                     ["ASPNETCORE_HTTP_PORTS"] = "8181"
                 }));
+        Assert.Equal(
+            new Uri("http://127.0.0.2:8282/health"),
+            CompanionHealthProbe.ResolveHealthUri(
+                environment: new Dictionary<string, string?>
+                {
+                    ["ASPNETCORE_URLS"] = "http://127.0.0.2:8282"
+                }));
+        Assert.Equal(
+            new Uri("http://[::1]:9090/health"),
+            CompanionHealthProbe.ResolveHealthUri(
+                environment: new Dictionary<string, string?>
+                {
+                    ["ASPNETCORE_URLS"] = "http://[::1]:9090"
+                }));
+        Assert.Equal(
+            new Uri("http://127.0.0.1:8282/health"),
+            CompanionHealthProbe.ResolveHealthUri(
+                environment: new Dictionary<string, string?>
+                {
+                    ["ASPNETCORE_URLS"] = "http://0.0.0.0:8080",
+                    ["DOTNET_URLS"] = "http://0.0.0.0:8282"
+                }));
     }
 
     [Theory]
@@ -104,6 +126,38 @@ public sealed class CompanionHealthProbeTests
                 environment: new Dictionary<string, string?>
                 {
                     ["ASPNETCORE_URLS"] = $"http://0.0.0.0:{port}"
+                },
+                cancellationToken: timeout.Token);
+
+            Assert.Equal(0, exit);
+            Assert.True(listener.Server.IsBound);
+            await serve.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task ProbesAnExplicitLoopbackBindAddressWithoutRewritingIt()
+    {
+        var address = IPAddress.Parse("127.0.0.2");
+        var listener = new TcpListener(address, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var serve = ServeJsonHealthAsync(
+                listener,
+                """{"status":"ok","libraryReady":false}""",
+                timeout.Token);
+
+            var exit = await CompanionHealthProbe.RunAsync(
+                environment: new Dictionary<string, string?>
+                {
+                    ["ASPNETCORE_URLS"] = $"http://127.0.0.2:{port}"
                 },
                 cancellationToken: timeout.Token);
 

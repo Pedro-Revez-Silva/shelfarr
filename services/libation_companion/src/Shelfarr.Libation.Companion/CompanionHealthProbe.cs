@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 
 namespace Shelfarr.Libation.Companion;
@@ -90,8 +91,10 @@ public static class CompanionHealthProbe
             return true;
         }
 
-        var fromEnvironment = ReadVariable(environment, "ASPNETCORE_URLS")
-            ?? ReadVariable(environment, "DOTNET_URLS");
+        // WebApplication.CreateBuilder treats DOTNET_URLS as the urls host
+        // setting and lets it override the image's ASPNETCORE_URLS=8080.
+        var fromEnvironment = ReadVariable(environment, "DOTNET_URLS")
+            ?? ReadVariable(environment, "ASPNETCORE_URLS");
         if (!string.IsNullOrWhiteSpace(fromEnvironment))
         {
             urls = fromEnvironment;
@@ -131,7 +134,7 @@ public static class CompanionHealthProbe
     {
         foreach (var candidate in urls.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (TryCreateLoopbackHealthUri(candidate, out healthUri))
+            if (TryCreateHealthUri(candidate, out healthUri))
                 return true;
         }
 
@@ -139,7 +142,7 @@ public static class CompanionHealthProbe
         return false;
     }
 
-    private static bool TryCreateLoopbackHealthUri(string binding, out Uri healthUri)
+    private static bool TryCreateHealthUri(string binding, out Uri healthUri)
     {
         healthUri = DefaultHealthUri;
         var normalized = NormalizeKestrelBinding(binding);
@@ -151,8 +154,26 @@ public static class CompanionHealthProbe
         if (port is < 1 or > 65535)
             return false;
 
-        healthUri = LoopbackHealthUri(port, ipv6: parsed.HostNameType == UriHostNameType.IPv6);
+        healthUri = CreateHealthUri(parsed.IdnHost, port);
         return true;
+    }
+
+    private static Uri CreateHealthUri(string host, int port)
+    {
+        if (IPAddress.TryParse(host, out var address))
+        {
+            if (address.Equals(IPAddress.Any))
+                return LoopbackHealthUri(port, ipv6: false);
+            if (address.Equals(IPAddress.IPv6Any))
+                return LoopbackHealthUri(port, ipv6: true);
+
+            var formatted = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+                ? $"[{address}]"
+                : address.ToString();
+            return new Uri($"http://{formatted}:{port}/health");
+        }
+
+        return LoopbackHealthUri(port, ipv6: false);
     }
 
     private static string NormalizeKestrelBinding(string binding)
