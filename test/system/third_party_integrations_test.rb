@@ -148,6 +148,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
   end
 
   test "Turbo visit confirms deliberate unsaved credential changes" do
+    SettingsService.set(:library_platform, "bookorbit")
     sign_in_as(@admin)
     visit admin_settings_path
     click_button "Integrations"
@@ -169,6 +170,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
   end
 
   test "history navigation confirms deliberate unsaved credential changes" do
+    SettingsService.set(:library_platform, "bookorbit")
     sign_in_as(@admin)
     visit admin_root_path
     click_link "Settings"
@@ -241,6 +243,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
   end
 
   test "settings autosave ignores autofilled credentials and preserves the live form" do
+    SettingsService.set(:library_platform, "bookorbit")
     sign_in_as(@admin)
     visit admin_settings_path
     click_button "Integrations"
@@ -276,7 +279,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     fill_in "Max Retries", with: "22"
     find("h1", text: "Settings").click
 
-    assert_selector "[data-settings-form-target='status'].hidden", visible: :all
+    assert_selector "[data-settings-form-target='status']", text: "Saved."
     assert_no_text "Settings updated successfully."
     assert_equal 22, SettingsService.get(:max_retries)
     assert_equal 2, SettingsService.get(:rate_limit_delay)
@@ -337,7 +340,49 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     assert_equal "https://prowlarr.example.com", SettingsService.get(:prowlarr_url)
   end
 
+  test "inactive credential drafts do not block unrelated autosaves" do
+    SettingsService.set(:library_platform, "bookorbit")
+    sign_in_as(@admin)
+    visit admin_settings_path
+    click_button "Integrations"
+
+    fill_in "BookOrbit Password", with: "inactive-password-draft"
+    select "Audiobookshelf", from: "Active Library Platform"
+    click_button "Queue & System"
+    fill_in "Max Retries", with: "23"
+    find("h1", text: "Settings").click
+
+    assert_selector "form[data-settings-form-target='form']:not([inert])[aria-busy='false']", visible: :all
+    assert_text "Unsaved changes. Click Save All."
+    assert_equal 23, SettingsService.get(:max_retries)
+    assert_equal "", SettingsService.get(:bookorbit_password)
+    assert_no_text "Invalid manual setting manifest"
+
+    click_button "Save All"
+    assert_text "Settings updated successfully."
+    assert_equal "audiobookshelf", SettingsService.get(:library_platform)
+    assert_text "Unsaved provider drafts. Switch providers to save them."
+
+    fill_in "Max Retries", with: "24"
+    find("h1", text: "Settings").click
+    assert_selector "form[data-settings-form-target='form']:not([inert])[aria-busy='false']", visible: :all
+    assert_text "Unsaved provider drafts. Switch providers to save them."
+    assert_equal 24, SettingsService.get(:max_retries)
+    assert_equal "", SettingsService.get(:bookorbit_password)
+    assert_no_text "Invalid manual setting manifest"
+
+    click_button "Integrations"
+    select "BookOrbit", from: "Active Library Platform"
+    assert_field "BookOrbit Password", with: "inactive-password-draft"
+    click_button "Save All"
+
+    assert_selector "[data-settings-form-target='status']", text: "Saved."
+    assert_equal "inactive-password-draft", SettingsService.get(:bookorbit_password)
+    assert_field "BookOrbit Password", with: ""
+  end
+
   test "settings form blocks overlapping edits while an autosave is in flight" do
+    SettingsService.set(:library_platform, "bookorbit")
     sign_in_as(@admin)
     visit admin_settings_path
     click_button "Integrations"
@@ -402,6 +447,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
   test "in-form connection test waits for pending autosave" do
     sign_in_as(@admin)
     visit admin_settings_path
+    find("summary", text: "eBooks.com Store (Beta)").click
     click_button "Queue & System"
 
     page.execute_script <<~JAVASCRIPT
@@ -470,6 +516,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     page.execute_script("window.releaseSettingsAutosave()")
 
     assert_text "Open Library is not enabled."
+    assert_selector "[data-settings-form-target='status'].hidden", visible: :all
     assert_equal 30, SettingsService.get(:max_retries)
     assert_equal [
       "/admin/settings/bulk_update",
@@ -504,12 +551,13 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     fill_in "Rate Limit Delay", with: "4"
     find("h1", text: "Settings").click
 
-    assert_selector "[data-settings-form-target='status'].hidden", visible: :all
+    assert_selector "[data-settings-form-target='status']", text: "Saved."
     assert_equal 27, SettingsService.get(:max_retries)
     assert_equal 4, SettingsService.get(:rate_limit_delay)
   end
 
   test "failed explicit save keeps drafts and retries the full form" do
+    SettingsService.set(:library_platform, "bookorbit")
     sign_in_as(@admin)
     visit admin_settings_path
     click_button "Queue & System"
@@ -550,6 +598,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
   end
 
   test "invalid explicit save is atomic and preserves the live form" do
+    SettingsService.set(:library_platform, "bookorbit")
     sign_in_as(@admin)
     visit admin_settings_path
     click_button "Downloads"
@@ -578,6 +627,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
   test "validation failure retries rejected dependencies after correction" do
     sign_in_as(@admin)
     visit admin_settings_path
+    find("summary", text: "eBooks.com Store (Beta)").click
 
     check "Show DRM-free eBooks.com Offers"
 
@@ -588,7 +638,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     fill_in "Buyer Country Code", with: "US"
     find("h1", text: "Settings").click
 
-    assert_selector "[data-settings-form-target='status'].hidden", visible: :all
+    assert_selector "[data-settings-form-target='status']", text: "Saved."
     assert SettingsService.get(:ebooks_com_enabled)
     assert_equal "US", SettingsService.get(:ebooks_com_country_code)
   end
@@ -596,6 +646,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
   test "failed autosave cancels deferred navigation until correction" do
     sign_in_as(@admin)
     visit admin_settings_path
+    find("summary", text: "eBooks.com Store (Beta)").click
 
     check "Show DRM-free eBooks.com Offers"
     click_link "Admin", match: :first
@@ -606,7 +657,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
 
     fill_in "Buyer Country Code", with: "US"
     find("h1", text: "Settings").click
-    assert_selector "[data-settings-form-target='status'].hidden", visible: :all
+    assert_selector "[data-settings-form-target='status']", text: "Saved."
     assert SettingsService.get(:ebooks_com_enabled)
 
     click_link "Admin", match: :first

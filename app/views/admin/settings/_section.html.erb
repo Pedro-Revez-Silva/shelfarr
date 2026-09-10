@@ -1,0 +1,35 @@
+<% collapsible = Admin::SettingsHelper::COLLAPSIBLE_SETTINGS_SOURCES.include?(category) %>
+<% enabled = settings.dig("#{category}_enabled".to_sym, :value).to_s.in?(%w[true 1]) %>
+<% advanced = category == "download" ? settings.slice(*Admin::SettingsHelper::ADVANCED_DOWNLOAD_SETTINGS) : {} %>
+<% basic = settings.except(*advanced.keys) %>
+<% section_tag = collapsible ? :details : :div %>
+<%= content_tag section_tag, class: "bg-gray-900 rounded-lg border border-gray-800", open: collapsible && enabled ? true : nil, data: collapsible ? { settings_form_target: "sourceSection", enabled_key: "#{category}_enabled" } : {} do %>
+  <%= content_tag(collapsible ? :summary : :div, class: "px-6 py-4 border-b border-gray-800 #{'cursor-pointer' if collapsible}") do %>
+    <h2 class="inline font-bold text-xl text-white"><%= SettingsService::CATEGORIES[category] || category.titleize %></h2>
+    <% if collapsible %>
+      <span class="ml-2 text-sm text-gray-400" data-source-status><%= enabled ? "Enabled" : "Disabled · Configure" %></span>
+    <% end %>
+  <% end %>
+  <div class="p-6 space-y-6">
+    <% basic.each do |key, data| %>
+      <%= render "admin/settings/setting_field", form: form, key: key, data: data %>
+    <% end %>
+    <% if category == "paths" %>
+      <details class="rounded-md border border-gray-700 p-4 text-sm text-gray-300">
+        <summary class="cursor-pointer font-medium text-white">Path template variables</summary>
+        <p class="mt-3 break-words">Use {author}, {authorSort}, {title}, {titleSort}, {year}, {publisher}, {language}, {series}, {seriesSort}, {seriesNum:00}, and {narrator}. Optional suffix text is supported inside braces, such as {series/} or {series - }.</p>
+      </details>
+    <% end %>
+    <% if advanced.any? %>
+      <details class="rounded-md border border-gray-700 p-4">
+        <summary class="cursor-pointer font-medium text-gray-200">Advanced download settings</summary>
+        <div class="mt-6 space-y-6">
+          <% advanced.each do |key, data| %>
+            <%= render "admin/settings/setting_field", form: form, key: key, data: data %>
+          <% end %>
+        </div>
+      </details>
+    <% end %>
+    <%= render "admin/settings/section_actions", form: form, category: category %>
+  </div>
+<% end %>

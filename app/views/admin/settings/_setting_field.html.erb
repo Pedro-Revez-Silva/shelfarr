@@ -1,0 +1,154 @@
+<div class="flex flex-col md:flex-row md:items-start gap-4" data-library-provider="<%= Admin::SettingsHelper::LIBRARY_CREDENTIAL_PROVIDERS[key.to_s] %>">
+  <div class="md:w-1/3">
+    <label for="settings_<%= key %>" class="font-medium text-gray-300"><%= SettingsService.label_for(key) %></label>
+    <p class="text-sm text-gray-400"><%= settings_field_description(key, data) %></p>
+    <% unless data[:env_managed] %>
+      <p class="mt-1 text-xs text-gray-400"><%= settings_field_save_hint(key) %></p>
+    <% end %>
+  </div>
+  <div class="md:w-2/3">
+    <% if data[:env_managed] %>
+      <%= render "admin/settings/env_managed_field", key: key, data: data %>
+    <% elsif key.to_s == "preferred_download_types" %>
+      <%= render "admin/settings/download_type_preferences_field", form: form, key: key, ordered_types: SettingsService.preferred_download_types %>
+    <% else %>
+    <% case data[:definition][:type] %>
+    <% when "boolean" %>
+      <% if key.to_s == "auth_disabled" %>
+        <label class="inline-flex items-center gap-2 cursor-pointer">
+          <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: { action: "change->settings-form#handleAuthDisabledToggle" } }, "true", "false" %>
+        </label>
+        <p class="mt-2 text-sm text-yellow-500">Warning: This removes password and 2FA authentication. Confirm carefully.</p>
+      <% else %>
+      <label class="inline-flex items-center cursor-pointer">
+        <% boolean_data = SettingsService.manual_save_setting_key?(key) ? { settings_form_manual_save: true } : { action: "change->settings-form#autoSave" } %>
+        <%= form.check_box "settings[#{key}]", { checked: data[:value] == true || data[:value] == "true", id: "settings_#{key}", class: "w-5 h-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-2", data: boolean_data }, "true", "false" %>
+      </label>
+      <% if key.to_s == "allow_nonatomic_nfs_directory_publication" %>
+        <p class="mt-2 text-sm text-red-400">Safety override: use only on an NFS export with no other writer. Save All is required to apply this change.</p>
+      <% end %>
+      <% if key.to_s == "precreate_download_archives" %>
+        <p class="mt-2 text-sm text-yellow-500">Cached archives use tmp/downloads; reference-mode directory downloads use the container's OS temp directory instead. Leave this off to protect imports, and keep both locations disk-backed before downloading large books.</p>
+      <% end %>
+      <% end %>
+    <% when "integer" %>
+      <% integer_constraints = case key.to_s
+      when "ebooks_com_search_limit" then { min: 1, max: EbooksComClient::MAX_RESULTS }
+      when "health_check_interval" then { min: SettingsService::MIN_HEALTH_CHECK_INTERVAL }
+      else {}
+      end %>
+      <%= form.number_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" }, **integer_constraints %>
+    <% when "json" %>
+      <%= form.text_field "settings[#{key}]", value: data[:value].is_a?(Array) ? data[:value].join(', ') : data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+      <p class="mt-1 text-xs text-gray-500">For multiple values, use comma-separated format (e.g., en, fr, de)</p>
+    <% else %>
+      <% if key.to_s == "completed_download_import_mode" %>
+        <% import_mode_options = SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.map { |mode| [mode.titleize, mode] } %>
+        <%= form.select "settings[#{key}]", options_for_select(import_mode_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+        <div class="mt-2 space-y-1 text-xs text-gray-500">
+          <p><strong class="text-gray-400">Copy:</strong> Retains the source and uses extra disk space.</p>
+          <p><strong class="text-gray-400">Move:</strong> Removes the source and can stop torrent seeding.</p>
+          <p><strong class="text-gray-400">Hardlink:</strong> Retains the source without duplicate data; unsupported or cross-filesystem links fall back to copy.</p>
+          <p><strong class="text-gray-400">Reference:</strong> Creates a library symlink pointing at the download path (no byte copy). Intended for debrid/rclone mounts where hardlinks are impossible. Deleting the library entry removes only the symlink.</p>
+          <p>Hardlinked names share content, ownership, and permissions; edits through either name affect both. Reference links break if the download path is removed.</p>
+        </div>
+      <% elsif key.to_s == "library_platform" %>
+          <%= form.select "settings[#{key}]", options_for_select([["Audiobookshelf", "audiobookshelf"], ["BookOrbit", "bookorbit"], ["Grimmory", "grimmory"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 px-3 py-2", data: { settings_form_manual_save: true, settings_form_target: "libraryPlatform", action: "change->settings-form#toggleLibraryPlatform" } %>
+      <% elsif key.to_s.end_with?("_scan_library_ids") && @audiobookshelf_libraries.any? %>
+        <% selected_ids = data[:value].to_s.split(",").map(&:strip).reject(&:blank?) %>
+        <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
+        <% missing_selected_ids = selected_ids - @audiobookshelf_libraries.map(&:id) %>
+        <% missing_selected_ids.each do |missing_id| %>
+          <% library_options << ["#{missing_id} (Unavailable)", missing_id] %>
+        <% end %>
+        <%= form.select "settings[#{key}]", options_for_select(library_options, selected_ids), { include_blank: "Select libraries to scan for duplicates..." }, { id: "settings_#{key}", multiple: true, class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2 min-h-[80px]", data: { settings_form_manual_save: true } } %>
+        <p class="mt-1 text-xs text-gray-500">Additional libraries scanned for duplicate detection. Delivery still goes to the single library selected above.</p>
+      <% elsif key.to_s.end_with?("_scan_library_ids") %>
+        <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure library platform connection details first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
+        <p class="mt-1 text-xs text-yellow-500">Enter active platform connection details above to select from available libraries</p>
+      <% elsif key.to_s.end_with?("_library_id") && @audiobookshelf_libraries.any? %>
+        <% library_options = @audiobookshelf_libraries.map { |lib| ["#{lib.name} (#{lib.media_type})", lib.id] } %>
+        <% if data[:value].present? && !@audiobookshelf_libraries.any? { |lib| lib.id == data[:value] } %>
+          <% library_options << ["#{data[:value]} (Unavailable)", data[:value]] %>
+        <% end %>
+        <%= form.select "settings[#{key}]", options_for_select([["Select a library...", ""]] + library_options, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
+      <% elsif key.to_s.end_with?("_library_id") %>
+        <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", placeholder: "Configure library platform connection details first", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
+        <p class="mt-1 text-xs text-yellow-500">Enter active platform connection details above to select from available libraries</p>
+      <% elsif key.to_s == "oidc_default_role" %>
+        <%= form.select "settings[#{key}]", options_for_select([["User", "user"], ["Admin", "admin"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
+      <% elsif key.to_s == "metadata_source" %>
+        <%= form.select "settings[#{key}]", options_for_select([["Auto", "auto"], ["Hardcover", "hardcover"], ["Google Books", "google_books"], ["Open Library", "openlibrary"], ["Comic Vine", "comic_vine"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+      <% elsif key.to_s == "telegram_update_mode" %>
+        <%= form.select "settings[#{key}]", options_for_select([["Polling", "polling"], ["Webhook", "webhook"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
+      <% elsif key.to_s == "discord_webhook_url" %>
+        <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "https://discord.com/api/webhooks/...", id: "settings_#{key}", autocomplete: "new-password", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
+      <% elsif %w[anna_archive_url zlibrary_url].include?(key.to_s) %>
+        <% url_list_urls = data[:value].to_s.split(/[,\s]+/).map(&:strip).reject(&:blank?).uniq %>
+        <% url_list_name = key.to_s == "zlibrary_url" ? "Z-Library" : "Anna's Archive" %>
+        <% url_list_placeholder = key.to_s == "zlibrary_url" ? "https://z-library.example" : "https://annas-archive.example" %>
+        <div class="space-y-3"
+             data-url-list
+             data-url-list-label="<%= url_list_name %>">
+          <%= form.hidden_field "settings[#{key}]",
+              value: url_list_urls.join("\n"),
+              id: "settings_#{key}",
+              data: {
+                url_list_field: true,
+                settings_form_manual_save: true
+              } %>
+          <div class="flex flex-wrap gap-2" data-url-list-list>
+            <% url_list_urls.each do |url| %>
+              <span class="inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-800 px-3 py-1 text-sm text-gray-200"
+                    data-url-list-value="<%= url %>">
+                <span class="break-all"><%= url %></span>
+                <button type="button"
+                        class="rounded-full p-1 text-gray-400 transition hover:bg-gray-700 hover:text-white"
+                        data-action="click->settings-form#removeUrl"
+                        data-url-list-value="<%= url %>"
+                        aria-label="Remove <%= url %>">
+                  <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </span>
+            <% end %>
+          </div>
+          <div class="flex flex-col gap-2 sm:flex-row">
+            <input type="url"
+                   placeholder="<%= url_list_placeholder %>"
+                   class="min-w-0 flex-grow rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                   data-url-list-input
+                   data-action="keydown->settings-form#handleUrlKeydown">
+            <button type="button"
+                    class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-blue-600 text-white transition hover:bg-blue-500"
+                    data-action="click->settings-form#addUrl"
+                    aria-label="Add <%= url_list_name %> URL">
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
+          </div>
+          <p class="hidden text-xs text-red-400" data-url-list-error></p>
+        </div>
+      <% elsif key.to_s == "ebooks_com_country_code" %>
+        <%= form.text_field "settings[#{key}]",
+            value: data[:value],
+            id: "settings_#{key}",
+            maxlength: 2,
+            pattern: "[A-Za-z]{2}",
+            autocapitalize: "characters",
+            spellcheck: false,
+            class: "w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 uppercase text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500",
+            data: { action: "change->settings-form#autoSave" } %>
+      <% elsif SettingsService.manual_save_setting_key?(key) && !SettingsService.secret_setting_key?(key) %>
+        <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", autocomplete: "off", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
+      <% elsif SettingsService.secret_setting_key?(key) %>
+        <%= form.password_field "settings[#{key}]", value: "", placeholder: data[:value].present? ? "********" : "", id: "settings_#{key}", autocomplete: "new-password", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
+      <% else %>
+        <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+      <% end %>
+    <% end %>
+    <% end %>
+  </div>
+</div>

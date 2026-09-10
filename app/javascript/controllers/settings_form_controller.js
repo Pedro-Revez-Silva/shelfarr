@@ -1,6 +1,8 @@
 import { Controller } from "@hotwired/stimulus";
 
 export default class extends Controller {
+  static values = { libraryPlatform: String };
+
   static targets = [
     "form",
     "status",
@@ -10,7 +12,12 @@ export default class extends Controller {
     "indexerProvider",
     "prowlarrFields",
     "jackettFields",
-    "newznabFields"
+    "newznabFields",
+    "libraryPlatform",
+    "indexerScope",
+    "customCategories",
+    "indexerTestAction",
+    "indexerTestHint"
   ];
 
   connect() {
@@ -18,6 +25,7 @@ export default class extends Controller {
     this.pendingSettingKeys = new Set();
     this.inFlightSettingKeys = new Set();
     this.explicitInFlightSettingKeys = new Set();
+    this.explicitSubmittedSettingKeys = new Set();
     this.autosaveInFlight = false;
     this.explicitSubmitInFlight = false;
     this.manualChangesPending = false;
@@ -49,6 +57,8 @@ export default class extends Controller {
     window.settingsNavigationGuard = this.boundHandlePopState;
 
     this.toggleIndexerProvider();
+    this.toggleIndexerScope();
+    this.toggleLibraryPlatform();
   }
 
   disconnect() {
@@ -160,6 +170,7 @@ export default class extends Controller {
     this.pendingSettingKeys.clear();
     this.saveTimeout = null;
     this.autosaveInFlight = true;
+    this.syncManualSettingManifest();
     this.formTarget.requestSubmit(this.autosaveSubmitTarget);
     this.setFormBusy(true);
   }
@@ -186,10 +197,7 @@ export default class extends Controller {
 
     this.clearSaveTimeout();
     if (saveAll && this.hasManualKeysTarget) {
-      const submittedKeys = new Set(
-        [...new FormData(this.formTarget).keys()].map((name) => this.settingKey(name)).filter(Boolean)
-      );
-      this.manualKeysTarget.value = [...this.manualSettingKeys].filter((key) => submittedKeys.has(key)).join(",");
+      this.explicitSubmittedSettingKeys = this.syncManualSettingManifest();
     }
     this.explicitInFlightSettingKeys = saveAll ? new Set(this.pendingSettingKeys) : new Set();
     if (saveAll) {
@@ -243,9 +251,10 @@ export default class extends Controller {
         return;
       }
       if (submitter?.name === "commit") {
-        this.discardManualChanges();
-        this.clearSecretFields();
+        this.discardManualChanges(this.explicitSubmittedSettingKeys);
+        this.clearSecretFields(this.explicitSubmittedSettingKeys);
       }
+      this.explicitSubmittedSettingKeys.clear();
       if (this.pendingSettingKeys.size > 0) {
         this.submitForm();
         return;
@@ -254,7 +263,7 @@ export default class extends Controller {
     }
 
     this.setFormBusy(false);
-    this.finishStatus();
+    this.finishStatus(submitter === this.autosaveSubmitTarget || submitter?.name === "commit");
   }
 
   handleActionClick(event) {
@@ -317,6 +326,10 @@ export default class extends Controller {
   }
 
   handleManualChange(event) {
+    const sourceSection = event.target.closest("[data-settings-form-target~='sourceSection']");
+    if (sourceSection && this.settingKey(event.target.name) === sourceSection.dataset.enabledKey && event.target.type === "checkbox") {
+      sourceSection.querySelector("[data-source-status]").textContent = event.target.checked ? "Enabled" : "Disabled · Configure";
+    }
     if (!event.target.matches("[data-settings-form-manual-save]")) return;
     if (!event.target.matches('select, input[type="checkbox"], input[type="radio"], input[type="hidden"]')) return;
 
@@ -404,6 +417,7 @@ export default class extends Controller {
     this.pendingSettingKeys.clear();
     this.autosaveInFlight = true;
     this.setFormBusy(true);
+    this.syncManualSettingManifest();
 
     try {
       const response = await window.fetch(this.formTarget.action, {
@@ -508,23 +522,37 @@ export default class extends Controller {
     this.showStatus("Unsaved changes. Click Save All.");
   }
 
-  discardManualChanges() {
-    this.manualSettingKeys.clear();
-    this.manualChangesPending = false;
-    if (this.hasManualKeysTarget) this.manualKeysTarget.value = "";
+  discardManualChanges(keys = this.manualSettingKeys) {
+    keys.forEach((key) => this.manualSettingKeys.delete(key));
+    this.manualChangesPending = this.manualSettingKeys.size > 0;
+    if (this.hasManualKeysTarget) this.manualKeysTarget.value = [...this.manualSettingKeys].join(",");
   }
 
-  finishStatus() {
+  syncManualSettingManifest() {
+    const submittedKeys = new Set(
+      [...new FormData(this.formTarget).keys()].map((name) => this.settingKey(name)).filter(Boolean)
+    );
+    if (this.hasManualKeysTarget) {
+      this.manualKeysTarget.value = [...this.manualSettingKeys].filter((key) => submittedKeys.has(key)).join(",");
+    }
+    return submittedKeys;
+  }
+
+  finishStatus(saved = true) {
     if (this.manualChangesPending) {
-      this.showStatus("Unsaved changes. Click Save All.");
+      const submittedKeys = this.syncManualSettingManifest();
+      const activeDrafts = [...this.manualSettingKeys].some((key) => submittedKeys.has(key));
+      this.showStatus(activeDrafts ? "Unsaved changes. Click Save All." : "Unsaved provider drafts. Switch providers to save them.");
+    } else if (saved) {
+      this.showStatus("Saved.");
     } else {
       this.hideStatus();
     }
   }
 
-  clearSecretFields() {
+  clearSecretFields(keys) {
     this.formTarget.querySelectorAll('input[type="password"]').forEach((field) => {
-      field.value = "";
+      if (keys.has(this.settingKey(field.name))) field.value = "";
     });
   }
 
@@ -597,12 +625,30 @@ export default class extends Controller {
     if (this.hasNewznabFieldsTarget) {
       this.toggleProviderFields(this.newznabFieldsTarget, provider === "newznab");
     }
+    if (this.hasIndexerTestActionTarget) this.indexerTestActionTarget.classList.toggle("hidden", provider === "none");
+    if (this.hasIndexerTestHintTarget) this.indexerTestHintTarget.classList.toggle("hidden", provider !== "none");
+  }
+
+  toggleIndexerScope() {
+    if (!this.hasIndexerScopeTarget || !this.hasCustomCategoriesTarget) return;
+
+    // Category preferences autosave independently. Keep their controls enabled
+    // so a pending edit can finish even if the scope is changed before saving.
+    this.customCategoriesTarget.classList.toggle("hidden", this.indexerScopeTarget.value !== "custom");
+  }
+
+  toggleLibraryPlatform() {
+    const platform = this.hasLibraryPlatformTarget ? this.libraryPlatformTarget.value : this.libraryPlatformValue;
+    this.element.querySelectorAll("[data-library-provider]").forEach((container) => {
+      if (container.dataset.libraryProvider) this.toggleProviderFields(container, container.dataset.libraryProvider === platform);
+    });
   }
 
   toggleProviderFields(container, active) {
     container.classList.toggle("hidden", !active);
-    container.querySelectorAll('input[type="url"]').forEach((input) => {
-      input.disabled = !active;
+    container.querySelectorAll("input, select, textarea, button").forEach((input) => {
+      if (input.dataset.settingsInitiallyDisabled === undefined) input.dataset.settingsInitiallyDisabled = String(input.disabled);
+      input.disabled = !active || input.dataset.settingsInitiallyDisabled === "true";
     });
   }
 
