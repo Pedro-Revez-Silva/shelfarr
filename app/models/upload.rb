@@ -24,6 +24,7 @@ class Upload < ApplicationRecord
   validates :status, presence: true
 
   before_destroy :prevent_unsafe_destruction
+  before_destroy :prune_manual_match_before_destroy
   before_destroy :remove_unprocessed_file
 
   scope :recent, -> { order(created_at: :desc) }
@@ -93,6 +94,44 @@ class Upload < ApplicationRecord
     ].any? { |attribute| public_send(attribute).present? }
   end
 
+  def manual_match_available?
+    failed? && request_id.nil? && !recovery_state? &&
+      !OwnedMediaImport.exists?(upload_id: id)
+  end
+
+  # Choose only before publication has reserved a destination. Retries with
+  # recovery state must reconcile that destination using the original Book.
+  def match_and_retry!(book_id: nil, title: nil, author: nil)
+    with_lock do
+      errors.clear
+      unless manual_match_available?
+        errors.add(:base, "Only failed standalone uploads without reserved files can be matched. Use Retry to reconcile a reserved file.")
+        raise ActiveRecord::RecordInvalid.new(self)
+      end
+
+      previous_owned_book_id = self.book_id if manual_match? && manual_match_created_book?
+      selected_book = if book_id.present?
+        Book.lock.find(book_id)
+      else
+        Book.new(title: title.to_s.strip, author: author.to_s.strip.presence,
+          book_type: infer_book_type, content_kind: comicbook_file? ? :graphic : :book)
+      end
+
+      if selected_book.book_type != infer_book_type.to_s
+        errors.add(:base, "Choose a book with the same format as this upload.")
+      elsif selected_book.acquisition_blocked?
+        errors.add(:base, "This book already has a library file or an acquisition in progress. Choose another book.")
+      end
+      raise ActiveRecord::RecordInvalid.new(self) if errors.any?
+
+      owns_selected_book = selected_book.new_record? || previous_owned_book_id == selected_book.id
+      selected_book.save! if selected_book.new_record?
+      update!(book: selected_book, book_type: infer_book_type, manual_match: true,
+        manual_match_created_book: owns_selected_book, status: :pending, error_message: nil)
+      prune_abandoned_manual_book(previous_owned_book_id) if previous_owned_book_id != selected_book.id
+    end
+  end
+
   def destruction_blocked?
     return false if completed?
     return true if processing? || recovery_state?
@@ -111,6 +150,34 @@ class Upload < ApplicationRecord
       "This upload is processing or owns recovery state and cannot be deleted safely"
     )
     throw :abort
+  end
+
+  def prune_manual_match_before_destroy
+    return unless (failed? || pending?) && manual_match? && manual_match_created_book?
+
+    # Prune metadata before unlinking ingress. A database error must not roll
+    # back the upload deletion after its source bytes have already been removed.
+    prune_abandoned_manual_book(book_id, excluding_upload_id: id)
+  end
+
+  def prune_abandoned_manual_book(book_id, excluding_upload_id: nil)
+    return if book_id.nil?
+
+    Book.transaction do
+      candidate = Book.lock.find_by(id: book_id)
+      next unless candidate
+      next if candidate.acquisition_blocked?
+      next if candidate.requests.exists? || candidate.owned_library_items.exists?
+      next if OwnedMediaImport.exists?(created_book_id: candidate.id)
+      next if candidate.owned_media_recovery_pending? || candidate.post_processing_recovery_pending?
+
+      remaining_uploads = candidate.uploads
+      remaining_uploads = remaining_uploads.where.not(id: excluding_upload_id) if excluding_upload_id
+      next if remaining_uploads.exists?
+
+      # Book's own destruction guards may still conservatively retain it.
+      candidate.destroy
+    end
   end
 
   def remove_unprocessed_file

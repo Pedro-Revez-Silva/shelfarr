@@ -42,7 +42,7 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 - **Auto-Selection & Format Preferences** — Pick the best release automatically, scored by your preferred formats, bitrate and language
 - **Auto-Processing** — Rename and organize files with path/filename templates, then deliver to Audiobookshelf, BookOrbit or Grimmory watched folders
 - **Library Sync** — Automatic Audiobookshelf, BookOrbit or Grimmory scans after downloads complete
-- **Manual Uploads** — Upload your own files to fulfill a request
+- **Manual Uploads** — Upload your own files to fulfill a request, or add them directly to the library. For a failed standalone upload, administrators can open **Admin → Uploads → Upload Details** to select a local book of the same format or create one with corrected title/author, then retry. That choice is preserved across retries and bypasses automatic metadata matching. Uploads attached to requests or Audible imports cannot be reassigned here; uploads with reserved library files must use **Retry** to reconcile their existing destination first.
 - **Multi-User** — Role-based access with user requests and admin controls
 - **Authentication** — TOTP-based 2FA with backup codes, plus OIDC/SSO (Authentik, Authelia, Keycloak, etc.)
 - **Notifications** — In-app, Discord, Telegram and webhook notifications for request events
@@ -51,6 +51,10 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 - **Custom Acquisition Providers** — Trusted HTTP providers can contribute search results and resolve selected items into direct, torrent or usenet artifacts
 - **Third-Party Store Offers (Beta)** — Surface legitimate DRM-free editions from supported sellers without handling checkout or payment data
 - **Audible Backup (Beta)** — Sync purchased Audible titles, explicitly queue a one-time backup of eligible existing purchases, optionally back up future purchases automatically, and import them through the separately packaged Libation companion
+
+Books created solely for a failed upload are kept for retries. Replacing the match or deleting the unfinished upload removes that creation only if it is still unused and unacquired; existing or adopted books are preserved.
+
+Manual upload recovery screenshots: [Desktop](docs/screenshot-upload-recovery.jpg) · [Mobile](docs/screenshot-upload-recovery-mobile.jpg).
 
 ### Beta integrations
 

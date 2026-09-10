@@ -42,6 +42,205 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(@temp_ebook_dest) if @temp_ebook_dest
   end
 
+  test "manual match publishes to the chosen book without automatic matching or enrichment" do
+    wrong_book = Book.create!(title: "Mistborn", author: "Brandon Sanderson", book_type: :audiobook)
+    selected_book = Book.create!(title: "Corrected title", author: "Corrected author", book_type: :audiobook,
+      description: "Keep this description", hardcover_id: "chosen-identity")
+    @upload.update!(status: :failed)
+    @upload.match_and_retry!(book_id: selected_book.id)
+    job = UploadProcessingJob.new
+
+    job.stub(:fetch_metadata, ->(*) { flunk "A manual choice must not query external metadata" }) do
+      job.stub(:destination_book_for_metadata, ->(*) { flunk "A manual choice must not be rematched" }) do
+        assert_no_difference "Book.count" do
+          job.perform(@upload.id)
+        end
+      end
+    end
+
+    assert @upload.reload.completed?, @upload.error_message
+    assert @upload.manual_match?
+    assert_equal selected_book, @upload.book
+    assert_equal "Mistborn", @upload.parsed_title
+    assert_equal "Corrected title", selected_book.reload.title
+    assert_equal "Corrected author", selected_book.author
+    assert_equal "Keep this description", selected_book.description
+    assert_equal "chosen-identity", selected_book.hardcover_id
+    assert_equal "test audio content", File.binread(@upload.destination_path)
+    assert_equal File.join(@temp_audiobook_dest, "Corrected author", "Corrected title"), selected_book.file_path
+    assert_nil selected_book.acquisition_reservation_token
+    assert_nil wrong_book.reload.file_path
+  end
+
+  test "manual choice survives publication rollback and a later retry" do
+    @upload.update!(status: :failed)
+    @upload.match_and_retry!(title: "Corrected title", author: "Corrected author")
+    selected_book = @upload.book
+    published_path = nil
+    observed_reservation = false
+    job = UploadProcessingJob.new
+    job.define_singleton_method(:claim_book_file_path!) do |book, _destination, current_upload|
+      published_path = current_upload.reload.destination_path
+      observed_reservation = current_upload.book_reservation_token.present? &&
+        book.reload.acquisition_reservation_token == current_upload.book_reservation_token
+      raise "Database completion interrupted"
+    end
+
+    job.perform(@upload.id)
+
+    assert observed_reservation
+    assert @upload.reload.failed?
+    assert @upload.manual_match?
+    assert @upload.manual_match_created_book?
+    assert_equal selected_book, @upload.book
+    assert_not File.exist?(published_path)
+    assert_equal "test audio content", File.binread(@test_file)
+    assert_not @upload.recovery_state?
+    assert_nil selected_book.reload.acquisition_reservation_token
+    assert_nil selected_book.file_path
+
+    @upload.update!(status: :pending, error_message: nil)
+    UploadProcessingJob.perform_now(@upload.id)
+
+    assert @upload.reload.completed?, @upload.error_message
+    assert_equal selected_book, @upload.book
+    assert_equal "test audio content", File.binread(@upload.destination_path)
+  end
+
+  test "manual creation imports a different volume without changing an acquired sibling" do
+    sibling_file = File.join(@temp_source, "acquired-sibling.m4b")
+    File.binwrite(sibling_file, "acquired sibling content")
+    sibling = Book.create!(title: "Mistborn", author: "Brandon Sanderson", book_type: :audiobook, file_path: sibling_file)
+    @upload.update!(status: :failed)
+    @upload.match_and_retry!(title: "The Well of Ascension", author: sibling.author)
+    selected = @upload.book
+
+    UploadProcessingJob.perform_now(@upload.id)
+
+    assert @upload.reload.completed?, @upload.error_message
+    assert_equal selected, @upload.book
+    assert_equal "The Well of Ascension", selected.reload.title
+    assert_equal sibling_file, sibling.reload.file_path
+    assert_equal "acquired sibling content", File.binread(sibling_file)
+    assert_equal "test audio content", File.binread(@upload.destination_path)
+  end
+
+  test "manual audiobook choice does not bypass ZIP path validation" do
+    zip_file = File.join(@temp_source, "Unsafe archive.zip")
+    build_zip_archive(zip_file, "../escape.mp3" => "untrusted audio")
+    @upload.update!(status: :failed, original_filename: File.basename(zip_file), file_path: zip_file, file_size: File.size(zip_file))
+    @upload.match_and_retry!(title: "Chosen ZIP")
+    book = @upload.book
+
+    UploadProcessingJob.perform_now(@upload.id)
+
+    assert @upload.reload.failed?
+    assert_includes @upload.error_message, "unsafe path"
+    assert_equal book, @upload.book
+    assert @upload.manual_match?
+    assert_nil book.reload.file_path
+    assert_nil book.acquisition_reservation_token
+    assert File.exist?(zip_file)
+    assert_not File.exist?(File.join(@temp_audiobook_dest, "escape.mp3"))
+  end
+
+  test "manual match cannot overwrite a book acquired after selection" do
+    @upload.update!(status: :failed)
+    @upload.match_and_retry!(title: "Chosen book", author: "Chosen author")
+    book = @upload.book
+    existing_file = File.join(@temp_source, "existing.m4b")
+    File.binwrite(existing_file, "existing library content")
+    book.update!(file_path: existing_file)
+
+    UploadProcessingJob.perform_now(@upload.id)
+
+    assert @upload.reload.failed?
+    assert_match(/already claimed/, @upload.error_message)
+    assert_equal book, @upload.book
+    assert @upload.manual_match?
+    assert_nil @upload.destination_path
+    assert_equal "test audio content", File.binread(@test_file)
+    assert_equal "existing library content", File.binread(existing_file)
+    assert_equal existing_file, book.reload.file_path
+  end
+
+  test "manual match cannot take a reservation acquired after selection" do
+    @upload.update!(status: :failed)
+    @upload.match_and_retry!(title: "Chosen book")
+    book = @upload.book
+    book.update!(acquisition_reservation_token: "download-owner", acquisition_reservation_owner_type: "Download",
+      acquisition_reservation_owner_id: 99_001)
+
+    UploadProcessingJob.perform_now(@upload.id)
+
+    assert @upload.reload.failed?
+    assert_match(/already claimed/, @upload.error_message)
+    assert_equal book, @upload.book
+    assert_equal "download-owner", book.reload.acquisition_reservation_token
+    assert_equal "test audio content", File.binread(@test_file)
+    assert_nil @upload.destination_path
+  end
+
+  test "deleted manual choice fails without falling back to automatic matching" do
+    @upload.update!(status: :failed)
+    @upload.match_and_retry!(title: "Deleted title")
+    @upload.book.destroy!
+
+    assert_no_difference "Book.count" do
+      UploadProcessingJob.perform_now(@upload.id)
+    end
+
+    assert @upload.reload.failed?
+    assert @upload.manual_match?
+    assert_nil @upload.book_id
+    assert_match(/manually selected book no longer exists/, @upload.error_message)
+    assert_equal "test audio content", File.binread(@test_file)
+    assert_nil @upload.destination_path
+    assert @upload.manual_match_available?
+  end
+
+  test "manual choice with changed format fails before publication" do
+    @upload.update!(status: :failed)
+    @upload.match_and_retry!(title: "Changed format")
+    @upload.book.update!(book_type: :ebook)
+
+    UploadProcessingJob.perform_now(@upload.id)
+
+    assert @upload.reload.failed?
+    assert_match(/different format/, @upload.error_message)
+    assert_equal "test audio content", File.binread(@test_file)
+    assert_nil @upload.destination_path
+  end
+
+  test "manual audiobook ZIP resumes its reserved publication after a worker stops" do
+    zip_file = File.join(@temp_source, "Wrong author - Wrong title.zip")
+    build_zip_archive(zip_file, "chapter_01.mp3" => "trusted audio")
+    @upload.update!(status: :failed, original_filename: File.basename(zip_file), file_path: zip_file, file_size: File.size(zip_file))
+    @upload.match_and_retry!(title: "Selected ZIP", author: "Selected author")
+    book = @upload.book
+    @upload.update!(status: :processing)
+    UploadProcessingJob.new.send(:reserve_upload_book!, @upload, book)
+    service = UploadZipImportFileService.new(upload: @upload, book: book,
+      max_bytes: UploadProcessingJob::MAX_AUDIOBOOK_ZIP_EXTRACTED_BYTES,
+      max_files: UploadProcessingJob::MAX_AUDIOBOOK_ZIP_FILES)
+    service.reserve!
+    library_path = service.publish!
+    @upload.update!(status: :pending)
+
+    assert_no_difference "Book.count" do
+      UploadProcessingJob.perform_now(@upload.id)
+    end
+
+    assert @upload.reload.completed?, @upload.error_message
+    assert @upload.manual_match?
+    assert_equal book, @upload.book
+    assert_equal library_path, book.reload.file_path
+    assert_equal "Selected ZIP", book.title
+    assert_equal "trusted audio", File.binread(File.join(library_path, "chapter_01.mp3"))
+    assert_nil book.acquisition_reservation_token
+    assert File.zero?(zip_file)
+  end
+
   test "processes upload and creates book" do
     VCR.turned_off do
       stub_open_library_search("Mistborn Brandon Sanderson")

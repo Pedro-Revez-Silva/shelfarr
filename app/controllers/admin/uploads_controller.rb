@@ -3,7 +3,7 @@
 module Admin
   class UploadsController < BaseController
     before_action :set_request_context, only: [ :new, :create ]
-    before_action :set_upload, only: [ :show, :destroy, :retry ]
+    before_action :set_upload, only: [ :show, :destroy, :retry, :match_and_retry ]
 
     def index
       @uploads = Upload.includes(:user, :book).recent
@@ -31,6 +31,33 @@ module Admin
     end
 
     def show
+      prepare_manual_match
+    end
+
+    def match_and_retry
+      attributes = manual_match_params
+      @upload.match_and_retry!(**attributes)
+      ActivityTracker.track("upload.manually_matched", user: Current.user, trackable: @upload,
+        details: { book_id: @upload.book_id, choice: attributes[:book_id] ? "existing" : "created" }
+      )
+
+      unless enqueue_retry(nil)
+        Upload.where(id: @upload.id, status: :pending).update_all(
+          status: Upload.statuses[:failed],
+          error_message: "Shelfarr could not queue the upload retry. Your manual match was saved.",
+          updated_at: Time.current
+        )
+        redirect_to admin_upload_path(@upload), alert: "Upload retry could not be queued. Your manual match was saved; try Retry again."
+        return
+      end
+
+      redirect_to admin_upload_path(@upload), notice: "Manual match saved. Upload queued for retry."
+    rescue ActiveRecord::RecordInvalid => error
+      flash.now[:alert] = error.record.errors.full_messages.to_sentence
+      prepare_manual_match
+      render :show, status: :unprocessable_entity
+    rescue ActiveRecord::RecordNotFound
+      redirect_to admin_upload_path(@upload), alert: "That book is no longer available. Choose another book."
     end
 
     def destroy
@@ -117,6 +144,42 @@ module Admin
 
     def set_upload
       @upload = Upload.find(params[:id])
+    end
+
+    def prepare_manual_match
+      return unless @upload.manual_match_available?
+
+      @match_query = params.fetch(:q, @upload.parsed_title).to_s.strip.first(200)
+      @match_page = Integer(params[:page], exception: false).to_i.clamp(1, 100_000)
+      fields = params[:manual_book]
+      fields = fields.is_a?(ActionController::Parameters) ? fields.permit(:title, :author) : {}
+      parsed = FilenameParserService.parse(@upload.original_filename)
+      @manual_book = Book.new(
+        title: fields[:title] || @upload.book&.title || @upload.parsed_title.presence || parsed.title,
+        author: fields[:author] || @upload.book&.author || @upload.parsed_author.presence || parsed.author
+      )
+      @match_books = Book.where(book_type: @upload.infer_book_type)
+        .where("file_path IS NULL OR TRIM(file_path) = ''")
+        .where(acquisition_reservation_token: nil)
+      if @match_query.present?
+        query = "%#{Book.sanitize_sql_like(@match_query)}%"
+        @match_books = @match_books.where("title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\'", query: query)
+      end
+      @match_books = @match_books.order(:title, :id).offset((@match_page - 1) * 20).limit(21).to_a
+    end
+
+    def manual_match_params
+      if params.key?(:book_id)
+        { book_id: params.expect(:book_id) }
+      else
+        fields = params.expect(manual_book: [ :title, :author ])
+        %i[title author].each do |field|
+          if params[:manual_book].key?(field) && !fields.key?(field)
+            raise ActionController::ParameterMissing, field
+          end
+        end
+        fields.to_h.symbolize_keys
+      end
     end
 
     def set_request_context
