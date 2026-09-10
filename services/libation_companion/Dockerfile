@@ -77,6 +77,7 @@ ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
     COMPANION_TOKEN_FILE=/control/token
 
 EXPOSE 8080
+# Probe the already-running companion. Do not start a second Kestrel listener.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD ["/companion/Shelfarr.Libation.Companion", "--healthcheck"]
 ENTRYPOINT ["/companion/entrypoint.sh"]

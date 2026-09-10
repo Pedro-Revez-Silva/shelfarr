@@ -322,4 +322,4 @@ exec setpriv \
   --clear-groups \
   --no-new-privs \
   --bounding-set=-all \
-  /companion/Shelfarr.Libation.Companion
+  /companion/Shelfarr.Libation.Companion "$@"
