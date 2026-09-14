@@ -19,6 +19,7 @@ class DownloadJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_password, "")
     SettingsService.set(:gutenberg_enabled, false)
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:auto_select_enabled, false)
 
     # Create a qBittorrent client
     @client = DownloadClient.create!(
@@ -54,6 +55,7 @@ class DownloadJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_password, "")
     SettingsService.set(:gutenberg_enabled, false)
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:auto_select_enabled, false)
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     GutenbergClient.reset_connection! if defined?(GutenbergClient)
     IndexerClients::Prowlarr.reset_connection!
@@ -673,10 +675,13 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "does not blocklist when qBittorrent add returns a transient HTTP status" do
+    @selected_result.update!(
+      download_url: nil,
+      magnet_url: "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    )
+
     VCR.turned_off do
       stub_qbittorrent_connection("http://localhost:8080")
-      stub_request(:get, "http://example.com/download/test.torrent")
-        .to_return(status: 200, headers: { "Content-Type" => "application/x-bittorrent" }, body: "not-a-torrent")
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(
           status: 503,
@@ -693,10 +698,13 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "blocklists when qBittorrent add returns a 400 rejection" do
+    @selected_result.update!(
+      download_url: nil,
+      magnet_url: "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    )
+
     VCR.turned_off do
       stub_qbittorrent_connection("http://localhost:8080")
-      stub_request(:get, "http://example.com/download/test.torrent")
-        .to_return(status: 200, headers: { "Content-Type" => "application/x-bittorrent" }, body: "not-a-torrent")
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 400, headers: { "Content-Type" => "text/plain" }, body: "Fails to add torrent")
 
