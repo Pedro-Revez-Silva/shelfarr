@@ -580,29 +580,107 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
           }.to_json
         )
 
-      error = assert_raises(DownloadClients::Base::Error) do
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
         @client.add_torrent("magnet:?xt=urn:btih:error")
       end
 
+      assert_instance_of DownloadClients::Base::ConnectionError, error
       assert_equal "Transmission API error for torrent_add: HTTP error from backend service: Couldn't fetch torrent: No Response (0)", error.message
+    end
+  end
+
+  test "add_torrent raises ConnectionError when legacy RPC cannot fetch the torrent" do
+    VCR.turned_off do
+      Thread.current[:transmission_sessions][@client_record.id] = "session-id"
+      Thread.current[:transmission_protocols][@client_record.id] = :legacy
+
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| legacy_request?(request, method: "torrent-get", arguments: { "ids" => "all", "fields" => [ "hashString" ] }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "success", "arguments" => { "torrents" => [] } }.to_json
+        )
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| legacy_request?(request, method: "torrent-add", arguments: { "filename" => "magnet:?xt=urn:btih:error" }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => "Couldn't fetch torrent: No Response (0)" }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.add_torrent("magnet:?xt=urn:btih:error")
+      end
+
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "Transmission API error for torrent-add: Couldn't fetch torrent: No Response (0)", error.message
+    end
+  end
+
+  test "add_torrent keeps corrupt torrent failures as Error" do
+    VCR.turned_off do
+      stub_session_handshake("http://localhost:9091/transmission/rpc")
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_get", params: { "ids" => "all", "fields" => [ "hash_string" ] }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "torrents" => [] }, "id" => 1 }.to_json
+        )
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| jsonrpc_request?(request, method: "torrent_add", params: { "filename" => "magnet:?xt=urn:btih:corrupt" }) }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "error" => {
+              "code" => 2,
+              "message" => "invalid or corrupt torrent file"
+            },
+            "id" => 1
+          }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.add_torrent("magnet:?xt=urn:btih:corrupt")
+      end
+
+      assert_instance_of DownloadClients::Base::Error, error
+      assert_equal "Transmission API error for torrent_add: invalid or corrupt torrent file", error.message
     end
   end
 
   test "parse_response handles http legacy and json-rpc error branches" do
     unauthorized = transmission_response(status: 401, body: {})
-    assert_raises(DownloadClients::Base::AuthenticationError) do
+    error = assert_raises(DownloadClients::Base::AuthenticationError) do
       @client.send(:parse_response, unauthorized, "session-get", :jsonrpc)
     end
+    assert_instance_of DownloadClients::Base::AuthenticationError, error
 
-    server_error = transmission_response(status: 500, body: {})
-    assert_raises(DownloadClients::Base::Error) do
-      @client.send(:parse_response, server_error, "session-get", :jsonrpc)
+    [ 408, 425, 429, 500, 503 ].each do |status|
+      server_error = transmission_response(status: status, body: {})
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.send(:parse_response, server_error, "session-get", :jsonrpc)
+      end
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "Transmission API error: #{status}", error.message
     end
+
+    client_error = transmission_response(status: 400, body: {})
+    error = assert_raises(DownloadClients::Base::Error) do
+      @client.send(:parse_response, client_error, "session-get", :jsonrpc)
+    end
+    assert_instance_of DownloadClients::Base::Error, error
+    assert_equal "Transmission API error: 400", error.message
 
     unexpected_body = transmission_response(status: 200, body: "not a hash")
-    assert_raises(DownloadClients::Base::Error) do
+    error = assert_raises(DownloadClients::Base::ConnectionError) do
       @client.send(:parse_response, unexpected_body, "session-get", :jsonrpc)
     end
+    assert_instance_of DownloadClients::Base::ConnectionError, error
+    assert_equal "Transmission API returned unexpected response format", error.message
 
     assert_raises(DownloadClients::Transmission::LegacyProtocolRequired) do
       @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "success" }), "session-get", :jsonrpc)
@@ -612,16 +690,50 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
       @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "session" }), "session-get", :legacy)
     end
 
-    assert_raises(DownloadClients::Base::Error) do
+    error = assert_raises(DownloadClients::Base::Error) do
       @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "failure" }), "torrent-add", :legacy)
     end
+    assert_instance_of DownloadClients::Base::Error, error
+    assert_equal "Transmission API error for torrent-add: failure", error.message
+
+    error = assert_raises(DownloadClients::Base::Error) do
+      @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "unrecognized info" }), "torrent-add", :legacy)
+    end
+    assert_instance_of DownloadClients::Base::Error, error
+
+    error = assert_raises(DownloadClients::Base::ConnectionError) do
+      @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "Couldn't fetch torrent: No Response (0)" }), "torrent-add", :legacy)
+    end
+    assert_instance_of DownloadClients::Base::ConnectionError, error
 
     assert_equal({}, @client.send(:parse_response, transmission_response(status: 200, body: { "result" => "success" }), "session-get", :legacy))
   end
 
-  test "parse_jsonrpc_response rejects missing result hash" do
-    assert_raises(DownloadClients::Base::Error) do
+  test "parse_jsonrpc_response rejects missing result hash as ConnectionError" do
+    error = assert_raises(DownloadClients::Base::ConnectionError) do
       @client.send(:parse_jsonrpc_response, { "jsonrpc" => "2.0", "result" => "ok" }, "session-get")
+    end
+    assert_instance_of DownloadClients::Base::ConnectionError, error
+    assert_equal "Transmission API returned unexpected JSON-RPC response format", error.message
+  end
+
+  test "session negotiation failure raises ConnectionError" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .to_return(
+          status: 409,
+          headers: {
+            "x-transmission-session-id" => "session-id",
+            "Content-Type" => "application/json"
+          },
+          body: { "result" => "session", "arguments" => {} }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "Transmission session negotiation failed", error.message
     end
   end
 

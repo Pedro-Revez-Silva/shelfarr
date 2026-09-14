@@ -762,6 +762,103 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent raises ConnectionError for transient API HTTP statuses" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      [ 408, 429, 503 ].each do |status|
+        stub_request(:post, "http://localhost:8112/json")
+          .with(body: /"core.add_torrent_magnet"/)
+          .to_return(
+            status: status,
+            headers: { "Content-Type" => "application/json" },
+            body: { error: "unavailable" }.to_json
+          )
+
+        error = assert_raises(DownloadClients::Base::ConnectionError) do
+          @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+        end
+        assert_instance_of DownloadClients::Base::ConnectionError, error
+        assert_equal "Deluge API error: #{status}", error.message
+      end
+    end
+  end
+
+  test "add_torrent raises ConnectionError for an unparseable API envelope" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.add_torrent_magnet"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: "not a hash".to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "Deluge API returned unexpected response format", error.message
+    end
+  end
+
+  test "add_torrent keeps a 400 API status as Error" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.add_torrent_magnet"/)
+        .to_return(
+          status: 400,
+          headers: { "Content-Type" => "application/json" },
+          body: { error: "bad torrent" }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+      assert_instance_of DownloadClients::Base::Error, error
+      assert_equal "Deluge API error: 400", error.message
+    end
+  end
+
+  test "add_torrent keeps a Deluge error object as Error" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+      stub_deluge_rpc("core.add_torrent_magnet", nil, error: { "message" => "Invalid torrent" })
+
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+      assert_instance_of DownloadClients::Base::Error, error
+      assert_match(/Invalid torrent/, error.message)
+    end
+  end
+
   test "remove_torrent returns false when Deluge reports removal errors" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8112/json")

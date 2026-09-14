@@ -1172,6 +1172,78 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent raises ConnectionError for transient API HTTP statuses" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      [ 408, 425, 429, 500, 503 ].each do |status|
+        stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+          .to_return(
+            status: status,
+            headers: { "Content-Type" => "application/json" },
+            body: { "error" => "unavailable" }.to_json
+          )
+
+        error = assert_raises(DownloadClients::Base::ConnectionError) do
+          @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        end
+        assert_instance_of DownloadClients::Base::ConnectionError, error
+        assert_equal "qBittorrent API error: #{status}", error.message
+      end
+    end
+  end
+
+  test "add_torrent returns nil for a 400 client rejection" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 400, headers: { "Content-Type" => "text/plain" }, body: "Fails to add torrent")
+
+      assert_nil @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+    end
+  end
+
+  test "add_torrent returns nil for a 404 client rejection" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 404, headers: { "Content-Type" => "text/plain" }, body: "Not Found")
+
+      assert_nil @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+    end
+  end
+
+  test "handle_response maps transient HTTP statuses to ConnectionError" do
+    error = assert_raises(DownloadClients::Base::ConnectionError) do
+      @client.send(:handle_response, qbittorrent_response(status: 503, body: {})) { |data| data }
+    end
+    assert_instance_of DownloadClients::Base::ConnectionError, error
+    assert_equal "qBittorrent API error: 503", error.message
+  end
+
+  test "handle_response keeps a 400 API status as Error" do
+    error = assert_raises(DownloadClients::Base::Error) do
+      @client.send(:handle_response, qbittorrent_response(status: 400, body: {})) { |data| data }
+    end
+    assert_instance_of DownloadClients::Base::Error, error
+    assert_equal "qBittorrent API error: 400", error.message
+  end
+
   # === Category Auto-Creation Tests ===
 
   test "test_connection creates category after successful connection" do
@@ -1604,5 +1676,9 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     return body if body.is_a?(Hash)
 
     URI.decode_www_form(body.to_s).to_h
+  end
+
+  def qbittorrent_response(status:, body:, headers: {})
+    Struct.new(:status, :body, :headers).new(status, body, headers)
   end
 end

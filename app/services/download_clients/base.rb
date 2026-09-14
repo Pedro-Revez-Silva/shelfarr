@@ -84,6 +84,17 @@ module DownloadClients
       config.url
     end
 
+    def transient_http_status?(status)
+      code = status.to_i
+      code.in?([ 408, 425, 429 ]) || code >= 500
+    end
+
+    def raise_for_http_status!(status, message)
+      raise ConnectionError, message if transient_http_status?(status)
+
+      raise Error, message
+    end
+
     def resolve_guarded_torrent_source(raw_url)
       current_url = raw_url.to_s.strip.gsub(" ", "%20")
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + MAX_GUARDED_TORRENT_DURATION
@@ -113,7 +124,7 @@ module DownloadClients
             response = incoming
             next if incoming.is_a?(Net::HTTPRedirection)
             status = incoming.code.to_i
-            if status.in?([ 408, 425, 429 ]) || status >= 500
+            if transient_http_status?(status)
               raise ConnectionError, "Torrent source returned HTTP #{incoming.code}"
             end
             next unless incoming.is_a?(Net::HTTPSuccess)
