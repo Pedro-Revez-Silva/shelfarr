@@ -158,6 +158,76 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
     end
   end
 
+  test "add_torrent raises ConnectionError for transient API HTTP statuses" do
+    VCR.turned_off do
+      [ 408, 429, 503 ].each do |status|
+        stub_request(:get, %r{localhost:8080/api.*mode=addurl})
+          .to_return(
+            status: status,
+            headers: { "Content-Type" => "application/json" },
+            body: { "error" => "unavailable" }.to_json
+          )
+
+        error = assert_raises(DownloadClients::Base::ConnectionError) do
+          @client.add_torrent("http://example.com/test.nzb")
+        end
+        assert_instance_of DownloadClients::Base::ConnectionError, error
+        assert_equal "SABnzbd API error: #{status}", error.message
+      end
+    end
+  end
+
+  test "add_torrent raises ConnectionError for an unparseable API envelope" do
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:8080/api.*mode=addurl})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: "not a hash".to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.add_torrent("http://example.com/test.nzb")
+      end
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "SABnzbd returned unexpected response format", error.message
+    end
+  end
+
+  test "add_torrent keeps a 400 API status as Error" do
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:8080/api.*mode=addurl})
+        .to_return(
+          status: 400,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "bad nzb" }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.add_torrent("http://example.com/test.nzb")
+      end
+      assert_instance_of DownloadClients::Base::Error, error
+      assert_equal "SABnzbd API error: 400", error.message
+    end
+  end
+
+  test "add_torrent keeps a usenet reject as Error" do
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:8080/api.*mode=addurl})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "Empty NZB" }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.add_torrent("http://example.com/test.nzb")
+      end
+      assert_instance_of DownloadClients::Base::Error, error
+      assert_equal "SABnzbd error: Empty NZB", error.message
+    end
+  end
+
   test "list_torrents returns queue and history items" do
     VCR.turned_off do
       stub_request(:get, %r{localhost:8080/api.*mode=queue})
@@ -301,9 +371,11 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
       stub_request(:get, %r{localhost:8080/api.*mode=queue})
         .to_return(status: 503, body: "temporarily unavailable")
 
-      assert_raises(DownloadClients::Base::Error) do
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
         @client.torrent_info("test_nzo_id")
       end
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "SABnzbd API error: 503", error.message
     end
   end
 end

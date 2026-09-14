@@ -182,7 +182,7 @@ module DownloadClients
           attempts += 1
           next if attempts <= 1
 
-          raise Base::Error, "Transmission session negotiation failed"
+          raise Base::ConnectionError, "Transmission session negotiation failed"
         end
 
         return parse_response(response, method, protocol)
@@ -198,12 +198,12 @@ module DownloadClients
       end
 
       unless response.status == 200
-        raise Base::Error, "Transmission API error: #{response.status}"
+        raise_for_http_status!(response.status, "Transmission API error: #{response.status}")
       end
 
       body = response.body
       unless body.is_a?(Hash)
-        raise Base::Error, "Transmission API returned unexpected response format"
+        raise Base::ConnectionError, "Transmission API returned unexpected response format"
       end
 
       if body["jsonrpc"] == "2.0"
@@ -218,7 +218,7 @@ module DownloadClients
           clear_session!
           raise Base::AuthenticationError, "Transmission session negotiation required"
         end
-        raise Base::Error, "Transmission API error for #{method}: #{message}"
+        raise_transmission_method_error!(method, message)
       end
 
       body["arguments"] || {}
@@ -229,15 +229,26 @@ module DownloadClients
         error = body["error"]
         message = error["message"].presence || "Unknown error"
         details = error["data"].is_a?(Hash) ? error["data"]["error_string"].presence : nil
-        raise Base::Error, "Transmission API error for #{method.tr('-', '_')}: #{[message, details].compact.join(': ')}"
+        raise_transmission_method_error!(method.tr("-", "_"), [ message, details ].compact.join(": "))
       end
 
       result = body["result"]
       unless result.is_a?(Hash)
-        raise Base::Error, "Transmission API returned unexpected JSON-RPC response format"
+        raise Base::ConnectionError, "Transmission API returned unexpected JSON-RPC response format"
       end
 
       result
+    end
+
+    def raise_transmission_method_error!(method, message)
+      full_message = "Transmission API error for #{method}: #{message}"
+      raise Base::ConnectionError, full_message if torrent_source_fetch_failure?(message)
+
+      raise Base::Error, full_message
+    end
+
+    def torrent_source_fetch_failure?(message)
+      message.to_s.match?(/couldn't fetch torrent/i)
     end
 
     def extract_session_id(response)

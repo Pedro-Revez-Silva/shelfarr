@@ -144,12 +144,12 @@ module DownloadClients
       end
 
       unless response.status == 200
-        raise Base::Error, "Deluge API error: #{response.status}"
+        raise_for_http_status!(response.status, "Deluge API error: #{response.status}")
       end
 
       body = response.body
       unless body.is_a?(Hash)
-        raise Base::Error, "Deluge API returned unexpected response format"
+        raise Base::ConnectionError, "Deluge API returned unexpected response format"
       end
 
       body

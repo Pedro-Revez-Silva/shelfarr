@@ -154,17 +154,75 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
           body: "Could not fetch #{url}".to_json
         )
 
-      Rails.stub(:logger, logger) do
-        assert_raises(DownloadClients::Base::Error) do
+      error = Rails.stub(:logger, logger) do
+        assert_raises(DownloadClients::Base::ConnectionError) do
           @client.add_torrent(url, sensitive_url: true)
         end
       end
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "NZBGet returned unexpected response format", error.message
     end
 
     output = logger.messages.join("\n")
     assert_not_includes output, "alice"
     assert_not_includes output, "password"
     assert_not_includes output, "very-secret"
+  end
+
+  test "add_torrent raises ConnectionError for transient API HTTP statuses" do
+    VCR.turned_off do
+      [ 408, 429, 503 ].each do |status|
+        stub_request(:post, "http://localhost:6789/jsonrpc")
+          .with(body: hash_including("method" => "append"))
+          .to_return(
+            status: status,
+            headers: { "Content-Type" => "application/json" },
+            body: { "error" => "unavailable" }.to_json
+          )
+
+        error = assert_raises(DownloadClients::Base::ConnectionError) do
+          @client.add_torrent("http://example.com/test.nzb")
+        end
+        assert_instance_of DownloadClients::Base::ConnectionError, error
+        assert_equal "NZBGet API error: #{status}", error.message
+      end
+    end
+  end
+
+  test "add_torrent keeps a 400 API status as Error" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(body: hash_including("method" => "append"))
+        .to_return(
+          status: 400,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "bad nzb" }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.add_torrent("http://example.com/test.nzb")
+      end
+      assert_instance_of DownloadClients::Base::Error, error
+      assert_equal "NZBGet API error: 400", error.message
+    end
+  end
+
+  test "add_torrent keeps a usenet reject as Error" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(body: hash_including("method" => "append"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "Empty NZB" }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.add_torrent("http://example.com/test.nzb")
+      end
+      assert_instance_of DownloadClients::Base::Error, error
+      assert_equal "NZBGet error: Empty NZB", error.message
+    end
   end
 
   test "add_torrent does not expose a sensitive URL returned as a failed result" do
@@ -409,9 +467,11 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
         .with(body: hash_including("method" => "listgroups"))
         .to_return(status: 503, body: "temporarily unavailable")
 
-      assert_raises(DownloadClients::Base::Error) do
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
         @client.torrent_info("999")
       end
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "NZBGet API error: 503", error.message
     end
   end
 
