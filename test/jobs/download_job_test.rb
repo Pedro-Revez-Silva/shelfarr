@@ -140,6 +140,7 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "marks for attention when no download client configured" do
+    @request.update!(status: :downloading)
     @client.destroy!
 
     DownloadJob.perform_now(@download.id)
@@ -147,12 +148,13 @@ class DownloadJobTest < ActiveJob::TestCase
     @request.reload
 
     assert @download.failed?
-    assert @request.attention_needed?
     assert_includes @request.issue_description, "No torrent download client configured"
     assert_not @selected_result.reload.blocklisted?
+    assert_idle_attention_clears_downloading
   end
 
   test "marks for attention on download client authentication error" do
+    @request.update!(status: :downloading)
     job = DownloadJob.new
 
     job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::AuthenticationError, "bad credentials" }) do
@@ -162,9 +164,11 @@ class DownloadJobTest < ActiveJob::TestCase
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "authentication failed"
     assert_not @selected_result.reload.blocklisted?
+    assert_idle_attention_clears_downloading
   end
 
   test "marks for attention on download client connection error" do
+    @request.update!(status: :downloading)
     job = DownloadJob.new
 
     job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::ConnectionError, "offline" }) do
@@ -174,9 +178,11 @@ class DownloadJobTest < ActiveJob::TestCase
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "Failed to connect"
     assert_not @selected_result.reload.blocklisted?
+    assert_idle_attention_clears_downloading
   end
 
   test "marks for attention on generic download client error" do
+    @request.update!(status: :downloading)
     job = DownloadJob.new
 
     job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::Error, "client boom" }) do
@@ -186,6 +192,28 @@ class DownloadJobTest < ActiveJob::TestCase
     assert @download.reload.failed?
     assert_includes @request.reload.issue_description, "Download client error"
     assert @selected_result.reload.blocklisted?
+    assert_idle_attention_clears_downloading
+  end
+
+  test "client connection error keeps downloading while another acquisition download is still active" do
+    @request.update!(status: :downloading)
+    @request.downloads.create!(
+      name: "Still queued",
+      search_result: @selected_result,
+      status: :queued
+    )
+    job = DownloadJob.new
+
+    job.stub(:handle_standard_download, ->(*) { raise DownloadClients::Base::ConnectionError, "offline" }) do
+      job.perform(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.downloading?
+    assert @request.attention_needed?
+    assert_not @request.search_refresh_allowed?
+    assert_includes Request.active, @request
+    assert_not @selected_result.reload.blocklisted?
   end
 
   test "generic download client error blocklists release and selects next candidate when auto-select is enabled" do
@@ -2392,6 +2420,22 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   private
+
+  def assert_idle_attention_clears_downloading
+    @request.reload
+    assert @request.not_found?
+    assert @request.attention_needed?
+    assert @request.search_refresh_allowed?
+    assert @request.can_retry?
+    assert_not_includes Request.active, @request
+
+    result = DuplicateDetectionService.check(
+      work_id: @request.book.open_library_work_id,
+      book_type: @request.book.book_type
+    )
+    assert result.warn?
+    assert_includes result.message, "not found"
+  end
 
   def setup_zlibrary_download
     SettingsService.set(:zlibrary_enabled, true)
