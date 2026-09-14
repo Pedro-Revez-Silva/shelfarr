@@ -91,21 +91,21 @@ class DownloadJob < ApplicationJob
         Rails.logger.error "[DownloadJob] No download client available: #{e.message}"
         track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
         download.update!(status: :failed)
-        download.request.mark_for_attention!(e.message)
+        download.request.mark_for_attention_after_idle_failure!(e.message)
       end
     rescue DownloadClients::Base::AuthenticationError => e
       with_current_dispatch(download) do
         Rails.logger.error "[DownloadJob] Download client authentication failed: #{e.message}"
         track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
         download.update!(status: :failed)
-        download.request.mark_for_attention!("Download client authentication failed. Please check credentials.")
+        download.request.mark_for_attention_after_idle_failure!("Download client authentication failed. Please check credentials.")
       end
     rescue DownloadClients::Base::ConnectionError => e
       with_current_dispatch(download) do
         Rails.logger.error "[DownloadJob] Download client connection error: #{e.message}"
         track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
         download.update!(status: :failed)
-        download.request.mark_for_attention!("Failed to connect to download client: #{e.message}")
+        download.request.mark_for_attention_after_idle_failure!("Failed to connect to download client: #{e.message}")
       end
     rescue DownloadClients::Base::Error => e
       with_current_dispatch(download) do
