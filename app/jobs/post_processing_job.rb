@@ -10,6 +10,11 @@ class PostProcessingJob < ApplicationJob
   EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
   EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
   EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
+  # SABnzbd (and some torrent clients) report a completed file path instead of
+  # the job folder. Basename remapping must still recover that parent folder.
+  COMPLETED_DOWNLOAD_FILE_EXTENSIONS = (
+    EBOOK_FILE_EXTENSIONS + %w[m4b mp3 m4a aac flac ogg opus wma zip rar 7z tar gz tgz]
+  ).freeze
   ERROR_DETAIL_CHARACTER_LIMIT = 500
   ERROR_DETAIL_INPUT_BYTE_LIMIT = ERROR_DETAIL_CHARACTER_LIMIT * 4
   MAX_FILENAME_BYTES = 255
@@ -1452,6 +1457,8 @@ class PostProcessingJob < ApplicationJob
     Rails.logger.info "[PostProcessingJob] Resolving the download client path"
 
     candidates = build_path_candidates(path, download)
+    parent_path = parent_directory_for_file_source(path, download)
+    candidates.concat(build_path_candidates(parent_path, download)) if parent_path.present?
     candidates = deduplicate_path_candidates(candidates)
 
     # Return the first candidate that actually exists on disk.
@@ -1551,6 +1558,40 @@ class PostProcessingJob < ApplicationJob
 
   def normalize_path_separators(path)
     path.to_s.tr("\\", "/") if path.present?
+  end
+
+  # Clients such as SABnzbd report a single-file release as the file itself.
+  # Remap the parent job folder as well so category/basename strategies still
+  # find the completed download. Skip parents that are shared download roots
+  # (category or configured mount) so we never import an entire queue folder.
+  def parent_directory_for_file_source(path, download)
+    normalized_path = normalize_path_separators(path)
+    return unless completed_download_file_leaf?(File.basename(normalized_path))
+
+    parent = File.dirname(normalized_path)
+    return if generic_path_leaf?(parent)
+
+    parent_name = File.basename(parent)
+    return if generic_path_leaf?(parent_name)
+    return if shared_download_leaf?(parent_name, download)
+
+    parent
+  end
+
+  def completed_download_file_leaf?(name)
+    extension = File.extname(name.to_s).delete_prefix(".").downcase
+    COMPLETED_DOWNLOAD_FILE_EXTENSIONS.include?(extension)
+  end
+
+  def generic_path_leaf?(value)
+    value.blank? || value == "." || value == "/" || value == File::SEPARATOR
+  end
+
+  def shared_download_leaf?(name, download)
+    category_path_variants(download.download_client&.category).any? { |category| category.casecmp?(name) } ||
+      shared_download_roots(download).any? do |root|
+        File.basename(normalize_path_separators(root)).casecmp?(name)
+      end
   end
 
   def path_prefix_match?(path, prefix)

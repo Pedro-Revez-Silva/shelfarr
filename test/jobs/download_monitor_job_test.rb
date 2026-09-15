@@ -468,6 +468,62 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "stores a SABnzbd history storage path that points at a completed file" do
+    sabnzbd = DownloadClient.create!(
+      name: "File History SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8080",
+      api_key: "test-api-key",
+      priority: 0,
+      enabled: true
+    )
+    storage_file = "/Data/Downloads/Usenet/Books/Cassandra Clare - City of Ashes/" \
+      "Cassandra Clare - City of Ashes (retail) (epub).epub"
+
+    @download.update!(
+      download_type: "usenet",
+      external_id: "SABnzbd_nzo_history_file",
+      download_client: sabnzbd,
+      progress: 0
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:8080/api.*mode=queue})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "queue" => { "slots" => [] } }.to_json
+        )
+
+      stub_request(:get, %r{localhost:8080/api.*mode=history})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "history" => {
+              "slots" => [
+                {
+                  "nzo_id" => "SABnzbd_nzo_history_file",
+                  "name" => "Cassandra Clare - City of Ashes",
+                  "status" => "Completed",
+                  "bytes" => 2048,
+                  "storage" => storage_file
+                }
+              ]
+            }
+          }.to_json
+        )
+
+      assert_enqueued_with(job: PostProcessingJob, args: [ @download.id ]) do
+        DownloadMonitorJob.perform_now
+      end
+
+      @download.reload
+      assert @download.completed?
+      assert_equal storage_file, @download.download_path
+    end
+  end
+
   test "ensure_running! only enqueues one monitor job while scheduled" do
     SettingsService.set(:download_check_interval, 60)
 
