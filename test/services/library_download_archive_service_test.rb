@@ -88,6 +88,47 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "fresh archives with non-ASCII UTF-8 filenames pass snapshot validation" do
+    filename = "Twilight \u00A9 -- Anna\u2019s Archive.epub"
+    File.binwrite(File.join(@source_path, filename), "ebook bytes")
+
+    cache_path = build_archive
+
+    Zip::File.open(cache_path) do |archive|
+      file_entries = archive.entries.reject(&:directory?)
+      assert_equal 1, file_entries.length
+      zip_name = file_entries.first.name
+      assert_equal filename.bytes, zip_name.bytes
+      assert_equal "ebook bytes", archive.get_input_stream(zip_name).read
+    end
+
+    assert_equal cache_path, build_archive
+  end
+
+  test "ZIP snapshot comparison treats binary and UTF-8 names with the same bytes as equal" do
+    utf8_name = "Anna\u2019s Archive.epub"
+    binary_name = utf8_name.dup.force_encoding(Encoding::ASCII_8BIT)
+    service = archive_service
+
+    refute_equal utf8_name, binary_name
+    assert_equal utf8_name.bytes, binary_name.bytes
+    assert_equal Encoding::UTF_8, service.send(:comparable_zip_name, utf8_name).encoding
+    assert_equal Encoding::UTF_8, service.send(:comparable_zip_name, binary_name).encoding
+    assert_equal service.send(:comparable_zip_name, utf8_name), service.send(:comparable_zip_name, binary_name)
+    assert_nil service.send(:comparable_zip_name, "\xFF".b)
+  end
+
+  test "source preflight accepts UTF-8 filename bytes tagged as ASCII-8BIT" do
+    service = archive_service
+    binary_name = "Anna\u2019s Archive.epub".dup.force_encoding(Encoding::ASCII_8BIT)
+
+    service.send(:validate_source_component!, binary_name)
+    assert_equal "Anna\u2019s Archive.epub", service.send(:safe_zip_component, binary_name)
+    assert_raises(LibraryDownloadArchiveService::UnsafePathError) do
+      service.send(:validate_source_component!, "\xFF".b)
+    end
+  end
+
   test "archive publication does not use pathname File.link" do
     File.binwrite(File.join(@source_path, "chapter.m4b"), "chapter")
 

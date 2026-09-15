@@ -160,10 +160,8 @@ class LibraryDownloadArchiveService
   end
 
   def validate_source_component!(component)
-    unless component.valid_encoding? && component.encode(Encoding::UTF_8).valid_encoding?
-      raise UnsafePathError, "library tree contains an invalid filename"
-    end
-    if component.empty? || component.in?([ ".", ".." ]) || component.include?(File::SEPARATOR)
+    name = utf8_filename!(component)
+    if name.empty? || name.in?([ ".", ".." ]) || name.include?(File::SEPARATOR)
       raise UnsafePathError, "library tree contains an unsafe filename"
     end
   end
@@ -311,9 +309,7 @@ class LibraryDownloadArchiveService
   end
 
   def safe_zip_component(component)
-    raise UnsafePathError, "library tree contains an invalid filename" unless component.valid_encoding?
-
-    value = component.encode(Encoding::UTF_8).unicode_normalize(:nfc)
+    value = utf8_filename!(component).unicode_normalize(:nfc)
     value = value.gsub(/[\\\/:*?"<>|\x00-\x1f\x7f]/, "_")
     value = value.gsub(/[ .]+\z/) { |suffix| "_" * suffix.length }
     value = "_" if value.empty?
@@ -424,7 +420,9 @@ class LibraryDownloadArchiveService
 
   def zip_matches_snapshot?(file, source_root)
     expected = source_root.entries.map do |relative, manifest|
-      name = safe_entry_name(relative, directory: manifest[2] == :directory)
+      name = comparable_zip_name(safe_entry_name(relative, directory: manifest[2] == :directory))
+      return false unless name
+
       [ name, manifest[2], manifest[2] == :file ? manifest[3] : 0 ]
     end.sort
 
@@ -436,11 +434,32 @@ class LibraryDownloadArchiveService
       actual = archive.entries.map do |entry|
         enforce_runtime_budget!
         type = entry.directory? ? :directory : :file
-        [ entry.name, type, type == :file ? entry.size : 0 ]
+        name = comparable_zip_name(entry.name)
+        return false unless name
+
+        [ name, type, type == :file ? entry.size : 0 ]
       end.sort
       matches = actual == expected
     end
     matches
+  end
+
+  # Rubyzip tags entry names as ASCII-8BIT. Dir/FileCopyService names are
+  # UTF-8. Ruby string equality is false for those encodings when any byte
+  # is non-ASCII, even when the bytes are identical.
+  def comparable_zip_name(name)
+    utf8_filename(name)
+  end
+
+  def utf8_filename!(component)
+    utf8_filename(component) || raise(UnsafePathError, "library tree contains an invalid filename")
+  end
+
+  def utf8_filename(component)
+    # Retag valid UTF-8 bytes without transcoding. ASCII-8BIT#encode(UTF-8)
+    # raises on non-ASCII bytes even when those bytes are already UTF-8.
+    name = component.to_s.dup.force_encoding(Encoding::UTF_8)
+    name if name.valid_encoding?
   end
 
   def with_build_admission
