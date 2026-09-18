@@ -2845,6 +2845,164 @@ class PostProcessingJobTest < ActiveJob::TestCase
       "Windows client paths should match normalized remote path mappings"
   end
 
+  test "remaps a SABnzbd single-file storage path through the job folder" do
+    job_dir = File.join(@temp_download_base, "books", "Cassandra Clare - City of Ashes")
+    FileUtils.mkdir_p(job_dir)
+    write_valid_ebook_file(File.join(
+      job_dir,
+      "Cassandra Clare - [Mortal Instruments 02] - City of Ashes (retail) (epub).epub"
+    ))
+
+    client = DownloadClient.create!(
+      name: "SABnzbd File Path",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key",
+      category: "books"
+    )
+    reported_file = "/Data/Downloads/Usenet/Books/Cassandra Clare - City of Ashes/" \
+      "Cassandra Clare - [Mortal Instruments 02] - City of Ashes (retail) (epub).epub"
+    @book.update!(book_type: :ebook)
+    @download.update!(
+      download_client: client,
+      external_id: "SABnzbd_nzo_single_file",
+      download_path: reported_file
+    )
+
+    SettingsService.set(:download_remote_path, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    resolution = PostProcessingJob.new.send(:remap_download_path, reported_file, @download.reload)
+    assert_equal File.join(job_dir, File.basename(reported_file)), resolution[:path]
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete", "value" => "SABnzbd_nzo_single_file"))
+        .to_return(status: 200, body: { "status" => true }.to_json, headers: { "Content-Type" => "application/json" })
+
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_not @request.attention_needed?
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub")),
+      "A completed file path should remap through its job folder and import"
+  end
+
+  test "remaps every supported audiobook file without widening to its parent" do
+    client = DownloadClient.create!(
+      name: "SABnzbd Audio Formats", client_type: :sabnzbd,
+      url: "http://localhost:8080", api_key: "test-api-key", category: "books"
+    )
+    @download.update!(download_client: client)
+    SettingsService.set(:download_remote_path, "")
+    job_dir = File.join(@temp_download_base, "books", "Audio job")
+    FileUtils.mkdir_p(job_dir)
+
+    AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS.each do |extension|
+      source = File.join(job_dir, "Book.#{extension}")
+      File.write(source, "audio")
+      resolution = PostProcessingJob.new.send(
+        :remap_download_path, "/host/books/Audio job/Book.#{extension}", @download
+      )
+      assert_equal source, resolution[:path], "Failed to preserve the .#{extension} source file"
+    end
+  end
+
+  test "does not import sibling ebooks when the reported single file is missing" do
+    client = DownloadClient.create!(
+      name: "SABnzbd Missing File", client_type: :sabnzbd,
+      url: "http://localhost:8080", api_key: "test-api-key", category: "books"
+    )
+    SettingsService.set(:download_remote_path, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:remove_completed_usenet_downloads, false)
+    job_dir = File.join(@temp_download_base, "books", "Book job")
+    FileUtils.mkdir_p(job_dir)
+    sibling = File.join(job_dir, "Other Book.epub")
+    write_valid_ebook_file(sibling)
+    @book.update!(book_type: :ebook)
+    @download.update!(
+      download_client: client, external_id: "nzo_missing_file",
+      download_path: "/host/books/Book job/Missing Book.epub"
+    )
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert_not @request.reload.completed?
+    assert_nil @book.reload.file_path
+    assert File.exist?(sibling)
+    assert_empty Dir.children(@temp_dest_base)
+  end
+
+  test "imports when a remapped SABnzbd storage path exists as a file" do
+    job_dir = File.join(@temp_download_base, "books", "Single File Job")
+    FileUtils.mkdir_p(job_dir)
+    source_file = File.join(job_dir, "City of Ashes.epub")
+    write_valid_ebook_file(source_file)
+
+    client = DownloadClient.create!(
+      name: "SABnzbd Visible File",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key",
+      category: "books"
+    )
+    @book.update!(book_type: :ebook)
+    @download.update!(
+      download_client: client,
+      external_id: "SABnzbd_nzo_visible_file",
+      download_path: source_file
+    )
+
+    SettingsService.set(:download_remote_path, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete", "value" => "SABnzbd_nzo_visible_file"))
+        .to_return(status: 200, body: { "status" => true }.to_json, headers: { "Content-Type" => "application/json" })
+
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+  end
+
+  test "does not remap a single-file path up to the shared category folder" do
+    category_dir = File.join(@temp_download_base, "books")
+    FileUtils.mkdir_p(category_dir)
+    write_valid_ebook_file(File.join(category_dir, "other-release.epub"))
+
+    client = DownloadClient.create!(
+      name: "SABnzbd Category Guard",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key",
+      category: "books"
+    )
+    @download.update!(
+      download_client: client,
+      download_path: "/Data/Downloads/Usenet/Books/missing-release.epub"
+    )
+
+    SettingsService.set(:download_remote_path, "")
+    resolution = PostProcessingJob.new.send(
+      :remap_download_path,
+      @download.download_path,
+      @download.reload
+    )
+
+    assert_not_equal category_dir, resolution[:path]
+    assert_not File.exist?(resolution[:path].to_s)
+  end
+
   test "remaps path using client download_path with category" do
     # Scenario: client has a download_path and category, global remote doesn't match
     category_dir = File.join(@temp_source, "Test Audiobook")
