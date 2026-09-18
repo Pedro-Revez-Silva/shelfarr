@@ -69,6 +69,17 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "unknown or malformed torrent fetch details remain permanent errors" do
+    [ "Couldn't fetch torrent", "Couldn't fetch torrent: (0", "Couldn't fetch torrent: ()",
+      "Couldn't fetch torrent: (unknown)", "Couldn't fetch torrent: (404) (0) extra" ].each do |message|
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.send(:parse_response,
+          transmission_response(status: 200, body: { "result" => message }), "torrent-add", :legacy)
+      end
+      assert_instance_of DownloadClients::Base::Error, error
+    end
+  end
+
   test "add_torrent adds torrent and returns hash" do
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")

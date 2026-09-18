@@ -251,8 +251,11 @@ module DownloadClients
       # Transmission uses the same fetch-error prefix for missing releases and
       # temporary outages; its trailing code is the source HTTP status (0 when
       # no response was received).
-      status = message.to_s[/couldn't fetch torrent:.*\((\d+)\)\s*\z/i, 1]
-      status.present? && (status.to_i.zero? || transient_http_status?(status))
+      details, _separator, suffix = message.to_s.rstrip.rpartition("(")
+      return false unless details.match?(/couldn't fetch torrent:/i) && suffix.end_with?(")")
+
+      status = suffix.delete_suffix(")")
+      status.match?(/\A\d+\z/) && (status.to_i.zero? || transient_http_status?(status))
     end
 
     def extract_session_id(response)
