@@ -1497,6 +1497,8 @@ class PostProcessingJob < ApplicationJob
     return unless client&.enabled?
 
     info = client.adapter.torrent_info(download.external_id)
+    return unless info&.completed?
+
     path = info&.download_path.to_s
     return if path.blank?
 
