@@ -124,4 +124,27 @@ class DownloadClients::DecypharrTest < ActiveSupport::TestCase
       assert_requested(add_stub)
     end
   end
+
+  test "add_torrent raises ConnectionError for a transient Decypharr API outage" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8282/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "sid=test_session_id; path=/" },
+          body: "Ok."
+        )
+      stub_request(:post, "http://localhost:8282/api/v2/torrents/add")
+        .to_return(
+          status: 503,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "unavailable" }.to_json
+        )
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.add_torrent("magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+      end
+      assert_instance_of DownloadClients::Base::ConnectionError, error
+      assert_equal "qBittorrent API error: 503", error.message
+    end
+  end
 end

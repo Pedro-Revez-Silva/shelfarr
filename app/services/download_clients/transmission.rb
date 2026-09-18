@@ -62,7 +62,7 @@ module DownloadClients
     def torrent_info(hash)
       ensure_authenticated!
 
-      response = rpc_request("torrent-get", ids: [hash], fields: torrent_fields)
+      response = rpc_request("torrent-get", ids: [ hash ], fields: torrent_fields)
       return nil unless response && response["torrents"].is_a?(Array)
 
       info = response["torrents"].find { |torrent| transmission_value(torrent, "hash_string", "hashString") == hash.to_s }
@@ -94,7 +94,7 @@ module DownloadClients
     def remove_torrent(hash, delete_files: false)
       ensure_authenticated!
 
-      response = rpc_request("torrent-remove", ids: [hash], delete_local_data: delete_files)
+      response = rpc_request("torrent-remove", ids: [ hash ], delete_local_data: delete_files)
       !response.nil?
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Transmission: #{e.message}"
@@ -182,7 +182,7 @@ module DownloadClients
           attempts += 1
           next if attempts <= 1
 
-          raise Base::Error, "Transmission session negotiation failed"
+          raise Base::ConnectionError, "Transmission session negotiation failed"
         end
 
         return parse_response(response, method, protocol)
@@ -198,12 +198,12 @@ module DownloadClients
       end
 
       unless response.status == 200
-        raise Base::Error, "Transmission API error: #{response.status}"
+        raise_for_http_status!(response.status, "Transmission API error: #{response.status}")
       end
 
       body = response.body
       unless body.is_a?(Hash)
-        raise Base::Error, "Transmission API returned unexpected response format"
+        raise Base::ConnectionError, "Transmission API returned unexpected response format"
       end
 
       if body["jsonrpc"] == "2.0"
@@ -218,7 +218,7 @@ module DownloadClients
           clear_session!
           raise Base::AuthenticationError, "Transmission session negotiation required"
         end
-        raise Base::Error, "Transmission API error for #{method}: #{message}"
+        raise_transmission_method_error!(method, message)
       end
 
       body["arguments"] || {}
@@ -229,15 +229,33 @@ module DownloadClients
         error = body["error"]
         message = error["message"].presence || "Unknown error"
         details = error["data"].is_a?(Hash) ? error["data"]["error_string"].presence : nil
-        raise Base::Error, "Transmission API error for #{method.tr('-', '_')}: #{[message, details].compact.join(': ')}"
+        raise_transmission_method_error!(method.tr("-", "_"), [ message, details ].compact.join(": "))
       end
 
       result = body["result"]
       unless result.is_a?(Hash)
-        raise Base::Error, "Transmission API returned unexpected JSON-RPC response format"
+        raise Base::ConnectionError, "Transmission API returned unexpected JSON-RPC response format"
       end
 
       result
+    end
+
+    def raise_transmission_method_error!(method, message)
+      full_message = "Transmission API error for #{method}: #{message}"
+      raise Base::ConnectionError, full_message if torrent_source_fetch_failure?(message)
+
+      raise Base::Error, full_message
+    end
+
+    def torrent_source_fetch_failure?(message)
+      # Transmission uses the same fetch-error prefix for missing releases and
+      # temporary outages; its trailing code is the source HTTP status (0 when
+      # no response was received).
+      details, _separator, suffix = message.to_s.rstrip.rpartition("(")
+      return false unless details.match?(/couldn't fetch torrent:/i) && suffix.end_with?(")")
+
+      status = suffix.delete_suffix(")")
+      status.match?(/\A\d+\z/) && (status.to_i.zero? || transient_http_status?(status))
     end
 
     def extract_session_id(response)

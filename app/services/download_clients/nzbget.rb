@@ -169,7 +169,7 @@ module DownloadClients
           else
             Rails.logger.error "[Nzbget] Unexpected response format: #{body.inspect.truncate(200)}"
           end
-          raise Base::Error, "NZBGet returned unexpected response format"
+          raise Base::ConnectionError, "NZBGet returned unexpected response format"
         end
       when 401, 403
         Rails.logger.error "[Nzbget] Authentication failed (status #{response.status})"
@@ -180,7 +180,7 @@ module DownloadClients
         else
           Rails.logger.error "[Nzbget] API error (status #{response.status}): #{response.body.inspect.truncate(200)}"
         end
-        raise Base::Error, "NZBGet API error: #{response.status}"
+        raise_for_http_status!(response.status, "NZBGet API error: #{response.status}")
       end
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
       if sensitive_url

@@ -144,7 +144,7 @@ module DownloadClients
           else
             Rails.logger.error "[Sabnzbd] Unexpected response format: #{body.inspect.truncate(200)}"
           end
-          raise Base::Error, "SABnzbd returned unexpected response format"
+          raise Base::ConnectionError, "SABnzbd returned unexpected response format"
         end
 
         # SABnzbd returns error in JSON body sometimes
@@ -167,7 +167,7 @@ module DownloadClients
         else
           Rails.logger.error "[Sabnzbd] API error (status #{response.status}): #{response.body.inspect.truncate(200)}"
         end
-        raise Base::Error, "SABnzbd API error: #{response.status}"
+        raise_for_http_status!(response.status, "SABnzbd API error: #{response.status}")
       end
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
       if sensitive_url

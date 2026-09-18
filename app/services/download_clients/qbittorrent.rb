@@ -66,6 +66,10 @@ module DownloadClients
         raise Base::AuthenticationError, "qBittorrent authentication failed"
       else
         Rails.logger.error "[Qbittorrent] Failed to add torrent: #{response.status} - #{response.body}"
+        if transient_http_status?(response.status)
+          raise Base::ConnectionError, "qBittorrent API error: #{response.status}"
+        end
+
         nil
       end
     rescue Faraday::Error => e
@@ -576,7 +580,7 @@ module DownloadClients
         raise Base::AuthenticationError, "qBittorrent authentication failed (HTTP #{response.status}) at #{base_url}"
       else
         Rails.logger.error "[Qbittorrent] API error: HTTP #{response.status} from #{base_url} — #{response.body.to_s.truncate(200)}"
-        raise Base::Error, "qBittorrent API error: #{response.status}"
+        raise_for_http_status!(response.status, "qBittorrent API error: #{response.status}")
       end
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
       raise Base::ConnectionError, "Failed to connect to qBittorrent at #{base_url}: #{e.message}"

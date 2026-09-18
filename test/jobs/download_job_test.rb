@@ -19,6 +19,7 @@ class DownloadJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_password, "")
     SettingsService.set(:gutenberg_enabled, false)
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:auto_select_enabled, false)
 
     # Create a qBittorrent client
     @client = DownloadClient.create!(
@@ -54,6 +55,7 @@ class DownloadJobTest < ActiveJob::TestCase
     SettingsService.set(:zlibrary_password, "")
     SettingsService.set(:gutenberg_enabled, false)
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:auto_select_enabled, false)
     ZLibraryClient.reset_connection! if defined?(ZLibraryClient)
     GutenbergClient.reset_connection! if defined?(GutenbergClient)
     IndexerClients::Prowlarr.reset_connection!
@@ -580,6 +582,205 @@ class DownloadJobTest < ActiveJob::TestCase
       assert_equal "transmission-hash", @download.external_id
       assert_equal "torrent", @download.download_type
     end
+  end
+
+  test "does not blocklist when Transmission cannot fetch the torrent" do
+    use_transmission_client!
+    @selected_result.update!(download_url: nil, magnet_url: "magnet:?xt=urn:btih:abcdef")
+
+    VCR.turned_off do
+      stub_transmission_jsonrpc_handshake
+      stub_transmission_empty_torrent_list
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| transmission_jsonrpc?(request, method: "torrent_add") }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "error" => {
+              "code" => 7,
+              "message" => "HTTP error from backend service",
+              "data" => { "error_string" => "Couldn't fetch torrent: No Response (0)" }
+            },
+            "id" => 1
+          }.to_json
+        )
+
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert_equal "", @download.external_id.to_s
+    assert @request.reload.attention_needed?
+    assert_includes @request.issue_description, "Couldn't fetch torrent"
+    assert_not @selected_result.reload.blocklisted?
+  end
+
+  test "does not blocklist when Transmission returns a transient HTTP status" do
+    use_transmission_client!
+    @selected_result.update!(download_url: nil, magnet_url: "magnet:?xt=urn:btih:abcdef")
+
+    VCR.turned_off do
+      stub_transmission_jsonrpc_handshake
+      stub_transmission_empty_torrent_list
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| transmission_jsonrpc?(request, method: "torrent_add") }
+        .to_return(status: 503, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
+  test "blocklists when Transmission rejects a corrupt torrent" do
+    use_transmission_client!
+    @selected_result.update!(download_url: nil, magnet_url: "magnet:?xt=urn:btih:abcdef")
+
+    VCR.turned_off do
+      stub_transmission_jsonrpc_handshake
+      stub_transmission_empty_torrent_list
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| transmission_jsonrpc?(request, method: "torrent_add") }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "error" => { "code" => 2, "message" => "invalid or corrupt torrent file" },
+            "id" => 1
+          }.to_json
+        )
+
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @selected_result.reload.blocklisted?
+    assert_includes @request.reload.issue_description, "invalid or corrupt torrent file"
+  end
+
+  test "auto-selects the next candidate when Transmission rejects a corrupt torrent" do
+    use_transmission_client!
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    @selected_result.update!(download_url: nil, magnet_url: "magnet:?xt=urn:btih:abcdef")
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+
+    VCR.turned_off do
+      stub_transmission_jsonrpc_handshake
+      stub_transmission_empty_torrent_list
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| transmission_jsonrpc?(request, method: "torrent_add") }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "error" => { "code" => 2, "message" => "invalid or corrupt torrent file" },
+            "id" => 1
+          }.to_json
+        )
+
+      assert_enqueued_with(job: DownloadJob) do
+        DownloadJob.perform_now(@download.id)
+      end
+    end
+
+    assert @download.reload.failed?
+    assert @selected_result.reload.blocklisted?
+    assert fallback.reload.selected?
+    assert @request.reload.downloading?
+    assert_not @request.attention_needed?
+  end
+
+  test "auto-selects the next candidate when Transmission cannot fetch a missing torrent" do
+    use_transmission_client!
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    @selected_result.update!(download_url: nil, magnet_url: "magnet:?xt=urn:btih:abcdef")
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+
+    VCR.turned_off do
+      stub_transmission_jsonrpc_handshake
+      stub_transmission_empty_torrent_list
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| transmission_jsonrpc?(request, method: "torrent_add") }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "error" => { "code" => 7, "message" => "HTTP error from backend service",
+              "data" => { "error_string" => "Couldn't fetch torrent: Not Found (404)" } },
+            "id" => 1
+          }.to_json
+        )
+
+      assert_enqueued_with(job: DownloadJob) do
+        DownloadJob.perform_now(@download.id)
+      end
+    end
+
+    assert @download.reload.failed?
+    assert @selected_result.reload.blocklisted?
+    assert fallback.reload.selected?
+    assert @request.reload.downloading?
+    assert_not @request.attention_needed?
+  end
+
+  test "does not blocklist when qBittorrent add returns a transient HTTP status" do
+    @selected_result.update!(
+      download_url: nil,
+      magnet_url: "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    )
+
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://localhost:8080")
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(
+          status: 503,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "unavailable" }.to_json
+        )
+
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @request.reload.attention_needed?
+    assert_not @selected_result.reload.blocklisted?
+  end
+
+  test "blocklists when qBittorrent add returns a 400 rejection" do
+    @selected_result.update!(
+      download_url: nil,
+      magnet_url: "magnet:?xt=urn:btih:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    )
+
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://localhost:8080")
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 400, headers: { "Content-Type" => "text/plain" }, body: "Fails to add torrent")
+
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @selected_result.reload.blocklisted?
   end
 
   test "uses book metadata as usenet job name for sabnzbd" do
@@ -2666,6 +2867,54 @@ class DownloadJobTest < ActiveJob::TestCase
         headers: { "Content-Type" => "application/json" },
         body: indexers.to_json
       )
+  end
+
+  def use_transmission_client!
+    @client.destroy!
+    @client = DownloadClient.create!(
+      name: "Test Transmission",
+      client_type: "transmission",
+      url: "http://localhost:9091/transmission/rpc",
+      username: "admin",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    Thread.current[:transmission_sessions] = {}
+    Thread.current[:transmission_protocols] = {}
+    @client
+  end
+
+  def stub_transmission_jsonrpc_handshake
+    stub_request(:post, "http://localhost:9091/transmission/rpc")
+      .with { |request| transmission_jsonrpc?(request, method: "session_get") }
+      .to_return(
+        {
+          status: 409,
+          headers: { "x-transmission-session-id" => "session-id" },
+          body: { "result" => "session", "arguments" => {} }.to_json
+        },
+        {
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "version" => "4.1.1" }, "id" => 1 }.to_json
+        }
+      )
+  end
+
+  def stub_transmission_empty_torrent_list
+    stub_request(:post, "http://localhost:9091/transmission/rpc")
+      .with { |request| transmission_jsonrpc?(request, method: "torrent_get") }
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "jsonrpc" => "2.0", "result" => { "torrents" => [] }, "id" => 1 }.to_json
+      )
+  end
+
+  def transmission_jsonrpc?(request, method:)
+    body = JSON.parse(request.body)
+    body["jsonrpc"] == "2.0" && body["method"] == method && body["id"] == 1
   end
 
   def stub_qbittorrent_magnet_add(magnet)
