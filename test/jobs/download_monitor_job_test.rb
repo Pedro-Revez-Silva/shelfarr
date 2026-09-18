@@ -524,6 +524,116 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "does not complete a SABnzbd download still in history post-processing" do
+    sabnzbd = DownloadClient.create!(
+      name: "Post-processing SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8080",
+      api_key: "test-api-key",
+      priority: 0,
+      enabled: true
+    )
+
+    @download.update!(
+      download_type: "usenet",
+      external_id: "SABnzbd_nzo_extracting",
+      download_client: sabnzbd,
+      progress: 100,
+      download_path: nil
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:8080/api.*mode=queue})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "queue" => { "slots" => [] } }.to_json
+        )
+
+      stub_request(:get, %r{localhost:8080/api.*mode=history})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "history" => {
+              "slots" => [
+                {
+                  "nzo_id" => "SABnzbd_nzo_extracting",
+                  "name" => "Unpacking Download",
+                  "status" => "Extracting",
+                  "bytes" => 1024,
+                  "storage" => ""
+                }
+              ]
+            }
+          }.to_json
+        )
+
+      assert_no_enqueued_jobs(only: PostProcessingJob) do
+        DownloadMonitorJob.perform_now
+      end
+
+      @download.reload
+      assert @download.downloading?
+      assert_not @download.completed?
+      assert @download.download_path.blank?
+    end
+  end
+
+  test "does not complete a SABnzbd history item whose storage path is still blank" do
+    sabnzbd = DownloadClient.create!(
+      name: "Blank-path SABnzbd",
+      client_type: "sabnzbd",
+      url: "http://localhost:8080",
+      api_key: "test-api-key",
+      priority: 0,
+      enabled: true
+    )
+
+    @download.update!(
+      download_type: "usenet",
+      external_id: "SABnzbd_nzo_blank_storage",
+      download_client: sabnzbd,
+      progress: 100
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:8080/api.*mode=queue})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "queue" => { "slots" => [] } }.to_json
+        )
+
+      stub_request(:get, %r{localhost:8080/api.*mode=history})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "history" => {
+              "slots" => [
+                {
+                  "nzo_id" => "SABnzbd_nzo_blank_storage",
+                  "name" => "Completed-looking Download",
+                  "status" => "Completed",
+                  "bytes" => 1024,
+                  "storage" => ""
+                }
+              ]
+            }
+          }.to_json
+        )
+
+      assert_no_enqueued_jobs(only: PostProcessingJob) do
+        DownloadMonitorJob.perform_now
+      end
+
+      @download.reload
+      assert @download.downloading?
+      assert @download.download_path.blank?
+    end
+  end
+
   test "ensure_running! only enqueues one monitor job while scheduled" do
     SettingsService.set(:download_check_interval, 60)
 

@@ -296,6 +296,87 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
     end
   end
 
+  test "torrent_info treats mid-post-processing history as not completed" do
+    VCR.turned_off do
+      %w[Queued QuickCheck Verifying Repairing Fetching Extracting Moving Running Checking].each do |status|
+        stub_sabnzbd_history_item(
+          nzo_id: "SABnzbd_nzo_pp",
+          status: status,
+          storage: ""
+        )
+
+        info = @client.torrent_info("SABnzbd_nzo_pp")
+
+        assert_not_nil info, "#{status} should remain visible in history"
+        assert_not info.completed?, "#{status} history must not be treated as completed"
+        assert_not info.failed?, "#{status} history must not be treated as failed"
+        assert_equal "", info.download_path
+      end
+    end
+  end
+
+  test "torrent_info treats completed history with a blank storage path as not ready" do
+    VCR.turned_off do
+      stub_sabnzbd_history_item(
+        nzo_id: "SABnzbd_nzo_blank",
+        status: "Completed",
+        storage: ""
+      )
+
+      info = @client.torrent_info("SABnzbd_nzo_blank")
+
+      assert_not_nil info
+      assert_not info.completed?
+      assert_equal "", info.download_path
+    end
+  end
+
+  test "torrent_info treats unknown history status as not completed" do
+    VCR.turned_off do
+      stub_sabnzbd_history_item(
+        nzo_id: "SABnzbd_nzo_unknown",
+        status: "SomethingNew",
+        storage: "/downloads/complete/Unknown"
+      )
+
+      info = @client.torrent_info("SABnzbd_nzo_unknown")
+
+      assert_not_nil info
+      assert_not info.completed?
+      assert_not info.failed?
+    end
+  end
+
+  test "torrent_info returns completed history with a reported storage path" do
+    VCR.turned_off do
+      stub_sabnzbd_history_item(
+        nzo_id: "SABnzbd_nzo_done",
+        status: "Completed",
+        storage: "/downloads/complete/Finished Book.m4b"
+      )
+
+      info = @client.torrent_info("SABnzbd_nzo_done")
+
+      assert info.completed?
+      assert_equal "/downloads/complete/Finished Book.m4b", info.download_path
+    end
+  end
+
+  test "torrent_info returns failed history as failed" do
+    VCR.turned_off do
+      stub_sabnzbd_history_item(
+        nzo_id: "SABnzbd_nzo_failed",
+        status: "Failed",
+        storage: ""
+      )
+
+      info = @client.torrent_info("SABnzbd_nzo_failed")
+
+      assert info.failed?
+      assert_not info.completed?
+    end
+  end
+
   test "torrent_info propagates queue API failures" do
     VCR.turned_off do
       stub_request(:get, %r{localhost:8080/api.*mode=queue})
@@ -305,5 +386,35 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
         @client.torrent_info("test_nzo_id")
       end
     end
+  end
+
+  private
+
+  def stub_sabnzbd_history_item(nzo_id:, status:, storage:)
+    stub_request(:get, %r{localhost:8080/api.*mode=queue})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "queue" => { "slots" => [] } }.to_json
+      )
+
+    stub_request(:get, %r{localhost:8080/api.*mode=history})
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: {
+          "history" => {
+            "slots" => [
+              {
+                "nzo_id" => nzo_id,
+                "name" => "History Item",
+                "status" => status,
+                "bytes" => 1024,
+                "storage" => storage
+              }
+            ]
+          }
+        }.to_json
+      )
   end
 end

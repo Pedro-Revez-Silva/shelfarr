@@ -215,13 +215,14 @@ module DownloadClients
     end
 
     def parse_history_item(data)
+      download_path = data["storage"].presence || ""
       Base::TorrentInfo.new(
         hash: data["nzo_id"],
         name: data["name"],
         progress: 100,
-        state: normalize_history_state(data["status"]),
+        state: normalize_history_state(data["status"], download_path: download_path),
         size_bytes: data["bytes"].to_i,
-        download_path: data["storage"].presence || ""
+        download_path: download_path
       )
     end
 
@@ -238,14 +239,19 @@ module DownloadClients
       end
     end
 
-    def normalize_history_state(status)
+    # SABnzbd moves a job into history as soon as the download finishes, then
+    # continues repair/unpack/move there. Those statuses (Queued, QuickCheck,
+    # Verifying, Repairing, Fetching, Extracting, Moving, Running, Checking)
+    # must not be treated as import-ready. Completed with a blank storage path
+    # is the same race: the file is not visible yet.
+    def normalize_history_state(status, download_path: "")
       case status&.downcase
       when "completed"
-        :completed
+        download_path.present? ? :completed : :downloading
       when "failed"
         :failed
       else
-        :completed
+        :downloading
       end
     end
   end

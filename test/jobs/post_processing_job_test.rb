@@ -3440,6 +3440,64 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_match /source path is blank/i, @request.issue_description
   end
 
+  test "re-reads a blank download path from SABnzbd so a post-processing retry can recover" do
+    client = DownloadClient.create!(
+      name: "Retry SABnzbd",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(
+      download_client: client,
+      external_id: "SABnzbd_nzo_retry_blank",
+      download_path: "",
+      post_processing_job_id: "failed-blank-path-job"
+    )
+    @request.update!(
+      status: :processing,
+      attention_needed: true,
+      issue_description: "Post-processing failed: Source path is blank because the download client did not report one"
+    )
+    SettingsService.set(:audiobookshelf_url, "")
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:8080/api.*mode=queue})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "queue" => { "slots" => [] } }.to_json
+        )
+      stub_request(:get, %r{localhost:8080/api.*mode=history})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "history" => {
+              "slots" => [
+                {
+                  "nzo_id" => "SABnzbd_nzo_retry_blank",
+                  "name" => "Recovered Download",
+                  "status" => "Completed",
+                  "bytes" => 1024,
+                  "storage" => @temp_source
+                }
+              ]
+            }
+          }.to_json
+        )
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete", "value" => "SABnzbd_nzo_retry_blank"))
+        .to_return(status: 200, body: { "status" => true }.to_json, headers: { "Content-Type" => "application/json" })
+
+      assert_equal :post_processing_queued, @request.retry_post_processing_now!
+      perform_enqueued_jobs only: PostProcessingJob
+    end
+
+    assert_equal @temp_source, @download.reload.download_path
+    assert @request.reload.completed?, @request.issue_description
+    assert_not @request.attention_needed?
+  end
+
   test "sends attention notification when post-processing fails" do
     @download.update!(download_path: "")
     attention_requests = []
