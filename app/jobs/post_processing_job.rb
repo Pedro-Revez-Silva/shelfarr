@@ -11,9 +11,9 @@ class PostProcessingJob < ApplicationJob
   EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
   EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
   # SABnzbd (and some torrent clients) report a completed file path instead of
-  # the job folder. Basename remapping must still recover that parent folder.
+  # the job folder. Remap through the parent while preserving the reported file.
   COMPLETED_DOWNLOAD_FILE_EXTENSIONS = (
-    EBOOK_FILE_EXTENSIONS + %w[m4b mp3 m4a aac flac ogg opus wma zip rar 7z tar gz tgz]
+    EBOOK_FILE_EXTENSIONS + AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS + %w[zip rar 7z tar gz tgz]
   ).freeze
   ERROR_DETAIL_CHARACTER_LIMIT = 500
   ERROR_DETAIL_INPUT_BYTE_LIMIT = ERROR_DETAIL_CHARACTER_LIMIT * 4
@@ -1458,7 +1458,12 @@ class PostProcessingJob < ApplicationJob
 
     candidates = build_path_candidates(path, download)
     parent_path = parent_directory_for_file_source(path, download)
-    candidates.concat(build_path_candidates(parent_path, download)) if parent_path.present?
+    if parent_path.present?
+      filename = File.basename(normalize_path_separators(path))
+      candidates.concat(build_path_candidates(parent_path, download).map do |candidate|
+        candidate.merge(path: File.join(candidate[:path], filename))
+      end)
+    end
     candidates = deduplicate_path_candidates(candidates)
 
     # Return the first candidate that actually exists on disk.
@@ -1561,8 +1566,8 @@ class PostProcessingJob < ApplicationJob
   end
 
   # Clients such as SABnzbd report a single-file release as the file itself.
-  # Remap the parent job folder as well so category/basename strategies still
-  # find the completed download. Skip parents that are shared download roots
+  # Remap through the parent job folder so category/basename strategies still
+  # find the reported file. Skip parents that are shared download roots
   # (category or configured mount) so we never import an entire queue folder.
   def parent_directory_for_file_source(path, download)
     normalized_path = normalize_path_separators(path)
