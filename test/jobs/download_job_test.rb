@@ -674,6 +674,46 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not @request.attention_needed?
   end
 
+  test "auto-selects the next candidate when Transmission cannot fetch a missing torrent" do
+    use_transmission_client!
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    @selected_result.update!(download_url: nil, magnet_url: "magnet:?xt=urn:btih:abcdef")
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+
+    VCR.turned_off do
+      stub_transmission_jsonrpc_handshake
+      stub_transmission_empty_torrent_list
+      stub_request(:post, "http://localhost:9091/transmission/rpc")
+        .with { |request| transmission_jsonrpc?(request, method: "torrent_add") }
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "error" => { "code" => 7, "message" => "HTTP error from backend service",
+              "data" => { "error_string" => "Couldn't fetch torrent: Not Found (404)" } },
+            "id" => 1
+          }.to_json
+        )
+
+      assert_enqueued_with(job: DownloadJob) do
+        DownloadJob.perform_now(@download.id)
+      end
+    end
+
+    assert @download.reload.failed?
+    assert @selected_result.reload.blocklisted?
+    assert fallback.reload.selected?
+    assert @request.reload.downloading?
+    assert_not @request.attention_needed?
+  end
+
   test "does not blocklist when qBittorrent add returns a transient HTTP status" do
     @selected_result.update!(
       download_url: nil,

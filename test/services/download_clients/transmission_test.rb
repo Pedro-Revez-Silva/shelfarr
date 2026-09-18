@@ -46,6 +46,29 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     Thread.current[:transmission_protocols] = {}
   end
 
+  [ :legacy, :jsonrpc ].each do |protocol|
+    [ 0, 408, 425, 429, 500, 503, 400, 404, 410 ].each do |status|
+      test "#{protocol} classifies torrent fetch status #{status}" do
+        message = "Couldn't fetch torrent: HTTP response (#{status})"
+        body = if protocol == :legacy
+          { "result" => message }
+        else
+          { "jsonrpc" => "2.0", "error" => {
+            "code" => 7, "message" => "HTTP error from backend service",
+            "data" => { "error_string" => message }
+          } }
+        end
+        expected = [ 0, 408, 425, 429, 500, 503 ].include?(status) ?
+          DownloadClients::Base::ConnectionError : DownloadClients::Base::Error
+
+        error = assert_raises(DownloadClients::Base::Error) do
+          @client.send(:parse_response, transmission_response(status: 200, body: body), "torrent-add", protocol)
+        end
+        assert_instance_of expected, error
+      end
+    end
+  end
+
   test "add_torrent adds torrent and returns hash" do
     VCR.turned_off do
       stub_session_handshake("http://localhost:9091/transmission/rpc")

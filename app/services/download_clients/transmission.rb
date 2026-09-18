@@ -62,7 +62,7 @@ module DownloadClients
     def torrent_info(hash)
       ensure_authenticated!
 
-      response = rpc_request("torrent-get", ids: [hash], fields: torrent_fields)
+      response = rpc_request("torrent-get", ids: [ hash ], fields: torrent_fields)
       return nil unless response && response["torrents"].is_a?(Array)
 
       info = response["torrents"].find { |torrent| transmission_value(torrent, "hash_string", "hashString") == hash.to_s }
@@ -94,7 +94,7 @@ module DownloadClients
     def remove_torrent(hash, delete_files: false)
       ensure_authenticated!
 
-      response = rpc_request("torrent-remove", ids: [hash], delete_local_data: delete_files)
+      response = rpc_request("torrent-remove", ids: [ hash ], delete_local_data: delete_files)
       !response.nil?
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Transmission: #{e.message}"
@@ -248,7 +248,11 @@ module DownloadClients
     end
 
     def torrent_source_fetch_failure?(message)
-      message.to_s.match?(/couldn't fetch torrent/i)
+      # Transmission uses the same fetch-error prefix for missing releases and
+      # temporary outages; its trailing code is the source HTTP status (0 when
+      # no response was received).
+      status = message.to_s[/couldn't fetch torrent:.*\((\d+)\)\s*\z/i, 1]
+      status.present? && (status.to_i.zero? || transient_http_status?(status))
     end
 
     def extract_session_id(response)
