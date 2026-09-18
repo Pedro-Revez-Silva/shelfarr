@@ -1450,6 +1450,10 @@ class PostProcessingJob < ApplicationJob
   # per-client download_path) without requiring a single "correct" configuration.
   def remap_download_path(path, download)
     if path.blank?
+      path = refresh_download_path_from_client(download).to_s
+    end
+
+    if path.blank?
       Rails.logger.warn "[PostProcessingJob] Download path is blank - download client didn't report a path"
       return { path: path, authorized_roots: [] }
     end
@@ -1484,6 +1488,27 @@ class PostProcessingJob < ApplicationJob
     # Return the first non-nil candidate so import_files produces a clear "not found" error
     best_guess = candidates.find { |c| c[:path].present? }
     best_guess || { path: path, authorized_roots: [] }
+  end
+
+  def refresh_download_path_from_client(download)
+    return if download.external_id.blank?
+
+    client = download.download_client
+    return unless client&.enabled?
+
+    info = client.adapter.torrent_info(download.external_id)
+    return unless info&.completed?
+
+    path = info&.download_path.to_s
+    return if path.blank?
+
+    download.update!(download_path: path)
+    path
+  rescue DownloadClients::Base::Error => e
+    Rails.logger.warn(
+      "[PostProcessingJob] Could not refresh blank download path from client for download ##{download.id}: #{e.class}"
+    )
+    nil
   end
 
   def build_path_candidates(path, download)
