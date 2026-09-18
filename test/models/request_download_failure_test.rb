@@ -110,6 +110,35 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     ).block?
   end
 
+  test "handle_download_failure keeps downloading while direct acquisition recovery remains" do
+    SettingsService.set(:auto_select_enabled, false)
+    request = build_request
+    failed_download = request.downloads.create!(
+      name: "Recoverable direct download", status: :failed, download_type: "direct",
+      direct_staging_path: "/ebooks/.shelfarr-staging/direct-downloads/recovery/download"
+    )
+
+    assert_equal :manual_review, request.handle_download_failure!(failed_download, reason: "Cleanup could not finish")
+
+    assert request.reload.downloading?
+    assert request.attention_needed?
+    assert_not request.search_refresh_allowed?
+    assert DuplicateDetectionService.check(
+      work_id: request.book.open_library_work_id, book_type: request.book.book_type
+    ).block?
+  end
+
+  test "idle client failure keeps downloading while another import awaits recovery" do
+    request = build_request
+    request.downloads.create!(name: "Recoverable import", status: :completed, post_processing_job_id: "recovery-owner")
+
+    request.mark_for_attention_after_idle_failure!("Client unavailable")
+
+    assert request.reload.downloading?
+    assert request.attention_needed?
+    assert_not request.search_refresh_allowed?
+  end
+
   test "handle_download_failure skips nil search result without crashing" do
     SettingsService.set(:auto_select_enabled, false)
     request = build_request

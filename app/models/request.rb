@@ -826,7 +826,7 @@ class Request < ApplicationRecord
   end
 
   def attention_status_after_idle_failure
-    return {} if downloads.where(status: SEARCH_REFRESH_BLOCKING_DOWNLOAD_STATUSES).exists?
+    return {} if search_refresh_acquisition_blocked?
 
     { status: :not_found }
   end
