@@ -85,8 +85,58 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     end
 
     assert selected.reload.blocklisted?
-    assert request.reload.attention_needed?
-    assert_includes request.issue_description, "Select another release manually"
+    assert_includes request.reload.issue_description, "Select another release manually"
+    assert_idle_attention_clears_downloading(request)
+  end
+
+  test "handle_download_failure keeps downloading while another acquisition download is still active" do
+    SettingsService.set(:auto_select_enabled, false)
+    request = build_request
+    selected = create_result(request, guid: "failed", status: :selected, seeders: 100)
+    other = create_result(request, guid: "still-active", status: :pending, seeders: 20)
+    failed_download = request.downloads.create!(name: selected.title, search_result: selected, status: :failed)
+    request.downloads.create!(name: other.title, search_result: other, status: :queued)
+
+    outcome = request.handle_download_failure!(failed_download, reason: "Dead torrent")
+
+    assert_equal :manual_review, outcome
+    assert request.reload.downloading?
+    assert request.attention_needed?
+    assert_not request.search_refresh_allowed?
+    assert_includes Request.active, request
+    assert DuplicateDetectionService.check(
+      work_id: request.book.open_library_work_id,
+      book_type: request.book.book_type
+    ).block?
+  end
+
+  test "handle_download_failure keeps downloading while direct acquisition recovery remains" do
+    SettingsService.set(:auto_select_enabled, false)
+    request = build_request
+    failed_download = request.downloads.create!(
+      name: "Recoverable direct download", status: :failed, download_type: "direct",
+      direct_staging_path: "/ebooks/.shelfarr-staging/direct-downloads/recovery/download"
+    )
+
+    assert_equal :manual_review, request.handle_download_failure!(failed_download, reason: "Cleanup could not finish")
+
+    assert request.reload.downloading?
+    assert request.attention_needed?
+    assert_not request.search_refresh_allowed?
+    assert DuplicateDetectionService.check(
+      work_id: request.book.open_library_work_id, book_type: request.book.book_type
+    ).block?
+  end
+
+  test "idle client failure keeps downloading while another import awaits recovery" do
+    request = build_request
+    request.downloads.create!(name: "Recoverable import", status: :completed, post_processing_job_id: "recovery-owner")
+
+    request.mark_for_attention_after_idle_failure!("Client unavailable")
+
+    assert request.reload.downloading?
+    assert request.attention_needed?
+    assert_not request.search_refresh_allowed?
   end
 
   test "handle_download_failure skips nil search result without crashing" do
@@ -97,8 +147,8 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     outcome = request.handle_download_failure!(failed_download, reason: "Legacy failure")
 
     assert_equal :manual_review, outcome
-    assert request.reload.attention_needed?
     assert_equal 0, request.search_results.blocklisted.count
+    assert_idle_attention_clears_downloading(request)
   end
 
   test "handle_download_failure is idempotent for an already blocklisted release" do
@@ -114,6 +164,7 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     end
 
     assert_equal "First failure", selected.reload.blocklist_reason
+    assert_idle_attention_clears_downloading(request)
   end
 
   test "blocklist_and_select_next cancels active downloads and runs selection even when auto-select is disabled" do
@@ -144,6 +195,22 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
   end
 
   private
+
+  def assert_idle_attention_clears_downloading(request)
+    request.reload
+    assert request.not_found?
+    assert request.attention_needed?
+    assert request.search_refresh_allowed?
+    assert request.can_retry?
+    assert_not_includes Request.active, request
+
+    result = DuplicateDetectionService.check(
+      work_id: request.book.open_library_work_id,
+      book_type: request.book.book_type
+    )
+    assert result.warn?
+    assert_includes result.message, "not found"
+  end
 
   def build_request(status: :downloading)
     book = Book.create!(title: "Fallback Book", author: "Fallback Author", book_type: :ebook, open_library_work_id: SecureRandom.uuid)

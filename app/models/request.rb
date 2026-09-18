@@ -107,6 +107,10 @@ class Request < ApplicationRecord
     NotificationService.request_attention(self)
   end
 
+  def mark_for_attention_after_idle_failure!(description)
+    mark_for_attention!(description, **attention_status_after_idle_failure)
+  end
+
   def clear_attention!
     update!(attention_needed: false, issue_description: nil)
   end
@@ -280,7 +284,7 @@ class Request < ApplicationRecord
       else
         "Download failed: #{reason}. Select another release manually."
       end
-      mark_for_attention!(manual_message)
+      mark_for_attention_after_idle_failure!(manual_message)
       return :manual_review
     end
 
@@ -819,6 +823,12 @@ class Request < ApplicationRecord
       upload_cancellation_blocked? ||
       post_processing_recovery_pending? ||
       direct_acquisition_recovery_pending?
+  end
+
+  def attention_status_after_idle_failure
+    return {} if search_refresh_acquisition_blocked?
+
+    { status: :not_found }
   end
 
   def enqueue_stale_client_cleanup(download)
