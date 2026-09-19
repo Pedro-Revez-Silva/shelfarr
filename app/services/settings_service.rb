@@ -605,7 +605,7 @@ class SettingsService
     end
 
     def anna_archive_configured?
-      get(:anna_archive_enabled, default: false) && configured?(:anna_archive_api_key)
+      get(:anna_archive_enabled, default: false)
     end
 
     def zlibrary_configured?

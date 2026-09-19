@@ -253,8 +253,13 @@ module Admin
     end
 
     def test_zlibrary
+      unless ZLibraryClient.enabled?
+        respond_with_flash(alert: "Z-Library is not enabled.")
+        return
+      end
+
       unless ZLibraryClient.configured?
-        respond_with_flash(alert: "Z-Library is not configured. Enable it and enter your account credentials first.")
+        respond_with_flash(alert: "Z-Library is not configured. Enter your account credentials first.")
         return
       end
 

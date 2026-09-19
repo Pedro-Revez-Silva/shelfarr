@@ -26,6 +26,13 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     assert_not ZLibraryClient.configured?
   end
 
+  test "enabled? follows the UI enable flag" do
+    assert ZLibraryClient.enabled?
+
+    SettingsService.set(:zlibrary_enabled, false)
+    assert_not ZLibraryClient.enabled?
+  end
+
   test "test_connection returns true when login succeeds" do
     VCR.turned_off do
       stub_zlibrary_login_success

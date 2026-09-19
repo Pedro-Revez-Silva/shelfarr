@@ -30,9 +30,9 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     assert_not AnnaArchiveClient.configured?
   end
 
-  test "configured? returns false when key is empty" do
+  test "configured? returns true when enabled without an API key" do
     SettingsService.set(:anna_archive_api_key, "")
-    assert_not AnnaArchiveClient.configured?
+    assert AnnaArchiveClient.configured?
   end
 
   test "enabled? returns true when setting is enabled" do
@@ -50,6 +50,29 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     assert_raises AnnaArchiveClient::NotConfiguredError do
       AnnaArchiveClient.search("test query")
     end
+  end
+
+  test "search works when enabled without an API key" do
+    SettingsService.set(:anna_archive_api_key, "")
+
+    VCR.turned_off do
+      stub_anna_search_with_results
+
+      results = AnnaArchiveClient.search("test book")
+
+      assert results.any?
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
+    end
+  end
+
+  test "get_download_url requires a member API key" do
+    SettingsService.set(:anna_archive_api_key, "")
+
+    error = assert_raises AnnaArchiveClient::NotConfiguredError do
+      AnnaArchiveClient.get_download_url("0123456789abcdef0123456789abcdef")
+    end
+
+    assert_includes error.message, "API key"
   end
 
   test "search parses HTML results" do

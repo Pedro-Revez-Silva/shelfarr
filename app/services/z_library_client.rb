@@ -34,6 +34,10 @@ class ZLibraryClient
       SettingsService.zlibrary_configured?
     end
 
+    def enabled?
+      SettingsService.get(:zlibrary_enabled, default: false)
+    end
+
     def test_connection
       test_connection!
     rescue Error => e

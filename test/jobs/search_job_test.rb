@@ -2457,6 +2457,26 @@ class SearchJobTest < ActiveJob::TestCase
     assert @request.search_results.none? { |result| direct_sources.include?(result.source) }
   end
 
+  test "treats enabled Anna's Archive as a search source without an API key" do
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:anna_archive_enabled, true)
+    SettingsService.set(:anna_archive_api_key, "")
+
+    searched = false
+    AnnaArchiveClient.stub :search, ->(*) {
+      searched = true
+      []
+    } do
+      SearchJob.perform_now(@request.id)
+    end
+
+    assert searched, "SearchJob should search Anna's Archive when the UI enabled flag is on"
+    @request.reload
+    assert @request.not_found?
+    assert_not @request.attention_needed?
+    assert_not_includes @request.issue_description.to_s, "No search sources configured"
+  end
+
   test "marks z-library as a valid configured source" do
     SettingsService.set(:prowlarr_api_key, "")
     SettingsService.set(:zlibrary_enabled, true)

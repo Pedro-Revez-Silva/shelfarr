@@ -56,13 +56,12 @@ class AnnaArchiveClient
   HttpResponse = Data.define(:status, :body)
 
   class << self
-    # Check if Anna's Archive is configured (has API key)
+    # Search is HTML-based and only needs the source enabled. Member
+    # downloads still require an API key (see get_download_url).
     def configured?
-      SettingsService.configured?(:anna_archive_api_key) &&
-        SettingsService.get(:anna_archive_enabled, default: false)
+      enabled?
     end
 
-    # Check if Anna's Archive is enabled but not necessarily with key
     def enabled?
       SettingsService.get(:anna_archive_enabled, default: false)
     end
@@ -89,6 +88,9 @@ class AnnaArchiveClient
     # Requires member API key
     def get_download_url(md5, path_index: 0, domain_index: 0)
       ensure_configured!
+      unless SettingsService.configured?(:anna_archive_api_key)
+        raise NotConfiguredError, "Anna's Archive member API key is required for downloads"
+      end
       unless md5.to_s.match?(/\A[0-9a-f]{32}\z/i)
         raise Error, "Selected Anna's Archive result has an invalid MD5"
       end

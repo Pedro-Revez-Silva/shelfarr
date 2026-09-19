@@ -213,6 +213,16 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal true, SettingsService.get(:precreate_download_archives)
   end
 
+  test "anna_archive_configured? follows the enabled flag without requiring an API key" do
+    SettingsService.set(:anna_archive_enabled, true)
+    SettingsService.set(:anna_archive_api_key, "")
+
+    assert SettingsService.anna_archive_configured?
+
+    SettingsService.set(:anna_archive_enabled, false)
+    assert_not SettingsService.anna_archive_configured?
+  end
+
   test "zlibrary_configured? requires enabled flag and credentials" do
     SettingsService.set(:zlibrary_enabled, true)
     SettingsService.set(:zlibrary_url, "https://z-library.sk")

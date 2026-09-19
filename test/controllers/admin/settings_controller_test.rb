@@ -1513,7 +1513,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_match /Telegram group removed: Readers/, flash[:notice]
   end
 
-  test "test_zlibrary fails when not configured" do
+  test "test_zlibrary fails when not enabled" do
     SettingsService.set(:zlibrary_enabled, false)
     SettingsService.set(:zlibrary_url, "")
     SettingsService.set(:zlibrary_email, "")
@@ -1522,7 +1522,20 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     post test_zlibrary_admin_settings_url
 
     assert_redirected_to admin_settings_path
-    assert_match /not configured/i, flash[:alert]
+    assert_match /not enabled/i, flash[:alert]
+  end
+
+  test "test_zlibrary asks for credentials when the UI already shows the source enabled" do
+    SettingsService.set(:zlibrary_enabled, true)
+    SettingsService.set(:zlibrary_url, "https://z-library.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+
+    post test_zlibrary_admin_settings_url
+
+    assert_redirected_to admin_settings_path
+    assert_match /credentials/i, flash[:alert]
+    assert_no_match /enable it/i, flash[:alert]
   end
 
   test "test_zlibrary succeeds when connection works" do
