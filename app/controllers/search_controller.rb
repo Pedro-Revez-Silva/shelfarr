@@ -255,7 +255,7 @@ class SearchController < ApplicationController
       default: ContentKinds::BOOK
     )
     @available_book_types = RequestOptionPolicy.book_types_for(@content_kind)
-    @collection_entries = collection_entries
+    @collection_entries = @collection_source == "hardcover" ? [] : collection_entries
 
     redirect_to search_path, alert: "Missing title information" if @work_id.blank? || @title.blank?
   end

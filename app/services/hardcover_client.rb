@@ -21,6 +21,8 @@ class HardcoverClient
   REQUEST_LOCK_TTL = HARD_REQUEST_TIMEOUT + 10.seconds
   REQUEST_LOCK_WAIT = REQUEST_LOCK_TTL + 1.second
   REQUEST_LOCK_POLL_INTERVAL = 0.05
+  SERIES_PAGE_SIZE = 100
+  MAX_SERIES_PAGES = 100
 
   # Custom error classes
   class Error < StandardError; end
@@ -154,17 +156,30 @@ class HardcoverClient
 
     def series_books(series_id, limit: nil)
       ensure_configured!
+      result_limit = limit.present? ? [ limit.to_i, 0 ].max : nil
+      return [] if result_limit == 0
 
-      limit_clause = limit.present? ? ", limit: $limit" : ""
       query_string = <<~GRAPHQL
-        query GetSeriesBooks($id: Int!#{", $limit: Int!" if limit.present?}) {
+        query GetSeriesBooks($id: Int!, $limit: Int!, $offset: Int!) {
           series(where: { id: { _eq: $id } }, limit: 1) {
             id
             name
-            book_series(order_by: { position: asc }#{limit_clause}) {
+            book_series(
+              where: {
+                book: { canonical_id: { _is_null: true }, is_partial_book: { _eq: false } },
+                compilation: { _eq: false }
+              },
+              order_by: [{ position: asc_nulls_last }, { id: asc }],
+              limit: $limit,
+              offset: $offset
+            ) {
+              id
               position
+              compilation
               book {
                 id
+                canonical_id
+                is_partial_book
                 title
                 description
                 release_year
@@ -180,29 +195,42 @@ class HardcoverClient
         }
       GRAPHQL
 
-      variables = { id: series_id.to_i }
-      variables[:limit] = limit.to_i if limit.present?
-      response = execute_query(query_string, variables)
-      series = Array(response.dig("data", "series")).first
-      return [] unless series
+      books_by_id = {}
+      seen_pages = {}
+      offset = 0
+      MAX_SERIES_PAGES.times do
+        page_size = result_limit ? [ SERIES_PAGE_SIZE, result_limit - books_by_id.size ].min : SERIES_PAGE_SIZE
+        response = execute_query(query_string, { id: series_id.to_i, limit: page_size, offset: offset })
+        series_list = response.dig("data", "series")
+        raise Error, "Hardcover returned an invalid series response" unless series_list.is_a?(Array)
 
-      Array(series["book_series"]).filter_map do |entry|
-        book = entry["book"]
-        next unless book.is_a?(Hash)
+        series = series_list.first
+        return [] if series.nil? && offset.zero?
+        raise Error, "Hardcover series disappeared while loading its books" unless series.is_a?(Hash)
 
-        SearchResult.new(
-          id: book["id"]&.to_s,
-          title: book["title"],
-          author: extract_author(book),
-          description: book["description"],
-          release_year: book["release_year"],
-          cover_url: extract_cover_url(book),
-          has_audiobook: false,
-          has_ebook: false,
-          series_name: series["name"],
-          series_position: normalize_series_position(entry["position"])
-        )
+        entries = series["book_series"]
+        unless entries.is_a?(Array) && entries.size <= page_size
+          raise Error, "Hardcover returned an invalid series page"
+        end
+
+        page_key = Digest::SHA256.hexdigest(entries.to_json)
+        raise Error, "Hardcover returned a repeated series page" if entries.any? && seen_pages[page_key]
+        seen_pages[page_key] = true
+
+        entries.each do |entry|
+          result = parse_series_book(entry, series["name"])
+          # Positions describe ordering, not identity. Keep different works at
+          # the same position so the collection preview can flag ambiguity.
+          books_by_id[result.id] ||= result if result
+        end
+
+        return books_by_id.values if entries.size < page_size || (result_limit && books_by_id.size >= result_limit)
+
+        offset += entries.size
       end
+
+      # Never turn a truncated collection into a successful whole-series import.
+      raise Error, "Hardcover series exceeds the maximum number of pages"
     end
 
     # Test API connection
@@ -676,6 +704,28 @@ class HardcoverClient
 
     def extract_author(doc)
       doc["author_names"]&.first || doc.dig("contributions", 0, "author", "name") || doc["author"]
+    end
+
+    def parse_series_book(entry, series_name)
+      book = entry["book"] if entry.is_a?(Hash)
+      unless book.is_a?(Hash) && book["id"].to_s.match?(/\A[1-9]\d*\z/) && book["title"].present?
+        raise Error, "Hardcover returned an invalid book in the series"
+      end
+
+      return if entry["compilation"] == true || book["is_partial_book"] == true || book["canonical_id"].present?
+
+      SearchResult.new(
+        id: book["id"].to_s,
+        title: book["title"],
+        author: extract_author(book),
+        description: book["description"],
+        release_year: book["release_year"],
+        cover_url: extract_cover_url(book),
+        has_audiobook: false,
+        has_ebook: false,
+        series_name: series_name,
+        series_position: normalize_series_position(entry["position"])
+      )
     end
 
     def parse_book_details(book)

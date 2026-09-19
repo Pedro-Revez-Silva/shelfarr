@@ -5,6 +5,10 @@ class Book < ApplicationRecord
   METADATA_SOURCE_NAMES = MetadataSources::NAMES
   ReferenceTargetRoot = Data.define(:path, :device, :inode)
 
+  belongs_to :book_work, optional: true
+
+  before_validation :attach_collection_work
+
   has_many :requests, dependent: :restrict_with_error
   has_many :uploads, dependent: :nullify
   has_many :owned_library_items, dependent: :nullify
@@ -256,9 +260,17 @@ class Book < ApplicationRecord
     scope = scope.or(where(comic_vine_id: comic_vine_ids)) if comic_vine_ids.any?
     scope = scope.or(where(open_library_work_id: openlibrary_ids)) if openlibrary_ids.any?
 
+    if hardcover_ids.any?
+      linked_work_ids = BookWork.where(source: "hardcover", source_id: hardcover_ids).select(:id)
+      scope = scope.or(where(book_work_id: linked_work_ids))
+    end
+
     lookup = Hash.new { |hash, key| hash[key] = {} }
-    scope.includes(:requests).find_each do |book|
-      work_ids_for(book).each do |unified_work_id|
+    scope.includes(:requests, :book_work).find_each do |book|
+      (work_ids_for(book) + [ book.book_work&.work_id ]).compact.uniq.each do |unified_work_id|
+        previous = lookup[unified_work_id][book.book_type]
+        next if previous && collection_duplicate_rank(previous) >= collection_duplicate_rank(book)
+
         lookup[unified_work_id][book.book_type] = book
 
         source, source_id = parse_work_id(unified_work_id)
@@ -267,6 +279,14 @@ class Book < ApplicationRecord
     end
 
     lookup
+  end
+
+  def self.collection_duplicate_rank(book)
+    return 4 if book.acquired?
+    return 3 if book.acquisition_reserved?
+    return 2 if book.requests.any?(&:open?)
+
+    1
   end
 
   def self.work_ids_for(book)
@@ -339,6 +359,13 @@ class Book < ApplicationRecord
   end
 
   private_class_method :normalize_reference_target_root, :conflicting_reference_target_roots?
+
+  def attach_collection_work
+    return if hardcover_id.blank?
+    return if book_work && book_work.source == "hardcover" && book_work.source_id == hardcover_id
+
+    self.book_work = BookWork.find_by(source: "hardcover", source_id: hardcover_id)
+  end
 
   def prevent_destroy_during_active_acquisition
     message = if acquisition_reserved?

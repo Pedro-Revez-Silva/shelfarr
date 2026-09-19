@@ -179,6 +179,157 @@ class HardcoverClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "series_books filters merged works partial books and compilations without collapsing positions" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_hardcover_series_books(987, "Test Series", [
+        series_entry(111, position: 1),
+        series_entry(111, position: 1, membership_id: 1001),
+        series_entry(112, position: 1),
+        series_entry(113, position: nil),
+        series_entry(114, position: nil),
+        series_entry(115, position: 2).deep_merge("book" => { "canonical_id" => 111 }),
+        series_entry(116, position: 3).deep_merge("book" => { "is_partial_book" => true }),
+        series_entry(117, position: 4).merge("compilation" => true)
+      ])
+
+      books = HardcoverClient.series_books(987)
+
+      assert_equal %w[111 112 113 114], books.map(&:id)
+      assert_equal [ "1", "1", nil, nil ], books.map(&:series_position)
+      assert_requested(:post, HardcoverClient::BASE_URL) do |request|
+        query = JSON.parse(request.body).fetch("query")
+        query.include?("canonical_id: { _is_null: true }") &&
+          query.include?("is_partial_book: { _eq: false }") &&
+          query.include?("compilation: { _eq: false }") &&
+          query.include?("order_by: [{ position: asc_nulls_last }, { id: asc }]") &&
+          !query.include?("distinct_on") && !query.include?("editions")
+      end
+    end
+  end
+
+  test "series_books follows pages and deduplicates work identities across pages" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_const(HardcoverClient, :SERIES_PAGE_SIZE, 2) do
+        first_page = stub_hardcover_series_books(987, "Test Series", [
+          series_entry(111, position: 1), series_entry(112, position: 2)
+        ], offset: 0, limit: 2)
+        second_page = stub_hardcover_series_books(987, "Test Series", [
+          series_entry(112, position: 2, membership_id: 1002), series_entry(113, position: 2)
+        ], offset: 2, limit: 2)
+        last_page = stub_hardcover_series_books(987, "Test Series", [
+          series_entry(114, position: nil)
+        ], offset: 4, limit: 2)
+
+        books = HardcoverClient.series_books(987)
+
+        assert_equal %w[111 112 113 114], books.map(&:id)
+        assert_equal [ "1", "2", "2", nil ], books.map(&:series_position)
+        assert books.all? { |book| book.series_name == "Test Series" }
+        [ first_page, second_page, last_page ].each { |page| assert_requested(page, times: 1) }
+      end
+    end
+  end
+
+  test "series_books limit counts distinct eligible works instead of raw memberships" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_const(HardcoverClient, :SERIES_PAGE_SIZE, 2) do
+        stub_hardcover_series_books(987, "Test Series", [
+          series_entry(111, position: 1), series_entry(111, position: 1, membership_id: 1001)
+        ], offset: 0, limit: 2)
+        stub_hardcover_series_books(987, "Test Series", [
+          series_entry(112, position: 2), series_entry(113, position: 3)
+        ], offset: 2, limit: 2)
+
+        assert_equal %w[111 112 113], HardcoverClient.series_books(987, limit: 3).map(&:id)
+        assert_requested(:post, HardcoverClient::BASE_URL, times: 2)
+      end
+    end
+  end
+
+  test "series_books returns an empty result for zero limit without fetching" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      assert_empty HardcoverClient.series_books(987, limit: 0)
+      assert_not_requested(:post, HardcoverClient::BASE_URL)
+    end
+  end
+
+  test "series_books returns an empty result for a missing series" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_request(:post, HardcoverClient::BASE_URL).to_return(
+        status: 200, headers: { "Content-Type" => "application/json" }, body: { data: { series: [] } }.to_json
+      )
+
+      assert_empty HardcoverClient.series_books(987)
+    end
+  end
+
+  test "series_books rejects invalid membership instead of returning an incomplete collection" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_hardcover_series_books(987, "Test Series", [ series_entry(111, position: 1), { "book" => nil } ])
+
+      error = assert_raises(HardcoverClient::Error) { HardcoverClient.series_books(987) }
+      assert_match "invalid book", error.message
+    end
+  end
+
+  test "series_books propagates a later page failure instead of returning a partial collection" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_const(HardcoverClient, :SERIES_PAGE_SIZE, 1) do
+        stub_hardcover_series_books(987, "Test Series", [ series_entry(111, position: 1) ], offset: 0, limit: 1)
+        stub_request(:post, HardcoverClient::BASE_URL)
+          .with { |request| JSON.parse(request.body).dig("variables", "offset") == 1 }
+          .to_return(status: 503)
+
+        assert_raises(HardcoverClient::Error) { HardcoverClient.series_books(987) }
+      end
+    end
+  end
+
+  test "series_books fails if the provider repeats a page" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_const(HardcoverClient, :SERIES_PAGE_SIZE, 1) do
+        stub_hardcover_series_books(987, "Test Series", [ series_entry(111, position: 1) ])
+
+        error = assert_raises(HardcoverClient::Error) { HardcoverClient.series_books(987) }
+        assert_match "repeated series page", error.message
+        assert_requested(:post, HardcoverClient::BASE_URL, times: 2)
+      end
+    end
+  end
+
+  test "series_books caps provider requests without returning a truncated collection" do
+    SettingsService.set(:hardcover_api_token, "test_token")
+
+    VCR.turned_off do
+      stub_const(HardcoverClient, :SERIES_PAGE_SIZE, 1) do
+        stub_const(HardcoverClient, :MAX_SERIES_PAGES, 2) do
+          stub_hardcover_series_books(987, "Test Series", [ series_entry(111, position: 1) ], offset: 0, limit: 1)
+          stub_hardcover_series_books(987, "Test Series", [ series_entry(112, position: 2) ], offset: 1, limit: 1)
+
+          error = assert_raises(HardcoverClient::Error) { HardcoverClient.series_books(987) }
+          assert_match "maximum number of pages", error.message
+          assert_requested(:post, HardcoverClient::BASE_URL, times: 2)
+        end
+      end
+    end
+  end
+
   test "book extracts cover_url from cached_image hash" do
     SettingsService.set(:hardcover_api_token, "test_token")
 
@@ -655,9 +806,23 @@ class HardcoverClientTest < ActiveSupport::TestCase
       )
   end
 
-  def stub_hardcover_series_books(id, name, book_series)
+  def series_entry(id, position:, membership_id: id)
+    {
+      "id" => membership_id,
+      "position" => position,
+      "compilation" => false,
+      "book" => { "id" => id, "title" => "Book #{id}", "canonical_id" => nil, "is_partial_book" => false }
+    }
+  end
+
+  def stub_hardcover_series_books(id, name, book_series, offset: nil, limit: nil)
     stub_request(:post, HardcoverClient::BASE_URL)
-      .with { |request| request.body.include?("GetSeriesBooks") && request.body.include?(id.to_s) }
+      .with do |request|
+        payload = JSON.parse(request.body)
+        variables = payload.fetch("variables")
+        payload.fetch("query").include?("GetSeriesBooks") && variables["id"] == id &&
+          (offset.nil? || variables["offset"] == offset) && (limit.nil? || variables["limit"] == limit)
+      end
       .to_return(
         status: 200,
         headers: { "Content-Type" => "application/json" },

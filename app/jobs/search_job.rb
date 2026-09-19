@@ -627,6 +627,8 @@ class SearchJob < ApplicationJob
       sr.published_at = nil
       sr.source = SearchResult::SOURCE_ZLIBRARY
       sr.detected_language = result.language
+      # This year describes the provider's offered publication, not its upload.
+      sr.provider_payload = { "edition_year" => result.year }.compact
     end
   end
 

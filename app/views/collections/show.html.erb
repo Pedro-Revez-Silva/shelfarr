@@ -1,0 +1,89 @@
+<% content_for :title, "#{@collection.title} · Collections · Shelfarr" %>
+
+<div class="mx-auto max-w-6xl">
+  <%= link_to "← Collections", collections_path, class: "text-sm text-gray-400 hover:text-white" %>
+  <div class="mt-5 flex items-start gap-5">
+    <% if @collection.cover_url.present? %>
+      <img src="<%= @collection.cover_url %>" alt="" class="hidden w-28 shrink-0 rounded-lg object-cover sm:block">
+    <% end %>
+    <div class="min-w-0">
+      <p class="text-sm font-medium text-emerald-400">Series collection</p>
+      <h1 class="mt-1 break-words text-3xl font-bold text-white"><%= @collection.title %></h1>
+      <% if @collection.author.present? %><p class="mt-2 text-lg text-gray-400"><%= @collection.author %></p><% end %>
+      <p class="mt-2 text-sm text-gray-500"><%= pluralize(@memberships.size, "book") %> · Hardcover</p>
+      <% if @collection.description.present? %><p class="mt-3 whitespace-pre-line text-sm text-gray-300"><%= truncate(@collection.description, length: 800) %></p><% end %>
+    </div>
+  </div>
+
+  <% if @errors.present? %>
+    <div role="alert" class="mt-6 rounded-lg border border-red-800 bg-red-950/30 p-4 text-sm text-red-200">
+      <% @errors.each do |error| %><p><%= error %></p><% end %>
+    </div>
+  <% end %>
+
+  <%= form_with url: request_books_collection_path(@collection), method: :post, data: { turbo: false, controller: "collection-selection" }, class: "mt-8" do %>
+    <div class="rounded-lg border border-gray-800 bg-gray-900 p-5">
+      <h2 class="text-lg font-semibold text-white">Request books</h2>
+      <p class="mt-1 text-sm text-gray-400">Each book appears once, regardless of edition. Copies already in your library or requested are skipped for each format.</p>
+      <div class="mt-5 flex flex-wrap items-start gap-x-10 gap-y-5">
+        <fieldset>
+          <legend class="mb-2 text-sm font-medium text-gray-300">Formats</legend>
+          <div class="flex gap-5">
+            <% [["ebook", "Ebooks"], ["audiobook", "Audiobooks"]].each do |value, label| %>
+              <label class="flex cursor-pointer items-center gap-2 text-white" for="book_type_<%= value %>">
+                <%= check_box_tag "book_types[]", value, @selected_book_types.include?(value), id: "book_type_#{value}", class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500", data: { collection_selection_target: "format", action: "change->collection-selection#update" } %>
+                <%= label %>
+              </label>
+            <% end %>
+          </div>
+        </fieldset>
+        <div>
+          <%= label_tag :language, "Language", class: "mb-1 block text-sm font-medium text-gray-300" %>
+          <%= select_tag :language, options_for_select(@enabled_languages, @language), class: "rounded-lg border-gray-700 bg-gray-800 text-sm text-white" %>
+        </div>
+      </div>
+      <label class="mt-5 flex cursor-pointer items-center gap-2 text-white" for="whole_series">
+        <%= hidden_field_tag :whole_series, "0" %>
+        <%= check_box_tag :whole_series, "1", @whole_series, class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500", data: { collection_selection_target: "wholeSeries", action: "change->collection-selection#update" } %>
+        Whole series
+      </label>
+      <p class="mt-1 text-sm text-gray-400">Uncheck to select individual books. Entries marked “Needs review” require individual selection.</p>
+      <div class="mt-5 flex flex-wrap items-center gap-4">
+        <%= submit_tag "Request missing books", class: "rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50", data: { collection_selection_target: "submit" } %>
+        <p class="text-sm text-amber-300" data-collection-selection-target="validation" role="status" aria-live="polite"></p>
+      </div>
+    </div>
+
+    <div class="mt-5 space-y-3" aria-label="Books in this collection">
+      <% @memberships.each do |membership| %>
+        <% work = membership.book_work %>
+        <article data-collection-membership="<%= membership.id %>" class="flex flex-wrap items-center gap-4 rounded-lg border border-gray-800 bg-gray-900 px-4 py-4 sm:flex-nowrap">
+          <%= check_box_tag "membership_ids[]", membership.id, @selected_membership_ids.include?(membership.id.to_s), id: "membership_#{membership.id}", class: "rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 disabled:opacity-40", aria: { label: "Select #{work.title}" }, data: { collection_selection_target: "member", action: "change->collection-selection#update" } %>
+          <% if work.cover_url.present? %>
+            <img src="<%= work.cover_url %>" alt="" loading="lazy" class="h-20 w-14 shrink-0 rounded object-cover">
+          <% else %>
+            <div class="flex h-20 w-14 shrink-0 items-center justify-center rounded bg-gray-800 text-[10px] text-gray-500">No cover</div>
+          <% end %>
+          <div class="min-w-0 flex-1">
+            <% if membership.position.present? %><p class="text-xs text-gray-500">Book <%= membership.position %></p><% end %>
+            <h3 class="break-words font-semibold text-white"><%= work.title %></h3>
+            <% if work.author.present? %><p class="mt-1 text-sm text-gray-400"><%= work.author %></p><% end %>
+            <% if membership.ambiguous? %>
+              <p class="mt-2 text-xs text-amber-300">Needs review · Not included in whole-series requests</p>
+            <% end %>
+          </div>
+          <dl class="grid w-full grid-cols-2 gap-3 border-t border-gray-800 pt-3 text-sm sm:w-auto sm:min-w-56 sm:border-0 sm:pt-0">
+            <% [["ebook", "Ebook"], ["audiobook", "Audiobook"]].each do |value, label| %>
+              <% status = @availability.fetch(membership.id).fetch(value) %>
+              <div data-format="<%= value %>">
+                <dt class="text-xs text-gray-500"><%= label %></dt>
+                <dd class="mt-1 <%= status == 'In library' ? 'text-emerald-300' : status == 'Missing' ? 'text-gray-400' : 'text-blue-300' %>"><%= status %></dd>
+              </div>
+            <% end %>
+          </dl>
+        </article>
+      <% end %>
+    </div>
+
+  <% end %>
+</div>

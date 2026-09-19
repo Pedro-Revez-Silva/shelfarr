@@ -182,6 +182,57 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_equal high_seeder, selection.search_result
   end
 
+  test "collection auto selection prefers a newer identified edition among equally suitable copies" do
+    @request.update!(request_scope: "collection")
+    older = create_search_result(source: SearchResult::SOURCE_ZLIBRARY,
+      size_bytes: 100, provider_payload: { "edition_year" => 2005 })
+    newer = create_search_result(source: SearchResult::SOURCE_ZLIBRARY,
+      size_bytes: 200, provider_payload: { "edition_year" => 2020 })
+
+    assert_equal older, @request.search_results.best_first.first
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal newer, selection.search_result
+  end
+
+  test "single request auto selection keeps existing ordering despite newer editions" do
+    older = create_search_result(source: SearchResult::SOURCE_ZLIBRARY,
+      size_bytes: 100, provider_payload: { "edition_year" => 2005 })
+    create_search_result(source: SearchResult::SOURCE_ZLIBRARY,
+      size_bytes: 200, provider_payload: { "edition_year" => 2020 })
+
+    assert_equal older, AutoSelectService.call(@request).search_result
+  end
+
+  test "collection edition preference cannot select unavailable or mismatched copies" do
+    @request.update!(request_scope: "collection")
+    eligible = create_search_result(source: SearchResult::SOURCE_ZLIBRARY,
+      size_bytes: 100, provider_payload: { "edition_year" => 2005 })
+    newer_attributes = { source: SearchResult::SOURCE_ZLIBRARY,
+                         size_bytes: 200, provider_payload: { "edition_year" => 2020 } }
+    create_search_result(newer_attributes.merge(detected_language: "pt"))
+    create_search_result(newer_attributes.merge(score_breakdown: { "auto_select_allowed" => false }))
+    blocked = create_search_result(newer_attributes)
+    blocked.blocklist!("Failed copy")
+    create_search_result(newer_attributes.merge(source: SearchResult::SOURCE_CUSTOM))
+
+    assert_equal eligible, AutoSelectService.call(@request).search_result
+  end
+
+  test "manual selection of an older collection edition remains available" do
+    @request.update!(request_scope: "collection")
+    older = create_search_result(source: SearchResult::SOURCE_ZLIBRARY,
+      provider_payload: { "edition_year" => 2005 })
+    create_search_result(source: SearchResult::SOURCE_ZLIBRARY,
+      provider_payload: { "edition_year" => 2020 })
+
+    @request.select_result!(older)
+
+    assert older.reload.selected?
+    assert_equal older.id, @request.downloads.last.search_result_id
+  end
+
   test "skips blocklisted best candidate and selects next eligible result" do
     blocklisted = create_search_result(seeders: 100, magnet_url: "magnet:?blocked")
     blocklisted.blocklist!("Previous failure")

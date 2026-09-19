@@ -53,6 +53,15 @@ class DuplicateDetectionService
         )
       end
 
+      if existing_book&.acquisition_reserved?
+        return Result.new(
+          status: BLOCK,
+          message: "An acquisition is already in progress for this #{label_for(book_type)}.",
+          existing_book: existing_book,
+          existing_request: nil
+        )
+      end
+
       # Check 3: Same work + type has pending/active request
       if existing_book
         active_request = existing_book.requests.open.first

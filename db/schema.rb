@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_19_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -63,12 +63,39 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
     t.index ["user_id"], name: "index_api_tokens_on_user_id"
   end
 
+  create_table "book_collections", force: :cascade do |t|
+    t.string "author"
+    t.string "cover_url"
+    t.datetime "created_at", null: false
+    t.text "description"
+    t.string "source", null: false
+    t.string "source_id", null: false
+    t.datetime "synced_at"
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.index ["source", "source_id"], name: "index_book_collections_on_source_and_source_id", unique: true
+  end
+
+  create_table "book_works", force: :cascade do |t|
+    t.string "author"
+    t.string "cover_url"
+    t.datetime "created_at", null: false
+    t.text "description"
+    t.integer "release_year"
+    t.string "source", null: false
+    t.string "source_id", null: false
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.index ["source", "source_id"], name: "index_book_works_on_source_and_source_id", unique: true
+  end
+
   create_table "books", force: :cascade do |t|
     t.integer "acquisition_reservation_owner_id"
     t.string "acquisition_reservation_owner_type"
     t.string "acquisition_reservation_token"
     t.string "author"
     t.integer "book_type", default: 0, null: false
+    t.integer "book_work_id"
     t.string "comic_vine_id"
     t.integer "content_kind", default: 0, null: false
     t.string "cover_url"
@@ -96,6 +123,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
     t.integer "year"
     t.index ["acquisition_reservation_token"], name: "index_books_on_acquisition_reservation_token", unique: true, where: "acquisition_reservation_token IS NOT NULL"
     t.index ["book_type"], name: "index_books_on_book_type"
+    t.index ["book_work_id"], name: "index_books_on_book_work_id"
     t.index ["comic_vine_id"], name: "index_books_on_comic_vine_id"
     t.index ["content_kind"], name: "index_books_on_content_kind"
     t.index ["google_books_id"], name: "index_books_on_google_books_id"
@@ -105,6 +133,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
     t.index ["open_library_edition_id"], name: "index_books_on_open_library_edition_id"
     t.index ["open_library_work_id"], name: "index_books_on_open_library_work_id"
     t.index ["series_position"], name: "index_books_on_series_position"
+  end
+
+  create_table "collection_memberships", force: :cascade do |t|
+    t.boolean "ambiguous", default: false, null: false
+    t.integer "book_collection_id", null: false
+    t.integer "book_work_id", null: false
+    t.datetime "created_at", null: false
+    t.string "position"
+    t.integer "sort_order", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["book_collection_id", "book_work_id"], name: "index_collection_memberships_on_collection_and_work", unique: true
+    t.index ["book_collection_id"], name: "index_collection_memberships_on_book_collection_id"
+    t.index ["book_work_id"], name: "index_collection_memberships_on_book_work_id"
   end
 
   create_table "download_clients", force: :cascade do |t|
@@ -582,6 +623,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
 
   add_foreign_key "activity_logs", "users"
   add_foreign_key "api_tokens", "users"
+  add_foreign_key "books", "book_works"
+  add_foreign_key "collection_memberships", "book_collections"
+  add_foreign_key "collection_memberships", "book_works"
   add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
   add_foreign_key "downloads", "search_results", on_delete: :nullify

@@ -525,6 +525,25 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     assert_no_match "available_book_types", response.body
   end
 
+  test "Hardcover details open the saved series flow without fetching its membership" do
+    HardcoverClient.stub(:configured?, false) do
+      MetadataCollectionService.stub(:expand, ->(**) { flunk "Hardcover details must not enumerate the series" }) do
+        get search_details_path, params: {
+          modal: "1", work_id: "hardcover:100", title: "The First Book",
+          collection_source: "hardcover", collection_id: "42", collection_title: "The Series"
+        }
+      end
+    end
+
+    assert_response :success
+    assert_select "turbo-frame#modal"
+    assert_select "form[action='#{collections_path}'][method=post][data-turbo=false]" do
+      assert_select "input[name=source_id][value='42']"
+      assert_select "button", text: "View series collection"
+    end
+    assert_select "form[action='#{requests_path}']", count: 0
+  end
+
   test "details renders modal with collection preview and collection request action" do
     preview_item = MetadataCollectionService::Item.new(
       work_id: "comic_vine:4000-101",

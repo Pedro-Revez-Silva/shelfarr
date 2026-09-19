@@ -2330,6 +2330,7 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal SearchResult::SOURCE_ZLIBRARY, saved_result.source
     assert_equal "999:deadbeef", saved_result.guid
     assert_equal "Z-Library", saved_result.indexer
+    assert_equal 2024, saved_result.provider_payload["edition_year"]
   end
 
   test "continues to z-library when indexer URL is invalid" do

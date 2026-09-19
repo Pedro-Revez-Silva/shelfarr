@@ -52,6 +52,11 @@ class AutoSelectService
       return SelectionResult.new(selected: false, reason: :below_seeder_threshold, search_result: best_result)
     end
 
+    best_result = EditionPreferenceService.call(
+      request: @request,
+      candidates: candidates.select { |candidate| meets_seeder_threshold?(candidate) }
+    )
+
     @request.select_result!(best_result)
     log_success(best_result)
     SelectionResult.new(selected: true, reason: :auto_selected, search_result: best_result)

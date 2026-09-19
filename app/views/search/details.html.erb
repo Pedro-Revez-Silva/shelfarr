@@ -104,11 +104,14 @@
         <% end %>
       </div>
 
-      <% if @collection_title.present? %>
+      <% if @collection_title.present? || (@collection_source == "hardcover" && @collection_id.present?) %>
         <div class="border-l-2 border-emerald-500/60 pl-4">
-          <p class="text-sm font-medium text-emerald-300">Part of <%= @collection_title %></p>
+          <p class="text-sm font-medium text-emerald-300">Part of <%= @collection_title.presence || "a series" %></p>
           <% if @series_position.present? %>
             <p class="mt-1 text-xs text-emerald-100/80">Position <%= @series_position %></p>
+          <% end %>
+          <% if @collection_source == "hardcover" && @collection_id.present? %>
+            <%= button_to "View series collection", collections_path, params: { source_id: @collection_id }, method: :post, class: "mt-3 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600", form: { data: { turbo: false } } %>
           <% end %>
         </div>
       <% end %>
@@ -142,7 +145,7 @@
     </div>
   </div>
 
-  <% if @collection_entries.any? %>
+  <% if @collection_entries.any? && @collection_source != "hardcover" %>
     <div class="mt-10 border-t border-gray-800 pt-8">
       <%= form_with url: requests_path, method: :post, data: { turbo: false, controller: "bulk-select" } do %>
         <%= hidden_field_tag :work_id, @work_id %>

@@ -60,6 +60,7 @@ Manual upload recovery screenshots: [Desktop](docs/screenshot-upload-recovery.jp
 
 The following integrations are opt-in and disabled by default:
 
+- **Series collections** save Hardcover series as underlying books, with independent ebook and audiobook selection and edition-aware duplicate protection. See [Series collections](docs/collections.md).
 - **Third-party stores** add a separate purchase-options section to a request. Shelfarr checks the seller's catalog, shows DRM-free formats, localized availability and an external purchase link, but never handles payment or treats an offer as a downloadable result. The first provider is eBooks.com. See [Third-party stores (Beta)](docs/drm-free-store-providers.md).
 - **Audible Backup, powered by Libation** connects Shelfarr to an optional companion service running the unmodified, pinned [Libation](https://github.com/rmcrackan/Libation) CLI. Its Settings-style page separates Overview, Connection, Automation, and diagnostic Catalog concerns. After the first sync, Shelfarr asks whether to queue a conservative one-time backup of eligible existing purchases; the durable background batch and individual-title work are managed from the main Library while Libation processes one title at a time. Scheduled sync is optional, with a 24-hour default and an hourly option. Automatic backup for future purchases remains a separate opt-in. It is not an Audible store or general metadata provider. See [Audible Backup (Beta)](docs/audible-backup.md).
 

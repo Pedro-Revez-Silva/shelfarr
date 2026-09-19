@@ -1,0 +1,58 @@
+<% content_for :title, "Collections · Shelfarr" %>
+
+<div class="mx-auto max-w-6xl">
+  <h1 class="text-3xl font-bold text-white">Collections</h1>
+  <p class="mt-2 text-gray-400">Your saved book series. Request the missing ebooks, audiobooks, or both.</p>
+
+  <section class="my-8 rounded-lg border border-gray-800 bg-gray-900 p-5" aria-labelledby="add-series-heading">
+    <h2 id="add-series-heading" class="text-lg font-semibold text-white">Add a series</h2>
+    <p class="mt-1 text-sm text-gray-400">Open a book in Search and choose its series collection, or enter a Hardcover series ID.</p>
+    <% if @errors.present? %>
+      <div role="alert" class="mt-4 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-200">
+        <% @errors.each do |error| %><p><%= error %></p><% end %>
+      </div>
+    <% end %>
+    <%= form_with url: collections_path, method: :post, data: { turbo: false }, class: "mt-4 flex flex-wrap items-end gap-3" do |form| %>
+      <div class="min-w-0 flex-1">
+        <%= form.label :source_id, "Hardcover series ID", class: "mb-1 block text-sm font-medium text-gray-300" %>
+        <%= form.text_field :source_id, value: (@source_id if @source_id.is_a?(String)), inputmode: "numeric", pattern: "[1-9][0-9]*", required: true, maxlength: 10, placeholder: "For example, 1", class: "w-full rounded-lg border-gray-700 bg-gray-800 text-white" %>
+      </div>
+      <%= form.submit "Add series", class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-500" %>
+    <% end %>
+  </section>
+
+  <% if @collections.empty? %>
+    <div class="rounded-lg border border-dashed border-gray-800 px-5 py-14 text-center">
+      <h2 class="text-lg font-medium text-gray-300">No collections yet</h2>
+      <p class="mt-2 text-sm text-gray-500">Start with a series you want to read or listen to.</p>
+      <%= link_to "Search books", search_path, class: "mt-5 inline-block rounded-lg bg-gray-800 px-4 py-2 text-white hover:bg-gray-700" %>
+    </div>
+  <% else %>
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <% @collections.each do |collection| %>
+        <%= link_to collection_path(collection), class: "flex gap-4 rounded-lg border border-gray-800 bg-gray-900 p-4 transition hover:border-blue-500" do %>
+          <% if collection.cover_url.present? %>
+            <img src="<%= collection.cover_url %>" alt="" loading="lazy" class="h-28 w-20 shrink-0 rounded object-cover">
+          <% else %>
+            <div class="flex h-28 w-20 shrink-0 items-center justify-center rounded bg-gray-800 text-xs text-gray-500">No cover</div>
+          <% end %>
+          <div class="min-w-0">
+            <h2 class="break-words text-lg font-semibold text-white"><%= collection.title %></h2>
+            <% if collection.author.present? %><p class="mt-1 text-sm text-gray-400"><%= collection.author %></p><% end %>
+            <% count = @membership_counts.fetch(collection.id, 0) %>
+            <p class="mt-3 text-sm text-gray-500"><%= pluralize(count, "book") %></p>
+          </div>
+        <% end %>
+      <% end %>
+    </div>
+    <% if @total_pages > 1 %>
+      <nav class="mt-6 flex items-center justify-between text-sm text-gray-400" aria-label="Collection pages">
+        <p>Page <%= @page %> of <%= @total_pages %></p>
+        <div class="flex gap-3">
+          <%= link_to "Previous", collections_path(page: @page - 1), class: "rounded-md bg-gray-800 px-3 py-2 text-white" if @page > 1 %>
+          <%= link_to "Next", collections_path(page: @page + 1), class: "rounded-md bg-gray-800 px-3 py-2 text-white" if @page < @total_pages %>
+        </div>
+      </nav>
+    <% end %>
+  <% end %>
+</div>

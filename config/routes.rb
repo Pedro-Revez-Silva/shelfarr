@@ -29,6 +29,10 @@ Rails.application.routes.draw do
     end
   end
 
+  resources :collections, only: [ :index, :show, :create ] do
+    post :request_books, on: :member
+  end
+
   # Profile
   resource :profile, only: [ :show, :edit, :update ] do
     get :password, on: :member

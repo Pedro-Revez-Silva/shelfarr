@@ -51,6 +51,7 @@
                   <% end %>
                 </div>
                 <%= link_to "Library", library_index_path, class: "text-gray-400 hover:text-white font-medium transition" %>
+                <%= link_to "Collections", collections_path, class: "text-gray-400 hover:text-white font-medium transition" %>
                 <% if allowed_to?(:index?, Upload) %>
                   <%= link_to "Uploads", uploads_path, class: "text-gray-400 hover:text-white font-medium transition" %>
                 <% end %>
@@ -132,6 +133,7 @@
               <% end %>
             </div>
             <%= link_to "Library", library_index_path, class: "py-2 text-gray-300 hover:text-white font-medium transition", data: { action: "mobile-menu#close" } %>
+            <%= link_to "Collections", collections_path, class: "py-2 text-gray-300 hover:text-white font-medium transition", data: { action: "mobile-menu#close" } %>
             <% if allowed_to?(:index?, Upload) %>
               <%= link_to "Uploads", uploads_path, class: "py-2 text-gray-300 hover:text-white font-medium transition", data: { action: "mobile-menu#close" } %>
             <% end %>

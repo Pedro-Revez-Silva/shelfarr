@@ -98,6 +98,11 @@ Recommended result fields:
 - `availability`: `available`, `unknown`, `temporarily_unavailable`, or provider-specific text
 - `info_url`
 - `published_at`
+- `edition_year`: optional publication year of the offered edition, as an integer
+  or four-digit string. Collection requests can use a known year to prefer a
+  newer edition among otherwise equally suitable results. Do not use the upload
+  year for this field; omit it when the edition is unknown. See
+  [Series collections](collections.md#edition-preference).
 
 Shelfarr stores the full result object as provider metadata so `/acquire` can receive it later.
 

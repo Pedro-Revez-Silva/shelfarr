@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class RequestCreationService
+  class IdentityConflictError < StandardError; end
+
   RequestInput = Data.define(:work_id, :source_work_ids, :metadata_attrs)
 
   Result = Data.define(:created_requests, :warnings, :errors, :queued) do
@@ -23,7 +25,7 @@ class RequestCreationService
     end
   end
 
-  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil, collection_item_ids: nil, expand_collection: false)
+  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil, collection_item_ids: nil, expand_collection: false, collection_item: false)
     @user = user
     @work_id = work_id.to_s.strip
     @source_work_ids = BookMetadataLookupService.normalize_work_ids([ @work_id, *Array(source_work_ids) ])
@@ -35,18 +37,20 @@ class RequestCreationService
     @origin = origin.to_h.symbolize_keys
     @collection_item_ids = Array(collection_item_ids).compact_blank.map(&:to_s).uniq
     @expand_collection = expand_collection
+    @collection_item = collection_item
+    @collection_warnings = []
   end
 
   def call
     return failure("Missing required information") if work_id.blank? || book_types.empty?
     return failure(incompatible_book_types_error) unless RequestOptionPolicy.permitted_book_types?(book_types, metadata_attrs[:content_kind])
-    return enqueue_collection_expansion if collection_request? && !expand_collection?
+    return enqueue_collection_expansion if collection_request? && !expand_collection? && !@collection_item
 
     request_inputs = build_request_inputs
     return failure("Collection did not contain any requestable items") if request_inputs.empty?
 
     created_requests = []
-    warnings = []
+    warnings = @collection_warnings.dup
     errors = []
     existing_books_lookup = Book.preload_by_work_ids(request_inputs.flat_map(&:source_work_ids))
 
@@ -56,32 +60,48 @@ class RequestCreationService
         next
       end
 
-      book_types.each do |book_type|
-        duplicate_check = DuplicateDetectionService.check(
-          work_id: input.work_id,
-          source_work_ids: input.source_work_ids,
-          book_type: book_type,
-          existing_books_lookup: existing_books_lookup
-        )
+      input_requests = []
+      with_work_identity(input) do |resolved_input, work|
+        lookup = work ? Book.preload_by_work_ids(resolved_input.source_work_ids) : existing_books_lookup
+        book_types.each do |book_type|
+          duplicate_check = DuplicateDetectionService.check(
+            work_id: resolved_input.work_id,
+            source_work_ids: resolved_input.source_work_ids,
+            book_type: book_type,
+            existing_books_lookup: lookup
+          )
 
-        if duplicate_check.block?
-          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate_check.message}"
-          next
-        end
+          if duplicate_check.block?
+            errors << "#{resolved_input.metadata_attrs[:title].presence || resolved_input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate_check.message}"
+            next
+          end
 
-        warnings << duplicate_check.message if duplicate_check.warn?
+          warnings << duplicate_check.message if duplicate_check.warn?
 
-        book = find_or_create_book_for_source(book_type, input: input, existing_books_lookup: existing_books_lookup)
-        request = build_request(book, input.metadata_attrs)
+          book = find_or_create_book_for_source(book_type, input: resolved_input, existing_books_lookup: lookup, lookup_details: work.nil?)
+          request = build_request(book, resolved_input.metadata_attrs)
 
-        if request.save
-          after_create(request)
-          created_requests << request
-          input.source_work_ids.each { |source_work_id| existing_books_lookup[source_work_id.to_s][book.book_type] = book }
-        else
-          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{request.errors.full_messages.join(', ')}"
+          if request.save
+            if work
+              input_requests << request
+            else
+              # The legacy path has no enclosing identity transaction: each
+              # successful format is already durable even if the next fails.
+              created_requests << request
+              after_create(request)
+            end
+            resolved_input.source_work_ids.each { |source_work_id| lookup[source_work_id.to_s][book.book_type] = book }
+          else
+            errors << "#{resolved_input.metadata_attrs[:title].presence || resolved_input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{request.errors.full_messages.join(', ')}"
+          end
         end
       end
+      # Dispatch each committed input before proceeding to the next. A later
+      # invalid member must not strand earlier requests or hide their result.
+      created_requests.concat(input_requests)
+      input_requests.each { |request| after_create(request) }
+    rescue IdentityConflictError, ActiveRecord::RecordInvalid => e
+      errors << "#{input.metadata_attrs[:title].presence || input.work_id}: #{e.message}"
     end
 
     Result.new(created_requests: created_requests, warnings: warnings.compact, errors: errors)
@@ -125,7 +145,7 @@ class RequestCreationService
   end
 
   def build_request_inputs
-    if collection_request?
+    if collection_request? && !@collection_item
       items = MetadataCollectionService.expand(
         source: metadata_attrs[:collection_source],
         collection_id: metadata_attrs[:collection_id],
@@ -136,6 +156,7 @@ class RequestCreationService
       # ticked in the collection view; without one the whole collection is
       # requested (API compatibility).
       items = items.select { |item| collection_item_ids.include?(item.work_id) } if collection_item_ids.any?
+      items = unambiguous_collection_items(items) if metadata_attrs[:collection_source] == "hardcover" && collection_item_ids.empty?
       items.map do |item|
         RequestInput.new(
           work_id: item.work_id,
@@ -150,6 +171,23 @@ class RequestCreationService
     else
       [ RequestInput.new(work_id: work_id, source_work_ids: source_work_ids, metadata_attrs: metadata_attrs) ]
     end
+  end
+
+  def unambiguous_collection_items(items)
+    items = items.uniq(&:work_id)
+    grouped = items.group_by do |item|
+      position = item.metadata_attrs[:series_position].to_s.strip.presence
+      next unless position
+
+      begin
+        BigDecimal(position).to_s("F")
+      rescue ArgumentError
+        position.downcase
+      end
+    end
+    ambiguous = grouped.filter_map { |position, members| members if position && members.many? }.flatten
+    @collection_warnings.concat(ambiguous.map { |item| "#{item.metadata_attrs[:title]}: review the conflicting series position before requesting." })
+    items - ambiguous
   end
 
   def collection_request?
@@ -184,16 +222,67 @@ class RequestCreationService
     Result.new(created_requests: [], warnings: [], errors: [], queued: true)
   end
 
-  def find_or_create_book_for_source(book_type, input:, existing_books_lookup:)
+  def with_work_identity(input)
+    matched_books = Book.preload_by_work_ids(input.source_work_ids).values.flat_map(&:values).uniq
+    existing_works = BookWork.where(id: matched_books.map(&:book_work_id).compact).to_a
+    hardcover_ids = input.source_work_ids.filter_map do |id|
+      source, source_id = Book.parse_work_id(id)
+      source_id if source == "hardcover"
+    end
+    hardcover_ids = (hardcover_ids + matched_books.map(&:hardcover_id) + existing_works.map(&:source_id)).compact_blank.uniq
+    if hardcover_ids.many? || existing_works.map(&:id).uniq.many?
+      raise IdentityConflictError, "These identifiers point to different books. Review the book match before requesting."
+    end
+
+    hardcover_id = hardcover_ids.first
+    return yield(input, nil) unless hardcover_id&.match?(/\A[1-9]\d*\z/)
+
+    work = BookWork.find_by(source: "hardcover", source_id: hardcover_id)
+    unless collection_request?
+      # Preserve ordinary request enrichment, but finish network access before
+      # entering the admission transaction. Recheck duplicates after locking.
+      details = BookMetadataLookupService.call([ "hardcover:#{hardcover_id}", *input.source_work_ids ].uniq, fallback: input.metadata_attrs)
+      input = RequestInput.new(work_id: input.work_id, source_work_ids: input.source_work_ids,
+        metadata_attrs: input.metadata_attrs.merge(details.compact))
+    end
+    unless work
+      # Establish identity before checking duplicates, including ordinary
+      # requests that arrive before the first series import. Existing library
+      # aliases are authoritative; title similarity is never an identity join.
+      attrs = input.metadata_attrs
+      attrs = matched_books.first.attributes.symbolize_keys.merge(attrs.compact_blank) if matched_books.any?
+      work = BookWork.create_or_find_by!(source: "hardcover", source_id: hardcover_id) do |record|
+        record.assign_attributes(attrs.slice(:title, :author, :cover_url, :description))
+        record.release_year = attrs[:first_publish_year] || attrs[:year]
+      end
+    end
+
+    # Canonical identity must be first in both fields: duplicate detection
+    # prepends work_id, and an alias-specific record may be an older empty copy.
+    input = RequestInput.new(work_id: work.work_id,
+      source_work_ids: ([ work.work_id ] + input.source_work_ids).uniq,
+      metadata_attrs: work.metadata_attrs.merge(input.metadata_attrs.compact_blank))
+
+    BookWork.transaction do
+      # SELECT FOR UPDATE is ineffective on SQLite. A write before rechecking
+      # ownership serializes admission across processes and overlapping series.
+      BookWork.where(id: work.id).update_all(updated_at: Time.current)
+      work.attach_existing_books!
+      yield(input, work)
+    end
+  end
+
+  def find_or_create_book_for_source(book_type, input:, existing_books_lookup:, lookup_details: true)
     book = Book.find_in_lookup(existing_books_lookup, input.source_work_ids, book_type: book_type)
     book ||= Book.find_or_initialize_by_work_id(input.work_id, book_type: book_type)
     input.source_work_ids.each { |source_work_id| book.assign_work_id(source_work_id) }
+    book.language = language.presence || SettingsService.get(:default_language, default: "en") if !book.acquired? && !book.acquisition_reserved?
     BookMetadataBackfillService.apply!(
       book,
       work_id: input.work_id,
       source_work_ids: input.source_work_ids,
       fallback_attrs: fallback_attrs(input.metadata_attrs),
-      lookup_details: !collection_request?
+      lookup_details: lookup_details && !collection_request?
     )
 
     book
