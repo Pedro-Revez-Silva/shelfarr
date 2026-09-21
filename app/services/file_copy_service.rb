@@ -1592,8 +1592,15 @@ class FileCopyService
           next unless manifest
 
           source_validator&.call
+          ignore_timestamps = unstable_file_timestamps?(parent)
           with_pinned_regular_child(parent, basename) do |current|
-            raise Errno::ESTALE, "library file changed after content validation" unless file_manifest_entry(current.stat) == manifest
+            unless file_manifests_equivalent?(
+              file_manifest_entry(current.stat),
+              manifest,
+              ignore_timestamps: ignore_timestamps
+            )
+              raise Errno::ESTALE, "library file changed after content validation"
+            end
           end
           validate_current_directory_identity!(parent_path, parent)
           parent_durable = sync_io(parent)
@@ -1627,13 +1634,26 @@ class FileCopyService
 
         validate_current_directory_identity!(snapshot.parent_path, parent)
         durable = false
+        ignore_timestamps = unstable_file_timestamps?(parent)
         with_pinned_regular_child(parent, snapshot.path.basename.to_s) do |file|
-          return false unless file_manifest_entry(file.stat) == snapshot.manifest
+          unless file_manifests_equivalent?(
+            file_manifest_entry(file.stat),
+            snapshot.manifest,
+            ignore_timestamps: ignore_timestamps
+          )
+            return false
+          end
 
           durable = sync_io(file)
         end
         with_pinned_regular_child(parent, snapshot.path.basename.to_s) do |current|
-          return false unless file_manifest_entry(current.stat) == snapshot.manifest
+          unless file_manifests_equivalent?(
+            file_manifest_entry(current.stat),
+            snapshot.manifest,
+            ignore_timestamps: ignore_timestamps
+          )
+            return false
+          end
         end
         parent_durable = sync_io(parent)
         return false if require_durable && !(durable && parent_durable)
@@ -1702,8 +1722,11 @@ class FileCopyService
         entries = Dir.children(parent_path)
         unless identity_reliable
           retained = entries.any? do |entry|
-            COPY_LOCK_PATTERN.match?(entry) || COPY_QUARANTINE_PATTERN.match?(entry) ||
+            next true if COPY_LOCK_PATTERN.match?(entry) ||
               DISCARD_PATTERN.match?(entry) || OWNER_PROBE_PATTERN.match?(entry)
+            next false unless COPY_QUARANTINE_PATTERN.match?(entry)
+
+            !empty_copy_quarantine?(parent_path, entry)
           end
           if retained
             Rails.logger.warn(
@@ -3769,12 +3792,31 @@ class FileCopyService
       [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.ctime.to_r, stat.mode & 0o7777 ]
     end
 
+    # CIFS/SMB can keep size and inode stable while mtime/ctime still settle
+    # after a write. Content validation already compared bytes; the follow-up
+    # re-stat only needs to prove the same published entry is still there.
+    def file_manifests_equivalent?(left, right, ignore_timestamps: false)
+      return left == right unless ignore_timestamps
+
+      left.values_at(0, 1, 2, 3, 6) == right.values_at(0, 1, 2, 3, 6)
+    end
+
     def stable_hardlink_manifest_entry(stat)
       [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.mode & 0o7777 ]
     end
 
     def stable_hardlink_snapshot_entry(manifest)
       [ *manifest.first(5), manifest.fetch(6) ]
+    end
+
+    def unstable_file_timestamps?(*filesystem_entries)
+      hardlink_identity_unreliable?(*filesystem_entries, reject_cifs: true)
+    end
+
+    def empty_copy_quarantine?(parent_path, entry)
+      Dir.children(File.join(parent_path, entry)).empty?
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR, Errno::ELOOP
+      false
     end
 
     def hardlink_identity_unreliable?(*filesystem_entries, reject_cifs: false)
