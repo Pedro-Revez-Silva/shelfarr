@@ -3809,8 +3809,23 @@ class FileCopyService
       [ *manifest.first(5), manifest.fetch(6) ]
     end
 
+    # CIFS/SMB (even with serverino) and DrvFS can keep inode and size stable
+    # while mtime/ctime still settle after a write. Unknown or unreadable
+    # mounts keep the strict timestamp check so local filesystems are not
+    # weakened when mount metadata is missing.
     def unstable_file_timestamps?(*filesystem_entries)
-      hardlink_identity_unreliable?(*filesystem_entries, reject_cifs: true)
+      return false unless RUBY_PLATFORM.include?("linux")
+
+      mounts, mount_parents = filesystem_mounts
+      filesystem_entries.any? do |entry|
+        mount = filesystem_mount_for(entry, mounts, mount_parents)
+        next false unless mount
+        next true if drvfs_mount_record?(mount)
+
+        mount.fetch(4).in?([ "cifs", "smb3" ])
+      end
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
+      false
     end
 
     def empty_copy_quarantine?(parent_path, entry)

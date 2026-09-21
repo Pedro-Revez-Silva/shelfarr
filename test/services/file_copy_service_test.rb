@@ -3806,6 +3806,19 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "local filesystems keep strict timestamp identity checks" do
+    assert_not FileCopyService.send(:unstable_file_timestamps?, @dest_dir)
+  end
+
+  test "unreadable mount metadata does not disable timestamp identity checks" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    File.stub(:binread, ->(*) { raise Errno::ENOENT }) do
+      assert FileCopyService.send(:hardlink_identity_unreliable?, @dest_dir)
+      assert_not FileCopyService.send(:unstable_file_timestamps?, @dest_dir)
+    end
+  end
+
   test "verified_library_file_snapshot rejects destination mtime/ctime settle on local filesystems" do
     destination = File.join(@dest_dir, "local-settling.txt")
     FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
