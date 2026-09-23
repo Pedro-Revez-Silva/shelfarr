@@ -2200,6 +2200,53 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_match(/require manual cleanup/, output.string)
   end
 
+  test "cleanup_interrupted_copies does not block retry for an empty CIFS quarantine" do
+    expected_stat = File.stat(@src_file)
+    quarantine = copy_quarantine_path(expected_stat, "9" * 32)
+    Dir.mkdir(quarantine, 0o700)
+    destination = File.join(@dest_dir, "retry-after-empty-quarantine.txt")
+
+    FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    end
+
+    assert File.directory?(quarantine)
+    assert_empty Dir.children(quarantine)
+    assert_equal "test content", File.binread(destination)
+  end
+
+  test "cleanup_interrupted_copies still blocks retry for a non-empty CIFS quarantine" do
+    expected_stat = File.stat(@src_file)
+    quarantine = copy_quarantine_path(expected_stat, "8" * 32)
+    Dir.mkdir(quarantine, 0o700)
+    entry = File.join(quarantine, FileCopyService::COPY_QUARANTINE_ENTRY)
+    File.binwrite(entry, "displaced bytes")
+
+    FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+        FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+      end
+    end
+
+    assert_equal "displaced bytes", File.binread(entry)
+  end
+
+  test "cleanup_interrupted_copies still blocks retry for a symlinked CIFS quarantine" do
+    target = File.join(@tmp_dir, "empty-quarantine-target")
+    Dir.mkdir(target)
+    quarantine = copy_quarantine_path(File.stat(@src_file), "7" * 32)
+    File.symlink(target, quarantine)
+
+    FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+        FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+      end
+    end
+
+    assert File.symlink?(quarantine)
+  end
+
   test "cleanup_interrupted_copies reclaims an identity-tagged discard" do
     discarded = File.join(@dest_dir, ".shelfarr-discard-placeholder.tmp")
     File.binwrite(discarded, "discarded bytes")
@@ -3781,6 +3828,251 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "test content", File.binread(displaced)
   end
 
+  test "CIFS serverino mounts keep stable identities but treat timestamps as unstable" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    with_mountinfo(cifs_serverino_mountinfo) do
+      assert_not FileCopyService.send(:hardlink_identity_unreliable?, @dest_dir)
+      assert FileCopyService.send(:unstable_file_timestamps?, @dest_dir)
+    end
+  end
+
+  test "local filesystems keep strict timestamp identity checks" do
+    assert_not FileCopyService.send(:unstable_file_timestamps?, @dest_dir)
+  end
+
+  test "unreadable mount metadata does not disable timestamp identity checks" do
+    skip "Linux mountinfo is required" unless RUBY_PLATFORM.include?("linux")
+
+    File.stub(:binread, ->(*) { raise Errno::ENOENT }) do
+      assert FileCopyService.send(:hardlink_identity_unreliable?, @dest_dir)
+      assert_not FileCopyService.send(:unstable_file_timestamps?, @dest_dir)
+    end
+  end
+
+  test "verified_library_file_snapshot rejects destination mtime/ctime settle on local filesystems" do
+    destination = File.join(@dest_dir, "local-settling.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    destination_identity = [ File.stat(destination).dev, File.stat(destination).ino ]
+
+    error = with_settling_destination_timestamps(destination) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.verified_library_file_snapshot(
+          @src_file,
+          destination,
+          root: @dest_dir,
+          require_durable: true
+        )
+      end
+    end
+
+    assert_match(/library file changed after content validation/, error.message)
+    assert_equal destination_identity, [ File.stat(destination).dev, File.stat(destination).ino ]
+    assert_equal "test content", File.binread(destination)
+  end
+
+  test "verified_library_file_snapshot tolerates CIFS mtime/ctime settle after content validation" do
+    destination = File.join(@dest_dir, "cifs-settling.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    destination_stat = File.stat(destination)
+
+    snapshot = FileCopyService.stub(:unstable_file_timestamps?, true) do
+      with_settling_destination_timestamps(destination) do
+        FileCopyService.verified_library_file_snapshot(
+          @src_file,
+          destination,
+          root: @dest_dir,
+          require_durable: true
+        )
+      end
+    end
+
+    settled = File.stat(destination)
+    assert snapshot
+    assert_equal [ destination_stat.dev, destination_stat.ino ], [ settled.dev, settled.ino ]
+    assert_equal destination_stat.size, settled.size
+    assert_not_equal destination_stat.mtime, settled.mtime
+    assert_equal "test content", File.binread(destination)
+    assert_equal FileCopyService.send(:file_manifest_entry, settled), snapshot.manifest
+    assert_equal Digest::SHA256.hexdigest("test content"), snapshot.content_digest
+    assert FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+  end
+
+  test "verified_library_file_snapshot rejects a same-size CIFS rewrite after content validation" do
+    destination = File.join(@dest_dir, "cifs-rewritten.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    destination_identity = [ File.stat(destination).dev, File.stat(destination).ino ]
+
+    error = FileCopyService.stub(:unstable_file_timestamps?, true) do
+      with_settling_destination_timestamps(destination, rewrite: "TEST CONTENT") do
+        assert_raises(Errno::ESTALE) do
+          FileCopyService.verified_library_file_snapshot(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            require_durable: true
+          )
+        end
+      end
+    end
+
+    assert_match(/library file changed after content validation/, error.message)
+    assert_equal destination_identity, [ File.stat(destination).dev, File.stat(destination).ino ]
+    assert_equal "TEST CONTENT", File.binread(destination)
+  end
+
+  test "verified_library_file_snapshot still rejects a replaced destination on CIFS" do
+    destination = File.join(@dest_dir, "cifs-replaced.txt")
+    displaced = File.join(@dest_dir, "cifs-displaced.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    real_open = FileCopyService.method(:with_pinned_regular_child)
+    destination_basename = File.basename(destination)
+    destination_opens = 0
+
+    replacing_open = lambda do |parent, basename, writable: false, &operation|
+      result = real_open.call(parent, basename, writable: writable, &operation)
+      if basename == destination_basename
+        destination_opens += 1
+        if destination_opens == 1
+          File.rename(destination, displaced)
+          File.binwrite(destination, "test content")
+          File.chmod(FileCopyService::LIBRARY_FILE_MODE, destination)
+        end
+      end
+      result
+    end
+
+    FileCopyService.stub(:unstable_file_timestamps?, true) do
+      FileCopyService.stub(:with_pinned_regular_child, replacing_open) do
+        assert_raises(Errno::ESTALE) do
+          FileCopyService.verified_library_file_snapshot(
+            @src_file,
+            destination,
+            root: @dest_dir,
+            require_durable: true
+          )
+        end
+      end
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal "test content", File.binread(displaced)
+    assert_not_equal File.stat(displaced).ino, File.stat(destination).ino
+  end
+
+  test "file_snapshot_current? tolerates CIFS mtime/ctime settle after the snapshot" do
+    destination = File.join(@dest_dir, "cifs-snapshot-settle.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    snapshot = FileCopyService.stub(:unstable_file_timestamps?, true) do
+      FileCopyService.verified_library_file_snapshot(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        require_durable: true
+      )
+    end
+    snapshotted_mtime = snapshot.manifest.fetch(4)
+    stat = File.stat(destination)
+    File.utime(stat.atime, stat.mtime + 1, destination)
+
+    assert FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+    assert_not_equal snapshotted_mtime, File.stat(destination).mtime.to_r
+    assert_equal "test content", File.binread(destination)
+  end
+
+  test "file_snapshot_current? rejects a same-size CIFS rewrite after the snapshot" do
+    destination = File.join(@dest_dir, "cifs-snapshot-rewrite.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    snapshot = FileCopyService.stub(:unstable_file_timestamps?, true) do
+      FileCopyService.verified_library_file_snapshot(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        require_durable: true
+      )
+    end
+    identity = [ File.stat(destination).dev, File.stat(destination).ino ]
+    stat = File.stat(destination)
+    File.open(destination, "r+b") { |file| file.write("TEST CONTENT") }
+    File.utime(stat.atime, stat.mtime + 1, destination)
+
+    assert_equal identity, [ File.stat(destination).dev, File.stat(destination).ino ]
+    assert_equal File.stat(@src_file).size, File.stat(destination).size
+    assert_not FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+  end
+
+  test "file_snapshot_current? rejects CIFS timestamps that keep changing during the re-read" do
+    destination = File.join(@dest_dir, "cifs-snapshot-unsettled.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    snapshot = FileCopyService.stub(:unstable_file_timestamps?, true) do
+      FileCopyService.verified_library_file_snapshot(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        require_durable: true
+      )
+    end
+    stat = File.stat(destination)
+    File.utime(stat.atime, stat.mtime + 1, destination)
+    real_identity = FileCopyService.method(:io_content_identity)
+    reads = 0
+    changing_identity = lambda do |io, **options|
+      reads += 1
+      identity = real_identity.call(io, **options)
+      stat = File.stat(destination)
+      File.utime(stat.atime, stat.mtime + 1, destination)
+      identity
+    end
+
+    current = FileCopyService.stub(:io_content_identity, changing_identity) do
+      FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+    end
+
+    assert_not current
+    assert_equal FileCopyService::TIMESTAMP_SETTLE_ATTEMPTS, reads
+    assert_equal "test content", File.binread(destination)
+  end
+
+  test "file_snapshot_current? keeps strict timestamps for snapshots without a content digest" do
+    destination = File.join(@dest_dir, "local-snapshot-settle.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      require_durable: true
+    )
+    stat = File.stat(destination)
+    File.utime(stat.atime, stat.mtime + 1, destination)
+
+    assert_nil snapshot.content_digest
+    assert_not FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+  end
+
+  test "file snapshot serialization round-trips the CIFS content digest" do
+    destination = File.join(@dest_dir, "cifs-serialized.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    snapshot = FileCopyService.stub(:unstable_file_timestamps?, true) do
+      FileCopyService.verified_library_file_snapshot(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        require_durable: true
+      )
+    end
+
+    attributes = JSON.parse(JSON.generate(FileCopyService.serialize_file_snapshot(snapshot)))
+    restored = FileCopyService.deserialize_file_snapshot(attributes)
+    legacy = FileCopyService.deserialize_file_snapshot(attributes.except("content_digest"))
+
+    assert_equal snapshot, restored
+    assert_nil legacy.content_digest
+    assert_equal snapshot.manifest, legacy.manifest
+    assert_raises(ArgumentError) do
+      FileCopyService.deserialize_file_snapshot(attributes.merge("content_digest" => "not-a-digest"))
+    end
+  end
+
   test "remove_source_file is idempotent when the source is already missing" do
     snapshot = FileCopyService.snapshot_source_file(@src_file)
     File.unlink(@src_file)
@@ -4567,6 +4859,42 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       @dest_dir,
       ".shelfarr-copy-quarantine-#{expected_stat.dev.to_s(16)}-#{expected_stat.ino.to_s(16)}-#{token}"
     )
+  end
+
+  def cifs_serverino_mountinfo
+    stat = File.stat(@tmp_dir)
+    device = "#{stat.dev_major}:#{stat.dev_minor}"
+    mountpoint = @tmp_dir.gsub(" ", "\\040")
+    "1 0 #{device} / #{mountpoint} rw,relatime - cifs //server/share " \
+      "rw,vers=3.1.1,cache=strict,serverino,actimeo=1\n"
+  end
+
+  def with_mountinfo(mountinfo, &operation)
+    real_binread = File.method(:binread)
+    File.stub(:binread, lambda { |path, *args|
+      path.to_s == "/proc/self/mountinfo" ? mountinfo.b : real_binread.call(path, *args)
+    }, &operation)
+  end
+
+  def with_settling_destination_timestamps(destination, rewrite: nil, &operation)
+    real_open = FileCopyService.method(:with_pinned_regular_child)
+    destination_basename = File.basename(destination)
+    destination_opens = 0
+
+    settling_open = lambda do |parent, basename, writable: false, &block|
+      result = real_open.call(parent, basename, writable: writable, &block)
+      if basename == destination_basename
+        destination_opens += 1
+        if destination_opens == 1 && File.exist?(destination)
+          stat = File.stat(destination)
+          File.open(destination, "r+b") { |file| file.write(rewrite) } if rewrite
+          File.utime(stat.atime, stat.mtime + 1, destination)
+        end
+      end
+      result
+    end
+
+    FileCopyService.stub(:with_pinned_regular_child, settling_open, &operation)
   end
 
   def with_root_squashed_creation(directory, effective_uid: 0, &operation)

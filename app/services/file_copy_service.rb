@@ -46,6 +46,7 @@ class FileCopyService
   SOURCE_QUARANTINE_PATTERN = /\A\.shelfarr-source-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   COPY_QUARANTINE_ENTRY = "entry"
   COPY_QUARANTINE_STALE_AGE = 24 * 60 * 60
+  TIMESTAMP_SETTLE_ATTEMPTS = 3
   AT_REMOVEDIR = RUBY_PLATFORM.include?("darwin") ? 0x80 : 0x200
 
   class UnsafePathError < StandardError
@@ -73,6 +74,7 @@ class FileCopyService
     :parent_device,
     :parent_inode,
     :manifest,
+    :content_digest,
     keyword_init: true
   )
   ReferenceRootSnapshot = Struct.new(:path, :device, :inode, keyword_init: true)
@@ -1561,6 +1563,8 @@ class FileCopyService
         with_pinned_destination_parent(destination_path, root: root) do |parent, basename, parent_path|
           file_durable = false
           manifest = nil
+          content_digest = nil
+          unstable_timestamps = unstable_file_timestamps?(parent)
           with_pinned_regular_child(parent, basename) do |destination|
             source_stat = source.stat
             destination_stat = destination.stat
@@ -1575,7 +1579,8 @@ class FileCopyService
 
             source.rewind
             destination.rewind
-            next unless compare_io(source, destination)
+            digest = Digest::SHA256.new if unstable_timestamps
+            next unless compare_io(source, destination, digest: digest)
 
             unless hardlink_mode
               apply_file_mode!(
@@ -1588,12 +1593,14 @@ class FileCopyService
             end
             file_durable = sync_io(destination)
             manifest = file_manifest_entry(destination.stat).freeze
+            content_digest = digest&.hexdigest&.freeze
           end
           next unless manifest
 
           source_validator&.call
           with_pinned_regular_child(parent, basename) do |current|
-            raise Errno::ESTALE, "library file changed after content validation" unless file_manifest_entry(current.stat) == manifest
+            manifest = settled_file_manifest(current, manifest, content_digest)
+            raise Errno::ESTALE, "library file changed after content validation" unless manifest
           end
           validate_current_directory_identity!(parent_path, parent)
           parent_durable = sync_io(parent)
@@ -1608,7 +1615,8 @@ class FileCopyService
             canonical_parent_path: Pathname(parent_path).realpath,
             parent_device: parent_stat.dev,
             parent_inode: parent_stat.ino,
-            manifest: manifest
+            manifest: manifest,
+            content_digest: content_digest
           ).freeze
         end
       end
@@ -1627,13 +1635,15 @@ class FileCopyService
 
         validate_current_directory_identity!(snapshot.parent_path, parent)
         durable = false
+        manifest = snapshot.manifest
         with_pinned_regular_child(parent, snapshot.path.basename.to_s) do |file|
-          return false unless file_manifest_entry(file.stat) == snapshot.manifest
+          manifest = settled_file_manifest(file, manifest, snapshot.content_digest)
+          return false unless manifest
 
           durable = sync_io(file)
         end
         with_pinned_regular_child(parent, snapshot.path.basename.to_s) do |current|
-          return false unless file_manifest_entry(current.stat) == snapshot.manifest
+          return false unless settled_file_manifest(current, manifest, snapshot.content_digest)
         end
         parent_durable = sync_io(parent)
         return false if require_durable && !(durable && parent_durable)
@@ -1662,7 +1672,9 @@ class FileCopyService
           "ctime_denominator" => manifest.fetch(5).denominator,
           "mode" => manifest.fetch(6)
         }
-      }
+      }.tap do |attributes|
+        attributes["content_digest"] = snapshot.content_digest if snapshot.content_digest
+      end
     end
 
     def deserialize_file_snapshot(attributes)
@@ -1687,8 +1699,16 @@ class FileCopyService
             Integer(manifest.fetch("ctime_denominator"))
           ),
           Integer(manifest.fetch("mode"))
-        ].freeze
+        ].freeze,
+        content_digest: content_digest_attribute(attributes["content_digest"])
       ).freeze
+    end
+
+    def content_digest_attribute(value)
+      return nil if value.nil?
+      raise ArgumentError, "invalid file snapshot content digest" unless value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/)
+
+      value.dup.freeze
     end
 
     # Reclaim private copy files left by a hard process exit. A unique lock
@@ -1702,8 +1722,11 @@ class FileCopyService
         entries = Dir.children(parent_path)
         unless identity_reliable
           retained = entries.any? do |entry|
-            COPY_LOCK_PATTERN.match?(entry) || COPY_QUARANTINE_PATTERN.match?(entry) ||
+            next true if COPY_LOCK_PATTERN.match?(entry) ||
               DISCARD_PATTERN.match?(entry) || OWNER_PROBE_PATTERN.match?(entry)
+            next false unless COPY_QUARANTINE_PATTERN.match?(entry)
+
+            !empty_copy_quarantine?(parent, entry)
           end
           if retained
             Rails.logger.warn(
@@ -3127,7 +3150,7 @@ class FileCopyService
       false
     end
 
-    def compare_io(left, right)
+    def compare_io(left, right, digest: nil)
       left_buffer = +""
       right_buffer = +""
       loop do
@@ -3135,6 +3158,8 @@ class FileCopyService
         right_bytes = right.read(BUFFER_SIZE, right_buffer)
         return true unless left_bytes || right_bytes
         return false unless left_bytes == right_bytes
+
+        digest&.update(right_bytes)
       end
     end
 
@@ -3769,12 +3794,66 @@ class FileCopyService
       [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.ctime.to_r, stat.mode & 0o7777 ]
     end
 
+    # CIFS/SMB can keep the inode and size of a freshly written file while the
+    # server commits mtime/ctime about a second later. A timestamp-only change
+    # is accepted only when the snapshot carries a digest of the validated
+    # bytes and a re-read of the pinned descriptor, bracketed by identical
+    # stats, still produces it. Same-size in-place writes are still rejected.
+    def settled_file_manifest(file, expected_manifest, content_digest)
+      current = file_manifest_entry(file.stat)
+      return expected_manifest if current == expected_manifest
+      return nil unless content_digest
+
+      TIMESTAMP_SETTLE_ATTEMPTS.times do
+        return nil unless timestamp_only_manifest_change?(current, expected_manifest)
+        return nil unless io_content_identity(file) == [ expected_manifest.fetch(3), content_digest ]
+
+        settled = file_manifest_entry(file.stat)
+        return settled.freeze if settled == current
+
+        current = settled
+      end
+      nil
+    end
+
+    def timestamp_only_manifest_change?(current, expected)
+      current.values_at(0, 1, 2, 3, 6) == expected.values_at(0, 1, 2, 3, 6)
+    end
+
     def stable_hardlink_manifest_entry(stat)
       [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.mode & 0o7777 ]
     end
 
     def stable_hardlink_snapshot_entry(manifest)
       [ *manifest.first(5), manifest.fetch(6) ]
+    end
+
+    # CIFS/SMB (even with serverino) and DrvFS can keep inode and size stable
+    # while mtime/ctime still settle after a write. Unknown or unreadable
+    # mounts keep the strict timestamp check so local filesystems are not
+    # weakened when mount metadata is missing.
+    def unstable_file_timestamps?(*filesystem_entries)
+      return false unless RUBY_PLATFORM.include?("linux")
+
+      mounts, mount_parents = filesystem_mounts
+      filesystem_entries.any? do |entry|
+        mount = filesystem_mount_for(entry, mounts, mount_parents)
+        next false unless mount
+        next true if drvfs_mount_record?(mount)
+
+        mount.fetch(4).in?([ "cifs", "smb3" ])
+      end
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
+      false
+    end
+
+    def empty_copy_quarantine?(parent, entry)
+      quarantine = open_pinned_directory_child(parent, entry)
+      pinned_directory_children(quarantine).empty?
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR, Errno::ELOOP, UnsafePathError
+      false
+    ensure
+      quarantine&.close unless quarantine&.closed?
     end
 
     def hardlink_identity_unreliable?(*filesystem_entries, reject_cifs: false)
