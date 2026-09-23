@@ -1726,7 +1726,7 @@ class FileCopyService
               DISCARD_PATTERN.match?(entry) || OWNER_PROBE_PATTERN.match?(entry)
             next false unless COPY_QUARANTINE_PATTERN.match?(entry)
 
-            !empty_copy_quarantine?(parent_path, entry)
+            !empty_copy_quarantine?(parent, entry)
           end
           if retained
             Rails.logger.warn(
@@ -3847,10 +3847,13 @@ class FileCopyService
       false
     end
 
-    def empty_copy_quarantine?(parent_path, entry)
-      Dir.children(File.join(parent_path, entry)).empty?
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR, Errno::ELOOP
+    def empty_copy_quarantine?(parent, entry)
+      quarantine = open_pinned_directory_child(parent, entry)
+      pinned_directory_children(quarantine).empty?
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR, Errno::ELOOP, UnsafePathError
       false
+    ensure
+      quarantine&.close unless quarantine&.closed?
     end
 
     def hardlink_identity_unreliable?(*filesystem_entries, reject_cifs: false)

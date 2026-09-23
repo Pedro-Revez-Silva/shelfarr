@@ -2216,6 +2216,37 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "test content", File.binread(destination)
   end
 
+  test "cleanup_interrupted_copies still blocks retry for a non-empty CIFS quarantine" do
+    expected_stat = File.stat(@src_file)
+    quarantine = copy_quarantine_path(expected_stat, "8" * 32)
+    Dir.mkdir(quarantine, 0o700)
+    entry = File.join(quarantine, FileCopyService::COPY_QUARANTINE_ENTRY)
+    File.binwrite(entry, "displaced bytes")
+
+    FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+        FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+      end
+    end
+
+    assert_equal "displaced bytes", File.binread(entry)
+  end
+
+  test "cleanup_interrupted_copies still blocks retry for a symlinked CIFS quarantine" do
+    target = File.join(@tmp_dir, "empty-quarantine-target")
+    Dir.mkdir(target)
+    quarantine = copy_quarantine_path(File.stat(@src_file), "7" * 32)
+    File.symlink(target, quarantine)
+
+    FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      assert_raises(FileCopyService::AtomicPublicationUnsupportedError) do
+        FileCopyService.cleanup_interrupted_copies(@dest_dir, root: @dest_dir)
+      end
+    end
+
+    assert File.symlink?(quarantine)
+  end
+
   test "cleanup_interrupted_copies reclaims an identity-tagged discard" do
     discarded = File.join(@dest_dir, ".shelfarr-discard-placeholder.tmp")
     File.binwrite(discarded, "discarded bytes")
@@ -3961,11 +3992,45 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       )
     end
     identity = [ File.stat(destination).dev, File.stat(destination).ino ]
+    stat = File.stat(destination)
     File.open(destination, "r+b") { |file| file.write("TEST CONTENT") }
+    File.utime(stat.atime, stat.mtime + 1, destination)
 
     assert_equal identity, [ File.stat(destination).dev, File.stat(destination).ino ]
     assert_equal File.stat(@src_file).size, File.stat(destination).size
     assert_not FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+  end
+
+  test "file_snapshot_current? rejects CIFS timestamps that keep changing during the re-read" do
+    destination = File.join(@dest_dir, "cifs-snapshot-unsettled.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    snapshot = FileCopyService.stub(:unstable_file_timestamps?, true) do
+      FileCopyService.verified_library_file_snapshot(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        require_durable: true
+      )
+    end
+    stat = File.stat(destination)
+    File.utime(stat.atime, stat.mtime + 1, destination)
+    real_identity = FileCopyService.method(:io_content_identity)
+    reads = 0
+    changing_identity = lambda do |io, **options|
+      reads += 1
+      identity = real_identity.call(io, **options)
+      stat = File.stat(destination)
+      File.utime(stat.atime, stat.mtime + 1, destination)
+      identity
+    end
+
+    current = FileCopyService.stub(:io_content_identity, changing_identity) do
+      FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+    end
+
+    assert_not current
+    assert_equal FileCopyService::TIMESTAMP_SETTLE_ATTEMPTS, reads
+    assert_equal "test content", File.binread(destination)
   end
 
   test "file_snapshot_current? keeps strict timestamps for snapshots without a content digest" do
