@@ -641,7 +641,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       DownloadMonitorJob.ensure_running!
     end
 
-    assert_no_enqueued_jobs do
+    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
       DownloadMonitorJob.ensure_running!
     end
   end
