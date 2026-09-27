@@ -364,10 +364,26 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "search raises BotProtectionError on 403 response" do
+  test "search raises BotProtectionError on 403 response when member sign-in fails" do
     VCR.turned_off do
       stub_request(:get, /annas-archive\.org\/search/)
         .to_return(status: 403, body: "Forbidden")
+      stub_failed_member_sign_in
+
+      error = assert_raises AnnaArchiveClient::BotProtectionError do
+        AnnaArchiveClient.search("test query")
+      end
+
+      assert_includes error.message, "FlareSolverr"
+      assert_requested :post, "https://annas-archive.org/account/"
+    end
+  end
+
+  test "search raises BotProtectionError when DDoS-Guard detected and member sign-in fails" do
+    VCR.turned_off do
+      stub_request(:get, /annas-archive\.org\/search/)
+        .to_return(status: 200, body: "<html>DDoS-Guard protection</html>")
+      stub_failed_member_sign_in
 
       error = assert_raises AnnaArchiveClient::BotProtectionError do
         AnnaArchiveClient.search("test query")
@@ -377,16 +393,18 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "search raises BotProtectionError when DDoS-Guard detected" do
+  test "search rejects a gated anonymous DDoS interstitial instead of treating it as results" do
     VCR.turned_off do
       stub_request(:get, /annas-archive\.org\/search/)
-        .to_return(status: 200, body: "<html>DDoS-Guard protection</html>")
+        .to_return(status: 200, body: gated_anonymous_search_page)
+      stub_failed_member_sign_in
 
       error = assert_raises AnnaArchiveClient::BotProtectionError do
         AnnaArchiveClient.search("test query")
       end
 
       assert_includes error.message, "FlareSolverr"
+      assert_requested :post, "https://annas-archive.org/account/"
     end
   end
 
@@ -396,6 +414,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
 
       stub_request(:get, /annas-archive\.org\/search/)
         .to_return(status: 403, body: "Forbidden")
+      stub_failed_member_sign_in
       stub_request(:get, /offline\.example\/search/)
         .to_raise(Faraday::ConnectionFailed.new("Connection failed"))
 
@@ -409,18 +428,152 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "search uses FlareSolverr when configured" do
+  test "search uses a cached member session cookie without signing in again" do
+    VCR.turned_off do
+      AnnaArchiveClient.send(:store_member_session, "https://annas-archive.org", "member-session")
+      signed_in_search = stub_signed_in_search("member-session")
+      sign_in = stub_member_sign_in
+
+      results = AnnaArchiveClient.search("test book")
+
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
+      assert_requested signed_in_search
+      assert_not_requested sign_in
+    end
+  end
+
+  test "search signs in with the member key after a check redirect" do
+    VCR.turned_off do
+      anonymous_search = stub_gated_anonymous_search(:check_redirect)
+      sign_in = stub_member_sign_in
+      signed_in_search = stub_signed_in_search("member-session")
+
+      results = AnnaArchiveClient.search("test book")
+
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
+      assert_requested anonymous_search
+      assert_requested sign_in
+      assert_requested signed_in_search
+    end
+  end
+
+  test "search signs in with the member key after a DDoS interstitial" do
+    VCR.turned_off do
+      stub_gated_anonymous_search(:interstitial)
+      stub_member_sign_in
+      stub_signed_in_search("member-session")
+
+      results = AnnaArchiveClient.search("test book")
+
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
+    end
+  end
+
+  test "search signs in with the member key after a 403" do
+    VCR.turned_off do
+      stub_gated_anonymous_search(:forbidden)
+      stub_member_sign_in
+      stub_signed_in_search("member-session")
+
+      results = AnnaArchiveClient.search("test book")
+
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
+    end
+  end
+
+  test "search reuses a member session cookie on later searches" do
+    VCR.turned_off do
+      stub_gated_anonymous_search(:check_redirect)
+      sign_in = stub_member_sign_in
+      signed_in_search = stub_signed_in_search("member-session")
+
+      first = AnnaArchiveClient.search("test book")
+      second = AnnaArchiveClient.search("test book")
+
+      assert_equal "0123456789abcdef0123456789abcdef", first.first.md5
+      assert_equal "0123456789abcdef0123456789abcdef", second.first.md5
+      assert_requested sign_in, times: 1
+      assert_requested signed_in_search, times: 2
+    end
+  end
+
+  test "search signs in again when a cached member session is rejected" do
+    VCR.turned_off do
+      stub_gated_anonymous_search(:check_redirect)
+      stub_request(:post, "https://annas-archive.org/account/")
+        .with { |request| form_includes_key?(request, "test-api-key") }
+        .to_return(
+          { status: 302, headers: { "Set-Cookie" => "#{AnnaArchiveClient::SESSION_COOKIE_NAME}=expired-session; Path=/" } },
+          { status: 302, headers: { "Set-Cookie" => "#{AnnaArchiveClient::SESSION_COOKIE_NAME}=fresh-session; Path=/" } }
+        )
+      expired_search = stub_request(:get, /annas-archive\.org\/search/)
+        .with(headers: { "Cookie" => "#{AnnaArchiveClient::SESSION_COOKIE_NAME}=expired-session" })
+        .to_return(
+          { status: 200, body: search_results_html },
+          { status: 302, headers: { "Location" => "https://annas-archive.org/search?q=test+book&check=1" } }
+        )
+      refreshed_search = stub_signed_in_search("fresh-session")
+
+      first = AnnaArchiveClient.search("test book")
+      second = AnnaArchiveClient.search("test book")
+
+      assert_equal "0123456789abcdef0123456789abcdef", first.first.md5
+      assert_equal "0123456789abcdef0123456789abcdef", second.first.md5
+      assert_requested :post, "https://annas-archive.org/account/", times: 2
+      assert_requested expired_search, times: 2
+      assert_requested refreshed_search
+    end
+  end
+
+  test "search falls back to FlareSolverr when member sign-in fails" do
     VCR.turned_off do
       SettingsService.set(:flaresolverr_url, "http://localhost:8191")
 
+      stub_gated_anonymous_search(:check_redirect)
+      stub_failed_member_sign_in
       stub_flaresolverr_with_search_results
+
       results = AnnaArchiveClient.search("test book")
 
-      assert results.is_a?(Array)
-      assert results.any?
       assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
-
+      assert_requested :post, "https://annas-archive.org/account/"
+      assert_requested :post, "http://localhost:8191/v1"
+    ensure
       SettingsService.set(:flaresolverr_url, "")
+    end
+  end
+
+  test "search does not use FlareSolverr when member sign-in succeeds" do
+    VCR.turned_off do
+      SettingsService.set(:flaresolverr_url, "http://localhost:8191")
+
+      stub_gated_anonymous_search(:check_redirect)
+      stub_member_sign_in
+      stub_signed_in_search("member-session")
+      flaresolverr = stub_flaresolverr_with_search_results
+
+      results = AnnaArchiveClient.search("test book")
+
+      assert_equal "0123456789abcdef0123456789abcdef", results.first.md5
+      assert_not_requested flaresolverr
+    ensure
+      SettingsService.set(:flaresolverr_url, "")
+    end
+  end
+
+  test "get_download_url does not sign in or send a member session cookie" do
+    VCR.turned_off do
+      AnnaArchiveClient.send(:store_member_session, "https://annas-archive.org", "member-session")
+      sign_in = stub_member_sign_in
+      stub_anna_download_api
+
+      url = AnnaArchiveClient.get_download_url("0123456789abcdef0123456789abcdef")
+
+      assert_equal "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", url
+      assert_not_requested sign_in
+      assert_requested :get, /annas-archive\.org\/dyn\/api\/fast_download\.json/ do |request|
+        request.headers["Cookie"].to_s.exclude?(AnnaArchiveClient::SESSION_COOKIE_NAME)
+      end
     end
   end
 
@@ -439,6 +592,77 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
   end
 
   private
+
+  def gated_anonymous_search_page
+    <<~HTML
+      <html>
+        <head><title>DDoS-Guard</title></head>
+        <body>Sorry, we could not verify your browser automatically. Complete the manual check to continue</body>
+      </html>
+    HTML
+  end
+
+  def search_results_html
+    <<~HTML
+      <html>
+        <body>
+          <a href="/md5/0123456789abcdef0123456789abcdef">
+            <div>
+              <h3>Test Book Title</h3>
+              <span class="author">by Test Author</span>
+              <span class="badge">epub</span>
+              <span>15.2 MB</span>
+              <span>English</span>
+              <span>2023</span>
+            </div>
+          </a>
+        </body>
+      </html>
+    HTML
+  end
+
+  def form_includes_key?(request, key)
+    URI.decode_www_form(request.body.to_s).include?([ "key", key ])
+  end
+
+  def stub_failed_member_sign_in(host: "annas-archive.org")
+    stub_request(:post, "https://#{host}/account/")
+      .to_return(status: 200, body: '<html><form action="/account/">Enter your secret key</form></html>')
+  end
+
+  def stub_member_sign_in(cookie: "member-session", host: "annas-archive.org", key: "test-api-key")
+    stub_request(:post, "https://#{host}/account/")
+      .with { |request| form_includes_key?(request, key) }
+      .to_return(
+        status: 302,
+        headers: {
+          "Set-Cookie" => "#{AnnaArchiveClient::SESSION_COOKIE_NAME}=#{cookie}; Path=/; HttpOnly; Secure; SameSite=Lax"
+        }
+      )
+  end
+
+  def stub_gated_anonymous_search(kind)
+    response = case kind
+    when :check_redirect
+      { status: 302, headers: { "Location" => "https://annas-archive.org/search?q=test+book&check=1" } }
+    when :forbidden
+      { status: 403, body: "Forbidden" }
+    when :interstitial
+      { status: 200, body: gated_anonymous_search_page }
+    else
+      raise ArgumentError, "Unknown gated search kind: #{kind}"
+    end
+
+    stub_request(:get, /annas-archive\.org\/search/)
+      .with { |request| request.headers["Cookie"].to_s.exclude?(AnnaArchiveClient::SESSION_COOKIE_NAME) }
+      .to_return(response)
+  end
+
+  def stub_signed_in_search(cookie)
+    stub_request(:get, /annas-archive\.org\/search/)
+      .with(headers: { "Cookie" => "#{AnnaArchiveClient::SESSION_COOKIE_NAME}=#{cookie}" })
+      .to_return(status: 200, body: search_results_html)
+  end
 
   def anna_search_page_without_results
     <<~HTML
@@ -487,25 +711,8 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
   end
 
   def stub_anna_search_with_results
-    html = <<~HTML
-      <html>
-        <body>
-          <a href="/md5/0123456789abcdef0123456789abcdef">
-            <div>
-              <h3>Test Book Title</h3>
-              <span class="author">by Test Author</span>
-              <span class="badge">epub</span>
-              <span>15.2 MB</span>
-              <span>English</span>
-              <span>2023</span>
-            </div>
-          </a>
-        </body>
-      </html>
-    HTML
-
     stub_request(:get, /annas-archive\.org\/search/)
-      .to_return(status: 200, body: html)
+      .to_return(status: 200, body: search_results_html)
   end
 
   def stub_anna_download_api
