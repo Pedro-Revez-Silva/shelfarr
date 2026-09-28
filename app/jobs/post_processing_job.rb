@@ -1530,6 +1530,21 @@ class PostProcessingJob < ApplicationJob
       }
     end
 
+    # 1b. Per-client download_path → local_path prefix replacement.
+    # Users often store the torrent client's host path on the client record and
+    # leave download_remote_path blank. Treat that value as a remap prefix so
+    # nested completed downloads stay visible on the container mount.
+    if client_download_path.present? &&
+        local_path.present? &&
+        client_download_path != remote_path &&
+        path_prefix_match?(normalized_path, client_download_path)
+      candidates << {
+        strategy: "client_prefix_remap",
+        path: replace_path_prefix(normalized_path, client_download_path, local_path),
+        authorized_roots: [ local_path ]
+      }
+    end
+
     # 2. local_path/category/basename — most common torrent client layout
     categories.each do |category|
       candidates << {

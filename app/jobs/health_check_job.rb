@@ -145,28 +145,39 @@ class HealthCheckJob < ApplicationJob
 
     issues = []
     local_path = SettingsService.get(:download_local_path, default: "/downloads")
+    local_visibility = visible_download_directory(local_path)
 
-    unless Dir.exist?(local_path)
+    case local_visibility[:status]
+    when :blank
+      issues << "Base download path not configured"
+    when :error
+      issues << "Base download path '#{local_path}' could not be checked: #{local_visibility[:error].message}"
+    when :missing
       issues << "Base download path '#{local_path}' does not exist in container"
     end
 
     clients.each do |client|
-      # Check client-specific download_path if set
       if client.download_path.present?
-        if !Dir.exist?(client.download_path)
+        visibility = visible_download_directory(client.download_path)
+        case visibility[:status]
+        when :error
+          issues << "#{client.name}: configured download path '#{client.download_path}' " \
+                    "could not be checked: #{visibility[:error].message}"
+        when :missing
           issues << "#{client.name}: configured download path '#{client.download_path}' does not exist"
         end
-      else
+      elsif client.qbittorrent_compatible? && client.category.present?
         # No client-specific download_path set, try the default pattern that qbittorrent will set
-        # Check category subfolder only for qBittorrent-compatible clients
-        if client.qbittorrent_compatible? && client.category.present?
-          base = client.download_path.presence || local_path
-          if Dir.exist?(base)
-            category_path = File.join(base, client.category)
-            unless Dir.exist?(category_path)
-              issues << "#{client.name}: category folder '#{category_path}' not found — " \
-                        "ensure your Docker mount includes the '#{client.category}' subfolder"
-            end
+        if local_visibility[:status] == :ok
+          category_path = File.join(local_visibility[:path] || local_path, client.category)
+          category_visibility = inspect_download_directory(category_path)
+          case category_visibility[:status]
+          when :error
+            issues << "#{client.name}: category folder '#{category_path}' " \
+                      "could not be checked: #{category_visibility[:error].message}"
+          when :missing
+            issues << "#{client.name}: category folder '#{category_path}' not found — " \
+                      "ensure your Docker mount includes the '#{client.category}' subfolder"
           end
         end
       end
@@ -192,9 +203,68 @@ class HealthCheckJob < ApplicationJob
     else
       health.check_failed!(
         message: issues.join("; ").truncate(500),
-        degraded: issues.none? { |i| i.include?("does not exist in container") }
+        degraded: issues.none? { |issue| hard_download_path_failure?(issue) }
       )
     end
+  rescue StandardError => e
+    SystemHealth.for_service("download_paths").check_failed!(
+      message: "Download paths could not be checked: #{e.message}".truncate(500)
+    )
+    Rails.logger.error "[HealthCheckJob] Download paths check failed: #{e.message}"
+  end
+
+  def hard_download_path_failure?(issue)
+    issue.include?("does not exist in container") || issue.include?("could not be checked") ||
+      issue.include?("not configured")
+  end
+
+  def visible_download_directory(path)
+    inspection = inspect_download_directory(path)
+    return inspection if inspection[:status] == :ok || inspection[:status] == :blank
+
+    remapped = remap_download_directory_to_local(path)
+    return inspection if remapped.blank? || remapped == path
+
+    remapped_inspection = inspect_download_directory(remapped)
+    remapped_inspection[:status] == :ok ? remapped_inspection : inspection
+  end
+
+  def inspect_download_directory(path)
+    normalized = normalize_download_path_separators(path)
+    return { status: :blank } if normalized.blank?
+
+    begin
+      return { status: :ok, path: normalized } if Dir.exist?(normalized)
+    rescue SystemCallError => error
+      return { status: :error, path: normalized, error: error }
+    end
+
+    { status: :missing, path: normalized }
+  end
+
+  def remap_download_directory_to_local(path)
+    normalized = normalize_download_path_separators(path)
+    remote_path = normalize_download_path_separators(SettingsService.get(:download_remote_path))
+    local_path = normalize_download_path_separators(SettingsService.get(:download_local_path, default: "/downloads"))
+    return if normalized.blank? || local_path.blank?
+    return unless remote_path.present? && download_path_prefix_match?(normalized, remote_path)
+
+    replace_download_path_prefix(normalized, remote_path, local_path)
+  end
+
+  def normalize_download_path_separators(path)
+    path.to_s.tr("\\", "/") if path.present?
+  end
+
+  def download_path_prefix_match?(path, prefix)
+    return false unless path.start_with?(prefix)
+
+    path.length == prefix.length || prefix.end_with?("/") || path[prefix.length] == "/"
+  end
+
+  def replace_download_path_prefix(path, remote_path, local_path)
+    suffix = path.delete_prefix(remote_path).sub(%r{\A/+}, "")
+    suffix.present? ? File.join(local_path, suffix) : local_path
   end
 
   def check_output_paths

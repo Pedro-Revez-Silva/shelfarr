@@ -557,6 +557,9 @@ module Admin
       if changed_keys.any? { |k| k.start_with?("audiobook_output_path") || k.start_with?("ebook_output_path") }
         run_service_health_check_now("output_paths")
       end
+      if changed_keys.any? { |k| k.start_with?("download_local_path") || k.start_with?("download_remote_path") }
+        run_service_health_check_now("download_paths")
+      end
       nil
     rescue StandardError => e
       Rails.logger.error("[SettingsController] Settings saved but a follow-up action failed: #{e.class}: #{e.message}")

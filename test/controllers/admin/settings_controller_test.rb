@@ -1153,6 +1153,33 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "bulk_update immediately updates download_paths health with failure reason" do
+    DownloadClient.destroy_all
+    DownloadClient.create!(
+      name: "Settings Path Client",
+      client_type: "qbittorrent",
+      url: "http://localhost:8080",
+      username: "admin",
+      password: "password",
+      category: "",
+      priority: 0,
+      enabled: true
+    )
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        download_local_path: "/definitely/missing/downloads",
+        download_remote_path: "/mnt/torrents/complete"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+
+    health = SystemHealth.for_service("download_paths")
+    assert health.down?
+    assert_includes health.message, "does not exist"
+  end
+
   # Test connection tests for Prowlarr
   test "test_prowlarr fails when not configured" do
     SettingsService.set(:prowlarr_url, "")

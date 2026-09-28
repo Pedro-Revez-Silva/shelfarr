@@ -2360,6 +2360,38 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "remaps a host-style client download_path prefix onto the local mount" do
+    FileUtils.rm_rf(@temp_source)
+    nested_source = File.join(@temp_source, "completed", "shelfarr")
+    FileUtils.mkdir_p(nested_source)
+    write_valid_ebook_file(File.join(nested_source, "Host Client Book.epub"))
+
+    client = DownloadClient.create!(
+      name: "Host Path Client",
+      client_type: :qbittorrent,
+      url: "http://localhost:8080",
+      download_path: "/mnt/torrents"
+    )
+
+    @book.update!(book_type: :ebook)
+    @download.update!(
+      download_client: client,
+      download_path: "/mnt/torrents/completed/shelfarr/Host Client Book.epub"
+    )
+
+    SettingsService.set(:download_remote_path, "")
+    SettingsService.set(:download_local_path, @temp_source)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    resolution = PostProcessingJob.new.send(
+      :remap_download_path,
+      @download.download_path,
+      @download.reload
+    )
+    assert_equal File.join(nested_source, "Host Client Book.epub"), resolution[:path]
+  end
+
   test "uses per-client download path when configured" do
     # Create a subdirectory in temp_source to simulate a download folder
     download_subdir = File.join(@temp_source, "Test Audiobook")
