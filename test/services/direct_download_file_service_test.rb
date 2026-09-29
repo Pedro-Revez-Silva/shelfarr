@@ -145,6 +145,26 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_nil DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
   end
 
+  test "legacy staging diagnostic does not treat current owned-media staging as leftover when a mount forces mode 0775" do
+    legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+    uploads = File.join(legacy, "uploads")
+    locks = File.join(legacy, "locks")
+    database_fingerprint = Digest::SHA256.hexdigest(
+      ActiveRecord::Base.connection_db_config.database.to_s
+    ).first(12)
+    upload_staging = File.join(uploads, database_fingerprint)
+    FileUtils.mkdir_p(upload_staging)
+    FileUtils.mkdir_p(locks)
+
+    # CIFS 3.1.1 mounts with forced dir_mode=0775 recreate Shelfarr's current
+    # uploads/<fingerprint>/ tree at 0775. Mode alone must not classify that
+    # live layout as leftover direct-download staging.
+    [ legacy, uploads, locks, upload_staging ].each { |path| File.chmod(0o775, path) }
+
+    assert_equal 0o775, File.lstat(legacy).mode & 0o7777
+    assert_nil DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
+  end
+
   test "legacy staging diagnostic accepts only uploads directory" do
     legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
     uploads = File.join(legacy, "uploads")
