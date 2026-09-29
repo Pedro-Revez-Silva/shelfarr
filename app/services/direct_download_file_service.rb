@@ -151,21 +151,25 @@ class DirectDownloadFileService
       legacy = root.join(LEGACY_STAGING_DIRECTORY)
       stat = File.lstat(legacy)
       mode = stat.mode & 0o7777
-      if stat.directory? && mode == 0o700
-        return if Dir.empty?(legacy)
-
-        # Check if the directory only contains current owned-media structure.
-        # OwnedMediaImportFileService still uses .shelfarr-staging with uploads/
-        # and locks/ subdirectories. Only warn if there are other entries that
-        # could be leftover direct-download data.
+      if stat.directory?
         children = Dir.children(legacy)
-        owned_media_structure = children.all? do |name|
-          name.in?([ "uploads", "locks" ]) && File.lstat(legacy.join(name)).directory?
-        end
-        return if owned_media_structure
+        return if children.empty? && mode == 0o700
 
-        return "legacy direct-download staging contains retained entries; new downloads use " \
-          "#{STAGING_DIRECTORY}, and the legacy entry requires manual review"
+        # OwnedMediaImportFileService still uses .shelfarr-staging with uploads/
+        # and locks/ subdirectories. Network mounts (CIFS/SMB) may force a
+        # non-0700 directory mode, so recognize that live layout before treating
+        # the mode itself as leftover direct-download staging.
+        if children.any?
+          owned_media_structure = children.all? do |name|
+            name.in?([ "uploads", "locks" ]) && File.lstat(legacy.join(name)).directory?
+          end
+          return if owned_media_structure
+        end
+
+        if mode == 0o700
+          return "legacy direct-download staging contains retained entries; new downloads use " \
+            "#{STAGING_DIRECTORY}, and the legacy entry requires manual review"
+        end
       end
 
       type = stat.directory? ? "directory" : "non-directory entry"
