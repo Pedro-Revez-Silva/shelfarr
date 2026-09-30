@@ -543,6 +543,60 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search falls back to FlareSolverr after a direct connection failure" do
+    VCR.turned_off do
+      SettingsService.set(:flaresolverr_url, "http://localhost:8191")
+      stub_request(:get, /annas-archive\.org\/search/).to_timeout
+      fallback = stub_flaresolverr_with_search_results
+
+      assert_equal "0123456789abcdef0123456789abcdef", AnnaArchiveClient.search("test book").first.md5
+      assert_requested fallback
+    ensure
+      SettingsService.set(:flaresolverr_url, "")
+    end
+  end
+
+  test "search falls back to FlareSolverr after a direct server error" do
+    VCR.turned_off do
+      SettingsService.set(:flaresolverr_url, "http://localhost:8191")
+      stub_request(:get, /annas-archive\.org\/search/).to_return(status: 502, body: "Bad Gateway")
+      fallback = stub_flaresolverr_with_search_results
+
+      assert_equal "0123456789abcdef0123456789abcdef", AnnaArchiveClient.search("test book").first.md5
+      assert_requested fallback
+    ensure
+      SettingsService.set(:flaresolverr_url, "")
+    end
+  end
+
+  test "search falls back to FlareSolverr after an incompatible direct page" do
+    VCR.turned_off do
+      SettingsService.set(:flaresolverr_url, "http://localhost:8191")
+      stub_request(:get, /annas-archive\.org\/search/).to_return(status: 200, body: "unrecognized browser check")
+      fallback = stub_flaresolverr_with_search_results
+
+      assert_equal "0123456789abcdef0123456789abcdef", AnnaArchiveClient.search("test book").first.md5
+      assert_requested fallback
+    ensure
+      SettingsService.set(:flaresolverr_url, "")
+    end
+  end
+
+  test "member sign-in discards a response from a key rotated during the request" do
+    VCR.turned_off do
+      stub_request(:post, "https://annas-archive.org/account/")
+        .with { |request| form_includes_key?(request, "test-api-key") }
+        .to_return do
+          SettingsService.set(:anna_archive_api_key, "new-api-key")
+          AnnaArchiveClient.reset_connection!
+          { status: 302, headers: { "Set-Cookie" => "aa_account_id2=old-account; Path=/" } }
+        end
+
+      assert_not AnnaArchiveClient.send(:sign_in_member_session!, "https://annas-archive.org")
+      assert_nil AnnaArchiveClient.send(:member_session_cookie, "https://annas-archive.org")
+    end
+  end
+
   test "search does not use FlareSolverr when member sign-in succeeds" do
     VCR.turned_off do
       SettingsService.set(:flaresolverr_url, "http://localhost:8191")

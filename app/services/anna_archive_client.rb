@@ -197,7 +197,16 @@ class AnnaArchiveClient
 
     def fetch_with_protection_bypass(path, base_url:)
       url = "#{base_url}#{path}"
-      html = fetch_member_search(path, base_url: base_url)
+      html = begin
+        fetch_member_search(path, base_url: base_url).tap do |body|
+          validate_search_page!(body) if body
+        end
+      rescue ConnectionError, RetryableError, IncompatibleSiteError => error
+        raise unless FlaresolverrClient.configured?
+
+        Rails.logger.info "[AnnaArchiveClient] Direct search unavailable: #{error.class}"
+        nil
+      end
       return html unless html.nil?
 
       if FlaresolverrClient.configured?
@@ -277,12 +286,14 @@ class AnnaArchiveClient
 
     def sign_in_member_session!(base_url)
       clear_member_session(base_url)
+      submitted_key = api_key.to_s
+      submitted_key_digest = Digest::SHA256.hexdigest(submitted_key)
 
       response = capped_request(
         :post,
         base_url,
         ACCOUNT_PATH,
-        form: { "key" => api_key },
+        form: { "key" => submitted_key },
         max_bytes: MAX_ACCOUNT_RESPONSE_BYTES
       )
       cookie = extract_account_session_cookie(response)
@@ -291,7 +302,9 @@ class AnnaArchiveClient
         return false
       end
 
-      store_member_session(base_url, cookie)
+      return false unless submitted_key_digest == api_key_digest
+
+      store_member_session(base_url, cookie, key_digest: submitted_key_digest)
       Rails.logger.info "[AnnaArchiveClient] Established member session for #{URI.parse(base_url).host}"
       true
     rescue ConnectionError, RetryableError, ResponseTooLargeError => e
@@ -322,8 +335,8 @@ class AnnaArchiveClient
       session[:cookie]
     end
 
-    def store_member_session(base_url, cookie)
-      member_sessions[base_url] = { cookie: cookie, key_digest: api_key_digest }
+    def store_member_session(base_url, cookie, key_digest: api_key_digest)
+      member_sessions[base_url] = { cookie: cookie, key_digest: key_digest }
     end
 
     def clear_member_session(base_url)
