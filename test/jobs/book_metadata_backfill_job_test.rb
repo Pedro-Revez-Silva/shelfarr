@@ -224,16 +224,131 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
     )
     processed = []
 
+    slept = []
+    BookMetadataBackfillService.stub(:apply!, lambda { |book, **|
+      processed << book.id
+      raise HardcoverClient::RateLimitError.new("limited", retry_after: 8.hours.to_i)
+    }) do
+      perform_backfill_job(slept: slept)
+    end
+
+    assert_equal [ first_book.id ], processed
+    assert_empty slept
+    assert_nil first_book.reload.metadata_backfill_checked_at
+    assert_nil second_book.reload.metadata_backfill_checked_at
+  end
+
+  test "waits out a short Hardcover throttle and keeps backfilling matched books" do
+    first_book = Book.create!(
+      title: "Throttled Hardcover Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "801",
+      series: nil,
+      series_position: nil
+    )
+    second_book = Book.create!(
+      title: "Next Hardcover Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "802",
+      series: nil,
+      series_position: nil
+    )
+    processed = []
+    slept = []
+    attempts = Hash.new(0)
+
+    BookMetadataBackfillService.stub(:apply!, lambda { |book, **|
+      processed << book.id
+      attempts[book.id] += 1
+      if book.id == first_book.id && attempts[book.id] == 1
+        raise HardcoverClient::RateLimitError.new(
+          "Hardcover rate limit cooldown active; retry in 1 seconds",
+          retry_after: 1
+        )
+      end
+
+      false
+    }) do
+      perform_backfill_job(slept: slept)
+    end
+
+    assert_equal [ first_book.id, first_book.id, second_book.id ], processed
+    assert_equal [ 1 ], slept
+    assert first_book.reload.metadata_backfill_checked_at.present?
+    assert second_book.reload.metadata_backfill_checked_at.present?
+    hardcover_status = MetadataProviderStatus.find_by(provider: "hardcover")
+    assert_not_equal "rate_limited", hardcover_status&.status
+    assert_equal 0, hardcover_status&.failure_count.to_i
+  end
+
+  test "stands down when a Hardcover rate limit has no retry_after" do
+    first_book = Book.create!(
+      title: "Unspecified Cooldown Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "811",
+      series: nil,
+      series_position: nil
+    )
+    second_book = Book.create!(
+      title: "Unspecified Cooldown Next Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "812",
+      series: nil,
+      series_position: nil
+    )
+    processed = []
+    slept = []
+
+    BookMetadataBackfillService.stub(:apply!, lambda { |book, **|
+      processed << book.id
+      raise HardcoverClient::RateLimitError, "limited"
+    }) do
+      perform_backfill_job(slept: slept)
+    end
+
+    assert_equal [ first_book.id ], processed
+    assert_empty slept
+    assert_nil first_book.reload.metadata_backfill_checked_at
+    assert_nil second_book.reload.metadata_backfill_checked_at
+    assert_equal "rate_limited", MetadataProviderStatus.find_by(provider: "hardcover").status
+  end
+
+  test "stands down after the per-run Hardcover wait budget is exhausted" do
+    first_book = Book.create!(
+      title: "Budget Exhausted Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "821",
+      series: nil,
+      series_position: nil
+    )
+    second_book = Book.create!(
+      title: "Budget Exhausted Next Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "822",
+      series: nil,
+      series_position: nil
+    )
+    processed = []
+    slept = []
+
     BookMetadataBackfillService.stub(:apply!, lambda { |book, **|
       processed << book.id
       raise HardcoverClient::RateLimitError.new("limited", retry_after: 120)
     }) do
-      BookMetadataBackfillJob.perform_now
+      perform_backfill_job(slept: slept)
     end
 
-    assert_equal [ first_book.id ], processed
+    assert_equal [ first_book.id ] * 6, processed
+    assert_equal [ 120 ] * 5, slept
     assert_nil first_book.reload.metadata_backfill_checked_at
     assert_nil second_book.reload.metadata_backfill_checked_at
+    assert_equal "rate_limited", MetadataProviderStatus.find_by(provider: "hardcover").status
   end
 
   test "continues other providers after Hardcover becomes unavailable" do
@@ -260,7 +375,7 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
     BookMetadataBackfillService.stub(:apply!, lambda { |_book, work_id:, **|
       processed << work_id
       if work_id.start_with?("hardcover:")
-        raise HardcoverClient::RateLimitError.new("limited", retry_after: 120)
+        raise HardcoverClient::RateLimitError.new("limited", retry_after: 8.hours.to_i)
       end
 
       false
@@ -421,5 +536,82 @@ class BookMetadataBackfillJobTest < ActiveJob::TestCase
     end
 
     assert book.reload.metadata_backfill_checked_at.present?
+  end
+
+  test "stops probing Hardcover after an authentication error" do
+    first_book = Book.create!(
+      title: "Auth Failed Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "831",
+      series: nil,
+      series_position: nil
+    )
+    second_book = Book.create!(
+      title: "Auth Failed Next Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "832",
+      series: nil,
+      series_position: nil
+    )
+    processed = []
+    slept = []
+
+    BookMetadataBackfillService.stub(:apply!, lambda { |book, **|
+      processed << book.id
+      raise HardcoverClient::AuthenticationError, "Invalid API token"
+    }) do
+      perform_backfill_job(slept: slept)
+    end
+
+    assert_equal [ first_book.id ], processed
+    assert_empty slept
+    assert_nil first_book.reload.metadata_backfill_checked_at
+    assert_nil second_book.reload.metadata_backfill_checked_at
+    assert_equal "auth_failed", MetadataProviderStatus.find_by(provider: "hardcover").status
+  end
+
+  test "stops probing Hardcover after a connection error" do
+    first_book = Book.create!(
+      title: "Connection Failed Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "841",
+      series: nil,
+      series_position: nil
+    )
+    second_book = Book.create!(
+      title: "Connection Failed Next Book",
+      author: "Author",
+      book_type: :ebook,
+      hardcover_id: "842",
+      series: nil,
+      series_position: nil
+    )
+    processed = []
+    slept = []
+
+    BookMetadataBackfillService.stub(:apply!, lambda { |book, **|
+      processed << book.id
+      raise HardcoverClient::ConnectionError, "Failed to connect to Hardcover"
+    }) do
+      perform_backfill_job(slept: slept)
+    end
+
+    assert_equal [ first_book.id ], processed
+    assert_empty slept
+    assert_nil first_book.reload.metadata_backfill_checked_at
+    assert_nil second_book.reload.metadata_backfill_checked_at
+    assert_equal "down", MetadataProviderStatus.find_by(provider: "hardcover").status
+  end
+
+  private
+
+  def perform_backfill_job(slept: [])
+    job = BookMetadataBackfillJob.new
+    job.stub(:sleep, ->(seconds) { slept << seconds }) do
+      job.perform
+    end
   end
 end

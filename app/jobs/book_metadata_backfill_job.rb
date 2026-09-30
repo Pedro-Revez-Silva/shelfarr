@@ -10,10 +10,13 @@ class BookMetadataBackfillJob < ApplicationJob
 
   SCHEDULED_BATCH_SIZE = 100
   RECHECK_INTERVAL = 30.days
+  SHORT_RATE_LIMIT_RETRY_AFTER = 2.minutes.to_i
+  MAX_RATE_LIMIT_WAIT = 10.minutes.to_i
 
   def perform(book_ids: nil)
     unavailable_sources = []
     unavailable_sources << "hardcover" unless HardcoverClient.configured?
+    @hardcover_rate_limit_waited = 0
 
     each_book_for_backfill(book_ids, unavailable_sources: unavailable_sources) do |book|
       result = backfill_book(book)
@@ -88,12 +91,12 @@ class BookMetadataBackfillJob < ApplicationJob
   rescue HardcoverClient::NotFoundError
     mark_checked!(book)
     :processed
-  rescue HardcoverClient::RateLimitError,
-         HardcoverClient::AuthenticationError,
-         HardcoverClient::ConnectionError => e
-    MetadataProviderStatus.for_provider("hardcover").record_failure!(e)
-    Rails.logger.warn("[BookMetadataBackfillJob] Skipping Hardcover after provider error: #{e.message}")
-    :hardcover_unavailable
+  rescue HardcoverClient::RateLimitError => e
+    retry if wait_out_short_hardcover_rate_limit?(e)
+
+    record_hardcover_unavailable!(e)
+  rescue HardcoverClient::AuthenticationError, HardcoverClient::ConnectionError => e
+    record_hardcover_unavailable!(e)
   rescue StandardError => e
     Rails.logger.warn("[BookMetadataBackfillJob] Failed for book #{book.id}: #{e.message}")
     :processed
@@ -117,5 +120,25 @@ class BookMetadataBackfillJob < ApplicationJob
   def source_unavailable?(book, unavailable_sources)
     source, = Book.parse_work_id(book.unified_work_id)
     unavailable_sources.include?(source)
+  end
+
+  def wait_out_short_hardcover_rate_limit?(error)
+    retry_after = error.retry_after
+    return false unless retry_after.is_a?(Numeric) && retry_after.positive?
+    return false if retry_after > SHORT_RATE_LIMIT_RETRY_AFTER
+
+    waited = @hardcover_rate_limit_waited.to_i
+    return false if waited + retry_after > MAX_RATE_LIMIT_WAIT
+
+    Rails.logger.info("[BookMetadataBackfillJob] Waiting #{retry_after}s for Hardcover rate limit before retry")
+    sleep retry_after
+    @hardcover_rate_limit_waited = waited + retry_after
+    true
+  end
+
+  def record_hardcover_unavailable!(error)
+    MetadataProviderStatus.for_provider("hardcover").record_failure!(error)
+    Rails.logger.warn("[BookMetadataBackfillJob] Skipping Hardcover after provider error: #{error.message}")
+    :hardcover_unavailable
   end
 end
