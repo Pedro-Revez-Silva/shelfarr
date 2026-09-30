@@ -1536,7 +1536,10 @@ class PostProcessingJob < ApplicationJob
     # nested completed downloads stay visible on the container mount.
     if client_download_path.present? &&
         local_path.present? &&
-        client_download_path != remote_path &&
+        remote_path.blank? &&
+        !path_prefix_match?(client_download_path, local_path) &&
+        !Dir.exist?(client_download_path) &&
+        !File.exist?(normalized_path) &&
         path_prefix_match?(normalized_path, client_download_path)
       candidates << {
         strategy: "client_prefix_remap",

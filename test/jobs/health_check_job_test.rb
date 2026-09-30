@@ -406,6 +406,20 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "accepts an inferred host client path with no global remote prefix" do
+    Dir.mktmpdir do |local_path|
+      setup_download_paths(local_path, remote_path: "")
+      client = create_download_client(name: "Inferred Host Path")
+      client.update!(category: "", download_path: "/unmounted-host-downloads")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+        HealthCheckJob.perform_now(service: "download_paths")
+        assert SystemHealth.for_service("download_paths").healthy?
+      end
+    end
+  end
+
   test "treats a remappable client download path as accessible when the mount exists" do
     Dir.mktmpdir do |local_path|
       setup_download_paths(local_path, remote_path: "/mnt/torrents/complete")

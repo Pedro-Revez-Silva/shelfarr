@@ -158,7 +158,7 @@ class HealthCheckJob < ApplicationJob
 
     clients.each do |client|
       if client.download_path.present?
-        visibility = visible_download_directory(client.download_path)
+        visibility = visible_download_directory(client.download_path, infer_client_prefix: true)
         case visibility[:status]
         when :error
           issues << "#{client.name}: configured download path '#{client.download_path}' " \
@@ -218,11 +218,16 @@ class HealthCheckJob < ApplicationJob
       issue.include?("not configured")
   end
 
-  def visible_download_directory(path)
+  def visible_download_directory(path, infer_client_prefix: false)
     inspection = inspect_download_directory(path)
     return inspection if inspection[:status] == :ok || inspection[:status] == :blank
 
     remapped = remap_download_directory_to_local(path)
+    if remapped.blank? && infer_client_prefix && inspection[:status] == :missing &&
+        SettingsService.get(:download_remote_path).blank?
+      local_path = normalize_download_path_separators(SettingsService.get(:download_local_path, default: "/downloads"))
+      remapped = local_path unless local_path.blank? || download_path_prefix_match?(inspection[:path], local_path)
+    end
     return inspection if remapped.blank? || remapped == path
 
     remapped_inspection = inspect_download_directory(remapped)

@@ -3007,6 +3007,50 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
   end
 
+  test "preserves a visible per-client path when the global mount has a matching release" do
+    client_root = Dir.mktmpdir("client-download-root")
+    relative = File.join("completed", "release", "Book.epub")
+    client_file = File.join(client_root, relative)
+    global_file = File.join(@temp_download_base, relative)
+    FileUtils.mkdir_p(File.dirname(client_file))
+    FileUtils.mkdir_p(File.dirname(global_file))
+    write_valid_ebook_file(client_file)
+    write_valid_ebook_file(global_file)
+    client = DownloadClient.create!(
+      name: "Separate Local Client", client_type: :transmission,
+      url: "http://localhost:9091", download_path: client_root
+    )
+    @download.update!(download_client: client, download_path: client_file)
+    SettingsService.set(:download_remote_path, "")
+
+    resolution = PostProcessingJob.new.send(:remap_download_path, client_file, @download.reload)
+
+    assert_equal client_file, resolution[:path]
+    assert_includes resolution[:authorized_roots], client_root
+  ensure
+    FileUtils.rm_rf(client_root) if client_root
+  end
+
+  test "does not infer a host prefix for a missing local client directory" do
+    client_root = File.join(@temp_download_base, "missing-client")
+    relative = File.join("completed", "release", "Book.epub")
+    global_file = File.join(@temp_download_base, relative)
+    FileUtils.mkdir_p(File.dirname(global_file))
+    write_valid_ebook_file(global_file)
+    reported_file = File.join(client_root, relative)
+    client = DownloadClient.create!(
+      name: "Missing Local Client", client_type: :transmission,
+      url: "http://localhost:9091", download_path: client_root
+    )
+    @download.update!(download_client: client, download_path: reported_file)
+    SettingsService.set(:download_remote_path, "")
+
+    resolution = PostProcessingJob.new.send(:remap_download_path, reported_file, @download.reload)
+
+    assert_not_equal global_file, resolution[:path]
+    assert_not File.exist?(resolution[:path])
+  end
+
   test "does not remap a single-file path up to the shared category folder" do
     category_dir = File.join(@temp_download_base, "books")
     FileUtils.mkdir_p(category_dir)
