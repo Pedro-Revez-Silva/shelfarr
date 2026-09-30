@@ -164,6 +164,91 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
     assert_match(/Title \(2\)\z/, @upload.reload.library_path)
   end
 
+  test "shares a completed companion-format folder on a shared library root and template" do
+    SettingsService.set(:audiobook_output_path, @library_root)
+    SettingsService.set(:ebook_path_template, "{series/}{seriesNum:00 - }{title}")
+    SettingsService.set(:audiobook_path_template, "{series/}{seriesNum:00 - }{title}")
+
+    shared_folder = File.join(File.realpath(@library_root), "Mistborn", "01 - The Final Empire")
+    FileUtils.mkdir_p(shared_folder)
+    File.binwrite(File.join(shared_folder, "Brandon Sanderson - The Final Empire.epub"), "ebook bytes")
+    Book.create!(
+      title: "The Final Empire",
+      author: "Brandon Sanderson",
+      series: "Mistborn",
+      series_position: "1",
+      book_type: :ebook,
+      file_path: shared_folder
+    )
+
+    audiobook = Book.new(
+      title: "The Final Empire",
+      author: "Brandon Sanderson",
+      series: "Mistborn",
+      series_position: "1",
+      book_type: :audiobook
+    )
+    source = File.join(@source_root, "The Final Empire.m4b")
+    File.binwrite(source, "audiobook bytes")
+    upload = Upload.create!(
+      user: users(:two),
+      original_filename: File.basename(source),
+      file_path: source,
+      file_size: File.size(source),
+      book_type: :audiobook,
+      status: :processing
+    )
+
+    service = UploadImportFileService.new(upload: upload, book: audiobook)
+    service.reserve!
+    service.publish!
+
+    assert_equal shared_folder, upload.reload.library_path
+    assert_equal File.join(shared_folder, "Brandon Sanderson - The Final Empire.m4b"),
+      upload.destination_path
+    assert_no_match(/ \(2\)/, upload.library_path)
+    assert_equal "ebook bytes",
+      File.binread(File.join(shared_folder, "Brandon Sanderson - The Final Empire.epub"))
+    assert_equal "audiobook bytes", File.binread(upload.destination_path)
+  end
+
+  test "keeps a numbered folder when a different book already occupies the shared path" do
+    SettingsService.set(:audiobook_output_path, @library_root)
+    SettingsService.set(:ebook_path_template, "{title}")
+    SettingsService.set(:audiobook_path_template, "{title}")
+
+    occupied_folder = File.join(File.realpath(@library_root), "The Shining")
+    FileUtils.mkdir_p(occupied_folder)
+    File.binwrite(File.join(occupied_folder, "Stephen King - The Shining.epub"), "king ebook")
+    Book.create!(
+      title: "The Shining",
+      author: "Stephen King",
+      book_type: :ebook,
+      file_path: occupied_folder
+    )
+
+    audiobook = Book.new(
+      title: "The Shining",
+      author: "A Different Author",
+      book_type: :audiobook
+    )
+    source = File.join(@source_root, "The Shining.m4b")
+    File.binwrite(source, "unrelated audiobook")
+    upload = Upload.create!(
+      user: users(:two),
+      original_filename: File.basename(source),
+      file_path: source,
+      file_size: File.size(source),
+      book_type: :audiobook,
+      status: :processing
+    )
+
+    service = UploadImportFileService.new(upload: upload, book: audiobook)
+    service.reserve!
+
+    assert_equal "#{occupied_folder} (2)", upload.reload.library_path
+  end
+
   test "a settings change cannot redirect a persisted reservation" do
     service = UploadImportFileService.new(upload: @upload, book: @book)
     service.reserve!

@@ -478,6 +478,37 @@ class OwnedMediaImportFileServiceTest < ActiveSupport::TestCase
     assert_not_equal first_destination, second_import.destination_path
   end
 
+  test "shares a completed ebook folder when audiobook uses the same root and template" do
+    SettingsService.set(:ebook_output_path, @output_root)
+    SettingsService.set(:ebook_path_template, "{series/}{seriesNum:00 - }{title}")
+    SettingsService.set(:audiobook_path_template, "{series/}{seriesNum:00 - }{title}")
+    @book.update!(
+      title: "The Final Empire",
+      series: "Mistborn",
+      series_position: "1"
+    )
+
+    shared_folder = File.join(File.realpath(@output_root), "Mistborn", "01 - The Final Empire")
+    FileUtils.mkdir_p(shared_folder)
+    File.binwrite(File.join(shared_folder, "Safe Author - The Final Empire.epub"), "ebook bytes")
+    Book.create!(
+      title: @book.title,
+      author: @book.author,
+      series: @book.series,
+      series_position: @book.series_position,
+      book_type: :ebook,
+      file_path: shared_folder
+    )
+
+    service = persistent_service
+    service.with_destination_lock { }
+
+    assert_equal shared_folder, @media_import.reload.library_path
+    assert_equal File.join(shared_folder, "Safe Author - The Final Empire.m4b"),
+      @media_import.destination_path
+    assert_no_match(/ \(2\)/, @media_import.library_path)
+  end
+
   test "different filenames cannot reserve the same directory-mode library path" do
     SettingsService.set(:audiobook_path_template, "{title}")
     first_service = persistent_service

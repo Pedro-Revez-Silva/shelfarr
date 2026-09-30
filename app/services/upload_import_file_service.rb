@@ -1136,16 +1136,16 @@ class UploadImportFileService
   end
 
   def occupied?(destination, library_path)
-    self.class.send(:path_occupied?, library_path) ||
-      Book.acquired.where(file_path: library_path.to_s).exists? ||
-      Upload.blocking_reservations.where(library_path: library_path.to_s)
-        .where.not(id: upload.id)
-        .exists? ||
+    self.class.send(:path_occupied?, destination) ||
       Upload.blocking_reservations.where(destination_path: destination.to_s)
         .where.not(id: upload.id)
         .exists? ||
-      OwnedMediaImport.blocking.where(library_path: library_path.to_s).exists? ||
-      OwnedMediaImport.blocking.where(destination_path: destination.to_s).exists?
+      OwnedMediaImport.blocking.where(destination_path: destination.to_s).exists? ||
+      LibraryDestinationOccupancy.occupied?(
+        library_path: library_path,
+        book: @book,
+        except_upload_id: upload.id
+      )
   end
 
   def validate_reservation!

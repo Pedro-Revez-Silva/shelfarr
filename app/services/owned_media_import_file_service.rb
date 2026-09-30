@@ -834,16 +834,23 @@ class OwnedMediaImportFileService
 
   def destination_occupied?(candidate)
     tracked_path = book_library_path(candidate)
-    filesystem_path = @flat_output ? candidate : candidate.dirname
 
-    path_exists_without_following?(filesystem_path) ||
-      Book.acquired.where(file_path: tracked_path).where.not(id: book.id).exists? ||
+    path_exists_without_following?(candidate) ||
       Upload.blocking_reservations
         .where.not(id: upload.id)
-        .where("destination_path = :destination OR library_path = :library",
-          destination: candidate.to_s, library: tracked_path)
+        .where(destination_path: candidate.to_s)
         .exists? ||
-      OwnedMediaImport.blocking.where(library_path: tracked_path).where.not(id: media_import.id).exists?
+      OwnedMediaImport.blocking
+        .where.not(id: media_import.id)
+        .where(destination_path: candidate.to_s)
+        .exists? ||
+      LibraryDestinationOccupancy.occupied?(
+        library_path: tracked_path,
+        book: book,
+        except_book_id: book.id,
+        except_upload_id: upload.id,
+        except_import_id: media_import.id
+      )
   end
 
   def book_library_path(destination)

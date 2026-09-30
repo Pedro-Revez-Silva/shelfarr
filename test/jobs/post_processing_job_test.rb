@@ -503,6 +503,65 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(File.join(@temp_dest_base, "Frank Herbert", "Dune", "Frank Herbert - Dune.epub"))
   end
 
+  test "ebook and audiobook downloads share one folder on a shared root and template" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_path_template, "{series/}{seriesNum:00 - }{title}")
+    SettingsService.set(:audiobook_path_template, "{series/}{seriesNum:00 - }{title}")
+    SettingsService.set(:ebook_filename_template, "{author} - {title}")
+
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "The Final Empire.epub"))
+    @book.update!(
+      title: "The Final Empire",
+      author: "Brandon Sanderson",
+      series: "Mistborn",
+      series_position: "1",
+      book_type: :ebook
+    )
+
+    PostProcessingJob.perform_now(@download.id)
+
+    shared_folder = File.join(@temp_dest_base, "Mistborn", "01 - The Final Empire")
+    ebook_file = File.join(shared_folder, "Brandon Sanderson - The Final Empire.epub")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal shared_folder, @book.reload.file_path
+    assert File.exist?(ebook_file)
+
+    audiobook = Book.create!(
+      title: @book.title,
+      author: @book.author,
+      series: @book.series,
+      series_position: @book.series_position,
+      book_type: :audiobook
+    )
+    audio_request = Request.create!(
+      book: audiobook,
+      user: users(:one),
+      status: :downloading
+    )
+    audio_source = File.join(@temp_download_base, "audio-source")
+    FileUtils.mkdir_p(audio_source)
+    File.write(File.join(audio_source, "audiobook.mp3"), "companion audio")
+    audio_download = audio_request.downloads.create!(
+      name: audiobook.title,
+      size_bytes: 1024,
+      status: :completed,
+      download_path: audio_source,
+      progress: 100
+    )
+
+    PostProcessingJob.perform_now(audio_download.id)
+
+    assert audio_request.reload.completed?, audio_request.issue_description
+    assert_equal shared_folder, audiobook.reload.file_path
+    assert File.exist?(ebook_file)
+    assert File.exist?(File.join(shared_folder, "audiobook.mp3"))
+    assert_not File.exist?("#{shared_folder} (2)")
+  end
+
   test "preserves original files for seeding" do
     VCR.turned_off do
       stub_audiobookshelf_library(@temp_dest_base)
