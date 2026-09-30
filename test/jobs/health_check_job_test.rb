@@ -503,6 +503,32 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "does not treat current owned-media staging as leftover when a mount forces directory mode 0775" do
+    Dir.mktmpdir("cifs-audiobooks") do |audiobook_dir|
+      Dir.mktmpdir("owned-ebooks") do |ebook_dir|
+        setup_output_paths(audiobook_dir, ebook_dir)
+        database_fingerprint = Digest::SHA256.hexdigest(
+          ActiveRecord::Base.connection_db_config.database.to_s
+        ).first(12)
+        staging = File.join(audiobook_dir, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
+        uploads = File.join(staging, "uploads")
+        upload_staging = File.join(uploads, database_fingerprint)
+        locks = File.join(staging, "locks")
+        FileUtils.mkdir_p(upload_staging)
+        FileUtils.mkdir_p(locks)
+        [ staging, uploads, upload_staging, locks ].each { |path| File.chmod(0o775, path) }
+
+        HealthCheckJob.perform_now(service: "output_paths")
+
+        health = SystemHealth.for_service("output_paths")
+        assert health.healthy?
+        assert_includes health.message, "accessible"
+        refute_includes health.message, "legacy"
+        refute_includes health.message, "0775"
+      end
+    end
+  end
+
   test "still reports leftover direct-download data beside owned-media staging" do
     Dir.mktmpdir("owned-audiobooks") do |audiobook_dir|
       Dir.mktmpdir("legacy-ebooks") do |ebook_dir|
