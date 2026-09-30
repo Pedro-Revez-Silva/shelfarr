@@ -45,6 +45,7 @@ class PostProcessingJob < ApplicationJob
     @referenced_file_count = 0
     @reused_file_count = 0
     @completed_reference_target_roots = []
+    @imported_library_entry = false
     download = Download.find_by(id: download_id)
     return unless download&.completed?
 
@@ -140,6 +141,7 @@ class PostProcessingJob < ApplicationJob
       end
 
       book_path = imported_book_path(book, destination)
+      @imported_library_entry = true
       cleanup_state = source_cleanup&.fetch(:state)
       acquisition_finalized = finalize_acquisition!(download, request, book, book_path, cleanup_state)
       return unless acquisition_finalized
@@ -225,8 +227,8 @@ class PostProcessingJob < ApplicationJob
             .where("file_path IS NULL OR TRIM(file_path) = ''")
             .where(acquisition_reservation_token: nil)
         end
-      elsif book.file_path != imported_path
-        if verifiable_library_entry?(book.file_path)
+      elsif book.file_path != imported_path || @imported_library_entry
+        if book.file_path != imported_path && verifiable_library_entry?(book.file_path)
           raise BookAcquisitionConflictError,
             "Another acquisition already attached a different library file to this title"
         end
@@ -428,7 +430,7 @@ class PostProcessingJob < ApplicationJob
     stat = File.lstat(path)
     # Reference import mode publishes leaf symlinks under the library root.
     stat.file? || stat.directory? || stat.symlink?
-  rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
+  rescue Errno::ENOENT, Errno::ENOTDIR
     false
   end
 
