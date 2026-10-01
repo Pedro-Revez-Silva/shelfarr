@@ -9,6 +9,7 @@ class SearchJob < ApplicationJob
     exact_title: 0,
     title_author: 5,
     short_title: 6,
+    tail_title: 7,
     author_title: 8,
     normalized_title: 10,
     number_variant: 12
@@ -972,6 +973,11 @@ class SearchJob < ApplicationJob
         attempts << build_search_attempt(:short_title, [ short_title, book.author, language_hint ])
       end
 
+      tail_title = tail_search_title(preferred_title)
+      if tail_title.present? && !tail_title.casecmp?(book.author.to_s.squish)
+        attempts << build_search_attempt(:tail_title, [ tail_title, book.author, language_hint ])
+      end
+
       attempts << build_search_attempt(:author_title, [ book.author, preferred_title, language_hint ])
       attempts << build_search_attempt(:normalized_title, [ normalized_search_title(preferred_title), language_hint ])
 
@@ -1083,6 +1089,19 @@ class SearchJob < ApplicationJob
     return nil if short.length < 4
 
     short
+  end
+
+  # Collection and series prefixes are the inverse of a subtitle: the head is
+  # the edition label and the tail is the title indexers actually carry
+  # ("The Works of A. Conan Doyle: The hound of the Baskervilles").
+  # Returns the text after the first subtitle separator, or nil when the
+  # title has no suffix or the remainder is too short to search safely.
+  def tail_search_title(title)
+    tail = title.to_s.split(/\s*(?::|;|–|—|\s-\s)\s*/, 2).last.to_s.squish
+    return nil if tail.blank? || tail.casecmp?(title.to_s.squish)
+    return nil if tail.length < 4
+
+    tail
   end
 
   def normalized_search_title(title)
