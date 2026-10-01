@@ -135,6 +135,49 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "preserves both formats when a library directory is shared" do
+    folder = File.join(@root, "Shared Book")
+    FileUtils.mkdir_p(folder)
+    ebook_file = File.join(folder, "book.epub")
+    audio_file = File.join(folder, "book.m4b")
+    File.binwrite(ebook_file, "ebook bytes")
+    File.binwrite(audio_file, "audio bytes")
+    @book.update!(file_path: folder)
+    Book.create!(title: @book.title, author: @book.author, book_type: :audiobook, file_path: folder)
+
+    assert_raises(SafeLibraryDeletionService::Error) { SafeLibraryDeletionService.new(@book).delete! }
+    assert_equal "ebook bytes", File.binread(ebook_file)
+    assert_equal "audio bytes", File.binread(audio_file)
+  end
+
+  test "preserves hidden nested companion media after its library record is removed" do
+    folder = File.join(@root, "Shared Book")
+    nested = File.join(folder, "Audio", "Discs", "Disc 1", "Tracks")
+    FileUtils.mkdir_p(nested)
+    File.binwrite(File.join(folder, "book.epub"), "ebook bytes")
+    audio_file = File.join(nested, ".book.m4b")
+    File.binwrite(audio_file, "retained audio bytes")
+    @book.update!(file_path: folder)
+
+    assert_raises(SafeLibraryDeletionService::Error) { SafeLibraryDeletionService.new(@book).delete! }
+    assert_equal "retained audio bytes", File.binread(audio_file)
+    assert File.exist?(File.join(folder, "book.epub"))
+  end
+
+  test "preserves a folder reserved by an unpublished companion upload" do
+    folder = File.join(@root, "Shared Book")
+    FileUtils.mkdir_p(folder)
+    ebook = File.join(folder, "book.epub")
+    File.binwrite(ebook, "ebook bytes")
+    @book.update!(file_path: folder)
+    Upload.create!(user: users(:one), original_filename: "book.m4b", file_path: @path,
+      file_size: File.size(@path), book_type: :audiobook, status: :processing,
+      library_path: folder, destination_path: File.join(folder, "book.m4b"))
+
+    assert_raises(SafeLibraryDeletionService::Error) { SafeLibraryDeletionService.new(@book).delete! }
+    assert_equal "ebook bytes", File.binread(ebook)
+  end
+
   test "supports the configured comic library root" do
     SettingsService.set(:comicbook_output_path, @root)
     @book.update!(book_type: :comicbook)

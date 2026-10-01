@@ -72,6 +72,9 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
         require "rbconfig"
         require "shelfarr/solid_queue_in_puma"
 
+        # Noninteractive parents may pass an ignored INT to a fresh child.
+        trap(:INT, "IGNORE")
+
         class << Process
           alias_method :sqip_real_spawn, :spawn
 
@@ -81,14 +84,43 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
               Process.kill(:USR1, Process.pid)
             end
             sleep 0.25
-            sqip_real_spawn(
+            ready_reader, ready_writer = IO.pipe
+            supervisor_script = <<~'SUPERVISOR'
+              trap(:INT) { exit }
+              ready = IO.for_fd(3)
+              ready.puts("ready")
+              ready.close
+              sleep 10
+            SUPERVISOR
+            pid = sqip_real_spawn(
               RbConfig.ruby,
               "-e",
-              "trap(:INT) { exit }; sleep 10",
+              supervisor_script,
+              3 => ready_writer,
               pgroup: true,
               out: File::NULL,
               err: File::NULL
             )
+            ready_writer.close
+            # Keep the spawn lock held until the child can handle shutdown.
+            ready = IO.select([ready_reader], nil, nil, 3) && ready_reader.gets == "ready\n"
+            raise "supervisor did not become ready" unless ready
+            pid
+          rescue StandardError
+            if pid
+              begin
+                Process.kill(:KILL, -pid)
+              rescue Errno::ESRCH
+              end
+              begin
+                Process.waitpid(pid)
+              rescue Errno::ECHILD
+              end
+            end
+            raise
+          ensure
+            ready_reader&.close
+            ready_writer&.close unless ready_writer&.closed?
           end
         end
 

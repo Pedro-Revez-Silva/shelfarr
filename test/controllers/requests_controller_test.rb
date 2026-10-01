@@ -2209,6 +2209,9 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     File.binwrite(target, "archived debrid audio")
     File.symlink(target, File.join(book_directory, "book.m4b"))
     File.binwrite(File.join(book_directory, "cover.txt"), "regular sidecar")
+    companion = File.join(temp_dir, "companion.epub")
+    File.binwrite(companion, "companion ebook outside audio provenance")
+    File.symlink(companion, File.join(book_directory, "companion.epub"))
     content_root_stat = File.lstat(content_root)
     SettingsService.set(:audiobook_output_path, output_root)
     book = Book.create!(

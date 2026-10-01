@@ -22,13 +22,24 @@ class SafeLibraryDeletionService
     root, relative = authorized_root_and_relative!
     parts = relative.each_filename.to_a
     raise Error, "Shelfarr refuses to delete an output root" if parts.empty?
-
-    with_pinned_absolute_directory(root) do |root_directory|
-      with_pinned_relative_directory(root_directory, parts[0...-1]) do |parent|
-        delete_entry!(parent, parts.last)
+    operation = lambda do
+      if LibraryDestinationOccupancy.shared_directory?(@path, @book)
+        raise Error, "This library folder contains another book's files; remove only this format's files manually"
+      end
+      with_pinned_absolute_directory(root) do |root_directory|
+        with_pinned_relative_directory(root_directory, parts[0...-1]) do |parent|
+          delete_entry!(parent, parts.last, protect_shared: true)
+        end
       end
     end
+    if File.directory?(@path) && !File.symlink?(@path)
+      OwnedMediaImportFileService.with_lock(root, "destination-#{root.join(relative)}", &operation)
+    else
+      operation.call
+    end
     true
+  rescue OwnedMediaImportFileService::Error => error
+    raise Error, "Shelfarr could not coordinate library deletion: #{error.message}"
   rescue Errno::ENOENT
     # A path which was authorized from durable provenance and is already gone
     # needs no further filesystem work.
@@ -177,7 +188,7 @@ class SafeLibraryDeletionService
     directory
   end
 
-  def delete_entry!(parent, basename)
+  def delete_entry!(parent, basename, protect_shared: false)
     interrupted = quarantined_entries(parent)
     descriptor = begin
       native_openat(
@@ -197,6 +208,9 @@ class SafeLibraryDeletionService
     stat = entry.stat
     unless stat.file? || stat.directory?
       raise Error, "Shelfarr refuses to remove a symbolic link or special library entry"
+    end
+    if protect_shared && stat.directory? && LibraryDestinationOccupancy.shared_directory?(@path, @book)
+      raise Error, "This library folder contains another book's files; remove only this format's files manually"
     end
     entry.close
 

@@ -419,7 +419,7 @@ class RequestsController < ApplicationController
     raise UnsafeDownloadPathError, "reference tree outside library root" unless
       canonical_path_contained?(source.realpath.to_s, root.to_s) || source.realpath == root
 
-    entries = collect_authorized_reference_entries(source, library_root: root)
+    entries = collect_authorized_reference_entries(source, library_root: root, book: book)
     raise UnsafeDownloadPathError, "reference tree has no downloadable entries" if entries.empty?
 
     tmp = Tempfile.new([ "shelfarr-ref-", ".zip" ])
@@ -456,15 +456,16 @@ class RequestsController < ApplicationController
     tmp&.close!
   end
 
-  def collect_authorized_reference_entries(directory, library_root:, prefix: nil)
+  def collect_authorized_reference_entries(directory, library_root:, book:, prefix: nil)
     results = []
     Dir.each_child(directory) do |name|
       child = directory.join(name)
       relative = prefix ? File.join(prefix, name) : name
       stat = File.lstat(child)
+      next if !stat.directory? && LibraryDestinationOccupancy.foreign_media?(name, book)
       if stat.directory?
         results.concat(
-          collect_authorized_reference_entries(child, library_root: library_root, prefix: relative)
+          collect_authorized_reference_entries(child, library_root: library_root, book: book, prefix: relative)
         )
       elsif stat.symlink?
         target = Pathname(File.readlink(child))
