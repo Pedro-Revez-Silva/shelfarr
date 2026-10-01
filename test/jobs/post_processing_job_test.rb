@@ -3374,6 +3374,68 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(@temp_source), "legacy recovery must not remove an unverified source"
   end
 
+  test "retry recovers when an existing library entry cannot be verified" do
+    SettingsService.set(:audiobookshelf_url, "")
+    stale_path = File.join(@temp_dest_base, "unmapped-host-library", @book.title)
+    @book.update!(file_path: stale_path)
+    @request.update!(
+      status: :processing,
+      attention_needed: true,
+      issue_description: "Post-processing failed: The existing library entry could not be verified; its database state was preserved for review"
+    )
+    @download.update!(post_processing_job_id: "unverified-library-owner")
+
+    assert_equal :post_processing_queued, @request.retry_now!
+    perform_enqueued_jobs only: PostProcessingJob
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_not @request.attention_needed?
+    assert_nil @request.issue_description
+    assert_nil @download.reload.post_processing_job_id
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+    assert_equal expected_dest, @book.reload.file_path
+    assert File.exist?(@temp_source), "copy-mode recovery must retain the download source"
+  end
+
+  test "recovery preserves an existing library entry when access is denied" do
+    SettingsService.set(:audiobookshelf_url, "")
+    existing_path = File.join(@temp_dest_base, "existing.m4b")
+    File.binwrite(existing_path, "existing library bytes")
+    @book.update!(file_path: existing_path)
+    real_lstat = File.method(:lstat)
+    denied_lstat = lambda do |path|
+      raise Errno::EACCES, "library temporarily inaccessible" if path.to_s == existing_path
+
+      real_lstat.call(path)
+    end
+
+    File.stub(:lstat, denied_lstat) { PostProcessingJob.perform_now(@download.id) }
+
+    assert_not @request.reload.completed?
+    assert @request.attention_needed?
+    assert_equal existing_path, @book.reload.file_path
+    assert_equal "existing library bytes", File.binread(existing_path)
+    assert_not File.exist?(File.join(@temp_dest_base, @book.author, @book.title))
+    assert File.exist?(@temp_source)
+  end
+
+  test "reimport at the stale path replaces obsolete reference provenance" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    stale_path = File.join(@temp_dest_base, @book.author, @book.title)
+    @book.update!(file_path: stale_path, reference_target_roots: [
+      { "path" => "/obsolete-download-mount", "device" => 1, "inode" => 2 }
+    ])
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal stale_path, @book.reload.file_path
+    assert_equal [ File.realpath(@temp_download_base) ], @book.reference_target_roots.map { |root| root.path.to_s }
+    assert File.symlink?(File.join(stale_path, "audiobook.mp3"))
+  end
+
   test "a late completion-side-effect failure cannot reopen a completed request" do
     SettingsService.set(:audiobookshelf_url, "")
     job = PostProcessingJob.new(@download.id)

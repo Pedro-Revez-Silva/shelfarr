@@ -45,6 +45,7 @@ class PostProcessingJob < ApplicationJob
     @referenced_file_count = 0
     @reused_file_count = 0
     @completed_reference_target_roots = []
+    @imported_library_entry = false
     download = Download.find_by(id: download_id)
     return unless download&.completed?
 
@@ -72,17 +73,15 @@ class PostProcessingJob < ApplicationJob
           "This title already has an acquisition in progress; its recovery reservation was preserved"
       end
 
-      # Shelfarr versions which predate atomic finalization could be killed
-      # after attaching the imported path to Book but before completing the
-      # Request. The durable Download owner proves this request still needs
-      # reconciliation, so finish only the database transition and retain the
+      # A verifiable library path means a prior (or legacy) acquisition already
+      # published the file. Finish only the database transition and retain the
       # download source for manual cleanup.
-      if book.acquired?
-        unless verifiable_library_entry?(book.file_path)
-          raise BookAcquisitionConflictError,
-            "The existing library entry could not be verified; its database state was preserved for review"
-        end
-
+      #
+      # An unverifiable path is stale: re-import from the completed download
+      # instead of leaving Retry stuck in Attention Required. A later
+      # finalize_acquisition! replaces that path only after import succeeds,
+      # and still preserves a different verifiable library file.
+      if book.acquired? && verifiable_library_entry?(book.file_path)
         acquisition_finalized = finalize_acquisition!(
           download,
           request,
@@ -142,6 +141,7 @@ class PostProcessingJob < ApplicationJob
       end
 
       book_path = imported_book_path(book, destination)
+      @imported_library_entry = true
       cleanup_state = source_cleanup&.fetch(:state)
       acquisition_finalized = finalize_acquisition!(download, request, book, book_path, cleanup_state)
       return unless acquisition_finalized
@@ -222,26 +222,22 @@ class PostProcessingJob < ApplicationJob
       end
 
       if book.file_path.blank?
-        reference_target_roots = Book.dump_reference_target_roots(
-          @completed_reference_target_roots
-        )
-        claimed = Book.where(id: book.id)
-          .where("file_path IS NULL OR TRIM(file_path) = ''")
-          .where(acquisition_reservation_token: nil)
-          .update_all(
-            file_path: imported_path,
-            reference_target_roots: reference_target_roots,
-            updated_at: Time.current
-          )
-        unless claimed == 1
-          raise BookAcquisitionConflictError,
-            "Another acquisition claimed this title while post-processing was finalizing"
+        claim_imported_path!(book, imported_path) do
+          Book.where(id: book.id)
+            .where("file_path IS NULL OR TRIM(file_path) = ''")
+            .where(acquisition_reservation_token: nil)
         end
-        book.file_path = imported_path
-        book[:reference_target_roots] = reference_target_roots
-      elsif book.file_path != imported_path
-        raise BookAcquisitionConflictError,
-          "Another acquisition already attached a different library file to this title"
+      elsif book.file_path != imported_path || @imported_library_entry
+        if book.file_path != imported_path && verifiable_library_entry?(book.file_path)
+          raise BookAcquisitionConflictError,
+            "Another acquisition already attached a different library file to this title"
+        end
+
+        stale_path = book.file_path
+        claim_imported_path!(book, imported_path) do
+          Book.where(id: book.id, file_path: stale_path)
+            .where(acquisition_reservation_token: nil)
+        end
       end
 
       # Clearing the owner and completing the Request in one transaction closes
@@ -259,6 +255,24 @@ class PostProcessingJob < ApplicationJob
     finalized == true
   rescue ActiveRecord::RecordNotFound
     false
+  end
+
+  def claim_imported_path!(book, imported_path)
+    reference_target_roots = Book.dump_reference_target_roots(
+      @completed_reference_target_roots
+    )
+    claimed = yield.update_all(
+      file_path: imported_path,
+      reference_target_roots: reference_target_roots,
+      updated_at: Time.current
+    )
+    unless claimed == 1
+      raise BookAcquisitionConflictError,
+        "Another acquisition claimed this title while post-processing was finalizing"
+    end
+
+    book.file_path = imported_path
+    book[:reference_target_roots] = reference_target_roots
   end
 
   def mark_post_processing_failure!(download, request, error)
@@ -416,7 +430,7 @@ class PostProcessingJob < ApplicationJob
     stat = File.lstat(path)
     # Reference import mode publishes leaf symlinks under the library root.
     stat.file? || stat.directory? || stat.symlink?
-  rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
+  rescue Errno::ENOENT, Errno::ENOTDIR
     false
   end
 
