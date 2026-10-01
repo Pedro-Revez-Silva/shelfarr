@@ -215,14 +215,11 @@ class UploadImportFileService
             configured_root = validated_configured_root(upload)
             display_path = configured_root.join(destination.relative_path_from(root)).to_s
             display_library_path = configured_root.join(library_path.relative_path_from(root)).to_s
-            adopted = Book.acquired.where(
-              file_path: [
-                destination.to_s,
-                display_path,
-                library_path.to_s,
-                display_library_path
-              ].uniq
-            ).exists?
+            adopted = Book.acquired.where(file_path: [ destination.to_s, display_path ].uniq)
+              .or(Book.acquired.where(
+                book_type: upload.book_type,
+                file_path: [ library_path.to_s, display_library_path ].uniq
+              )).exists?
             return false if adopted
 
             remove_verified_destination!(

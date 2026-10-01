@@ -212,6 +212,27 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
     assert_equal "audiobook bytes", File.binread(upload.destination_path)
   end
 
+  test "failed companion publication can roll back beside a directory-backed ebook" do
+    SettingsService.set(:audiobook_output_path, @library_root)
+    @book.book_type = :audiobook
+    @upload.update!(book_type: :audiobook)
+    folder = File.join(File.realpath(@library_root), "Author", "Title")
+    FileUtils.mkdir_p(folder)
+    ebook = File.join(folder, "book.epub")
+    File.binwrite(ebook, "companion ebook")
+    Book.create!(title: @book.title, author: @book.author, book_type: :ebook, file_path: folder)
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    service.publish!
+    destination = @upload.reload.destination_path
+
+    assert service.restore_and_clear!
+    assert_nil @upload.reload.destination_path
+    assert_not File.exist?(destination)
+    assert_equal "companion ebook", File.binread(ebook)
+    assert File.exist?(@source)
+  end
+
   test "keeps a numbered folder when a different book already occupies the shared path" do
     SettingsService.set(:audiobook_output_path, @library_root)
     SettingsService.set(:ebook_path_template, "{title}")

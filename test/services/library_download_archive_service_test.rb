@@ -21,6 +21,34 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "ebook archives exclude companion audio and its byte budget" do
+    File.binwrite(File.join(@source_path, "book.epub"), "ebook bytes")
+    File.binwrite(File.join(@source_path, "book.m4b"), "audiobook bytes" * 100)
+    File.binwrite(File.join(@source_path, "cover.jpg"), "cover")
+    @book = Book.create!(title: "Shared Book", author: "Author", book_type: :ebook, file_path: @source_path)
+    service = LibraryDownloadArchiveService.new(book: @book, source_path: @source_path, output_root: @output_root)
+
+    cache = service.stub(:max_archive_source_bytes, 20) { service.call }
+
+    Zip::File.open(cache) do |archive|
+      assert_equal %w[book.epub cover.jpg], archive.entries.map(&:name).sort
+      assert_equal "ebook bytes", archive.get_input_stream("book.epub").read
+    end
+  end
+
+  test "archives preserve readable formats accepted across ebook and comic requests" do
+    File.binwrite(File.join(@source_path, "book.pdf"), "comic PDF")
+    File.binwrite(File.join(@source_path, "book.cbz"), "comic ZIP")
+    File.binwrite(File.join(@source_path, "book.m4b"), "companion audio")
+    %i[ebook comicbook].each do |type|
+      @book = Book.create!(title: "Readable Book", author: "Author", book_type: type, file_path: @source_path)
+      cache = build_archive
+      Zip::File.open(cache) do |archive|
+        assert_equal %w[book.cbz book.pdf], archive.entries.map(&:name).sort
+      end
+    end
+  end
+
   test "source must be a strict descendant of the configured output root" do
     File.binwrite(File.join(@output_root, "unrelated.m4b"), "private library bytes")
 

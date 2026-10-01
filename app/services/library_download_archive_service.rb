@@ -28,7 +28,7 @@ class LibraryDownloadArchiveService
   ARCHIVE_ADMISSION_RETRY_SECONDS = 0.05
   ARCHIVE_BUILD_SLOTS = 2
   ARCHIVE_LOCK_SHARDS = 256
-  CACHE_FORMAT_VERSION = 2
+  CACHE_FORMAT_VERSION = 3
   CACHE_DIRECTORY = Rails.root.join("tmp", "downloads").freeze
   ZIP_EOCD_SIGNATURE = "PK\x05\x06".b.freeze
   ZIP_LOCAL_SIGNATURE = "PK\x03\x04".b.freeze
@@ -188,6 +188,7 @@ class LibraryDownloadArchiveService
           path_contained?(snapshot_path.join(relative_path).cleanpath, snapshot_path)
         raise UnsafePathError, "library archive snapshot contains an unsafe entry"
       end
+      next if manifest[2] == :file && LibraryDestinationOccupancy.foreign_media?(relative, @book)
 
       source_bytes += Integer(manifest[3]) if manifest[2] == :file
       name_bytes += safe_entry_name(relative, directory: manifest[2] == :directory).bytesize
@@ -214,6 +215,7 @@ class LibraryDownloadArchiveService
     enforce_runtime_budget!
     fingerprint_payload = [
       CACHE_FORMAT_VERSION,
+      (@book.book_type if @book.respond_to?(:book_type)),
       source_root.canonical_path.to_s,
       source_root.device,
       source_root.inode,
@@ -261,7 +263,7 @@ class LibraryDownloadArchiveService
     enforce_runtime_budget!
     archive = Zip::OutputStream.new(output, stream: true)
     begin
-      source_root.entries.sort_by { |relative, _manifest| relative }.each do |relative, manifest|
+      archive_entries(source_root).sort_by { |relative, _manifest| relative }.each do |relative, manifest|
         enforce_runtime_budget!
         entry_name = safe_entry_name(relative, directory: manifest[2] == :directory)
         @written_name_bytes += entry_name.bytesize
@@ -419,7 +421,7 @@ class LibraryDownloadArchiveService
   end
 
   def zip_matches_snapshot?(file, source_root)
-    expected = source_root.entries.map do |relative, manifest|
+    expected = archive_entries(source_root).map do |relative, manifest|
       name = comparable_zip_name(safe_entry_name(relative, directory: manifest[2] == :directory))
       return false unless name
 
@@ -442,6 +444,12 @@ class LibraryDownloadArchiveService
       matches = actual == expected
     end
     matches
+  end
+
+  def archive_entries(source_root)
+    source_root.entries.reject do |relative, manifest|
+      manifest[2] == :file && LibraryDestinationOccupancy.foreign_media?(relative, @book)
+    end
   end
 
   # Rubyzip tags entry names as ASCII-8BIT. Dir/FileCopyService names are

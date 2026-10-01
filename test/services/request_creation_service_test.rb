@@ -423,9 +423,10 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
   end
 
   test "collection request enqueues background expansion instead of expanding inline" do
+    expansion_job = nil
     ComicVineClient.stub(:configured?, true) do
       assert_no_difference [ "Book.count", "Request.count" ] do
-        assert_enqueued_with(job: CollectionRequestExpansionJob) do
+        expansion_job = assert_enqueued_with(job: CollectionRequestExpansionJob) do
           result = RequestCreationService.call(
             user: @user,
             work_id: "comic_vine:4050-99",
@@ -449,7 +450,7 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
       end
     end
 
-    job_args = enqueued_jobs.last[:args].first
+    job_args = expansion_job.arguments.first.with_indifferent_access
     assert_equal [ "comic_vine:4000-101", "comic_vine:4000-102" ], job_args["collection_item_ids"]
     assert_equal "graphic", job_args.dig("metadata_attrs", "content_kind")
   end

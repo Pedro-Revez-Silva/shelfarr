@@ -10,7 +10,7 @@ class LibraryDestinationOccupancy
   ].freeze
   EBOOK_EXTENSIONS = %w[epub pdf mobi azw azw3 djvu].freeze
   COMIC_EXTENSIONS = %w[cbz cbr].freeze
-  MAX_SCAN_DEPTH = 2
+  MAX_SCAN_DEPTH = 128
 
   class << self
     def occupied?(
@@ -31,19 +31,35 @@ class LibraryDestinationOccupancy
       return true unless directory_without_symlink?(path)
 
       occupants = acquired_books_at(path, except_book_id: except_book_id)
+      return true if contains_same_format_media?(path, book)
       return false if occupants.any? && occupants.all? { |occupant| companion?(book, occupant) }
 
-      contains_same_format_media?(path, book)
+      each_library_file(path).any? { |entry| media_extension?(entry) }
+    end
+
+    def foreign_media?(filename, book)
+      return false unless book.respond_to?(:book_type)
+
+      media_extension?(filename) && !media_extensions_for(book).include?(extension_for(filename))
+    end
+
+    def shared_directory?(path, book)
+      return true if blocking_reservation?(Pathname(path), except_upload_id: nil, except_import_id: nil)
+      return true if acquired_books_at(Pathname(path), except_book_id: book.id).any?
+      return false unless File.directory?(path)
+
+      each_library_file(path).any? { |entry| foreign_media?(entry, book) }
     end
 
     private
 
     def blocking_reservation?(path, except_upload_id:, except_import_id:)
-      uploads = Upload.blocking_reservations.where(library_path: path.to_s)
+      paths = library_path_aliases(path)
+      uploads = Upload.blocking_reservations.where(library_path: paths)
       uploads = uploads.where.not(id: except_upload_id) if except_upload_id
       return true if uploads.exists?
 
-      imports = OwnedMediaImport.blocking.where(library_path: path.to_s)
+      imports = OwnedMediaImport.blocking.where(library_path: paths)
       imports = imports.where.not(id: except_import_id) if except_import_id
       imports.exists?
     end
@@ -55,9 +71,34 @@ class LibraryDestinationOccupancy
     end
 
     def acquired_books_at(path, except_book_id:)
-      scope = Book.acquired.where(file_path: path.to_s)
+      paths = library_path_aliases(path)
+      scope = Book.acquired.where(file_path: paths)
+      paths.each do |candidate|
+        scope = scope.or(Book.acquired.where("instr(file_path, ?) = 1", "#{candidate}/"))
+      end
       scope = scope.where.not(id: except_book_id) if except_book_id
       scope.to_a
+    end
+
+    def library_path_aliases(path)
+      canonical = path.expand_path
+      canonical = canonical.dirname.realpath.join(canonical.basename)
+      paths = [ path.expand_path.to_s, canonical.to_s ]
+      %i[ebook_output_path audiobook_output_path comicbook_output_path].each do |key|
+        configured = SettingsService.get(key)
+        next if configured.blank?
+
+        root = Pathname(configured).expand_path
+        relative = canonical.relative_path_from(root.realpath)
+        next if relative.to_s == ".." || relative.to_s.start_with?("../")
+
+        paths << root.join(relative).to_s
+      rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR, ArgumentError
+        next
+      end
+      paths.uniq
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      [ path.expand_path.to_s ]
     end
 
     def companion?(book, occupant)
@@ -116,30 +157,35 @@ class LibraryDestinationOccupancy
     def media_extensions_for(book)
       if book.audiobook?
         AUDIO_EXTENSIONS
-      elsif book.comicbook?
-        COMIC_EXTENSIONS
       else
-        EBOOK_EXTENSIONS
+        EBOOK_EXTENSIONS + COMIC_EXTENSIONS
       end
     end
 
     def each_library_file(path, depth = 0, &block)
-      return if depth > MAX_SCAN_DEPTH
+      return enum_for(__method__, path, depth) unless block
+      raise Errno::ELOOP, "Library tree exceeds the safe scan depth" if depth > MAX_SCAN_DEPTH
 
       Dir.children(path).each do |name|
-        next if name.start_with?(".")
-
         child = File.join(path, name)
-        next if File.symlink?(child)
-
-        if File.directory?(child)
+        if File.symlink?(child)
+          yield child
+        elsif File.directory?(child)
           each_library_file(child, depth + 1, &block)
         elsif File.file?(child)
           yield child
         end
       end
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
+    rescue Errno::ENOENT
       nil
+    end
+
+    def extension_for(path)
+      File.extname(path.to_s).delete_prefix(".").downcase
+    end
+
+    def media_extension?(path)
+      (AUDIO_EXTENSIONS + EBOOK_EXTENSIONS + COMIC_EXTENSIONS).include?(extension_for(path))
     end
 
     def present_normalized_match?(left, right)
