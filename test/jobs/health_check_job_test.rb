@@ -385,6 +385,60 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "records a filesystem error for download paths without failing the job" do
+    Dir.mktmpdir do |download_dir|
+      setup_download_paths(download_dir)
+      create_download_client(name: "Path Error Client")
+
+      exist = Dir.method(:exist?)
+      Dir.stub(:exist?, ->(path) {
+        raise Errno::EACCES, "Permission denied" if path == download_dir
+
+        exist.call(path)
+      }) do
+        HealthCheckJob.perform_now(service: "download_paths")
+      end
+
+      health = SystemHealth.for_service("download_paths")
+      assert health.down?
+      assert_includes health.message, "could not be checked"
+      refute_includes health.message, "Error:"
+    end
+  end
+
+  test "accepts an inferred host client path with no global remote prefix" do
+    Dir.mktmpdir do |local_path|
+      setup_download_paths(local_path, remote_path: "")
+      client = create_download_client(name: "Inferred Host Path")
+      client.update!(category: "", download_path: "/unmounted-host-downloads")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+        HealthCheckJob.perform_now(service: "download_paths")
+        assert SystemHealth.for_service("download_paths").healthy?
+      end
+    end
+  end
+
+  test "treats a remappable client download path as accessible when the mount exists" do
+    Dir.mktmpdir do |local_path|
+      setup_download_paths(local_path, remote_path: "/mnt/torrents/complete")
+      client = create_download_client(name: "Remapped Path Client")
+      client.update!(category: "", download_path: "/mnt/torrents/complete")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.healthy?, health.message
+        assert_includes health.message, "accessible"
+        refute_includes health.message, "does not exist"
+      end
+    end
+  end
+
   # Output paths tests
   test "marks output_paths as healthy when paths exist and are writable" do
     Dir.mktmpdir do |audiobook_dir|
@@ -800,9 +854,16 @@ class HealthCheckJobTest < ActiveJob::TestCase
     )
   end
 
-  def setup_download_paths(local_path)
+  def setup_download_paths(local_path, remote_path: nil)
     Setting.find_or_create_by(key: "download_local_path").update!(
       value: local_path,
+      value_type: "string",
+      category: "paths"
+    )
+    return if remote_path.nil?
+
+    Setting.find_or_create_by(key: "download_remote_path").update!(
+      value: remote_path,
       value_type: "string",
       category: "paths"
     )

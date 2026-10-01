@@ -2360,6 +2360,38 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "remaps a host-style client download_path prefix onto the local mount" do
+    FileUtils.rm_rf(@temp_source)
+    nested_source = File.join(@temp_source, "completed", "shelfarr")
+    FileUtils.mkdir_p(nested_source)
+    write_valid_ebook_file(File.join(nested_source, "Host Client Book.epub"))
+
+    client = DownloadClient.create!(
+      name: "Host Path Client",
+      client_type: :qbittorrent,
+      url: "http://localhost:8080",
+      download_path: "/mnt/torrents"
+    )
+
+    @book.update!(book_type: :ebook)
+    @download.update!(
+      download_client: client,
+      download_path: "/mnt/torrents/completed/shelfarr/Host Client Book.epub"
+    )
+
+    SettingsService.set(:download_remote_path, "")
+    SettingsService.set(:download_local_path, @temp_source)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    resolution = PostProcessingJob.new.send(
+      :remap_download_path,
+      @download.download_path,
+      @download.reload
+    )
+    assert_equal File.join(nested_source, "Host Client Book.epub"), resolution[:path]
+  end
+
   test "uses per-client download path when configured" do
     # Create a subdirectory in temp_source to simulate a download folder
     download_subdir = File.join(@temp_source, "Test Audiobook")
@@ -2973,6 +3005,50 @@ class PostProcessingJobTest < ActiveJob::TestCase
     expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
     assert @request.reload.completed?, @request.issue_description
     assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+  end
+
+  test "preserves a visible per-client path when the global mount has a matching release" do
+    client_root = Dir.mktmpdir("client-download-root")
+    relative = File.join("completed", "release", "Book.epub")
+    client_file = File.join(client_root, relative)
+    global_file = File.join(@temp_download_base, relative)
+    FileUtils.mkdir_p(File.dirname(client_file))
+    FileUtils.mkdir_p(File.dirname(global_file))
+    write_valid_ebook_file(client_file)
+    write_valid_ebook_file(global_file)
+    client = DownloadClient.create!(
+      name: "Separate Local Client", client_type: :transmission,
+      url: "http://localhost:9091", download_path: client_root
+    )
+    @download.update!(download_client: client, download_path: client_file)
+    SettingsService.set(:download_remote_path, "")
+
+    resolution = PostProcessingJob.new.send(:remap_download_path, client_file, @download.reload)
+
+    assert_equal client_file, resolution[:path]
+    assert_includes resolution[:authorized_roots], client_root
+  ensure
+    FileUtils.rm_rf(client_root) if client_root
+  end
+
+  test "does not infer a host prefix for a missing local client directory" do
+    client_root = File.join(@temp_download_base, "missing-client")
+    relative = File.join("completed", "release", "Book.epub")
+    global_file = File.join(@temp_download_base, relative)
+    FileUtils.mkdir_p(File.dirname(global_file))
+    write_valid_ebook_file(global_file)
+    reported_file = File.join(client_root, relative)
+    client = DownloadClient.create!(
+      name: "Missing Local Client", client_type: :transmission,
+      url: "http://localhost:9091", download_path: client_root
+    )
+    @download.update!(download_client: client, download_path: reported_file)
+    SettingsService.set(:download_remote_path, "")
+
+    resolution = PostProcessingJob.new.send(:remap_download_path, reported_file, @download.reload)
+
+    assert_not_equal global_file, resolution[:path]
+    assert_not File.exist?(resolution[:path])
   end
 
   test "does not remap a single-file path up to the shared category folder" do
