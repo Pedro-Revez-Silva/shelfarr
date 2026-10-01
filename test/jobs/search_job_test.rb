@@ -1688,6 +1688,90 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  %w[ebook audiobook].each do |book_type|
+    test "tries title-tail query despite related structured #{book_type} results" do
+      SettingsService.set(:indexer_search_scope, "strict")
+      %w[approved rejected preferred].each do |preference|
+        SettingsService.set("#{book_type}_#{preference}_formats", [])
+      end
+      book = Book.create!(
+        title: "The Works of A. Conan Doyle: The hound of the Baskervilles",
+        author: "Arthur Conan Doyle",
+        book_type: book_type
+      )
+      request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+      extension = book.audiobook? ? "M4B" : "EPUB"
+      related_payload = prowlarr_result_payload.merge(
+        "guid" => "related-complete-works",
+        "title" => "The Works of A. Conan Doyle: Complete Sherlock Holmes Arthur Conan Doyle English #{extension}"
+      )
+      tail_payload = related_payload.merge(
+        "guid" => "actual-title",
+        "title" => "The Hound of the Baskervilles Arthur Conan Doyle English #{extension}"
+      )
+      related_score = ReleaseScorer.score(SearchResult.new(title: related_payload["title"]), request)
+      assert_operator related_score.total, :>=, SettingsService.get(:min_match_confidence), related_score.inspect
+      assert_operator related_score.breakdown[:title], :<, 100
+
+      VCR.turned_off do
+        stub_request(:get, %r{localhost:9696/api/v1/search})
+          .with { |req| req.uri.query_values["type"] == "book" }
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [ related_payload ].to_json)
+        stub_request(:get, %r{localhost:9696/api/v1/search})
+          .with { |req| req.uri.query_values["type"] == "search" }
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+        tail_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+          .with do |req|
+            req.uri.query_values["type"] == "search" &&
+              req.uri.query_values["query"] == "The hound of the Baskervilles Arthur Conan Doyle"
+          end
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [ tail_payload ].to_json)
+
+        SearchJob.perform_now(request.id)
+
+        assert_requested tail_stub
+        assert request.search_results.exists?(title: tail_payload["title"])
+      end
+    end
+  end
+
+  test "a generic subtitle tail does not stop a later full-title search" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    %w[approved rejected preferred].each do |preference|
+      SettingsService.set("audiobook_#{preference}_formats", [])
+    end
+    book = Book.create!(title: "Project Hail Mary: A Novel", author: "Andy Weir", book_type: :audiobook)
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+    unrelated_payload = prowlarr_result_payload.merge(
+      "guid" => "martian",
+      "title" => "The Martian A Novel Andy Weir English Audiobook M4B",
+      "downloadUrl" => "https://example.org/martian.nzb",
+      "magnetUrl" => nil,
+      "seeders" => nil
+    )
+    correct_payload = unrelated_payload.merge(
+      "guid" => "hail-mary",
+      "title" => "Andy Weir Project Hail Mary A Novel English Audiobook M4B",
+      "downloadUrl" => "https://example.org/hail.nzb"
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["query"] == "A Novel Andy Weir" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [ unrelated_payload ].to_json)
+      full_title_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+        .with { |req| req.uri.query_values["query"] == "Andy Weir Project Hail Mary: A Novel" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [ correct_payload ].to_json)
+
+      SearchJob.perform_now(request.id)
+
+      assert_requested full_title_stub
+      assert request.search_results.exists?(title: correct_payload["title"])
+    end
+  end
+
   test "does not search the title tail when it is only the book author" do
     book = Book.create!(
       title: "The Hound of the Baskervilles - Arthur Conan Doyle",
