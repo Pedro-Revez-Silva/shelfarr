@@ -9,6 +9,7 @@ class SearchJob < ApplicationJob
     exact_title: 0,
     title_author: 5,
     short_title: 6,
+    tail_title: 7,
     author_title: 8,
     normalized_title: 10,
     number_variant: 12
@@ -321,16 +322,18 @@ class SearchJob < ApplicationJob
     )
 
     results = structured_results
+    generic_attempts = generic_indexer_attempts(request)
+    tail_pending = generic_attempts.any? { |attempt| attempt.name == :tail_title }
 
     if structured_results.empty?
       Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search returned no results for request ##{request.id}; retrying with a generic query"
-      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
+      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results, attempts: generic_attempts))
     elsif book.ebook?
       Rails.logger.info "[SearchJob] #{IndexerClient.display_name} ebook search found #{structured_results.count} structured results for request ##{request.id}; supplementing with a generic query"
-      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
-    elsif !strong_indexer_match?(results, request)
+      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results, attempts: generic_attempts))
+    elsif !strong_indexer_match?(results, request, require_complete_title: tail_pending)
       Rails.logger.info "[SearchJob] #{IndexerClient.display_name} book search found no strong match for request ##{request.id}; supplementing with a generic query"
-      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results))
+      results = merge_indexer_results(results, search_generic_indexer_attempts(request, categories: categories, starting_results: results, attempts: generic_attempts))
     end
 
     finalize_indexer_results(request, results)
@@ -819,7 +822,7 @@ class SearchJob < ApplicationJob
     SettingsService.indexer_category_ids_for(request.book.book_type)
   end
 
-  def strong_indexer_match?(results, request)
+  def strong_indexer_match?(results, request, require_complete_title: false)
     threshold = SettingsService.get(:min_match_confidence)
 
     Array(results).any? do |tagged_result|
@@ -828,7 +831,13 @@ class SearchJob < ApplicationJob
       next false if SettingsService.unrestricted_indexer_search_scope? &&
         !compatible_result_categories?(result, request.book.book_type)
 
-      penalized_indexer_score(tagged_result, request) >= threshold
+      score = ReleaseScorer.score(search_result_for_scoring(result), request)
+      tail_result = tagged_result.is_a?(Hash) && tagged_result[:search_attempt] == "tail_title"
+      # Generic subtitles ("A Novel") can find another book by the same
+      # author. Keep those candidates, but do not let them stop later queries.
+      next false if (require_complete_title || tail_result) && score.breakdown[:title] != 100
+
+      penalized_indexer_score(tagged_result, request, raw_score: score) >= threshold
     end
   end
 
@@ -836,9 +845,9 @@ class SearchJob < ApplicationJob
   # ReleaseScorer total minus the search attempt penalty. Keeping threshold
   # checks on the penalized score prevents broadened attempts from stopping
   # the search with a result that ends up stored below the confidence threshold.
-  def penalized_indexer_score(tagged_result, request)
+  def penalized_indexer_score(tagged_result, request, raw_score: nil)
     result = indexer_result_from(tagged_result)
-    score = ReleaseScorer.score(search_result_for_scoring(result), request).total
+    score = (raw_score || ReleaseScorer.score(search_result_for_scoring(result), request)).total
     penalty = tagged_result.is_a?(Hash) ? tagged_result[:score_penalty].to_i : 0
     [ score - penalty, 0 ].max
   end
@@ -906,6 +915,7 @@ class SearchJob < ApplicationJob
     attempts ||= generic_indexer_attempts(request)
     results = []
     last_error = nil
+    tail_pending = attempts.any? { |attempt| attempt.name == :tail_title }
 
     attempts.each do |attempt|
       Rails.logger.debug "[SearchJob] Searching #{IndexerClient.display_name} for request ##{request.id} (attempt: #{attempt.name})"
@@ -924,7 +934,8 @@ class SearchJob < ApplicationJob
         last_error = e
       end
 
-      break if strong_indexer_match?(merge_indexer_results(starting_results, results), request)
+      tail_pending = false if attempt.name == :tail_title
+      break if strong_indexer_match?(merge_indexer_results(starting_results, results), request, require_complete_title: tail_pending)
     end
 
     # If nothing was found anywhere and at least one attempt errored, propagate
@@ -970,6 +981,11 @@ class SearchJob < ApplicationJob
       short_title = short_search_title(preferred_title)
       if short_title.present?
         attempts << build_search_attempt(:short_title, [ short_title, book.author, language_hint ])
+      end
+
+      tail_title = tail_search_title(preferred_title)
+      if tail_title.present? && !tail_title.casecmp?(book.author.to_s.squish)
+        attempts << build_search_attempt(:tail_title, [ tail_title, book.author, language_hint ])
       end
 
       attempts << build_search_attempt(:author_title, [ book.author, preferred_title, language_hint ])
@@ -1083,6 +1099,19 @@ class SearchJob < ApplicationJob
     return nil if short.length < 4
 
     short
+  end
+
+  # Collection and series prefixes are the inverse of a subtitle: the head is
+  # the edition label and the tail is the title indexers actually carry
+  # ("The Works of A. Conan Doyle: The hound of the Baskervilles").
+  # Returns the text after the first subtitle separator, or nil when the
+  # title has no suffix or the remainder is too short to search safely.
+  def tail_search_title(title)
+    tail = title.to_s.split(/\s*(?::|;|–|—|\s-\s)\s*/, 2).last.to_s.squish
+    return nil if tail.blank? || tail.casecmp?(title.to_s.squish)
+    return nil if tail.length < 4
+
+    tail
   end
 
   def normalized_search_title(title)
