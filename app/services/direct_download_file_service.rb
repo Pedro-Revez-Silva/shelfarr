@@ -380,7 +380,10 @@ class DirectDownloadFileService
       snapshot = FileCopyService.snapshot_source_root(expanded)
       return false unless [ snapshot.device, snapshot.inode ] == expected_identity
 
-      FileCopyService.remove_source_tree(snapshot)
+      FileCopyService.remove_source_tree(
+        snapshot,
+        allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+      )
     rescue Errno::ENOENT
       valid_output_root_identity?(download) && valid_staging_parent_identity?(download)
     rescue Error, SystemCallError, FileCopyService::UnsafePathError

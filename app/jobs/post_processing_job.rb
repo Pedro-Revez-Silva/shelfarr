@@ -642,7 +642,10 @@ class PostProcessingJob < ApplicationJob
     return if shared_roots.include?(canonical_source)
     return unless authorized_roots.any? { |root| path_inside_root?(canonical_source, root) }
 
-    if FileCopyService.remove_source_tree(snapshot)
+    if FileCopyService.remove_source_tree(
+      snapshot,
+      allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+    )
       Rails.logger.info "[PostProcessingJob] Removed empty download job directory"
     end
   rescue FileCopyService::UnsafePathError, SystemCallError => e
@@ -1323,8 +1326,13 @@ class PostProcessingJob < ApplicationJob
       return false
     end
 
-    removed = FileCopyService.remove_source_tree(source_root)
-    Rails.logger.warn "[PostProcessingJob] Source directory changed; it was retained" unless removed
+    removed = FileCopyService.remove_source_tree(
+      source_root,
+      allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+    )
+    unless removed
+      Rails.logger.warn "[PostProcessingJob] Source directory was retained"
+    end
     removed
   end
 

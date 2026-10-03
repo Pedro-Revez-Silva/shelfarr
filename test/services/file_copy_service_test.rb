@@ -4106,13 +4106,56 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     FileUtils.mkdir_p(source_root_path)
     File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
     snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    messages = []
 
     removed = FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL }) do
-      FileCopyService.remove_source_tree(snapshot)
+      FileCopyService.stub(:native_renameat, ->(*) { flunk "plain rename must require explicit opt-in" }) do
+        Rails.logger.stub(:warn, ->(message) { messages << message }) do
+          FileCopyService.remove_source_tree(snapshot, allow_nonatomic: false)
+        end
+      end
     end
 
     assert_not removed
     assert_equal "chapter", File.binread(File.join(source_root_path, "chapter.mp3"))
+    assert messages.any? { |message| message.match?(/atomic source quarantine is unsupported/i) }
+  end
+
+  test "remove_source_tree uses the explicitly enabled non-atomic NFS fallback" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+
+    removed = FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+      FileCopyService.remove_source_tree(snapshot, allow_nonatomic: true)
+    end
+
+    assert removed
+    assert_not File.exist?(source_root_path)
+    assert_empty Dir.glob(File.join(@tmp_dir, ".shelfarr-remove-*"))
+  end
+
+  test "remove_source_tree non-atomic fallback preserves a quarantine name found before rename" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    hex = "a" * 32
+    quarantine_path = File.join(@tmp_dir, ".shelfarr-remove-#{hex}")
+    FileUtils.mkdir_p(quarantine_path)
+    File.binwrite(File.join(quarantine_path, "other.mp3"), "other")
+
+    SecureRandom.stub(:hex, hex) do
+      FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+        FileCopyService.stub(:native_renameat, ->(*) { flunk "plain rename must not replace a present quarantine name" }) do
+          assert_not FileCopyService.remove_source_tree(snapshot, allow_nonatomic: true)
+        end
+      end
+    end
+
+    assert_equal "chapter", File.binread(File.join(source_root_path, "chapter.mp3"))
+    assert_equal "other", File.binread(File.join(quarantine_path, "other.mp3"))
   end
 
   test "remove_source_tree retains data when filesystem identities are unreliable" do
