@@ -1029,7 +1029,14 @@ class FileCopyService
       end
     end
 
-    def remove_directory_child_if_identity(parent_path, child_name, root:, device:, inode:)
+    def remove_directory_child_if_identity(
+      parent_path,
+      child_name,
+      root:,
+      device:,
+      inode:,
+      allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+    )
       if child_name.include?(File::SEPARATOR) || child_name.in?([ ".", ".." ])
         raise UnsafePathError, "directory child name is unsafe"
       end
@@ -1067,7 +1074,7 @@ class FileCopyService
         end
       end
 
-      remove_source_tree(snapshot)
+      remove_source_tree(snapshot, allow_nonatomic: allow_nonatomic)
     rescue Errno::ENOENT, Errno::ESTALE, UnsafePathError
       false
     end
@@ -1446,8 +1453,13 @@ class FileCopyService
     # Atomically quarantine the current directory entry, verify that it is the
     # exact tree snapshotted before import, and only then remove it. If another
     # directory won the pathname race, restore or retain that replacement; it
-    # is never recursively deleted.
-    def remove_source_tree(source_root)
+    # is never recursively deleted. Some NFS servers reject RENAME_NOREPLACE
+    # with EINVAL; operators may explicitly allow the weaker check-then-rename
+    # compatibility path used by directory publication.
+    def remove_source_tree(
+      source_root,
+      allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+    )
       expanded = source_root.path
       parent_path = source_root.parent_path
       canonical_parent = source_root.canonical_parent_path
@@ -1460,18 +1472,32 @@ class FileCopyService
           raise Errno::ESTALE, "source parent identity changed during cleanup"
         end
         validate_current_directory_identity!(parent_path, parent)
-        renamed = native_rename_noreplace_compatibility(
-          parent.fileno,
+        renamed = rename_entry_noreplace(
+          parent,
           expanded.basename.to_s,
-          parent.fileno,
-          quarantine_basename
+          quarantine_basename,
+          allow_nonatomic: allow_nonatomic,
+          directory: true,
+          log_fallback: true
         )
-        return false unless renamed
+        unless renamed
+          unless allow_nonatomic
+            Rails.logger.warn(
+              "[FileCopyService] Atomic source quarantine is unsupported; the source was retained"
+            )
+          end
+          return false
+        end
 
         quarantined_identity = pinned_child_identity(parent, quarantine_basename, directory: true)
         expected_identity = [ source_root.device, source_root.inode ]
         unless quarantined_identity == expected_identity
-          restore_quarantined_replacement(parent, quarantine_basename, expanded.basename.to_s)
+          restore_quarantined_replacement(
+            parent,
+            quarantine_basename,
+            expanded.basename.to_s,
+            allow_nonatomic: allow_nonatomic
+          )
           return false
         end
 
@@ -1481,16 +1507,30 @@ class FileCopyService
           create: false
         ) do |quarantine|
           unless snapshot_pinned_regular_tree(quarantine) == source_root.entries
-            restore_quarantined_replacement(parent, quarantine_basename, expanded.basename.to_s)
+            restore_quarantined_replacement(
+              parent,
+              quarantine_basename,
+              expanded.basename.to_s,
+              allow_nonatomic: allow_nonatomic
+            )
             return false
           end
 
-          remove_pinned_tree_contents!(quarantine, source_root.entries)
+          remove_pinned_tree_contents!(
+            quarantine,
+            source_root.entries,
+            allow_nonatomic: allow_nonatomic
+          )
         end
 
         validate_current_directory_identity!(parent_path, parent)
         unless pinned_child_identity(parent, quarantine_basename, directory: true) == expected_identity
-          restore_quarantined_replacement(parent, quarantine_basename, expanded.basename.to_s)
+          restore_quarantined_replacement(
+            parent,
+            quarantine_basename,
+            expanded.basename.to_s,
+            allow_nonatomic: allow_nonatomic
+          )
           return false
         end
         native_unlinkat(parent.fileno, quarantine_basename, AT_REMOVEDIR)
@@ -3695,7 +3735,7 @@ class FileCopyService
       manifest
     end
 
-    def remove_pinned_tree_contents!(directory, expected_entries, prefix = nil)
+    def remove_pinned_tree_contents!(directory, expected_entries, prefix = nil, allow_nonatomic: false)
       children = pinned_directory_children(directory)
       expected_children = expected_entries.keys.filter_map do |relative|
         path = Pathname(relative)
@@ -3711,11 +3751,12 @@ class FileCopyService
         relative = prefix ? prefix.join(entry) : Pathname(entry)
         expected = expected_entries.fetch(relative.to_s)
         quarantine = ".shelfarr-remove-child-#{SecureRandom.hex(16)}"
-        renamed = native_rename_noreplace_compatibility(
-          directory.fileno,
+        renamed = rename_entry_noreplace(
+          directory,
           entry,
-          directory.fileno,
-          quarantine
+          quarantine,
+          allow_nonatomic: allow_nonatomic,
+          directory: expected[2] == :directory
         )
         raise Errno::ESTALE, "source child changed during cleanup" unless renamed
 
@@ -3730,23 +3771,48 @@ class FileCopyService
           stat = child.stat
           if expected[2] == :directory
             unless stat.directory? && file_identity(stat) == expected.first(2)
-              restore_quarantined_replacement(directory, quarantine, entry)
+              restore_quarantined_replacement(
+                directory,
+                quarantine,
+                entry,
+                allow_nonatomic: allow_nonatomic
+              )
               raise Errno::ESTALE, "source directory changed during cleanup"
             end
-            remove_pinned_tree_contents!(child, expected_entries, relative)
+            remove_pinned_tree_contents!(
+              child,
+              expected_entries,
+              relative,
+              allow_nonatomic: allow_nonatomic
+            )
             unless pinned_child_identity(directory, quarantine, directory: true) == expected.first(2)
-              restore_quarantined_replacement(directory, quarantine, entry)
+              restore_quarantined_replacement(
+                directory,
+                quarantine,
+                entry,
+                allow_nonatomic: allow_nonatomic
+              )
               raise Errno::ESTALE, "source directory changed during cleanup"
             end
             native_unlinkat(directory.fileno, quarantine, AT_REMOVEDIR)
           else
             current = file_manifest_entry(stat)
             unless stat.file? && current.first(5) == expected.first(5)
-              restore_quarantined_replacement(directory, quarantine, entry)
+              restore_quarantined_replacement(
+                directory,
+                quarantine,
+                entry,
+                allow_nonatomic: allow_nonatomic
+              )
               raise Errno::ESTALE, "source file changed during cleanup"
             end
             unless pinned_child_identity(directory, quarantine) == expected.first(2)
-              restore_quarantined_replacement(directory, quarantine, entry)
+              restore_quarantined_replacement(
+                directory,
+                quarantine,
+                entry,
+                allow_nonatomic: allow_nonatomic
+              )
               raise Errno::ESTALE, "source file changed during cleanup"
             end
             native_unlinkat(directory.fileno, quarantine)
@@ -3976,12 +4042,18 @@ class FileCopyService
       end
     end
 
-    def restore_quarantined_replacement(parent, quarantine_basename, original_basename)
-      restored = native_rename_noreplace_compatibility(
-        parent.fileno,
+    def restore_quarantined_replacement(
+      parent,
+      quarantine_basename,
+      original_basename,
+      allow_nonatomic: false
+    )
+      restored = rename_entry_noreplace(
+        parent,
         quarantine_basename,
-        parent.fileno,
-        original_basename
+        original_basename,
+        allow_nonatomic: allow_nonatomic,
+        directory: true
       )
       return if restored
 
@@ -4526,6 +4598,52 @@ class FileCopyService
       native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
     rescue Errno::EINVAL
       false
+    end
+
+    # Atomic no-replace rename with the same operator-authorized NFS fallback
+    # used by directory publication. The destination name is checked before a
+    # plain renameat so an existing entry is never replaced.
+    def rename_entry_noreplace(
+      parent,
+      source_basename,
+      destination_basename,
+      allow_nonatomic:,
+      directory:,
+      log_fallback: false
+    )
+      renamed = begin
+        native_rename_noreplace(
+          parent.fileno,
+          source_basename,
+          parent.fileno,
+          destination_basename
+        )
+      rescue Errno::EINVAL
+        false
+      end
+      return true if renamed
+      return false unless allow_nonatomic
+
+      if log_fallback
+        Rails.logger.warn(
+          "[FileCopyService] Using operator-authorized non-atomic source quarantine for #{destination_basename}"
+        )
+      end
+      begin
+        if pinned_child_identity(parent, destination_basename, directory: directory)
+          return false
+        end
+      rescue SystemCallError => error
+        raise unless error.is_a?(Errno::ENOENT)
+      end
+
+      native_renameat(
+        parent.fileno,
+        source_basename,
+        parent.fileno,
+        destination_basename
+      )
+      true
     end
 
     def file_identity(stat)

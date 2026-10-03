@@ -1216,6 +1216,40 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(@temp_source), "Source download folder should be removed after successful import"
   end
 
+  test "move import removes the source on NFS EINVAL when non-atomic publication is enabled" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, true)
+
+    with_nfs_rejecting_source_quarantine_renames do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+    assert_not File.exist?(@temp_source)
+  ensure
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, false)
+  end
+
+  test "move import retains the source on NFS EINVAL and logs atomic rename unsupported" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, false)
+
+    output = capture_private_post_processing_logs do
+      with_nfs_rejecting_source_quarantine_renames do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+    assert File.exist?(@temp_source)
+    assert_match(/atomic source (quarantine|rename) is unsupported/i, output)
+    assert_no_match(/Source directory changed/, output)
+  end
+
   test "removes source directory after split audiobook bundle move import" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
@@ -3882,6 +3916,17 @@ class PostProcessingJobTest < ActiveJob::TestCase
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
       FileCopyService.stub(:native_rename_noreplace, false, &operation)
     end
+  end
+
+  def with_nfs_rejecting_source_quarantine_renames(&operation)
+    real_rename = FileCopyService.method(:native_rename_noreplace)
+    FileCopyService.stub(:native_rename_noreplace, lambda { |source_fd, source_name, destination_fd, destination_name|
+      if destination_name.to_s.start_with?(".shelfarr-remove")
+        raise Errno::EINVAL, "renameat2"
+      end
+
+      real_rename.call(source_fd, source_name, destination_fd, destination_name)
+    }, &operation)
   end
 
   def capture_private_post_processing_logs
