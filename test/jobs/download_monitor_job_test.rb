@@ -3,7 +3,7 @@
 require "test_helper"
 
 class DownloadMonitorJobTest < ActiveJob::TestCase
-  CLIENT_THREAD_LOCALS = %i[qbittorrent_sessions transmission_sessions transmission_protocols].freeze
+  CLIENT_THREAD_LOCALS = %i[qbittorrent_sessions deluge_sessions transmission_sessions transmission_protocols].freeze
 
   def run
     Request.suppressing_turbo_broadcasts { super }
@@ -185,6 +185,36 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
 
       @download.reload
       assert @download.completed?
+      assert_equal 100, @download.progress
+    end
+  end
+
+  test "handles Deluge torrents paused or stopped at 100% as completed and triggers post-processing" do
+    deluge = DownloadClient.create!(
+      name: "Monitor Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    @download.update!(download_client: deluge)
+
+    %w[Paused Stopped].each do |state|
+      @download.update!(status: :downloading, progress: 50, download_path: nil)
+
+      VCR.turned_off do
+        Thread.current[:deluge_sessions] = {}
+        stub_deluge_login
+        stub_deluge_torrent_info(progress: 100, state: state)
+
+        assert_enqueued_with(job: PostProcessingJob, args: [ @download.id ]) do
+          DownloadMonitorJob.perform_now
+        end
+      end
+
+      @download.reload
+      assert @download.completed?, "Deluge #{state} at 100% should complete the download"
       assert_equal 100, @download.progress
     end
   end
@@ -998,6 +1028,39 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
             "content_path" => "/downloads/complete/Test Audiobook"
           }
         ].to_json
+      )
+  end
+
+  def stub_deluge_login
+    stub_request(:post, "http://localhost:8112/json")
+      .with(body: /"auth.login"/)
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+        body: { result: true, error: nil, id: 1 }.to_json
+      )
+  end
+
+  def stub_deluge_torrent_info(progress:, state:)
+    stub_request(:post, "http://localhost:8112/json")
+      .with(body: /"core.get_torrents_status"/)
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: {
+          result: {
+            "abc123def456" => {
+              "name" => "Test Audiobook",
+              "progress" => progress,
+              "state" => state,
+              "total_size" => 1_073_741_824,
+              "download_location" => "/downloads/complete",
+              "save_path" => "/downloads/complete"
+            }
+          },
+          error: nil,
+          id: 1
+        }.to_json
       )
   end
 
