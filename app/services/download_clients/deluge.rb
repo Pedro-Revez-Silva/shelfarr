@@ -196,7 +196,7 @@ module DownloadClients
         hash: id,
         name: data["name"],
         progress: progress,
-        state: normalize_state(data["state"].to_s),
+        state: normalize_state(data["state"].to_s, progress: progress),
         size_bytes: data["total_size"].to_f,
         download_path: torrent_download_path(data)
       )
@@ -218,7 +218,7 @@ module DownloadClients
       normalized.round
     end
 
-    def normalize_state(state)
+    def normalize_state(state, progress: 0)
       case state
       when "Downloading", "Checking", "CheckingResumeData", "Queued", "Moving", "Allocating", "Creating"
         :downloading
@@ -226,10 +226,8 @@ module DownloadClients
         :completed
       when "Error", "ErrorPause"
         :failed
-      when "Paused", "PausedDownload", "PausedUpload"
-        :paused
-      when "Stopped"
-        :paused
+      when "Paused", "PausedDownload", "PausedUpload", "Stopped"
+        progress >= 100 ? :completed : :paused
       else
         :queued
       end
