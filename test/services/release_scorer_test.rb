@@ -275,6 +275,64 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal 100, result.breakdown[:title]
   end
 
+  test "scores dotted scene-style release titles the same as spaced exact matches" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+
+    book = Book.create!(
+      title: "Vielleicht bin ich nicht Gott. Chroniken einer Katze",
+      author: "Stefania Gander",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "de")
+
+    spaced = ReleaseScorer.score(
+      SearchResult.new(title: "Stefania Gander - Vielleicht bin ich nicht Gott - Chroniken einer Katze", seeders: 50),
+      request
+    )
+    dotted_with_separators = ReleaseScorer.score(
+      SearchResult.new(title: "Stefania.Gander.-.Vielleicht.bin.ich.nicht.Gott.-.Chroniken.einer.Katze", seeders: 50),
+      request
+    )
+    dotted = ReleaseScorer.score(
+      SearchResult.new(title: "Stefania.Gander.Vielleicht.bin.ich.nicht.Gott.Chroniken.einer.Katze", seeders: 50),
+      request
+    )
+
+    assert_equal 100, spaced.breakdown[:title]
+    assert_equal 100, dotted_with_separators.breakdown[:title]
+    assert_equal 100, dotted.breakdown[:title]
+    assert_equal spaced.breakdown[:title], dotted_with_separators.breakdown[:title]
+    assert_equal spaced.breakdown[:title], dotted.breakdown[:title]
+  end
+
+  test "transliterates non-ASCII title letters instead of deleting them" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+
+    book = Book.create!(
+      title: "Spaß in der Küche",
+      author: "Jürgen Weiß",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "de")
+
+    native = ReleaseScorer.score(
+      SearchResult.new(title: "Spaß in der Küche - Jürgen Weiß", seeders: 50),
+      request
+    )
+    ascii = ReleaseScorer.score(
+      SearchResult.new(title: "Spass in der Kuche - Jurgen Weiss", seeders: 50),
+      request
+    )
+
+    assert_equal 100, native.breakdown[:title]
+    assert_equal 100, ascii.breakdown[:title]
+    assert_equal native.breakdown[:title], ascii.breakdown[:title]
+  end
+
   test "rewards an exact comic issue and rejects a conflicting issue" do
     book = Book.create!(
       title: "Saga",
