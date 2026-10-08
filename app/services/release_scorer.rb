@@ -411,14 +411,16 @@ class ReleaseScorer
     value.to_s.match?(/\A\d+\z/)
   end
 
-  # Normalize text for matching
+  # Normalize text for matching. Transliterate letters (ü -> u, ß -> ss)
+  # and treat punctuation as word boundaries so scene-style dotted names
+  # stay tokenized. Apostrophes are removed so contractions stay one token.
   def normalize_for_matching(text)
     return "" if text.blank?
 
-    normalized = text
+    normalized = I18n.transliterate(text.to_s)
       .downcase
-      .gsub(/[^a-z0-9\s]/, "")  # Remove special characters
-      .gsub(/\s+/, " ")         # Collapse whitespace
+      .delete("'\"`´’‘")
+      .gsub(/[^a-z0-9]+/, " ")
       .strip
 
     normalize_number_tokens(normalized)
