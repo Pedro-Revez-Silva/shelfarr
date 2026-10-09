@@ -232,6 +232,37 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "does not post-process incomplete paused Deluge torrents rounded to 100 percent" do
+    deluge = DownloadClient.create!(
+      name: "Incomplete Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    @download.update!(download_client: deluge)
+
+    %w[Paused PausedDownload PausedUpload Stopped].each do |state|
+      [ 1.0, 99.5, 99.99 ].each do |progress|
+        @download.update!(status: :downloading, progress: 0, download_path: nil)
+
+        VCR.turned_off do
+          Thread.current[:deluge_sessions] = {}
+          stub_deluge_login
+          stub_deluge_torrent_info(progress: progress, state: state)
+
+          assert_no_enqueued_jobs(only: PostProcessingJob) do
+            DownloadMonitorJob.perform_now
+          end
+        end
+
+        assert @download.reload.downloading?, "Deluge #{state} at #{progress}% is incomplete"
+        assert_equal progress.round, @download.progress
+      end
+    end
+  end
+
   test "marks download as failed after not-found threshold exceeded" do
     @download.update!(not_found_count: DownloadMonitorJob::NOT_FOUND_THRESHOLD - 1)
 
