@@ -171,7 +171,7 @@ class ReleaseScorer
     release_title = normalize_for_matching(@search_result.title)
     author = normalize_for_matching(@book.author)
 
-    return 0 if release_title.blank?
+    return 0 if release_title.blank? || author.blank?
 
     # Check for full author name
     return 100 if matching_text_variants(@search_result.title).any? do |title|
