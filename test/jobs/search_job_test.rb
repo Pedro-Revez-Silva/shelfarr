@@ -760,6 +760,27 @@ class SearchJobTest < ActiveJob::TestCase
     assert_empty @request.downloads
   end
 
+  test "does not auto-select short dotted titles inside collection releases" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    @request.book.update!(title: "R.U.R.", author: "Karel Capek", book_type: :ebook)
+    payload = prowlarr_result_payload.merge("title" => "Collected R.U.R. Karel Capek English EPUB", "seeders" => 50)
+    stub_request(:get, %r{localhost:9696/api/v1/search})
+      .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [ payload ].to_json)
+
+    VCR.turned_off do
+      assert_no_enqueued_jobs(only: DownloadJob) { SearchJob.perform_now(@request.id) }
+    end
+
+    assert_operator @request.search_results.sole.score_breakdown["title"], :<, 100
+    assert @request.reload.attention_needed?
+    assert_empty @request.downloads
+  end
+
   test "sends attention notification when no search sources configured" do
     SettingsService.set(:prowlarr_api_key, "")
     SettingsService.set(:anna_archive_enabled, false)
