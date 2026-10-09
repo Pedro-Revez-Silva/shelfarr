@@ -417,9 +417,9 @@ class ReleaseScorer
   def normalize_for_matching(text)
     return "" if text.blank?
 
-    normalized = I18n.transliterate(text.to_s)
+    # Remove quotes first: transliteration replaces curly apostrophes with "?".
+    normalized = I18n.transliterate(text.to_s.delete("'\"`´’‘"))
       .downcase
-      .delete("'\"`´’‘")
       .gsub(/[^a-z0-9]+/, " ")
       .strip
 

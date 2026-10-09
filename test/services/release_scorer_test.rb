@@ -333,6 +333,23 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal native.breakdown[:title], ascii.breakdown[:title]
   end
 
+  test "preserves exact title and author matches with curly apostrophes" do
+    [ "'", "’", "‘" ].each do |apostrophe|
+      @book.update!(title: "Ender#{apostrophe}s Game", author: "O#{apostrophe}Connor")
+      release = @request.search_results.new(
+        title: "Enders Game OConnor English Audiobook M4B",
+        seeders: 50
+      )
+
+      score = ReleaseScorer.score(release, @request)
+
+      assert_equal 100, score.breakdown[:title]
+      assert_equal 100, score.breakdown[:author]
+      assert score.high_confidence?
+      assert score.breakdown[:auto_select_allowed]
+    end
+  end
+
   test "rewards an exact comic issue and rejects a conflicting issue" do
     book = Book.create!(
       title: "Saga",
