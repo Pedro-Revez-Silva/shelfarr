@@ -25,6 +25,7 @@ Rails.application.routes.draw do
   # Library
   resources :library, only: [ :index, :show, :destroy ] do
     member do
+      get :download
       post :retry_post_processing
     end
   end

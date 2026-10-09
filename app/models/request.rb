@@ -455,6 +455,21 @@ class Request < ApplicationRecord
       !direct_acquisition_recovery_pending?
   end
 
+  def can_delete_completed_history?
+    completed? && completed_history_removal_blocked_message.nil?
+  end
+
+  # Completed requests are history, not acquisition admission. Keep the Book
+  # and its files while deleting history under the same recovery lock as imports.
+  def destroy_completed_history!
+    with_acquisition_transition_lock do
+      message = completed_history_removal_blocked_message
+      raise CancellationBlockedError, message if message
+
+      destroy!
+    end
+  end
+
   def search_refresh_allowed?
     status.in?(SEARCH_REFRESHABLE_STATUSES) && !search_refresh_acquisition_blocked?
   end
@@ -655,6 +670,17 @@ class Request < ApplicationRecord
 
     errors.add(:base, message)
     throw :abort
+  end
+
+  def completed_history_removal_blocked_message
+    return "Only completed request history can be deleted" unless completed?
+    return upload_cancellation_blocked_message if upload_cancellation_blocked?
+    return post_processing_recovery_message if post_processing_recovery_pending?
+    return direct_acquisition_recovery_message if direct_acquisition_recovery_pending?
+    return "This request still has an active download. Wait for it to finish before deleting its history." if
+      downloads.where(status: [ :queued, :downloading, :paused ]).exists?
+
+    nil
   end
 
   def serialize_acquisition_transition!

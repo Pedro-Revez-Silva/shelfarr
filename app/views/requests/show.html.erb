@@ -335,7 +335,9 @@
       <% end %>
     </div>
 
-    <% if @request.can_be_cancelled? || (Current.user.admin? && @request.can_retry?) %>
+    <% can_remove = @request.can_be_cancelled? || @request.can_delete_completed_history? %>
+    <% removal_label = @request.completed? ? "Delete Request" : "Cancel Request" %>
+    <% if can_remove || (Current.user.admin? && @request.can_retry?) %>
       <div class="px-6 py-4 bg-gray-800/50 border-t border-gray-800 flex justify-end gap-3" data-controller="delete-modal">
         <% if Current.user.admin? && @request.can_retry? %>
           <%= button_to "Retry Request", retry_request_path(@request),
@@ -349,22 +351,29 @@
               class: "px-4 py-2 bg-green-600 hover:bg-green-500 text-white font-medium rounded-lg transition" %>
         <% end %>
 
-        <% if @request.can_be_cancelled? %>
+        <% if can_remove %>
           <button type="button"
                   class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition"
                   data-action="click->delete-modal#open">
-            Cancel Request
+            <%= removal_label %>
           </button>
 
           <dialog data-delete-modal-target="modal"
                   class="bg-gray-900 border border-gray-700 rounded-lg p-0 backdrop:bg-black/50 max-w-md w-full"
                   data-action="click->delete-modal#backdropClick">
             <div class="p-6">
-              <h3 class="text-lg font-semibold text-white mb-2">Cancel Request</h3>
-              <p class="text-gray-400 mb-4">Are you sure you want to cancel this request for "<%= @request.book.title %>"?</p>
+              <h3 class="text-lg font-semibold text-white mb-2"><%= removal_label %></h3>
+              <% if @request.completed? %>
+                <p class="text-gray-400 mb-4">Delete the completed request history for "<%= @request.book.title %>"? Library files will be kept.</p>
+                <% if @request.book.acquired? %>
+                  <p class="text-gray-400 mb-4">To request this book again, ask an admin to remove its entry from the <%= link_to "Library", library_path(@request.book), class: "text-blue-400 hover:text-blue-300" %>, including when its files were deleted manually.</p>
+                <% end %>
+              <% else %>
+                <p class="text-gray-400 mb-4">Are you sure you want to cancel this request for "<%= @request.book.title %>"?</p>
+              <% end %>
 
               <%= form_with url: request_path(@request), method: :delete, local: true, class: "space-y-4" do |f| %>
-                <% if @request.downloads.any? { |d| d.external_id.present? && d.download_client.present? } %>
+                <% if !@request.completed? && @request.downloads.any? { |d| d.external_id.present? && d.download_client.present? } %>
                   <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
                     <input type="checkbox" name="remove_torrent" value="1"
                            class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-red-600 focus:ring-red-500">
@@ -380,7 +389,7 @@
                   </button>
                   <button type="submit"
                           class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg transition">
-                    Cancel Request
+                    <%= removal_label %>
                   </button>
                 </div>
               <% end %>

@@ -59,11 +59,10 @@
         </div>
       </div>
 
-      <% if @user_request %>
         <div class="mt-6 pt-6 border-t border-gray-800">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-medium text-gray-500">Download</h3>
-            <%= link_to download_request_path(@user_request),
+            <%= link_to download_library_path(@book),
                 class: "inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition text-sm" do %>
               <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
@@ -71,13 +70,10 @@
               Download
             <% end %>
           </div>
-          <%= link_to "View Request Details", request_path(@user_request), class: "text-blue-400 hover:text-blue-300 text-sm" %>
+          <% if @user_request %>
+            <%= link_to "View Request Details", request_path(@user_request), class: "text-blue-400 hover:text-blue-300 text-sm" %>
+          <% end %>
         </div>
-      <% else %>
-        <div class="mt-6 pt-6 border-t border-gray-800">
-          <p class="text-sm text-gray-500">This book is in your library but has no associated download request.</p>
-        </div>
-      <% end %>
 
       <% if Current.user&.admin? %>
         <% if @attention_request %>

@@ -183,7 +183,7 @@
               <%# Error description and action buttons row %>
               <% if Current.user.admin? %>
                 <% has_retry = request.can_retry? %>
-                <% has_cancel = request.can_be_cancelled? %>
+                <% has_cancel = request.can_be_cancelled? || request.can_delete_completed_history? %>
                 <% has_issue = request.issue_description.present? %>
                 <% if has_view_results || has_retry || has_cancel || has_issue %>
                   <div data-request-card-action-row class="mt-2 flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
@@ -213,8 +213,8 @@
                         <% if has_cancel %>
                           <%= button_to request_path(request), method: :delete,
                               class: "inline-flex items-center px-2 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded font-medium transition whitespace-nowrap",
-                              data: { turbo_confirm: "Cancel request for \"#{request.book.title}\"?" } do %>
-                            Cancel
+                              data: { turbo_confirm: request.completed? ? "Delete completed request history? Library files will be kept." : "Cancel request for \"#{request.book.title}\"?" } do %>
+                            <%= request.completed? ? "Delete" : "Cancel" %>
                           <% end %>
                         <% end %>
                       </div>

@@ -686,7 +686,7 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "show displays download button when user has request" do
-    request = Request.create!(
+    Request.create!(
       book: @acquired_audiobook,
       user: @user,
       status: :completed
@@ -694,13 +694,13 @@ class LibraryControllerTest < ActionDispatch::IntegrationTest
 
     get library_path(@acquired_audiobook)
     assert_response :success
-    assert_select "a[href='#{download_request_path(request)}']", text: /Download/
+    assert_select "a[href='#{download_library_path(@acquired_audiobook)}']", text: /Download/
   end
 
-  test "show does not display download button when user has no request" do
+  test "show displays download button when user has no request" do
     get library_path(@acquired_audiobook)
     assert_response :success
-    assert_select "a[href*='download']", false
+    assert_select "a[href='#{download_library_path(@acquired_audiobook)}']", text: /Download/
   end
 
   test "show displays file path for admin" do
