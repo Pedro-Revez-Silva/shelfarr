@@ -1816,16 +1816,16 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
-  test "destroy rejects non-cancellable status" do
-    # Only completed requests cannot be cancelled
+  test "destroy deletes completed history without allowing cancellation" do
     @pending_request.update!(status: :completed)
 
-    assert_no_difference "Request.count" do
+    assert_not @pending_request.can_be_cancelled?
+    assert_difference "Request.count", -1 do
       delete request_path(@pending_request)
     end
 
-    assert_redirected_to request_path(@pending_request)
-    assert_includes flash[:alert], "Cannot cancel"
+    assert_redirected_to requests_path
+    assert_equal "Request deleted. Library files were kept.", flash[:notice]
   end
 
   test "user cannot cancel another user's request" do

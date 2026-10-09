@@ -3,6 +3,8 @@
 require "set"
 
 class LibraryController < ApplicationController
+  include LibraryFileDownload
+
   CATALOG_ITEMS_PER_PAGE = 50
   SOURCE_FILTERS = %w[audible].freeze
 
@@ -422,6 +424,11 @@ class LibraryController < ApplicationController
     @attention_request = @book.requests.where(attention_needed: true).first
   end
 
+  def download
+    @book = Book.acquired.find(params[:id])
+    serve_library_book_download
+  end
+
   def retry_post_processing
     unless Current.user&.admin?
       redirect_to library_index_path, alert: "Only admins can retry post-processing"
@@ -509,6 +516,14 @@ class LibraryController < ApplicationController
   end
 
   private
+
+  def download_book
+    @book
+  end
+
+  def download_failure_location
+    library_path(@book)
+  end
 
   def acquisition_recovery_pending?(book)
     return true if book.owned_media_recovery_pending?
