@@ -57,6 +57,9 @@ class LibraryDownloadRoots
     stat = path.lstat
     return [ path ] if stat.symlink?
     return [] unless stat.directory?
+    # Flat imports share this directory with unrelated books. The download
+    # pipeline refuses an entire-library bundle; history needs no such scan.
+    return [] if output_roots.include?(path.realpath)
 
     references = []
     pending = [ path ]

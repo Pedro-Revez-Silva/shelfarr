@@ -189,6 +189,35 @@ class CompletedRequestHistoryTest < ActionDispatch::IntegrationTest
     assert_equal "library bytes", response.body
   end
 
+  test "flat copied imports do not inspect another book's reference files" do
+    library_root = File.join(@root, "library")
+    other_source = File.join(@root, "other-source")
+    FileUtils.mkdir_p([ library_root, other_source ])
+    SettingsService.set(:ebook_output_path, library_root)
+    SettingsService.set(:download_local_path, File.join(@root, "unused-downloads"))
+    @book.update!(file_path: library_root)
+    File.binwrite(File.join(library_root, "Completed.epub"), "library bytes")
+    target = File.join(other_source, "Other.epub")
+    File.binwrite(target, "other reference bytes")
+    leaf = File.join(library_root, "Other.epub")
+    File.symlink(target, leaf)
+    other = Book.create!(title: "Other", book_type: :ebook, file_path: leaf)
+    other_request = Request.create!(book: other, user: @user, status: :completed)
+    client = DownloadClient.create!(name: "Other source", client_type: "deluge",
+      url: "http://localhost:8112", download_path: other_source)
+    other_request.downloads.create!(name: "Other", status: :completed, download_client: client)
+
+    assert_difference "Request.count", -1 do
+      delete request_path(@history_request)
+    end
+    assert_redirected_to requests_path
+    assert_equal "library bytes", File.binread(File.join(library_root, "Completed.epub"))
+    assert_not @book.reload.reference_target_roots_recorded?
+    get download_library_path(other)
+    assert_response :success
+    assert_equal "other reference bytes", response.body
+  end
+
   test "completed history with pending upload preserves its source and recovery records" do
     upload = Upload.create!(user: @user, book: @book, request: @history_request,
       original_filename: "Completed.epub", file_path: @path, status: :pending)
