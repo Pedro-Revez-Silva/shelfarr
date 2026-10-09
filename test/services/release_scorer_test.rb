@@ -366,6 +366,46 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "preserves punctuationless title and author matches" do
+    [
+      [ "Catch-22", "Joseph Heller", "Catch22 Joseph Heller" ],
+      [ "Catch22", "Joseph Heller", "Catch-22 Joseph Heller" ],
+      [ "R.U.R.", "Karel Capek", "RUR Karel Capek" ],
+      [ "The Hobbit", "J.R.R. Tolkien", "The Hobbit JRR Tolkien" ]
+    ].each do |title, author, release_title|
+      @book.update!(title: title, author: author)
+      release = @request.search_results.new(title: "#{release_title} English Audiobook M4B", seeders: 50)
+      score = ReleaseScorer.score(release, @request)
+
+      assert_equal 100, score.breakdown[:title], title
+      assert_equal 100, score.breakdown[:author], author
+      assert score.high_confidence?
+      assert score.breakdown[:auto_select_allowed]
+    end
+  end
+
+  test "punctuationless title matching preserves phrase and short alias boundaries" do
+    [
+      [ "Catch-22", "Catch220 Joseph Heller" ],
+      [ "Catch-22", "Scatch22 Joseph Heller" ],
+      [ "R.U.R.", "Collected RUR Karel Capek" ]
+    ].each do |title, release_title|
+      @book.update!(title: title)
+      score = ReleaseScorer.score(@request.search_results.new(title: release_title), @request)
+
+      assert_operator score.breakdown[:title], :<, 100, release_title
+    end
+
+    @book.update!(title: "Catch-22 / R.U.R.")
+    partial = ReleaseScorer.score(@request.search_results.new(title: "Catch22 English Audiobook M4B"), @request)
+    full = ReleaseScorer.score(@request.search_results.new(title: "Catch22 RUR English Audiobook M4B"), @request)
+
+    assert_equal 100, partial.breakdown[:title]
+    assert_not partial.breakdown[:auto_select_allowed]
+    assert_equal 100, full.breakdown[:title]
+    assert full.breakdown[:auto_select_allowed]
+  end
+
   test "rewards an exact comic issue and rejects a conflicting issue" do
     book = Book.create!(
       title: "Saga",

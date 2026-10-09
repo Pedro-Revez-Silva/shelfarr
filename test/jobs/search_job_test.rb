@@ -701,7 +701,7 @@ class SearchJobTest < ActiveJob::TestCase
     assert_nil @request.search_claimed_at
   end
 
-  test "auto-selects dotted and transliterated exact matches through the search job" do
+  test "auto-selects normalized exact matches through the search job" do
     SettingsService.set(:auto_select_enabled, true)
     SettingsService.set(:auto_select_confidence_threshold, 90)
     SettingsService.set(:auto_select_min_seeders, 1)
@@ -713,7 +713,9 @@ class SearchJobTest < ActiveJob::TestCase
     [
       [ "Spaß in der Küche", "Jürgen Weiß", "de", "Spass.in.der.Kuche.Jurgen.Weiss.German.EPUB" ],
       [ "Die Bücherdiebin".unicode_normalize(:nfd), "Jürgen Weiß".unicode_normalize(:nfd), "de", "Die.Bucherdiebin.Jurgen.Weiss.German.EPUB" ],
-      [ "Ender’s Game", "O’Connor", "en", "Enders.Game.OConnor.English.EPUB" ]
+      [ "Ender’s Game", "O’Connor", "en", "Enders.Game.OConnor.English.EPUB" ],
+      [ "Catch-22", "Joseph Heller", "en", "Catch22 Joseph Heller English EPUB" ],
+      [ "R.U.R.", "Karel Capek", "en", "RUR Karel Capek English EPUB" ]
     ].each_with_index do |(title, author, language, release_title), index|
       book = Book.create!(title: title, author: author, book_type: :ebook)
       request = Request.create!(book: book, user: users(:one), status: :pending, language: language)
