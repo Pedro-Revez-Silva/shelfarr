@@ -712,6 +712,7 @@ class SearchJobTest < ActiveJob::TestCase
 
     [
       [ "Spaß in der Küche", "Jürgen Weiß", "de", "Spass.in.der.Kuche.Jurgen.Weiss.German.EPUB" ],
+      [ "Die Bücherdiebin".unicode_normalize(:nfd), "Jürgen Weiß".unicode_normalize(:nfd), "de", "Die.Bucherdiebin.Jurgen.Weiss.German.EPUB" ],
       [ "Ender’s Game", "O’Connor", "en", "Enders.Game.OConnor.English.EPUB" ]
     ].each_with_index do |(title, author, language, release_title), index|
       book = Book.create!(title: title, author: author, book_type: :ebook)
