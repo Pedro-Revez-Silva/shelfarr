@@ -284,26 +284,6 @@ module LibraryFileDownload
     )
   end
 
-  def allowed_output_paths
-    [
-      SettingsService.get(:audiobook_output_path),
-      SettingsService.get(:ebook_output_path),
-      SettingsService.get(:comicbook_output_path)
-    ].compact.reject(&:blank?)
-  end
-
-  def allowed_download_paths
-    client_paths = download_book.requests
-      .joins(downloads: :download_client)
-      .where.not(download_clients: { download_path: [ nil, "" ] })
-      .pluck("download_clients.download_path")
-    [
-      SettingsService.get(:download_local_path, default: "/downloads"),
-      SettingsService.get(:download_remote_path),
-      *client_paths
-    ].compact_blank
-  end
-
   def canonical_path_contained?(path, root)
     return true if path == root
 
@@ -312,49 +292,11 @@ module LibraryFileDownload
   end
 
   def canonical_output_roots
-    canonicalize_roots(allowed_output_paths)
+    LibraryDownloadRoots.new(download_book).output_roots
   end
 
   def authorized_reference_target_roots
-    book = download_book
-    if book.reference_target_roots_recorded?
-      validate_persisted_reference_target_roots(book.reference_target_roots)
-    else
-      canonicalize_roots(allowed_output_paths + allowed_download_paths).filter_map do |path|
-        FileCopyService.snapshot_reference_root(path)
-      rescue FileCopyService::UnsafePathError
-        nil
-      end
-    end
-  end
-
-  def validate_persisted_reference_target_roots(roots)
-    roots.filter_map do |root|
-      path = Pathname(root.path)
-      stat = File.lstat(path)
-      next unless stat.directory?
-      next unless [ stat.dev, stat.ino ] == [ root.device, root.inode ]
-
-      FileCopyService::ReferenceRootSnapshot.new(
-        path: path,
-        device: root.device,
-        inode: root.inode
-      ).freeze
-    rescue SystemCallError, ArgumentError
-      nil
-    end
-  end
-
-  def canonicalize_roots(paths)
-    paths.filter_map do |configured_root|
-      candidate = Pathname(configured_root).expand_path.realpath
-      next if candidate.root?
-      next unless candidate.lstat.directory?
-
-      candidate
-    rescue SystemCallError, ArgumentError
-      nil
-    end.uniq
+    LibraryDownloadRoots.new(download_book).reference_target_roots
   end
 
   def download_log_context

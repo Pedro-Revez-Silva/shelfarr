@@ -94,4 +94,82 @@ class CompletedRequestHistoryTest < ActionDispatch::IntegrationTest
     assert_equal "de", replacement.language
     assert_redirected_to request_path(replacement)
   end
+
+  test "deleting completed history preserves legacy reference client authorization" do
+    client_root = prepare_legacy_reference
+    get download_request_path(@history_request)
+    assert_response :success
+    assert_equal "reference bytes", response.body
+
+    delete request_path(@history_request)
+    assert_redirected_to requests_path
+    assert_not Request.exists?(@history_request.id)
+    assert @book.reload.reference_target_roots_recorded?
+    get download_library_path(@book)
+    assert_response :success
+    assert_equal "reference bytes", response.body
+
+    # A replacement directory with the same pathname must not inherit the old
+    # authorization just because the source Request is gone.
+    File.rename(client_root, "#{client_root}-original")
+    FileUtils.mkdir_p(client_root)
+    File.binwrite(File.join(client_root, "book.epub"), "replacement private bytes")
+    get download_library_path(@book)
+    assert_redirected_to library_path(@book)
+    assert_equal "Invalid file path", flash[:alert]
+  end
+
+  test "temporarily unavailable legacy download root keeps history for recovery" do
+    client_root = prepare_legacy_reference
+    File.rename(client_root, "#{client_root}-unmounted")
+    assert_no_difference [ "Request.count", "Download.count", "Book.count" ] do
+      delete request_path(@history_request)
+    end
+    assert_redirected_to request_path(@history_request)
+    assert_includes flash[:alert], "download source is unavailable"
+    assert_not @book.reload.reference_target_roots_recorded?
+  end
+
+  test "completed history with pending upload preserves its source and recovery records" do
+    upload = Upload.create!(user: @user, book: @book, request: @history_request,
+      original_filename: "Completed.epub", file_path: @path, status: :pending)
+    assert_no_difference [ "Request.count", "Upload.count", "Book.count" ] do
+      delete request_path(@history_request)
+    end
+    assert_redirected_to request_path(@history_request)
+    assert_includes flash[:alert], "upload"
+    assert upload.reload.pending?
+    assert_equal "library bytes", File.binread(@path)
+  end
+
+  test "completed history with direct recovery preserves download provenance" do
+    @history_request.downloads.create!(name: "Direct", status: :completed,
+      direct_staging_path: File.join(@root, "pending-direct-recovery"))
+    assert_no_difference [ "Request.count", "Download.count", "Book.count" ] do
+      delete request_path(@history_request)
+    end
+    assert_redirected_to request_path(@history_request)
+    assert_includes flash[:alert], "direct download"
+  end
+
+  private
+
+  def prepare_legacy_reference
+    library_root = File.join(@root, "library")
+    client_root = File.join(@root, "client")
+    default_root = File.join(@root, "downloads")
+    FileUtils.mkdir_p([ library_root, client_root, default_root ])
+    target = File.join(client_root, "book.epub")
+    File.binwrite(target, "reference bytes")
+    leaf = File.join(library_root, "book.epub")
+    File.symlink(target, leaf)
+    @book.update!(file_path: leaf)
+    SettingsService.set(:ebook_output_path, library_root)
+    SettingsService.set(:download_local_path, default_root)
+    SettingsService.set(:download_remote_path, nil)
+    client = DownloadClient.create!(name: "Legacy client", client_type: "deluge",
+      url: "http://localhost:8112", download_path: client_root)
+    @history_request.downloads.create!(name: "Completed", status: :completed, download_client: client)
+    client_root
+  end
 end

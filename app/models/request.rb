@@ -466,8 +466,11 @@ class Request < ApplicationRecord
       message = completed_history_removal_blocked_message
       raise CancellationBlockedError, message if message
 
+      LibraryDownloadRoots.new(book.reload).preserve_legacy_reference_roots!
       destroy!
     end
+  rescue LibraryDownloadRoots::UnavailableRootError => error
+    raise CancellationBlockedError, error.message
   end
 
   def search_refresh_allowed?
