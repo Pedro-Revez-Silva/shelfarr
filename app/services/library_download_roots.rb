@@ -3,6 +3,7 @@
 # Root identities authorize reference files independently of request history.
 class LibraryDownloadRoots
   class UnavailableRootError < StandardError; end
+  MAX_REFERENCE_ENTRIES = 10_000
 
   def initialize(book)
     @book = book
@@ -11,19 +12,24 @@ class LibraryDownloadRoots
   def preserve_legacy_reference_roots!
     return if !book.acquired? || book.reference_target_roots_recorded?
 
-    # A missing client root may be temporarily unmounted. Keep its provenance
-    # recoverable rather than deleting history and permanently forgetting it.
-    client_download_paths.each do |path|
-      canonical = Pathname(path).expand_path.realpath
-      next if canonical.root?
+    references = legacy_reference_leaves
+    return if references.empty?
 
-      FileCopyService.snapshot_reference_root(canonical)
-    rescue SystemCallError, ArgumentError, FileCopyService::UnsafePathError
-      raise UnavailableRootError, "A download source is unavailable. Restore it before deleting request history, or remove the book from the Library."
+    # Capture once and retain those identities. Re-querying after a directory
+    # disappears can silently freeze a partial authorization set on the Book.
+    roots = reference_target_roots
+    references.each do |leaf|
+      target = leaf.realpath
+      root = roots.select { |candidate| contained?(target, candidate.path) }
+        .max_by { |candidate| candidate.path.to_s.length }
+      raise FileCopyService::UnsafePathError, "unavailable reference root" unless root
+
+      FileCopyService.with_regular_file(target, root: root.path, authorized_root_snapshot: root) { |_file| }
     end
 
-    roots = reference_target_roots
-    book.update!(reference_target_roots: roots) if roots.any?
+    book.update!(reference_target_roots: roots)
+  rescue SystemCallError, ArgumentError, FileCopyService::UnsafePathError
+    raise UnavailableRootError, "A download source is unavailable. Restore it before deleting request history, or remove the book from the Library."
   end
 
   def output_roots
@@ -45,6 +51,45 @@ class LibraryDownloadRoots
   private
 
   attr_reader :book
+
+  def legacy_reference_leaves
+    path = Pathname(book.file_path)
+    stat = path.lstat
+    return [ path ] if stat.symlink?
+    return [] unless stat.directory?
+
+    references = []
+    pending = [ path ]
+    count = 0
+    until pending.empty?
+      directory = pending.pop
+      directory.each_child do |child|
+        count += 1
+        raise UnavailableRootError, "This library item has too many entries to safely remove its request history." if
+          count > MAX_REFERENCE_ENTRIES
+
+        child_stat = child.lstat
+        next if !child_stat.directory? && LibraryDestinationOccupancy.foreign_media?(child.basename.to_s, book)
+
+        if child_stat.symlink?
+          references << child
+        elsif child_stat.directory?
+          pending << child
+        end
+      end
+    end
+    references
+  rescue Errno::ENOENT
+    # A manually removed copied file needs no reference provenance. When
+    # client-backed history exists, keep it until its contents can be inspected.
+    raise unless client_download_paths.empty?
+
+    []
+  end
+
+  def contained?(path, root)
+    path == root || path.to_s.start_with?("#{root}#{File::SEPARATOR}")
+  end
 
   def allowed_output_paths
     [

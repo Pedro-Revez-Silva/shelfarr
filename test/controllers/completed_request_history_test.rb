@@ -130,6 +130,65 @@ class CompletedRequestHistoryTest < ActionDispatch::IntegrationTest
     assert_not @book.reload.reference_target_roots_recorded?
   end
 
+  test "unavailable global reference source does not freeze a partial root set" do
+    client_root = prepare_legacy_reference
+    @history_request.downloads.first.download_client.update!(download_path: nil)
+    SettingsService.set(:download_local_path, client_root)
+    File.rename(client_root, "#{client_root}-unmounted")
+    assert_no_difference "Request.count" do
+      delete request_path(@history_request)
+    end
+    assert_redirected_to request_path(@history_request)
+    assert_not @book.reload.reference_target_roots_recorded?
+    File.rename("#{client_root}-unmounted", client_root)
+
+    delete request_path(@history_request)
+    assert_redirected_to requests_path
+    get download_library_path(@book)
+    assert_response :success
+    assert_equal "reference bytes", response.body
+  end
+
+  test "a source disappearing after snapshot retains history until recovery" do
+    client_root = prepare_legacy_reference
+    original = FileCopyService.method(:snapshot_reference_root)
+    disappeared = false
+    snapshot = lambda do |path|
+      root = original.call(path)
+      if path.to_s == client_root && !disappeared
+        File.rename(client_root, "#{client_root}-unmounted")
+        disappeared = true
+      end
+      root
+    end
+    FileCopyService.stub(:snapshot_reference_root, snapshot) do
+      assert_no_difference "Request.count" do
+        delete request_path(@history_request)
+      end
+    end
+    assert disappeared
+    assert_redirected_to request_path(@history_request)
+    assert_not @book.reload.reference_target_roots_recorded?
+    File.rename("#{client_root}-unmounted", client_root)
+    delete request_path(@history_request)
+    get download_library_path(@book)
+    assert_response :success
+    assert_equal "reference bytes", response.body
+  end
+
+  test "copied library files remain independent of an unavailable old source" do
+    client = DownloadClient.create!(name: "Offline old client", client_type: "deluge",
+      url: "http://localhost:8112", download_path: File.join(@root, "offline-source"))
+    @history_request.downloads.create!(name: "Old download", status: :completed, download_client: client)
+    assert_difference "Request.count", -1 do
+      delete request_path(@history_request)
+    end
+    assert_redirected_to requests_path
+    get download_library_path(@book)
+    assert_response :success
+    assert_equal "library bytes", response.body
+  end
+
   test "completed history with pending upload preserves its source and recovery records" do
     upload = Upload.create!(user: @user, book: @book, request: @history_request,
       original_filename: "Completed.epub", file_path: @path, status: :pending)
