@@ -398,7 +398,9 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     [
       [ "Catch-22", "Catch220 Joseph Heller" ],
       [ "Catch-22", "Scatch22 Joseph Heller" ],
-      [ "R.U.R.", "Collected RUR Karel Capek" ]
+      [ "R.U.R.", "Collected RUR Karel Capek" ],
+      [ "R.U.R.", "Collected R.U.R. Karel Capek" ],
+      [ "RUR", "Collected R.U.R. Karel Capek" ]
     ].each do |title, release_title|
       @book.update!(title: title)
       score = ReleaseScorer.score(@request.search_results.new(title: release_title), @request)

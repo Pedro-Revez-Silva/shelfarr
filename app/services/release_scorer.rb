@@ -139,18 +139,20 @@ class ReleaseScorer
     end
   end
 
-  def exact_title_phrase_match?(release_title, book_title)
+  def exact_title_phrase_match?(release_title, book_title, short_title:)
     phrase = /(?:\A|\s)#{Regexp.escape(book_title)}(?:\z|\s)/
     return false unless release_title.match?(phrase)
-    return true if book_title.length >= 4
+    return true unless short_title
 
     release_title == book_title || release_title.start_with?("#{book_title} ")
   end
 
   def exact_normalized_title_match?(book_title)
+    title_variants = matching_text_variants(book_title)
+    short_title = title_variants.any? { |title| title.length < 4 }
     matching_text_variants(@search_result.title).any? do |release_title|
-      matching_text_variants(book_title).any? do |title|
-        exact_title_phrase_match?(release_title, title)
+      title_variants.any? do |title|
+        exact_title_phrase_match?(release_title, title, short_title: short_title)
       end
     end
   end
