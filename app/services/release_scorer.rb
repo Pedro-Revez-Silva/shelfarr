@@ -122,7 +122,8 @@ class ReleaseScorer
     return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
 
     release_title = normalize_for_matching(@search_result.title)
-    book_titles = SearchTitleVariantService.call(@book.title)
+    title_variants = SearchTitleVariantService.call(@book.title)
+    book_titles = title_variants
       .map { |title| normalize_for_matching(title) }
       .reject(&:blank?)
 
@@ -131,7 +132,7 @@ class ReleaseScorer
     # Localized/original title aliases are equivalent only as complete phrases.
     # Very short inferred titles are too collision-prone unless they lead the
     # release name (for example, "It" must not match "The Institute").
-    if book_titles.any? { |title| exact_title_phrase_match?(release_title, title) }
+    if title_variants.any? { |title| exact_normalized_title_match?(title) }
       100
     else
       book_titles.map { |title| trigram_similarity(release_title, title) }.max
@@ -146,13 +147,19 @@ class ReleaseScorer
     release_title == book_title || release_title.start_with?("#{book_title} ")
   end
 
+  def exact_normalized_title_match?(book_title)
+    matching_text_variants(@search_result.title).any? do |release_title|
+      matching_text_variants(book_title).any? do |title|
+        exact_title_phrase_match?(release_title, title)
+      end
+    end
+  end
+
   def ambiguous_title_alias_match?
     variants = SearchTitleVariantService.call(@book.title)
     return false if variants.length < 3
 
-    release_title = normalize_for_matching(@search_result.title)
-    full_title = normalize_for_matching(@book.title)
-    !exact_title_phrase_match?(release_title, full_title)
+    !exact_normalized_title_match?(@book.title)
   end
 
   # Author matching score (0-100)
@@ -167,7 +174,9 @@ class ReleaseScorer
     return 0 if release_title.blank?
 
     # Check for full author name
-    return 100 if release_title.include?(author)
+    return 100 if matching_text_variants(@search_result.title).any? do |title|
+      matching_text_variants(@book.author).any? { |name| title.include?(name) }
+    end
 
     # Check for last name (common pattern)
     author_parts = author.split
@@ -424,6 +433,15 @@ class ReleaseScorer
       .strip
 
     normalize_number_tokens(normalized)
+  end
+
+  # Keep the previous punctuation-omitted representation for names such as
+  # Catch-22, R.U.R. and J.R.R. while retaining real whitespace boundaries.
+  def matching_text_variants(text)
+    punctuationless = ActiveSupport::Inflector.transliterate(text.to_s.delete("'\"`´’‘"))
+      .downcase.gsub(/[^a-z0-9\s]/, "").squish
+
+    [ normalize_for_matching(text), normalize_number_tokens(punctuationless) ].compact_blank.uniq
   end
 
   def normalize_number_tokens(text)
