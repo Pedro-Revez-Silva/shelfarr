@@ -196,7 +196,7 @@ module DownloadClients
         hash: id,
         name: data["name"],
         progress: progress,
-        state: normalize_state(data["state"].to_s, progress: progress),
+        state: normalize_state(data["state"].to_s, progress: data["progress"].to_f),
         size_bytes: data["total_size"].to_f,
         download_path: torrent_download_path(data)
       )
@@ -213,9 +213,8 @@ module DownloadClients
     def normalize_progress(progress)
       return 0 if progress.blank?
 
-      normalized = progress.to_f
-      normalized *= 100 if normalized <= 1.0
-      normalized.round
+      # Deluge reports percentages from 0 to 100, including values below 1%.
+      progress.to_f.round
     end
 
     def normalize_state(state, progress: 0)

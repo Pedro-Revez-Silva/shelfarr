@@ -440,7 +440,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
             result: {
               "existing_torrent" => {
                 "name" => "Test Torrent",
-                "progress" => 0.5,
+                "progress" => 50.0,
                 "state" => "Downloading",
                 "total_size" => 1073741824,
                 "save_path" => "/downloads/Test Torrent"
@@ -713,7 +713,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
             result: {
               "known_torrent" => {
                 "name" => "Info Torrent",
-                "progress" => 1.0,
+                "progress" => 100.0,
                 "state" => "Seeding",
                 "total_size" => 2048,
                 "download_location" => "/downloads",
@@ -782,6 +782,24 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     data = { "download_location" => "/downloads/shelfarr", "name" => "shelfarr" }
 
     assert_equal "/downloads/shelfarr/shelfarr", @client.send(:torrent_download_path, data)
+  end
+
+  test "torrent_info keeps incomplete paused percentages below completion even when display rounds up" do
+    VCR.turned_off do
+      stub_deluge_login
+
+      %w[Paused PausedDownload PausedUpload Stopped].each do |state|
+        [ 0.5, 1.0, 99.49, 99.5, 99.99 ].each do |progress|
+          stub_deluge_torrent_status("partial", state: state, progress: progress)
+
+          info = @client.torrent_info("partial")
+
+          assert_equal :paused, info.state, "#{state} at #{progress}% must remain paused"
+          assert_equal progress.round, info.progress
+          assert_not info.completed?
+        end
+      end
+    end
   end
 
   test "remove_torrent returns true on success" do
