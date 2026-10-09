@@ -701,6 +701,38 @@ class SearchJobTest < ActiveJob::TestCase
     assert_nil @request.search_claimed_at
   end
 
+  test "auto-selects dotted and transliterated exact matches through the search job" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:anna_archive_enabled, false)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+
+    [
+      [ "Spaß in der Küche", "Jürgen Weiß", "de", "Spass.in.der.Kuche.Jurgen.Weiss.German.EPUB" ],
+      [ "Ender’s Game", "O’Connor", "en", "Enders.Game.OConnor.English.EPUB" ]
+    ].each_with_index do |(title, author, language, release_title), index|
+      book = Book.create!(title: title, author: author, book_type: :ebook)
+      request = Request.create!(book: book, user: users(:one), status: :pending, language: language)
+      guid = "normalized-exact-match-#{index}"
+      payload = prowlarr_result_payload.merge("guid" => guid, "title" => release_title, "seeders" => 50)
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [ payload ].to_json)
+
+      VCR.turned_off do
+        assert_enqueued_with(job: DownloadJob) { SearchJob.perform_now(request.id) }
+      end
+
+      assert request.reload.downloading?
+      result = request.search_results.find_by!(guid: guid)
+      assert result.selected?
+      assert_operator result.confidence_score, :>=, 90
+      assert_equal result, request.downloads.sole.search_result
+    end
+  end
+
   test "sends attention notification when no search sources configured" do
     SettingsService.set(:prowlarr_api_key, "")
     SettingsService.set(:anna_archive_enabled, false)
