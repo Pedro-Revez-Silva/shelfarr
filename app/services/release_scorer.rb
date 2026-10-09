@@ -418,7 +418,7 @@ class ReleaseScorer
     return "" if text.blank?
 
     # Remove quotes first: transliteration replaces curly apostrophes with "?".
-    normalized = I18n.transliterate(text.to_s.delete("'\"`´’‘"))
+    normalized = ActiveSupport::Inflector.transliterate(text.to_s.delete("'\"`´’‘"))
       .downcase
       .gsub(/[^a-z0-9]+/, " ")
       .strip

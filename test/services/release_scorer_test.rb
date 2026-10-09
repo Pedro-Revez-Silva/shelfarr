@@ -350,6 +350,22 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "matches canonically decomposed accents in titles and authors" do
+    @book.update!(
+      title: "Die Bücherdiebin".unicode_normalize(:nfd),
+      author: "Jürgen Weiß".unicode_normalize(:nfd)
+    )
+
+    [ "Die Bucherdiebin Jurgen Weiss", "Die Bücherdiebin Jürgen Weiß".unicode_normalize(:nfd) ].each do |name|
+      release = @request.search_results.new(title: "#{name} English Audiobook M4B", seeders: 50)
+      score = ReleaseScorer.score(release, @request)
+
+      assert_equal 100, score.breakdown[:title]
+      assert_equal 100, score.breakdown[:author]
+      assert score.high_confidence?
+    end
+  end
+
   test "rewards an exact comic issue and rejects a conflicting issue" do
     book = Book.create!(
       title: "Saga",
