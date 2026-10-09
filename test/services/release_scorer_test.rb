@@ -384,6 +384,16 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "does not crash or award an author match when transliteration has no matching letters" do
+    @book.update!(title: "The Three Body Problem", author: "刘慈欣")
+    release = @request.search_results.new(title: "The Three Body Problem English Audiobook M4B", seeders: 50)
+    score = ReleaseScorer.score(release, @request)
+
+    assert_equal 100, score.breakdown[:title]
+    assert_equal 0, score.breakdown[:author]
+    assert_not score.high_confidence?
+  end
+
   test "punctuationless title matching preserves phrase and short alias boundaries" do
     [
       [ "Catch-22", "Catch220 Joseph Heller" ],
