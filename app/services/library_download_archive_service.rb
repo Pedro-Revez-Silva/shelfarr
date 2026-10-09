@@ -28,7 +28,7 @@ class LibraryDownloadArchiveService
   ARCHIVE_ADMISSION_RETRY_SECONDS = 0.05
   ARCHIVE_BUILD_SLOTS = 2
   ARCHIVE_LOCK_SHARDS = 256
-  CACHE_FORMAT_VERSION = 3
+  CACHE_FORMAT_VERSION = 4
   CACHE_DIRECTORY = Rails.root.join("tmp", "downloads").freeze
   ZIP_EOCD_SIGNATURE = "PK\x05\x06".b.freeze
   ZIP_LOCAL_SIGNATURE = "PK\x03\x04".b.freeze
@@ -274,7 +274,9 @@ class LibraryDownloadArchiveService
         raise UnsafePathError, "library paths collide in a portable ZIP archive" if used_names[collision_key]
 
         used_names[collision_key] = true
-        archive.put_next_entry(entry_name)
+        entry = Zip::Entry.new("", entry_name)
+        entry.gp_flags |= Zip::Entry::EFS
+        archive.put_next_entry(entry)
         enforce_output_budget!(output)
         next if manifest[2] == :directory
         raise UnsafePathError, "library tree contains a non-regular entry" unless manifest[2] == :file

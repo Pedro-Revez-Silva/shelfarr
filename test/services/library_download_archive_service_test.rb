@@ -127,10 +127,64 @@ class LibraryDownloadArchiveServiceTest < ActiveSupport::TestCase
       assert_equal 1, file_entries.length
       zip_name = file_entries.first.name
       assert_equal filename.bytes, zip_name.bytes
+      assert_equal Zip::Entry::EFS, file_entries.first.gp_flags & Zip::Entry::EFS
       assert_equal "ebook bytes", archive.get_input_stream(zip_name).read
     end
 
     assert_equal cache_path, build_archive
+  end
+
+  test "UTF-8 flags are written in local and central headers for nested entries" do
+    directory = "Jürgen Weiß"
+    filename = "Spaß in der Küche.epub"
+    FileUtils.mkdir_p(File.join(@source_path, directory))
+    File.binwrite(File.join(@source_path, directory, filename), "ebook bytes")
+    File.binwrite(File.join(@source_path, "plain.txt"), "plain bytes")
+    unicode_names = Zip.unicode_names
+
+    cache_path = build_archive
+
+    expected = [ "#{directory}/", "#{directory}/#{filename}", "plain.txt" ].sort
+    Zip::File.open(cache_path) do |archive|
+      assert_equal expected, archive.entries.map { |entry| entry.name.dup.force_encoding(Encoding::UTF_8) }.sort
+      archive.entries.each do |entry|
+        assert_equal Zip::Entry::EFS, entry.gp_flags & Zip::Entry::EFS
+        next if entry.directory?
+
+        expected_content = entry.name.end_with?("plain.txt") ? "plain bytes" : "ebook bytes"
+        assert_equal expected_content, archive.get_input_stream(entry.name).read
+      end
+    end
+    local_names = []
+    Zip::InputStream.open(cache_path) do |archive|
+      while (entry = archive.get_next_entry)
+        assert_equal Zip::Entry::EFS, entry.gp_flags & Zip::Entry::EFS
+        local_names << entry.name.dup.force_encoding(Encoding::UTF_8)
+      end
+    end
+    assert_equal expected, local_names.sort
+    assert_equal unicode_names, Zip.unicode_names
+    assert_equal cache_path, build_archive
+  end
+
+  test "archive cache identity invalidates the previous filename encoding format" do
+    File.binwrite(File.join(@source_path, "book.epub"), "ebook bytes")
+    legacy_path = nil
+    current_version = LibraryDownloadArchiveService::CACHE_FORMAT_VERSION
+    begin
+      LibraryDownloadArchiveService.send(:remove_const, :CACHE_FORMAT_VERSION)
+      LibraryDownloadArchiveService.const_set(:CACHE_FORMAT_VERSION, 3)
+      legacy_path = build_archive
+    ensure
+      LibraryDownloadArchiveService.send(:remove_const, :CACHE_FORMAT_VERSION)
+      LibraryDownloadArchiveService.const_set(:CACHE_FORMAT_VERSION, current_version)
+    end
+
+    cache_path = build_archive
+
+    refute_equal legacy_path, cache_path
+    assert File.file?(legacy_path)
+    assert_match(/_v4_/, File.basename(cache_path))
   end
 
   test "ZIP snapshot comparison treats binary and UTF-8 names with the same bytes as equal" do
