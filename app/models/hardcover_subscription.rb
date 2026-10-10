@@ -138,6 +138,26 @@ class HardcoverSubscription < ApplicationRecord
     update!(status: "active", pause_reason: nil, consecutive_failures: 0, last_error: nil, next_sync_at: Time.current)
   end
 
+  # Changes the formats and whether new additions are requested
+  # automatically. Turning automatic requests off also stops what they
+  # already started: books queued for them (including formats still waiting
+  # for the request limit) go back to New for the user to select, and failed
+  # ones are no longer retried by themselves. Books the user selected and
+  # requests that already exist are unaffected, and turning automatic
+  # requests on again only applies to later additions. Returns the number of
+  # books returned to the user.
+  def update_settings!(book_types:, automatic:)
+    with_lock do
+      update!(book_types: book_types, automatic: automatic)
+      next 0 if automatic
+
+      items.where(wanted: false, state: "failed").where.not(next_attempt_at: nil).update_all(next_attempt_at: nil, updated_at: Time.current)
+      held = items.where(wanted: false, state: "queued").to_a
+      held.each(&:hold_for_review!)
+      held.size
+    end
+  end
+
   # Starts a fresh preview of a different account's Want to Read shelf. The
   # previous account's entries and baseline are dropped so nothing from it
   # carries over; requests already created are kept. Bumping the generation

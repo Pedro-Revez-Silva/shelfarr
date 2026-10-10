@@ -41,6 +41,29 @@ class HardcoverSyncSchedulerJobTest < ActiveJob::TestCase
     assert_equal "pending", author_backlist.reload.state, "authors offer released books for review when automatic requests are off"
   end
 
+  # Streams that would get a page refresh, without Turbo's debounce timer.
+  def capture_refreshes(&block)
+    streams = []
+    Turbo::StreamsChannel.stub(:broadcast_refresh_later_to, ->(*streamables, **) { streams << streamables }, &block)
+    streams
+  end
+
+  test "open subscription pages refresh once when the schedule changes their items, not on quiet runs" do
+    shelf = create_hardcover_subscription(@user, kind: "list", target_id: 21, automatic: true)
+    author = create_hardcover_subscription(@user, kind: "author", target_id: 22)
+    unchanged = create_hardcover_subscription(@user, kind: "list", target_id: 23)
+    known = create_hardcover_item(shelf, book_id: 31, state: "upcoming", release_date: Date.yesterday, baseline: true)
+    retried = create_hardcover_item(shelf, book_id: 32, state: "failed", attempts: 1, next_attempt_at: 1.minute.ago)
+    pending = [ 33, 34 ].map { |id| create_hardcover_item(author, book_id: id, state: "upcoming", release_date: Date.yesterday) }
+    create_hardcover_item(unchanged, book_id: 35, state: "upcoming", release_date: Date.tomorrow)
+
+    streams = capture_refreshes { HardcoverSyncSchedulerJob.perform_now }
+
+    assert_equal [ "known", "queued", %w[pending pending] ], [ known.reload.state, retried.reload.state, pending.map { |item| item.reload.state } ]
+    assert_equal [ [ author ], [ shelf ] ].sort_by { |(subscription)| subscription.id }, streams.sort_by { |(subscription)| subscription.id }
+    assert_empty capture_refreshes { HardcoverSyncSchedulerJob.perform_now }, "a run that changes nothing sends nothing"
+  end
+
   test "failed imports are retried after their backoff, up to the attempt limit" do
     subscription = create_hardcover_subscription(@user)
     due = create_hardcover_item(subscription, book_id: 1, state: "failed", attempts: 1, next_attempt_at: 1.minute.ago)

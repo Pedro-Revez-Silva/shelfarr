@@ -12,8 +12,10 @@ class HardcoverSyncSchedulerJob < ApplicationJob
   def perform
     return unless HardcoverIntegration.enabled?
 
-    promote_released_items
-    requeue_failed_items
+    changed = promote_released_items + requeue_failed_items
+    # Open subscription pages show item states; refresh each changed one once,
+    # after its items are saved.
+    HardcoverSubscription.where(id: changed.uniq).find_each(&:broadcast_progress)
     enqueue_due_subscriptions
     HardcoverSubscription.stale_drafts.find_each(&:destroy)
     HardcoverImportJob.perform_later if HardcoverSubscriptionItem.claimable.exists?
@@ -36,8 +38,9 @@ class HardcoverSyncSchedulerJob < ApplicationJob
   #   baseline. A future book that was already there and left unselected
   #   in the preview is never requested automatically.
   # Everything else waits for the user (baseline list books as not requested).
+  # Both steps return the ids of the subscriptions whose items they changed.
   def promote_released_items
-    active_items(HardcoverSubscriptionItem.released_upcoming).find_each do |item|
+    active_items(HardcoverSubscriptionItem.released_upcoming).find_each.map do |item|
       subscription = item.subscription
       automatic = subscription.automatic? && subscription.book_types.any? && (subscription.author? || !item.baseline?)
       if item.wanted? || automatic
@@ -47,12 +50,14 @@ class HardcoverSyncSchedulerJob < ApplicationJob
       else
         item.update!(state: "pending")
       end
+      item.hardcover_subscription_id
     end
   end
 
   def requeue_failed_items
-    active_items(HardcoverSubscriptionItem.retry_due).find_each do |item|
+    active_items(HardcoverSubscriptionItem.retry_due).find_each.map do |item|
       item.update!(state: "queued", claim_token: nil, claimed_at: nil)
+      item.hardcover_subscription_id
     end
   end
 

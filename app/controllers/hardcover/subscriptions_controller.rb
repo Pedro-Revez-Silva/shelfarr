@@ -87,8 +87,10 @@ module Hardcover
       if @subscription.draft?
         confirm_draft(book_types, automatic)
       else
-        @subscription.update!(book_types: book_types, automatic: automatic)
-        redirect_to hardcover_subscription_path(@subscription), notice: "Settings saved."
+        held = @subscription.update_settings!(book_types: book_types, automatic: automatic)
+        notice = "Settings saved."
+        notice += " #{helpers.pluralize(held, 'book')} waiting for an automatic request moved to New for you to review." if held.positive?
+        redirect_to hardcover_subscription_path(@subscription), notice: notice
       end
     end
 
@@ -166,7 +168,9 @@ module Hardcover
         item.update!(state: item.unreleased? ? "upcoming" : "pending") if item.ignored?
       when "retry"
         if item.failed? && !@subscription.draft?
-          item.update!(state: "queued", next_attempt_at: nil, claim_token: nil, claimed_at: nil, attempts: 0)
+          # Retrying is a request by the user, so it also runs when automatic
+          # requests are off. Formats already requested are not requested again.
+          item.update!(state: "queued", wanted: true, next_attempt_at: nil, claim_token: nil, claimed_at: nil, attempts: 0)
           HardcoverImportJob.perform_later
         end
       else

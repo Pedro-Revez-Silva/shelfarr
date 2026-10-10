@@ -181,6 +181,86 @@ class Hardcover::SubscriptionsControllerTest < ActionDispatch::IntegrationTest
     assert Request.exists?(request.id)
   end
 
+  def requested_formats(book_id)
+    Request.joins(:book).where(books: { hardcover_id: book_id.to_s }).order(:id).map { |request| request.book.book_type }
+  end
+
+  test "turning automatic requests off stops what they started and leaves it for review" do
+    SettingsService.set(:immediate_search_enabled, false)
+    SettingsService.set(:hardcover_max_requests_per_run, 1)
+    subscription = create_hardcover_subscription(@user, kind: "list", target_id: 77, automatic: true, book_types: %w[ebook audiobook])
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => { "list_books" => [
+      hardcover_list_book_row(hardcover_book(id: 901), id: 1, date_added: 1.hour.ago.iso8601)
+    ] })
+    HardcoverSubscriptionSyncJob.perform_now(subscription.id)
+    HardcoverImportJob.perform_now
+    item = subscription.items.find_by!(hardcover_book_id: 901)
+    assert_equal [ "queued", [ "ebook" ], [ "ebook" ] ], [ item.state, requested_formats(901), item.settled_book_types ]
+    failed = create_hardcover_item(subscription, book_id: 902, state: "failed", book_types: [ "ebook" ], attempts: 1,
+      next_attempt_at: 5.minutes.from_now, last_error: "boom")
+    selected = create_hardcover_item(subscription, book_id: 903, state: "queued", wanted: true, book_types: [ "audiobook" ],
+      next_attempt_at: 1.hour.from_now)
+
+    patch hardcover_subscription_path(subscription), params: { book_types: %w[ebook audiobook], automatic: "0" }
+
+    assert_redirected_to hardcover_subscription_path(subscription)
+    assert_match(/1 book waiting for an automatic request moved to New/, flash[:notice])
+    assert_not subscription.reload.automatic?
+    item.reload
+    assert_equal [ "pending", %w[ebook audiobook], [ "ebook" ], nil ], [ item.state, item.book_types, item.settled_book_types, item.next_attempt_at ]
+    assert_equal [ "failed", nil, "boom" ], [ failed.reload.state, failed.next_attempt_at, failed.last_error ]
+    assert_equal "queued", selected.reload.state, "a book the user selected is still requested"
+    Request.find(item.request_ids.sole).schedule_retry!
+
+    travel 7.hours do
+      assert_difference -> { Request.count } => 1 do
+        HardcoverSyncSchedulerJob.perform_now
+        HardcoverImportJob.perform_now
+      end
+      assert_equal [ "audiobook" ], requested_formats(903)
+      assert_equal [ "pending", "failed" ], [ item.reload.state, failed.reload.state ]
+    end
+
+    patch hardcover_subscription_path(subscription), params: { book_types: %w[ebook audiobook], automatic: "1" }
+    assert_equal "Settings saved.", flash[:notice]
+    assert_equal "pending", item.reload.state, "turning it back on only applies to later additions"
+
+    # Selecting the book requests the format still missing, not the ebook again.
+    post request_items_hardcover_subscription_path(subscription), params: { book_types: %w[ebook audiobook], item_ids: [ item.id ] }
+    assert_difference -> { Request.count } => 1 do
+      HardcoverImportJob.perform_now
+    end
+    assert_equal %w[ebook audiobook], requested_formats(901)
+    assert_equal [ "requested", %w[audiobook ebook] ], [ item.reload.state, item.settled_book_types.sort ]
+  end
+
+  test "turning automatic requests off while a batch runs stops its automatic items" do
+    SettingsService.set(:immediate_search_enabled, false)
+    subscription = create_hardcover_subscription(@user, kind: "list", target_id: 77, automatic: true, book_types: [ "ebook" ])
+    selected = create_hardcover_item(subscription, book_id: 911, state: "queued", wanted: true, book_types: [ "ebook" ])
+    automatic = [ 912, 913 ].map { |id| create_hardcover_item(subscription, book_id: id, state: "queued", book_types: [ "ebook" ]) }
+    original = RequestCreationService.method(:call)
+    changed = false
+    creator = lambda do |**args|
+      original.call(**args).tap do
+        next if changed || args[:work_id] != selected.work_id
+
+        changed = true
+        patch hardcover_subscription_path(subscription), params: { book_types: [ "ebook" ], automatic: "0" }
+      end
+    end
+
+    assert_difference -> { Request.count } => 1 do
+      RequestCreationService.stub(:call, creator) { HardcoverImportJob.perform_now }
+    end
+
+    assert changed
+    assert_equal "requested", selected.reload.state
+    assert_equal %w[pending pending], automatic.map { |item| item.reload.state }
+    assert automatic.all? { |item| item.claim_token.nil? }
+    assert_no_enqueued_jobs(only: HardcoverImportJob)
+  end
+
   test "item actions dismiss, restore, and retry" do
     subscription = create_hardcover_subscription(@user, kind: "list")
     item = create_hardcover_item(subscription, book_id: 61, state: "pending")
@@ -194,7 +274,7 @@ class Hardcover::SubscriptionsControllerTest < ActionDispatch::IntegrationTest
     assert_enqueued_with(job: HardcoverImportJob) do
       post item_hardcover_subscription_path(subscription, item_id: item.id, item_action: "retry")
     end
-    assert_equal [ "queued", 0 ], [ item.reload.state, item.attempts ]
+    assert_equal [ "queued", 0, true ], [ item.reload.state, item.attempts, item.wanted? ], "a retry is the user's request"
   end
 
   test "manual checks are rate limited" do

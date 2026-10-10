@@ -37,6 +37,22 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
     assert_nil subscription.baseline_established_at, "a preview never establishes a baseline by itself"
   end
 
+  test "turning automatic requests off while Hardcover is being read leaves new entries for review" do
+    configure_hardcover_instance_token
+    subscription = create_hardcover_subscription(@user, kind: "list", target_id: 77, automatic: true, book_types: %w[ebook audiobook])
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => ->(_variables) do
+      HardcoverSubscription.find(subscription.id).update_settings!(book_types: [ "audiobook" ], automatic: false)
+      { "list_books" => [ hardcover_list_book_row(hardcover_book(id: 31), id: 531, date_added: 1.hour.ago.iso8601) ] }
+    end)
+
+    result = Hardcover::SubscriptionSync.call(subscription)
+
+    assert_equal 0, result.queued
+    assert_equal [ "pending", [] ], [ subscription.items.sole.state, subscription.items.sole.book_types ]
+    subscription.reload
+    assert_equal [ false, [ "audiobook" ] ], [ subscription.automatic?, subscription.book_types ], "the sync keeps the new settings"
+  end
+
   test "an automatic list sync queues only entries added after the baseline" do
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "list", target_id: 77, automatic: true, book_types: %w[ebook audiobook], baseline: 2.days.ago)

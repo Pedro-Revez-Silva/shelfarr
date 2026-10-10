@@ -86,6 +86,10 @@ Hardcover lists an author's records newest release first, so every check reads t
 
 Each followed list or author shows when it was last checked and any problem. Books that could not be requested are listed under **Failed** with the reason; Shelfarr retries them with increasing delays and you can retry manually. **Check now** can be used every few minutes. **Pause** stops all automatic requests for that subscription until you resume, including books already queued: a request being created at that moment finishes, the rest wait.
 
+Each format of a book is requested once. When a book's ebook is requested but its audiobook waits for the next check (because of the automatic request limit) or fails, later checks and retries only request the audiobook: what happens to the ebook from then on is up to its own request, which you can retry or cancel from **Requests**. Selecting the book again also leaves formats it already requested to their requests.
+
+Turning **automatic requests off** stops the automatic requests that were still waiting, including formats waiting for the limit: those books move to **New** with their formats, for you to select or dismiss. Books under **Failed** stay there but are no longer retried by themselves; **Retry** still requests them. Books you selected are still requested, and existing requests are kept. Turning automatic requests on again applies to books added from then on.
+
 ## For administrators
 
 ### Discovery

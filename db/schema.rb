@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_10_130000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_10_140000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -236,6 +236,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_130000) do
     t.datetime "resolved_at"
     t.string "series_name"
     t.string "series_position"
+    t.json "settled_book_types", default: [], null: false
     t.string "state", null: false
     t.string "title", null: false
     t.datetime "updated_at", null: false

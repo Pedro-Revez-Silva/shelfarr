@@ -58,6 +58,12 @@ class HardcoverSubscriptionItem < ApplicationRecord
     Array(super).map(&:to_i)
   end
 
+  # Formats this item already requested or found in Shelfarr. Their requests
+  # handle them from then on, so the item never requests them again.
+  def settled_book_types
+    Array(super).map(&:to_s)
+  end
+
   def hardcover_url
     MetadataSources.hardcover_book_url(hardcover_book_id)
   end
@@ -88,7 +94,21 @@ class HardcoverSubscriptionItem < ApplicationRecord
     end
   end
 
+  # Automatic requests were turned off before this book was requested (or
+  # before all of its formats were). It goes back to New for the user to
+  # select, keeping its formats and the formats already requested.
+  def hold_for_review!
+    left = book_types - settled_book_types
+    resolution = if settled_book_types.any? && left.any?
+      "#{format_labels(settled_book_types).upcase_first} requested; #{format_labels(left)} not requested because automatic requests were turned off"
+    else
+      "Not requested because automatic requests were turned off"
+    end
+    update!(state: "pending", claim_token: nil, claimed_at: nil, next_attempt_at: nil, last_error: nil, resolution: resolution)
+  end
+
   # Selecting the book makes the import job request it with these formats.
+  # Formats it already requested stay with those requests.
   def queue_for_import!(book_types)
     update!(
       state: "queued",
@@ -100,5 +120,11 @@ class HardcoverSubscriptionItem < ApplicationRecord
       next_attempt_at: nil,
       last_error: nil
     )
+  end
+
+  private
+
+  def format_labels(types)
+    types.map { |type| RequestOptionPolicy.book_type_label(type).downcase }.to_sentence
   end
 end

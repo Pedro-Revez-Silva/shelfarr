@@ -10,6 +10,12 @@ module Hardcover
   # after a crash idempotent. Failures are recorded on the item for automatic
   # retry with backoff instead of being dropped.
   #
+  # Each format the item requested, or found in Shelfarr, is recorded as
+  # settled together with those requests. From then on the request's own
+  # retries and cancellation decide what happens to that format, and later
+  # runs of the item (the rest of its formats, a retry, a new selection) only
+  # request the formats that are not settled yet.
+  #
   # A claimed batch is not a promise to import it. Right before each item's
   # requests are created, the item, its subscription, the user, the feature
   # switch, and (for personal subscriptions) the connected account are read
@@ -17,7 +23,9 @@ module Hardcover
   # disconnecting, deleting the user, or disabling Hardcover therefore stops
   # the rest of the batch; those items keep their place in the queue and run
   # after a deliberate resume. A book whose release moved to a later date
-  # goes back to waiting for it.
+  # goes back to waiting for it. A book the user did not select is only
+  # requested while the subscription requests automatically; once that is
+  # turned off it goes back to the user for review.
   #
   # Automatic requests draw on the user's HardcoverRequestBudget, one per
   # format, in that same transaction. Formats beyond it stay queued on the
@@ -101,7 +109,7 @@ module Hardcover
         if current.nil? || !current.queued?
           outcome = :skipped
         elsif (subscription = eligible_subscription(current))
-          outcome = import(current, subscription)
+          outcome = current.wanted? || subscription.automatic? ? import(current, subscription) : hold!(current)
         else
           release!(current)
           outcome = :cancelled
@@ -145,8 +153,10 @@ module Hardcover
       book_types = (item.book_types.presence || subscription.book_types) & RequestOptionPolicy.book_types_for(ContentKinds::BOOK)
       return fail!(item, "No formats selected for this book") if book_types.empty?
 
-      covered, request_ids = covered_formats(item, book_types)
-      missing = book_types - covered
+      earlier = book_types & item.settled_book_types
+      outstanding = book_types - earlier
+      covered, request_ids = covered_formats(item, outstanding)
+      missing = outstanding - covered
       waiting = []
       budget = nil
       created_types = []
@@ -179,18 +189,20 @@ module Hardcover
         request_ids.concat(late_ids)
       end
 
+      settled = (item.settled_book_types + covered + created_types).uniq
       still_missing = missing - created_types
       if still_missing.any?
         return fail!(item, errors.presence&.join("; ") || "Could not create requests for #{still_missing.join(', ')}",
-          request_ids: request_ids)
+          request_ids: request_ids, settled: settled)
       end
 
-      return defer!(item, budget, request_ids, resolution_text(created_types, covered, waiting)) if waiting.any?
+      return defer!(item, budget, request_ids, settled, resolution_text(created_types, covered, earlier, waiting)) if waiting.any?
 
       item.update!(
         state: "requested",
         request_ids: (item.request_ids + request_ids).uniq,
-        resolution: resolution_text(created_types, covered),
+        settled_book_types: settled,
+        resolution: resolution_text(created_types, covered, earlier),
         resolved_at: now,
         last_error: nil,
         claim_token: nil,
@@ -224,10 +236,11 @@ module Hardcover
 
     # The budget ran out before every format was requested. The item stays
     # queued with the formats still to request and runs when the window
-    # ends; formats requested now count as done next time.
-    def defer!(item, budget, request_ids, resolution)
+    # ends; formats requested now are settled and are not requested again.
+    def defer!(item, budget, request_ids, settled, resolution)
       item.update!(
         request_ids: (item.request_ids + request_ids).uniq,
+        settled_book_types: settled,
         resolution: resolution,
         last_error: nil,
         claim_token: nil,
@@ -237,7 +250,7 @@ module Hardcover
       :deferred
     end
 
-    def fail!(item, message, request_ids: [])
+    def fail!(item, message, request_ids: [], settled: item.settled_book_types)
       attempts = item.attempts + 1
       retry_at = attempts < HardcoverSubscriptionItem::MAX_AUTOMATIC_ATTEMPTS ? now + (attempts**2 * 10).minutes : nil
       item.update!(
@@ -247,6 +260,7 @@ module Hardcover
         last_attempt_at: now,
         next_attempt_at: retry_at,
         request_ids: (item.request_ids + request_ids).uniq,
+        settled_book_types: settled,
         claim_token: nil,
         claimed_at: nil
       )
@@ -259,10 +273,17 @@ module Hardcover
       item.update!(claim_token: nil, claimed_at: nil)
     end
 
-    def resolution_text(created_types, covered, waiting = [])
+    # Automatic requests were turned off after this book was queued for them.
+    def hold!(item)
+      item.hold_for_review!
+      :cancelled
+    end
+
+    def resolution_text(created_types, covered, earlier, waiting = [])
       parts = []
       parts << "Requested #{labels(created_types)}" if created_types.any?
       parts << "#{labels(covered)} already in Shelfarr" if covered.any?
+      parts << "#{labels(earlier)} requested earlier" if earlier.any?
       parts << "#{labels(waiting).upcase_first} waiting for the next check (automatic request limit reached)" if waiting.any?
       parts.join("; ")
     end

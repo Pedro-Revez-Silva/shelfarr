@@ -243,9 +243,12 @@ module Hardcover
 
     def ensure_current!
       current = HardcoverSubscription.lock.find_by(id: subscription.id)
-      return if current && current.sync_generation == generation
+      raise Stale, "Hardcover subscription #{subscription.id} changed during the sync" unless current && current.sync_generation == generation
 
-      raise Stale, "Hardcover subscription #{subscription.id} changed during the sync"
+      # Settings changed while Hardcover was being read apply to what is
+      # recorded now, so turning automatic requests off stops queueing.
+      subscription.automatic = current.automatic
+      subscription.book_types = current.read_attribute(:book_types)
     end
 
     def create_item!(entry)
