@@ -16,7 +16,10 @@ class SettingsService
     ],
     anna_archive: %w[anna_archive_enabled anna_archive_url anna_archive_api_key],
     zlibrary: %w[zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password],
-    hardcover: %w[hardcover_enabled hardcover_api_token],
+    hardcover: %w[
+      hardcover_enabled hardcover_api_token hardcover_oauth_client_id hardcover_oauth_client_secret
+      hardcover_oauth_redirect_uri hardcover_oauth_device_flow_enabled hardcover_allow_personal_access
+    ],
     google_books: %w[google_books_enabled google_books_api_key],
     comic_vine: %w[comic_vine_enabled comic_vine_api_key],
     discord: %w[discord_enabled discord_webhook_url],
@@ -237,6 +240,13 @@ class SettingsService
     metadata_source: { type: "string", default: "auto", category: "hardcover", description: "Legacy metadata source selector. Auto uses all enabled providers; selecting a provider restricts metadata search to that provider." },
     metadata_provider_priority: { type: "string", default: "hardcover,openlibrary,google_books,comic_vine", category: "hardcover", description: "Comma-separated metadata provider priority used when merging duplicate search results." },
     hardcover_search_limit: { type: "integer", default: 10, category: "hardcover", description: "Maximum number of search results from Hardcover" },
+    hardcover_oauth_client_id: { type: "string", default: "", category: "hardcover", description: "Client ID of the Hardcover developer app you registered for this Shelfarr instance. Lets each user connect their own Hardcover account for Want to Read and private lists.", env_overridable: true },
+    hardcover_oauth_client_secret: { type: "string", default: "", category: "hardcover", description: "Client secret for a \"Web app (server-side)\" Hardcover app. Leave blank for a \"Mobile, desktop, or CLI\" (public) app.", env_overridable: true },
+    hardcover_oauth_redirect_uri: { type: "string", default: "", category: "hardcover", description: "Optional. The exact redirect URI registered with Hardcover. Leave blank to use this Shelfarr address followed by /hardcover/connection/callback. Hardcover requires HTTPS except for localhost.", env_overridable: true },
+    hardcover_oauth_device_flow_enabled: { type: "boolean", default: false, category: "hardcover", description: "Offer sign-in with a code at hardcover.app/link. Enable only if Device Authorization Grant is turned on for your Hardcover app; useful when Shelfarr has no HTTPS address." },
+    hardcover_allow_personal_access: { type: "boolean", default: false, category: "hardcover", description: "Let users connect by pasting a personal Hardcover API key instead of signing in. Hardcover recommends OAuth for apps used by other people; only enable this for instances where every user trusts the administrator." },
+    hardcover_sync_interval_hours: { type: "integer", default: 6, category: "hardcover", description: "Hours between automatic checks of followed Hardcover lists, Want to Read shelves, and authors (1-168)." },
+    hardcover_max_requests_per_run: { type: "integer", default: 10, category: "hardcover", description: "Maximum automatic requests created for each user per sync run. Additional new books stay queued for the next run." },
 
     # Webhook Notifications
     webhook_enabled: { type: "boolean", default: false, category: "webhook", description: "Send outbound webhook notifications for request lifecycle events", env_overridable: true },
@@ -324,7 +334,14 @@ class SettingsService
     audiobookshelf_audiobook_scan_library_ids: "Additional Audiobook Libraries to Scan",
     audiobookshelf_ebook_scan_library_ids: "Additional Ebook Libraries to Scan",
     audiobookshelf_comicbook_scan_library_ids: "Additional Comics & Manga Libraries to Scan",
-    audiobookshelf_library_sync_interval: "Library Sync Interval"
+    audiobookshelf_library_sync_interval: "Library Sync Interval",
+    hardcover_oauth_client_id: "Hardcover OAuth Client ID",
+    hardcover_oauth_client_secret: "Hardcover OAuth Client Secret",
+    hardcover_oauth_redirect_uri: "Hardcover OAuth Redirect URI",
+    hardcover_oauth_device_flow_enabled: "Allow Sign-in With a Code",
+    hardcover_allow_personal_access: "Allow Personal API Keys",
+    hardcover_sync_interval_hours: "Reading List Sync Interval (hours)",
+    hardcover_max_requests_per_run: "Automatic Requests per User per Run"
   }.freeze
 
   # Delivery/scan library settings keep ABS-era keys for compatibility, but the

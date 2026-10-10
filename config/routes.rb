@@ -22,6 +22,33 @@ Rails.application.routes.draw do
   get "search/results/stream", to: "search#stream_results"
   get "search/results/snapshot", to: "search#snapshot_results"
 
+  # Hardcover discovery
+  get "discover", to: "discover#index", as: :discover
+  get "discover/lists", to: "discover#lists", as: :discover_lists
+  get "discover/lists/:id", to: "discover#list", as: :discover_list
+  get "discover/authors", to: "discover#authors", as: :discover_authors
+  get "discover/authors/:id", to: "discover#author", as: :discover_author
+
+  # Hardcover account connection, followed lists, shelves, and authors
+  namespace :hardcover do
+    resource :connection, only: [ :create, :destroy ] do
+      post :authorize
+      get :callback
+      post :device
+      get :device, action: :show_device
+      post :device_poll
+    end
+    resources :subscriptions, only: [ :index, :create, :show, :update, :destroy ] do
+      member do
+        post :request_items
+        post :refresh
+        post :pause
+        post :resume
+        match "items/:item_id", action: :update_item, as: :item, via: [ :post, :patch ]
+      end
+    end
+  end
+
   # Library
   resources :library, only: [ :index, :show, :destroy ] do
     member do

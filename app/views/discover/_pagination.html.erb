@@ -1,0 +1,15 @@
+<% if page > 1 || has_more %>
+  <nav class="mt-8 flex items-center justify-between gap-4" aria-label="Pagination">
+    <% if page > 1 %>
+      <%= link_to "← Previous", url_for(request.query_parameters.merge(page: page - 1)), class: "rounded-lg bg-gray-800 px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-700" %>
+    <% else %>
+      <span></span>
+    <% end %>
+    <span class="text-sm text-gray-500">Page <%= page %></span>
+    <% if has_more && page < Hardcover::Discovery::MAX_PAGE %>
+      <%= link_to "Next →", url_for(request.query_parameters.merge(page: page + 1)), class: "rounded-lg bg-gray-800 px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-700" %>
+    <% else %>
+      <span></span>
+    <% end %>
+  </nav>
+<% end %>

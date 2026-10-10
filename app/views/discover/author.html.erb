@@ -1,0 +1,54 @@
+<% content_for :title, "#{@author&.name || 'Author'} · Shelfarr" %>
+<div class="mx-auto max-w-6xl">
+  <%= render "discover/nav" %>
+
+  <% if !@catalog_available %>
+    <%= render "discover/unavailable" %>
+  <% elsif @error.present? %>
+    <%= render "discover/error", message: @error %>
+    <%= link_to "← Back to authors", discover_authors_path, class: "text-sm text-blue-400 hover:text-blue-300" %>
+  <% else %>
+    <header class="mb-6 rounded-lg border border-gray-800 bg-gray-900 p-5">
+      <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div class="flex min-w-0 gap-4">
+          <% if @author.image_url.present? %>
+            <img src="<%= @author.image_url %>" alt="" class="h-20 w-20 shrink-0 rounded-full object-cover">
+          <% end %>
+          <div class="min-w-0">
+            <p class="text-xs font-medium uppercase tracking-wide text-gray-500">Author</p>
+            <h2 class="mt-1 text-2xl font-bold text-white"><%= @author.name %></h2>
+            <p class="mt-1 text-sm text-gray-400"><%= pluralize(@books.size, "book") %> written by <%= @author.name %></p>
+            <% if @author.bio.present? %>
+              <p class="mt-3 line-clamp-4 max-w-3xl text-sm text-gray-300"><%= @author.bio %></p>
+            <% end %>
+          </div>
+        </div>
+        <div class="flex shrink-0 flex-col items-start gap-2 md:items-end">
+          <%= render "discover/follow_button", kind: "author", target_id: @author.id, subscription: @subscription, label: "Follow author" %>
+          <% if @author.hardcover_url %>
+            <%= hardcover_attribution(url: @author.hardcover_url, text: "View on Hardcover") %>
+          <% end %>
+        </div>
+      </div>
+      <p class="mt-4 text-xs text-gray-500">Following lets you pick books from the backlist to request now, and can request new releases when they come out.</p>
+      <% if @excluded.present? && @excluded.values.sum.positive? %>
+        <details class="mt-3 text-xs text-gray-400">
+          <summary class="cursor-pointer text-gray-300">Hidden: <%= pluralize(@excluded.values.sum, "record") %></summary>
+          <ul class="mt-2 list-disc space-y-1 pl-5">
+            <% @excluded.each do |reason, count| %>
+              <li><%= count %> <%= Hardcover::AuthorCatalog::REASONS.fetch(reason.to_sym, reason.to_s.humanize.downcase) %></li>
+            <% end %>
+          </ul>
+        </details>
+      <% end %>
+      <% if @truncated %>
+        <p class="mt-2 text-xs text-amber-300">This author has many Hardcover records; only the first ones are shown here.</p>
+      <% end %>
+    </header>
+
+    <%= render "discover/book_grid", books: @books, existing_books_lookup: @existing_books_lookup, page: 1, has_more: false,
+      empty_message: "Hardcover has no books credited to this author as a writer." %>
+  <% end %>
+</div>
+
+<%= turbo_frame_tag "modal" %>

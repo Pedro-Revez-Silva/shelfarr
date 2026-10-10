@@ -29,7 +29,7 @@ class Request < ApplicationRecord
     direct_content_manifest
   ].freeze
 
-  CREATED_VIA_VALUES = %w[web api telegram].freeze
+  CREATED_VIA_VALUES = %w[web api telegram hardcover].freeze
   REQUEST_SCOPE_VALUES = %w[single collection].freeze
   MANUAL_MAGNET_GUID_PREFIX = "manual-magnet"
   MANUAL_NZB_GUID_PREFIX = "manual-nzb"

@@ -1,0 +1,74 @@
+<% content_for :title, "Following · Shelfarr" %>
+<div class="mx-auto max-w-6xl">
+  <%= render "discover/nav" %>
+
+  <section class="mb-8" aria-labelledby="your-hardcover-heading">
+    <h2 id="your-hardcover-heading" class="mb-3 text-xl font-semibold text-white">Your Hardcover</h2>
+    <% if @connection&.usable? %>
+      <p class="mb-4 text-sm text-gray-400">Preview your Want to Read shelf or one of your lists, pick what to request, and choose whether new additions are requested automatically.</p>
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <article class="flex flex-col rounded-lg border border-gray-800 bg-gray-900 p-4">
+          <h3 class="font-semibold text-white">Want to Read</h3>
+          <p class="mt-1 text-xs text-gray-500">Your Hardcover shelf</p>
+          <div class="mt-auto pt-4">
+            <%= button_to "Preview", hardcover_subscriptions_path, params: { kind: "want_to_read" }, class: "rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+          </div>
+        </article>
+        <% Array(@account_lists).each do |list| %>
+          <article class="flex flex-col rounded-lg border border-gray-800 bg-gray-900 p-4">
+            <h3 class="font-semibold text-white"><%= list.name %></h3>
+            <p class="mt-1 text-xs text-gray-500">
+              <%= pluralize(list.books_count, "book") %>
+              <% unless list.public.nil? %> · <%= list.public ? "Public" : "Private" %><% end %>
+            </p>
+            <div class="mt-auto pt-4">
+              <%= button_to "Preview", hardcover_subscriptions_path, params: { kind: "list", hardcover_target_id: list.id }, class: "rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+            </div>
+          </article>
+        <% end %>
+      </div>
+      <% if @account_lists_error.present? %>
+        <p class="mt-3 text-sm text-amber-300" role="status"><%= @account_lists_error %></p>
+      <% end %>
+    <% else %>
+      <div class="overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
+        <%= render "hardcover/shared/connection_panel", connection: @connection %>
+      </div>
+      <p class="mt-3 text-sm text-gray-500">You can still follow public lists and authors from the <%= link_to "Lists", discover_lists_path, class: "text-blue-400 hover:text-blue-300" %> and <%= link_to "Authors", discover_authors_path, class: "text-blue-400 hover:text-blue-300" %> tabs.</p>
+    <% end %>
+  </section>
+
+  <section aria-labelledby="following-heading">
+    <h2 id="following-heading" class="mb-3 text-xl font-semibold text-white">Following</h2>
+    <% if @subscriptions.any? %>
+      <ul class="divide-y divide-gray-800 overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
+        <% @subscriptions.each do |subscription| %>
+          <% counts = @item_counts.select { |(id, _), _| id == subscription.id }.transform_keys(&:last) %>
+          <li class="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="rounded bg-gray-800 px-2 py-0.5 text-xs font-medium text-gray-300"><%= subscription.kind_label %></span>
+                <%= link_to subscription.title, hardcover_subscription_path(subscription), class: "font-semibold text-white hover:text-blue-300" %>
+                <% if subscription.automatic? && subscription.active? %>
+                  <span class="rounded bg-green-500/15 px-2 py-0.5 text-xs text-green-300">Auto-request on</span>
+                <% end %>
+              </div>
+              <p class="mt-1 text-xs text-gray-500"><%= hardcover_sync_status(subscription) %></p>
+            </div>
+            <div class="flex flex-wrap gap-2 text-xs">
+              <% { "pending" => "new", "upcoming" => "upcoming", "queued" => "queued", "requested" => "requested", "failed" => "failed" }.each do |state, label| %>
+                <% next unless counts[state].to_i.positive? %>
+                <span class="rounded-full px-2 py-0.5 <%= hardcover_item_state_class(state) %>"><%= counts[state] %> <%= label %></span>
+              <% end %>
+            </div>
+          </li>
+        <% end %>
+      </ul>
+    <% else %>
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-6 py-10 text-center">
+        <p class="text-gray-300">You are not following anything yet.</p>
+        <p class="mt-1 text-sm text-gray-500">Preview your Want to Read shelf above, or find a public list or an author to follow.</p>
+      </div>
+    <% end %>
+  </section>
+</div>

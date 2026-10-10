@@ -1,0 +1,39 @@
+<% content_for :title, "#{@list&.name || 'Hardcover list'} · Shelfarr" %>
+<div class="mx-auto max-w-6xl">
+  <%= render "discover/nav" %>
+
+  <% if !@catalog_available %>
+    <%= render "discover/unavailable" %>
+  <% elsif @error.present? %>
+    <%= render "discover/error", message: @error %>
+    <%= link_to "← Back to lists", discover_lists_path, class: "text-sm text-blue-400 hover:text-blue-300" %>
+  <% else %>
+    <header class="mb-6 rounded-lg border border-gray-800 bg-gray-900 p-5">
+      <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div class="min-w-0">
+          <p class="text-xs font-medium uppercase tracking-wide text-gray-500">Hardcover list</p>
+          <h2 class="mt-1 text-2xl font-bold text-white"><%= @list.name %></h2>
+          <p class="mt-1 text-sm text-gray-400">
+            <% if @list.owner_username.present? %>by @<%= @list.owner_username %> · <% end %>
+            <%= pluralize(@list.books_count, "book") %>
+          </p>
+          <% if @list.description.present? %>
+            <p class="mt-3 max-w-3xl text-sm text-gray-300"><%= @list.description %></p>
+          <% end %>
+        </div>
+        <div class="flex shrink-0 flex-col items-start gap-2 md:items-end">
+          <%= render "discover/follow_button", kind: "list", target_id: @list.id, subscription: @subscription, label: "Preview & follow list" %>
+          <% if @list.hardcover_url %>
+            <%= hardcover_attribution(url: @list.hardcover_url, text: "View on Hardcover") %>
+          <% end %>
+        </div>
+      </div>
+      <p class="mt-4 text-xs text-gray-500">Following lets you choose which books to request now, then optionally request books added to the list later. Nothing is requested until you confirm.</p>
+    </header>
+
+    <%= render "discover/book_grid", books: @books, existing_books_lookup: @existing_books_lookup, page: @page, has_more: @has_more,
+      empty_message: "This list has no books Shelfarr can show." %>
+  <% end %>
+</div>
+
+<%= turbo_frame_tag "modal" %>

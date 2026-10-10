@@ -58,6 +58,10 @@ default: &default
     args:
       - scheduled: true
     schedule: every minute
+  hardcover_sync:
+    class: HardcoverSyncSchedulerJob
+    queue: default
+    schedule: every 15 minutes
 
 development:
   <<: *default

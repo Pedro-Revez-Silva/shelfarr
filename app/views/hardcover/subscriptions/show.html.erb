@@ -1,0 +1,274 @@
+<% content_for :title, "#{@subscription.title} · Shelfarr" %>
+<%= turbo_stream_from @subscription %>
+<% turbo_refreshes_with(method: :morph, scroll: :preserve) %>
+<%
+  draft = @subscription.draft?
+  filter_labels = {
+    "all" => [ "All", @state_counts.values.sum ],
+    "new" => [ "New", @state_counts["pending"].to_i ],
+    "upcoming" => [ "Upcoming", @state_counts["upcoming"].to_i ],
+    "requested" => [ "Requested", @state_counts["queued"].to_i + @state_counts["requested"].to_i ],
+    "attention" => [ "Failed", @state_counts["failed"].to_i ],
+    "not_requested" => [ "Not requested", @state_counts["known"].to_i + @state_counts["ignored"].to_i ]
+  }
+  automatic_label = @subscription.author? ? "Request new releases automatically when they come out" : "Request books added to this #{@subscription.want_to_read? ? 'shelf' : 'list'} later automatically"
+%>
+<div class="mx-auto max-w-6xl">
+  <%= render "discover/nav" %>
+
+  <header class="mb-6 rounded-lg border border-gray-800 bg-gray-900 p-5">
+    <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+      <div class="flex min-w-0 gap-4">
+        <% if @subscription.image_url.present? %>
+          <img src="<%= @subscription.image_url %>" alt="" class="h-16 w-16 shrink-0 rounded-full object-cover">
+        <% end %>
+        <div class="min-w-0">
+          <p class="text-xs font-medium uppercase tracking-wide text-gray-500"><%= @subscription.kind_label %><%= " · Preview" if draft %></p>
+          <h2 class="mt-1 text-2xl font-bold text-white"><%= @subscription.title %></h2>
+          <% if @subscription.owner_username.present? && !@subscription.author? %>
+            <p class="text-sm text-gray-400">by @<%= @subscription.owner_username %></p>
+          <% end %>
+          <p class="mt-2 text-sm text-gray-400" role="status"><%= hardcover_sync_status(@subscription) %></p>
+          <% unless draft %>
+            <p class="mt-1 text-xs text-gray-500">
+              Requests <%= @subscription.book_types.map { |type| RequestOptionPolicy.book_type_label(type).downcase }.to_sentence %>
+              · <%= @subscription.automatic? ? "new additions are requested automatically" : "new additions wait for your review" %>
+            </p>
+          <% end %>
+        </div>
+      </div>
+      <div class="flex shrink-0 flex-wrap gap-2 md:justify-end">
+        <%= button_to "Check now", refresh_hardcover_subscription_path(@subscription), class: "rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-600 cursor-pointer" %>
+        <% if @subscription.paused? %>
+          <%= button_to "Resume", resume_hardcover_subscription_path(@subscription), class: "rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+        <% elsif @subscription.active? %>
+          <%= button_to "Pause", pause_hardcover_subscription_path(@subscription), class: "rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-600 cursor-pointer" %>
+        <% end %>
+        <%= button_to draft ? "Cancel preview" : "Stop following", hardcover_subscription_path(@subscription), method: :delete,
+          form: { data: { turbo_confirm: draft ? "Discard this preview?" : "Stop following #{@subscription.title}? Requests already created are kept." } },
+          class: "rounded-lg bg-red-800 px-3 py-2 text-sm font-medium text-white transition hover:bg-red-700 cursor-pointer" %>
+      </div>
+    </div>
+    <div class="mt-3 flex flex-wrap items-center gap-4">
+      <% if @subscription.hardcover_url %>
+        <%= hardcover_attribution(url: @subscription.hardcover_url, text: "View on Hardcover") %>
+      <% else %>
+        <%= hardcover_attribution %>
+      <% end %>
+    </div>
+  </header>
+
+  <% if @subscription.snapshot_loading? %>
+    <div class="mb-6 flex items-center gap-3 rounded-lg border border-blue-800/60 bg-blue-950/30 px-4 py-3 text-sm text-blue-200" role="status" aria-live="polite">
+      <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+      Loading entries from Hardcover. This page updates when they arrive.
+    </div>
+  <% elsif @subscription.snapshot_state == "failed" %>
+    <div class="mb-6 rounded-lg border border-red-800/60 bg-red-950/30 px-4 py-3 text-sm text-red-200" role="alert">
+      Hardcover could not be read: <%= @subscription.last_error.presence || "unknown error" %>. Use “Check now” to try again.
+    </div>
+  <% end %>
+
+  <% if @subscription.entries_truncated %>
+    <p class="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+      Only the most recent <%= @subscription.entries_seen_count %> entries are shown. Older entries are treated as already present and are never requested automatically.
+    </p>
+  <% end %>
+
+  <% if @subscription.author? && @subscription.exclusions.present? && @subscription.exclusions.values.sum.positive? %>
+    <details class="mb-4 text-sm text-gray-400">
+      <summary class="cursor-pointer text-gray-300">Hidden from this author: <%= pluralize(@subscription.exclusions.values.sum, "record") %></summary>
+      <ul class="mt-2 list-disc space-y-1 pl-5">
+        <% @subscription.exclusions.each do |reason, count| %>
+          <li><%= count %> <%= Hardcover::AuthorCatalog::REASONS.fetch(reason.to_sym, reason.to_s.humanize.downcase) %></li>
+        <% end %>
+      </ul>
+    </details>
+  <% end %>
+
+  <% unless draft %>
+    <details class="mb-6 rounded-lg border border-gray-800 bg-gray-900">
+      <summary class="cursor-pointer px-5 py-3 text-sm font-medium text-gray-200">Settings</summary>
+      <%= form_with url: hardcover_subscription_path(@subscription), method: :patch, class: "space-y-4 border-t border-gray-800 px-5 py-4" do %>
+        <fieldset>
+          <legend class="text-sm font-medium text-gray-300">Formats to request</legend>
+          <div class="mt-2 flex flex-wrap gap-4">
+            <% @available_book_types.each do |book_type| %>
+              <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                <%= check_box_tag "book_types[]", book_type, @subscription.book_types.include?(book_type), id: "settings_book_type_#{book_type}", class: "rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
+                <%= RequestOptionPolicy.book_type_label(book_type) %>
+              </label>
+            <% end %>
+          </div>
+        </fieldset>
+        <label class="flex items-start gap-2 text-sm text-gray-300">
+          <%= hidden_field_tag :automatic, "0", id: nil %>
+          <%= check_box_tag :automatic, "1", @subscription.automatic?, id: "settings_automatic", class: "mt-0.5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
+          <span><%= automatic_label %>
+            <span class="block text-xs text-gray-500">Up to <%= HardcoverIntegration.max_automatic_requests_per_run %> per check; anything beyond that waits for the next check.</span></span>
+        </label>
+        <%= submit_tag "Save settings", class: "rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+      <% end %>
+    </details>
+  <% end %>
+
+  <%= form_with url: draft ? hardcover_subscription_path(@subscription) : request_items_hardcover_subscription_path(@subscription),
+        method: draft ? :patch : :post, data: { controller: "bulk-select" }, id: "hardcover-items-form" do %>
+    <%= hidden_field_tag :filter, @filter, id: nil %>
+    <% if draft %>
+      <section class="mb-6 rounded-lg border border-blue-800/50 bg-blue-950/20 p-5" aria-labelledby="confirm-heading">
+        <h3 id="confirm-heading" class="text-lg font-semibold text-white">Choose what to request</h3>
+        <p class="mt-1 text-sm text-gray-400">
+          Nothing has been requested. Select books below, choose formats, and confirm. Books you don't select are remembered as already present and are never requested automatically.
+        </p>
+        <fieldset class="mt-4">
+          <legend class="text-sm font-medium text-gray-300">Formats</legend>
+          <div class="mt-2 flex flex-wrap gap-4">
+            <% @available_book_types.each do |book_type| %>
+              <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                <%= check_box_tag "book_types[]", book_type, @subscription.book_types.include?(book_type), id: "confirm_book_type_#{book_type}", class: "rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
+                <%= RequestOptionPolicy.book_type_label(book_type) %>
+              </label>
+            <% end %>
+          </div>
+        </fieldset>
+        <div class="mt-4 space-y-2">
+          <label class="flex items-start gap-2 text-sm text-gray-300">
+            <%= hidden_field_tag :automatic, "0", id: nil %>
+            <%= check_box_tag :automatic, "1", false, id: "confirm_automatic", class: "mt-0.5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
+            <span><%= automatic_label %></span>
+          </label>
+          <label class="flex items-start gap-2 text-sm text-gray-300">
+            <%= check_box_tag :select_all, "1", false, id: "confirm_select_all", class: "mt-0.5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
+            <span>Request every released book in this preview that is not already in Shelfarr</span>
+          </label>
+        </div>
+        <div class="mt-4 flex flex-wrap items-center gap-3">
+          <%= submit_tag "Follow and request selected", disabled: !@subscription.snapshot_ready?, class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer" %>
+          <span class="text-sm text-gray-400"><span data-bulk-select-target="count">0</span> selected on this page</span>
+        </div>
+      </section>
+    <% end %>
+
+    <nav class="mb-4 flex gap-1 overflow-x-auto border-b border-gray-800" aria-label="Filter books">
+      <% filter_labels.each do |key, (label, count)| %>
+        <% next if key != "all" && count.zero? && @filter != key %>
+        <%= link_to hardcover_subscription_path(@subscription, filter: key),
+          class: "whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition #{@filter == key ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-300'}",
+          aria: { current: (@filter == key ? "page" : nil) } do %>
+          <%= label %> <span class="text-xs text-gray-500">(<%= count %>)</span>
+        <% end %>
+      <% end %>
+    </nav>
+
+    <% if @items.any? %>
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+          <input type="checkbox" data-bulk-select-target="selectAll" data-action="change->bulk-select#toggleAll" class="rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500">
+          Select all on this page
+        </label>
+        <% unless draft %>
+          <div class="hidden flex flex-wrap items-center gap-3" data-bulk-select-target="actions">
+            <% @available_book_types.each do |book_type| %>
+              <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+                <%= check_box_tag "book_types[]", book_type, @subscription.book_types.include?(book_type), id: "request_book_type_#{book_type}", class: "rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
+                <%= RequestOptionPolicy.book_type_label(book_type) %>
+              </label>
+            <% end %>
+            <label class="inline-flex items-center gap-2 text-sm text-gray-300">
+              <%= check_box_tag :select_all, "1", false, id: "request_select_all", class: "rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
+              Every released book not yet requested
+            </label>
+            <%= submit_tag "Request selected", class: "rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+          </div>
+        <% end %>
+      </div>
+
+      <ul class="divide-y divide-gray-800 overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
+        <% @items.each do |item| %>
+          <% statuses = hardcover_format_statuses(item.work_id, @existing_books_lookup, book_types: @available_book_types) %>
+          <% selectable = item.requestable? || item.upcoming? %>
+          <li class="flex gap-3 p-3 sm:gap-4 sm:p-4">
+            <div class="flex w-5 shrink-0 items-start pt-1">
+              <% if selectable %>
+                <%= check_box_tag "item_ids[]", item.id, false, id: "item_#{item.id}",
+                  class: "rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500",
+                  aria: { label: "Select #{item.title}" },
+                  data: { bulk_select_target: "checkbox", action: "change->bulk-select#updateSelection" } %>
+              <% end %>
+            </div>
+            <div class="h-[72px] w-12 shrink-0 overflow-hidden rounded bg-gray-800">
+              <% if item.cover_url.present? %>
+                <img src="<%= item.cover_url %>" alt="" class="h-full w-full object-cover" loading="lazy">
+              <% end %>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <% if selectable %>
+                  <label for="item_<%= item.id %>" class="font-medium text-white"><%= item.title %></label>
+                <% else %>
+                  <span class="font-medium text-white"><%= item.title %></span>
+                <% end %>
+                <span class="rounded-full px-2 py-0.5 text-xs <%= hardcover_item_state_class(item.state) %>"><%= item.state_label %></span>
+              </div>
+              <p class="mt-0.5 text-sm text-gray-400">
+                <%= item.author.presence || "Unknown author" %>
+                <% if item.series_name.present? %> · <%= item.series_name %><%= " ##{item.series_position}" if item.series_position.present? %><% end %>
+              </p>
+              <p class="mt-0.5 text-xs text-gray-500">
+                <% if item.release_date && item.unreleased? %>
+                  Releases <%= l(item.release_date, format: :long) %>
+                <% elsif item.release_date %>
+                  Released <%= l(item.release_date, format: :long) %>
+                <% elsif item.release_year %>
+                  <%= item.release_year %>
+                <% end %>
+                <% if item.hardcover_url %>
+                  · <%= link_to "Hardcover", item.hardcover_url, target: "_blank", rel: "noopener", class: "underline decoration-gray-700 underline-offset-2 hover:text-gray-300" %>
+                <% end %>
+              </p>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <% statuses.each do |book_type, status| %>
+                  <span class="rounded border px-2 py-0.5 text-xs <%= hardcover_format_status_class(status) %>">
+                    <%= RequestOptionPolicy.book_type_label(book_type) %>: <%= HardcoverHelper::FORMAT_STATUS_LABELS[status] %>
+                  </span>
+                <% end %>
+              </div>
+              <% if item.failed? && item.last_error.present? %>
+                <p class="mt-2 text-xs text-red-300"><%= item.last_error %><%= " · retrying automatically" if item.next_attempt_at.present? %></p>
+              <% elsif item.resolution.present? %>
+                <p class="mt-2 text-xs text-gray-500"><%= item.resolution %></p>
+              <% end %>
+            </div>
+            <div class="flex shrink-0 flex-col items-end gap-2">
+              <% if item.failed? && !draft %>
+                <button type="submit" formaction="<%= item_hardcover_subscription_path(@subscription, item_id: item.id, item_action: 'retry', filter: @filter, page: @page) %>" formmethod="post" formnovalidate class="rounded bg-gray-700 px-2 py-1 text-xs text-gray-200 hover:bg-gray-600 cursor-pointer">Retry</button>
+              <% end %>
+              <% if item.state.in?(%w[known pending failed upcoming]) %>
+                <button type="submit" formaction="<%= item_hardcover_subscription_path(@subscription, item_id: item.id, item_action: 'ignore', filter: @filter, page: @page) %>" formmethod="post" formnovalidate class="rounded px-2 py-1 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 cursor-pointer" aria-label="Dismiss <%= item.title %>">Dismiss</button>
+              <% elsif item.ignored? %>
+                <button type="submit" formaction="<%= item_hardcover_subscription_path(@subscription, item_id: item.id, item_action: 'restore', filter: @filter, page: @page) %>" formmethod="post" formnovalidate class="rounded px-2 py-1 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 cursor-pointer" aria-label="Restore <%= item.title %>">Restore</button>
+              <% end %>
+            </div>
+          </li>
+        <% end %>
+      </ul>
+
+      <% if @page_count > 1 %>
+        <nav class="mt-6 flex items-center justify-between" aria-label="Pagination">
+          <% if @page > 1 %>
+            <%= link_to "← Previous", hardcover_subscription_path(@subscription, filter: @filter, page: @page - 1), class: "rounded-lg bg-gray-800 px-4 py-2 text-sm text-gray-200 hover:bg-gray-700" %>
+          <% else %><span></span><% end %>
+          <span class="text-sm text-gray-500">Page <%= @page %> of <%= @page_count %></span>
+          <% if @page < @page_count %>
+            <%= link_to "Next →", hardcover_subscription_path(@subscription, filter: @filter, page: @page + 1), class: "rounded-lg bg-gray-800 px-4 py-2 text-sm text-gray-200 hover:bg-gray-700" %>
+          <% else %><span></span><% end %>
+        </nav>
+      <% end %>
+    <% elsif !@subscription.snapshot_loading? %>
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-6 py-10 text-center text-gray-400">
+        <%= @filter == "all" ? "No books found on Hardcover for this #{@subscription.kind_label.downcase}." : "No books in this view." %>
+      </div>
+    <% end %>
+  <% end %>
+</div>

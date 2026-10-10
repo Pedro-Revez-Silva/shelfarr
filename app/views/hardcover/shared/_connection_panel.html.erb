@@ -1,0 +1,80 @@
+<%# locals: (connection:) %>
+<section id="hardcover" class="border-t border-gray-700 bg-gray-900/40 px-6 py-5" aria-labelledby="hardcover-connection-heading">
+  <div class="flex flex-col gap-4">
+    <div>
+      <h2 id="hardcover-connection-heading" class="text-sm font-medium text-gray-200">Hardcover account</h2>
+      <p class="mt-1 text-sm text-gray-400">
+        Connect your own Hardcover account to preview your Want to Read shelf and lists, choose books to request, and optionally request new additions automatically.
+        Shelfarr only reads from Hardcover; it never changes your Hardcover library.
+      </p>
+    </div>
+
+    <% if !HardcoverIntegration.enabled? %>
+      <p class="text-sm text-gray-500">Hardcover is disabled on this Shelfarr instance.</p>
+    <% elsif connection %>
+      <div class="flex flex-col gap-3 rounded-lg border border-gray-800 bg-gray-950/50 px-4 py-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p class="text-sm font-medium text-gray-200">
+            Connected as <%= link_to "@#{connection.hardcover_username}", "https://hardcover.app/@#{connection.hardcover_username}", target: "_blank", rel: "noopener", class: "text-blue-400 hover:text-blue-300" %>
+          </p>
+          <p class="text-xs text-gray-500">
+            <%= connection.oauth? ? "Signed in with Hardcover" : "Personal API key" %>
+            <% if connection.active? %>
+              · <span class="text-green-400">Active</span>
+            <% else %>
+              · <span class="text-amber-300">Needs reconnecting</span>
+              <% if connection.last_error.present? %>— <%= connection.last_error %><% end %>
+            <% end %>
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <%= link_to "Reading lists", hardcover_subscriptions_path, class: "rounded-lg bg-gray-700 px-3 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-600" %>
+          <%= button_to "Disconnect", hardcover_connection_path, method: :delete,
+            form: { data: { turbo_confirm: "Disconnect Hardcover? Want to Read automation stops. Requests already created are kept." } },
+            class: "rounded-lg bg-red-700 px-3 py-2 text-sm font-medium text-white transition hover:bg-red-600 cursor-pointer" %>
+        </div>
+      </div>
+    <% end %>
+
+    <% if HardcoverIntegration.enabled? && (connection.nil? || !connection.active?) %>
+      <% if HardcoverIntegration.connection_available? %>
+        <div class="flex flex-col gap-3">
+          <% if HardcoverIntegration.oauth_configured? %>
+            <div class="flex flex-wrap gap-2">
+              <%= button_to "Sign in with Hardcover", authorize_hardcover_connection_path, form: { data: { turbo: false } },
+                class: "rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+              <% if HardcoverIntegration.device_flow_enabled? %>
+                <%= button_to "Sign in with a code", device_hardcover_connection_path, form: { data: { turbo: false } },
+                  class: "rounded-lg bg-gray-700 px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-600 cursor-pointer" %>
+              <% end %>
+            </div>
+            <p class="text-xs text-gray-500">Shelfarr asks Hardcover for read-only access to your profile, library, lists, and the catalog.</p>
+          <% end %>
+          <% if HardcoverIntegration.personal_tokens_allowed? %>
+            <details class="rounded-lg border border-gray-800 bg-gray-950/50 p-4" <%= "open" unless HardcoverIntegration.oauth_configured? %>>
+              <summary class="cursor-pointer text-sm font-medium text-gray-300">Connect with a personal API key</summary>
+              <p class="mt-2 text-xs text-gray-400">
+                <%= link_to "Create a Hardcover API key", HardcoverIntegration.personal_token_url, target: "_blank", rel: "noopener", class: "text-blue-400 hover:text-blue-300" %>
+                with read:me:content, read:library, read:lists, and read:catalog, then paste it here. Shelfarr encrypts it and never shows it again.
+                Revoke it on Hardcover's API page at any time.
+              </p>
+              <%= form_with url: hardcover_connection_path, method: :post, class: "mt-3 flex flex-col gap-2 md:flex-row" do |form| %>
+                <%= form.label :api_key, "Hardcover API key", class: "sr-only" %>
+                <%= form.password_field :api_key, required: true, autocomplete: "off", placeholder: "Hardcover API key", class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
+                <%= form.submit "Connect", class: "rounded-lg bg-blue-700 px-4 py-2 font-medium text-white transition hover:bg-blue-600 cursor-pointer" %>
+              <% end %>
+            </details>
+          <% end %>
+        </div>
+      <% else %>
+        <p class="text-sm text-gray-500">
+          <% if Current.user.admin? %>
+            To let users connect, register a Hardcover developer app and add its client ID in <%= link_to "Settings → Integrations → Hardcover", admin_settings_path, class: "text-blue-400 hover:text-blue-300" %>.
+          <% else %>
+            An administrator has not enabled Hardcover account connections yet.
+          <% end %>
+        </p>
+      <% end %>
+    <% end %>
+  </div>
+</section>

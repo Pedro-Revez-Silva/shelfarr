@@ -9,6 +9,8 @@ class User < ApplicationRecord
   has_many :uploads, dependent: :destroy
   has_many :notifications, dependent: :destroy
   has_many :activity_logs, dependent: :destroy
+  has_one :hardcover_connection, dependent: :destroy
+  has_many :hardcover_subscriptions, dependent: :destroy
 
   scope :active, -> { where(deleted_at: nil) }
 
@@ -151,12 +153,18 @@ class User < ApplicationRecord
 
   # Soft delete
   def soft_delete!
+    hardcover_token = hardcover_connection&.oauth? ? hardcover_connection.refresh_token.presence || hardcover_connection.access_token : nil
     transaction do
       sessions.destroy_all
       now = Time.current
       api_tokens.where(revoked_at: nil).update_all(revoked_at: now, updated_at: now)
+      hardcover_subscriptions.where(status: %w[draft active]).update_all(
+        status: "paused", pause_reason: "Account deleted", updated_at: now
+      )
+      hardcover_connection&.destroy!
       update!(deleted_at: Time.current)
     end
+    Hardcover::Oauth.revoke(hardcover_token) if hardcover_token.present?
   end
 
   def deleted?

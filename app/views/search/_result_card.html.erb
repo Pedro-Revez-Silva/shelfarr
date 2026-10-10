@@ -1,6 +1,7 @@
 <%
   audiobookshelf_matches ||= []
   existing_books_lookup ||= {}
+  show_format_statuses ||= false
   result_sources = result.respond_to?(:sources) ? Array(result.sources) : [ { source_name: result.source_name, source_url: result.source_url, work_id: result.work_id } ]
   source_work_ids = result_sources.filter_map { |source| source[:work_id] }
   source_work_ids = [ result.work_id ] if source_work_ids.blank?
@@ -113,6 +114,15 @@
       <p class="mt-1 truncate text-xs text-emerald-300"><%= result.collection_title %></p>
     <% elsif result.series_name.present? %>
       <p class="mt-1 truncate text-xs text-gray-500"><%= result.series_name %></p>
+    <% end %>
+    <% if show_format_statuses && format_statuses.values.any? { |status| status != :available } %>
+      <ul class="mt-2 flex flex-wrap gap-1" aria-label="Library status by format">
+        <% format_statuses.each do |book_type, status| %>
+          <li class="rounded border px-1.5 py-0.5 text-[10px] <%= hardcover_format_status_class(status) %>">
+            <%= RequestOptionPolicy.book_type_label(book_type) %>: <%= HardcoverHelper::FORMAT_STATUS_LABELS[status] %>
+          </li>
+        <% end %>
+      </ul>
     <% end %>
     <% if audiobookshelf_matches.any? %>
       <p class="mt-2 border-t border-gray-800 pt-2 text-[11px] text-amber-300">Related titles in <%= LibraryPlatformClient.display_name %></p>

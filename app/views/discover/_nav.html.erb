@@ -1,0 +1,24 @@
+<%
+  tabs = [
+    [ "Books", discover_path, %w[index] ],
+    [ "Lists", discover_lists_path, %w[lists list] ],
+    [ "Authors", discover_authors_path, %w[authors author] ],
+    [ "Following", hardcover_subscriptions_path, %w[following] ]
+  ]
+  current = controller_path == "hardcover/subscriptions" ? "following" : (action_name if controller_name == "discover")
+%>
+<div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+  <div>
+    <h1 class="text-3xl font-bold text-white">Discover</h1>
+    <p class="mt-1 text-sm text-gray-400">Browse books, public lists, and authors from Hardcover, then request them like any search result.</p>
+  </div>
+  <%= hardcover_attribution %>
+</div>
+<nav class="mb-6 flex gap-1 overflow-x-auto border-b border-gray-800" aria-label="Discover sections">
+  <% tabs.each do |label, path, actions| %>
+    <% active = current.present? && actions.include?(current) %>
+    <%= link_to label, path,
+      class: "whitespace-nowrap border-b-2 px-4 py-3 text-sm font-medium transition #{active ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:border-gray-600 hover:text-gray-300'}",
+      aria: { current: (active ? "page" : nil) } %>
+  <% end %>
+</nav>

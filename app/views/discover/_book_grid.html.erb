@@ -1,0 +1,12 @@
+<% if books.any? %>
+  <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+    <% books.each do |book| %>
+      <%= render "search/result_card", result: book, existing_books_lookup: existing_books_lookup, audiobookshelf_matches: [], show_format_statuses: true %>
+    <% end %>
+  </div>
+  <%= render "discover/pagination", page: page, has_more: has_more %>
+<% else %>
+  <div class="rounded-lg border border-gray-800 bg-gray-900 px-6 py-12 text-center">
+    <p class="text-gray-300"><%= empty_message %></p>
+  </div>
+<% end %>
