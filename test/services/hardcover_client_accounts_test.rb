@@ -123,6 +123,61 @@ class HardcoverClientAccountsTest < ActiveSupport::TestCase
     assert HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential), "interactive use keeps the reserve"
   end
 
+  # A background request is admitted with allowance to spare, then waits for
+  # its slot outside the lease. A request made meanwhile can bring the daily
+  # allowance down to the reserve, and the waiting one must not spend it.
+  test "a background request waiting for its slot does not spend the reserve used up meanwhile" do
+    credential = HardcoverClient.credential_for_token("hc_at_queued", budget_key: HardcoverClient.account_budget_key(915))
+    daily_remaining = 102
+    stub_request(:post, HardcoverClient::BASE_URL).to_return do |_request|
+      daily_remaining -= 1
+      headers = RATE_LIMIT_HEADERS.merge(
+        "RateLimit-Policy" => %("Free";q=60;w=60;burst=10, "daily";q=1000;w=86400),
+        "RateLimit" => %("Free";r=9;t=0, "daily";r=#{daily_remaining};t=3600)
+      )
+      { status: 200, headers: headers, body: { data: { me: [ { id: 915 } ] } }.to_json }
+    end
+
+    HardcoverClient.stub(:background_min_interval, HardcoverClient::BACKGROUND_MIN_INTERVAL) do
+      HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true)
+      assert_equal 101, daily_remaining, "one above the reserve of 100 still admits background work"
+
+      waiting = Queue.new
+      resume = Queue.new
+      gated = false
+      pause_first_wait = lambda do |seconds|
+        if gated
+          Kernel.sleep(seconds)
+        else
+          gated = true
+          waiting << seconds
+          resume.pop
+        end
+      end
+
+      HardcoverClient.stub(:sleep, pause_first_wait) do
+        queued = Thread.new do
+          HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true)
+        rescue HardcoverClient::Error => e
+          e
+        end
+        Timeout.timeout(5) { assert_operator waiting.pop, :>, 0, "the second background request holds a later slot" }
+
+        assert HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential), "interactive use is not held back"
+        assert_equal 100, daily_remaining
+
+        resume << true
+        error = Timeout.timeout(5) { queued.value }
+        assert_kind_of HardcoverClient::RateLimitError, error
+        assert_operator error.retry_after, :>, 3000
+      end
+    end
+
+    assert_requested :post, HardcoverClient::BASE_URL, times: 2
+    assert HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential), "interactive use keeps the reserve"
+    assert_equal 99, daily_remaining
+  end
+
   test "the instance token joins its owner's account budget once the account is known" do
     SettingsService.set(:hardcover_enabled, true)
     SettingsService.set(:hardcover_api_token, "instance_token")

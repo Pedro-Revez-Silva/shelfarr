@@ -335,7 +335,12 @@ class HardcoverClient
 
       with_rate_limit_request_lock(credential.digest) do
         ensure_not_rate_limited!(credential.digest)
-        space_background_send!(credential.digest) if background
+        if background
+          # Another request may have used the daily allowance down to the
+          # interactive reserve while this one waited for its slot.
+          ensure_background_budget!(credential.digest)
+          space_background_send!(credential.digest)
+        end
 
         begin
           response = Timeout.timeout(
@@ -484,7 +489,8 @@ class HardcoverClient
     end
 
     # Admission and pacing for background work happen under the account's
-    # request lease: the daily reserve and any cooldown are checked, and the
+    # request lease: the daily reserve and any cooldown are checked (and
+    # checked again when the slot comes up), and the
     # caller is given the next free send slot. Slots are handed out in order,
     # so concurrent jobs on one account are spaced out instead of sleeping
     # against the same timestamp and sending together.
