@@ -28,17 +28,16 @@ class HardcoverAutomaticEnableTest < ActionDispatch::IntegrationTest
           enable(subscription)
           assert_equal Time.current, subscription.reload.automatic_enabled_at
           travel 1.hour
-          if observed_before && kind == "want_to_read"
-            # An edit to an existing shelf row changes updated_at. It does
-            # not make an already observed addition a new opt-in request.
-            rows.each { |row| row["updated_at"] = Time.current.iso8601 }
-          end
+          # Edits are not additions, including when an old row is first
+          # observed after enabling because earlier checks were unavailable.
+          rows.each { |row| row["updated_at"] = Time.current.iso8601 }
           rows.concat([
             entry_row(kind, 903, Time.current),
             entry_row(kind, 904, Time.current, release_date: future.iso8601),
             entry_row(kind, 905, nil),
             entry_row(kind, 906, nil, release_date: future.iso8601)
           ])
+          rows.last(2).each { |row| row["updated_at"] = Time.current.iso8601 }
           HardcoverSubscriptionSyncJob.perform_now(subscription.id)
           assert_equal %w[pending upcoming queued upcoming pending upcoming], subscription.items.order(:hardcover_book_id).pluck(:state)
           HardcoverImportJob.perform_now

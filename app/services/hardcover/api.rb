@@ -102,7 +102,7 @@ module Hardcover
         end
         rows = Array(data(HardcoverClient.execute(query, variables, credential: credential, background: background), "list_books"))
         entries = rows.filter_map do |row|
-          parse_book(row["book"], added_at: parse_time(row["date_added"]) || parse_time(row["updated_at"]), position: row["position"])
+          parse_book(row["book"], added_at: parse_time(row["date_added"]), position: row["position"])
         end
         Page.new(entries: entries, has_more: rows.size >= limit, next_cursor: row_ids(rows).min)
       end
@@ -117,8 +117,10 @@ module Hardcover
         end
         rows = Array(data(HardcoverClient.execute(query, variables, credential: credential, background: background), "user_books"))
         entries = rows.filter_map do |row|
-          added_at = [ parse_time(row["updated_at"]), parse_time(row["created_at"]) ].compact.max
-          parse_book(row["book"], added_at: added_at)
+          # updated_at also changes for notes, ratings and privacy edits. It
+          # cannot prove when an old record joined Want to Read, so only a
+          # newly created record is eligible for automatic requests.
+          parse_book(row["book"], added_at: parse_time(row["created_at"]))
         end
         Page.new(entries: entries, has_more: rows.size >= limit, next_cursor: row_ids(rows).min)
       end

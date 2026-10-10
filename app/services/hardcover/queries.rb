@@ -175,8 +175,8 @@ module Hardcover
       }
     GRAPHQL
 
-    # A shelf change (for example Read -> Want to Read) updates the
-    # user_books row, so updated_at covers moves as well as new additions.
+    # Read status changes and metadata edits too, so the local preview stays
+    # current. updated_at is not evidence of when a book joined this shelf.
     WANT_TO_READ_SINCE = <<~GRAPHQL.freeze
       query ShelfarrWantToReadSince($userId: Int!, $since: timestamptz!, $beforeId: Int!, $limit: Int!) {
         user_books(

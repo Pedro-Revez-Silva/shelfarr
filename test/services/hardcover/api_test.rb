@@ -33,7 +33,7 @@ class Hardcover::APITest < ActiveSupport::TestCase
     assert_equal({ "userId" => 4242, "limit" => 100, "offset" => 0 }, hardcover_requests.last[:variables])
   end
 
-  test "incremental want_to_read sends the since cursor and records when the entry changed" do
+  test "incremental want_to_read refreshes changed rows but preserves their creation date" do
     since = Time.zone.parse("2026-09-01T00:00:00Z")
     row = hardcover_user_book_row(hardcover_book(id: 12), id: 99, created_at: "2025-01-01T00:00:00+00:00", updated_at: "2026-09-02T08:00:00+00:00")
     stub_hardcover_graphql("ShelfarrWantToReadSince" => { "user_books" => [ row ] })
@@ -42,9 +42,20 @@ class Hardcover::APITest < ActiveSupport::TestCase
 
     assert_equal "2026-09-01T00:00:00Z", hardcover_requests.last[:variables]["since"]
     assert_equal 2_147_483_647, hardcover_requests.last[:variables]["beforeId"], "the first page starts at the newest row"
-    assert_equal Time.zone.parse("2026-09-02T08:00:00Z"), page.entries.first.added_at
+    assert_equal Time.zone.parse("2025-01-01T00:00:00Z"), page.entries.first.added_at
     assert_not page.has_more
     assert_equal 99, page.next_cursor
+  end
+
+  test "a metadata update does not supply a missing shelf or list addition date" do
+    book = hardcover_book(id: 12)
+    stub_hardcover_graphql(
+      "ShelfarrWantToReadSince" => { "user_books" => [ hardcover_user_book_row(book, id: 99, created_at: nil, updated_at: Time.current.iso8601) ] },
+      "ShelfarrPublicListBooksSince" => { "list_books" => [ hardcover_list_book_row(book, id: 99, date_added: nil, updated_at: Time.current.iso8601) ] }
+    )
+
+    assert_nil Hardcover::API.want_to_read(4242, credential: @credential, since: 1.day.ago).entries.sole.added_at
+    assert_nil Hardcover::API.list_books(55, credential: @credential, since: 1.day.ago).entries.sole.added_at
   end
 
   test "incremental reads continue below the last row id instead of using an offset" do
