@@ -4,13 +4,22 @@
 # an author. A subscription starts as a draft so the user can preview the
 # current entries and choose what to request. Confirming it records those
 # entries as the baseline; later syncs only act on what is new.
+#
+# A personal subscription (a Want to Read shelf, or a list that was not
+# public) belongs to one Hardcover account and is only ever read with that
+# account's own connection. Its baseline describes that account's entries, so
+# connecting a different account starts a new preview instead of reusing it.
 class HardcoverSubscription < ApplicationRecord
   KINDS = %w[want_to_read list author].freeze
   STATUSES = %w[draft active paused].freeze
   SNAPSHOT_STATES = %w[pending loading ready failed].freeze
-  CONNECTION_KINDS = %w[want_to_read].freeze
   DRAFT_RETENTION = 7.days
   MAX_BACKOFF = 1.day
+  PAUSE_RECONNECT = "Reconnect your Hardcover account to resume."
+  PAUSE_DISCONNECTED = "Hardcover account disconnected."
+  PAUSE_OTHER_ACCOUNT = "Connected to a different Hardcover account than the one this follows. Reconnect that account to resume."
+  # Pauses that end by themselves once the right account is connected again.
+  ACCOUNT_PAUSE_REASONS = [ PAUSE_RECONNECT, PAUSE_DISCONNECTED, PAUSE_OTHER_ACCOUNT ].freeze
 
   belongs_to :user
   has_many :items, class_name: "HardcoverSubscriptionItem", dependent: :delete_all, inverse_of: :subscription
@@ -26,7 +35,7 @@ class HardcoverSubscription < ApplicationRecord
   before_validation :assign_target_key
   after_update_commit :broadcast_progress, if: -> { saved_change_to_snapshot_state? || saved_change_to_last_synced_at? || saved_change_to_status? }
 
-  scope :requiring_connection, -> { where(kind: CONNECTION_KINDS) }
+  scope :requiring_connection, -> { where(kind: "want_to_read").or(where(personal: true)) }
   scope :confirmed, -> { where(status: %w[active paused]) }
   scope :syncable, -> { where(status: "active") }
   scope :due_for_sync, ->(now = Time.current) { syncable.where("next_sync_at IS NULL OR next_sync_at <= ?", now) }
@@ -61,7 +70,18 @@ class HardcoverSubscription < ApplicationRecord
   end
 
   def requires_connection?
-    CONNECTION_KINDS.include?(kind)
+    want_to_read? || personal?
+  end
+
+  # Whether a connection may read this subscription's entries with the
+  # owner's privileges. Personal entries never fall back to another account.
+  def owned_by_connection?(connection)
+    connection.present? && hardcover_account_id.present? && connection.hardcover_user_id == hardcover_account_id
+  end
+
+  # Incremental reading stopped at a page limit and continues on the next run.
+  def catching_up?
+    sync_window_until.present?
   end
 
   def snapshot_ready?
@@ -117,6 +137,38 @@ class HardcoverSubscription < ApplicationRecord
 
   def resume!
     update!(status: "active", pause_reason: nil, consecutive_failures: 0, last_error: nil, next_sync_at: Time.current)
+  end
+
+  # Starts a fresh preview of a different account's Want to Read shelf. The
+  # previous account's entries and baseline are dropped so nothing from it
+  # carries over; requests already created are kept. Bumping the generation
+  # makes any sync still reading the old account discard its results.
+  def restart_preview_for!(account_id:, username:)
+    transaction do
+      items.delete_all
+      update!(
+        status: "draft",
+        hardcover_account_id: account_id,
+        owner_username: username,
+        personal: true,
+        automatic: false,
+        pause_reason: nil,
+        snapshot_state: "pending",
+        snapshot_completed_at: nil,
+        entries_seen_count: 0,
+        entries_truncated: false,
+        baseline_established_at: nil,
+        sync_cursor_at: nil,
+        sync_window_since: nil,
+        sync_window_until: nil,
+        sync_window_before_id: nil,
+        last_synced_at: nil,
+        next_sync_at: nil,
+        last_error: nil,
+        consecutive_failures: 0,
+        sync_generation: sync_generation + 1
+      )
+    end
   end
 
   def broadcast_progress

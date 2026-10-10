@@ -142,4 +142,90 @@ class Hardcover::ItemImporterTest < ActiveSupport::TestCase
 
     assert_equal 5, Hardcover::ItemImporter.call.processed
   end
+
+  # Runs the importer and applies `change` while the first item's requests
+  # are being created, the way a web request can while a batch is running.
+  def import_while(first_work_id)
+    original = RequestCreationService.method(:call)
+    changed = false
+    creator = lambda do |**args|
+      result = original.call(**args)
+      if args[:work_id] == first_work_id && !changed
+        changed = true
+        yield
+      end
+      result
+    end
+    RequestCreationService.stub(:call, creator) { Hardcover::ItemImporter.call }
+  end
+
+  {
+    "pausing the subscription" => ->(test) { HardcoverSubscription.find(test.subscription_id).pause!("Paused by you.") },
+    "deleting the user" => ->(test) { User.find(test.user_id).soft_delete! },
+    "disabling Hardcover" => ->(_test) { SettingsService.set(:hardcover_enabled, false) }
+  }.each do |label, change|
+    test "#{label} after a batch was claimed stops its remaining items" do
+      first = queued_item(9_500, wanted: false, book_types: [ "ebook" ])
+      second = queued_item(9_501, wanted: false, book_types: [ "ebook" ])
+      third = queued_item(9_502, book_types: [ "ebook" ])
+
+      result = nil
+      assert_difference -> { Request.count } => 1 do
+        result = import_while(third.work_id) { change.call(self) }
+      end
+
+      assert_equal 3, result.processed
+      assert_equal 1, result.requested, "the request created before the change is kept"
+      assert_equal 2, result.cancelled
+      assert_equal "requested", third.reload.state
+      [ first, second ].each do |item|
+        item.reload
+        assert_equal "queued", item.state, "an unprocessed item keeps its place"
+        assert_nil item.claim_token, "and is released for a later run"
+        assert_equal 0, item.attempts
+      end
+    end
+  end
+
+  test "disconnecting Want to Read during a batch stops it until a deliberate resume" do
+    connection = create_hardcover_connection(@user, auth_method: "personal_token", access_token: "hc_pat")
+    shelf = create_hardcover_subscription(@user, kind: "want_to_read", automatic: true)
+    first = create_hardcover_item(shelf, book_id: 9_600, state: "queued", wanted: false, book_types: [ "ebook" ])
+    second = create_hardcover_item(shelf, book_id: 9_601, state: "queued", wanted: false, book_types: [ "ebook" ])
+
+    assert_difference -> { Request.count } => 1 do
+      import_while(first.work_id) { Hardcover::ConnectionManager.disconnect!(connection) }
+    end
+
+    assert_equal "requested", first.reload.state
+    assert_equal [ "queued", nil ], [ second.reload.state, second.claim_token ]
+    assert shelf.reload.paused?
+    assert_no_difference -> { Request.count } do
+      assert_equal 0, Hardcover::ItemImporter.call.processed, "nothing runs while the shelf is paused"
+    end
+
+    create_hardcover_connection(@user, auth_method: "personal_token", access_token: "hc_pat_again")
+    shelf.resume!
+    assert_difference -> { Request.count } => 1 do
+      Hardcover::ItemImporter.call
+    end
+    assert_equal "requested", second.reload.state
+  end
+
+  test "a personal subscription stops importing when another account is connected" do
+    create_hardcover_connection(@user, hardcover_user_id: 5_555)
+    shelf = create_hardcover_subscription(@user, kind: "want_to_read", account_id: 4_242, automatic: true)
+    item = create_hardcover_item(shelf, book_id: 9_700, state: "queued", wanted: false, book_types: [ "ebook" ])
+
+    assert_no_difference -> { Request.count } do
+      result = Hardcover::ItemImporter.call
+      assert_equal 1, result.cancelled
+      assert_equal 0, result.remaining, "the rest of the queue waits instead of being claimed again"
+    end
+    assert_equal [ "queued", nil ], [ item.reload.state, item.claim_token ]
+    assert_equal HardcoverSubscription::PAUSE_OTHER_ACCOUNT, shelf.reload.pause_reason
+  end
+
+  def subscription_id = @subscription.id
+  def user_id = @user.id
 end

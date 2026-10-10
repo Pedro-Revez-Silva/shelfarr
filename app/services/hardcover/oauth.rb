@@ -32,6 +32,8 @@ module Hardcover
     # The authorization was refused, expired, or the refresh token is no
     # longer valid. The user must connect again.
     class AuthorizationError < Error; end
+    # The connection was replaced or removed while a refresh was in flight.
+    class ConnectionChanged < Error; end
 
     TokenSet = Data.define(:access_token, :refresh_token, :expires_at, :scope)
     DeviceAuthorization = Data.define(:device_code, :user_code, :verification_uri, :verification_uri_complete, :expires_at, :interval)
@@ -120,27 +122,47 @@ module Hardcover
       # Refresh tokens rotate and Hardcover revokes the whole chain if one is
       # reused, so only one process may refresh a connection at a time and the
       # newest token must be stored before anything else uses it.
+      #
+      # The network call happens outside any transaction. Its result is only
+      # saved if the row still holds the version that was refreshed; if the
+      # account was replaced or disconnected meanwhile, the rotated tokens
+      # belong to nobody and are revoked instead of being stored.
       def refresh_connection!(connection, force: false)
         raise AuthorizationError, "This Hardcover connection cannot be refreshed" unless connection.refreshable?
 
         token_in_use = connection.access_token
+        account_in_use = connection.hardcover_user_id
         with_refresh_lock(connection) do
-          connection.reload
-          # Another process already rotated the tokens while we waited.
-          return connection if connection.access_token != token_in_use
-          return connection unless force || connection.access_token_expiring?
+          current = HardcoverConnection.find_by(id: connection.id)
+          raise ConnectionChanged, "The Hardcover connection was removed" unless current
+          raise ConnectionChanged, "A different Hardcover account was connected" if current.hardcover_user_id != account_in_use
 
-          token_set = refresh(connection.refresh_token)
-          connection.update!(
-            access_token: token_set.access_token,
-            refresh_token: token_set.refresh_token.presence || connection.refresh_token,
-            access_token_expires_at: token_set.expires_at,
-            granted_scopes: token_set.scope.presence || connection.granted_scopes,
-            refreshed_at: Time.current,
-            status: "active",
-            last_error: nil
-          )
-          connection
+          # Another process already rotated the tokens while we waited.
+          if current.access_token != token_in_use || !current.refreshable?
+            connection.reload
+            return connection
+          end
+          unless force || current.access_token_expiring?
+            connection.reload
+            return connection
+          end
+
+          token_set = refresh(current.refresh_token)
+          begin
+            current.update!(
+              access_token: token_set.access_token,
+              refresh_token: token_set.refresh_token.presence || current.refresh_token,
+              access_token_expires_at: token_set.expires_at,
+              granted_scopes: token_set.scope.presence || current.granted_scopes,
+              refreshed_at: Time.current,
+              status: "active",
+              last_error: nil
+            )
+          rescue ActiveRecord::StaleObjectError
+            revoke(token_set.refresh_token.presence || token_set.access_token)
+            raise ConnectionChanged, "The Hardcover connection changed while it was being refreshed"
+          end
+          connection.reload
         end
       end
 

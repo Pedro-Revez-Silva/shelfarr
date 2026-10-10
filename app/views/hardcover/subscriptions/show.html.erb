@@ -71,7 +71,11 @@
 
   <% if @subscription.entries_truncated %>
     <p class="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-      Only the most recent <%= @subscription.entries_seen_count %> entries are shown. Older entries are treated as already present and are never requested automatically.
+      <% if @subscription.author? %>
+        This author has more Hardcover records than one check reads. Every check reads the newest and upcoming releases first, so new books are always seen; older books are added a few pages at a time and are never requested automatically.
+      <% else %>
+        Only the most recent <%= @subscription.entries_seen_count %> entries were read for the preview. Older entries are treated as already present and are never requested automatically.
+      <% end %>
     </p>
   <% end %>
 

@@ -68,6 +68,36 @@ module HardcoverTestHelper
     end
   end
 
+  # Simulates Hardcover's list visibility. A list that is not public
+  # (privacy_setting_id 2 or 3) is only returned to its owner's token, and
+  # the public-only queries never return it. `accounts` maps access tokens
+  # to Hardcover account ids; `lists` maps list ids to list rows.
+  def stub_hardcover_list_visibility(lists:, books: {}, accounts: {})
+    @hardcover_requests = []
+    stub_request(:post, GRAPHQL_URL).to_return do |request|
+      payload = JSON.parse(request.body)
+      operation = payload["query"].to_s[/query\s+(\w+)/, 1]
+      variables = payload["variables"] || {}
+      token = request.headers["Authorization"].to_s.delete_prefix("Bearer ")
+      @hardcover_requests << { operation: operation, variables: variables, authorization: request.headers["Authorization"] }
+      list_id = variables["id"] || variables["listId"]
+      list = lists[list_id]
+      is_public = list && list["privacy_setting_id"] == 1
+      visible = list && (is_public || list["user_id"] == accounts[token]) && (is_public || !operation.start_with?("ShelfarrPublic"))
+      data = case operation
+      when "ShelfarrList", "ShelfarrPublicList"
+        { "lists" => visible ? [ list.merge("id" => list_id, "public" => is_public) ] : [] }
+      when "ShelfarrListBooks", "ShelfarrPublicListBooks", "ShelfarrListBooksSince", "ShelfarrPublicListBooksSince"
+        { "list_books" => visible ? books.fetch(list_id, []) : [] }
+      when "ShelfarrMe"
+        { "me" => [ { "id" => accounts.fetch(token), "username" => "account#{accounts.fetch(token)}" } ] }
+      else
+        raise "Unexpected Hardcover operation #{operation}"
+      end
+      { status: 200, headers: RATE_LIMIT_HEADERS, body: { "data" => data }.to_json }
+    end
+  end
+
   def hardcover_requests
     @hardcover_requests || []
   end
@@ -98,11 +128,15 @@ module HardcoverTestHelper
     )
   end
 
+  # Want to Read subscriptions belong to the account create_hardcover_connection
+  # uses by default (4242) unless another account_id is given.
   def create_hardcover_subscription(user, kind: "list", target_id: 77, status: "active", automatic: false, book_types: [ "ebook" ],
-    baseline: 2.days.ago, title: "Subscription #{kind}")
+    baseline: 2.days.ago, title: "Subscription #{kind}", account_id: (kind == "want_to_read" ? 4242 : nil), personal: kind == "want_to_read")
     user.hardcover_subscriptions.create!(
       kind: kind,
       hardcover_target_id: kind == "want_to_read" ? nil : target_id,
+      hardcover_account_id: account_id,
+      personal: personal,
       title: title,
       status: status,
       automatic: automatic,

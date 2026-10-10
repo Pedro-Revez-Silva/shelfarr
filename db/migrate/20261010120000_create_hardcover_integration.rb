@@ -13,6 +13,9 @@ class CreateHardcoverIntegration < ActiveRecord::Migration[8.1]
       t.string :last_error
       t.datetime :last_verified_at
       t.datetime :refreshed_at
+      # Optimistic lock shared by token refresh, account replacement, and
+      # disconnect so a late refresh can never overwrite newer credentials.
+      t.integer :lock_version, null: false, default: 0
       t.timestamps
     end
     add_index :hardcover_connections, :hardcover_user_id
@@ -27,6 +30,11 @@ class CreateHardcoverIntegration < ActiveRecord::Migration[8.1]
       t.text :description
       t.string :image_url
       t.string :owner_username
+      # The Hardcover account that owns the followed entries (the shelf owner
+      # or the list owner). Personal subscriptions can only be read with that
+      # account's own connection.
+      t.integer :hardcover_account_id
+      t.boolean :personal, null: false, default: false
       t.json :book_types, null: false, default: []
       t.boolean :automatic, null: false, default: false
       t.string :status, null: false, default: "draft"
@@ -38,6 +46,15 @@ class CreateHardcoverIntegration < ActiveRecord::Migration[8.1]
       t.json :exclusions, null: false, default: {}
       t.datetime :baseline_established_at
       t.datetime :sync_cursor_at
+      # An incremental window still being read page by page.
+      t.datetime :sync_window_since
+      t.datetime :sync_window_until
+      t.integer :sync_window_before_id
+      # Rolling position in an author catalog larger than one scan.
+      t.bigint :catalog_cursor_id
+      # Bumped when the followed account changes so in-flight syncs discard
+      # what they read.
+      t.integer :sync_generation, null: false, default: 0
       t.datetime :last_synced_at
       t.datetime :next_sync_at
       t.text :last_error
@@ -64,6 +81,8 @@ class CreateHardcoverIntegration < ActiveRecord::Migration[8.1]
       t.datetime :entry_added_at
       t.integer :position
       t.string :state, null: false
+      # Present when the baseline was taken (or older than it).
+      t.boolean :baseline, null: false, default: false
       t.boolean :wanted, null: false, default: false
       t.json :book_types, null: false, default: []
       t.json :request_ids, null: false, default: []

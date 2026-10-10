@@ -16,15 +16,20 @@ class HardcoverClient
   MAX_RATE_LIMIT_COOLDOWN = 25.hours.to_i
   MAX_RATE_LIMIT_HEADER_BYTES = 4.kilobytes
   RATE_LIMIT_STATE_MUTEX = Mutex.new
-  REQUEST_MUTEX = Mutex.new
+  REQUEST_MUTEXES_MUTEX = Mutex.new
+  CONNECTIONS_MUTEX = Mutex.new
+  MAX_CACHED_CONNECTIONS = 32
   HARD_REQUEST_TIMEOUT = 35.seconds
   REQUEST_LOCK_TTL = HARD_REQUEST_TIMEOUT + 10.seconds
   REQUEST_LOCK_WAIT = REQUEST_LOCK_TTL + 1.second
   REQUEST_LOCK_POLL_INTERVAL = 0.05
   # Background work spends at most the per-minute refill rate and leaves part
-  # of the daily allowance for people browsing Shelfarr.
+  # of the daily allowance for people browsing Shelfarr. Every background
+  # caller reserves its own send slot for the account, so concurrent jobs
+  # queue behind each other instead of waking up and sending together.
   BACKGROUND_MIN_INTERVAL = 1.1
   BACKGROUND_MAX_PACING_SLEEP = 3.0
+  BACKGROUND_MAX_QUEUE_WAIT = 30.0
   BACKGROUND_DAILY_RESERVE_RATIO = 0.1
   MIN_BACKGROUND_DAILY_RESERVE = 100
   ACCOUNT_CACHE_TTL = 30.days
@@ -293,11 +298,7 @@ class HardcoverClient
     end
 
     def reset_connection!
-      REQUEST_MUTEX.synchronize do
-        @connection = nil
-        @connection_credential_digest = nil
-        @connection_authorization = nil
-      end
+      CONNECTIONS_MUTEX.synchronize { @connections = {} }
     end
 
     def rate_limited?
@@ -309,8 +310,19 @@ class HardcoverClient
     def reset_rate_limit_state!
       credential_digest = current_credential.digest
       cache_keys = RATE_LIMIT_BUCKETS.map { |bucket| rate_limit_cache_key(bucket, credential_digest) }
-      RATE_LIMIT_STATE_MUTEX.synchronize { @local_rate_limit_deadlines = {} }
+      cache_keys += %i[slot sent].map { |kind| pacing_cache_key(kind, credential_digest) }
+      RATE_LIMIT_STATE_MUTEX.synchronize do
+        @local_rate_limit_deadlines = {}
+        @local_pacing = {}
+      end
       cache_keys.each { |key| safe_cache_delete(key) }
+    end
+
+    # Seconds between background sends for one Hardcover account. The test
+    # environment lowers it so suites do not sleep between stubbed pages.
+    def background_min_interval
+      configured = Rails.configuration.x.hardcover_background_min_interval
+      configured.nil? ? BACKGROUND_MIN_INTERVAL : configured.to_f
     end
 
     private
@@ -320,13 +332,12 @@ class HardcoverClient
     end
 
     def execute_query(query, variables, credential: current_credential, background: false)
-      if background
-        ensure_background_budget!(credential.digest)
-        pace_background_request!(credential.digest)
-      end
+      reserve_background_slot!(credential.digest) if background
 
       with_rate_limit_request_lock(credential.digest) do
         ensure_not_rate_limited!(credential.digest)
+        space_background_send!(credential.digest) if background
+        remember_send!(credential.digest)
 
         response = Timeout.timeout(
           HARD_REQUEST_TIMEOUT,
@@ -345,18 +356,17 @@ class HardcoverClient
       raise ConnectionError, "Failed to connect to Hardcover: #{e.message}"
     end
 
+    # Connections are cached per exact Authorization header. Several tokens
+    # can share one account budget, and requests for different accounts run
+    # concurrently, so a shared single connection could send the wrong token.
     def connection(credential = current_credential)
-      # Several tokens can share one account budget digest, so the cached
-      # connection must also match the exact Authorization header.
-      if @connection && @connection_credential_digest == credential.digest &&
-          @connection_authorization == credential.authorization_header
-        return @connection
+      key = Digest::SHA256.hexdigest(credential.authorization_header)
+      CONNECTIONS_MUTEX.synchronize do
+        @connections ||= {}
+        existing = @connections.delete(key)
+        @connections.shift while @connections.size >= MAX_CACHED_CONNECTIONS
+        @connections[key] = existing || build_connection(credential)
       end
-
-      @connection = build_connection(credential)
-      @connection_credential_digest = credential.digest
-      @connection_authorization = credential.authorization_header
-      @connection
     end
 
     def build_connection(credential)
@@ -466,12 +476,95 @@ class HardcoverClient
       )
     end
 
-    def pace_background_request!(credential_digest)
-      key = "hardcover:v#{RATE_LIMIT_CACHE_VERSION}:background-pace:#{credential_digest}"
-      last = Float(safe_cache_read_raw(key), exception: false)
-      wait = last ? (last + BACKGROUND_MIN_INTERVAL) - Time.current.to_f : 0
-      sleep([ wait, BACKGROUND_MAX_PACING_SLEEP ].min) if wait.positive?
-      safe_cache_write(key, Time.current.to_f, expires_in: 1.minute)
+    # Admission and pacing for background work happen under the account's
+    # request lease: the daily reserve and any cooldown are checked, and the
+    # caller is given the next free send slot. Slots are handed out in order,
+    # so concurrent jobs on one account are spaced out instead of sleeping
+    # against the same timestamp and sending together.
+    def reserve_background_slot!(credential_digest)
+      slot = with_rate_limit_request_lock(credential_digest) do
+        ensure_background_budget!(credential_digest)
+        now = Time.current.to_f
+        reserved = [ now, next_background_slot(credential_digest) ].compact.max
+
+        cooldown = active_rate_limit_retry_after(credential_digest)
+        if cooldown
+          # A short cooldown (an exhausted burst bucket) is waited out; a
+          # long one is reported so the job backs off.
+          ensure_not_rate_limited!(credential_digest) if cooldown > BACKGROUND_MAX_PACING_SLEEP
+          reserved = [ reserved, now + cooldown ].max
+        end
+
+        wait = reserved - now
+        if wait > BACKGROUND_MAX_QUEUE_WAIT
+          raise RateLimitError.new(
+            "Hardcover background requests for this account are queued; retrying in #{wait.ceil} seconds",
+            retry_after: wait.ceil
+          )
+        end
+
+        remember_next_background_slot!(credential_digest, reserved + background_min_interval)
+        reserved
+      end
+
+      wait = slot - Time.current.to_f
+      sleep(wait) if wait.positive?
+    end
+
+    # Runs inside the lease right before sending. Slots are already spaced;
+    # this also covers a slot that was delayed by an interactive request.
+    def space_background_send!(credential_digest)
+      last = last_send_at(credential_digest)
+      return unless last
+
+      wait = [ last + background_min_interval - Time.current.to_f, background_min_interval ].min
+      sleep(wait) if wait.positive?
+    end
+
+    # A slot can legitimately be at most one queue's length ahead. Anything
+    # later comes from a wall-clock jump and is ignored, so it cannot stall
+    # the account.
+    def next_background_slot(credential_digest)
+      pacing_value(:slot, credential_digest, ceiling: Time.current.to_f + BACKGROUND_MAX_QUEUE_WAIT + background_min_interval)
+    end
+
+    def remember_next_background_slot!(credential_digest, value)
+      remember_pacing_value!(:slot, credential_digest, value)
+    end
+
+    def last_send_at(credential_digest)
+      pacing_value(:sent, credential_digest, ceiling: Time.current.to_f)
+    end
+
+    # Interactive sends are recorded too, so background work yields to them.
+    def remember_send!(credential_digest)
+      remember_pacing_value!(:sent, credential_digest, Time.current.to_f)
+    end
+
+    # The shared cache spans processes; the in-process copy keeps pacing
+    # working under NullStore or during a cache outage. Values past
+    # `ceiling` are ignored.
+    def pacing_value(kind, credential_digest, ceiling:)
+      key = pacing_cache_key(kind, credential_digest)
+      local = RATE_LIMIT_STATE_MUTEX.synchronize { local_pacing[key] }
+      [ local, safe_cache_read(key) ].compact.select { |value| value <= ceiling }.max
+    end
+
+    # Written under the account's request lease, so the newest value is
+    # always the one to keep.
+    def remember_pacing_value!(kind, credential_digest, value)
+      key = pacing_cache_key(kind, credential_digest)
+      RATE_LIMIT_STATE_MUTEX.synchronize { local_pacing[key] = value }
+      ttl = [ (value - Time.current.to_f).ceil, 0 ].max + 1.minute.to_i
+      safe_cache_write(key, value, expires_in: ttl)
+    end
+
+    def pacing_cache_key(kind, credential_digest)
+      "hardcover:v#{RATE_LIMIT_CACHE_VERSION}:background-pace:#{kind}:#{credential_digest}"
+    end
+
+    def local_pacing
+      @local_pacing ||= {}
     end
 
     def remember_remaining!(bucket, remaining:, quota:, reset_after:, credential_digest:)
@@ -670,9 +763,10 @@ class HardcoverClient
     end
 
     # Solid Cache makes this lease shared across Puma and job processes. The
-    # mutex preserves the same safety under NullStore and during cache outages.
+    # per-account mutex preserves the same safety under NullStore and during
+    # cache outages without making unrelated accounts wait for each other.
     def with_rate_limit_request_lock(credential_digest)
-      REQUEST_MUTEX.synchronize do
+      request_mutex(credential_digest).synchronize do
         token = SecureRandom.hex(16)
         deadline = monotonic_time + REQUEST_LOCK_WAIT
 
@@ -692,6 +786,13 @@ class HardcoverClient
 
           sleep REQUEST_LOCK_POLL_INTERVAL
         end
+      end
+    end
+
+    def request_mutex(credential_digest)
+      REQUEST_MUTEXES_MUTEX.synchronize do
+        @request_mutexes ||= {}
+        @request_mutexes[credential_digest] ||= Mutex.new
       end
     end
 

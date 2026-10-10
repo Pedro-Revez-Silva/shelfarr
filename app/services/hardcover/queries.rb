@@ -58,52 +58,106 @@ module Hardcover
       }
     GRAPHQL
 
+    # Hardcover lists are public (privacy_setting_id 1), followers-only (2),
+    # or private (3). Discovery and anything read with a credential other
+    # than the list owner's own connection is restricted to public lists in
+    # the query itself, so private entries never reach Shelfarr.
+    PUBLIC_LIST_FILTER = "privacy_setting_id: { _eq: 1 }, public: { _eq: true }"
+    LIST_FIELDS = <<~GRAPHQL.freeze
+      id
+      name
+      slug
+      description
+      books_count
+      likes_count
+      privacy_setting_id
+      public
+      user_id
+      user {
+        username
+      }
+    GRAPHQL
+    # Keyset start for incremental reads ordered by descending row id.
+    MAX_ROW_ID = 2_147_483_647
+
     LIST = <<~GRAPHQL.freeze
       query ShelfarrList($id: Int!) {
         lists(where: { id: { _eq: $id } }, limit: 1) {
-          id
-          name
-          slug
-          description
-          books_count
-          likes_count
-          privacy_setting_id
-          user {
-            username
-          }
+          #{LIST_FIELDS}
         }
+      }
+    GRAPHQL
+
+    PUBLIC_LIST = <<~GRAPHQL.freeze
+      query ShelfarrPublicList($id: Int!) {
+        lists(where: { id: { _eq: $id }, #{PUBLIC_LIST_FILTER} }, limit: 1) {
+          #{LIST_FIELDS}
+        }
+      }
+    GRAPHQL
+
+    LIST_BOOK_FIELDS = <<~GRAPHQL.freeze
+      id
+      position
+      date_added
+      updated_at
+      book {
+        #{BOOK_FIELDS}
       }
     GRAPHQL
 
     LIST_BOOKS = <<~GRAPHQL.freeze
       query ShelfarrListBooks($listId: Int!, $limit: Int!, $offset: Int!) {
         list_books(where: { list_id: { _eq: $listId } }, order_by: [{ id: desc }], limit: $limit, offset: $offset) {
-          id
-          position
-          date_added
-          updated_at
-          book {
-            #{BOOK_FIELDS}
-          }
+          #{LIST_BOOK_FIELDS}
         }
       }
     GRAPHQL
 
-    LIST_BOOKS_SINCE = <<~GRAPHQL.freeze
-      query ShelfarrListBooksSince($listId: Int!, $since: timestamptz!, $limit: Int!, $offset: Int!) {
+    PUBLIC_LIST_BOOKS = <<~GRAPHQL.freeze
+      query ShelfarrPublicListBooks($listId: Int!, $limit: Int!, $offset: Int!) {
         list_books(
-          where: { list_id: { _eq: $listId }, _or: [{ date_added: { _gte: $since } }, { updated_at: { _gte: $since } }] }
+          where: { list_id: { _eq: $listId }, list: { #{PUBLIC_LIST_FILTER} } }
           order_by: [{ id: desc }]
           limit: $limit
           offset: $offset
         ) {
-          id
-          position
-          date_added
-          updated_at
-          book {
-            #{BOOK_FIELDS}
+          #{LIST_BOOK_FIELDS}
+        }
+      }
+    GRAPHQL
+
+    # Incremental reads page by row id (keyset) so a window can be resumed
+    # after a restart without skipping or re-reading rows.
+    LIST_BOOKS_SINCE = <<~GRAPHQL.freeze
+      query ShelfarrListBooksSince($listId: Int!, $since: timestamptz!, $beforeId: Int!, $limit: Int!) {
+        list_books(
+          where: {
+            list_id: { _eq: $listId }
+            id: { _lt: $beforeId }
+            _or: [{ date_added: { _gte: $since } }, { updated_at: { _gte: $since } }]
           }
+          order_by: [{ id: desc }]
+          limit: $limit
+        ) {
+          #{LIST_BOOK_FIELDS}
+        }
+      }
+    GRAPHQL
+
+    PUBLIC_LIST_BOOKS_SINCE = <<~GRAPHQL.freeze
+      query ShelfarrPublicListBooksSince($listId: Int!, $since: timestamptz!, $beforeId: Int!, $limit: Int!) {
+        list_books(
+          where: {
+            list_id: { _eq: $listId }
+            list: { #{PUBLIC_LIST_FILTER} }
+            id: { _lt: $beforeId }
+            _or: [{ date_added: { _gte: $since } }, { updated_at: { _gte: $since } }]
+          }
+          order_by: [{ id: desc }]
+          limit: $limit
+        ) {
+          #{LIST_BOOK_FIELDS}
         }
       }
     GRAPHQL
@@ -121,17 +175,19 @@ module Hardcover
       }
     GRAPHQL
 
+    # A shelf change (for example Read -> Want to Read) updates the
+    # user_books row, so updated_at covers moves as well as new additions.
     WANT_TO_READ_SINCE = <<~GRAPHQL.freeze
-      query ShelfarrWantToReadSince($userId: Int!, $since: timestamptz!, $limit: Int!, $offset: Int!) {
+      query ShelfarrWantToReadSince($userId: Int!, $since: timestamptz!, $beforeId: Int!, $limit: Int!) {
         user_books(
           where: {
             user_id: { _eq: $userId }
             status_id: { _eq: 1 }
+            id: { _lt: $beforeId }
             _or: [{ created_at: { _gte: $since } }, { updated_at: { _gte: $since } }]
           }
           order_by: [{ id: desc }]
           limit: $limit
-          offset: $offset
         ) {
           id
           created_at
@@ -157,34 +213,54 @@ module Hardcover
       }
     GRAPHQL
 
-    AUTHOR_CONTRIBUTIONS = <<~GRAPHQL.freeze
-      query ShelfarrAuthorContributions($authorId: Int!, $limit: Int!, $offset: Int!) {
+    CONTRIBUTION_FIELDS = <<~GRAPHQL.freeze
+      id
+      contribution
+      book {
+        #{BOOK_FIELDS}
+        default_ebook_edition {
+          language {
+            code2
+          }
+        }
+        default_audio_edition {
+          language {
+            code2
+          }
+        }
+        default_physical_edition {
+          language {
+            code2
+          }
+        }
+      }
+    GRAPHQL
+
+    # Newest and upcoming releases first, so new books are always inside the
+    # bounded scan no matter how long the author's catalog is.
+    AUTHOR_RECENT_CONTRIBUTIONS = <<~GRAPHQL.freeze
+      query ShelfarrAuthorRecentContributions($authorId: Int!, $limit: Int!, $offset: Int!) {
         contributions(
           where: { author_id: { _eq: $authorId }, contributable_type: { _eq: "Book" } }
-          order_by: [{ id: asc }]
+          order_by: [{ book: { release_date: desc_nulls_last } }, { id: desc }]
           limit: $limit
           offset: $offset
         ) {
-          id
-          contribution
-          book {
-            #{BOOK_FIELDS}
-            default_ebook_edition {
-              language {
-                code2
-              }
-            }
-            default_audio_edition {
-              language {
-                code2
-              }
-            }
-            default_physical_edition {
-              language {
-                code2
-              }
-            }
-          }
+          #{CONTRIBUTION_FIELDS}
+        }
+      }
+    GRAPHQL
+
+    # Walks a long catalog in stable id order across checks, so books older
+    # than the recent scan are still listed and kept up to date.
+    AUTHOR_CATALOG_CONTRIBUTIONS = <<~GRAPHQL.freeze
+      query ShelfarrAuthorCatalogContributions($authorId: Int!, $afterId: bigint!, $limit: Int!) {
+        contributions(
+          where: { author_id: { _eq: $authorId }, contributable_type: { _eq: "Book" }, id: { _gt: $afterId } }
+          order_by: [{ id: asc }]
+          limit: $limit
+        ) {
+          #{CONTRIBUTION_FIELDS}
         }
       }
     GRAPHQL
@@ -227,20 +303,12 @@ module Hardcover
     POPULAR_LISTS = <<~GRAPHQL.freeze
       query ShelfarrPopularLists($limit: Int!, $offset: Int!) {
         lists(
-          where: { public: { _eq: true }, books_count: { _gt: 0 } }
+          where: { #{PUBLIC_LIST_FILTER}, books_count: { _gt: 0 } }
           order_by: [{ likes_count: desc }, { id: asc }]
           limit: $limit
           offset: $offset
         ) {
-          id
-          name
-          slug
-          description
-          books_count
-          likes_count
-          user {
-            username
-          }
+          #{LIST_FIELDS}
         }
       }
     GRAPHQL

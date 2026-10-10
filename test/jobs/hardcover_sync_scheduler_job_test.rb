@@ -25,6 +25,22 @@ class HardcoverSyncSchedulerJobTest < ActiveJob::TestCase
     assert_enqueued_with(job: HardcoverImportJob)
   end
 
+  test "an automatic list requests released books added after its baseline but not ones that were already there" do
+    list = create_hardcover_subscription(@user, kind: "list", target_id: 7, automatic: true)
+    added_later = create_hardcover_item(list, book_id: 11, state: "upcoming", release_date: Date.yesterday, baseline: false)
+    already_there = create_hardcover_item(list, book_id: 12, state: "upcoming", release_date: Date.yesterday, baseline: true)
+    selected = create_hardcover_item(list, book_id: 13, state: "upcoming", release_date: Date.yesterday, baseline: true, wanted: true, book_types: [ "audiobook" ])
+    manual_author = create_hardcover_subscription(@user, kind: "author", target_id: 8)
+    author_backlist = create_hardcover_item(manual_author, book_id: 14, state: "upcoming", release_date: Date.yesterday, baseline: true)
+
+    HardcoverSyncSchedulerJob.perform_now
+
+    assert_equal [ "queued", [ "ebook" ] ], [ added_later.reload.state, added_later.book_types ]
+    assert_equal "known", already_there.reload.state
+    assert_equal [ "queued", [ "audiobook" ] ], [ selected.reload.state, selected.book_types ]
+    assert_equal "pending", author_backlist.reload.state, "authors offer released books for review when automatic requests are off"
+  end
+
   test "failed imports are retried after their backoff, up to the attempt limit" do
     subscription = create_hardcover_subscription(@user)
     due = create_hardcover_item(subscription, book_id: 1, state: "failed", attempts: 1, next_attempt_at: 1.minute.ago)

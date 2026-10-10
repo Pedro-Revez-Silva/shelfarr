@@ -11,7 +11,7 @@ class HardcoverSubscriptionSyncJobTest < ActiveJob::TestCase
   test "a preview loads entries and enqueues no imports" do
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "list", status: "draft")
-    stub_hardcover_graphql("ShelfarrListBooks" => { "list_books" => [ hardcover_list_book_row(hardcover_book(id: 1), id: 1) ] })
+    stub_hardcover_graphql("ShelfarrPublicListBooks" => { "list_books" => [ hardcover_list_book_row(hardcover_book(id: 1), id: 1) ] })
 
     assert_no_enqueued_jobs(only: HardcoverImportJob) do
       HardcoverSubscriptionSyncJob.perform_now(subscription.id, mode: "snapshot")
@@ -24,7 +24,7 @@ class HardcoverSubscriptionSyncJobTest < ActiveJob::TestCase
   test "new automatic additions enqueue the import job" do
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "list", automatic: true)
-    stub_hardcover_graphql("ShelfarrListBooksSince" => { "list_books" => [ hardcover_list_book_row(hardcover_book(id: 2), id: 2, date_added: 1.minute.ago.iso8601) ] })
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => { "list_books" => [ hardcover_list_book_row(hardcover_book(id: 2), id: 2, date_added: 1.minute.ago.iso8601) ] })
 
     assert_enqueued_with(job: HardcoverImportJob) do
       HardcoverSubscriptionSyncJob.perform_now(subscription.id)
@@ -95,7 +95,7 @@ class HardcoverSubscriptionSyncJobTest < ActiveJob::TestCase
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "author", target_id: 501)
     subscription.update!(snapshot_state: "pending")
-    stub_hardcover_graphql("ShelfarrAuthorContributions" => { "contributions" => [] })
+    stub_hardcover_graphql("ShelfarrAuthorRecentContributions" => { "contributions" => [] })
 
     HardcoverSubscriptionSyncJob.perform_now(subscription.id)
 
@@ -111,5 +111,34 @@ class HardcoverSubscriptionSyncJobTest < ActiveJob::TestCase
     HardcoverSubscriptionSyncJob.perform_now(subscription.id)
 
     assert_equal "failed", subscription.reload.snapshot_state
+  end
+
+  test "a run that was reading the old account leaves the new account's preview alone" do
+    create_hardcover_connection(@user, auth_method: "personal_token", access_token: "hc_pat")
+    subscription = create_hardcover_subscription(@user, kind: "want_to_read", automatic: true)
+    stub_hardcover_graphql("ShelfarrWantToReadSince" => ->(_variables) do
+      HardcoverSubscription.find(subscription.id).restart_preview_for!(account_id: 5_555, username: "other")
+      [ 503, { error: "Service temporarily unavailable" } ]
+    end)
+
+    HardcoverSubscriptionSyncJob.perform_now(subscription.id)
+
+    subscription.reload
+    assert subscription.draft?
+    assert_equal [ "pending", 0, nil ], [ subscription.snapshot_state, subscription.consecutive_failures, subscription.last_error ]
+  end
+
+  test "a window that did not fit in one run continues shortly" do
+    configure_hardcover_instance_token
+    subscription = create_hardcover_subscription(@user, kind: "list")
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => ->(variables) do
+      ids = (1..[ variables["beforeId"] - 1, 600 ].min).to_a.reverse.first(variables["limit"])
+      { "list_books" => ids.map { |id| hardcover_list_book_row(hardcover_book(id: id), id: id, date_added: 1.hour.ago.iso8601) } }
+    end)
+
+    assert_enqueued_with(job: HardcoverSubscriptionSyncJob, args: [ subscription.id ]) do
+      HardcoverSubscriptionSyncJob.perform_now(subscription.id)
+    end
+    assert subscription.reload.catching_up?
   end
 end

@@ -11,7 +11,7 @@ module Hardcover
     PRIMARY_ROLES = [ nil, "", "author", "writer", "co-author", "coauthor" ].freeze
 
     Account = Data.define(:id, :username)
-    ListSummary = Data.define(:id, :name, :slug, :description, :books_count, :likes_count, :owner_username, :public) do
+    ListSummary = Data.define(:id, :name, :slug, :description, :books_count, :likes_count, :owner_username, :owner_id, :public) do
       def hardcover_url
         owner_username.present? && slug.present? ? "https://hardcover.app/@#{owner_username}/lists/#{slug}" : nil
       end
@@ -57,7 +57,12 @@ module Hardcover
       end
     end
 
-    Page = Data.define(:entries, :has_more)
+    # `next_cursor` is the row id to continue from for keyset reads.
+    Page = Data.define(:entries, :has_more, :next_cursor) do
+      def initialize(entries:, has_more:, next_cursor: nil)
+        super
+      end
+    end
 
     class << self
       def me(credential:)
@@ -72,32 +77,50 @@ module Hardcover
         Array(rows).filter_map { |row| parse_list(row) }
       end
 
-      def list(id, credential:)
-        rows = data(HardcoverClient.execute(Queries::LIST, { id: Integer(id) }, credential: credential), "lists")
-        parse_list(Array(rows).first) || raise(HardcoverClient::NotFoundError, "List not found or not visible to this account")
+      # Public lists only, unless `public_only: false` is passed by a caller
+      # reading with the list owner's own connection.
+      def list(id, credential:, public_only: true)
+        query = public_only ? Queries::PUBLIC_LIST : Queries::LIST
+        rows = data(HardcoverClient.execute(query, { id: Integer(id) }, credential: credential), "lists")
+        list = parse_list(Array(rows).first)
+        raise HardcoverClient::NotFoundError, "List not found or not visible to this account" unless list
+        raise HardcoverClient::NotFoundError, "List not found or not visible to this account" if public_only && list.public != true
+
+        list
       end
 
-      def list_books(list_id, credential:, offset: 0, since: nil, limit: PAGE_SIZE, background: false)
-        variables = { listId: Integer(list_id), limit: limit, offset: offset }
-        query = since ? Queries::LIST_BOOKS_SINCE : Queries::LIST_BOOKS
-        variables[:since] = since.utc.iso8601 if since
+      # Without `since`, pages by offset (previews and browsing). With
+      # `since`, reads entries changed since then by descending row id,
+      # continuing below `before_id`.
+      def list_books(list_id, credential:, offset: 0, since: nil, before_id: nil, limit: PAGE_SIZE, background: false, public_only: true)
+        if since
+          query = public_only ? Queries::PUBLIC_LIST_BOOKS_SINCE : Queries::LIST_BOOKS_SINCE
+          variables = { listId: Integer(list_id), since: since.utc.iso8601, beforeId: before_id || Queries::MAX_ROW_ID, limit: limit }
+        else
+          query = public_only ? Queries::PUBLIC_LIST_BOOKS : Queries::LIST_BOOKS
+          variables = { listId: Integer(list_id), limit: limit, offset: offset }
+        end
         rows = Array(data(HardcoverClient.execute(query, variables, credential: credential, background: background), "list_books"))
         entries = rows.filter_map do |row|
           parse_book(row["book"], added_at: parse_time(row["date_added"]) || parse_time(row["updated_at"]), position: row["position"])
         end
-        Page.new(entries: entries, has_more: rows.size >= limit)
+        Page.new(entries: entries, has_more: rows.size >= limit, next_cursor: row_ids(rows).min)
       end
 
-      def want_to_read(user_id, credential:, offset: 0, since: nil, limit: PAGE_SIZE, background: false)
-        variables = { userId: Integer(user_id), limit: limit, offset: offset }
-        query = since ? Queries::WANT_TO_READ_SINCE : Queries::WANT_TO_READ
-        variables[:since] = since.utc.iso8601 if since
+      def want_to_read(user_id, credential:, offset: 0, since: nil, before_id: nil, limit: PAGE_SIZE, background: false)
+        if since
+          query = Queries::WANT_TO_READ_SINCE
+          variables = { userId: Integer(user_id), since: since.utc.iso8601, beforeId: before_id || Queries::MAX_ROW_ID, limit: limit }
+        else
+          query = Queries::WANT_TO_READ
+          variables = { userId: Integer(user_id), limit: limit, offset: offset }
+        end
         rows = Array(data(HardcoverClient.execute(query, variables, credential: credential, background: background), "user_books"))
         entries = rows.filter_map do |row|
           added_at = [ parse_time(row["updated_at"]), parse_time(row["created_at"]) ].compact.max
           parse_book(row["book"], added_at: added_at)
         end
-        Page.new(entries: entries, has_more: rows.size >= limit)
+        Page.new(entries: entries, has_more: rows.size >= limit, next_cursor: row_ids(rows).min)
       end
 
       def author(id, credential:)
@@ -105,21 +128,19 @@ module Hardcover
         parse_author(Array(rows).first) || raise(HardcoverClient::NotFoundError, "Author not found")
       end
 
-      # Returns each contribution's book with the author's role on it. Role
-      # filtering and de-duplication happen in AuthorCatalog.
+      # Returns each contribution's book with the author's role on it, newest
+      # and upcoming releases first. Role filtering and de-duplication happen
+      # in AuthorCatalog.
       def author_contributions(author_id, credential:, offset: 0, limit: PAGE_SIZE, background: false)
         variables = { authorId: Integer(author_id), limit: limit, offset: offset }
-        rows = Array(data(HardcoverClient.execute(Queries::AUTHOR_CONTRIBUTIONS, variables, credential: credential, background: background), "contributions"))
-        entries = rows.filter_map do |row|
-          book = row["book"]
-          next unless book.is_a?(Hash)
+        contributions_page(Queries::AUTHOR_RECENT_CONTRIBUTIONS, variables, credential: credential, background: background, limit: limit)
+      end
 
-          languages = %w[default_ebook_edition default_audio_edition default_physical_edition].filter_map do |key|
-            book.dig(key, "language", "code2").to_s.downcase.presence
-          end.uniq
-          parse_book(book, role: row["contribution"], languages: languages)
-        end
-        Page.new(entries: entries, has_more: rows.size >= limit)
+      # The author's contributions in stable id order after `after_id`, used
+      # to work through catalogs longer than one recent scan.
+      def author_catalog_contributions(author_id, credential:, after_id: 0, limit: PAGE_SIZE, background: false)
+        variables = { authorId: Integer(author_id), afterId: Integer(after_id), limit: limit }
+        contributions_page(Queries::AUTHOR_CATALOG_CONTRIBUTIONS, variables, credential: credential, background: background, limit: limit)
       end
 
       def trending_ids(duration:, credential:, offset: 0, limit: 24)
@@ -216,6 +237,24 @@ module Hardcover
         response.is_a?(Hash) ? response.dig("data", key) : nil
       end
 
+      def row_ids(rows)
+        rows.filter_map { |row| positive_id(row["id"]) if row.is_a?(Hash) }
+      end
+
+      def contributions_page(query, variables, credential:, background:, limit:)
+        rows = Array(data(HardcoverClient.execute(query, variables, credential: credential, background: background), "contributions"))
+        entries = rows.filter_map do |row|
+          book = row["book"]
+          next unless book.is_a?(Hash)
+
+          languages = %w[default_ebook_edition default_audio_edition default_physical_edition].filter_map do |key|
+            book.dig(key, "language", "code2").to_s.downcase.presence
+          end.uniq
+          parse_book(book, role: row["contribution"], languages: languages)
+        end
+        Page.new(entries: entries, has_more: rows.size >= limit, next_cursor: row_ids(rows).max)
+      end
+
       def search_hits(query, type, credential:, page:, per_page:)
         variables = { query: query.to_s.strip.first(200), queryType: type, perPage: per_page, page: page }
         extract_documents(data(HardcoverClient.execute(Queries::SEARCH, variables, credential: credential), "search"))
@@ -249,8 +288,17 @@ module Hardcover
           books_count: Integer(row["books_count"], exception: false) || 0,
           likes_count: Integer(row["likes_count"], exception: false),
           owner_username: row.dig("user", "username").to_s.presence,
-          public: row.key?("privacy_setting_id") ? row["privacy_setting_id"].to_i == 1 : nil
+          owner_id: positive_id(row["user_id"]),
+          public: list_public(row)
         )
+      end
+
+      # Public means privacy_setting_id 1 (1 public, 2 followers, 3 private);
+      # a `public: false` flag is honoured too. Unknown stays nil.
+      def list_public(row)
+        return nil unless row.key?("privacy_setting_id")
+
+        row["privacy_setting_id"].to_i == 1 && row["public"] != false
       end
 
       def parse_list_document(doc)

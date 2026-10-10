@@ -12,8 +12,8 @@ class Hardcover::SubscriptionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "previewing a list creates a draft and loads it in the background without requesting anything" do
-    stub_hardcover_graphql("ShelfarrList" => { "lists" => [ { "id" => 77, "name" => "Space Opera", "slug" => "space-opera", "books_count" => 2, "likes_count" => 3,
-      "privacy_setting_id" => 1, "user" => { "username" => "curator" } } ] })
+    stub_hardcover_graphql("ShelfarrPublicList" => { "lists" => [ { "id" => 77, "name" => "Space Opera", "slug" => "space-opera", "books_count" => 2, "likes_count" => 3,
+      "privacy_setting_id" => 1, "public" => true, "user_id" => 31, "user" => { "username" => "curator" } } ] })
 
     assert_no_difference -> { Request.count } do
       assert_enqueued_with(job: HardcoverSubscriptionSyncJob) do
@@ -25,6 +25,8 @@ class Hardcover::SubscriptionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to hardcover_subscription_path(subscription)
     assert subscription.draft?
     assert_equal [ "Space Opera", "curator" ], [ subscription.title, subscription.owner_username ]
+    assert_not subscription.personal?, "a public list can be read by anyone"
+    assert_equal 31, subscription.hardcover_account_id
   end
 
   test "following an author resolves a duplicate author record to its canonical author" do
@@ -227,5 +229,154 @@ class Hardcover::SubscriptionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Followed Author"
     assert_not_includes response.body, "Someone Else&#39;s Author"
     assert_equal "Bearer hc_at_test_#{@user.id}", hardcover_requests.last[:authorization]
+  end
+
+  PRIVATE_LIST = { "name" => "Owner's secret shelf", "slug" => "secret", "books_count" => 1, "likes_count" => 0,
+    "privacy_setting_id" => 3, "user_id" => 1_001, "user" => { "username" => "owner" } }.freeze
+
+  def private_list_provider
+    stub_hardcover_list_visibility(
+      lists: { 77 => PRIVATE_LIST },
+      books: { 77 => [ hardcover_list_book_row(hardcover_book(id: 9_001, title: "Secret owner book"), id: 1) ] },
+      accounts: { "owner_token" => 1_001, "viewer_token" => 2_002, "instance_test_token" => 1_001 }
+    )
+  end
+
+  test "only the owner can follow a private list, and only with their own connection" do
+    configure_hardcover_instance_token("owner_token")
+    create_hardcover_connection(@user, hardcover_user_id: 1_001, access_token: "owner_token", username: "owner")
+    private_list_provider
+
+    post hardcover_subscriptions_path, params: { kind: "list", hardcover_target_id: 77 }
+    subscription = @user.hardcover_subscriptions.find_by!(target_key: "list:77")
+    assert subscription.personal?
+    assert_equal 1_001, subscription.hardcover_account_id
+    perform_enqueued_jobs(only: HardcoverSubscriptionSyncJob)
+    assert_equal [ "Secret owner book" ], subscription.items.pluck(:title)
+    assert_equal [ [ "ShelfarrList", "Bearer owner_token" ], [ "ShelfarrListBooks", "Bearer owner_token" ] ],
+      hardcover_requests.map { |request| request.values_at(:operation, :authorization) }
+
+    viewer = users(:two)
+    sign_in_as(viewer)
+    hardcover_requests.clear
+    post hardcover_subscriptions_path, params: { kind: "list", hardcover_target_id: 77 }
+    assert_match(/could not find that list, or it is private/, flash[:alert])
+    assert_equal [ [ "ShelfarrPublicList", "Bearer owner_token" ] ], hardcover_requests.map { |request| request.values_at(:operation, :authorization) },
+      "without a connection only public lists can be followed, even when the instance token owns the list"
+
+    create_hardcover_connection(viewer, hardcover_user_id: 2_002, access_token: "viewer_token")
+    post hardcover_subscriptions_path, params: { kind: "list", hardcover_target_id: 77 }
+    assert_match(/could not find that list, or it is private/, flash[:alert])
+    assert_equal 0, viewer.hardcover_subscriptions.count
+  end
+
+  test "someone else's non-public list is refused even if Hardcover returns it" do
+    create_hardcover_connection(@user, hardcover_user_id: 2_002, access_token: "viewer_token")
+    stub_hardcover_graphql("ShelfarrList" => { "lists" => [ PRIVATE_LIST.merge("id" => 77, "privacy_setting_id" => 2, "public" => false) ] })
+
+    post hardcover_subscriptions_path, params: { kind: "list", hardcover_target_id: 77 }
+
+    assert_match(/or it is private/, flash[:alert])
+    assert_equal 0, @user.hardcover_subscriptions.count
+  end
+
+  test "a personal subscription cannot be resumed with a different account" do
+    create_hardcover_connection(@user, hardcover_user_id: 5_555)
+    subscription = create_hardcover_subscription(@user, kind: "list", account_id: 1_001, personal: true)
+    subscription.pause!(HardcoverSubscription::PAUSE_OTHER_ACCOUNT)
+
+    post resume_hardcover_subscription_path(subscription)
+
+    assert subscription.reload.paused?
+    assert_match(/different Hardcover account/, flash[:alert])
+  end
+
+  # Previews a list or Want to Read shelf holding a released book and one
+  # announced for later, then confirms it with automatic requests on.
+  def preview_and_confirm(kind, item_selection: [])
+    released = hardcover_book(id: 701, title: "Already Out", release_date: "2020-01-01")
+    announced = hardcover_book(id: 702, title: "Coming Later", release_date: 3.days.from_now.to_date.iso8601)
+    if kind == "want_to_read"
+      create_hardcover_connection(@user)
+      stub_hardcover_graphql("ShelfarrWantToRead" => { "user_books" => [
+        hardcover_user_book_row(released, id: 1, created_at: 1.year.ago.iso8601),
+        hardcover_user_book_row(announced, id: 2, created_at: 1.month.ago.iso8601)
+      ] }, "ShelfarrWantToReadSince" => { "user_books" => [] })
+    else
+      stub_hardcover_graphql(
+        "ShelfarrPublicList" => { "lists" => [ { "id" => 77, "name" => "Picks", "books_count" => 2, "privacy_setting_id" => 1, "public" => true, "user_id" => 31 } ] },
+        "ShelfarrPublicListBooks" => { "list_books" => [ hardcover_list_book_row(released, id: 1), hardcover_list_book_row(announced, id: 2) ] },
+        "ShelfarrPublicListBooksSince" => { "list_books" => [] }
+      )
+    end
+
+    post hardcover_subscriptions_path, params: { kind: kind, hardcover_target_id: (77 if kind == "list") }
+    perform_enqueued_jobs(only: HardcoverSubscriptionSyncJob)
+    subscription = @user.hardcover_subscriptions.sole
+    upcoming = subscription.items.find_by!(hardcover_book_id: 702)
+    assert_equal [ "upcoming", true ], [ upcoming.state, upcoming.baseline? ]
+
+    ids = item_selection.map { |book_id| subscription.items.find_by!(hardcover_book_id: book_id).id }
+    patch hardcover_subscription_path(subscription), params: { book_types: [ "ebook" ], automatic: "1", item_ids: ids }
+    assert subscription.reload.active?
+    assert subscription.automatic?
+    [ subscription, upcoming ]
+  end
+
+  %w[list want_to_read].each do |kind|
+    test "an upcoming #{kind} book left unselected in the preview is never requested after release" do
+      SettingsService.set(:immediate_search_enabled, false)
+      subscription, upcoming = preview_and_confirm(kind)
+
+      travel 4.days do
+        assert_no_difference -> { Request.count } do
+          HardcoverSyncSchedulerJob.perform_now
+          perform_enqueued_jobs(only: HardcoverImportJob)
+        end
+      end
+
+      assert_equal "known", upcoming.reload.state, "baseline books stay out of automatic requests"
+      assert_equal 0, subscription.items.where(state: %w[queued requested]).count
+    end
+
+    test "an upcoming #{kind} book selected in the preview is requested after release" do
+      SettingsService.set(:immediate_search_enabled, false)
+      _subscription, upcoming = preview_and_confirm(kind, item_selection: [ 702 ])
+      assert upcoming.reload.wanted?
+
+      travel 4.days do
+        assert_difference -> { Request.where(created_via: "hardcover").count } => 1 do
+          HardcoverSyncSchedulerJob.perform_now
+          perform_enqueued_jobs(only: HardcoverImportJob)
+        end
+      end
+
+      assert_equal "requested", upcoming.reload.state
+    end
+  end
+
+  test "a followed author's announced book is requested after release without being selected" do
+    SettingsService.set(:immediate_search_enabled, false)
+    SettingsService.set(:enabled_languages, [ "en" ])
+    stub_hardcover_graphql(
+      "ShelfarrAuthor" => { "authors" => [ { "id" => 501, "name" => "Ada Writer", "slug" => "ada" } ] },
+      "ShelfarrAuthorRecentContributions" => { "contributions" => [
+        hardcover_contribution_row(hardcover_book(id: 801, title: "Announced Novel", release_date: 3.days.from_now.to_date.iso8601), id: 1)
+      ] }
+    )
+    post hardcover_subscriptions_path, params: { kind: "author", hardcover_target_id: 501 }
+    perform_enqueued_jobs(only: HardcoverSubscriptionSyncJob)
+    subscription = @user.hardcover_subscriptions.sole
+    patch hardcover_subscription_path(subscription), params: { book_types: [ "ebook" ], automatic: "1" }
+    upcoming = subscription.items.sole
+    assert_equal [ "upcoming", true, false ], [ upcoming.state, upcoming.baseline?, upcoming.wanted? ]
+
+    travel 4.days do
+      assert_difference -> { Request.where(created_via: "hardcover").count } => 1 do
+        HardcoverSyncSchedulerJob.perform_now
+        perform_enqueued_jobs(only: HardcoverImportJob)
+      end
+    end
+    assert_equal "requested", upcoming.reload.state
   end
 end

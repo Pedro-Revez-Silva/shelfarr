@@ -28,13 +28,22 @@ class HardcoverSyncSchedulerJob < ApplicationJob
       .includes(:subscription)
   end
 
-  # Books the user selected while unreleased, or any release on an automatic
-  # subscription, are requested once they are out; others wait for the user.
+  # Once an upcoming book is out:
+  # * a book the user selected is requested;
+  # * an automatic author subscription requests it, since following an
+  #   author means watching their future releases;
+  # * an automatic list or shelf only requests books added after its
+  #   baseline. A future book that was already there and left unselected
+  #   in the preview is never requested automatically.
+  # Everything else waits for the user (baseline list books as not requested).
   def promote_released_items
     active_items(HardcoverSubscriptionItem.released_upcoming).find_each do |item|
       subscription = item.subscription
-      if item.wanted? || (subscription.automatic? && subscription.book_types.any?)
+      automatic = subscription.automatic? && subscription.book_types.any? && (subscription.author? || !item.baseline?)
+      if item.wanted? || automatic
         item.update!(state: "queued", book_types: item.book_types.presence || subscription.book_types, next_attempt_at: nil)
+      elsif item.baseline? && !subscription.author?
+        item.update!(state: "known")
       else
         item.update!(state: "pending")
       end

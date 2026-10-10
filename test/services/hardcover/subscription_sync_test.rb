@@ -46,7 +46,7 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
       hardcover_list_book_row(hardcover_book(id: 2), id: 502, date_added: 10.days.ago.iso8601, updated_at: 1.hour.ago.iso8601),
       hardcover_list_book_row(hardcover_book(id: 3, title: "Renamed"), id: 503, date_added: 20.days.ago.iso8601, updated_at: 1.hour.ago.iso8601)
     ]
-    stub_hardcover_graphql("ShelfarrListBooksSince" => { "list_books" => rows })
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => { "list_books" => rows })
 
     result = Hardcover::SubscriptionSync.call(subscription)
 
@@ -67,7 +67,7 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
   test "new additions wait for review when automatic requests are off" do
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "list", automatic: false)
-    stub_hardcover_graphql("ShelfarrListBooksSince" => { "list_books" => [ hardcover_list_book_row(hardcover_book(id: 9), id: 1, date_added: 1.hour.ago.iso8601) ] })
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => { "list_books" => [ hardcover_list_book_row(hardcover_book(id: 9), id: 1, date_added: 1.hour.ago.iso8601) ] })
 
     Hardcover::SubscriptionSync.call(subscription)
 
@@ -78,7 +78,7 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "author", target_id: 501, automatic: true, baseline: 10.days.ago)
     moved = create_hardcover_item(subscription, book_id: 40, state: "upcoming", release_date: 1.month.from_now.to_date)
-    stub_hardcover_graphql("ShelfarrAuthorContributions" => { "contributions" => [
+    stub_hardcover_graphql("ShelfarrAuthorRecentContributions" => { "contributions" => [
       hardcover_contribution_row(hardcover_book(id: 10, release_date: 3.days.ago.to_date.iso8601), id: 1),
       hardcover_contribution_row(hardcover_book(id: 11, release_date: "2009-05-01"), id: 2),
       hardcover_contribution_row(hardcover_book(id: 12, release_date: 3.months.from_now.to_date.iso8601), id: 3),
@@ -99,24 +99,115 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
     assert_equal({ "role" => 2 }, subscription.reload.exclusions)
   end
 
-  test "a failed page leaves items and the cursor untouched" do
+  # Answers incremental list reads the way Hardcover's query does: rows
+  # changed since `since`, below `beforeId`, newest row first.
+  def list_changes(rows)
+    ->(variables) do
+      since = Time.zone.parse(variables["since"])
+      matching = rows.select do |row|
+        row["id"] < variables["beforeId"] &&
+          [ row["date_added"], row["updated_at"] ].compact.any? { |time| Time.zone.parse(time) >= since }
+      end
+      { "list_books" => matching.sort_by { |row| -row["id"] }.first(variables["limit"]) }
+    end
+  end
+
+  test "a window larger than one run is drained across runs exactly once" do
+    configure_hardcover_instance_token
+    freeze_time
+    baseline = 2.days.ago
+    subscription = create_hardcover_subscription(@user, kind: "list", automatic: true, baseline: baseline)
+    # 600 books were added during downtime, all well before this check.
+    rows = (1..600).map { |id| hardcover_list_book_row(hardcover_book(id: 10_000 + id), id: id, date_added: 2.hours.ago.iso8601) }
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => list_changes(rows))
+    first_started = Time.current
+
+    first = Hardcover::SubscriptionSync.call(subscription)
+
+    assert_equal [ 500, 500, 500, true ], [ first.fetched, first.created, first.queued, first.continuing ]
+    subscription.reload
+    assert subscription.catching_up?, "an unfinished window is visible on the subscription"
+    assert_equal baseline.to_i, subscription.sync_cursor_at.to_i, "the cursor waits until the whole window is read"
+    assert_equal 101, subscription.sync_window_before_id
+    assert_operator subscription.next_sync_at, :<=, Time.current
+    assert_match(/Catching up/, ApplicationController.helpers.hardcover_sync_status(subscription))
+
+    # Upstream keeps changing while Shelfarr catches up.
+    travel 2.minutes
+    rows << hardcover_list_book_row(hardcover_book(id: 20_000), id: 601, date_added: Time.current.iso8601)
+    rows.find { |row| row["id"] == 50 }["updated_at"] = Time.current.iso8601
+
+    second = Hardcover::SubscriptionSync.call(subscription)
+
+    assert_equal [ 100, 100, false ], [ second.created, second.queued, second.continuing ]
+    subscription.reload
+    assert_not subscription.catching_up?
+    assert_equal first_started.to_i, subscription.sync_cursor_at.to_i
+
+    travel 6.hours
+    third = Hardcover::SubscriptionSync.call(subscription)
+
+    assert_equal [ 1, 1 ], [ third.created, third.queued ], "only the book added meanwhile is new"
+    items = subscription.items
+    assert_equal 601, items.count
+    assert_equal 601, items.queued.count
+    assert_equal (10_001..10_600).to_a + [ 20_000 ], items.order(:hardcover_book_id).pluck(:hardcover_book_id)
+    assert items.none?(&:baseline?)
+    assert_equal [ "ShelfarrPublicListBooksSince" ], hardcover_operations.uniq, "no snapshot of the whole list is ever taken"
+    assert_equal 8, hardcover_requests.size
+    assert_equal [ 2_147_483_647, 501, 401, 301, 201, 101, 1, 2_147_483_647 ], hardcover_requests.map { |request| request[:variables]["beforeId"] }
+  end
+
+  test "a failed page keeps what was read and the next run continues after it" do
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "list", automatic: true, baseline: 2.days.ago)
     cursor = subscription.sync_cursor_at
-    full_page = 100.times.map { |index| hardcover_list_book_row(hardcover_book(id: 100 + index), id: index, date_added: 1.hour.ago.iso8601) }
-    stub_hardcover_graphql("ShelfarrListBooksSince" => ->(variables) { variables["offset"].zero? ? { "list_books" => full_page } : [ 503, { error: "Service temporarily unavailable" } ] })
+    rows = (1..300).map { |id| hardcover_list_book_row(hardcover_book(id: 100 + id), id: id, date_added: 1.hour.ago.iso8601) }
+    reader = list_changes(rows)
+    outage = true
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => ->(variables) do
+      if outage && variables["beforeId"] <= 101
+        [ 503, { error: "Service temporarily unavailable" } ]
+      else
+        reader.call(variables)
+      end
+    end)
 
     assert_raises(HardcoverClient::TransientError) { Hardcover::SubscriptionSync.call(subscription) }
 
-    assert_equal 0, subscription.items.count
+    subscription.reload
+    assert_equal 200, subscription.items.count, "pages read before the outage are kept"
+    assert_equal cursor.to_i, subscription.sync_cursor_at.to_i
+    assert_equal 101, subscription.sync_window_before_id
+
+    outage = false
+    hardcover_requests.clear
+    result = Hardcover::SubscriptionSync.call(subscription)
+
+    assert_equal 101, hardcover_requests.first[:variables]["beforeId"], "the next run resumes after the last saved page"
+    assert_equal 100, result.created
+    assert_equal 300, subscription.items.count
+    assert_not subscription.reload.catching_up?
+  end
+
+  test "a full page without row ids stops the sync instead of skipping the rest of the window" do
+    configure_hardcover_instance_token
+    subscription = create_hardcover_subscription(@user, kind: "list", automatic: true)
+    cursor = subscription.sync_cursor_at
+    rows = 100.times.map { |index| hardcover_list_book_row(hardcover_book(id: 100 + index), id: nil, date_added: 1.hour.ago.iso8601) }
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => { "list_books" => rows })
+
+    assert_raises(HardcoverClient::Error) { Hardcover::SubscriptionSync.call(subscription) }
+
     assert_equal cursor.to_i, subscription.reload.sync_cursor_at.to_i
+    assert_equal 0, subscription.items.count
   end
 
   test "an empty response is not treated as removals" do
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "list")
     item = create_hardcover_item(subscription, book_id: 5, state: "requested")
-    stub_hardcover_graphql("ShelfarrListBooksSince" => { "list_books" => [] })
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => { "list_books" => [] })
 
     Hardcover::SubscriptionSync.call(subscription)
 
@@ -128,7 +219,7 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
     configure_hardcover_instance_token
     create_hardcover_connection(@user)
     subscription = create_hardcover_subscription(@user, kind: "list")
-    stub_hardcover_graphql("ShelfarrListBooksSince" => { "list_books" => [] })
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => { "list_books" => [] })
 
     Hardcover::SubscriptionSync.call(subscription)
 
@@ -138,7 +229,7 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
   test "a very long list preview is bounded and flagged" do
     configure_hardcover_instance_token
     subscription = create_hardcover_subscription(@user, kind: "list", status: "draft")
-    stub_hardcover_graphql("ShelfarrListBooks" => ->(variables) do
+    stub_hardcover_graphql("ShelfarrPublicListBooks" => ->(variables) do
       offset = variables["offset"]
       { "list_books" => 100.times.map { |index| hardcover_list_book_row(hardcover_book(id: offset + index + 1), id: offset + index + 1) } }
     end)
@@ -148,5 +239,108 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
     assert_equal Hardcover::SubscriptionSync::MAX_SNAPSHOT_PAGES, hardcover_requests.size
     assert subscription.reload.entries_truncated
     assert_equal 1_000, subscription.items.count
+  end
+
+  # Recent-first author reads, ordered like Hardcover's query: release date
+  # descending (no date last), then contribution id descending.
+  def author_provider(contributions)
+    recent = ->(variables) do
+      ordered = contributions.sort_by do |row|
+        date = row.dig("book", "release_date")
+        [ date ? 0 : 1, date ? -Date.iso8601(date).jd : 0, -row["id"] ]
+      end
+      { "contributions" => ordered.drop(variables["offset"]).first(variables["limit"]) }
+    end
+    catalog = ->(variables) do
+      { "contributions" => contributions.select { |row| row["id"] > variables["afterId"] }.sort_by { |row| row["id"] }.first(variables["limit"]) }
+    end
+    { "ShelfarrAuthorRecentContributions" => recent, "ShelfarrAuthorCatalogContributions" => catalog }
+  end
+
+  test "a long author catalog always sees new releases and covers older books over later checks" do
+    configure_hardcover_instance_token
+    subscription = create_hardcover_subscription(@user, kind: "author", target_id: 501, automatic: true, baseline: 10.days.ago)
+    # 1,050 records; every seventh credits the author only as editor. The
+    # newest release is the most recently created record, the one an
+    # oldest-first scan capped at 1,000 records would never reach.
+    contributions = (1..1_050).map do |id|
+      release = id == 1_050 ? 2.days.ago.to_date : Date.new(1950, 1, 1) + id
+      hardcover_contribution_row(hardcover_book(id: 50_000 + id, title: "Book #{id}", release_date: release.iso8601), id: id,
+        contribution: id % 7 == 1 ? "Editor" : nil)
+    end
+    stub_hardcover_graphql(author_provider(contributions))
+
+    first = Hardcover::SubscriptionSync.call(subscription)
+
+    latest = subscription.items.find_by!(hardcover_book_id: 51_050)
+    assert_equal "queued", latest.state, "the newest release is found on the first check"
+    assert_equal 1, first.queued
+    assert first.truncated
+    subscription.reload
+    assert subscription.entries_truncated
+    assert_equal 200, subscription.catalog_cursor_id
+
+    authored = contributions.reject { |row| row["contribution"] == "Editor" }.map { |row| row.dig("book", "id") }
+    5.times { Hardcover::SubscriptionSync.call(subscription.reload) }
+
+    assert_equal 0, subscription.reload.catalog_cursor_id, "the walk starts over after reaching the end"
+    assert_equal authored.sort, subscription.items.order(:hardcover_book_id).pluck(:hardcover_book_id), "every written book is tracked; editor credits are not"
+    assert_equal 1, subscription.items.queued.count, "older books are backlist, never requested automatically"
+
+    # A later release is picked up by the very next check.
+    contributions << hardcover_contribution_row(hardcover_book(id: 60_000, title: "Brand New", release_date: Date.current.iso8601), id: 1_051)
+    contributions << hardcover_contribution_row(hardcover_book(id: 60_001, title: "Announced", release_date: 2.months.from_now.to_date.iso8601), id: 1_052)
+    Hardcover::SubscriptionSync.call(subscription.reload)
+
+    assert_equal "queued", subscription.items.find_by!(hardcover_book_id: 60_000).state
+    assert_equal "upcoming", subscription.items.find_by!(hardcover_book_id: 60_001).state
+    assert_equal({ "role" => 142 }, subscription.reload.exclusions)
+  end
+
+  test "an author preview reads only the recent scan" do
+    configure_hardcover_instance_token
+    subscription = create_hardcover_subscription(@user, kind: "author", target_id: 501, status: "draft")
+    contributions = (1..1_050).map { |id| hardcover_contribution_row(hardcover_book(id: 50_000 + id, title: "Book #{id}"), id: id) }
+    stub_hardcover_graphql(author_provider(contributions))
+
+    Hardcover::SubscriptionSync.call(subscription, mode: :snapshot)
+
+    assert_equal [ "ShelfarrAuthorRecentContributions" ], hardcover_operations.uniq
+    assert_equal Hardcover::SubscriptionSync::MAX_SNAPSHOT_PAGES, hardcover_requests.size
+    assert subscription.items.all?(&:baseline?)
+  end
+
+  test "Want to Read is only read with the account it was previewed with" do
+    create_hardcover_connection(@user, hardcover_user_id: 5_555)
+    subscription = create_hardcover_subscription(@user, kind: "want_to_read", account_id: 4_242)
+
+    assert_raises(Hardcover::Credentials::AccountMismatch) { Hardcover::SubscriptionSync.call(subscription) }
+
+    assert_not_requested :post, HardcoverClient::BASE_URL
+    assert_equal 0, subscription.items.count
+  end
+
+  test "a private list falls back to nobody else's credentials" do
+    configure_hardcover_instance_token
+    subscription = create_hardcover_subscription(@user, kind: "list", account_id: 4_242, personal: true)
+
+    assert_raises(Hardcover::Credentials::Unavailable) { Hardcover::SubscriptionSync.call(subscription) }
+    assert_not_requested :post, HardcoverClient::BASE_URL
+  end
+
+  test "a sync that started before the account changed discards what it read" do
+    create_hardcover_connection(@user)
+    subscription = create_hardcover_subscription(@user, kind: "want_to_read", automatic: true)
+    stub_hardcover_graphql("ShelfarrWantToReadSince" => ->(_variables) do
+      HardcoverSubscription.find(subscription.id).restart_preview_for!(account_id: 5_555, username: "other")
+      { "user_books" => [ hardcover_user_book_row(hardcover_book(id: 7), id: 1, created_at: 1.minute.ago.iso8601) ] }
+    end)
+
+    assert_raises(Hardcover::SubscriptionSync::Stale) { Hardcover::SubscriptionSync.call(subscription) }
+
+    subscription.reload
+    assert subscription.draft?
+    assert_equal 5_555, subscription.hardcover_account_id
+    assert_equal 0, subscription.items.count
   end
 end

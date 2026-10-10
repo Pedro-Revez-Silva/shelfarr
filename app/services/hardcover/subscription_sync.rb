@@ -5,20 +5,29 @@ module Hardcover
   #
   # * A snapshot enumerates every entry (up to a bound). Drafts use it so the
   #   user can preview what is there before anything is requested.
-  # * An incremental sync of a list or Want to Read shelf only asks for
-  #   entries changed since the previous successful sync.
-  # * Author syncs always re-read the catalog because release dates move.
+  # * An incremental sync of a list or Want to Read shelf reads the entries
+  #   changed in a fixed window since the previous complete sync. The window
+  #   is read in pages by row id and its position is saved with every page,
+  #   so a window larger than one run, an outage, or a restart continues
+  #   where it stopped. The cursor only moves once the whole window is read.
+  # * Author syncs re-read the newest part of the catalog every time, because
+  #   release dates move, and work through longer catalogs a few pages a run.
   #
   # Entries that were already present when the baseline was taken are never
-  # requested automatically. Failures leave existing items and the cursor
-  # untouched so the next run retries the same window.
+  # requested automatically. Every write first checks that the subscription
+  # still follows the same account (its sync generation), so a sync that
+  # started before the account changed discards what it read.
   class SubscriptionSync
     MAX_SNAPSHOT_PAGES = 10
     MAX_INCREMENTAL_PAGES = 5
+    AUTHOR_CATALOG_PAGES = 2
     CURSOR_OVERLAP = 1.hour
     NEW_RELEASE_GRACE = 30.days
 
-    Result = Data.define(:fetched, :created, :queued, :truncated)
+    # The subscription was removed or now follows another account.
+    class Stale < StandardError; end
+
+    Result = Data.define(:fetched, :created, :queued, :truncated, :continuing)
 
     def self.call(subscription, mode: :scheduled)
       new(subscription, mode: mode).call
@@ -28,82 +37,189 @@ module Hardcover
       @subscription = subscription
       @mode = mode.to_sym
       @started_at = Time.current
+      @generation = subscription.sync_generation
+      @created = 0
+      @queued = 0
     end
 
     def call
-      entries, truncated = fetch_entries
-      created, queued = record_entries(entries)
-      finish!(entries.size, truncated)
-      Result.new(fetched: entries.size, created: created, queued: queued, truncated: truncated)
+      if subscription.author?
+        sync_author
+      elsif incremental?
+        sync_incremental
+      else
+        sync_snapshot
+      end
     end
 
     private
 
-    attr_reader :subscription, :mode, :started_at
+    attr_reader :subscription, :mode, :started_at, :generation
 
     def snapshot?
-      mode == :snapshot || subscription.draft? || subscription.author?
+      mode == :snapshot || subscription.draft?
+    end
+
+    def incremental?
+      !snapshot? && (subscription.catching_up? || incremental_since.present?)
     end
 
     def background?
       mode == :scheduled
     end
 
-    def fetch_entries
-      case subscription.kind
-      when "want_to_read"
-        Credentials.with_connection(subscription.user.hardcover_connection) do |credential|
-          user_id = subscription.user.hardcover_connection.hardcover_user_id
-          unique(paginate { |offset, since| API.want_to_read(user_id, credential: credential, offset: offset, since: since, background: background?) })
-        end
-      when "list"
-        with_list_credential do |credential|
-          unique(paginate { |offset, since| API.list_books(subscription.hardcover_target_id, credential: credential, offset: offset, since: since, background: background?) })
-        end
-      when "author"
-        Credentials.with_catalog(user: subscription.user) do |credential|
-          raw, truncated = paginate(force_full: true) do |offset, _since|
-            API.author_contributions(subscription.hardcover_target_id, credential: credential, offset: offset, background: background?)
+    def sync_snapshot
+      entries = []
+      truncated = false
+      with_entry_reader do |read|
+        entries, truncated = read_offset_pages { |offset| read.call(offset: offset) }
+      end
+      entries = entries.uniq(&:id)
+      progress = subscription.draft? ? {} : { sync_cursor_at: started_at, sync_window_since: nil, sync_window_until: nil, sync_window_before_id: nil }
+      record!(entries, progress)
+      finish!(fetched: entries.size, entries_seen: entries.size, truncated: truncated)
+    end
+
+    def sync_incremental
+      window = open_window
+      fetched = 0
+      drained = false
+      with_entry_reader do |read|
+        MAX_INCREMENTAL_PAGES.times do
+          page = read.call(since: window[:since], before_id: window[:before_id])
+          fetched += page.entries.size
+          # A full page always carries row ids; without one the position
+          # cannot be saved, so stop rather than skip what follows.
+          raise HardcoverClient::Error, "Hardcover returned a page without row ids" if page.has_more && page.next_cursor.blank?
+
+          continuing = page.has_more
+          if continuing
+            window[:before_id] = page.next_cursor
+            progress = { sync_window_since: window[:since], sync_window_until: window[:until], sync_window_before_id: window[:before_id] }
+          else
+            # The whole window was read; the next one starts where it ended.
+            progress = { sync_cursor_at: window[:until], sync_window_since: nil, sync_window_until: nil, sync_window_before_id: nil }
           end
-          catalog = AuthorCatalog.filter(raw)
-          @exclusions = catalog.excluded
-          [ catalog.entries, truncated ]
+          record!(page.entries.uniq(&:id), progress)
+          next if continuing
+
+          drained = true
+          break
+        end
+      end
+      finish!(fetched: fetched, continuing: !drained)
+    end
+
+    # The newest and upcoming releases are read every time. When the catalog
+    # is longer than that scan, a few more pages of the rest are read in id
+    # order, continuing from the previous run and starting over at the end.
+    def sync_author
+      raw = []
+      rolling = []
+      truncated = false
+      cursor = nil
+      Credentials.with_catalog(user: subscription.user) do |credential|
+        raw, truncated = read_offset_pages do |offset|
+          API.author_contributions(subscription.hardcover_target_id, credential: credential, offset: offset, background: background?)
+        end
+        rolling, cursor = read_author_catalog(credential) if truncated && !subscription.draft?
+      end
+
+      recent = AuthorCatalog.filter(raw)
+      catalog = rolling.any? ? AuthorCatalog.filter(raw + rolling) : recent
+      @exclusions = recent.excluded
+      record!(catalog.entries, catalog_cursor_id: cursor)
+      finish!(fetched: catalog.entries.size, entries_seen: recent.entries.size, truncated: truncated)
+    end
+
+    def read_author_catalog(credential)
+      entries = []
+      cursor = subscription.catalog_cursor_id.to_i
+      AUTHOR_CATALOG_PAGES.times do
+        page = API.author_catalog_contributions(subscription.hardcover_target_id, credential: credential, after_id: cursor, background: background?)
+        entries.concat(page.entries)
+        if page.has_more && page.next_cursor
+          cursor = page.next_cursor
+        else
+          cursor = 0
+          break
+        end
+      end
+      [ entries, cursor ]
+    end
+
+    def with_entry_reader
+      if subscription.want_to_read?
+        connection = owner_connection!
+        account_id = subscription.hardcover_account_id
+        Credentials.with_connection(connection, account_id: account_id) do |credential|
+          yield ->(offset: 0, since: nil, before_id: nil) do
+            API.want_to_read(account_id, credential: credential, offset: offset, since: since, before_id: before_id, background: background?)
+          end
+        end
+      else
+        with_list_credential do |credential, public_only|
+          yield ->(offset: 0, since: nil, before_id: nil) do
+            API.list_books(subscription.hardcover_target_id, credential: credential, offset: offset, since: since,
+              before_id: before_id, background: background?, public_only: public_only)
+          end
         end
       end
     end
 
-    # A list owned by the user may be private, so their own connection is
-    # preferred; public lists can also be read with the instance token.
-    def with_list_credential(&block)
+    # A private list is only read with its owner's own connection. Other
+    # lists are read as public data, with the follower's connection when
+    # they have one (their own budget) or the instance token.
+    def with_list_credential
+      if subscription.personal?
+        connection = owner_connection!
+        return Credentials.with_connection(connection, account_id: subscription.hardcover_account_id) { |credential| yield credential, false }
+      end
+
       connection = subscription.user.hardcover_connection
       if connection&.usable?
-        Credentials.with_connection(connection, &block)
+        owner = subscription.owned_by_connection?(connection)
+        Credentials.with_connection(connection, account_id: connection.hardcover_user_id) { |credential| yield credential, !owner }
       else
-        Credentials.with_catalog(user: subscription.user, &block)
+        Credentials.with_catalog(user: subscription.user) { |credential| yield credential, true }
       end
     end
 
-    def paginate(force_full: false)
-      since = force_full || snapshot? ? nil : incremental_since
-      max_pages = since ? MAX_INCREMENTAL_PAGES : MAX_SNAPSHOT_PAGES
+    def owner_connection!
+      connection = subscription.user.hardcover_connection
+      raise Credentials::Unavailable, "Connect your Hardcover account first." unless connection&.usable?
+      raise Credentials::AccountMismatch, HardcoverSubscription::PAUSE_OTHER_ACCOUNT unless subscription.owned_by_connection?(connection)
+
+      connection
+    end
+
+    def read_offset_pages
       entries = []
       truncated = false
       offset = 0
 
-      max_pages.times do |index|
-        page = yield(offset, since)
+      MAX_SNAPSHOT_PAGES.times do |index|
+        page = yield(offset)
         entries.concat(page.entries)
         break unless page.has_more
 
         offset += API::PAGE_SIZE
-        truncated = index == max_pages - 1
+        truncated = index == MAX_SNAPSHOT_PAGES - 1
       end
 
       [ entries, truncated ]
     end
 
-    def unique((entries, truncated))
-      [ entries.uniq(&:id), truncated ]
+    def open_window
+      if subscription.catching_up?
+        {
+          since: subscription.sync_window_since || incremental_since,
+          until: subscription.sync_window_until,
+          before_id: subscription.sync_window_before_id
+        }
+      else
+        { since: incremental_since, until: started_at, before_id: nil }
+      end
     end
 
     def incremental_since
@@ -111,44 +227,59 @@ module Hardcover
       anchor ? anchor - CURSOR_OVERLAP : nil
     end
 
-    def record_entries(entries)
-      created = 0
-      queued = 0
-      existing = subscription.items.where(hardcover_book_id: entries.map(&:id)).index_by(&:hardcover_book_id)
-
-      HardcoverSubscriptionItem.transaction do
+    # Records one batch of entries together with the sync's progress, so the
+    # saved position always matches the saved items.
+    def record!(entries, progress = {})
+      HardcoverSubscription.transaction do
+        ensure_current!
+        existing = subscription.items.where(hardcover_book_id: entries.map(&:id)).index_by(&:hardcover_book_id)
         entries.each do |entry|
           item = existing[entry.id]
-          if item
-            refresh_item!(item, entry)
-          else
-            state = initial_state_for(entry)
-            subscription.items.create!(item_attributes(entry).merge(
-              state: state,
-              book_types: state == "queued" ? subscription.book_types : [],
-              first_seen_at: started_at
-            ))
-            created += 1
-            queued += 1 if state == "queued"
-          end
+          item ? refresh_item!(item, entry) : create_item!(entry)
         end
+        subscription.update!(progress) if progress.any?
       end
+    end
 
-      [ created, queued ]
+    def ensure_current!
+      current = HardcoverSubscription.lock.find_by(id: subscription.id)
+      return if current && current.sync_generation == generation
+
+      raise Stale, "Hardcover subscription #{subscription.id} changed during the sync"
+    end
+
+    def create_item!(entry)
+      new_entry = !subscription.draft? && new_entry?(entry)
+      state = if entry.unreleased? then "upcoming"
+      elsif new_entry then new_entry_state
+      else "known"
+      end
+      subscription.items.create!(item_attributes(entry).merge(
+        state: state,
+        # Remembered separately from the state: a book that was already on a
+        # list or shelf stays out of automatic requests after its release.
+        baseline: !new_entry,
+        book_types: state == "queued" ? subscription.book_types : [],
+        first_seen_at: started_at
+      ))
+      @created += 1
+      @queued += 1 if state == "queued"
     end
 
     def refresh_item!(item, entry)
       attrs = item_attributes(entry)
-      # A book announced for a later date stays upcoming until it is out.
-      attrs[:state] = "upcoming" if item.known? && entry.unreleased? && subscription.author?
+      if subscription.author? && item.known?
+        if entry.unreleased?
+          # A book announced for a later date stays upcoming until it is out.
+          attrs[:state] = "upcoming"
+        elsif !item.baseline? && item.release_date.nil? && new_entry?(entry)
+          # First seen without a date, now dated as a new release.
+          attrs[:state] = new_entry_state
+          attrs[:book_types] = subscription.book_types if attrs[:state] == "queued"
+          @queued += 1 if attrs[:state] == "queued"
+        end
+      end
       item.update!(attrs)
-    end
-
-    def initial_state_for(entry)
-      return "upcoming" if entry.unreleased?
-      return "known" if subscription.draft?
-
-      new_entry?(entry) ? new_entry_state : "known"
     end
 
     def new_entry?(entry)
@@ -189,24 +320,28 @@ module Hardcover
       }
     end
 
-    def finish!(count, truncated)
+    def finish!(fetched:, entries_seen: nil, truncated: false, continuing: false)
       attrs = {
         last_synced_at: started_at,
         consecutive_failures: 0,
         last_error: nil,
-        entries_seen_count: snapshot? ? count : subscription.entries_seen_count
+        # Any successful read completes a pending manual check too, even if
+        # that request was folded into this run by the concurrency guard.
+        snapshot_state: "ready"
       }
-      attrs[:entries_truncated] = truncated if snapshot?
-      attrs[:exclusions] = @exclusions.transform_keys(&:to_s) if @exclusions
-      # Any successful read completes a pending manual check too, even if that
-      # request was folded into this run by the concurrency guard.
-      attrs[:snapshot_state] = "ready"
-      attrs[:snapshot_completed_at] = started_at if subscription.draft? || mode == :snapshot
-      unless subscription.draft?
-        attrs[:sync_cursor_at] = started_at
-        attrs[:next_sync_at] = started_at + subscription.sync_interval
+      unless entries_seen.nil?
+        attrs[:entries_seen_count] = entries_seen
+        attrs[:entries_truncated] = truncated
       end
-      subscription.update!(attrs)
+      attrs[:exclusions] = @exclusions.transform_keys(&:to_s) if @exclusions
+      attrs[:snapshot_completed_at] = started_at if snapshot?
+      # A window that is not finished continues on the next run right away.
+      attrs[:next_sync_at] = continuing ? started_at : started_at + subscription.sync_interval unless subscription.draft?
+      HardcoverSubscription.transaction do
+        ensure_current!
+        subscription.update!(attrs)
+      end
+      Result.new(fetched: fetched, created: @created, queued: @queued, truncated: truncated, continuing: continuing)
     end
   end
 end

@@ -135,4 +135,92 @@ class HardcoverClientAccountsTest < ActiveSupport::TestCase
     assert_equal personal.digest, instance.digest
     assert_equal "Bearer instance_token", instance.authorization_header
   end
+
+  # Hardcover's Free plan is a token bucket: a burst of 10 that refills at 60
+  # a minute. Time is scaled down 22x so the test runs in about a second:
+  # background pacing of 1.1s becomes 0.05s and the refill 1/22s.
+  test "concurrent background jobs on one account are spaced inside the bucket's refill rate" do
+    interval = 0.05
+    refill_every = HardcoverClient::BACKGROUND_MIN_INTERVAL.fdiv(interval).then { |scale| 1.0 / scale }
+    credential = HardcoverClient.credential_for_token("hc_at_shared", budget_key: HardcoverClient.account_budget_key(909))
+    bucket = 10.0
+    last = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    sends = []
+    lock = Mutex.new
+    stub_request(:post, HardcoverClient::BASE_URL).to_return do |_request|
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      status = remaining = nil
+      lock.synchronize do
+        bucket = [ 10.0, bucket + ((now - last) / refill_every) ].min
+        last = now
+        status = bucket >= 1 ? 200 : 429
+        bucket -= 1 if status == 200
+        remaining = bucket.floor
+        sends << [ now, status, bucket ]
+      end
+      headers = {
+        "Content-Type" => "application/json",
+        "RateLimit-Policy" => %("Free";q=60;w=60;burst=10, "daily";q=5000;w=86400),
+        "RateLimit" => %("Free";r=#{remaining};t=#{remaining.zero? ? 1 : 0}, "daily";r=4900;t=3600)
+      }
+      headers["Retry-After"] = "1" if status == 429
+      { status: status, headers: headers, body: { data: { me: [ { id: 909 } ] } }.to_json }
+    end
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    results = HardcoverClient.stub(:background_min_interval, interval) do
+      gate = Queue.new
+      workers = 3.times.map do
+        Thread.new do
+          gate.pop
+          8.times.count do
+            HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true)
+          end
+        rescue HardcoverClient::Error => e
+          e
+        end
+      end
+      3.times { gate << true }
+      Timeout.timeout(30) { workers.map(&:value) }
+    end
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_equal [ 8, 8, 8 ], results, "every job finishes all of its pages"
+    assert_equal [ 200 ], sends.map { |send| send[1] }.uniq, "no request is rejected by the bucket"
+    gaps = sends.map(&:first).each_cons(2).map { |earlier, later| later - earlier }
+    # The gap is measured where the stub receives the request, so it carries a
+    # few milliseconds of client overhead jitter.
+    assert_operator gaps.min, :>=, interval * 0.7, "sends for one account are spaced out, not clustered"
+    assert_operator sends.map(&:last).min, :>=, 7, "the burst allowance is never used up"
+    assert_operator elapsed, :<, 24 * interval * 3, "pacing queues jobs fairly instead of starving them"
+  end
+
+  test "a background job waits out a short cooldown instead of failing" do
+    credential = HardcoverClient.credential_for_token("hc_at_cool", budget_key: HardcoverClient.account_budget_key(910))
+    stub_request(:post, HardcoverClient::BASE_URL)
+      .to_return(status: 200, headers: RATE_LIMIT_HEADERS.merge("RateLimit" => %("Free";r=0;t=1, "daily";r=4900;t=3600)), body: { data: { me: [ { id: 910 } ] } }.to_json)
+      .then.to_return(status: 200, headers: RATE_LIMIT_HEADERS, body: { data: { me: [ { id: 910 } ] } }.to_json)
+
+    HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential)
+    assert_raises(HardcoverClient::RateLimitError) { HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential) }
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true)
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :>=, 0.5
+    assert_requested :post, HardcoverClient::BASE_URL, times: 2
+  end
+
+  test "pacing recovers from a wall-clock jump instead of stalling the account" do
+    credential = HardcoverClient.credential_for_token("hc_at_clock", budget_key: HardcoverClient.account_budget_key(911))
+    stub_hardcover_graphql("ShelfarrMe" => { "me" => [ { "id" => 911 } ] })
+
+    HardcoverClient.stub(:background_min_interval, 0.05) do
+      travel_to(2.hours.from_now) { HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true) }
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      2.times { HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true) }
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 1
+    end
+    assert_equal 3, hardcover_requests.size
+  end
 end

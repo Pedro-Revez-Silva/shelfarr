@@ -41,13 +41,50 @@ class Hardcover::APITest < ActiveSupport::TestCase
     page = Hardcover::API.want_to_read(4242, credential: @credential, since: since)
 
     assert_equal "2026-09-01T00:00:00Z", hardcover_requests.last[:variables]["since"]
+    assert_equal 2_147_483_647, hardcover_requests.last[:variables]["beforeId"], "the first page starts at the newest row"
     assert_equal Time.zone.parse("2026-09-02T08:00:00Z"), page.entries.first.added_at
     assert_not page.has_more
+    assert_equal 99, page.next_cursor
+  end
+
+  test "incremental reads continue below the last row id instead of using an offset" do
+    rows = [ hardcover_list_book_row(hardcover_book(id: 1), id: 80), hardcover_list_book_row(hardcover_book(id: 2), id: 75) ]
+    stub_hardcover_graphql("ShelfarrPublicListBooksSince" => { "list_books" => rows })
+
+    page = Hardcover::API.list_books(55, credential: @credential, since: 1.day.ago, before_id: 90, limit: 2)
+
+    variables = hardcover_requests.last[:variables]
+    assert_equal [ 90, 2 ], variables.values_at("beforeId", "limit")
+    assert_not variables.key?("offset")
+    assert page.has_more
+    assert_equal 75, page.next_cursor
+  end
+
+  test "lists are public-only unless the owner's connection asks otherwise" do
+    public_row = { "id" => 3, "name" => "Open", "privacy_setting_id" => 1, "public" => true, "user_id" => 9, "user" => { "username" => "curator" } }
+    stub_hardcover_graphql(
+      "ShelfarrPublicList" => { "lists" => [ public_row ] },
+      "ShelfarrList" => { "lists" => [ public_row.merge("privacy_setting_id" => 3, "public" => false) ] }
+    )
+
+    list = Hardcover::API.list(3, credential: @credential)
+    assert_equal [ true, 9 ], [ list.public, list.owner_id ]
+    assert_equal "ShelfarrPublicList", hardcover_requests.last[:operation]
+    assert_includes Hardcover::Queries::PUBLIC_LIST, "privacy_setting_id: { _eq: 1 }"
+
+    owned = Hardcover::API.list(3, credential: @credential, public_only: false)
+    assert_equal false, owned.public
+  end
+
+  test "a list that is not public is never returned by a public read" do
+    stub_hardcover_graphql("ShelfarrPublicList" => { "lists" => [ { "id" => 3, "name" => "Secret", "privacy_setting_id" => 2, "user_id" => 9 } ] })
+
+    assert_raises(HardcoverClient::NotFoundError) { Hardcover::API.list(3, credential: @credential) }
   end
 
   test "parses list books into requestable entries" do
     book = hardcover_book(id: 321, title: "The Left Hand of Darkness", author: "Ursula K. Le Guin", series: "Hainish Cycle", position: 4.0, audio: false)
-    stub_hardcover_graphql("ShelfarrListBooks" => { "list_books" => [ hardcover_list_book_row(book, id: 1, position: 2) ] })
+    stub_hardcover_graphql("ShelfarrPublicListBooks" => { "list_books" => [ hardcover_list_book_row(book, id: 1, position: 2) ] })
 
     entry = Hardcover::API.list_books(55, credential: @credential).entries.first
 
@@ -76,7 +113,7 @@ class Hardcover::APITest < ActiveSupport::TestCase
   end
 
   test "skips rows without a usable id or title" do
-    stub_hardcover_graphql("ShelfarrListBooks" => { "list_books" => [
+    stub_hardcover_graphql("ShelfarrPublicListBooks" => { "list_books" => [
       hardcover_list_book_row({ "id" => nil, "title" => "x" }, id: 1),
       hardcover_list_book_row(hardcover_book(id: 6, title: " "), id: 2),
       hardcover_list_book_row(hardcover_book(id: 7), id: 3)
@@ -119,7 +156,7 @@ class Hardcover::APITest < ActiveSupport::TestCase
   end
 
   test "author contributions carry the contribution role and edition languages" do
-    stub_hardcover_graphql("ShelfarrAuthorContributions" => { "contributions" => [
+    stub_hardcover_graphql("ShelfarrAuthorRecentContributions" => { "contributions" => [
       hardcover_contribution_row(hardcover_book(id: 1), id: 1, contribution: nil, languages: [ "en" ]),
       hardcover_contribution_row(hardcover_book(id: 2), id: 2, contribution: "Editor", languages: [ "fr", "fr" ])
     ] })
@@ -128,5 +165,18 @@ class Hardcover::APITest < ActiveSupport::TestCase
 
     assert_equal [ nil, "Editor" ], entries.map(&:role)
     assert_equal [ [ "en" ], [ "fr" ] ], entries.map(&:languages)
+    assert_includes Hardcover::Queries::AUTHOR_RECENT_CONTRIBUTIONS, "release_date: desc_nulls_last"
+  end
+
+  test "the author catalog walk continues after the highest contribution id" do
+    stub_hardcover_graphql("ShelfarrAuthorCatalogContributions" => { "contributions" => [
+      hardcover_contribution_row(hardcover_book(id: 1), id: 201), hardcover_contribution_row(hardcover_book(id: 2), id: 202)
+    ] })
+
+    page = Hardcover::API.author_catalog_contributions(501, credential: @credential, after_id: 200, limit: 2)
+
+    assert_equal 200, hardcover_requests.last[:variables]["afterId"]
+    assert page.has_more
+    assert_equal 202, page.next_cursor
   end
 end

@@ -57,7 +57,7 @@ class DiscoverControllerTest < ActionDispatch::IntegrationTest
   test "an author page lists written books and explains hidden records" do
     stub_hardcover_graphql(
       "ShelfarrAuthor" => { "authors" => [ { "id" => 501, "name" => "Ada Writer", "slug" => "ada-writer", "books_count" => 3 } ] },
-      "ShelfarrAuthorContributions" => { "contributions" => [
+      "ShelfarrAuthorRecentContributions" => { "contributions" => [
         hardcover_contribution_row(hardcover_book(id: 1, title: "Her Novel"), id: 1),
         hardcover_contribution_row(hardcover_book(id: 2, title: "Anthology She Edited"), id: 2, contribution: "Editor")
       ] }
@@ -106,5 +106,93 @@ class DiscoverControllerTest < ActionDispatch::IntegrationTest
     get discover_path
 
     assert_redirected_to search_path
+  end
+
+  PRIVATE_LIST = { "name" => "Owner's secret shelf", "slug" => "secret", "description" => "Only for the owner", "books_count" => 1,
+    "likes_count" => 0, "privacy_setting_id" => 3, "user_id" => 1_001, "user" => { "username" => "owner" } }.freeze
+  PUBLIC_LIST = { "name" => "Everyone's picks", "slug" => "picks", "description" => "Shared", "books_count" => 1,
+    "likes_count" => 5, "privacy_setting_id" => 1, "user_id" => 1_001, "user" => { "username" => "owner" } }.freeze
+
+  def browse_as(user)
+    open_session.tap do |session|
+      jar = ActionDispatch::TestRequest.create.cookie_jar
+      jar.signed[:session_id] = user.sessions.create!.id
+      session.cookies["session_id"] = jar[:session_id]
+    end
+  end
+
+  def private_list_fixture(instance_token: "")
+    SettingsService.set(:hardcover_api_token, instance_token)
+    HardcoverClient.reset_connection!
+    owner = users(:one)
+    viewer = users(:two)
+    create_hardcover_connection(owner, hardcover_user_id: 1_001, access_token: "owner_token", username: "owner")
+    create_hardcover_connection(viewer, hardcover_user_id: 2_002, access_token: "viewer_token", username: "viewer")
+    stub_hardcover_list_visibility(
+      lists: { 77 => PRIVATE_LIST, 88 => PUBLIC_LIST },
+      books: {
+        77 => [ hardcover_list_book_row(hardcover_book(id: 9_001, title: "Secret owner book"), id: 1) ],
+        88 => [ hardcover_list_book_row(hardcover_book(id: 9_002, title: "Shared book"), id: 2) ]
+      },
+      accounts: { "owner_token" => 1_001, "viewer_token" => 2_002 }
+    )
+    [ browse_as(owner), browse_as(viewer) ]
+  end
+
+  def assert_no_private_list(session)
+    assert_equal 200, session.response.status
+    body = session.response.body
+    [ "Owner&#39;s secret shelf", "Owner's secret shelf", "Only for the owner", "Secret owner book" ].each do |secret|
+      assert_not_includes body, secret
+    end
+    assert_includes body, "or it is private"
+  end
+
+  test "a private list is never shown in Discover to its owner or to other users, and nothing private is cached" do
+    with_hardcover_memory_cache do
+      owner, viewer = private_list_fixture
+
+      owner.get discover_list_path(77)
+      assert_no_private_list(owner)
+      viewer.get discover_list_path(77)
+      assert_no_private_list(viewer)
+
+      assert_equal [ "ShelfarrPublicList" ], hardcover_operations.uniq, "Discover only asks for public lists"
+      assert_equal [ "Bearer owner_token", "Bearer viewer_token" ], hardcover_requests.map { |request| request[:authorization] }
+
+      # Public lists are still shared through the cache.
+      owner.get discover_list_path(88)
+      assert_includes owner.response.body, "Shared book"
+      requests = hardcover_requests.size
+      viewer.get discover_list_path(88)
+      assert_includes viewer.response.body, "Shared book"
+      assert_equal requests, hardcover_requests.size, "the public list came from the shared cache"
+    end
+  end
+
+  test "an instance token that owns a private list cannot show it to other users" do
+    with_hardcover_memory_cache do
+      _owner, viewer = private_list_fixture(instance_token: "owner_token")
+      HardcoverConnection.find_by!(user: users(:two)).destroy!
+
+      viewer.get discover_list_path(77)
+
+      assert_no_private_list(viewer)
+      assert_equal [ [ "ShelfarrPublicList", "Bearer owner_token" ] ], hardcover_requests.map { |request| request.values_at(:operation, :authorization) }
+    end
+  end
+
+  test "a list response that is not public is rejected even if Hardcover returned it" do
+    with_hardcover_memory_cache do
+      stub_hardcover_graphql(
+        "ShelfarrPublicList" => { "lists" => [ PRIVATE_LIST.merge("id" => 77, "public" => false) ] },
+        "ShelfarrPublicListBooks" => { "list_books" => [ hardcover_list_book_row(hardcover_book(id: 9_001, title: "Secret owner book"), id: 1) ] }
+      )
+
+      get discover_list_path(77)
+
+      assert_no_private_list(self)
+      assert_equal [ "ShelfarrPublicList" ], hardcover_operations
+    end
   end
 end

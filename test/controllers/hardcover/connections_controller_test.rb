@@ -63,6 +63,23 @@ class Hardcover::ConnectionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "@reader"
   end
 
+  test "the authorization code is filtered from request logs" do
+    start_oauth
+    output = StringIO.new
+    original = ActionController::Base.logger
+    ActionController::Base.logger = ActiveSupport::Logger.new(output)
+
+    get callback_hardcover_connection_path, params: { code: "SYNTHETIC_CODE_123", state: "forged", iss: "https://api.hardcover.app" }
+
+    assert_includes output.string, "Parameters:"
+    assert_not_includes output.string, "SYNTHETIC_CODE_123"
+    filter = ActiveSupport::ParameterFilter.new(Rails.application.config.filter_parameters)
+    filtered = filter.filter("code" => "a", "device_code" => "b", "user_code" => "c", "code_verifier" => "d", "language_code" => "en")
+    assert_equal %w[[FILTERED] [FILTERED] [FILTERED] [FILTERED] en], filtered.values, "only the OAuth values are hidden"
+  ensure
+    ActionController::Base.logger = original
+  end
+
   test "a callback with the wrong state is rejected without redeeming the code" do
     start_oauth
     token = stub_request(:post, TOKEN_URL)
@@ -140,8 +157,8 @@ class Hardcover::ConnectionsControllerTest < ActionDispatch::IntegrationTest
     create_hardcover_connection(@user, refresh_token: "hc_rt_revoke_me")
     want_to_read = create_hardcover_subscription(@user, kind: "want_to_read")
     list = create_hardcover_subscription(@user, kind: "list")
-    own_list = create_hardcover_subscription(@user, kind: "list", target_id: 99)
-    own_list.update!(owner_username: "reader#{@user.id}")
+    own_list = create_hardcover_subscription(@user, kind: "list", target_id: 99, account_id: 4242, personal: true)
+    own_public_list = create_hardcover_subscription(@user, kind: "list", target_id: 98, account_id: 4242)
     revoke = stub_request(:post, "https://api.hardcover.app/oauth2/revoke").with(body: hash_including("token" => "hc_rt_revoke_me")).to_return(status: 200, body: "{}")
 
     assert_no_difference -> { Request.count } do
@@ -152,7 +169,8 @@ class Hardcover::ConnectionsControllerTest < ActionDispatch::IntegrationTest
     assert_nil @user.reload.hardcover_connection
     assert want_to_read.reload.paused?
     assert list.reload.active?, "other people's public lists can still be read with the instance token"
-    assert own_list.reload.paused?, "the user's own lists may be private"
+    assert own_list.reload.paused?, "a private list can only be read with its owner's connection"
+    assert own_public_list.reload.active?, "the user's public lists stay readable as public data"
   end
 
   test "device sign-in honours Hardcover's polling interval" do

@@ -189,6 +189,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_120000) do
     t.string "hardcover_username"
     t.string "last_error"
     t.datetime "last_verified_at"
+    t.integer "lock_version", default: 0, null: false
     t.text "refresh_token"
     t.datetime "refreshed_at"
     t.string "status", default: "active", null: false
@@ -201,6 +202,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_120000) do
   create_table "hardcover_subscription_items", force: :cascade do |t|
     t.integer "attempts", default: 0, null: false
     t.string "author"
+    t.boolean "baseline", default: false, null: false
     t.json "book_types", default: [], null: false
     t.string "claim_token"
     t.datetime "claimed_at"
@@ -240,12 +242,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_120000) do
     t.boolean "automatic", default: false, null: false
     t.datetime "baseline_established_at"
     t.json "book_types", default: [], null: false
+    t.bigint "catalog_cursor_id"
     t.integer "consecutive_failures", default: 0, null: false
     t.datetime "created_at", null: false
     t.text "description"
     t.integer "entries_seen_count", default: 0, null: false
     t.boolean "entries_truncated", default: false, null: false
     t.json "exclusions", default: {}, null: false
+    t.integer "hardcover_account_id"
     t.integer "hardcover_target_id"
     t.string "image_url"
     t.string "kind", null: false
@@ -254,11 +258,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_120000) do
     t.datetime "next_sync_at"
     t.string "owner_username"
     t.string "pause_reason"
+    t.boolean "personal", default: false, null: false
     t.string "slug"
     t.datetime "snapshot_completed_at"
     t.string "snapshot_state", default: "pending", null: false
     t.string "status", default: "draft", null: false
     t.datetime "sync_cursor_at"
+    t.integer "sync_generation", default: 0, null: false
+    t.integer "sync_window_before_id"
+    t.datetime "sync_window_since"
+    t.datetime "sync_window_until"
     t.string "target_key", null: false
     t.string "title", null: false
     t.datetime "updated_at", null: false

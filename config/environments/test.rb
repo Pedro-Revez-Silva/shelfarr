@@ -22,6 +22,11 @@ Rails.application.configure do
   config.consider_all_requests_local = true
   config.cache_store = :null_store
 
+  # Hardcover background pacing is exercised by dedicated tests; elsewhere
+  # stubbed pages should not sleep between requests.
+  config.x.hardcover_background_min_interval = 0
+  config.x.hardcover_import_item_gap = 0
+
   # Render exception templates for rescuable exceptions and raise for other exceptions.
   config.action_dispatch.show_exceptions = :rescuable
 

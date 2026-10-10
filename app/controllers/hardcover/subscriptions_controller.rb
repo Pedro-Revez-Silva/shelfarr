@@ -44,9 +44,17 @@ module Hardcover
         return
       end
 
-      subscription.assign_attributes(attrs.merge(kind: kind, status: "draft", snapshot_state: "pending", last_error: nil))
-      subscription.book_types = default_book_types if subscription.book_types.empty?
-      subscription.save!
+      HardcoverSubscription.transaction do
+        # A draft previewed with another Hardcover account starts over, so
+        # none of that account's entries end up in this preview.
+        if subscription.persisted? && subscription.hardcover_account_id != attrs[:hardcover_account_id]
+          subscription.items.delete_all
+          subscription.sync_generation += 1
+        end
+        subscription.assign_attributes(attrs.merge(kind: kind, status: "draft", snapshot_state: "pending", last_error: nil))
+        subscription.book_types = default_book_types if subscription.book_types.empty?
+        subscription.save!
+      end
       HardcoverSubscriptionSyncJob.perform_later(subscription.id, mode: "snapshot")
       redirect_to hardcover_subscription_path(subscription)
     rescue ActiveRecord::RecordInvalid => e
@@ -129,8 +137,13 @@ module Hardcover
     end
 
     def resume
-      if @subscription.requires_connection? && !Current.user.hardcover_connection&.usable?
+      connection = Current.user.hardcover_connection
+      if @subscription.requires_connection? && !connection&.usable?
         redirect_to profile_path, alert: "Reconnect your Hardcover account first."
+        return
+      end
+      if @subscription.requires_connection? && !@subscription.owned_by_connection?(connection)
+        redirect_to hardcover_subscription_path(@subscription), alert: "This follows a different Hardcover account than the one connected now.", status: :see_other
         return
       end
 
@@ -197,12 +210,14 @@ module Hardcover
           redirect_to profile_path, alert: "Connect your Hardcover account to use your Want to Read shelf."
           return {}
         end
-        { title: "Want to Read", hardcover_target_id: nil, owner_username: connection.hardcover_username, slug: nil }
+        { title: "Want to Read", hardcover_target_id: nil, owner_username: connection.hardcover_username, slug: nil,
+          hardcover_account_id: connection.hardcover_user_id, personal: true }
       when "list"
-        list = with_reader(kind) { |credential| API.list(target_id_param, credential: credential) }
+        list = with_reader(kind) { |credential, owner_read| find_list(credential, owner_read) }
         return {} if performed?
 
-        { title: list.name, hardcover_target_id: list.id, slug: list.slug, description: list.description, owner_username: list.owner_username }
+        { title: list.name, hardcover_target_id: list.id, slug: list.slug, description: list.description, owner_username: list.owner_username,
+          hardcover_account_id: list.owner_id, personal: list.public != true }
       when "author"
         author = with_reader(kind) do |credential|
           found = API.author(target_id_param, credential: credential)
@@ -210,8 +225,21 @@ module Hardcover
         end
         return {} if performed?
 
-        { title: author.name, hardcover_target_id: author.id, slug: author.slug, description: author.bio, image_url: author.image_url }
+        { title: author.name, hardcover_target_id: author.id, slug: author.slug, description: author.bio, image_url: author.image_url,
+          hardcover_account_id: nil, personal: false }
       end
+    end
+
+    # A list that is not public can only be followed by its owner, through
+    # their own connection. Anything else, including reads with the instance
+    # token, only ever sees public lists.
+    def find_list(credential, owner_read)
+      return API.list(target_id_param, credential: credential, public_only: true) unless owner_read
+
+      list = API.list(target_id_param, credential: credential, public_only: false)
+      return list if list.public == true || list.owner_id == Current.user.hardcover_connection.hardcover_user_id
+
+      raise HardcoverClient::NotFoundError, "List not found or not visible to this account"
     end
 
     def target_id_param
@@ -224,9 +252,9 @@ module Hardcover
     def with_reader(kind)
       connection = Current.user.hardcover_connection
       if kind == "list" && connection&.usable?
-        Credentials.with_connection(connection) { |credential| yield credential }
+        Credentials.with_connection(connection, account_id: connection.hardcover_user_id) { |credential| yield credential, true }
       else
-        Credentials.with_catalog(user: Current.user) { |credential| yield credential }
+        Credentials.with_catalog(user: Current.user) { |credential| yield credential, false }
       end
     rescue HardcoverClient::NotFoundError
       redirect_to hardcover_subscriptions_path, alert: "Hardcover could not find that #{kind}, or it is private."

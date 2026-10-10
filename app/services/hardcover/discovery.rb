@@ -6,8 +6,13 @@ module Hardcover
   # Only data Hardcover exposes is offered: trending, release windows, genre
   # search, public lists, and author catalogs. There are no personalized
   # recommendations.
+  #
+  # Because results are shared, every read here is restricted to public data
+  # in the query itself, whichever credential happens to make it (the
+  # instance token may belong to someone with private lists). Private lists
+  # are only read through the owner's own subscription.
   module Discovery
-    CACHE_VERSION = 1
+    CACHE_VERSION = 2
     PER_PAGE = 24
     MAX_PAGE = 20
     AUTHOR_PAGES = 3
@@ -76,8 +81,8 @@ module Hardcover
       def list(id, credential:, page: 1)
         page = page.to_i.clamp(1, MAX_PAGE)
         cached(:list, id.to_i, page) do
-          list = API.list(id, credential: credential)
-          books = API.list_books(list.id, credential: credential, offset: (page - 1) * PER_PAGE, limit: PER_PAGE)
+          list = API.list(id, credential: credential, public_only: true)
+          books = API.list_books(list.id, credential: credential, offset: (page - 1) * PER_PAGE, limit: PER_PAGE, public_only: true)
           ListView.new(list: list, books: books.entries, has_more: books.has_more)
         end
       end
@@ -90,8 +95,9 @@ module Hardcover
         cached(:authors, query.downcase, page) { API.search_authors(query, credential: credential, page: page, per_page: PER_PAGE) }
       end
 
-      # Reads up to AUTHOR_PAGES pages of contributions and applies the same
-      # role, duplicate, and language filtering used by author monitoring.
+      # Reads up to AUTHOR_PAGES pages of contributions, newest releases
+      # first, and applies the same role, duplicate, and language filtering
+      # used by author monitoring.
       def author(id, credential:)
         cached(:author, id.to_i, AuthorCatalog.enabled_languages.join(",")) do
           author = API.author(id, credential: credential)

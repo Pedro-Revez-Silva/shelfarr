@@ -56,6 +56,8 @@ module HardcoverHelper
       "Preview — nothing is requested until you confirm"
     elsif subscription.last_error.present?
       "Last check failed: #{subscription.last_error}"
+    elsif subscription.catching_up?
+      "Catching up: more changes on Hardcover than one check reads. Continuing shortly."
     elsif subscription.last_synced_at
       "Checked #{time_ago_in_words(subscription.last_synced_at)} ago"
     else

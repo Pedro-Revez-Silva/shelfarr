@@ -3,6 +3,10 @@
 # A Shelfarr user's link to their own Hardcover account. Tokens are encrypted
 # at rest, never rendered after they are saved, and only ever sent to
 # Hardcover from the server.
+#
+# `lock_version` makes every write conditional on the row being unchanged
+# since it was read, so a token refresh that finishes after the account was
+# replaced or disconnected cannot overwrite or resurrect credentials.
 class HardcoverConnection < ApplicationRecord
   AUTH_METHODS = %w[oauth personal_token].freeze
   STATUSES = %w[active reauthorization_required].freeze
@@ -55,11 +59,18 @@ class HardcoverConnection < ApplicationRecord
     )
   end
 
+  # Ignored when the connection was replaced, refreshed, or removed since it
+  # was read: the newer credentials decide.
   def mark_reauthorization_required!(message)
-    update!(status: "reauthorization_required", last_error: message.to_s.truncate(250))
-    user.hardcover_subscriptions.requiring_connection.where(status: "active").find_each do |subscription|
-      subscription.pause!("Reconnect your Hardcover account to resume.")
+    transaction do
+      update!(status: "reauthorization_required", last_error: message.to_s.truncate(250))
+      user.hardcover_subscriptions.requiring_connection.where(status: "active").find_each do |subscription|
+        subscription.pause!(HardcoverSubscription::PAUSE_RECONNECT)
+      end
     end
+    true
+  rescue ActiveRecord::StaleObjectError
+    false
   end
 
   def scope_list
