@@ -33,6 +33,15 @@ module ShelfarrEncryptionKeys
     end.to_h.slice(*REQUIRED)
   end
 
+  # Whether `keys` derive the same encryption key as `config`. Keys are
+  # derived from the primary key and the salt, so a file sharing only the
+  # primary key (with the salt left to its development default) still wrote
+  # values the configured keys cannot read.
+  def derives_like?(keys, config)
+    keys["ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"] == config.primary_key &&
+      keys["ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"] == config.key_derivation_salt
+  end
+
   # A previous encryption scheme that decrypts values encrypted with `keys`,
   # derived the way Active Record derives them from its configured primary
   # key and salt (SHA256, and SHA1 as Active Record also accepts).
@@ -53,8 +62,7 @@ return if Rails.env.test?
 
 if Rails.env.development?
   persisted = ShelfarrEncryptionKeys.read(ShelfarrEncryptionKeys.key_file)
-  configured = Rails.application.config.active_record.encryption.primary_key
-  if persisted.any? && persisted["ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"] != configured
+  if persisted.any? && !ShelfarrEncryptionKeys.derives_like?(persisted, Rails.application.config.active_record.encryption)
     ActiveSupport.on_load(:active_record_encryption) do
       scheme = ShelfarrEncryptionKeys.previous_scheme(persisted)
       ActiveRecord::Encryption.config.previous = [ scheme ] if scheme

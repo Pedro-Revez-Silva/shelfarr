@@ -5,6 +5,7 @@ require "open3"
 
 class ActiveRecordEncryptionTest < ActiveSupport::TestCase
   PROBE = "cross-process-probe"
+  LEGACY = "written-with-the-key-file"
 
   def random_keys
     ShelfarrEncryptionKeys::REQUIRED.index_with { SecureRandom.base64(32) }
@@ -63,13 +64,33 @@ class ActiveRecordEncryptionTest < ActiveSupport::TestCase
     end
   end
 
-  # Boots the development environment the way `bin/dev` does, with no
-  # encryption variables, encrypts a probe, and has a second process started
-  # from it (inheriting its environment, like the Solid Queue supervisor Puma
-  # spawns) decrypt it. Only the probe and booleans are printed.
-  test "a process started from a development server can read what the server encrypted" do
+  # Copies what booting the application needs into `dir`, so a development
+  # process can run there with its own key file and database instead of this
+  # checkout's.
+  def copy_application(dir)
+    root = Rails.root
+    (%w[app bin config db lib public vendor Gemfile Gemfile.lock Rakefile config.ru .bundle] & Dir.children(root)).each do |entry|
+      FileUtils.cp_r(root.join(entry), dir)
+    end
+    %w[storage tmp log].each { |entry| FileUtils.mkdir_p(File.join(dir, entry)) }
+  end
+
+  # Boots the development environment the way `bin/dev` does, in a copy of
+  # the application whose key file holds `persisted`, with `env` as the
+  # encryption variables. The process reads `legacy` (a value written with
+  # the persisted keys) through every encrypted attribute, encrypts a probe,
+  # and has a second process started from it (inheriting its environment,
+  # like the Solid Queue supervisor Puma spawns) decrypt it. Only booleans
+  # are printed, never keys or ciphertext.
+  def boot_development(persisted:, env:, legacy:)
     Dir.mktmpdir do |dir|
-      child = File.join(dir, "child.rb")
+      copy_application(dir)
+      key_file = File.join(dir, "storage", ".encryption_keys")
+      File.write(key_file, persisted.map { |name, value| %(export #{name}="#{value}"\n) }.join)
+      File.chmod(0o600, key_file)
+
+      scripts = Dir.mktmpdir
+      child = File.join(scripts, "child.rb")
       File.write(child, <<~RUBY)
         probe = $stdin.read
         outcome = begin
@@ -79,9 +100,24 @@ class ActiveRecordEncryptionTest < ActiveSupport::TestCase
         end
         puts "RESULT=\#{outcome}"
       RUBY
-      parent = File.join(dir, "parent.rb")
+      parent = File.join(scripts, "parent.rb")
       File.write(parent, <<~RUBY)
         require "open3"
+        require "json"
+        ActiveRecord::Schema.verbose = false
+        load Rails.root.join("db/schema.rb")
+        Rails.application.eager_load!
+        legacy = $stdin.read
+        readable = ActiveRecord::Base.descendants.reject(&:abstract_class?).each_with_object({}) do |model, found|
+          model.encrypted_attributes.to_a.each do |attribute|
+            found["\#{model.name}.\#{attribute}"] = begin
+              model.type_for_attribute(attribute.to_s).deserialize(legacy) == #{LEGACY.dump}
+            rescue StandardError => e
+              e.class.name
+            end
+          end
+        end
+        puts "LEGACY=\#{readable.to_json}"
         probe = ActiveRecord::Encryption.encryptor.encrypt(#{PROBE.dump})
         out, _status = Open3.capture2(Gem.ruby, "bin/rails", "runner", #{child.dump}, stdin_data: probe, chdir: Rails.root.to_s)
         puts out.lines.grep(/RESULT=/).last
@@ -89,12 +125,40 @@ class ActiveRecordEncryptionTest < ActiveSupport::TestCase
 
       # COVERAGE would make bin/rails start SimpleCov, and its coverage gate,
       # in these probe processes.
-      env = { "RAILS_ENV" => "development", "COVERAGE" => nil }
-      ShelfarrEncryptionKeys::REQUIRED.each { |name| env[name] = nil }
-      out, status = Open3.capture2e(env, Gem.ruby, "bin/rails", "runner", parent, chdir: Rails.root.to_s)
+      process_env = { "RAILS_ENV" => "development", "COVERAGE" => nil }
+      ShelfarrEncryptionKeys::REQUIRED.each { |name| process_env[name] = env[name] }
+      out, status = Open3.capture2e(process_env, Gem.ruby, "bin/rails", "runner", parent, stdin_data: legacy, chdir: dir)
+      FileUtils.rm_rf(scripts)
 
       assert status.success?, out.lines.last(5).join
-      assert_equal "RESULT=true", out.lines.grep(/RESULT=/).last&.strip
+      [ JSON.parse(out.lines.grep(/\ALEGACY=/).last.to_s.delete_prefix("LEGACY=").presence || "{}"),
+        out.lines.grep(/\ARESULT=/).last&.strip ]
+    end
+  end
+
+  ENCRYPTED_ATTRIBUTES = %w[
+    HardcoverConnection.access_token HardcoverConnection.refresh_token User.otp_secret User.backup_codes
+    DownloadClient.password DownloadClient.api_key AcquisitionProvider.api_key
+    OwnedLibraryConnection.bridge_token OwnedLibraryConnection.auth_session_id OwnedLibraryConnection.auth_login_url
+  ].freeze
+
+  {
+    # The variables `bin/dev` starts with: development's fixed keys.
+    "without encryption variables" => [],
+    # Only the primary key is set, to the persisted one; the salt stays at its
+    # development default, so the derived key still differs.
+    "with only the persisted primary key set" => %w[ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY],
+    # Every key matches the file; nothing earlier needs another scheme.
+    "with the persisted keys set" => ShelfarrEncryptionKeys::REQUIRED
+  }.each do |label, from_file|
+    test "development #{label} reads values written with a key file and shares its keys with processes it starts" do
+      persisted = random_keys
+      readable, result = boot_development(persisted: persisted, env: persisted.slice(*from_file),
+        legacy: encrypt_with(persisted, LEGACY))
+
+      assert_equal "RESULT=true", result, "a process started from the server reads what it encrypted"
+      assert_empty ENCRYPTED_ATTRIBUTES - readable.keys, "every encrypted attribute was checked"
+      assert_equal readable.keys.index_with(true), readable, "every encrypted attribute reads the earlier value"
     end
   end
 end
