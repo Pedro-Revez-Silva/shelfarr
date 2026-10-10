@@ -100,6 +100,72 @@ class Hardcover::ConnectionManagerTest < ActiveSupport::TestCase
     assert_includes @revocations, "late_refresh"
   end
 
+  # Holds Hardcover's `me` answer for `token` until the test releases it, so
+  # the user can be deleted while the new connection is being verified.
+  def pause_verification(token, account_id)
+    reached = Queue.new
+    release = Queue.new
+    stub_request(:post, HardcoverClient::BASE_URL).with(headers: { "Authorization" => "Bearer #{token}" }).to_return do |_request|
+      reached << true
+      release.pop
+      { status: 200, headers: { "Content-Type" => "application/json" }, body: { data: { me: [ { id: account_id, username: "reader" } ] } }.to_json }
+    end
+    [ reached, release ]
+  end
+
+  def connect_in_thread(**attributes)
+    Thread.new do
+      Hardcover::ConnectionManager.connect!(user: User.find(@user.id), **attributes)
+      :connected
+    rescue HardcoverClient::Error => e
+      e
+    end
+  end
+
+  test "a sign-in verified after the user was deleted stores nothing and revokes the new grant" do
+    create_hardcover_connection(@user, hardcover_user_id: 1_001, access_token: "old_access", refresh_token: "old_refresh")
+    @user.sessions.create!
+    reached, release = pause_verification("new_access", 1_001)
+
+    worker = connect_in_thread(auth_method: "oauth", access_token: "new_access", refresh_token: "new_refresh", expires_at: 1.week.from_now)
+    Timeout.timeout(10) { reached.pop }
+    @user.soft_delete!
+    assert_equal [ true, false, 0 ], [ @user.reload.deleted?, HardcoverConnection.exists?(user_id: @user.id), @user.sessions.count ]
+    release << true
+    outcome = Timeout.timeout(10) { worker.value }
+
+    assert_kind_of Hardcover::ConnectionManager::UserUnavailable, outcome
+    assert_not HardcoverConnection.exists?(user_id: @user.id), "a deleted user never gets a connection back"
+    assert_includes @revocations, "old_refresh", "the deletion revoked the previous grant"
+    assert_includes @revocations, "new_refresh", "the grant issued during the deletion is revoked too"
+  end
+
+  test "an API key verified after the user was deleted is not stored" do
+    SettingsService.set(:hardcover_allow_personal_access, true)
+    reached, release = pause_verification("new_pat", 1_001)
+
+    worker = connect_in_thread(auth_method: "personal_token", access_token: "new_pat")
+    Timeout.timeout(10) { reached.pop }
+    @user.soft_delete!
+    release << true
+    outcome = Timeout.timeout(10) { worker.value }
+
+    assert_kind_of Hardcover::ConnectionManager::UserUnavailable, outcome
+    assert_not HardcoverConnection.exists?(user_id: @user.id)
+    assert_empty @revocations, "an API key is managed on Hardcover and is not revoked through OAuth"
+  end
+
+  test "a deletion that runs after a sign-in was saved removes that connection" do
+    stub_accounts("new_access" => [ 1_001, "reader" ])
+    Hardcover::ConnectionManager.connect!(user: @user, auth_method: "oauth", access_token: "new_access", refresh_token: "new_refresh", expires_at: 1.week.from_now)
+    assert HardcoverConnection.exists?(user_id: @user.id)
+
+    @user.soft_delete!
+
+    assert_not HardcoverConnection.exists?(user_id: @user.id)
+    assert_includes @revocations, "new_refresh"
+  end
+
   test "connecting a different account starts a fresh Want to Read preview and never imports the new backlog" do
     create_hardcover_connection(@user, hardcover_user_id: 1_001, auth_method: "personal_token", access_token: "old_pat")
     shelf = create_hardcover_subscription(@user, kind: "want_to_read", account_id: 1_001, automatic: true, book_types: [ "ebook" ])

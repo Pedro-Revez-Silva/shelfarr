@@ -80,6 +80,8 @@ class HardcoverSyncSchedulerJobTest < ActiveJob::TestCase
 
     HardcoverSyncSchedulerJob.perform_now
 
-    assert_no_enqueued_jobs
+    # Scoped to the scheduler's own jobs: Turbo enqueues debounced refresh
+    # broadcasts from an earlier test on a timer thread.
+    assert_no_enqueued_jobs(only: [ HardcoverSubscriptionSyncJob, HardcoverImportJob ])
   end
 end

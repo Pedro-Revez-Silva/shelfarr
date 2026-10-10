@@ -117,6 +117,117 @@ class Hardcover::ItemImporterTest < ActiveSupport::TestCase
     assert_equal 3, Hardcover::ItemImporter.call.requested
   end
 
+  test "a queued book now announced for a later date waits for it instead of being requested" do
+    item = queued_item(9_900, book_types: [ "audiobook" ], release_date: 1.week.from_now.to_date)
+
+    result = nil
+    assert_no_difference -> { Request.count } do
+      result = Hardcover::ItemImporter.call
+    end
+
+    assert_equal [ 1, 0 ], [ result.postponed, result.requested ]
+    item.reload
+    assert_equal [ "upcoming", true, [ "audiobook" ], nil, 0 ], [ item.state, item.wanted?, item.book_types, item.claim_token, item.attempts ]
+
+    travel 8.days do
+      assert_difference -> { Request.count } => 1 do
+        HardcoverSyncSchedulerJob.perform_now
+        Hardcover::ItemImporter.call
+      end
+      assert_equal "requested", item.reload.state
+    end
+  end
+
+  test "a postponement synced while a batch is running stops that item" do
+    configure_hardcover_instance_token
+    SettingsService.set(:enabled_languages, [ "en" ])
+    author = create_hardcover_subscription(@user, kind: "author", target_id: 501, automatic: true, baseline: 10.days.ago)
+    first = create_hardcover_item(author, book_id: 9_910, state: "queued", book_types: [ "ebook" ], release_date: 3.days.ago.to_date)
+    second = create_hardcover_item(author, book_id: 9_911, state: "queued", book_types: [ "ebook" ], release_date: Date.yesterday)
+    stub_hardcover_graphql("ShelfarrAuthorRecentContributions" => { "contributions" => [
+      hardcover_contribution_row(hardcover_book(id: 9_910, release_date: 3.days.ago.to_date.iso8601), id: 1),
+      hardcover_contribution_row(hardcover_book(id: 9_911, release_date: 1.month.from_now.to_date.iso8601), id: 2)
+    ] })
+
+    result = nil
+    assert_difference -> { Request.count } => 1 do
+      result = import_while(first.work_id) { Hardcover::SubscriptionSync.call(HardcoverSubscription.find(author.id)) }
+    end
+
+    assert_equal "requested", first.reload.state
+    second.reload
+    assert_equal [ "upcoming", 1.month.from_now.to_date, nil ], [ second.state, second.release_date, second.claim_token ]
+    assert_equal 2, result.processed
+  end
+
+  test "each automatic format uses the limit and the rest of the book waits for the next window" do
+    SettingsService.set(:hardcover_max_requests_per_run, 1)
+    item = queued_item(9_920, wanted: false, book_types: %w[ebook audiobook])
+
+    assert_difference -> { Request.count } => 1 do
+      result = Hardcover::ItemImporter.call
+      assert_equal [ 1, 0 ], [ result.deferred, result.remaining ]
+    end
+    item.reload
+    first_request = Request.find(item.request_ids.sole)
+    assert_equal [ "queued", nil, 0 ], [ item.state, item.claim_token, item.attempts ]
+    assert_equal "ebook", first_request.book.book_type
+    assert_in_delta 6.hours.from_now, item.next_attempt_at, 5
+    assert_match(/Requested ebook; Audiobook waiting for the next check/, item.resolution)
+
+    assert_no_difference -> { Request.count } do
+      assert_equal 0, Hardcover::ItemImporter.call.processed, "nothing more until the window ends"
+    end
+
+    travel 6.hours + 1.minute do
+      assert_difference -> { Request.count } => 1 do
+        Hardcover::ItemImporter.call
+      end
+      item.reload
+      assert_equal "requested", item.state
+      assert_equal %w[audiobook ebook], Request.where(id: item.request_ids).map { |request| request.book.book_type }.sort
+      assert_equal 1, @user.hardcover_request_budget.used, "the new window counts only the audiobook"
+    end
+  end
+
+  test "the limit is shared by a user's subscriptions; formats already in Shelfarr and other users do not use it" do
+    SettingsService.set(:hardcover_max_requests_per_run, 2)
+    Book.create!(title: "Owned", hardcover_id: "9930", book_type: :ebook, file_path: "/ebooks/owned.epub")
+    owned = queued_item(9_930, wanted: false, book_types: [ "ebook" ])
+    author = create_hardcover_subscription(@user, kind: "author", target_id: 5, automatic: true)
+    from_author = 2.times.map { |index| create_hardcover_item(author, book_id: 9_931 + index, state: "queued", book_types: [ "ebook" ]) }
+    from_list = queued_item(9_935, wanted: false, book_types: [ "ebook" ])
+    other_user = create_hardcover_subscription(users(:two), kind: "list", automatic: true)
+    others = 3.times.map { |index| create_hardcover_item(other_user, book_id: 9_940 + index, state: "queued", book_types: [ "ebook" ]) }
+
+    assert_difference -> { Request.count } => 4 do
+      Hardcover::ItemImporter.call
+    end
+
+    assert_equal "requested", owned.reload.state, "an owned format resolves the book without using the limit"
+    assert_equal %w[requested requested queued], [ *from_author, from_list ].map { |item| item.reload.state }
+    assert_equal 2, @user.reload.hardcover_request_budget.used
+    assert_equal %w[requested requested queued], others.map { |item| item.reload.state }, "each user has their own limit"
+  end
+
+  test "a changed limit applies to the current window" do
+    SettingsService.set(:hardcover_max_requests_per_run, 1)
+    items = 4.times.map { |index| queued_item(9_950 + index, wanted: false, book_types: [ "ebook" ]) }
+    Hardcover::ItemImporter.call
+    assert_equal 1, items.count { |item| item.reload.requested? }
+
+    SettingsService.set(:hardcover_max_requests_per_run, 3)
+    items.each { |item| item.update!(next_attempt_at: nil) if item.queued? }
+    Hardcover::ItemImporter.call
+    assert_equal 3, items.count { |item| item.reload.requested? }, "a higher limit allows the difference now"
+
+    SettingsService.set(:hardcover_max_requests_per_run, 2)
+    items.each { |item| item.update!(next_attempt_at: nil) if item.queued? }
+    assert_no_difference -> { Request.count } do
+      Hardcover::ItemImporter.call
+    end
+  end
+
   test "paused subscriptions, deleted users, and a disabled provider stop imports" do
     item = queued_item(9_300, book_types: [ "ebook" ])
 

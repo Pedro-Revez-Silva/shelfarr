@@ -109,7 +109,7 @@
           <%= hidden_field_tag :automatic, "0", id: nil %>
           <%= check_box_tag :automatic, "1", @subscription.automatic?, id: "settings_automatic", class: "mt-0.5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
           <span><%= automatic_label %>
-            <span class="block text-xs text-gray-500">Up to <%= HardcoverIntegration.max_automatic_requests_per_run %> per check; anything beyond that waits for the next check.</span></span>
+            <span class="block text-xs text-gray-500">Up to <%= HardcoverIntegration.max_automatic_requests_per_run %> requests per check across everything you follow, each format counting once; anything beyond that waits for the next check.</span></span>
         </label>
         <%= submit_tag "Save settings", class: "rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
       <% end %>

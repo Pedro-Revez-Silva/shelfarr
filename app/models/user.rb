@@ -11,6 +11,7 @@ class User < ApplicationRecord
   has_many :activity_logs, dependent: :destroy
   has_one :hardcover_connection, dependent: :destroy
   has_many :hardcover_subscriptions, dependent: :destroy
+  has_one :hardcover_request_budget, dependent: :delete
 
   scope :active, -> { where(deleted_at: nil) }
 

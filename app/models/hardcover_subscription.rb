@@ -116,8 +116,7 @@ class HardcoverSubscription < ApplicationRecord
   end
 
   def sync_interval
-    hours = SettingsService.get(:hardcover_sync_interval_hours, default: 6).to_i
-    hours.clamp(1, 168).hours
+    HardcoverIntegration.sync_interval
   end
 
   def schedule_next_sync!(from: Time.current)

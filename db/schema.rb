@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_10_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_10_130000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -197,6 +197,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_120000) do
     t.integer "user_id", null: false
     t.index ["hardcover_user_id"], name: "index_hardcover_connections_on_hardcover_user_id"
     t.index ["user_id"], name: "index_hardcover_connections_on_user_id", unique: true
+  end
+
+  create_table "hardcover_request_budgets", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.integer "used", default: 0, null: false
+    t.integer "user_id", null: false
+    t.datetime "window_started_at", null: false
+    t.index ["user_id"], name: "index_hardcover_request_budgets_on_user_id", unique: true
   end
 
   create_table "hardcover_subscription_items", force: :cascade do |t|
@@ -684,6 +693,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_10_120000) do
   add_foreign_key "downloads", "requests"
   add_foreign_key "downloads", "search_results", on_delete: :nullify
   add_foreign_key "hardcover_connections", "users"
+  add_foreign_key "hardcover_request_budgets", "users"
   add_foreign_key "hardcover_subscription_items", "hardcover_subscriptions"
   add_foreign_key "hardcover_subscriptions", "users"
   add_foreign_key "notifications", "users"

@@ -59,7 +59,9 @@ The preview loads the entries from Hardcover in the background (up to 1,000; for
 Books you did not select become the *baseline*: they are remembered as already present and are never requested automatically. Later checks only act on what is new:
 
 - **Lists and Want to Read** — books added after the preview, including a book you move to Want to Read from another shelf. With automatic requests off, they appear under **New** for you to request or dismiss. An unreleased book that was already on the list or shelf when you previewed it is part of the baseline: if you did not select it, it is listed as **Not requested** once it comes out and is never requested automatically.
-- **Authors** — new releases. Books announced for a future date are listed as **Upcoming** and are requested (or offered for review) once they are released, because following an author means watching for their next books. An old book that Hardcover adds to the catalog later is treated as backlist, not as a new release.
+- **Authors** — new releases. Books announced for a future date are listed as **Upcoming** and are requested (or offered for review) once they are released, because following an author means watching for their next books. An old book that Hardcover adds to the catalog later is treated as backlist, not as a new release. A book that first appears without a release date is listed as **Not requested** until Hardcover adds one: a recent date makes it a new release, an old date keeps it backlist.
+
+If a release is postponed before Shelfarr requested it, the book goes back to **Upcoming** with the formats you chose and is requested once the new date arrives. Requests that already exist are kept.
 
 Selecting an upcoming book in any preview requests it on release, even when automatic requests are off.
 
@@ -117,7 +119,7 @@ The sign-in uses the authorization code flow with PKCE (S256), a single-use stat
 | Setting | Default | Meaning |
 |---------|---------|---------|
 | Reading List Sync Interval (hours) | 6 | How often followed lists, shelves, and authors are checked (1–168) |
-| Automatic Requests per User per Run | 10 | Cap on automatic requests per user per check; the rest stay queued for the next check |
+| Automatic Requests per User per Run | 10 | Cap on automatic requests per user in each sync interval, counting each format separately and across all of the user's lists, shelves, and authors. The rest stay queued, in order, for the next interval. Books a user selects themselves are not limited, and formats already in Shelfarr do not count |
 
 A scheduler runs every 15 minutes, checks subscriptions that are due, moves released upcoming books forward, and retries failed imports after their backoff. List and Want to Read checks only ask Hardcover for entries changed since the previous successful check.
 

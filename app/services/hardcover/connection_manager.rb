@@ -9,6 +9,9 @@ module Hardcover
   module ConnectionManager
     MAX_ATTEMPTS = 3
 
+    # The Shelfarr user was deleted while Hardcover was verifying the token.
+    class UserUnavailable < HardcoverClient::Error; end
+
     module_function
 
     # Verifies the token by asking Hardcover who it belongs to, then stores
@@ -19,6 +22,10 @@ module Hardcover
     # previewed with. Reconnecting that account resumes them; connecting a
     # different one starts a fresh Want to Read preview and pauses private
     # lists owned by the other account. Nothing is requested either way.
+    #
+    # Verification happens outside any transaction and can take a while, so
+    # the user is read again inside the write transaction. One deleted in the
+    # meantime gets no connection, and a new OAuth grant is revoked.
     def connect!(user:, auth_method:, access_token:, refresh_token: nil, expires_at: nil, scope: nil)
       account = Hardcover::API.me(credential: HardcoverClient.credential_for_token(access_token))
       replaced_token = nil
@@ -29,6 +36,8 @@ module Hardcover
       begin
         attempts += 1
         HardcoverConnection.transaction do
+          raise UserUnavailable, "This Shelfarr account is no longer active" unless active_user?(user)
+
           connection = HardcoverConnection.find_by(user_id: user.id) || HardcoverConnection.new(user: user)
           replaced_token = connection.persisted? ? revocable_token(connection) : nil
           connection.assign_attributes(
@@ -49,6 +58,9 @@ module Hardcover
         end
       rescue ActiveRecord::StaleObjectError, ActiveRecord::RecordNotUnique
         retry if attempts < MAX_ATTEMPTS
+        raise
+      rescue UserUnavailable
+        Hardcover::Oauth.revoke(refresh_token.presence || access_token) if auth_method == "oauth"
         raise
       end
 
@@ -77,6 +89,15 @@ module Hardcover
       user.association(:hardcover_connection).reset
       Hardcover::Oauth.revoke(token) if token.present?
       true
+    end
+
+    # Read inside the write transaction. On SQLite that is an IMMEDIATE
+    # transaction, like the one User#soft_delete! runs in, so a deletion
+    # either commits first (and is seen here) or runs after this save and
+    # removes the connection it finds.
+    def active_user?(user)
+      current = User.lock.find_by(id: user.id)
+      current.present? && !current.deleted?
     end
 
     def revocable_token(connection)

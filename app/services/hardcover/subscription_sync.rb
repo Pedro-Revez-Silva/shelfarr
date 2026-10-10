@@ -258,7 +258,7 @@ module Hardcover
         state: state,
         # Remembered separately from the state: a book that was already on a
         # list or shelf stays out of automatic requests after its release.
-        baseline: !new_entry,
+        baseline: baseline_entry?(entry, new_entry),
         book_types: state == "queued" ? subscription.book_types : [],
         first_seen_at: started_at
       ))
@@ -268,18 +268,43 @@ module Hardcover
 
     def refresh_item!(item, entry)
       attrs = item_attributes(entry)
-      if subscription.author? && item.known?
+      if entry.unreleased? && postponable?(item)
+        # The release moved to a later date before anything was requested.
+        # The book waits as upcoming, keeping the user's selection and
+        # formats, and is evaluated again once it is out.
+        attrs.merge!(state: "upcoming", claim_token: nil, claimed_at: nil, next_attempt_at: nil)
+      elsif subscription.author? && item.known?
         if entry.unreleased?
           # A book announced for a later date stays upcoming until it is out.
           attrs[:state] = "upcoming"
         elsif !item.baseline? && item.release_date.nil? && new_entry?(entry)
-          # First seen without a date, now dated as a new release.
+          # First seen without a date after the baseline, now dated as a new
+          # release.
           attrs[:state] = new_entry_state
           attrs[:book_types] = subscription.book_types if attrs[:state] == "queued"
           @queued += 1 if attrs[:state] == "queued"
         end
       end
       item.update!(attrs)
+    end
+
+    # Books waiting to be requested. A book already requested keeps its
+    # requests whatever its date says.
+    def postponable?(item)
+      item.pending? || item.queued? || item.failed?
+    end
+
+    # Whether an entry counts as already present. Everything in a preview
+    # does, and so does an older entry found later. An author's book without
+    # a release date is the exception: Hardcover often adds the date later,
+    # so a book first seen after the baseline stays eligible to be judged
+    # as a new release once its date is known (and stays backlist if that
+    # date turns out to be old).
+    def baseline_entry?(entry, new_entry)
+      return true if subscription.draft?
+      return false if new_entry
+
+      !(subscription.author? && entry.release_date.nil?)
     end
 
     def new_entry?(entry)

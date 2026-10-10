@@ -61,6 +61,20 @@ module HardcoverIntegration
     SettingsService.get(:hardcover_max_requests_per_run, default: 10).to_i.clamp(1, 100)
   end
 
+  # A duration in seconds from `config.x.<key>`, or `default` when it is not
+  # set. An unset custom key reads as an empty ActiveSupport::OrderedOptions,
+  # not nil, so only a number counts as configured.
+  def configured_seconds(key, default)
+    value = Rails.configuration.x.public_send(key)
+    value.is_a?(Numeric) ? [ value.to_f, 0.0 ].max : default
+  end
+
+  # Time between automatic checks of a subscription. The automatic request
+  # limit applies to windows of the same length.
+  def sync_interval
+    SettingsService.get(:hardcover_sync_interval_hours, default: 6).to_i.clamp(1, 168).hours
+  end
+
   def personal_token_url
     "https://hardcover.app/account/api/keys/new?scope=#{OAUTH_SCOPES.join('+')}"
   end

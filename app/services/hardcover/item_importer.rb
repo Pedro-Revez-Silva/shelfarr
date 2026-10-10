@@ -16,17 +16,21 @@ module Hardcover
   # again inside the same transaction that creates the requests. Pausing,
   # disconnecting, deleting the user, or disabling Hardcover therefore stops
   # the rest of the batch; those items keep their place in the queue and run
-  # after a deliberate resume.
+  # after a deliberate resume. A book whose release moved to a later date
+  # goes back to waiting for it.
+  #
+  # Automatic requests draw on the user's HardcoverRequestBudget, one per
+  # format, in that same transaction. Formats beyond it stay queued on the
+  # item until the next window; books the user selected are not limited.
   class ItemImporter
     BATCH_SIZE = 25
-    AUTOMATIC_DEFER = 15.minutes
     # Pause between items, outside any transaction. A pause or disconnect
     # waiting on the database lock gets in here instead of losing the race to
     # the next item's transaction.
     ITEM_GAP = 0.05
 
-    Result = Data.define(:processed, :requested, :failed, :deferred, :remaining, :cancelled) do
-      def initialize(processed:, requested:, failed:, deferred:, remaining:, cancelled: 0)
+    Result = Data.define(:processed, :requested, :failed, :deferred, :remaining, :cancelled, :postponed) do
+      def initialize(processed:, requested:, failed:, deferred:, remaining:, cancelled: 0, postponed: 0)
         super
       end
     end
@@ -38,27 +42,21 @@ module Hardcover
     def initialize(batch_size: BATCH_SIZE, now: Time.current)
       @batch_size = batch_size
       @now = now
-      @automatic_counts = Hash.new(0)
     end
 
     def call
       return Result.new(processed: 0, requested: 0, failed: 0, deferred: 0, remaining: 0) unless HardcoverIntegration.enabled?
 
-      requested = failed = deferred = cancelled = 0
+      counts = Hash.new(0)
       items = claim_batch
       items.each_with_index do |item, index|
         sleep(item_gap) if index.positive? && item_gap.positive?
-        case process(item)
-        when :requested then requested += 1
-        when :failed then failed += 1
-        when :deferred then deferred += 1
-        when :cancelled then cancelled += 1
-        end
+        counts[process(item)] += 1
       end
 
       HardcoverSubscription.where(id: items.map(&:hardcover_subscription_id).uniq).find_each(&:broadcast_progress)
-      Result.new(processed: items.size, requested: requested, failed: failed, deferred: deferred,
-        remaining: eligible_scope.count, cancelled: cancelled)
+      Result.new(processed: items.size, requested: counts[:requested], failed: counts[:failed], deferred: counts[:deferred],
+        remaining: eligible_scope.count, cancelled: counts[:cancelled], postponed: counts[:postponed])
     end
 
     private
@@ -67,15 +65,18 @@ module Hardcover
 
     # The test environment sets this to zero so suites do not sleep.
     def item_gap
-      configured = Rails.configuration.x.hardcover_import_item_gap
-      configured.nil? ? ITEM_GAP : configured.to_f
+      HardcoverIntegration.configured_seconds(:hardcover_import_item_gap, ITEM_GAP)
     end
 
+    # Automatic items of users who used up their budget wait for the next
+    # window without being claimed and released on every run.
     def eligible_scope
-      HardcoverSubscriptionItem.claimable(now)
+      scope = HardcoverSubscriptionItem.claimable(now)
         .joins(subscription: :user)
         .where(hardcover_subscriptions: { status: "active" })
         .where(users: { deleted_at: nil })
+      exhausted = HardcoverRequestBudget.exhausted(now).pluck(:user_id)
+      exhausted.any? ? scope.where.not(wanted: false, hardcover_subscriptions: { user_id: exhausted }) : scope
     end
 
     def claim_batch
@@ -139,19 +140,23 @@ module Hardcover
 
     def import(item, subscription)
       user = subscription.user
-
-      unless item.wanted? || within_automatic_limit?(user)
-        release!(item, next_attempt_at: now + AUTOMATIC_DEFER)
-        return :deferred
-      end
+      return postpone!(item) if item.unreleased?(now.to_date)
 
       book_types = (item.book_types.presence || subscription.book_types) & RequestOptionPolicy.book_types_for(ContentKinds::BOOK)
       return fail!(item, "No formats selected for this book") if book_types.empty?
 
       covered, request_ids = covered_formats(item, book_types)
       missing = book_types - covered
+      waiting = []
+      budget = nil
       created_types = []
       errors = []
+
+      if missing.any? && !item.wanted?
+        budget = HardcoverRequestBudget.current_for!(user, now: now)
+        waiting = missing.drop(budget.remaining)
+        missing -= waiting
+      end
 
       if missing.any?
         result = RequestCreationService.call(
@@ -166,6 +171,7 @@ module Hardcover
           created_types << request.book.book_type
           request_ids << request.id
         end
+        budget&.consume!(result.created_requests.size)
         errors = result.errors
         # A request created elsewhere in the meantime also satisfies the item.
         late_covered, late_ids = covered_formats(item, missing - created_types)
@@ -179,7 +185,8 @@ module Hardcover
           request_ids: request_ids)
       end
 
-      @automatic_counts[user.id] += created_types.size unless item.wanted?
+      return defer!(item, budget, request_ids, resolution_text(created_types, covered, waiting)) if waiting.any?
+
       item.update!(
         state: "requested",
         request_ids: (item.request_ids + request_ids).uniq,
@@ -207,8 +214,27 @@ module Hardcover
       [ covered, request_ids ]
     end
 
-    def within_automatic_limit?(user)
-      @automatic_counts[user.id] < HardcoverIntegration.max_automatic_requests_per_run
+    # The book is now announced for a later date. It waits as upcoming with
+    # its selection and formats, and the scheduler queues it again once it is
+    # out, the same as any other upcoming book.
+    def postpone!(item)
+      item.update!(state: "upcoming", claim_token: nil, claimed_at: nil, next_attempt_at: nil)
+      :postponed
+    end
+
+    # The budget ran out before every format was requested. The item stays
+    # queued with the formats still to request and runs when the window
+    # ends; formats requested now count as done next time.
+    def defer!(item, budget, request_ids, resolution)
+      item.update!(
+        request_ids: (item.request_ids + request_ids).uniq,
+        resolution: resolution,
+        last_error: nil,
+        claim_token: nil,
+        claimed_at: nil,
+        next_attempt_at: budget.window_ends_at
+      )
+      :deferred
     end
 
     def fail!(item, message, request_ids: [])
@@ -227,16 +253,17 @@ module Hardcover
       :failed
     end
 
-    # Keeps the item queued without a claim. Cancelled items keep no delay,
-    # so they run as soon as the subscription is resumed.
-    def release!(item, next_attempt_at: item.next_attempt_at)
-      item.update!(claim_token: nil, claimed_at: nil, next_attempt_at: next_attempt_at)
+    # Keeps the item queued without a claim and without a delay, so it runs
+    # as soon as the subscription is resumed.
+    def release!(item)
+      item.update!(claim_token: nil, claimed_at: nil)
     end
 
-    def resolution_text(created_types, covered)
+    def resolution_text(created_types, covered, waiting = [])
       parts = []
       parts << "Requested #{labels(created_types)}" if created_types.any?
       parts << "#{labels(covered)} already in Shelfarr" if covered.any?
+      parts << "#{labels(waiting).upcase_first} waiting for the next check (automatic request limit reached)" if waiting.any?
       parts.join("; ")
     end
 

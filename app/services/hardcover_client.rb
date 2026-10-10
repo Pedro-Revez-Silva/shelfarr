@@ -321,8 +321,7 @@ class HardcoverClient
     # Seconds between background sends for one Hardcover account. The test
     # environment lowers it so suites do not sleep between stubbed pages.
     def background_min_interval
-      configured = Rails.configuration.x.hardcover_background_min_interval
-      configured.nil? ? BACKGROUND_MIN_INTERVAL : configured.to_f
+      HardcoverIntegration.configured_seconds(:hardcover_background_min_interval, BACKGROUND_MIN_INTERVAL)
     end
 
     private

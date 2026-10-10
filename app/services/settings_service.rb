@@ -246,7 +246,7 @@ class SettingsService
     hardcover_oauth_device_flow_enabled: { type: "boolean", default: false, category: "hardcover", description: "Offer sign-in with a code at hardcover.app/link. Enable only if Device Authorization Grant is turned on for your Hardcover app; useful when Shelfarr has no HTTPS address." },
     hardcover_allow_personal_access: { type: "boolean", default: false, category: "hardcover", description: "Let users connect by pasting a personal Hardcover API key instead of signing in. Hardcover recommends OAuth for apps used by other people; only enable this for instances where every user trusts the administrator." },
     hardcover_sync_interval_hours: { type: "integer", default: 6, category: "hardcover", description: "Hours between automatic checks of followed Hardcover lists, Want to Read shelves, and authors (1-168)." },
-    hardcover_max_requests_per_run: { type: "integer", default: 10, category: "hardcover", description: "Maximum automatic requests created for each user per sync run. Additional new books stay queued for the next run." },
+    hardcover_max_requests_per_run: { type: "integer", default: 10, category: "hardcover", description: "Maximum automatic requests created for each user per sync interval, counting each format and all of the user's subscriptions. Additional books stay queued for the next interval; books users select themselves are not limited." },
 
     # Webhook Notifications
     webhook_enabled: { type: "boolean", default: false, category: "webhook", description: "Send outbound webhook notifications for request lifecycle events", env_overridable: true },

@@ -328,6 +328,103 @@ class Hardcover::SubscriptionSyncTest < ActiveSupport::TestCase
     assert_not_requested :post, HardcoverClient::BASE_URL
   end
 
+  # Answers the author's recent scan from `books`, which a test can change
+  # between syncs the way Hardcover's records change over time.
+  def author_books(books)
+    ->(_variables) { { "contributions" => books.each_with_index.map { |book, index| hardcover_contribution_row(book.call, id: index + 1) } } }
+  end
+
+  test "an undated book first seen after the baseline is requested once Hardcover dates it as a new release" do
+    configure_hardcover_instance_token
+    SettingsService.set(:immediate_search_enabled, false)
+    subscription = create_hardcover_subscription(@user, kind: "author", target_id: 501, automatic: true, baseline: 10.days.ago)
+    previewed = create_hardcover_item(subscription, book_id: 72, state: "known", baseline: true)
+    dates = { 70 => nil, 71 => nil, 72 => nil }
+    stub_hardcover_graphql("ShelfarrAuthorRecentContributions" => author_books(
+      dates.keys.map { |id| -> { hardcover_book(id: id, release_date: dates[id]) } }
+    ))
+
+    Hardcover::SubscriptionSync.call(subscription)
+
+    fresh = subscription.items.find_by!(hardcover_book_id: 70)
+    backlist = subscription.items.find_by!(hardcover_book_id: 71)
+    assert_equal [ "known", false ], [ fresh.state, fresh.baseline? ], "an undated book seen after the baseline is not part of it"
+    assert_equal [ "known", false ], [ backlist.state, backlist.baseline? ]
+
+    # Hardcover fills in the dates: one new release, one old book, and a
+    # date for the book that was already there when the author was previewed.
+    dates.merge!(70 => Date.current.iso8601, 71 => "2001-03-04", 72 => Date.current.iso8601)
+    result = Hardcover::SubscriptionSync.call(subscription.reload)
+
+    assert_equal 1, result.queued
+    assert_equal [ "queued", [ "ebook" ] ], [ fresh.reload.state, fresh.book_types ]
+    assert_equal "known", backlist.reload.state, "a book dated long ago is backlist"
+    assert_equal "known", previewed.reload.state, "a book left unselected in the preview stays unrequested"
+
+    assert_difference -> { Request.count } => 1 do
+      HardcoverSyncSchedulerJob.perform_now
+      Hardcover::ItemImporter.call
+    end
+    request = Request.where(id: fresh.reload.request_ids).sole
+    assert_equal [ "requested", @user, "hardcover", "70" ], [ fresh.state, request.user, request.created_via, request.book.hardcover_id ]
+
+    assert_no_difference -> { Request.count } do
+      Hardcover::SubscriptionSync.call(subscription.reload)
+      HardcoverSyncSchedulerJob.perform_now
+      Hardcover::ItemImporter.call
+    end
+  end
+
+  test "a release postponed after it was queued waits for its new date and is then requested once" do
+    configure_hardcover_instance_token
+    SettingsService.set(:immediate_search_enabled, false)
+    subscription = create_hardcover_subscription(@user, kind: "author", target_id: 501, automatic: true, baseline: 10.days.ago)
+    original = Date.yesterday
+    dates = { 80 => original, 81 => original, 82 => original }
+    stub_hardcover_graphql("ShelfarrAuthorRecentContributions" => author_books(
+      dates.keys.map { |id| -> { hardcover_book(id: id, release_date: dates[id].iso8601) } }
+    ))
+    travel_to(2.days.ago) { Hardcover::SubscriptionSync.call(subscription) }
+    announced = subscription.items.find_by!(hardcover_book_id: 80)
+    assert_equal "upcoming", announced.state
+    selected = subscription.items.find_by!(hardcover_book_id: 81)
+    selected.update!(wanted: true, book_types: [ "audiobook" ])
+    requested = subscription.items.find_by!(hardcover_book_id: 82)
+
+    HardcoverSyncSchedulerJob.perform_now
+    assert_equal [ "queued", "queued" ], [ announced.reload.state, selected.reload.state ]
+    requested.update!(state: "requested", request_ids: [ 4_242 ])
+
+    # The publisher moves the release two weeks out before the import runs.
+    postponed = 2.weeks.from_now.to_date
+    dates.transform_values! { postponed }
+    Hardcover::SubscriptionSync.call(subscription.reload)
+
+    announced.reload
+    assert_equal [ "upcoming", postponed, false, [ "ebook" ], nil ], [ announced.state, announced.release_date, announced.wanted?, announced.book_types, announced.claim_token ]
+    assert_equal [ "upcoming", true, [ "audiobook" ] ], [ selected.reload.state, selected.wanted?, selected.book_types ], "the selection and formats wait with it"
+    assert_equal [ "requested", [ 4_242 ] ], [ requested.reload.state, requested.request_ids ], "requests already made are kept"
+    assert_no_difference -> { Request.count } do
+      HardcoverSyncSchedulerJob.perform_now
+      assert_equal 0, Hardcover::ItemImporter.call.processed
+    end
+
+    travel_to(postponed.in_time_zone + 1.hour) do
+      assert_difference -> { Request.count } => 2 do
+        HardcoverSyncSchedulerJob.perform_now
+        Hardcover::ItemImporter.call
+      end
+      assert_equal [ "requested", "requested" ], [ announced.reload.state, selected.reload.state ]
+      assert_equal [ "audiobook" ], Request.where(id: selected.request_ids).map { |request| request.book.book_type }
+
+      assert_no_difference -> { Request.count } do
+        Hardcover::SubscriptionSync.call(subscription.reload)
+        HardcoverSyncSchedulerJob.perform_now
+        Hardcover::ItemImporter.call
+      end
+    end
+  end
+
   test "a sync that started before the account changed discards what it read" do
     create_hardcover_connection(@user)
     subscription = create_hardcover_subscription(@user, kind: "want_to_read", automatic: true)

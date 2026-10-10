@@ -379,4 +379,38 @@ class Hardcover::SubscriptionsControllerTest < ActionDispatch::IntegrationTest
     end
     assert_equal "requested", upcoming.reload.state
   end
+
+  test "a followed author's book added without a date is requested once Hardcover dates it" do
+    SettingsService.set(:immediate_search_enabled, false)
+    SettingsService.set(:enabled_languages, [ "en" ])
+    catalog = [ hardcover_book(id: 811, title: "Undated At Preview", release_date: nil) ]
+    stub_hardcover_graphql(
+      "ShelfarrAuthor" => { "authors" => [ { "id" => 501, "name" => "Ada Writer", "slug" => "ada" } ] },
+      "ShelfarrAuthorRecentContributions" => ->(_variables) do
+        { "contributions" => catalog.each_with_index.map { |book, index| hardcover_contribution_row(book, id: index + 1) } }
+      end
+    )
+    post hardcover_subscriptions_path, params: { kind: "author", hardcover_target_id: 501 }
+    perform_enqueued_jobs(only: HardcoverSubscriptionSyncJob)
+    subscription = @user.hardcover_subscriptions.sole
+    patch hardcover_subscription_path(subscription), params: { book_types: [ "ebook" ], automatic: "1" }
+
+    travel 1.day do
+      catalog << hardcover_book(id: 812, title: "Added Later", release_date: nil)
+      HardcoverSubscriptionSyncJob.perform_now(subscription.id)
+    end
+    added = subscription.items.find_by!(hardcover_book_id: 812)
+    assert_equal [ "known", false ], [ added.state, added.baseline? ]
+
+    travel 2.days do
+      catalog.each { |book| book.merge!("release_date" => Date.current.iso8601, "release_year" => Date.current.year) }
+      HardcoverSubscriptionSyncJob.perform_now(subscription.id)
+      assert_difference -> { Request.where(created_via: "hardcover").count } => 1 do
+        HardcoverSyncSchedulerJob.perform_now
+        perform_enqueued_jobs(only: HardcoverImportJob)
+      end
+    end
+    assert_equal "requested", added.reload.state
+    assert_equal "known", subscription.items.find_by!(hardcover_book_id: 811).state, "the book shown in the preview stays as chosen"
+  end
 end

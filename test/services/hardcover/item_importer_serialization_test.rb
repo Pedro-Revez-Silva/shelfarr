@@ -24,6 +24,7 @@ class Hardcover::ItemImporterSerializationTest < ActiveSupport::TestCase
     HardcoverSubscriptionItem.delete_all
     HardcoverSubscription.delete_all
     HardcoverConnection.delete_all
+    HardcoverRequestBudget.delete_all
     new_requests = Request.where("id > ?", @requests_before)
     Notification.where(notifiable: new_requests.to_a).delete_all
     ActivityLog.where(trackable: new_requests.to_a).delete_all
