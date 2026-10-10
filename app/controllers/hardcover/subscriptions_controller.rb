@@ -284,6 +284,7 @@ module Hardcover
           status: "active",
           book_types: book_types,
           automatic: automatic,
+          automatic_enabled_at: automatic ? Time.current : nil,
           baseline_established_at: baseline,
           sync_cursor_at: baseline,
           next_sync_at: Time.current + @subscription.sync_interval,

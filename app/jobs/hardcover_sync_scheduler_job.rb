@@ -35,14 +35,14 @@ class HardcoverSyncSchedulerJob < ApplicationJob
   # * an automatic author subscription requests it, since following an
   #   author means watching their future releases;
   # * an automatic list or shelf only requests books added after its
-  #   baseline. A future book that was already there and left unselected
-  #   in the preview is never requested automatically.
+  #   baseline and after automatic requests were enabled. A future book left
+  #   unselected in the preview is never requested automatically.
   # Everything else waits for the user (baseline list books as not requested).
   # Both steps return the ids of the subscriptions whose items they changed.
   def promote_released_items
     active_items(HardcoverSubscriptionItem.released_upcoming).find_each.map do |item|
       subscription = item.subscription
-      automatic = subscription.automatic? && subscription.book_types.any? && (subscription.author? || !item.baseline?)
+      automatic = subscription.automatically_requests?(added_at: item.entry_added_at, baseline: item.baseline?)
       if item.wanted? || automatic
         item.update!(state: "queued", book_types: item.book_types.presence || subscription.book_types, next_attempt_at: nil)
       elsif item.baseline? && !subscription.author?

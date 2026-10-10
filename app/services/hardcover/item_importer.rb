@@ -109,7 +109,8 @@ module Hardcover
         if current.nil? || !current.queued?
           outcome = :skipped
         elsif (subscription = eligible_subscription(current))
-          outcome = current.wanted? || subscription.automatic? ? import(current, subscription) : hold!(current)
+          automatic = subscription.automatically_requests?(added_at: current.entry_added_at, baseline: current.baseline?)
+          outcome = current.wanted? || automatic ? import(current, subscription) : hold!(current)
         else
           release!(current)
           outcome = :cancelled

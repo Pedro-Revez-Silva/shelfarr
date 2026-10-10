@@ -112,6 +112,7 @@ class Hardcover::SubscriptionsControllerTest < ActionDispatch::IntegrationTest
     subscription.reload
     assert subscription.active?
     assert subscription.automatic?
+    assert_in_delta Time.current, subscription.automatic_enabled_at, 5
     assert_equal %w[ebook audiobook], subscription.book_types
     assert_equal subscription.snapshot_completed_at.to_i, subscription.baseline_established_at.to_i
     assert_equal [ "queued", %w[ebook audiobook] ], [ selected.reload.state, selected.book_types ]

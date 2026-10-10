@@ -130,6 +130,7 @@ module HardcoverTestHelper
 
   # Want to Read subscriptions belong to the account create_hardcover_connection
   # uses by default (4242) unless another account_id is given.
+  # Active automatic subscriptions represent a follow enabled at its baseline.
   def create_hardcover_subscription(user, kind: "list", target_id: 77, status: "active", automatic: false, book_types: [ "ebook" ],
     baseline: 2.days.ago, title: "Subscription #{kind}", account_id: (kind == "want_to_read" ? 4242 : nil), personal: kind == "want_to_read")
     user.hardcover_subscriptions.create!(
@@ -140,6 +141,7 @@ module HardcoverTestHelper
       title: title,
       status: status,
       automatic: automatic,
+      automatic_enabled_at: automatic && status != "draft" ? baseline || Time.current : nil,
       book_types: book_types,
       snapshot_state: "ready",
       snapshot_completed_at: baseline,
@@ -149,7 +151,8 @@ module HardcoverTestHelper
   end
 
   def create_hardcover_item(subscription, book_id:, state: "known", title: "Book #{book_id}", **attrs)
-    subscription.items.create!({ hardcover_book_id: book_id, title: title, author: "Ada Writer", state: state, first_seen_at: Time.current }.merge(attrs))
+    subscription.items.create!({ hardcover_book_id: book_id, title: title, author: "Ada Writer", state: state,
+      first_seen_at: Time.current, entry_added_at: Time.current }.merge(attrs))
   end
 
   def configure_hardcover_instance_token(token = "instance_test_token")

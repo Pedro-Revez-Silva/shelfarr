@@ -148,7 +148,8 @@ class HardcoverSubscription < ApplicationRecord
   # books returned to the user.
   def update_settings!(book_types:, automatic:)
     with_lock do
-      update!(book_types: book_types, automatic: automatic)
+      enabled_at = automatic ? (automatic? && automatic_enabled_at.presence || Time.current) : nil
+      update!(book_types: book_types, automatic: automatic, automatic_enabled_at: enabled_at)
       next 0 if automatic
 
       items.where(wanted: false, state: "failed").where.not(next_attempt_at: nil).update_all(next_attempt_at: nil, updated_at: Time.current)
@@ -156,6 +157,17 @@ class HardcoverSubscription < ApplicationRecord
       held.each(&:hold_for_review!)
       held.size
     end
+  end
+
+  # Lists and shelves only request additions made while automatic requests
+  # are enabled, even when an outage delays reading them until much later.
+  # Author follows instead watch releases, regardless of when a catalog
+  # record was added. Explicit user selections are checked by the caller.
+  def automatically_requests?(added_at:, baseline: false)
+    return false unless automatic? && book_types.any?
+    return true if author?
+
+    !baseline && added_at.present? && automatic_enabled_at.present? && added_at >= automatic_enabled_at
   end
 
   # Starts a fresh preview of a different account's Want to Read shelf. The
@@ -171,6 +183,7 @@ class HardcoverSubscription < ApplicationRecord
         owner_username: username,
         personal: true,
         automatic: false,
+        automatic_enabled_at: nil,
         pause_reason: nil,
         snapshot_state: "pending",
         snapshot_completed_at: nil,

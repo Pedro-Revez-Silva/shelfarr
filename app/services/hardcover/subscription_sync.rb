@@ -248,13 +248,14 @@ module Hardcover
       # Settings changed while Hardcover was being read apply to what is
       # recorded now, so turning automatic requests off stops queueing.
       subscription.automatic = current.automatic
+      subscription.automatic_enabled_at = current.automatic_enabled_at
       subscription.book_types = current.read_attribute(:book_types)
     end
 
     def create_item!(entry)
       new_entry = !subscription.draft? && new_entry?(entry)
       state = if entry.unreleased? then "upcoming"
-      elsif new_entry then new_entry_state
+      elsif new_entry then new_entry_state(entry)
       else "known"
       end
       subscription.items.create!(item_attributes(entry).merge(
@@ -271,6 +272,9 @@ module Hardcover
 
     def refresh_item!(item, entry)
       attrs = item_attributes(entry)
+      # Editing an existing shelf row must not make an older, unselected
+      # upcoming addition eligible after automatic requests are enabled.
+      attrs[:entry_added_at] = item.entry_added_at unless subscription.author?
       if entry.unreleased? && postponable?(item)
         # The release moved to a later date before anything was requested.
         # The book waits as upcoming, keeping the user's selection and
@@ -283,7 +287,7 @@ module Hardcover
         elsif !item.baseline? && item.release_date.nil? && new_entry?(entry)
           # First seen without a date after the baseline, now dated as a new
           # release.
-          attrs[:state] = new_entry_state
+          attrs[:state] = new_entry_state(entry)
           attrs[:book_types] = subscription.book_types if attrs[:state] == "queued"
           @queued += 1 if attrs[:state] == "queued"
         end
@@ -324,8 +328,8 @@ module Hardcover
       end
     end
 
-    def new_entry_state
-      subscription.automatic? && subscription.book_types.any? ? "queued" : "pending"
+    def new_entry_state(entry)
+      subscription.automatically_requests?(added_at: entry.added_at) ? "queued" : "pending"
     end
 
     def item_attributes(entry)
