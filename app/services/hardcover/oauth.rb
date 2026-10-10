@@ -13,15 +13,22 @@ module Hardcover
   # client ID (and, for a "Web app" registration, its secret).
   module Oauth
     ISSUER = "https://api.hardcover.app"
+    API_ORIGIN = ISSUER
+    WEB_ORIGIN = "https://hardcover.app"
     DISCOVERY_URL = "#{ISSUER}/.well-known/oauth-authorization-server".freeze
     DEFAULT_ENDPOINTS = {
       "issuer" => ISSUER,
-      "authorization_endpoint" => "https://hardcover.app/oauth2/authorize",
-      "token_endpoint" => "#{ISSUER}/oauth2/token",
-      "revocation_endpoint" => "#{ISSUER}/oauth2/revoke",
-      "device_authorization_endpoint" => "#{ISSUER}/oauth2/device"
+      "authorization_endpoint" => "#{WEB_ORIGIN}/oauth2/authorize",
+      "token_endpoint" => "#{API_ORIGIN}/oauth2/token",
+      "revocation_endpoint" => "#{API_ORIGIN}/oauth2/revoke",
+      "device_authorization_endpoint" => "#{API_ORIGIN}/oauth2/device"
     }.freeze
     ALLOWED_HOSTS = %w[hardcover.app api.hardcover.app].freeze
+    # Discovered endpoints may only move to another plain path on one of
+    # Hardcover's origins: no empty, dot, or encoded segments, and nothing
+    # that another URL parser could read as a different host.
+    ENDPOINT_PATH = %r{\A(?:/[A-Za-z0-9_~-]+(?:\.[A-Za-z0-9_~-]+)*)+\z}
+    MAX_ENDPOINT_BYTES = 512
     DISCOVERY_CACHE_KEY = "hardcover:oauth:discovery:v1"
     DISCOVERY_TTL = 1.day
     PENDING_TTL = 10.minutes
@@ -79,7 +86,7 @@ module Hardcover
       end
 
       def start_device_authorization
-        body = post_form(endpoint("device_authorization_endpoint"), client_fields(scope: HardcoverIntegration::OAUTH_SCOPES.join(" ")))
+        body = post_form("device_authorization_endpoint", client_fields(scope: HardcoverIntegration::OAUTH_SCOPES.join(" ")))
         unless body["device_code"].present? && body["user_code"].present?
           raise Error, "Hardcover did not start the device sign-in"
         end
@@ -112,7 +119,7 @@ module Hardcover
       def revoke(token)
         return false if token.blank?
 
-        post_form(endpoint("revocation_endpoint"), client_fields(token: token, token_type_hint: "refresh_token"), allow_error: true)
+        post_form("revocation_endpoint", client_fields(token: token, token_type_hint: "refresh_token"), allow_error: true)
         true
       rescue Error, Faraday::Error => e
         Rails.logger.warn("[Hardcover::Oauth] Token revocation failed: #{e.class}")
@@ -166,8 +173,14 @@ module Hardcover
         end
       end
 
+      # Every read rebuilds the URL from a server-owned origin, so neither the
+      # discovery document nor a cached copy of it can choose the scheme,
+      # host, port, credentials, query, or fragment a request goes to.
       def endpoint(name)
-        discovery.fetch(name) { DEFAULT_ENDPOINTS.fetch(name) }
+        default = DEFAULT_ENDPOINTS.fetch(name)
+        return default if name == "issuer"
+
+        hardcover_endpoint(discovery[name]) || default
       end
 
       def reset_discovery!
@@ -199,14 +212,33 @@ module Hardcover
         body = parse_json(response.body)
         raise Error, "discovery issuer mismatch" unless body["issuer"] == ISSUER
 
-        DEFAULT_ENDPOINTS.keys.index_with do |key|
-          value = body[key]
-          safe_hardcover_url(value) ? value : DEFAULT_ENDPOINTS[key]
+        DEFAULT_ENDPOINTS.keys.excluding("issuer").index_with do |key|
+          hardcover_endpoint(body[key]) || DEFAULT_ENDPOINTS[key]
         end
       end
 
+      # Returns the endpoint rebuilt from one of Hardcover's own origins and a
+      # checked path, or nil for anything else.
+      def hardcover_endpoint(value)
+        value = value.to_s
+        return if value.bytesize > MAX_ENDPOINT_BYTES || value.match?(/[^\x21-\x7e]|\\/)
+
+        uri = URI.parse(value)
+        return unless uri.is_a?(URI::HTTPS) && uri.port == URI::HTTPS::DEFAULT_PORT
+        return unless uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?
+
+        origin = case uri.host.to_s.downcase
+        when "api.hardcover.app" then API_ORIGIN
+        when "hardcover.app" then WEB_ORIGIN
+        end
+        path = uri.path.to_s
+        "#{origin}#{path}" if origin && path.match?(ENDPOINT_PATH)
+      rescue URI::InvalidURIError
+        nil
+      end
+
       def token_request(**fields)
-        body = post_form(endpoint("token_endpoint"), client_fields(**fields))
+        body = post_form("token_endpoint", client_fields(**fields))
         access_token = body["access_token"].to_s
         raise Error, "Hardcover did not return an access token" if access_token.blank?
 
@@ -227,9 +259,13 @@ module Hardcover
         fields
       end
 
-      def post_form(url, fields, allow_error: false)
+      # Takes the endpoint's name rather than a URL so callers cannot send the
+      # client credentials and tokens anywhere but Hardcover. Redirects are
+      # not followed: a 3xx is an error like any other non-2xx answer.
+      def post_form(endpoint_name, fields, allow_error: false)
         raise Error, "Hardcover OAuth is not configured" if HardcoverIntegration.oauth_client_id.blank?
 
+        url = endpoint(endpoint_name)
         response = http.post(url) do |request|
           request.headers["Content-Type"] = "application/x-www-form-urlencoded"
           request.headers["Accept"] = "application/json"
@@ -271,9 +307,13 @@ module Hardcover
         {}
       end
 
+      # Links shown to the person signing in (they may carry the user code in
+      # the query). Shelfarr never requests them itself.
       def safe_hardcover_url(value)
         uri = URI.parse(value.to_s)
-        value.to_s if uri.scheme == "https" && ALLOWED_HOSTS.include?(uri.host)
+        return unless uri.is_a?(URI::HTTPS) && uri.port == URI::HTTPS::DEFAULT_PORT && uri.userinfo.nil?
+
+        value.to_s if ALLOWED_HOSTS.include?(uri.host.to_s.downcase)
       rescue URI::InvalidURIError
         nil
       end

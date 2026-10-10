@@ -336,16 +336,24 @@ class HardcoverClient
       with_rate_limit_request_lock(credential.digest) do
         ensure_not_rate_limited!(credential.digest)
         space_background_send!(credential.digest) if background
-        remember_send!(credential.digest)
 
-        response = Timeout.timeout(
-          HARD_REQUEST_TIMEOUT,
-          ConnectionError,
-          "Hardcover request timed out"
-        ) do
-          connection(credential).post do |req|
-            req.body = { query: query, variables: variables }.to_json
+        begin
+          response = Timeout.timeout(
+            HARD_REQUEST_TIMEOUT,
+            ConnectionError,
+            "Hardcover request timed out"
+          ) do
+            connection(credential).post do |req|
+              req.body = { query: query, variables: variables }.to_json
+            end
           end
+        ensure
+          # The request reaches Hardcover somewhere between dispatch and the
+          # end of the attempt, and preparing it can be delayed (GC, a busy
+          # process). Stamping once the attempt is over, still under the
+          # lease, keeps the next send a full interval behind it either way,
+          # including when the attempt failed after leaving the process.
+          remember_send!(credential.digest)
         end
 
         handle_response(response, credential.digest)
@@ -511,7 +519,8 @@ class HardcoverClient
     end
 
     # Runs inside the lease right before sending. Slots are already spaced;
-    # this also covers a slot that was delayed by an interactive request.
+    # this keeps a full interval after the previous attempt ended, which also
+    # covers a slot delayed by an interactive or slow request.
     def space_background_send!(credential_digest)
       last = last_send_at(credential_digest)
       return unless last
@@ -535,7 +544,8 @@ class HardcoverClient
       pacing_value(:sent, credential_digest, ceiling: Time.current.to_f)
     end
 
-    # Interactive sends are recorded too, so background work yields to them.
+    # Records when the account's latest request attempt finished. Interactive
+    # requests are recorded too, so background work yields to them.
     def remember_send!(credential_digest)
       remember_pacing_value!(:sent, credential_digest, Time.current.to_f)
     end

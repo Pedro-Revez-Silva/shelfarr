@@ -188,11 +188,68 @@ class HardcoverClientAccountsTest < ActiveSupport::TestCase
     assert_equal [ 8, 8, 8 ], results, "every job finishes all of its pages"
     assert_equal [ 200 ], sends.map { |send| send[1] }.uniq, "no request is rejected by the bucket"
     gaps = sends.map(&:first).each_cons(2).map { |earlier, later| later - earlier }
-    # The gap is measured where the stub receives the request, so it carries a
-    # few milliseconds of client overhead jitter.
-    assert_operator gaps.min, :>=, interval * 0.7, "sends for one account are spaced out, not clustered"
+    # The stub sees each request between its dispatch and the end of its
+    # attempt, and pacing counts from the end, so every gap is a full interval
+    # however late a request left the client.
+    assert_operator gaps.min, :>=, interval, "sends for one account are spaced out, not clustered"
     assert_operator sends.map(&:last).min, :>=, 7, "the burst allowance is never used up"
     assert_operator elapsed, :<, 24 * interval * 3, "pacing queues jobs fairly instead of starving them"
+  end
+
+  # Preparing a request (serializing it, GC, a busy process) can hold it up
+  # after it was let through. Slow serialization makes that delay
+  # deterministic here: the first request reaches Hardcover late, and the next
+  # one must still wait a full interval after it instead of following at once.
+  test "a request that leaves the client late does not let the next background send follow it closely" do
+    interval = 0.05
+    credential = HardcoverClient.credential_for_token("hc_at_late", budget_key: HardcoverClient.account_budget_key(912))
+    arrivals = []
+    stub_request(:post, HardcoverClient::BASE_URL).to_return do |_request|
+      arrivals << Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      { status: 200, headers: RATE_LIMIT_HEADERS, body: { data: { me: [ { id: 912 } ] } }.to_json }
+    end
+
+    HardcoverClient.stub(:background_min_interval, interval) do
+      HardcoverClient.execute(Hardcover::Queries::ME, slow_variables(interval * 3), credential: credential, background: true)
+      HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true)
+    end
+
+    assert_equal 2, arrivals.size
+    assert_operator arrivals[1] - arrivals[0], :>=, interval
+  end
+
+  test "a failed attempt still holds back the next background send" do
+    interval = 0.05
+    credential = HardcoverClient.credential_for_token("hc_at_fail", budget_key: HardcoverClient.account_budget_key(913))
+    arrivals = []
+    stub_request(:post, HardcoverClient::BASE_URL).to_return do |_request|
+      arrivals << Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      raise Faraday::ConnectionFailed, "connection reset" if arrivals.size == 1
+
+      { status: 200, headers: RATE_LIMIT_HEADERS, body: { data: { me: [ { id: 913 } ] } }.to_json }
+    end
+
+    HardcoverClient.stub(:background_min_interval, interval) do
+      assert_raises(HardcoverClient::ConnectionError) do
+        HardcoverClient.execute(Hardcover::Queries::ME, slow_variables(interval * 3), credential: credential, background: true)
+      end
+      HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true)
+    end
+
+    assert_equal 2, arrivals.size
+    assert_operator arrivals[1] - arrivals[0], :>=, interval
+  end
+
+  test "interactive requests are never held back by background pacing" do
+    credential = HardcoverClient.credential_for_token("hc_at_fg", budget_key: HardcoverClient.account_budget_key(914))
+    stub_hardcover_graphql("ShelfarrMe" => { "me" => [ { "id" => 914 } ] })
+
+    HardcoverClient.stub(:background_min_interval, 5.0) do
+      HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential, background: true)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      HardcoverClient.execute(Hardcover::Queries::ME, {}, credential: credential)
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 1
+    end
   end
 
   test "a background job waits out a short cooldown instead of failing" do
@@ -222,5 +279,18 @@ class HardcoverClientAccountsTest < ActiveSupport::TestCase
       assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 1
     end
     assert_equal 3, hardcover_requests.size
+  end
+
+  private
+
+  # Variables whose JSON encoding takes `seconds`, holding the request up
+  # after the client let it through and before it reaches the network.
+  def slow_variables(seconds)
+    Class.new do
+      define_method(:as_json) do |*|
+        sleep seconds
+        {}
+      end
+    end.new
   end
 end

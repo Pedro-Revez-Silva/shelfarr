@@ -59,6 +59,116 @@ class Hardcover::OauthTest < ActiveSupport::TestCase
     end
   end
 
+  UNSAFE_ENDPOINTS = [
+    "https://attacker.example/oauth2/token",
+    "http://api.hardcover.app/oauth2/token",
+    "https://api.hardcover.app:8443/oauth2/token",
+    "https://user:pass@api.hardcover.app/oauth2/token",
+    "https://api.hardcover.app@attacker.example/oauth2/token",
+    "https://api.hardcover.app.attacker.example/oauth2/token",
+    "https://api.hardcover.app./oauth2/token",
+    "https://api.hardcover.app//attacker.example/oauth2/token",
+    "https://api.hardcover.app/oauth2/../token",
+    "https://api.hardcover.app/oauth2/./token",
+    "https://api.hardcover.app/%2e%2e/oauth2/token",
+    "https://api.hardcover.app/oauth2%2F..%2Ftoken",
+    "https://api.hardcover.app\\@attacker.example/oauth2/token",
+    "https://api.hardcover.app/oauth2/token?next=https://attacker.example",
+    "https://api.hardcover.app/oauth2/token#fragment",
+    "https://api.hardcover.app/oauth2/token\r\nHost: attacker.example",
+    " https://api.hardcover.app/oauth2/token",
+    "https://api.hardcover.app",
+    "https://api.hardcover.app/",
+    "//attacker.example/oauth2/token",
+    "/oauth2/token",
+    "javascript:alert(1)",
+    "https://api.hardcover.app/#{'a' * 600}",
+    123,
+    nil,
+    [ "https://api.hardcover.app/oauth2/token" ],
+    { "url" => "https://api.hardcover.app/oauth2/token" }
+  ].freeze
+
+  test "discovery cannot change the scheme, host, port, credentials, or shape of an endpoint" do
+    with_hardcover_memory_cache do
+      UNSAFE_ENDPOINTS.each do |value|
+        Hardcover::Oauth.reset_discovery!
+        stub_request(:get, Hardcover::Oauth::DISCOVERY_URL).to_return(
+          status: 200, headers: { "Content-Type" => "application/json" },
+          body: DISCOVERY.merge("token_endpoint" => value).to_json
+        )
+
+        assert_equal TOKEN_URL, Hardcover::Oauth.endpoint("token_endpoint"), "accepted #{value.inspect}"
+      end
+    end
+  end
+
+  test "discovery may move an endpoint to another path on Hardcover's origins" do
+    with_hardcover_memory_cache do
+      stub_request(:get, Hardcover::Oauth::DISCOVERY_URL).to_return(
+        status: 200, headers: { "Content-Type" => "application/json" },
+        body: DISCOVERY.merge(
+          "token_endpoint" => "https://API.Hardcover.app:443/oauth2/v2/token",
+          "authorization_endpoint" => "https://hardcover.app/oauth2/v2.1/authorize"
+        ).to_json
+      )
+      moved = stub_request(:post, "https://api.hardcover.app/oauth2/v2/token")
+        .to_return(status: 200, body: { access_token: "hc_at_moved", expires_in: 60 }.to_json)
+
+      token_set = Hardcover::Oauth.exchange_code(code: "c", code_verifier: "v", redirect_uri: "https://shelf.example/cb")
+
+      assert_requested moved
+      assert_equal "hc_at_moved", token_set.access_token
+      assert_equal "https://hardcover.app/oauth2/v2.1/authorize", Hardcover::Oauth.endpoint("authorization_endpoint")
+    end
+  end
+
+  # The discovery document is cached in the shared cache store. Whatever is
+  # stored there is checked again before every use.
+  test "a tampered cached discovery document cannot redirect any OAuth request" do
+    SettingsService.set(:hardcover_oauth_client_secret, "s3cret")
+    with_hardcover_memory_cache do
+      attacker = stub_request(:any, /attacker\.example/)
+      Rails.cache.write(Hardcover::Oauth::DISCOVERY_CACHE_KEY, {
+        "issuer" => "https://attacker.example",
+        "authorization_endpoint" => "https://attacker.example/authorize",
+        "token_endpoint" => "https://attacker.example/token",
+        "revocation_endpoint" => "https://api.hardcover.app@attacker.example/revoke",
+        "device_authorization_endpoint" => "https://api.hardcover.app//attacker.example/device"
+      })
+      basic = { "Authorization" => "Basic #{Base64.strict_encode64('client-123:s3cret')}" }
+      token = stub_request(:post, TOKEN_URL).with(headers: basic)
+        .to_return(status: 200, body: { access_token: "hc_at_1", refresh_token: "hc_rt_1", expires_in: 60 }.to_json)
+      device = stub_request(:post, "https://api.hardcover.app/oauth2/device").with(headers: basic)
+        .to_return(status: 200, body: { device_code: "d", user_code: "U", interval: 5, expires_in: 600 }.to_json)
+      revoke = stub_request(:post, "https://api.hardcover.app/oauth2/revoke").with(headers: basic).to_return(status: 200)
+
+      Hardcover::Oauth.exchange_code(code: "c", code_verifier: "v", redirect_uri: "https://shelf.example/cb")
+      Hardcover::Oauth.refresh("hc_rt_1")
+      Hardcover::Oauth.start_device_authorization
+      Hardcover::Oauth.poll_device_authorization("d")
+      assert Hardcover::Oauth.revoke("hc_rt_1")
+
+      assert_requested token, times: 3
+      assert_requested device
+      assert_requested revoke
+      assert_not_requested attacker
+      assert_not Hardcover::Oauth.valid_issuer?("https://attacker.example")
+      assert Hardcover::Oauth.authorization_url(state: "s", code_challenge: "c", redirect_uri: "https://shelf.example/cb")
+        .start_with?("https://hardcover.app/oauth2/authorize?")
+    end
+  end
+
+  test "a redirect from the token endpoint is not followed" do
+    attacker = stub_request(:any, /attacker\.example/)
+    stub_request(:post, TOKEN_URL).to_return(status: 307, headers: { "Location" => "https://attacker.example/token" })
+
+    assert_raises(Hardcover::Oauth::Error) do
+      Hardcover::Oauth.exchange_code(code: "c", code_verifier: "v", redirect_uri: "https://shelf.example/cb")
+    end
+    assert_not_requested attacker
+  end
+
   test "a public client exchanges the code with client_id and the PKCE verifier" do
     stub = stub_request(:post, TOKEN_URL)
       .with(body: hash_including("grant_type" => "authorization_code", "code" => "code-1", "code_verifier" => "verifier-1",
@@ -154,6 +264,17 @@ class Hardcover::OauthTest < ActiveSupport::TestCase
       .to_return(status: 200, body: { device_code: "d", user_code: "WXYZ-0000", verification_uri: "https://phish.example/link", interval: 5, expires_in: 600 }.to_json)
 
     assert_equal "https://hardcover.app/link", Hardcover::Oauth.start_device_authorization.verification_uri
+  end
+
+  test "device sign-in rejects verification links with credentials or another port" do
+    stub_request(:post, "https://api.hardcover.app/oauth2/device")
+      .to_return(status: 200, body: { device_code: "d", user_code: "WXYZ-0000", interval: 5, expires_in: 600,
+        verification_uri: "https://hardcover.app:8443/link",
+        verification_uri_complete: "https://hardcover.app@phish.example/link?code=WXYZ-0000" }.to_json)
+
+    start = Hardcover::Oauth.start_device_authorization
+    assert_equal "https://hardcover.app/link", start.verification_uri
+    assert_nil start.verification_uri_complete
   end
 
   test "revocation failures do not raise" do
