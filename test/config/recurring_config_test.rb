@@ -75,4 +75,14 @@ class RecurringConfigTest < ActiveSupport::TestCase
     assert_equal [ { "scheduled" => true } ], sync_job["args"]
     assert_equal "every minute", sync_job["schedule"]
   end
+
+  test "checks Hardcover subscriptions every fifteen minutes" do
+    config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
+
+    job = config.fetch("default").fetch("hardcover_sync")
+
+    assert_equal "HardcoverSyncSchedulerJob", job["class"]
+    assert_equal "default", job["queue"]
+    assert_equal "every 15 minutes", job["schedule"]
+  end
 end

@@ -9,6 +9,9 @@ class User < ApplicationRecord
   has_many :uploads, dependent: :destroy
   has_many :notifications, dependent: :destroy
   has_many :activity_logs, dependent: :destroy
+  has_one :hardcover_connection, dependent: :destroy
+  has_many :hardcover_subscriptions, dependent: :destroy
+  has_one :hardcover_request_budget, dependent: :delete
 
   scope :active, -> { where(deleted_at: nil) }
 
@@ -151,12 +154,24 @@ class User < ApplicationRecord
 
   # Soft delete
   def soft_delete!
+    hardcover_token = nil
     transaction do
       sessions.destroy_all
       now = Time.current
       api_tokens.where(revoked_at: nil).update_all(revoked_at: now, updated_at: now)
+      hardcover_subscriptions.where(status: %w[draft active]).update_all(
+        status: "paused", pause_reason: "Account deleted", updated_at: now
+      )
+      # Read the newest tokens and delete the row whatever its version, so a
+      # refresh finishing meanwhile cannot keep the connection alive.
+      if (connection = HardcoverConnection.find_by(user_id: id))
+        hardcover_token = Hardcover::ConnectionManager.revocable_token(connection)
+        HardcoverConnection.where(id: connection.id).delete_all
+      end
+      association(:hardcover_connection).reset
       update!(deleted_at: Time.current)
     end
+    Hardcover::Oauth.revoke(hardcover_token) if hardcover_token.present?
   end
 
   def deleted?

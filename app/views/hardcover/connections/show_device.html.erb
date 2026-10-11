@@ -1,0 +1,22 @@
+<% content_for :title, "Sign in with Hardcover · Shelfarr" %>
+<div class="mx-auto max-w-lg">
+  <div class="rounded-lg border border-gray-800 bg-gray-900 p-6"
+       data-controller="hardcover-device"
+       data-hardcover-device-url-value="<%= device_poll_hardcover_connection_path(format: :json) %>"
+       data-hardcover-device-interval-value="<%= @device["interval"].to_i %>">
+    <h1 class="text-2xl font-bold text-white">Sign in with a code</h1>
+    <ol class="mt-4 list-decimal space-y-2 pl-5 text-sm text-gray-300">
+      <li>Open <%= link_to @device["verification_uri"], @device["verification_uri_complete"].presence || @device["verification_uri"], target: "_blank", rel: "noopener", class: "text-blue-400 hover:text-blue-300" %> on any device.</li>
+      <li>Enter this code and approve Shelfarr:</li>
+    </ol>
+    <p class="my-6 text-center font-mono text-4xl font-bold tracking-widest text-white" aria-label="Sign-in code <%= @device["user_code"].chars.join(" ") %>"><%= @device["user_code"] %></p>
+    <p class="text-sm text-gray-400" role="status" aria-live="polite" data-hardcover-device-target="status">
+      Waiting for approval. This page continues automatically.
+    </p>
+    <p class="mt-1 text-xs text-gray-500">The code expires <%= time_ago_in_words(Time.zone.at(@device["expires_at"].to_i)) %> from now.</p>
+    <div class="mt-6 flex flex-wrap gap-3">
+      <%= button_to "I've approved it", device_poll_hardcover_connection_path, class: "rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+      <%= link_to "Cancel", profile_path(anchor: "hardcover"), class: "rounded-lg bg-gray-700 px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-gray-600" %>
+    </div>
+  </div>
+</div>

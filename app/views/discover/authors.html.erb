@@ -1,0 +1,47 @@
+<% content_for :title, "Hardcover authors · Shelfarr" %>
+<div class="mx-auto max-w-6xl">
+  <%= render "discover/nav" %>
+
+  <% if @catalog_available %>
+    <%= form_with url: discover_authors_path, method: :get, class: "mb-6 flex max-w-xl gap-2", role: "search" do %>
+      <label for="discover-author-query" class="sr-only">Search authors</label>
+      <%= search_field_tag :q, @query, id: "discover-author-query", placeholder: "Search authors by name", maxlength: 100, class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500" %>
+      <%= submit_tag "Search", class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+    <% end %>
+
+    <% if @error.present? %>
+      <%= render "discover/error", message: @error %>
+    <% elsif @query.blank? %>
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-6 py-12 text-center">
+        <p class="text-gray-300">Find an author to see their books and follow new releases.</p>
+        <p class="mt-1 text-sm text-gray-500">Shelfarr lists only books they wrote: editor, translator, and narrator credits are left out.</p>
+      </div>
+    <% elsif @authors.any? %>
+      <ul class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <% @authors.each do |author| %>
+          <li class="flex gap-4 rounded-lg border border-gray-800 bg-gray-900 p-4">
+            <% if author.image_url.present? %>
+              <img src="<%= author.image_url %>" alt="" class="h-16 w-16 shrink-0 rounded-full object-cover" loading="lazy">
+            <% else %>
+              <div class="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-gray-800 text-xl font-bold text-gray-400" aria-hidden="true"><%= author.name.first %></div>
+            <% end %>
+            <div class="min-w-0">
+              <h3 class="font-semibold text-white"><%= link_to author.name, discover_author_path(author.id), class: "hover:text-blue-300" %></h3>
+              <% if author.books_count %>
+                <p class="text-xs text-gray-500"><%= pluralize(author.books_count, "book") %> on Hardcover</p>
+              <% end %>
+              <% if author.top_titles.any? %>
+                <p class="mt-1 line-clamp-2 text-xs text-gray-400"><%= author.top_titles.join(" · ") %></p>
+              <% end %>
+            </div>
+          </li>
+        <% end %>
+      </ul>
+      <%= render "discover/pagination", page: @page, has_more: @has_more %>
+    <% else %>
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-6 py-12 text-center text-gray-400">No authors found.</div>
+    <% end %>
+  <% else %>
+    <%= render "discover/unavailable" %>
+  <% end %>
+</div>

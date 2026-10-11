@@ -1,0 +1,16 @@
+<article class="flex flex-col rounded-lg border border-gray-800 bg-gray-900 p-4">
+  <h3 class="text-base font-semibold text-white">
+    <%= link_to list.name, discover_list_path(list.id), class: "hover:text-blue-300" %>
+  </h3>
+  <p class="mt-1 text-xs text-gray-500">
+    <% if list.owner_username.present? %>by @<%= list.owner_username %> · <% end %>
+    <%= pluralize(list.books_count, "book") %>
+    <% if list.likes_count.to_i.positive? %> · <%= pluralize(list.likes_count, "like") %><% end %>
+  </p>
+  <% if list.description.present? %>
+    <p class="mt-2 line-clamp-3 text-sm text-gray-400"><%= list.description %></p>
+  <% end %>
+  <div class="mt-auto pt-3">
+    <%= link_to "View list", discover_list_path(list.id), class: "text-sm font-medium text-blue-400 hover:text-blue-300" %>
+  </div>
+</article>

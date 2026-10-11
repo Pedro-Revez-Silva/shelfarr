@@ -23,7 +23,7 @@ class RequestCreationService
     end
   end
 
-  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil, collection_item_ids: nil, expand_collection: false)
+  def initialize(user:, work_id:, book_types:, metadata_attrs: {}, notes: nil, language: nil, origin: {}, source_work_ids: nil, collection_item_ids: nil, expand_collection: false, lookup_metadata: true)
     @user = user
     @work_id = work_id.to_s.strip
     @source_work_ids = BookMetadataLookupService.normalize_work_ids([ @work_id, *Array(source_work_ids) ])
@@ -35,6 +35,9 @@ class RequestCreationService
     @origin = origin.to_h.symbolize_keys
     @collection_item_ids = Array(collection_item_ids).compact_blank.map(&:to_s).uniq
     @expand_collection = expand_collection
+    # Callers that already hold provider metadata (e.g. Hardcover imports)
+    # skip the per-book detail lookup to avoid spending API budget twice.
+    @lookup_metadata = lookup_metadata
   end
 
   def call
@@ -193,7 +196,7 @@ class RequestCreationService
       work_id: input.work_id,
       source_work_ids: input.source_work_ids,
       fallback_attrs: fallback_attrs(input.metadata_attrs),
-      lookup_details: !collection_request?
+      lookup_details: @lookup_metadata && !collection_request?
     )
 
     book

@@ -1,0 +1,28 @@
+<% content_for :title, "Hardcover lists · Shelfarr" %>
+<div class="mx-auto max-w-6xl">
+  <%= render "discover/nav" %>
+
+  <% if @catalog_available %>
+    <%= form_with url: discover_lists_path, method: :get, class: "mb-6 flex max-w-xl gap-2", role: "search" do %>
+      <label for="discover-list-query" class="sr-only">Search public lists</label>
+      <%= search_field_tag :q, @query, id: "discover-list-query", placeholder: "Search public lists, e.g. best fantasy", maxlength: 100, class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500" %>
+      <%= submit_tag "Search", class: "rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+    <% end %>
+    <h2 class="mb-4 text-xl font-semibold text-white"><%= @query.present? ? "Lists matching “#{@query}”" : "Popular public lists" %></h2>
+
+    <% if @error.present? %>
+      <%= render "discover/error", message: @error %>
+    <% elsif @lists.any? %>
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <% @lists.each do |list| %>
+          <%= render "discover/list_card", list: list %>
+        <% end %>
+      </div>
+      <%= render "discover/pagination", page: @page, has_more: @has_more %>
+    <% else %>
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-6 py-12 text-center text-gray-400">No lists found.</div>
+    <% end %>
+  <% else %>
+    <%= render "discover/unavailable" %>
+  <% end %>
+</div>

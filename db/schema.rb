@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_10_150000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -177,6 +177,115 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
     t.index ["request_id"], name: "index_downloads_on_request_id"
     t.index ["search_result_id"], name: "index_downloads_on_search_result_id"
     t.index ["status"], name: "index_downloads_on_status"
+  end
+
+  create_table "hardcover_connections", force: :cascade do |t|
+    t.text "access_token", null: false
+    t.datetime "access_token_expires_at"
+    t.string "auth_method", null: false
+    t.datetime "created_at", null: false
+    t.string "granted_scopes"
+    t.integer "hardcover_user_id", null: false
+    t.string "hardcover_username"
+    t.string "last_error"
+    t.datetime "last_verified_at"
+    t.integer "lock_version", default: 0, null: false
+    t.text "refresh_token"
+    t.datetime "refreshed_at"
+    t.string "status", default: "active", null: false
+    t.datetime "updated_at", null: false
+    t.integer "user_id", null: false
+    t.index ["hardcover_user_id"], name: "index_hardcover_connections_on_hardcover_user_id"
+    t.index ["user_id"], name: "index_hardcover_connections_on_user_id", unique: true
+  end
+
+  create_table "hardcover_request_budgets", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.integer "used", default: 0, null: false
+    t.integer "user_id", null: false
+    t.datetime "window_started_at", null: false
+    t.index ["user_id"], name: "index_hardcover_request_budgets_on_user_id", unique: true
+  end
+
+  create_table "hardcover_subscription_items", force: :cascade do |t|
+    t.integer "attempts", default: 0, null: false
+    t.string "author"
+    t.boolean "baseline", default: false, null: false
+    t.json "book_types", default: [], null: false
+    t.string "claim_token"
+    t.datetime "claimed_at"
+    t.string "cover_url"
+    t.datetime "created_at", null: false
+    t.text "description"
+    t.datetime "entry_added_at"
+    t.datetime "first_seen_at", null: false
+    t.integer "hardcover_book_id", null: false
+    t.integer "hardcover_subscription_id", null: false
+    t.boolean "has_audiobook", default: false, null: false
+    t.boolean "has_ebook", default: false, null: false
+    t.datetime "last_attempt_at"
+    t.text "last_error"
+    t.datetime "last_seen_at"
+    t.datetime "next_attempt_at"
+    t.integer "position"
+    t.date "release_date"
+    t.integer "release_year"
+    t.json "request_ids", default: [], null: false
+    t.string "resolution"
+    t.datetime "resolved_at"
+    t.string "series_name"
+    t.string "series_position"
+    t.json "settled_book_types", default: [], null: false
+    t.string "state", null: false
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.integer "users_count"
+    t.boolean "wanted", default: false, null: false
+    t.index ["hardcover_subscription_id", "hardcover_book_id"], name: "index_hardcover_items_on_subscription_and_book", unique: true
+    t.index ["hardcover_subscription_id"], name: "idx_on_hardcover_subscription_id_c6db6b26d3"
+    t.index ["state", "next_attempt_at"], name: "index_hardcover_items_on_state_and_next_attempt"
+    t.index ["state", "release_date"], name: "index_hardcover_items_on_state_and_release_date"
+  end
+
+  create_table "hardcover_subscriptions", force: :cascade do |t|
+    t.boolean "automatic", default: false, null: false
+    t.datetime "automatic_enabled_at"
+    t.datetime "baseline_established_at"
+    t.json "book_types", default: [], null: false
+    t.bigint "catalog_cursor_id"
+    t.integer "consecutive_failures", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.text "description"
+    t.integer "entries_seen_count", default: 0, null: false
+    t.boolean "entries_truncated", default: false, null: false
+    t.json "exclusions", default: {}, null: false
+    t.integer "hardcover_account_id"
+    t.integer "hardcover_target_id"
+    t.string "image_url"
+    t.string "kind", null: false
+    t.text "last_error"
+    t.datetime "last_synced_at"
+    t.datetime "next_sync_at"
+    t.string "owner_username"
+    t.string "pause_reason"
+    t.boolean "personal", default: false, null: false
+    t.string "slug"
+    t.datetime "snapshot_completed_at"
+    t.string "snapshot_state", default: "pending", null: false
+    t.string "status", default: "draft", null: false
+    t.datetime "sync_cursor_at"
+    t.integer "sync_generation", default: 0, null: false
+    t.integer "sync_window_before_id"
+    t.datetime "sync_window_since"
+    t.datetime "sync_window_until"
+    t.string "target_key", null: false
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.integer "user_id", null: false
+    t.index ["status", "next_sync_at"], name: "index_hardcover_subscriptions_on_status_and_next_sync_at"
+    t.index ["user_id", "target_key"], name: "index_hardcover_subscriptions_on_user_id_and_target_key", unique: true
+    t.index ["user_id"], name: "index_hardcover_subscriptions_on_user_id"
   end
 
   create_table "library_items", force: :cascade do |t|
@@ -585,6 +694,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_08_131000) do
   add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
   add_foreign_key "downloads", "search_results", on_delete: :nullify
+  add_foreign_key "hardcover_connections", "users"
+  add_foreign_key "hardcover_request_budgets", "users"
+  add_foreign_key "hardcover_subscription_items", "hardcover_subscriptions"
+  add_foreign_key "hardcover_subscriptions", "users"
   add_foreign_key "notifications", "users"
   add_foreign_key "owned_library_connections", "users", column: "automatic_backup_user_id", on_delete: :nullify
   add_foreign_key "owned_library_items", "books", on_delete: :nullify

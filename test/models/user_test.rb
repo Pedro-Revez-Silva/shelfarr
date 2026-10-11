@@ -96,6 +96,25 @@ class UserTest < ActiveSupport::TestCase
     assert token.reload.revoked?
   end
 
+  test "soft_delete! stops Hardcover automation and revokes the account session" do
+    SettingsService.set(:hardcover_enabled, true)
+    SettingsService.set(:hardcover_oauth_client_id, "client-123")
+    stub_request(:get, Hardcover::Oauth::DISCOVERY_URL).to_return(status: 404)
+    revoke = stub_request(:post, "https://api.hardcover.app/oauth2/revoke")
+      .with(body: hash_including("token" => "hc_rt_deleted_user")).to_return(status: 200, body: "{}")
+    user = users(:one)
+    create_hardcover_connection(user, refresh_token: "hc_rt_deleted_user")
+    subscription = create_hardcover_subscription(user, kind: "author", target_id: 3)
+    request = Request.create!(user: user, book: books(:ebook_pending), created_via: "hardcover")
+
+    user.soft_delete!
+
+    assert_requested revoke
+    assert_nil user.reload.hardcover_connection
+    assert subscription.reload.paused?
+    assert Request.exists?(request.id)
+  end
+
   test "allows reusing username from a soft-deleted user" do
     user = users(:one)
     username = user.username

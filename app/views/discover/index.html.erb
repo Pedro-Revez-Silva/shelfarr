@@ -1,0 +1,65 @@
+<% content_for :title, "Discover · Shelfarr" %>
+<div class="mx-auto max-w-6xl">
+  <%= render "discover/nav" %>
+
+  <% if @catalog_available %>
+    <%
+      views = {
+        "trending" => "Trending",
+        "new" => "New releases",
+        "upcoming" => "Coming soon",
+        "genre" => "By genre"
+      }
+    %>
+    <div class="mb-6 flex flex-wrap gap-2" role="group" aria-label="Book lists">
+      <% views.each do |key, label| %>
+        <%= link_to label, discover_path(view: key),
+          class: "rounded-full border px-4 py-1.5 text-sm font-medium transition #{@view == key ? 'border-blue-500 bg-blue-500/15 text-blue-300' : 'border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-500'}",
+          aria: { current: (@view == key ? "true" : nil) } %>
+      <% end %>
+    </div>
+
+    <% if @view == "trending" %>
+      <div class="mb-6 flex flex-wrap items-center gap-2" role="group" aria-label="Trending period">
+        <span class="text-sm text-gray-400">Most read on Hardcover:</span>
+        <% Hardcover::Discovery::TRENDING_PERIODS.each do |key, label| %>
+          <%= link_to label, discover_path(view: "trending", period: key),
+            class: "rounded-full px-3 py-1 text-xs font-medium transition #{@period == key ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}",
+            aria: { current: (@period == key ? "true" : nil) } %>
+        <% end %>
+      </div>
+    <% elsif @view == "new" %>
+      <p class="mb-6 text-sm text-gray-400">Released in the last 90 days, most-saved on Hardcover first.</p>
+    <% elsif @view == "upcoming" %>
+      <p class="mb-6 text-sm text-gray-400">Releasing in the next six months, most-anticipated first. Follow an author to have their new books requested when they come out.</p>
+    <% elsif @view == "genre" %>
+      <div class="mb-6 space-y-3">
+        <div class="flex flex-wrap gap-2">
+          <% Hardcover::Discovery::GENRES.each do |genre| %>
+            <%= link_to genre, discover_path(view: "genre", genre: genre),
+              class: "rounded-full px-3 py-1 text-xs font-medium transition #{@genre.casecmp?(genre) ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}" %>
+          <% end %>
+        </div>
+        <%= form_with url: discover_path, method: :get, class: "flex max-w-md gap-2" do %>
+          <%= hidden_field_tag :view, "genre" %>
+          <label for="discover-genre" class="sr-only">Genre</label>
+          <%= text_field_tag :genre, @genre, id: "discover-genre", placeholder: "Another genre, e.g. Cozy Mystery", maxlength: 60, class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500" %>
+          <%= submit_tag "Browse", class: "rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 cursor-pointer" %>
+        <% end %>
+      </div>
+    <% end %>
+
+    <% if @error.present? %>
+      <%= render "discover/error", message: @error %>
+    <% elsif @view == "genre" && @genre.blank? %>
+      <div class="rounded-lg border border-gray-800 bg-gray-900 px-6 py-12 text-center text-gray-400">Pick a genre to see popular books in it.</div>
+    <% else %>
+      <%= render "discover/book_grid", books: @books, existing_books_lookup: @existing_books_lookup, page: @page, has_more: @has_more,
+        empty_message: "Hardcover returned no books for this view." %>
+    <% end %>
+  <% else %>
+    <%= render "discover/unavailable" %>
+  <% end %>
+</div>
+
+<%= turbo_frame_tag "modal" %>

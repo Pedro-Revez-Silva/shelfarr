@@ -39,6 +39,9 @@
             <% if authenticated? %>
               <div class="hidden lg:flex items-center gap-6">
                 <%= link_to "Search", search_path, class: "text-gray-400 hover:text-white font-medium transition" %>
+                <% if HardcoverIntegration.enabled? %>
+                  <%= link_to "Discover", discover_path, class: "text-gray-400 hover:text-white font-medium transition" %>
+                <% end %>
                 <div class="inline-flex items-center gap-2">
                   <%= link_to "Requests", requests_path, class: "text-gray-400 hover:text-white font-medium transition" %>
                   <% if attention_count > 0 %>
@@ -120,6 +123,9 @@
         <div data-mobile-menu-target="menu" class="hidden lg:hidden border-t border-gray-800">
           <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col">
             <%= link_to "Search", search_path, class: "py-2 text-gray-300 hover:text-white font-medium transition", data: { action: "mobile-menu#close" } %>
+            <% if HardcoverIntegration.enabled? %>
+              <%= link_to "Discover", discover_path, class: "py-2 text-gray-300 hover:text-white font-medium transition", data: { action: "mobile-menu#close" } %>
+            <% end %>
             <div class="inline-flex items-center gap-2 py-2">
               <%= link_to "Requests", requests_path, class: "text-gray-300 hover:text-white font-medium transition", data: { action: "mobile-menu#close" } %>
               <% if attention_count > 0 %>
