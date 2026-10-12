@@ -15,7 +15,7 @@ class SettingsService
       audiobookshelf_ebook_scan_library_ids audiobookshelf_comicbook_scan_library_ids
     ],
     anna_archive: %w[anna_archive_enabled anna_archive_url anna_archive_api_key],
-    zlibrary: %w[zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password],
+    zlibrary: %w[zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password zlibrary_remix_userid zlibrary_remix_userkey],
     hardcover: %w[
       hardcover_enabled hardcover_api_token hardcover_oauth_client_id hardcover_oauth_client_secret
       hardcover_oauth_redirect_uri hardcover_oauth_device_flow_enabled hardcover_allow_personal_access
@@ -37,7 +37,18 @@ class SettingsService
   }.freeze
   MANUAL_SAVE_SETTING_KEYS = MANUAL_SAVE_SETTING_GROUPS.values.flatten.uniq.freeze
   DEFAULT_ANNA_ARCHIVE_URL = "https://annas-archive.gl"
-  DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
+  PREFERRED_EAPI_HOSTS = %w[
+    z-lib.gd
+    z-lib.gl
+    z-library.ec
+    zlib.bz
+    article.sk
+    articles.sk
+  ].freeze
+  LEGACY_ZLIBRARY_URLS = %w[https://z-library.sk https://z-library.bz https://z-library.rs].freeze
+  DEFAULT_ZLIBRARY_URLS = (
+    PREFERRED_EAPI_HOSTS.map { |host| "https://#{host}" } + LEGACY_ZLIBRARY_URLS
+  ).join("\n")
   ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
@@ -215,9 +226,11 @@ class SettingsService
 
     # Z-Library
     zlibrary_enabled: { type: "boolean", default: false, category: "zlibrary", description: "Enable Z-Library as an additional ebook search and direct download source. This unofficial integration may break if the service changes." },
-    zlibrary_url: { type: "string", default: DEFAULT_ZLIBRARY_URLS, category: "zlibrary", description: "Z-Library base URLs to try. Shelfarr uses the first URL that accepts your login." },
+    zlibrary_url: { type: "string", default: DEFAULT_ZLIBRARY_URLS, category: "zlibrary", description: "Z-Library base URLs to try. Shelfarr probes each one and uses the first domain that serves the eAPI. Add or remove domains to match the mirrors that work for you." },
     zlibrary_email: { type: "string", default: "", category: "zlibrary", description: "Z-Library account email used for login" },
     zlibrary_password: { type: "string", default: "", category: "zlibrary", description: "Z-Library account password used for login" },
+    zlibrary_remix_userid: { type: "string", default: "", category: "zlibrary", description: "Optional saved remix_userid. Used instead of email and password when both the user id and user key are set and the password login is blank." },
+    zlibrary_remix_userkey: { type: "string", default: "", category: "zlibrary", description: "Optional saved remix_userkey. Pair this with the user id to skip the password login." },
 
     # LibriVox
     librivox_enabled: { type: "boolean", default: false, category: "librivox", description: "Enable LibriVox as a free public-domain audiobook source" },
@@ -335,6 +348,8 @@ class SettingsService
     audiobookshelf_ebook_scan_library_ids: "Additional Ebook Libraries to Scan",
     audiobookshelf_comicbook_scan_library_ids: "Additional Comics & Manga Libraries to Scan",
     audiobookshelf_library_sync_interval: "Library Sync Interval",
+    zlibrary_remix_userid: "Z-Library User ID",
+    zlibrary_remix_userkey: "Z-Library User Key",
     hardcover_oauth_client_id: "Hardcover OAuth Client ID",
     hardcover_oauth_client_secret: "Hardcover OAuth Client Secret",
     hardcover_oauth_redirect_uri: "Hardcover OAuth Redirect URI",
@@ -396,7 +411,7 @@ class SettingsService
 
     def secret_setting_key?(key)
       key = key.to_s
-      key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret")
+      key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret") || key.include?("userkey")
     end
 
     def manual_save_setting_key?(key)
@@ -626,10 +641,11 @@ class SettingsService
     end
 
     def zlibrary_configured?
-      get(:zlibrary_enabled, default: false) &&
-        configured?(:zlibrary_url) &&
-        configured?(:zlibrary_email) &&
-        configured?(:zlibrary_password)
+      return false unless get(:zlibrary_enabled, default: false) && configured?(:zlibrary_url)
+
+      password_login = configured?(:zlibrary_email) && configured?(:zlibrary_password)
+      saved_session = configured?(:zlibrary_remix_userid) && configured?(:zlibrary_remix_userkey)
+      password_login || saved_session
     end
 
     def librivox_configured?

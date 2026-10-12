@@ -47,6 +47,20 @@ class ZLibraryClient
     co.za co.kr co.in
     com.tr com.ua
   ].freeze
+  DOMAIN_HEALTH_TTL_SECONDS = 5.minutes
+  # Mirrors that are not in the preferred default list, but are still Z-Library
+  # hosts a login redirect may land on.
+  ADDITIONAL_KNOWN_ZLIBRARY_HOSTS = %w[
+    z-library.sk z-library.bz z-library.rs 1lib.sk z-lib.fm z-lib.sk
+  ].freeze
+  BOT_WALL_BODY_PATTERN = /
+    diamwall |
+    verify(?:ing)?\ your\ browser |
+    checking\ your\ browser |
+    just\ a\ moment |
+    cf-browser-verification |
+    attention\ required
+  /ix
 
   class << self
     def configured?
@@ -128,6 +142,7 @@ class ZLibraryClient
 
     def reset_connection!
       @auth_cache = nil
+      @domain_health_cache = nil
       @connection = nil
     end
 
@@ -149,6 +164,10 @@ class ZLibraryClient
 
       login_failed = auth.nil? || (auth.is_a?(Hash) && auth.key?(:errors))
       if login_failed
+        if auth.is_a?(Hash) && auth[:bot_walled]
+          raise AuthenticationError, auth[:errors].first.to_s
+        end
+
         error_details = auth.is_a?(Hash) && auth[:errors].present? ? " (#{auth[:errors].join('; ')})" : ""
         raise AuthenticationError, "Z-Library login failed#{error_details}"
       end
@@ -158,13 +177,27 @@ class ZLibraryClient
 
     def perform_login(signature, after_attempt: nil)
       errors = []
+      bot_walled = []
 
-      configured_uris.each do |uri|
+      ordered_login_uris.each do |uri|
         domain = uri.host
+        health = domain_health(uri, after_attempt: after_attempt)
 
-        auth = authenticate_uri(uri, after_attempt: after_attempt)
+        if health == :bot_wall
+          bot_walled << domain
+          next
+        elsif health != :healthy
+          errors << "#{domain}: #{health}"
+          next
+        end
+
+        auth = auth_for_domain(uri, after_attempt: after_attempt)
 
         if auth.nil?
+          next
+        elsif auth.is_a?(Hash) && auth[:bot_wall]
+          forget_healthy_domain(uri)
+          bot_walled << domain
           next
         elsif auth.is_a?(Hash) && auth[:error].present?
           errors << "#{domain}: #{auth[:error]}"
@@ -173,17 +206,14 @@ class ZLibraryClient
 
         Rails.logger.info "[ZLibraryClient] Login succeeded via #{domain}"
         cache_auth(signature, auth)
+        remember_healthy_domain(uri)
         return auth
       rescue JSON::ParserError, Faraday::Error => e
         Rails.logger.debug "[ZLibraryClient] Login failed on #{domain}: #{e.message}"
         errors << "#{domain}: #{e.class.name.split('::').last}"
       end
 
-      unless errors.empty?
-        Rails.logger.error "[ZLibraryClient] Login failed on all configured domains: #{errors.join('; ')}"
-      end
-
-      { errors: errors }
+      login_failure(errors, bot_walled)
     end
 
     def authenticate_uri(uri, after_attempt: nil)
@@ -192,7 +222,11 @@ class ZLibraryClient
       login_url = "#{uri.to_s.delete_suffix("/")}/eapi/user/login"
       body = URI.encode_www_form(email: email, password: password)
 
-      exchange = post_login_following_redirects(login_url, body: body, after_attempt: after_attempt)
+      exchange = follow_exchange(login_url, method: :post, body: body, after_attempt: after_attempt)
+      if exchange[:bot_wall]
+        Rails.logger.debug "[ZLibraryClient] Login blocked by a bot wall on #{uri.host}"
+        return { error: "bot wall", bot_wall: true }
+      end
       if exchange[:error]
         Rails.logger.debug "[ZLibraryClient] Login failed on #{uri.host}: #{exchange[:error]}"
         return { error: exchange[:error] }
@@ -200,6 +234,11 @@ class ZLibraryClient
 
       response = exchange[:response]
       final_uri = URI.parse(exchange[:url])
+
+      if bot_wall_response?(response)
+        Rails.logger.debug "[ZLibraryClient] Login blocked by a bot wall on #{uri.host}"
+        return { error: "bot wall", bot_wall: true }
+      end
 
       unless response.status == 200
         Rails.logger.debug "[ZLibraryClient] Login failed on #{uri.host}: HTTP #{response.status}"
@@ -238,10 +277,9 @@ class ZLibraryClient
       auth
     end
 
-    def post_login_following_redirects(url, body:, after_attempt:)
+    def follow_exchange(url, method:, body: nil, accept: nil, after_attempt: nil)
       cookies = {}
       visited = {}
-      method = :post
       redirects_followed = 0
 
       loop do
@@ -250,20 +288,26 @@ class ZLibraryClient
 
         visited[normalized] = true
         response = observe_search_attempt(after_attempt) do
-          send_login_request(method, url, body: body, cookies: cookies)
+          send_login_request(method, url, body: body, cookies: cookies, accept: accept)
         end
 
+        if bot_wall_response?(response)
+          return { bot_wall: true, error: "bot wall", response: response, url: url }
+        end
         return { response: response, url: url } unless login_redirect?(response)
-        return { error: "too many redirects" } if redirects_followed >= MAX_LOGIN_REDIRECTS
+        return { error: "too many redirects", response: response, url: url } if redirects_followed >= MAX_LOGIN_REDIRECTS
 
         location = redirect_location(response)
-        return { error: "HTTP #{response.status}" } if location.blank?
+        return { error: "HTTP #{response.status}", response: response, url: url } if location.blank?
+        if location.match?(/diamwall/i)
+          return { bot_wall: true, error: "bot wall", response: response, url: url }
+        end
 
         target = safe_login_redirect_target(url, location)
-        return { error: "HTTP #{response.status} untrusted redirect" } if target.nil?
+        return { error: "HTTP #{response.status} untrusted redirect", response: response, url: url } if target.nil?
 
         store_login_cookies!(cookies, response, url)
-        unless LOGIN_METHOD_PRESERVING_STATUSES.include?(response.status)
+        unless method == :get || LOGIN_METHOD_PRESERVING_STATUSES.include?(response.status)
           method = :get
           body = nil
         end
@@ -273,9 +317,10 @@ class ZLibraryClient
       end
     end
 
-    def send_login_request(method, url, body:, cookies:)
+    def send_login_request(method, url, body:, cookies:, accept: nil)
       cookie_header = login_cookie_header(cookies, url)
       connection.public_send(method, url) do |req|
+        req.headers["Accept"] = accept if accept.present?
         req.headers["Cookie"] = cookie_header if cookie_header.present?
         req.body = body if body.present? && method != :get
       end
@@ -311,16 +356,22 @@ class ZLibraryClient
     def allowed_login_redirect_host?(host)
       candidate = normalized_host(host)
       return false if candidate.blank? || !safe_login_hostname?(candidate)
-      return true if configured_login_hosts.include?(candidate)
+      return true if configured_login_hosts.include?(candidate) || known_zlibrary_hosts.include?(candidate)
 
       candidate_domain = registrable_domain(candidate)
       return false if candidate_domain.blank?
 
-      configured_login_hosts.any? { |configured| registrable_domain(configured) == candidate_domain }
+      (configured_login_hosts + known_zlibrary_hosts).any? do |allowed|
+        registrable_domain(allowed) == candidate_domain
+      end
     end
 
     def configured_login_hosts
       configured_uris.map { |configured| normalized_host(configured.host) }
+    end
+
+    def known_zlibrary_hosts
+      (SettingsService::PREFERRED_EAPI_HOSTS + ADDITIONAL_KNOWN_ZLIBRARY_HOSTS).map { |host| normalized_host(host) }.uniq
     end
 
     def safe_login_hostname?(host)
@@ -509,6 +560,128 @@ class ZLibraryClient
       cookie_path.end_with?("/") || request_path[cookie_path.length] == "/"
     end
 
+    def auth_for_domain(uri, after_attempt:)
+      if (saved = saved_remix_auth)
+        return saved.merge(domain: uri.host, base_url: uri.to_s.delete_suffix("/"))
+      end
+
+      authenticate_uri(uri, after_attempt: after_attempt)
+    end
+
+    def saved_remix_auth
+      return if password_credentials_present?
+
+      userid = SettingsService.get(:zlibrary_remix_userid).to_s.strip
+      userkey = SettingsService.get(:zlibrary_remix_userkey).to_s
+      return if userid.blank? || userkey.blank?
+
+      { remix_userid: userid, remix_userkey: userkey }
+    end
+
+    def password_credentials_present?
+      SettingsService.get(:zlibrary_email).to_s.strip.present? &&
+        SettingsService.get(:zlibrary_password).to_s.present?
+    end
+
+    def ordered_login_uris
+      cached = remembered_uri
+      uris = configured_uris
+      return uris unless cached
+
+      [ cached ] + uris.reject { |uri| same_site_uri?(uri, cached) }
+    end
+
+    def domain_health(uri, after_attempt:)
+      return :healthy if remembered_uri && same_site_uri?(uri, remembered_uri)
+
+      probe_domain(uri, after_attempt: after_attempt)
+    end
+
+    def probe_domain(uri, after_attempt: nil)
+      url = "#{uri.to_s.delete_suffix("/")}/eapi/info/domains"
+      exchange = follow_exchange(url, method: :get, accept: "application/json", after_attempt: after_attempt)
+      return :bot_wall if exchange[:bot_wall]
+
+      response = exchange[:response]
+      return exchange[:error] || "unhealthy" if response.nil?
+      return :healthy if domains_json_body?(response)
+      return :bot_wall if bot_wall_response?(response)
+
+      response.status == 200 ? "invalid response" : "HTTP #{response.status}"
+    rescue Faraday::Error, JSON::ParserError => e
+      e.class.name.split("::").last
+    end
+
+    def domains_json_body?(response)
+      return false unless response.status == 200
+
+      body = response_body_string(response)
+      return false if body.lstrip.start_with?("<")
+
+      parse_json_body(response).is_a?(Hash)
+    rescue JSON::ParserError
+      false
+    end
+
+    def bot_wall_response?(response)
+      return true if redirect_location(response).match?(/diamwall/i)
+
+      response_body_string(response).match?(BOT_WALL_BODY_PATTERN)
+    end
+
+    def response_body_string(response)
+      body = response.body
+      body.is_a?(String) ? body : body.to_json
+    end
+
+    def login_failure(errors, bot_walled)
+      bot_walled = bot_walled.uniq
+      if bot_walled.any? && errors.empty?
+        message = "Z-Library domains are bot-walled (#{bot_walled.join(', ')}). Configure another domain that serves the eAPI."
+        Rails.logger.error "[ZLibraryClient] #{message}"
+        return { errors: [ message ], bot_walled: true }
+      end
+
+      bot_walled.each { |domain| errors << "#{domain}: bot wall" }
+      unless errors.empty?
+        Rails.logger.error "[ZLibraryClient] Login failed on all configured domains: #{errors.join('; ')}"
+      end
+
+      { errors: errors }
+    end
+
+    def remembered_uri
+      cached = @domain_health_cache
+      return unless cached
+      return unless cached[:signature] == domain_list_signature
+      return unless cached[:expires_at] > Time.current
+
+      configured_uris.find { |uri| same_site_uri?(uri, cached[:uri]) }
+    end
+
+    def remember_healthy_domain(uri)
+      @domain_health_cache = {
+        signature: domain_list_signature,
+        uri: uri,
+        expires_at: Time.current + DOMAIN_HEALTH_TTL_SECONDS
+      }
+    end
+
+    def forget_healthy_domain(uri)
+      cached = remembered_uri
+      @domain_health_cache = nil if cached && same_site_uri?(cached, uri)
+    end
+
+    def domain_list_signature
+      configured_uris.map { |uri| "#{uri.scheme}://#{normalized_host(uri.host)}:#{uri.port}" }.join("\n")
+    end
+
+    def same_site_uri?(left, right)
+      left.scheme == right.scheme &&
+        normalized_host(left.host) == normalized_host(right.host) &&
+        left.port == right.port
+    end
+
     def normalized_login_error(error)
       error.to_s.scrub("?").gsub(/[[:cntrl:]]+/, " ").squish
         .truncate(MAX_LOGIN_ERROR_LENGTH, omission: "...").presence
@@ -532,7 +705,9 @@ class ZLibraryClient
         SettingsService.get(:zlibrary_enabled, default: false),
         SettingsService.get(:zlibrary_url).to_s,
         SettingsService.get(:zlibrary_email).to_s,
-        SettingsService.get(:zlibrary_password).to_s
+        SettingsService.get(:zlibrary_password).to_s,
+        SettingsService.get(:zlibrary_remix_userid).to_s,
+        SettingsService.get(:zlibrary_remix_userkey).to_s
       ].join("\0"))
     end
 
@@ -691,8 +866,9 @@ class ZLibraryClient
       configured_uris.each do |uri|
         base_url = uri.to_s.delete_suffix("/")
         next if base_url == current_auth[:base_url]
+        next unless probe_domain(uri, after_attempt: after_attempt) == :healthy
 
-        auth = authenticate_uri(uri, after_attempt: after_attempt)
+        auth = auth_for_domain(uri, after_attempt: after_attempt)
         next if auth.nil? || (auth.is_a?(Hash) && auth[:error].present?)
 
         Rails.logger.info "[ZLibraryClient] Retrying eAPI via #{auth[:domain]}"
