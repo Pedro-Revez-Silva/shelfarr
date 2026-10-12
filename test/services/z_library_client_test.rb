@@ -65,6 +65,237 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "login follows a 307 redirect and accepts the redirected login response" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(
+          status: 307,
+          headers: {
+            "Location" => "https://z-library.sk/eapi/user/login/",
+            "Set-Cookie" => "zlib_session=abc; Path=/"
+          }
+        )
+      stub_request(:post, "https://z-library.sk/eapi/user/login/")
+        .with(
+          body: "email=reader%40example.com&password=secret",
+          headers: { "Cookie" => "zlib_session=abc" }
+        )
+        .to_return(
+          status: 200,
+          body: { success: 1, user: { id: "12345", remix_userkey: "abc123" } }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=abc123" })
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            books: [ { id: 999, hash: "deadbeef", name: "Test Book", extension: "epub" } ]
+          }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      auth = ZLibraryClient.send(:login)
+      results = ZLibraryClient.search("Test Book")
+
+      assert_equal "12345", auth[:remix_userid]
+      assert_equal "abc123", auth[:remix_userkey]
+      assert_equal "z-library.sk", auth[:domain]
+      assert_equal "https://z-library.sk", auth[:base_url]
+      assert_equal "999", results.first.id
+    end
+  end
+
+  test "login follows a 308 redirect and replays the login body" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(status: 308, headers: { "Location" => "/eapi/user/login/permanent" })
+      stub_request(:post, "https://z-library.sk/eapi/user/login/permanent")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(status: 200, body: zlibrary_login_success_body, headers: json_headers)
+
+      auth = ZLibraryClient.send(:login)
+
+      assert_equal "12345", auth[:remix_userid]
+      assert_equal "https://z-library.sk", auth[:base_url]
+    end
+  end
+
+  test "login follows a 302 without resending credentials" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(status: 302, headers: { "Location" => "https://z-library.sk/eapi/user/login/session" })
+      stub_request(:get, "https://z-library.sk/eapi/user/login/session")
+        .to_return(status: 200, body: zlibrary_login_success_body, headers: json_headers)
+      replayed = stub_request(:post, "https://z-library.sk/eapi/user/login/session")
+
+      auth = ZLibraryClient.send(:login)
+
+      assert_equal "12345", auth[:remix_userid]
+      assert_not_requested replayed
+    end
+  end
+
+  test "login follows a 307 to another configured Z-Library domain and searches there" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://1lib.sk")
+
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(
+          status: 307,
+          headers: {
+            "Location" => "https://1lib.sk/eapi/user/login",
+            "Set-Cookie" => "zlib_session=secret; Path=/"
+          }
+        )
+      stub_request(:post, "https://1lib.sk/eapi/user/login")
+        .with { |request| request.body == "email=reader%40example.com&password=secret" && request.headers["Cookie"].nil? }
+        .to_return(
+          status: 200,
+          body: { success: 1, user: { id: "777", remix_userkey: "from-1lib" } }.to_json,
+          headers: json_headers
+        )
+      stub_request(:post, "https://1lib.sk/eapi/book/search")
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            books: [ { id: 999, hash: "deadbeef", name: "Test Book", extension: "epub" } ]
+          }.to_json,
+          headers: json_headers
+        )
+
+      results = ZLibraryClient.search("Test Book")
+
+      assert_equal "999", results.first.id
+      assert_requested(:post, "https://1lib.sk/eapi/book/search") do |request|
+        assert_equal "remix_userid=777; remix_userkey=from-1lib", request.headers["Cookie"]
+      end
+      assert_not_requested(:post, "https://z-library.sk/eapi/book/search")
+    end
+  end
+
+  test "login follows a 307 to another host on the same registrable domain" do
+    SettingsService.set(:zlibrary_url, "https://books.z-library.sk")
+
+    VCR.turned_off do
+      stub_request(:post, "https://books.z-library.sk/eapi/user/login")
+        .to_return(status: 307, headers: { "Location" => "https://login.z-library.sk/eapi/user/login" })
+      stub_request(:post, "https://login.z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(status: 200, body: zlibrary_login_success_body, headers: json_headers)
+
+      auth = ZLibraryClient.send(:login)
+
+      assert_equal "login.z-library.sk", auth[:domain]
+      assert_equal "https://login.z-library.sk", auth[:base_url]
+    end
+  end
+
+  test "login does not follow a redirect to a different site under a shared public suffix" do
+    SettingsService.set(:zlibrary_url, "https://books.example.co.uk")
+
+    VCR.turned_off do
+      stub_request(:post, "https://books.example.co.uk/eapi/user/login")
+        .to_return(status: 307, headers: { "Location" => "https://evil.other.co.uk/eapi/user/login" })
+      other_site = stub_request(:post, "https://evil.other.co.uk/eapi/user/login")
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.send(:login)
+      end
+
+      assert_match(/untrusted redirect/, error.message)
+      assert_not_requested other_site
+    end
+  end
+
+  test "login does not send credentials to an untrusted redirect host" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(status: 307, headers: { "Location" => "https://evil.example/eapi/user/login" })
+      evil = stub_request(:post, "https://evil.example/eapi/user/login")
+        .to_return(status: 200, body: zlibrary_login_success_body, headers: json_headers)
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.send(:login)
+      end
+
+      assert_match(/untrusted redirect/, error.message)
+      assert_not_requested evil
+    end
+  end
+
+  test "login does not follow an https to http redirect" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(status: 307, headers: { "Location" => "http://z-library.sk/eapi/user/login" })
+      downgrade = stub_request(:post, "http://z-library.sk/eapi/user/login")
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.send(:login)
+      end
+
+      assert_match(/untrusted redirect/, error.message)
+      assert_not_requested downgrade
+    end
+  end
+
+  test "login stops after the redirect hop cap" do
+    VCR.turned_off do
+      (0..5).each do |index|
+        path = index.zero? ? "/eapi/user/login" : "/eapi/user/login/#{index}"
+        stub_request(:post, "https://z-library.sk#{path}")
+          .to_return(
+            status: 307,
+            headers: { "Location" => "https://z-library.sk/eapi/user/login/#{index + 1}" }
+          )
+      end
+      beyond_cap = stub_request(:post, "https://z-library.sk/eapi/user/login/6")
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.send(:login)
+      end
+
+      assert_match(/too many redirects/, error.message)
+      assert_requested(:post, "https://z-library.sk/eapi/user/login/5")
+      assert_not_requested beyond_cap
+    end
+  end
+
+  test "login stops when a redirect loops" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(status: 307, headers: { "Location" => "https://z-library.sk/eapi/user/login" })
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.send(:login)
+      end
+
+      assert_match(/redirect loop/, error.message)
+      assert_requested(:post, "https://z-library.sk/eapi/user/login", times: 1)
+    end
+  end
+
+  test "login does not follow a location header on an authentication failure" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(status: 401, headers: { "Location" => "https://z-library.sk/eapi/user/login/again" })
+      followed = stub_request(:post, "https://z-library.sk/eapi/user/login/again")
+
+      error = assert_raises ZLibraryClient::AuthenticationError do
+        ZLibraryClient.send(:login)
+      end
+
+      assert_match(/HTTP 401/, error.message)
+      assert_not_requested followed
+    end
+  end
+
   test "login tries configured urls until one succeeds" do
     SettingsService.set(:zlibrary_url, "https://offline.example\nhttps://z-library.sk")
 
@@ -570,6 +801,14 @@ class ZLibraryClientTest < ActiveSupport::TestCase
   end
 
   private
+
+  def zlibrary_login_success_body
+    { success: 1, user: { id: "12345", remix_userkey: "abc123" } }.to_json
+  end
+
+  def json_headers
+    { "Content-Type" => "application/json" }
+  end
 
   def stub_zlibrary_login_success(domain = "z-library.sk")
     stub_request(:post, "https://#{domain}/eapi/user/login")
