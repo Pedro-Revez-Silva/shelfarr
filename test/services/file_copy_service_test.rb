@@ -391,7 +391,20 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   end
 
   test "cp_noreplace rejects a source modified while its private copy is written" do
-    assert_cp_noreplace_rejects_same_size_rewrite!(@src_file, "other bytes!")
+    destination = File.join(@dest_dir, "changed-source.txt")
+    real_copy = FileCopyService.method(:copy_source_io)
+    mutating_copy = lambda do |source, target, heartbeat: nil|
+      real_copy.call(source, target, heartbeat: heartbeat)
+      File.binwrite(@src_file, "changed source contents")
+    end
+
+    FileCopyService.stub(:copy_source_io, mutating_copy) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+    assert_not File.exist?(destination)
+    assert_equal "changed source contents", File.binread(@src_file)
   end
 
   test "cp_noreplace rejects a same-size rewrite that leaves file_manifest_entry unchanged" do
@@ -402,18 +415,19 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     destination = File.join(@dest_dir, "snapshotted-rewrite.txt")
     replacement = "other bytes!"
     snapshot = nil
-    force_same_size_manifest_collision!(@src_file, replacement) do
+    with_unchanged_source_metadata(@src_file) do
       snapshot = FileCopyService.snapshot_source_file(@src_file)
-      snapshot.manifest
-    end
+      rewrite_in_place!(@src_file, replacement)
+      assert_equal snapshot.manifest, file_stat_manifest(@src_file)
 
-    assert_raises(Errno::ESTALE) do
-      FileCopyService.cp_noreplace(
-        @src_file,
-        destination,
-        root: @dest_dir,
-        source_snapshot: snapshot
-      )
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.cp_noreplace(
+          @src_file,
+          destination,
+          root: @dest_dir,
+          source_snapshot: snapshot
+        )
+      end
     end
     assert_not File.exist?(destination)
     assert_equal replacement, File.binread(@src_file)
@@ -436,6 +450,130 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(destination)
     assert_equal "test content", File.binread(@src_file)
     assert_empty Dir.children(@dest_dir)
+  end
+
+  test "cp_noreplace verifies the bytes written by the kernel copy" do
+    destination = File.join(@dest_dir, "corrupted-kernel-copy.txt")
+    real_copy = IO.method(:copy_stream)
+    corrupting_copy = lambda do |source, target, *arguments|
+      result = real_copy.call(source, target, *arguments)
+      target.rewind
+      target.write("wrong bytes!")
+      target.flush
+      result
+    end
+
+    IO.stub(:copy_stream, corrupting_copy) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_not File.exist?(destination)
+    assert_equal "test content", File.binread(@src_file)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "cp_noreplace rejects a transient source rewrite even when the original bytes return" do
+    destination = File.join(@dest_dir, "transient-rewrite.txt")
+    real_copy = IO.method(:copy_stream)
+    changed_copy = lambda do |source, target, *arguments|
+      rewrite_in_place!(@src_file, "other bytes!")
+      result = real_copy.call(source, target, *arguments)
+      rewrite_in_place!(@src_file, "test content")
+      result
+    end
+
+    with_unchanged_source_metadata(@src_file) do
+      IO.stub(:copy_stream, changed_copy) do
+        assert_raises(Errno::ESTALE) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+      end
+    end
+
+    assert_not File.exist?(destination)
+    assert_equal "test content", File.binread(@src_file)
+    assert_empty Dir.children(@dest_dir)
+  end
+
+  test "cp_noreplace resets a partial kernel copy before the NFS buffered fallback" do
+    destination = File.join(@dest_dir, "nfs-kernel-copy.txt")
+    failed_copy = lambda do |source, target, *|
+      target.write("partial kernel output beyond EOF")
+      source.read(4)
+      raise Errno::EACCES, "copy_file_range"
+    end
+
+    IO.stub(:copy_stream, failed_copy) do
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal "test content", File.binread(@src_file)
+    assert_equal [ "nfs-kernel-copy.txt" ], Dir.children(@dest_dir)
+  end
+
+  test "cp_noreplace forwards its heartbeat through source and private destination verification" do
+    destination = File.join(@dest_dir, "heartbeat-copy.txt")
+    File.binwrite(@src_file, "a" * (FileCopyService::BUFFER_SIZE * 2 + 1))
+    heartbeats = 0
+    heartbeat = -> { heartbeats += 1 }
+    real_identity = FileCopyService.method(:io_content_identity)
+    real_comparison = FileCopyService.method(:compare_io)
+    verifications = 0
+    comparisons = 0
+    checking_identity = lambda do |io, **options|
+      assert_same heartbeat, options.fetch(:heartbeat)
+      verifications += 1
+      real_identity.call(io, **options)
+    end
+    checking_comparison = lambda do |left, right, **options|
+      assert_same heartbeat, options.fetch(:heartbeat)
+      comparisons += 1
+      real_comparison.call(left, right, **options)
+    end
+
+    FileCopyService.stub(:io_content_identity, checking_identity) do
+      FileCopyService.stub(:compare_io, checking_comparison) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir, heartbeat: heartbeat)
+      end
+    end
+
+    assert_operator verifications, :>, 0
+    assert_operator comparisons, :>, 0
+    assert_operator heartbeats, :>, 6
+    assert_equal File.binread(@src_file), File.binread(destination)
+  end
+
+  test "mv_directory_noreplace renews its heartbeat while revalidating file contents" do
+    source_directory = File.join(@tmp_dir, "heartbeat-source")
+    source = File.join(source_directory, "chapter.mp3")
+    destination = File.join(@dest_dir, "heartbeat-directory")
+    FileUtils.mkdir_p(source_directory)
+    File.binwrite(source, "a" * (FileCopyService::BUFFER_SIZE + 1))
+    snapshot = FileCopyService.snapshot_source_root(source_directory)
+    heartbeats = 0
+    heartbeat = -> { heartbeats += 1 }
+    real_identity = FileCopyService.method(:io_content_identity)
+    verifications = 0
+    checking_identity = lambda do |io, **options|
+      assert_same heartbeat, options.fetch(:heartbeat)
+      verifications += 1
+      real_identity.call(io, **options)
+    end
+
+    FileCopyService.stub(:io_content_identity, checking_identity) do
+      FileCopyService.mv_directory_noreplace(
+        source_directory, destination,
+        root: @dest_dir, source_root: snapshot, heartbeat: heartbeat
+      )
+    end
+
+    assert_operator verifications, :>, 0
+    assert_operator heartbeats, :>, 1
+    assert_not File.exist?(source_directory)
+    assert_equal "a" * (FileCopyService::BUFFER_SIZE + 1), File.binread(File.join(destination, "chapter.mp3"))
   end
 
   test "failed atomic publication never overwrites an occupied destination" do
@@ -3630,7 +3768,11 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   end
 
   test "remove_source_file retains an in-place mutation after snapshot" do
-    assert_remove_source_file_retains_same_size_rewrite!(@src_file, "other bytes!")
+    snapshot = FileCopyService.snapshot_source_file(@src_file)
+    File.binwrite(@src_file, "changed source contents")
+
+    assert_not FileCopyService.remove_source_file(snapshot)
+    assert_equal "changed source contents", File.binread(@src_file)
   end
 
   test "remove_source_file retains a same-size rewrite that leaves file_manifest_entry unchanged" do
@@ -3646,18 +3788,19 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     replacement = "mutated-bytes"
     snapshot = nil
 
-    force_same_size_manifest_collision!(source, replacement) do
+    with_unchanged_source_metadata(source) do
       snapshot = FileCopyService.snapshot_source_root(source_root_path)
-      snapshot.entries.fetch("chapter.mp3")
-    end
+      rewrite_in_place!(source, replacement)
+      assert_equal snapshot.entries.fetch("chapter.mp3").first(7), file_stat_manifest(source)
 
-    assert_raises(Errno::ESTALE) do
-      FileCopyService.cp_noreplace(
-        source,
-        destination,
-        root: @dest_dir,
-        source_root: snapshot
-      )
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.cp_noreplace(
+          source,
+          destination,
+          root: @dest_dir,
+          source_root: snapshot
+        )
+      end
     end
     assert_not File.exist?(destination)
     assert_equal replacement, File.binread(source)
@@ -3671,12 +3814,13 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     replacement = "mutated-bytes"
     snapshot = nil
 
-    force_same_size_manifest_collision!(source, replacement) do
+    with_unchanged_source_metadata(source) do
       snapshot = FileCopyService.snapshot_source_root(source_root_path)
-      snapshot.entries.fetch("chapter.mp3")
-    end
+      rewrite_in_place!(source, replacement)
+      assert_equal snapshot.entries.fetch("chapter.mp3").first(7), file_stat_manifest(source)
 
-    assert_not FileCopyService.remove_source_tree(snapshot)
+      assert_not FileCopyService.remove_source_tree(snapshot)
+    end
     assert_equal replacement, File.binread(source)
     assert_equal Digest::SHA256.hexdigest("chapter-bytes"), snapshot.entries.fetch("chapter.mp3")[7]
   end
@@ -3690,18 +3834,19 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     replacement = "mutated-bytes"
     snapshot = nil
 
-    force_same_size_manifest_collision!(source, replacement) do
+    with_unchanged_source_metadata(source) do
       snapshot = FileCopyService.snapshot_source_root(source_root_path)
-      snapshot.entries.fetch("chapter.mp3")
-    end
+      rewrite_in_place!(source, replacement)
+      assert_equal snapshot.entries.fetch("chapter.mp3").first(7), file_stat_manifest(source)
 
-    assert_raises(Errno::ESTALE) do
-      FileCopyService.hardlink_noreplace(
-        source,
-        destination,
-        root: @dest_dir,
-        source_root: snapshot
-      )
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.hardlink_noreplace(
+          source,
+          destination,
+          root: @dest_dir,
+          source_root: snapshot
+        )
+      end
     end
     assert_not File.exist?(destination)
     assert_equal replacement, File.binread(source)
@@ -4125,11 +4270,86 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       root: @dest_dir,
       require_durable: true
     )
+    snapshot = FileCopyService.deserialize_file_snapshot(
+      FileCopyService.serialize_file_snapshot(snapshot).except("content_digest")
+    )
     stat = File.stat(destination)
     File.utime(stat.atime, stat.mtime + 1, destination)
 
     assert_nil snapshot.content_digest
     assert_not FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+  end
+
+  test "verified library snapshots retain a digest and prevent cleanup after an unchanged-stat destination rewrite" do
+    destination = File.join(@dest_dir, "rewritten-library.txt")
+    source_snapshot = FileCopyService.snapshot_source_file(@src_file)
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir, source_snapshot: source_snapshot)
+    snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file, destination, root: @dest_dir, source_snapshot: source_snapshot, require_durable: true
+    )
+    assert_equal Digest::SHA256.hexdigest("test content"), snapshot.content_digest
+
+    with_unchanged_source_metadata(destination) do
+      rewrite_in_place!(destination, "other bytes!")
+      assert_equal snapshot.manifest, file_stat_manifest(destination)
+      assert_not FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+      assert_not FileCopyService.remove_source_file(source_snapshot, destination_snapshot: snapshot)
+    end
+
+    assert_equal "test content", File.binread(@src_file)
+    assert_equal "other bytes!", File.binread(destination)
+  end
+
+  test "library verification rejects matching source and destination bytes that differ from authorization" do
+    destination = File.join(@dest_dir, "changed-authorization.txt")
+
+    with_unchanged_source_metadata(@src_file) do
+      source_snapshot = FileCopyService.snapshot_source_file(@src_file)
+      rewrite_in_place!(@src_file, "other bytes!")
+      File.binwrite(destination, "other bytes!")
+      assert_equal source_snapshot.manifest, file_stat_manifest(@src_file)
+
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.verified_library_file_snapshot(
+          @src_file, destination, root: @dest_dir, source_snapshot: source_snapshot
+        )
+      end
+    end
+
+    assert_equal "other bytes!", File.binread(@src_file)
+    assert_equal "other bytes!", File.binread(destination)
+  end
+
+  test "hardlink verification rechecks the source pathname after comparing its pinned descriptor" do
+    source_directory = File.join(@tmp_dir, "hardlink-source")
+    source = File.join(source_directory, "chapter.mp3")
+    destination = File.join(@dest_dir, "hardlink-library.mp3")
+    FileUtils.mkdir_p(source_directory)
+    File.binwrite(source, "original bytes")
+    File.link(source, destination)
+    snapshot = FileCopyService.snapshot_source_root(source_directory)
+    real_comparison = FileCopyService.method(:compare_io)
+    replaced = false
+    replacing_comparison = lambda do |left, right, **options|
+      result = real_comparison.call(left, right, **options)
+      unless replaced
+        replaced = true
+        File.rename(source, File.join(@tmp_dir, "previous-source.mp3"))
+        File.binwrite(source, "replacement!!!")
+      end
+      result
+    end
+
+    FileCopyService.stub(:compare_io, replacing_comparison) do
+      assert_raises(Errno::ESTALE) do
+        FileCopyService.verified_library_file_snapshot(
+          source, destination, root: @dest_dir, source_root: snapshot, hardlink_mode: true
+        )
+      end
+    end
+
+    assert_equal "replacement!!!", File.binread(source)
+    assert_equal "original bytes", File.binread(destination)
   end
 
   test "file snapshot serialization round-trips the CIFS content digest" do
@@ -5054,27 +5274,33 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     File.for_fd(descriptor, "r+b", autoclose: false).chown(65_534, -1)
   end
 
-  # ext4 stamps mtime/ctime from a ~4ms clock, so a same-size rewrite leaves
-  # file_manifest_entry unchanged only inside that tick. Start each attempt on
-  # a fresh tick and retry until that happens. File.utime would hide the hole.
-  MANIFEST_COLLISION_ATTEMPTS = 40
-
   def file_stat_manifest(path)
     FileCopyService.send(:file_manifest_entry, File.stat(path))
   end
 
-  def coarse_realtime
-    clock = Process.const_defined?(:CLOCK_REALTIME_COARSE) ? Process::CLOCK_REALTIME_COARSE : Process::CLOCK_REALTIME
-    Process.clock_gettime(clock)
-  end
-
-  def write_bytes_at_timestamp_tick_start(path, bytes)
-    started = coarse_realtime
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.05
-    while coarse_realtime == started
-      break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+  # Model a filesystem whose timestamp granularity hides an in-place rewrite.
+  # Keep real descriptor/inode/size/mode checks and real file bytes: only the
+  # source inode's mtime/ctime observations are held constant. This also runs
+  # on multigrain filesystems, which correctly expose every actual write.
+  def with_unchanged_source_metadata(path)
+    stat = File.stat(path)
+    identity = [ stat.dev, stat.ino ]
+    times = [ stat.mtime.to_r, stat.ctime.to_r ]
+    real_manifest = FileCopyService.method(:file_manifest_entry)
+    real_hardlink_manifest = FileCopyService.method(:stable_hardlink_manifest_entry)
+    manifest = lambda do |observed|
+      entry = real_manifest.call(observed)
+      entry[4, 2] = times if entry.first(2) == identity
+      entry
     end
-    File.binwrite(path, bytes)
+    hardlink_manifest = lambda do |observed|
+      entry = real_hardlink_manifest.call(observed)
+      entry[4] = times.first if entry.first(2) == identity
+      entry
+    end
+    FileCopyService.stub(:file_manifest_entry, manifest) do
+      FileCopyService.stub(:stable_hardlink_manifest_entry, hardlink_manifest) { yield }
+    end
   end
 
   def rewrite_in_place!(path, bytes)
@@ -5085,70 +5311,37 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
   end
 
-  def force_same_size_manifest_collision!(path, replacement)
-    original = File.binread(path)
-    flunk "same-size rewrite required" unless replacement.bytesize == original.bytesize && replacement != original
-
-    MANIFEST_COLLISION_ATTEMPTS.times do
-      write_bytes_at_timestamp_tick_start(path, original)
-      recorded = yield
-      before = file_stat_manifest(path)
-      rewrite_in_place!(path, replacement)
-      after = file_stat_manifest(path)
-      next unless before == after && recorded.first(7) == after
-
-      return recorded
-    end
-
-    flunk "same-size rewrite changed file_manifest_entry on every attempt"
-  end
-
   def assert_cp_noreplace_rejects_same_size_rewrite!(path, replacement)
     destination = File.join(@dest_dir, "changed-source.txt")
     real_copy = FileCopyService.method(:copy_source_io)
-    collided = false
     mutating_copy = lambda do |source, target, heartbeat: nil|
-      copied_digest = real_copy.call(source, target, heartbeat: heartbeat)
+      real_copy.call(source, target, heartbeat: heartbeat)
       before = file_stat_manifest(path)
       rewrite_in_place!(path, replacement)
-      collided = file_stat_manifest(path) == before
-      copied_digest
+      assert_equal before, file_stat_manifest(path)
     end
 
-    MANIFEST_COLLISION_ATTEMPTS.times do
-      write_bytes_at_timestamp_tick_start(path, "test content")
-      FileUtils.rm_f(destination)
-      collided = false
-      published = false
+    with_unchanged_source_metadata(path) do
       FileCopyService.stub(:copy_source_io, mutating_copy) do
-        begin
+        assert_raises(Errno::ESTALE) do
           FileCopyService.cp_noreplace(path, destination, root: @dest_dir)
-          published = true
-        rescue Errno::ESTALE
-          published = false
         end
       end
-      next unless collided
-
-      assert_not published, "cp_noreplace published bytes after a same-size rewrite with an unchanged manifest"
-      assert_not File.exist?(destination)
-      assert_equal replacement, File.binread(path)
-      return
     end
-
-    flunk "same-size rewrite changed file_manifest_entry on every attempt"
+    assert_not File.exist?(destination)
+    assert_equal replacement, File.binread(path)
   end
 
   def assert_remove_source_file_retains_same_size_rewrite!(path, replacement)
     original = File.binread(path)
     snapshot = nil
-    force_same_size_manifest_collision!(path, replacement) do
+    with_unchanged_source_metadata(path) do
       snapshot = FileCopyService.snapshot_source_file(path)
-      snapshot.manifest
+      rewrite_in_place!(path, replacement)
+      assert_equal file_stat_manifest(path), snapshot.manifest
+      assert_not FileCopyService.remove_source_file(snapshot)
     end
 
-    assert_equal file_stat_manifest(path), snapshot.manifest
-    assert_not FileCopyService.remove_source_file(snapshot)
     assert_equal replacement, File.binread(path)
     assert_equal Digest::SHA256.hexdigest(original), snapshot.content_digest
   end
