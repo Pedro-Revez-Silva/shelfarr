@@ -8,16 +8,12 @@ namespace :settings do
     fixed_count = 0
     Setting.where(value_type: "json").find_each do |setting|
       begin
-        # Try to parse the current value
         JSON.parse(setting.value)
         puts "  ✓ #{setting.key}: valid JSON"
       rescue JSON::ParserError
-        # Invalid JSON - fix it
         old_value = setting.value
         puts "  ✗ #{setting.key}: invalid JSON detected - '#{old_value}'"
 
-        # The typed_value getter will handle the conversion
-        # Then we save it back using the typed_value setter
         fixed_value = setting.typed_value
         setting.typed_value = fixed_value
 

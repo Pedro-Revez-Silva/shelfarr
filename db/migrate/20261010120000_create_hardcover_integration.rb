@@ -52,8 +52,7 @@ class CreateHardcoverIntegration < ActiveRecord::Migration[8.1]
       t.integer :sync_window_before_id
       # Rolling position in an author catalog larger than one scan.
       t.bigint :catalog_cursor_id
-      # Bumped when the followed account changes so in-flight syncs discard
-      # what they read.
+      # Bumped when the followed account changes so in-flight syncs discard what they read.
       t.integer :sync_generation, null: false, default: 0
       t.datetime :last_synced_at
       t.datetime :next_sync_at

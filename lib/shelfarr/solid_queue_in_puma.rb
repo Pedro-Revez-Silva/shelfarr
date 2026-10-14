@@ -79,8 +79,7 @@ module Shelfarr
             { "SHELFARR_QUEUE_PARENT_PID" => @owner_pid.to_s },
             Gem.ruby, jobs_executable, spawn_options(log_path)
           )
-          # This thread is the sole reaper. It also serializes reaping with
-          # signaling to avoid racing our own cleanup.
+          # This thread is the sole reaper. It also serializes reaping with signaling to avoid racing our own cleanup.
           @reaper = Thread.new { monitor_supervisor }
           File.write(@pidfile, "#{@pid}\n")
           install_at_exit_hook!
