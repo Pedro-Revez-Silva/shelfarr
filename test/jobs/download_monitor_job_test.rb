@@ -16,7 +16,6 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     DownloadClient.destroy_all
     @request = requests(:pending_request)
 
-    # Create a qBittorrent client
     @qbittorrent = DownloadClient.create!(
       name: "Test qBittorrent",
       client_type: "qbittorrent",
@@ -27,13 +26,11 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       enabled: true
     )
 
-    # Clear qBittorrent sessions
     @original_client_thread_locals = CLIENT_THREAD_LOCALS.to_h do |key|
       [ key, Thread.current.key?(key) ? Thread.current[key] : :unset ]
     end
     CLIENT_THREAD_LOCALS.each { |key| Thread.current[key] = {} }
 
-    # Create an active download associated with the client
     @download = @request.downloads.create!(
       name: "Test Audiobook",
       size_bytes: 1073741824,
@@ -448,7 +445,6 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
   end
 
   test "uses SABnzbd for usenet downloads" do
-    # Create SABnzbd client
     sabnzbd = DownloadClient.create!(
       name: "Test SABnzbd",
       client_type: "sabnzbd",
@@ -806,7 +802,6 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     VCR.turned_off do
       stub_qbittorrent_auth
 
-      # Should not make any torrent info requests
       DownloadMonitorJob.perform_now
       @download.reload
 

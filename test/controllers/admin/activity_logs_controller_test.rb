@@ -7,7 +7,6 @@ class Admin::ActivityLogsControllerTest < ActionDispatch::IntegrationTest
     @admin = users(:two)
     sign_in_as(@admin)
 
-    # Create some test logs
     ActivityLog.create!(action: "user.login", user: @admin)
     ActivityLog.create!(action: "request.created", user: users(:one))
   end

@@ -86,7 +86,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
   test "checks only the specified service when service param is given" do
     Setting.where(key: %w[prowlarr_url prowlarr_api_key]).destroy_all
 
-    # Should only check prowlarr and NOT schedule next run
     assert_no_enqueued_jobs(only: HealthCheckJob) do
       HealthCheckJob.perform_now(service: "prowlarr")
     end
@@ -236,7 +235,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
       VCR.turned_off do
         stub_qbittorrent_auth_success
 
-        # Stub diagnostics endpoints
         stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
           .to_return(
             status: 200,
@@ -289,7 +287,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
 
   test "marks download_paths as degraded when category folder is missing for qbittorrent" do
     Dir.mktmpdir do |download_dir|
-      # Don't create the category subfolder
       setup_download_paths(download_dir)
       client = create_download_client(name: "Cat Missing Client")
       client.update!(category: "shelfarr")
@@ -439,7 +436,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
-  # Output paths tests
   test "marks output_paths as healthy when paths exist and are writable" do
     Dir.mktmpdir do |audiobook_dir|
       Dir.mktmpdir do |ebook_dir|
@@ -517,7 +513,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
   end
 
   test "marks output_paths as down when paths not configured" do
-    # Set paths to empty strings (blank = not configured)
     Setting.find_or_create_by(key: "audiobook_output_path").update!(
       value: "",
       value_type: "string",

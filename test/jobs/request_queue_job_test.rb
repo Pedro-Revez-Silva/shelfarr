@@ -32,10 +32,8 @@ class RequestQueueJobTest < ActiveJob::TestCase
   end
 
   test "processable scope returns pending requests in FIFO order" do
-    # Clear existing pending requests
     Request.pending.destroy_all
 
-    # Create pending requests with specific order
     older_book = Book.create!(title: "Older", book_type: :ebook, open_library_work_id: "OL_OLDER")
     newer_book = Book.create!(title: "Newer", book_type: :ebook, open_library_work_id: "OL_NEWER")
 
@@ -48,19 +46,15 @@ class RequestQueueJobTest < ActiveJob::TestCase
   end
 
   test "job processes pending requests limited by batch size" do
-    # Clear existing pending requests
     Request.pending.destroy_all
 
     batch_size = SettingsService.get(:queue_batch_size)
 
-    # Create more pending requests than the batch size
     (batch_size + 2).times do |i|
       book = Book.create!(title: "Batch Test #{i}", book_type: :ebook, open_library_work_id: "OL_BATCH_#{i}")
       Request.create!(book: book, user: users(:one), status: :pending)
     end
 
-    # The job logs which requests would be processed
-    # We verify the processable scope respects the limit
     processable = Request.processable.limit(batch_size)
     assert_equal batch_size, processable.count
 

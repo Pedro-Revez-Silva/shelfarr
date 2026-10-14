@@ -11,10 +11,7 @@ class RequestRetryTest < ActiveSupport::TestCase
     @max_retries_exceeded = requests(:max_retries_exceeded)
   end
 
-  # === Scopes ===
-
   test "processable returns pending requests ordered by created_at" do
-    # Create two pending requests with specific order
     older_book = Book.create!(title: "Older Processable", book_type: :ebook, open_library_work_id: "OL_OLDER_P")
     newer_book = Book.create!(title: "Newer Processable", book_type: :ebook, open_library_work_id: "OL_NEWER_P")
 
@@ -248,7 +245,6 @@ class RequestRetryTest < ActiveSupport::TestCase
       issue_description: "Download failed"
     )
 
-    # Create a selected search result
     search_result = request.search_results.create!(
       guid: "test-guid-retry",
       title: "Test Result",
@@ -264,7 +260,6 @@ class RequestRetryTest < ActiveSupport::TestCase
       download_url: "http://example.com/test-next.nzb"
     )
 
-    # Create a failed download
     request.downloads.create!(
       name: "Test Download",
       search_result: search_result,
@@ -357,7 +352,6 @@ class RequestRetryTest < ActiveSupport::TestCase
       issue_description: "Something went wrong"
     )
 
-    # Create a selected search result but no download at all
     request.search_results.create!(
       guid: "test-guid-search",
       title: "Test Result",
@@ -441,7 +435,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert @not_found_waiting.can_retry?
     assert requests(:failed_request).can_retry?
 
-    # Create a downloading request
     downloading = Request.create!(
       book: books(:audiobook_acquired),
       user: users(:one),
@@ -488,7 +481,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     # No results yet
     assert_not request.needs_manual_selection?
 
-    # Add a pending search result
     request.search_results.create!(
       guid: "manual-sel-guid",
       title: "Test Result",
@@ -542,8 +534,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_not @not_found_waiting.retry_due?
     assert_not @pending.retry_due? # No next_retry_at
   end
-
-  # === next_retry_in_words ===
 
   test "next_retry_in_words returns human-readable time" do
     request = Request.create!(
@@ -672,7 +662,6 @@ class RequestRetryTest < ActiveSupport::TestCase
       status: :downloading
     )
 
-    # Create an active download
     download = request.downloads.create!(
       name: "Test Download",
       status: :downloading,
@@ -771,7 +760,6 @@ class RequestRetryTest < ActiveSupport::TestCase
       status: :downloading
     )
 
-    # Create a paused download
     paused_download = request.downloads.create!(
       name: "Paused Download",
       status: :paused,

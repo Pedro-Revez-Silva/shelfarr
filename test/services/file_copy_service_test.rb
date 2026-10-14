@@ -1208,7 +1208,6 @@ class FileCopyServiceTest < ActiveSupport::TestCase
       "#{mount_id} 2192 #{mountinfo_device} /Audiobooks #{mountpoint} rw,relatime - btrfs " \
       "/dev/mapper/ug_A9FF7B_1786012497_pool2-volume1 rw,ugacl,space_cache=v2,subvolid=5,subvol=/\n"
 
-    # Create a wrapper class that behaves like a Dir with custom stat
     descriptor_wrapper = Class.new do
       attr_reader :fileno, :path
 
