@@ -30,6 +30,8 @@ export default class extends Controller {
     this.explicitSubmitInFlight = false;
     this.manualChangesPending = false;
     this.manualSettingKeys = new Set();
+    this.explicitSavedManualKeys = new Set();
+    this.secretDrafts = new Map();
     this.deferredAction = null;
     this.historyIndex = window.history.state?.turbo?.restorationIndex;
     this.revertingHistory = false;
@@ -53,6 +55,8 @@ export default class extends Controller {
     this.element.addEventListener("submit", this.boundHandleExternalSubmit, true);
     this.element.addEventListener("change", this.boundHandleManualChange, true);
     this.element.addEventListener("beforeinput", this.boundHandleManualInput, true);
+    this.element.addEventListener("paste", this.boundHandleManualInput, true);
+    this.element.addEventListener("input", this.boundHandleManualInput, true);
     window.addEventListener("beforeunload", this.boundHandleBeforeUnload);
     window.settingsNavigationGuard = this.boundHandlePopState;
 
@@ -70,6 +74,8 @@ export default class extends Controller {
     this.element.removeEventListener("submit", this.boundHandleExternalSubmit, true);
     this.element.removeEventListener("change", this.boundHandleManualChange, true);
     this.element.removeEventListener("beforeinput", this.boundHandleManualInput, true);
+    this.element.removeEventListener("paste", this.boundHandleManualInput, true);
+    this.element.removeEventListener("input", this.boundHandleManualInput, true);
     window.removeEventListener("beforeunload", this.boundHandleBeforeUnload);
     if (window.settingsNavigationGuard === this.boundHandlePopState) delete window.settingsNavigationGuard;
   }
@@ -196,8 +202,12 @@ export default class extends Controller {
     }
 
     this.clearSaveTimeout();
-    if (saveAll && this.hasManualKeysTarget) {
-      this.explicitSubmittedSettingKeys = this.syncManualSettingManifest();
+    if (saveAll) {
+      this.restoreSecretDrafts();
+      if (this.hasManualKeysTarget) {
+        this.explicitSubmittedSettingKeys = this.syncManualSettingManifest();
+        this.explicitSavedManualKeys = new Set(this.manualKeysTarget.value.split(",").filter(Boolean));
+      }
     }
     this.explicitInFlightSettingKeys = saveAll ? new Set(this.pendingSettingKeys) : new Set();
     if (saveAll) {
@@ -252,7 +262,8 @@ export default class extends Controller {
       }
       if (submitter?.name === "commit") {
         this.discardManualChanges(this.explicitSubmittedSettingKeys);
-        this.clearSecretFields(this.explicitSubmittedSettingKeys);
+        this.clearSecretFields(this.explicitSubmittedSettingKeys, this.explicitSavedManualKeys);
+        this.explicitSavedManualKeys = new Set();
       }
       this.explicitSubmittedSettingKeys.clear();
       if (this.pendingSettingKeys.size > 0) {
@@ -337,9 +348,44 @@ export default class extends Controller {
   }
 
   handleManualInput(event) {
-    if (!event.target.matches("[data-settings-form-manual-save]") || event.target !== document.activeElement) return;
+    const field = event.target;
+    if (!(field instanceof HTMLElement) || !field.matches("[data-settings-form-manual-save]")) return;
+    if (field !== document.activeElement) return;
+    // Password managers fill without beforeinput. A real paste or keystroke
+    // still emits paste/input, including browsers that skip beforeinput on
+    // password fields. Autofill uses insertReplacementText or no inputType.
+    if (event.type === "input" && !this.directUserInput(event.inputType)) return;
 
-    this.markManualField(event.target);
+    this.markManualField(field);
+    if (event.type === "paste") {
+      queueMicrotask(() => this.rememberSecretDraft(field));
+    } else if (event.type !== "beforeinput") {
+      this.rememberSecretDraft(field);
+    }
+  }
+
+  directUserInput(inputType) {
+    return [
+      "insertText",
+      "insertFromPaste",
+      "insertFromDrop",
+      "insertCompositionText",
+      "insertFromYank",
+      "insertTranspose",
+      "deleteByCut",
+      "deleteByDrag",
+      "deleteContent",
+      "deleteContentBackward",
+      "deleteContentForward",
+      "deleteWordBackward",
+      "deleteWordForward",
+      "deleteSoftLineBackward",
+      "deleteSoftLineForward",
+      "deleteHardLineBackward",
+      "deleteHardLineForward",
+      "historyUndo",
+      "historyRedo"
+    ].includes(inputType);
   }
 
   handleBeforeUnload(event) {
@@ -512,6 +558,25 @@ export default class extends Controller {
     this.showStatus("Save all changes before running this action.");
   }
 
+  rememberSecretDraft(field) {
+    const key = this.settingKey(field.name);
+    if (!key || field.type !== "password") return;
+
+    this.secretDrafts.set(key, field.value);
+  }
+
+  restoreSecretDrafts() {
+    if (!this.hasFormTarget) return;
+
+    this.formTarget.querySelectorAll('input[type="password"]').forEach((field) => {
+      const key = this.settingKey(field.name);
+      if (!key || field.value !== "" || !this.manualSettingKeys.has(key)) return;
+
+      const draft = this.secretDrafts.get(key);
+      if (draft) field.value = draft;
+    });
+  }
+
   markManualField(field) {
     const key = this.settingKey(field.name);
     if (!key) return;
@@ -550,9 +615,16 @@ export default class extends Controller {
     }
   }
 
-  clearSecretFields(keys) {
+  clearSecretFields(submittedKeys, savedKeys = submittedKeys) {
+    if (!submittedKeys || !this.hasFormTarget) return;
+
     this.formTarget.querySelectorAll('input[type="password"]').forEach((field) => {
-      if (keys.has(this.settingKey(field.name))) field.value = "";
+      const key = this.settingKey(field.name);
+      if (!submittedKeys.has(key)) return;
+
+      if (savedKeys.has(key) && field.value.trim() !== "") field.placeholder = "********";
+      field.value = "";
+      this.secretDrafts.delete(key);
     });
   }
 

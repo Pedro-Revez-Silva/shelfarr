@@ -194,6 +194,32 @@ class SettingsVisibilityTest < ApplicationSystemTestCase
     assert_equal "saved-zlibrary-password", SettingsService.get(:zlibrary_password)
   end
 
+  test "pasting a prowlarr api key saves it, masks the field, and the connection check uses it" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://prowlarr-save.example.test")
+    SettingsService.set(:prowlarr_api_key, "")
+    stub_request(:get, "http://prowlarr-save.example.test/api/v1/indexer")
+      .with(headers: { "X-Api-Key" => "pasted-prowlarr-key" })
+      .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+    open_settings
+
+    # Paste without beforeinput. Some browsers insert into a password field
+    # without that event, and Save All then treats the key as an untouched
+    # autofill and drops it. The field is cleared anyway, so it looks blank
+    # and the connection check has no key.
+    paste_secret_field "Prowlarr Api Key", "pasted-prowlarr-key"
+    save_all
+
+    submission = page.evaluate_script("window.settingsVisibilitySubmissions.at(-1)")
+    assert_includes submission.fetch("manualKeys"), "prowlarr_api_key"
+    assert_equal "pasted-prowlarr-key", submission.dig("values", "settings[prowlarr_api_key]")
+    assert_equal "pasted-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_field "Prowlarr Api Key", with: "", placeholder: "********"
+
+    click_on "Test Indexer Connection"
+    assert_text "Prowlarr connection successful!"
+  end
+
   test "save controls and successful save feedback stay reachable while scrolling on mobile" do
     page.current_window.resize_to(390, 844)
     open_settings
@@ -224,15 +250,30 @@ class SettingsVisibilityTest < ApplicationSystemTestCase
         const url = new URL(typeof input === "string" ? input : input.url, window.location.origin)
         if (url.pathname !== "/admin/settings/bulk_update") return originalFetch(input, options)
 
+        const values = {}
+        for (const [name, value] of options.body.entries()) values[name] = value
         window.settingsVisibilitySubmissions.push({
           fields: Array.from(options.body.keys()),
-          manualKeys: (options.body.get("manual_keys") || "").split(",")
+          manualKeys: (options.body.get("manual_keys") || "").split(","),
+          values
         })
         return originalFetch(input, options).then((response) => {
           document.documentElement.dataset.settingsVisibilitySaves = window.settingsVisibilitySubmissions.length
           return response
         })
       }
+    JAVASCRIPT
+  end
+
+  def paste_secret_field(label, value)
+    field = find_field(label)
+    page.execute_script(<<~JAVASCRIPT, field, value)
+      const field = arguments[0]
+      const value = arguments[1]
+      field.focus()
+      field.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true }))
+      field.value = value
+      field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste", data: value }))
     JAVASCRIPT
   end
 
