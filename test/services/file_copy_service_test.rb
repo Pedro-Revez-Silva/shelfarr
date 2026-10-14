@@ -391,21 +391,33 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   end
 
   test "cp_noreplace rejects a source modified while its private copy is written" do
-    destination = File.join(@dest_dir, "changed-source.txt")
-    real_copy = FileCopyService.method(:copy_source_io)
-    mutating_copy = lambda do |source, target, heartbeat: nil|
-      real_copy.call(source, target, heartbeat: heartbeat)
-      File.binwrite(@src_file, "other bytes!")
+    assert_cp_noreplace_rejects_same_size_rewrite!(@src_file, "other bytes!")
+  end
+
+  test "cp_noreplace rejects a same-size rewrite that leaves file_manifest_entry unchanged" do
+    assert_cp_noreplace_rejects_same_size_rewrite!(@src_file, "other bytes!")
+  end
+
+  test "cp_noreplace rejects a source snapshot whose same-size rewrite leaves file_manifest_entry unchanged" do
+    destination = File.join(@dest_dir, "snapshotted-rewrite.txt")
+    replacement = "other bytes!"
+    snapshot = nil
+    force_same_size_manifest_collision!(@src_file, replacement) do
+      snapshot = FileCopyService.snapshot_source_file(@src_file)
+      snapshot.manifest
     end
 
-    FileCopyService.stub(:copy_source_io, mutating_copy) do
-      assert_raises(Errno::ESTALE) do
-        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
-      end
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.cp_noreplace(
+        @src_file,
+        destination,
+        root: @dest_dir,
+        source_snapshot: snapshot
+      )
     end
-
     assert_not File.exist?(destination)
-    assert_equal "other bytes!", File.binread(@src_file)
+    assert_equal replacement, File.binread(@src_file)
+    assert_equal Digest::SHA256.hexdigest("test content"), snapshot.content_digest
   end
 
   test "cp_noreplace fails closed when atomic publication is unsupported" do
@@ -3618,11 +3630,82 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   end
 
   test "remove_source_file retains an in-place mutation after snapshot" do
-    snapshot = FileCopyService.snapshot_source_file(@src_file)
-    File.binwrite(@src_file, "other bytes!")
+    assert_remove_source_file_retains_same_size_rewrite!(@src_file, "other bytes!")
+  end
 
-    assert_not FileCopyService.remove_source_file(snapshot)
-    assert_equal "other bytes!", File.binread(@src_file)
+  test "remove_source_file retains a same-size rewrite that leaves file_manifest_entry unchanged" do
+    assert_remove_source_file_retains_same_size_rewrite!(@src_file, "other bytes!")
+  end
+
+  test "cp_noreplace rejects a snapshotted source root same-size rewrite when file_manifest_entry is unchanged" do
+    source_root_path = File.join(@tmp_dir, "download")
+    source = File.join(source_root_path, "chapter.mp3")
+    destination = File.join(@dest_dir, "chapter.mp3")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(source, "chapter-bytes")
+    replacement = "mutated-bytes"
+    snapshot = nil
+
+    force_same_size_manifest_collision!(source, replacement) do
+      snapshot = FileCopyService.snapshot_source_root(source_root_path)
+      snapshot.entries.fetch("chapter.mp3")
+    end
+
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.cp_noreplace(
+        source,
+        destination,
+        root: @dest_dir,
+        source_root: snapshot
+      )
+    end
+    assert_not File.exist?(destination)
+    assert_equal replacement, File.binread(source)
+  end
+
+  test "remove_source_tree retains a same-size rewrite that leaves file_manifest_entry unchanged" do
+    source_root_path = File.join(@tmp_dir, "download")
+    source = File.join(source_root_path, "chapter.mp3")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(source, "chapter-bytes")
+    replacement = "mutated-bytes"
+    snapshot = nil
+
+    force_same_size_manifest_collision!(source, replacement) do
+      snapshot = FileCopyService.snapshot_source_root(source_root_path)
+      snapshot.entries.fetch("chapter.mp3")
+    end
+
+    assert_not FileCopyService.remove_source_tree(snapshot)
+    assert_equal replacement, File.binread(source)
+    assert_equal Digest::SHA256.hexdigest("chapter-bytes"), snapshot.entries.fetch("chapter.mp3")[7]
+  end
+
+  test "hardlink_noreplace rejects a same-size rewrite that leaves file_manifest_entry unchanged" do
+    source_root_path = File.join(@tmp_dir, "download")
+    source = File.join(source_root_path, "chapter.mp3")
+    destination = File.join(@dest_dir, "chapter.mp3")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(source, "chapter-bytes")
+    replacement = "mutated-bytes"
+    snapshot = nil
+
+    force_same_size_manifest_collision!(source, replacement) do
+      snapshot = FileCopyService.snapshot_source_root(source_root_path)
+      snapshot.entries.fetch("chapter.mp3")
+    end
+
+    assert_raises(Errno::ESTALE) do
+      FileCopyService.hardlink_noreplace(
+        source,
+        destination,
+        root: @dest_dir,
+        source_root: snapshot
+      )
+    end
+    assert_not File.exist?(destination)
+    assert_equal replacement, File.binread(source)
+    assert_equal 1, File.stat(source).nlink
   end
 
   test "remove_source_file restores a replacement that wins before quarantine" do
@@ -4969,5 +5052,104 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     return unless Process.uid.zero?
 
     File.for_fd(descriptor, "r+b", autoclose: false).chown(65_534, -1)
+  end
+
+  # ext4 stamps mtime/ctime from a ~4ms clock, so a same-size rewrite leaves
+  # file_manifest_entry unchanged only inside that tick. Start each attempt on
+  # a fresh tick and retry until that happens. File.utime would hide the hole.
+  MANIFEST_COLLISION_ATTEMPTS = 40
+
+  def file_stat_manifest(path)
+    FileCopyService.send(:file_manifest_entry, File.stat(path))
+  end
+
+  def coarse_realtime
+    clock = Process.const_defined?(:CLOCK_REALTIME_COARSE) ? Process::CLOCK_REALTIME_COARSE : Process::CLOCK_REALTIME
+    Process.clock_gettime(clock)
+  end
+
+  def write_bytes_at_timestamp_tick_start(path, bytes)
+    started = coarse_realtime
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.05
+    while coarse_realtime == started
+      break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    end
+    File.binwrite(path, bytes)
+  end
+
+  def rewrite_in_place!(path, bytes)
+    File.open(path, "r+b") do |file|
+      file.rewind
+      file.write(bytes)
+      file.flush
+    end
+  end
+
+  def force_same_size_manifest_collision!(path, replacement)
+    original = File.binread(path)
+    flunk "same-size rewrite required" unless replacement.bytesize == original.bytesize && replacement != original
+
+    MANIFEST_COLLISION_ATTEMPTS.times do
+      write_bytes_at_timestamp_tick_start(path, original)
+      recorded = yield
+      before = file_stat_manifest(path)
+      rewrite_in_place!(path, replacement)
+      after = file_stat_manifest(path)
+      next unless before == after && recorded.first(7) == after
+
+      return recorded
+    end
+
+    flunk "same-size rewrite changed file_manifest_entry on every attempt"
+  end
+
+  def assert_cp_noreplace_rejects_same_size_rewrite!(path, replacement)
+    destination = File.join(@dest_dir, "changed-source.txt")
+    real_copy = FileCopyService.method(:copy_source_io)
+    collided = false
+    mutating_copy = lambda do |source, target, heartbeat: nil|
+      copied_digest = real_copy.call(source, target, heartbeat: heartbeat)
+      before = file_stat_manifest(path)
+      rewrite_in_place!(path, replacement)
+      collided = file_stat_manifest(path) == before
+      copied_digest
+    end
+
+    MANIFEST_COLLISION_ATTEMPTS.times do
+      write_bytes_at_timestamp_tick_start(path, "test content")
+      FileUtils.rm_f(destination)
+      collided = false
+      published = false
+      FileCopyService.stub(:copy_source_io, mutating_copy) do
+        begin
+          FileCopyService.cp_noreplace(path, destination, root: @dest_dir)
+          published = true
+        rescue Errno::ESTALE
+          published = false
+        end
+      end
+      next unless collided
+
+      assert_not published, "cp_noreplace published bytes after a same-size rewrite with an unchanged manifest"
+      assert_not File.exist?(destination)
+      assert_equal replacement, File.binread(path)
+      return
+    end
+
+    flunk "same-size rewrite changed file_manifest_entry on every attempt"
+  end
+
+  def assert_remove_source_file_retains_same_size_rewrite!(path, replacement)
+    original = File.binread(path)
+    snapshot = nil
+    force_same_size_manifest_collision!(path, replacement) do
+      snapshot = FileCopyService.snapshot_source_file(path)
+      snapshot.manifest
+    end
+
+    assert_equal file_stat_manifest(path), snapshot.manifest
+    assert_not FileCopyService.remove_source_file(snapshot)
+    assert_equal replacement, File.binread(path)
+    assert_equal Digest::SHA256.hexdigest(original), snapshot.content_digest
   end
 end

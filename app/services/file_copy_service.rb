@@ -155,7 +155,8 @@ class FileCopyService
             heartbeat: heartbeat,
             source_validator: validator,
             accepted_modes: LIBRARY_FILE_MODES,
-            require_durable: require_durable
+            require_durable: require_durable,
+            source_digest: file_manifest_digest(manifest)
           )
         end
       else
@@ -164,7 +165,7 @@ class FileCopyService
         else
           ->(&operation) { with_pinned_source(src, source_root: source_root, &operation) }
         end
-        source_operation.call do |source, _parent, _basename, _parent_path, validator|
+        source_operation.call do |source, _parent, _basename, _parent_path, validator, source_digest|
           publish_source_io_noreplace(
             source,
             dest,
@@ -172,7 +173,8 @@ class FileCopyService
             heartbeat: heartbeat,
             source_validator: validator,
             accepted_modes: LIBRARY_FILE_MODES,
-            require_durable: require_durable
+            require_durable: require_durable,
+            source_digest: source_digest
           )
         end
       end
@@ -1264,7 +1266,7 @@ class FileCopyService
     def snapshot_source_file(path, source_root: nil)
       if source_root
         snapshot = nil
-        with_pinned_source(path, source_root: source_root) do |source, parent, _basename, parent_path|
+        with_pinned_source(path, source_root: source_root) do |source, parent, _basename, parent_path, _validator, digest|
           parent_stat = parent.stat
           snapshot = SourceFileSnapshot.new(
             path: Pathname(path).expand_path,
@@ -1272,7 +1274,8 @@ class FileCopyService
             canonical_parent_path: parent_path.realpath,
             parent_device: parent_stat.dev,
             parent_inode: parent_stat.ino,
-            manifest: file_manifest_entry(source.stat).freeze
+            manifest: file_manifest_entry(source.stat).freeze,
+            content_digest: digest
           ).freeze
         end
         return snapshot
@@ -1285,13 +1288,15 @@ class FileCopyService
         validate_current_directory_identity!(parent_path, parent)
         with_pinned_regular_child(parent, expanded.basename.to_s) do |source|
           parent_stat = parent.stat
+          manifest, digest = capture_pinned_file_content(source)
           return SourceFileSnapshot.new(
             path: expanded,
             parent_path: parent_path,
             canonical_parent_path: canonical_parent,
             parent_device: parent_stat.dev,
             parent_inode: parent_stat.ino,
-            manifest: file_manifest_entry(source.stat).freeze
+            manifest: manifest,
+            content_digest: digest
           ).freeze
         end
       end
@@ -1418,6 +1423,7 @@ class FileCopyService
           expanded.basename.to_s,
           source_snapshot.manifest.first(2),
           expected_manifest: source_snapshot.manifest,
+          expected_digest: source_snapshot.content_digest,
           before_remove: destination_validator,
           quarantine_kind: :source
         )
@@ -2170,7 +2176,8 @@ class FileCopyService
       heartbeat: nil,
       source_validator: nil,
       accepted_modes: LIBRARY_FILE_MODES,
-      require_durable: false
+      require_durable: false,
+      source_digest: nil
     )
       raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
 
@@ -2203,7 +2210,8 @@ class FileCopyService
                 accepted_modes: accepted_modes,
                 require_durable: require_durable,
                 path: destination,
-                root: root
+                root: root,
+                expected_source_digest: source_digest
               )
             end
           end
@@ -2245,10 +2253,13 @@ class FileCopyService
                 path: destination,
                 root: root
               )
-              if heartbeat
+              copied_digest = if heartbeat
                 copy_source_io(source, temporary, heartbeat: heartbeat)
               else
                 copy_source_io(source, temporary)
+              end
+              if source_digest && copied_digest.is_a?(String) && copied_digest != source_digest
+                raise Errno::ESTALE, "source file changed while it was being copied"
               end
               published_mode = apply_file_mode!(
                 temporary,
@@ -2491,12 +2502,24 @@ class FileCopyService
       unless stable_hardlink_manifest_entry(source.stat) == expected
         raise Errno::ESTALE, "source file changed during hardlink publication"
       end
+      verify_pinned_content_digest!(
+        source,
+        expected_manifest,
+        nil,
+        "source file changed during hardlink publication"
+      )
 
       validate_current_directory_identity!(parent_path, parent)
       with_pinned_regular_child(parent, basename) do |current|
         unless stable_hardlink_manifest_entry(current.stat) == expected
           raise Errno::ESTALE, "source path changed during hardlink publication"
         end
+        verify_pinned_content_digest!(
+          current,
+          expected_manifest,
+          nil,
+          "source path changed during hardlink publication"
+        )
       end
     end
 
@@ -2550,28 +2573,18 @@ class FileCopyService
       end
     end
 
+    # Hash while copying. copy_file_range never exposes the bytes, so a
+    # same-tick rewrite would otherwise be published unchecked.
     def copy_source_io(source, target, heartbeat: nil)
       source.rewind
-      if heartbeat
-        buffer = +""
-        while source.read(BUFFER_SIZE, buffer)
-          target.write(buffer)
-          heartbeat.call
-        end
-        return
+      digest = Digest::SHA256.new
+      buffer = +""
+      while source.read(BUFFER_SIZE, buffer)
+        target.write(buffer)
+        digest << buffer
+        heartbeat&.call
       end
-
-      begin
-        IO.copy_stream(source, target)
-      rescue Errno::EACCES => error
-        raise unless copy_file_range_error?(error)
-
-        Rails.logger.info "[FileCopyService] copy_file_range failed on NFS, falling back to buffered descriptor copy"
-        source.rewind
-        target.rewind
-        target.truncate(0)
-        buffered_copy_io(source, target)
-      end
+      digest.hexdigest.freeze
     end
 
     def publish_private_child_atomically_noreplace!(
@@ -2622,9 +2635,13 @@ class FileCopyService
       accepted_modes:,
       require_durable:,
       path:,
-      root:
+      root:,
+      expected_source_digest: nil
     )
       source_size, source_digest = io_content_identity(source, heartbeat: heartbeat)
+      if expected_source_digest && source_digest != expected_source_digest
+        raise Errno::ESTALE, "source file changed while it was being copied"
+      end
       source_validator&.call
       token = SecureRandom.hex(16)
       destination_created = false
@@ -2662,7 +2679,10 @@ class FileCopyService
             path: path,
             root: root
           )
-          copy_source_io(source, destination, heartbeat: heartbeat)
+          copied_digest = copy_source_io(source, destination, heartbeat: heartbeat)
+          if copied_digest.is_a?(String) && copied_digest != source_digest
+            raise Errno::ESTALE, "source file changed while it was being copied"
+          end
           published_mode = apply_file_mode!(
             destination,
             LIBRARY_FILE_MODE,
@@ -3304,17 +3324,18 @@ class FileCopyService
       with_pinned_absolute_directory(canonical_parent) do |parent|
         validate_current_directory_identity!(expanded.parent, parent)
         with_pinned_regular_child(parent, expanded.basename.to_s) do |source|
-          manifest = file_manifest_entry(source.stat)
+          manifest, digest = capture_pinned_file_content(source)
           validator = lambda do
             validate_pinned_source_manifest!(
               source,
               parent,
               expanded.basename.to_s,
               expanded.parent,
-              manifest
+              manifest,
+              expected_digest: digest
             )
           end
-          result = yield source, parent, expanded.basename.to_s, expanded.parent, validator
+          result = yield source, parent, expanded.basename.to_s, expanded.parent, validator, digest
           validator.call
           result
         end
@@ -3337,11 +3358,19 @@ class FileCopyService
               parent,
               expanded.basename.to_s,
               source_snapshot.parent_path,
-              source_snapshot.manifest
+              source_snapshot.manifest,
+              expected_digest: source_snapshot.content_digest
             )
           end
           validator.call
-          result = yield source, parent, expanded.basename.to_s, source_snapshot.parent_path, validator
+          result = yield(
+            source,
+            parent,
+            expanded.basename.to_s,
+            source_snapshot.parent_path,
+            validator,
+            source_snapshot.content_digest
+          )
           validator.call
           result
         end
@@ -3350,15 +3379,28 @@ class FileCopyService
       raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
     end
 
-    def validate_pinned_source_manifest!(source, parent, basename, parent_path, expected_manifest)
-      unless file_manifest_entry(source.stat) == expected_manifest
+    def validate_pinned_source_manifest!(source, parent, basename, parent_path, expected_manifest, expected_digest: nil)
+      expected_stat = expected_manifest.first(7)
+      unless file_manifest_entry(source.stat) == expected_stat
         raise Errno::ESTALE, "source file changed while it was being imported"
       end
+      verify_pinned_content_digest!(
+        source,
+        expected_manifest,
+        expected_digest,
+        "source file changed while it was being imported"
+      )
       validate_current_directory_identity!(parent_path, parent)
       with_pinned_regular_child(parent, basename) do |current|
-        unless file_manifest_entry(current.stat) == expected_manifest
+        unless file_manifest_entry(current.stat) == expected_stat
           raise Errno::ESTALE, "source path changed while it was being imported"
         end
+        verify_pinned_content_digest!(
+          current,
+          expected_manifest,
+          expected_digest,
+          "source path changed while it was being imported"
+        )
       end
       true
     end
@@ -3373,11 +3415,18 @@ class FileCopyService
       with_pinned_absolute_directory(canonical_parent) do |parent|
         validate_current_directory_identity!(expanded.parent, parent)
         with_pinned_regular_child(parent, expanded.basename.to_s) do |source|
-          manifest = file_manifest_entry(source.stat)
+          stat_entry, digest = capture_pinned_file_content(source)
+          manifest = (stat_entry + [ digest ]).freeze
           result = yield source, parent, expanded.basename.to_s, expanded.parent, manifest
           unless stable_hardlink_manifest_entry(source.stat) == stable_hardlink_snapshot_entry(manifest)
             raise Errno::ESTALE, "source file changed while it was being hardlinked"
           end
+          verify_pinned_content_digest!(
+            source,
+            manifest,
+            digest,
+            "source file changed while it was being hardlinked"
+          )
           result
         end
       end
@@ -3416,10 +3465,22 @@ class FileCopyService
                 stable_hardlink_snapshot_entry(expected_source) == stable_hardlink_manifest_entry(source.stat)
               raise Errno::ESTALE, "source file changed after it was snapshotted"
             end
+            verify_pinned_content_digest!(
+              source,
+              expected_source,
+              nil,
+              "source file changed after it was snapshotted"
+            )
             result = yield source, parent, relative.basename.to_s, parent_path, expected_source
             unless stable_hardlink_manifest_entry(source.stat) == stable_hardlink_snapshot_entry(expected_source)
               raise Errno::ESTALE, "source file changed while it was being hardlinked"
             end
+            verify_pinned_content_digest!(
+              source,
+              expected_source,
+              nil,
+              "source file changed while it was being hardlinked"
+            )
             result
           end
         end
@@ -3454,7 +3515,7 @@ class FileCopyService
           end
           with_pinned_regular_child(parent, relative.basename.to_s) do |source|
             expected_source = source_root.entries[relative.to_s]
-            unless expected_source == file_manifest_entry(source.stat)
+            unless expected_source && file_manifest_entry(source.stat) == expected_source.first(7)
               raise Errno::ESTALE, "source file changed after it was snapshotted"
             end
             validator = lambda do
@@ -3466,7 +3527,14 @@ class FileCopyService
                 expected_source
               )
             end
-            result = yield source, parent, relative.basename.to_s, parent_path, validator
+            result = yield(
+              source,
+              parent,
+              relative.basename.to_s,
+              parent_path,
+              validator,
+              file_manifest_digest(expected_source)
+            )
             validator.call
             result
           end
@@ -3514,7 +3582,7 @@ class FileCopyService
               depth: depth + 1
             )
           elsif stat.file?
-            manifest[relative.to_s] = file_manifest_entry(stat)
+            manifest[relative.to_s] = pinned_regular_file_manifest(child, heartbeat: heartbeat)
           else
             raise UnsafePathError, "source tree contains a symbolic link or non-regular path"
           end
@@ -3587,7 +3655,7 @@ class FileCopyService
               depth: depth + 1
             )
           elsif stat.file?
-            manifest[relative.to_s] = file_manifest_entry(stat)
+            manifest[relative.to_s] = pinned_regular_file_manifest(child, heartbeat: heartbeat)
           else
             raise UnsafePathError, "source tree contains a symbolic link or non-regular path"
           end
@@ -3797,7 +3865,17 @@ class FileCopyService
             native_unlinkat(directory.fileno, quarantine, AT_REMOVEDIR)
           else
             current = file_manifest_entry(stat)
+            digest = file_manifest_digest(expected)
             unless stat.file? && current.first(5) == expected.first(5)
+              restore_quarantined_replacement(
+                directory,
+                quarantine,
+                entry,
+                allow_nonatomic: allow_nonatomic
+              )
+              raise Errno::ESTALE, "source file changed during cleanup"
+            end
+            if digest && !pinned_content_matches?(child, digest, expected.fetch(3))
               restore_quarantined_replacement(
                 directory,
                 quarantine,
@@ -3858,6 +3936,45 @@ class FileCopyService
 
     def file_manifest_entry(stat)
       [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.ctime.to_r, stat.mode & 0o7777 ]
+    end
+
+    # Stat fields are only a fast filter. ext4, NFS, and SMB stamp mtime/ctime
+    # from a coarse clock, so a same-size rewrite in that tick needs a digest.
+    def capture_pinned_file_content(io, heartbeat: nil)
+      TIMESTAMP_SETTLE_ATTEMPTS.times do
+        size, digest = io_content_identity(io, heartbeat: heartbeat)
+        manifest = file_manifest_entry(io.stat)
+        next unless size == manifest.fetch(3)
+        next unless file_manifest_entry(io.stat) == manifest
+
+        return [ manifest.freeze, digest.freeze ]
+      end
+      raise Errno::ESTALE, "source file changed while it was being snapshotted"
+    end
+
+    def pinned_regular_file_manifest(io, heartbeat: nil)
+      stat_entry, digest = capture_pinned_file_content(io, heartbeat: heartbeat)
+      (stat_entry + [ digest ]).freeze
+    end
+
+    def file_manifest_digest(manifest)
+      return nil unless manifest.is_a?(Array) && manifest[2] == :file
+
+      digest = manifest[7]
+      digest if digest.is_a?(String)
+    end
+
+    def pinned_content_matches?(io, expected_digest, expected_size)
+      size, digest = io_content_identity(io)
+      size == expected_size && digest == expected_digest
+    end
+
+    def verify_pinned_content_digest!(io, expected_manifest, expected_digest, message)
+      digest = expected_digest || file_manifest_digest(expected_manifest)
+      return true unless digest
+      return true if pinned_content_matches?(io, digest, expected_manifest.fetch(3))
+
+      raise Errno::ESTALE, message
     end
 
     # CIFS/SMB can keep the inode and size of a freshly written file while the
@@ -4281,6 +4398,7 @@ class FileCopyService
       basename,
       expected_identity,
       expected_manifest: nil,
+      expected_digest: nil,
       before_remove: nil,
       quarantine_kind: :copy,
       expected_owner_uid: nil
@@ -4291,7 +4409,7 @@ class FileCopyService
       begin
         with_pinned_regular_child(parent, basename) do |child|
           return :mismatch unless file_identity(child.stat) == expected_identity
-          return :mismatch if expected_manifest && file_manifest_entry(child.stat) != expected_manifest
+          return :mismatch if expected_manifest && file_manifest_entry(child.stat) != expected_manifest.first(7)
         end
       rescue Errno::ENOENT
         return :missing
@@ -4325,7 +4443,12 @@ class FileCopyService
             manifest_matches = !expected_manifest ||
               stable_hardlink_manifest_entry(stat) == stable_hardlink_snapshot_entry(expected_manifest)
             if quarantined_identity == expected_identity && manifest_matches
-              if before_remove && !before_remove.call
+              digest = expected_digest || file_manifest_digest(expected_manifest)
+              expected_size = expected_manifest ? expected_manifest.fetch(3) : stat.size
+              if digest && !pinned_content_matches?(child, digest, expected_size)
+                restore_quarantined_child!(quarantine, parent, basename)
+                :mismatch
+              elsif before_remove && !before_remove.call
                 restore_quarantined_child!(quarantine, parent, basename)
                 :mismatch
               else
@@ -4472,9 +4595,25 @@ class FileCopyService
           next unless pinned_directory_children(quarantine) == [ COPY_QUARANTINE_ENTRY ]
 
           matches = false
+          digest_mismatch = false
           with_pinned_regular_child(quarantine, COPY_QUARANTINE_ENTRY) do |entry|
             matches = file_identity(entry.stat) == expected_identity &&
               stable_hardlink_manifest_entry(entry.stat) == stable_hardlink_snapshot_entry(snapshot.manifest)
+            if matches && snapshot.content_digest &&
+                !pinned_content_matches?(entry, snapshot.content_digest, snapshot.manifest.fetch(3))
+              matches = false
+              digest_mismatch = true
+            end
+          end
+          if digest_mismatch
+            restore_quarantined_child!(quarantine, parent, original_basename)
+            remove_empty_cleanup_quarantine!(
+              parent,
+              basename,
+              quarantine,
+              file_identity(quarantine.stat)
+            )
+            return :mismatch
           end
           next unless matches
 
