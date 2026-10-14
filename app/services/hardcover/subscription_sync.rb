@@ -285,8 +285,7 @@ module Hardcover
           # A book announced for a later date stays upcoming until it is out.
           attrs[:state] = "upcoming"
         elsif !item.baseline? && item.release_date.nil? && new_entry?(entry)
-          # First seen without a date after the baseline, now dated as a new
-          # release.
+          # First seen without a date after the baseline, now dated as a new release.
           attrs[:state] = new_entry_state(entry)
           attrs[:book_types] = subscription.book_types if attrs[:state] == "queued"
           @queued += 1 if attrs[:state] == "queued"
@@ -295,8 +294,7 @@ module Hardcover
       item.update!(attrs)
     end
 
-    # Books waiting to be requested. A book already requested keeps its
-    # requests whatever its date says.
+    # Books waiting to be requested. A book already requested keeps its requests whatever its date says.
     def postponable?(item)
       item.pending? || item.queued? || item.failed?
     end

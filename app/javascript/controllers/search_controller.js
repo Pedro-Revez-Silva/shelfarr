@@ -3,7 +3,6 @@ import { Controller } from "@hotwired/stimulus"
 const PAGE_CACHE_LIMIT = 5
 const PAGE_CACHE_TTL = 10 * 60 * 1000
 
-// Handles progressive federated search and cached aggregate page navigation.
 export default class extends Controller {
   static targets = ["input", "results", "spinner", "contentKind"]
   static values = {

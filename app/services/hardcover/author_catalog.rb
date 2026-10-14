@@ -71,8 +71,7 @@ module Hardcover
 
     def duplicate_key(entry)
       title = entry.title.to_s.gsub(EDITION_MARKERS, " ")
-      # Fold accents but keep every script's letters so non-Latin titles do
-      # not collapse into the same key.
+      # Fold accents but keep every script's letters so non-Latin titles do not collapse into the same key.
       title = title.unicode_normalize(:nfkd).gsub(/\p{Mn}/, "").downcase.gsub(/[^\p{L}\p{N}]+/, " ").squish
       return [ "id:#{entry.id}" ] if title.blank?
 

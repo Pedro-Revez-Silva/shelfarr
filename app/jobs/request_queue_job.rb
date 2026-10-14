@@ -21,7 +21,6 @@ class RequestQueueJob < ApplicationJob
 
   private
 
-  # Re-queue not_found requests that are due for retry
   def requeue_retry_due_requests
     Request.retry_due.order(:next_retry_at, :id).limit(RECONCILIATION_BATCH_SIZE).each do |request|
       Rails.logger.info "[RequestQueueJob] Re-queuing request ##{request.id} for retry (attempt #{request.retry_count + 1})"
@@ -102,7 +101,6 @@ class RequestQueueJob < ApplicationJob
       end
   end
 
-  # Enqueue the search job for a pending request
   def enqueue_search(request)
     SearchJob.perform_later(request.id)
     Rails.logger.info "[RequestQueueJob] Enqueued SearchJob for request ##{request.id}"

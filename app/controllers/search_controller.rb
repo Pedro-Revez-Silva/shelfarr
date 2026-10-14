@@ -645,8 +645,7 @@ class SearchController < ApplicationController
       elsif book.acquired?
         :acquired
       elsif book.requests.any?(&:open?)
-        # Checked in Ruby so the lookup's preloaded requests are used instead
-        # of one query per collection item.
+        # Checked in Ruby so the lookup's preloaded requests are used instead of one query per collection item.
         :requested
       else
         :available

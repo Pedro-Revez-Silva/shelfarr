@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-# Recurring job that syncs library items from Audiobookshelf (or other library
-# platforms) into Shelfarr's inventory cache used for duplicate detection.
 class AudiobookshelfLibrarySyncJob < ApplicationJob
   queue_as :default
   limits_concurrency to: 1,

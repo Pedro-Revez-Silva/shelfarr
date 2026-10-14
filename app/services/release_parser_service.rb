@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-# Service for parsing release titles to extract metadata like language, format, and quality.
-# Based on patterns from Radarr/Sonarr LanguageParser and rank-torrent-name (RTN).
 class ReleaseParserService
   # Supported languages with their ISO 639-1 codes and display names
   LANGUAGES = {
@@ -36,8 +34,7 @@ class ReleaseParserService
     "el" => { name: "Greek", flag: "GR" }
   }.freeze
 
-  # Language detection patterns - order matters for specificity
-  # More specific patterns should come before generic ones
+  # Language detection patterns - order matters for specificity. More specific patterns should come before generic ones
   LANGUAGE_PATTERNS = [
     # English
     { code: "en", pattern: /\benglish\b/i },
@@ -190,7 +187,6 @@ class ReleaseParserService
     { code: "el", pattern: /\bgreek\b/i }
   ].freeze
 
-  # Multi-language indicators (treat as matching any requested language)
   MULTI_LANGUAGE_PATTERNS = [
     /\bmulti\b/i,
     /\bdual\b/i,
@@ -202,7 +198,6 @@ class ReleaseParserService
     /\bML\b/
   ].freeze
 
-  # Audiobook format indicators
   AUDIOBOOK_PATTERNS = [
     /\baudiobook\b/i,
     /\bm4b\b/i,
@@ -214,7 +209,6 @@ class ReleaseParserService
     /\bmp3\b.*\b(?:audiobook|book)\b/i
   ].freeze
 
-  # Ebook format indicators
   EBOOK_PATTERNS = [
     /\bebook\b/i,
     /\bepub\b/i,
@@ -278,9 +272,6 @@ class ReleaseParserService
   ].freeze
 
   class << self
-    # Parse a release title and extract metadata
-    # @param title [String] The release title to parse
-    # @return [Hash] Parsed metadata including languages, format, etc.
     def parse(title)
       return empty_result if title.blank?
 
@@ -314,9 +305,6 @@ class ReleaseParserService
       detected.to_a
     end
 
-    # Check if a release is marked as multi-language
-    # @param title [String] The release title
-    # @return [Boolean]
     def multi_language?(title)
       return false if title.blank?
 
@@ -358,12 +346,6 @@ class ReleaseParserService
         &.first
     end
 
-    # Check whether a release name looks like video (movie/TV) content.
-    # Explicit book markers (formats or extensions) veto the video markers so
-    # this stays high-precision: it only rejects titles that carry video
-    # signals and no book signals at all.
-    # @param title [String] The release title
-    # @return [Boolean]
     def video_release?(title)
       return false if title.blank?
       return false if detect_format(title).present? || detect_extensions(title).any?
@@ -388,21 +370,14 @@ class ReleaseParserService
       nil
     end
 
-    # Get display info for a language code
-    # @param code [String] ISO 639-1 language code
-    # @return [Hash, nil] Hash with :name and :flag, or nil if unknown
     def language_info(code)
       LANGUAGES[code]
     end
 
-    # Get all supported language codes
-    # @return [Array<String>]
     def supported_language_codes
       LANGUAGES.keys
     end
 
-    # Get languages formatted for select options
-    # @return [Array<Array>] Array of [display_name, code] pairs
     def language_options
       LANGUAGES.map { |code, info| [ info[:name], code ] }.sort_by(&:first)
     end

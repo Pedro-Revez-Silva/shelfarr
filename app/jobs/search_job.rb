@@ -58,7 +58,6 @@ class SearchJob < ApplicationJob
 
     Rails.logger.info "[SearchJob] Starting search for request ##{request.id}"
 
-    # Check if any search sources are configured
     indexer_available = IndexerClient.configured?
     anna_available = AnnaArchiveClient.configured? && (request.book.ebook? || request.book.audiobook?)
     zlibrary_available = ZLibraryClient.configured? && request.book.ebook?
@@ -85,7 +84,6 @@ class SearchJob < ApplicationJob
       Rails.logger.info "[SearchJob] Found #{indexer_results.count} #{IndexerClient.display_name} results"
     end
 
-    # Search Anna's Archive for ebooks and audiobooks if configured
     if anna_available
       anna_results = search_anna_archive(request, search_generation)
       return unless heartbeat_search!(request, search_generation)
@@ -760,8 +758,6 @@ class SearchJob < ApplicationJob
     end
   end
 
-  # Check if we should add language to the search query
-  # Only add for non-English languages that we have a name for
   def should_add_language_to_search?(request)
     language = request.effective_language
     return false if language.blank? || language == "en"
@@ -841,10 +837,6 @@ class SearchJob < ApplicationJob
     end
   end
 
-  # Scores a result the same way save_results will persist it: the raw
-  # ReleaseScorer total minus the search attempt penalty. Keeping threshold
-  # checks on the penalized score prevents broadened attempts from stopping
-  # the search with a result that ends up stored below the confidence threshold.
   def penalized_indexer_score(tagged_result, request, raw_score: nil)
     result = indexer_result_from(tagged_result)
     score = (raw_score || ReleaseScorer.score(search_result_for_scoring(result), request)).total

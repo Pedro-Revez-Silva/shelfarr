@@ -4,7 +4,6 @@ require "base64"
 require "bencode"
 
 module DownloadClients
-  # Transmission RPC client
   class Transmission < Base
     class LegacyProtocolRequired < StandardError; end
 

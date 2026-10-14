@@ -6,7 +6,6 @@ class DashboardController < ApplicationController
     @attention_needed = Current.user.admin? ? Request.needs_attention.count : Request.for_user(Current.user).needs_attention.count
     @system_health = SystemHealth.all.index_by(&:service)
 
-    # Recent activity for dashboard cards
     @recent_books = Book.acquired.order(updated_at: :desc).limit(10)
     @recent_requests = if Current.user.admin?
       Request.includes(:book, :user).order(created_at: :desc).limit(8)

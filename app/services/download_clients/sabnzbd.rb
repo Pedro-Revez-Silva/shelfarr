@@ -1,12 +1,10 @@
 # frozen_string_literal: true
 
 module DownloadClients
-  # SABnzbd API client for usenet downloads
-  # https://sabnzbd.org/wiki/advanced/api
+  # SABnzbd API client for usenet downloads https://sabnzbd.org/wiki/advanced/api
   class Sabnzbd < Base
     SAFE_NZO_ID = /\A[A-Za-z0-9][A-Za-z0-9._:-]{0,254}\z/
 
-    # Add an NZB by URL
     def add_torrent(url, options = {})
       Rails.logger.info "[Sabnzbd] Adding URL to queue (#{url.to_s.length} chars)"
       unless options[:sensitive_url]
@@ -49,7 +47,6 @@ module DownloadClients
       raise Base::ConnectionError, "Failed to connect to SABnzbd: #{e.message}"
     end
 
-    # Get info for a specific download by nzo_id
     def torrent_info(nzo_id)
       # Check queue first, then history
       queue_item = find_in_queue(nzo_id)
@@ -58,14 +55,12 @@ module DownloadClients
       find_in_history(nzo_id)
     end
 
-    # List all downloads (queue + recent history)
     def list_torrents(filter = {})
       queue = list_queue
       history = list_history(limit: filter[:limit] || 50)
       queue + history
     end
 
-    # Test connection to SABnzbd
     def test_connection
       # version/auth do not validate SABnzbd API keys. get_cats is a
       # lightweight authenticated endpoint with the access level Shelfarr
@@ -76,10 +71,7 @@ module DownloadClients
       false
     end
 
-    # Remove a download by nzo_id
-    # delete_files: if true, also delete downloaded files
     def remove_torrent(nzo_id, delete_files: false)
-      # Try to delete from queue first
       response = connection.get("api", {
         mode: "queue",
         name: "delete",

@@ -59,8 +59,7 @@ class HardcoverConnection < ApplicationRecord
     )
   end
 
-  # Ignored when the connection was replaced, refreshed, or removed since it
-  # was read: the newer credentials decide.
+  # Ignored when the connection was replaced, refreshed, or removed since it was read: the newer credentials decide.
   def mark_reauthorization_required!(message)
     transaction do
       update!(status: "reauthorization_required", last_error: message.to_s.truncate(250))

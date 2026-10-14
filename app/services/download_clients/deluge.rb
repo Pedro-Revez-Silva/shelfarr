@@ -4,7 +4,6 @@ require "base64"
 require "bencode"
 
 module DownloadClients
-  # Deluge Web API client
   class Deluge < Base
     AUTH_ERROR_PATTERNS = [
       /not logged in/i,

@@ -17,11 +17,9 @@ class LibraryDownloadArchiveService
   # Deflate can expand incompressible media slightly and ZIP metadata also
   # consumes space, so output receives a separate bounded allowance.
   MAX_ARCHIVE_OUTPUT_BYTES = MAX_ARCHIVE_SOURCE_BYTES + (128 * 1024 * 1024)
-  # 50,000 legal entries can otherwise consume unbounded memory and central
-  # directory space through long path names.
+  # 50,000 legal entries can otherwise consume unbounded memory and central directory space through long path names.
   MAX_ARCHIVE_NAME_BYTES = 32 * 1024 * 1024
-  # Large network-backed libraries need room to complete, but a request must
-  # never occupy a worker indefinitely.
+  # Large network-backed libraries need room to complete, but a request must never occupy a worker indefinitely.
   MAX_ARCHIVE_RUNTIME_SECONDS = 30 * 60
   MAX_ARCHIVE_COORDINATION_WAIT_SECONDS = 2
   MAX_ARCHIVE_ADMISSION_WAIT_SECONDS = 2

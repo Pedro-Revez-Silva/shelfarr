@@ -268,8 +268,7 @@ module Hardcover
       :failed
     end
 
-    # Keeps the item queued without a claim and without a delay, so it runs
-    # as soon as the subscription is resumed.
+    # Keeps the item queued without a claim and without a delay, so it runs as soon as the subscription is resumed.
     def release!(item)
       item.update!(claim_token: nil, claimed_at: nil)
     end

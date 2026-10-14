@@ -97,8 +97,6 @@ class API::V1::RequestsController < API::V1::ApplicationController
     }
   end
 
-  # Select a downloadable acquisition candidate and start download (Quartermaster, etc.).
-  # Body: { "search_result_id": 123 }
   def grab
     if params[:search_result_id].blank?
       render json: { errors: [ "search_result_id is required" ] }, status: :unprocessable_entity

@@ -83,7 +83,6 @@ class SettingsService
     }
   }.freeze
 
-  # Define all expected settings with their defaults and types
   DEFINITIONS = {
     # Indexer Integration
     indexer_provider: { type: "string", default: "", category: "indexer", description: "Active indexer provider. Leave unset on upgrades to keep legacy Prowlarr configuration." },
@@ -100,7 +99,6 @@ class SettingsService
     newznab_url: { type: "string", default: "", category: "indexer", description: "Newznab-compatible API URL for NZBHydra2 or another Newznab provider (e.g., http://localhost:5076)" },
     newznab_api_key: { type: "string", default: "", category: "indexer", description: "API key from NZBHydra2 or your Newznab provider" },
 
-    # Download Settings (clients are now managed separately via Admin > Download Clients)
     preferred_download_types: { type: "json", default: '["torrent","usenet","direct"]', category: "download", description: "Download types in preference order. Higher-ranked types are preferred when multiple result types are available." },
     download_check_interval: { type: "integer", default: 60, category: "download", description: "Seconds between download status checks" },
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
@@ -128,7 +126,6 @@ class SettingsService
     audiobookshelf_comicbook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for Comics & Manga duplicate detection (comma-separated). Delivery still goes to the Comics & Manga Library above." },
     audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
 
-    # Output Paths
     audiobook_output_path: { type: "string", default: "/audiobooks", category: "paths", description: "Directory for completed audiobooks" },
     ebook_output_path: { type: "string", default: "/ebooks", category: "paths", description: "Directory for completed ebooks" },
     comicbook_output_path: { type: "string", default: "/comics", category: "paths", description: "Directory for completed Comics & Manga" },
@@ -148,14 +145,12 @@ class SettingsService
       description: "Allow directory imports and source cleanup on NFS filesystems that reject atomic no-replace renames. Enable only when Shelfarr is the sole writer: a concurrently created empty destination or quarantine name could otherwise be replaced."
     },
 
-    # Queue Settings
     immediate_search_enabled: { type: "boolean", default: false, category: "queue", description: "Start searching immediately when a request is created (instead of waiting for queue cycle)" },
     auto_approve_requests: { type: "boolean", default: false, category: "queue", description: "Automatically enqueue search immediately for requests created by non-admin users" },
     queue_batch_size: { type: "integer", default: 5, category: "queue", description: "Number of requests to process per queue run" },
     rate_limit_delay: { type: "integer", default: 2, category: "queue", description: "Seconds between API calls" },
     max_retries: { type: "integer", default: 10, category: "queue", description: "Maximum retry attempts before flagging for attention" },
 
-    # Retry Settings
     retry_base_delay_hours: { type: "integer", default: 24, category: "queue", description: "Base delay in hours before retrying not_found requests" },
     retry_max_delay_days: { type: "integer", default: 7, category: "queue", description: "Maximum delay in days between retries" },
 
@@ -176,7 +171,6 @@ class SettingsService
     # Health Monitoring
     health_check_interval: { type: "integer", default: 300, category: "health", description: "Seconds between system health checks (minimum: 60; default: 300)" },
 
-    # Auto-Selection
     auto_select_enabled: { type: "boolean", default: false, category: "auto_select", description: "Automatically select the best search result without admin intervention" },
     auto_select_min_seeders: { type: "integer", default: 1, category: "auto_select", description: "Minimum seeders required for auto-selection (torrent only)" },
     auto_select_confidence_threshold: { type: "integer", default: 90, category: "auto_select", description: "Minimum confidence score (0-100) for auto-selection" },
@@ -196,7 +190,6 @@ class SettingsService
     enabled_languages: { type: "json", default: '["en"]', category: "language", description: "Languages available for selection when creating requests" },
     min_match_confidence: { type: "integer", default: 50, category: "language", description: "Minimum confidence score (0-100) for keeping results from category-less indexer searches. When nothing clears it, the best few low-confidence results are kept for manual review instead of returning an empty search." },
 
-    # Updates
     github_repo: { type: "string", default: "Pedro-Revez-Silva/shelfarr", category: "updates", description: "GitHub repository for update notifications" },
 
     # Security
@@ -403,7 +396,6 @@ class SettingsService
       secret_setting_key?(key) || MANUAL_SAVE_SETTING_KEYS.include?(key.to_s)
     end
 
-    # Primary getter with default fallback
     def get(key, default: nil)
       key = key.to_sym
       return env_override_value(key) if env_managed?(key)
@@ -421,7 +413,6 @@ class SettingsService
       definition ? definition[:default] : default
     end
 
-    # Primary setter
     def set(key, value)
       key = key.to_sym
       definition = DEFINITIONS[key]
@@ -462,14 +453,12 @@ class SettingsService
       end
     end
 
-    # Bulk getter for a category
     def for_category(category)
       DEFINITIONS.select { |_, v| v[:category] == category }.keys.each_with_object({}) do |key, hash|
         hash[key] = get(key)
       end
     end
 
-    # Check if a setting is configured (non-empty for strings)
     def configured?(key)
       value = get(key)
       return false if value.nil?
@@ -477,7 +466,6 @@ class SettingsService
       true
     end
 
-    # Get all settings organized by category
     def all_by_category
       DEFINITIONS.keys.group_by { |key| DEFINITIONS[key][:category] }.transform_values do |keys|
         keys.each_with_object({}) do |key, hash|
@@ -506,7 +494,6 @@ class SettingsService
       end
     end
 
-    # Check if integrations are configured
     def prowlarr_configured?
       configured?(:prowlarr_url) && configured?(:prowlarr_api_key)
     end

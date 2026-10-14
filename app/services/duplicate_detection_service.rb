@@ -1,11 +1,8 @@
 # frozen_string_literal: true
 
-# Service for detecting duplicate books and requests
-# Returns status and existing records to help users make informed decisions
 class DuplicateDetectionService
-  # Result status types
-  ALLOW = :allow           # No duplicates, proceed
-  WARN = :warn             # Similar exists, user can still proceed
+  ALLOW = :allow
+  WARN = :warn
   BLOCK = :block           # Exact duplicate, cannot create
 
   Result = Data.define(:status, :message, :existing_book, :existing_request) do
@@ -23,8 +20,6 @@ class DuplicateDetectionService
   end
 
   class << self
-    # Check if a book can be requested
-    # Returns a Result with status, message, and any existing records
     def check(work_id:, edition_id: nil, book_type:, source_work_ids: nil, existing_books_lookup: nil)
       book_type = book_type.to_s
       work_ids = [ work_id, *Array(source_work_ids) ].compact_blank.uniq
@@ -103,7 +98,6 @@ class DuplicateDetectionService
       )
     end
 
-    # Quick check - just returns true/false for whether request is allowed
     def can_request?(work_id:, edition_id: nil, book_type:, source_work_ids: nil, existing_books_lookup: nil)
       result = check(
         work_id: work_id,

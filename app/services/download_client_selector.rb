@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-# Selects the best available download client based on download type and priority
 class DownloadClientSelector
   class NoClientAvailableError < StandardError; end
 
@@ -8,7 +7,6 @@ class DownloadClientSelector
     new(search_result).select
   end
 
-  # Select a torrent client directly (for Anna's Archive downloads)
   def self.for_torrent
     available_clients = DownloadClient.torrent_clients.enabled.by_priority
 
@@ -16,7 +14,6 @@ class DownloadClientSelector
       raise NoClientAvailableError, "No torrent download client configured"
     end
 
-    # Try each client in priority order until one succeeds connection test
     available_clients.each do |client|
       return client if client.test_connection
     end
@@ -49,7 +46,6 @@ class DownloadClientSelector
       available_clients
     end
 
-    # Try the routed client first, then fall back to priority order.
     ordered_clients.each do |client|
       return client if client.test_connection
     end

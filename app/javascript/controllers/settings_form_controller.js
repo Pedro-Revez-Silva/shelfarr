@@ -36,7 +36,6 @@ export default class extends Controller {
     this.replayingHistory = false;
     if (this.hasManualKeysTarget) this.manualKeysTarget.name = "manual_keys";
 
-    // Listen for Turbo events to manage status
     this.boundHandleSubmitEnd = this.handleSubmitEnd.bind(this);
     this.boundHandleBeforeVisit = this.handleBeforeVisit.bind(this);
     this.boundHandleBeforeRender = this.handleBeforeRender.bind(this);
@@ -80,15 +79,12 @@ export default class extends Controller {
 
     this.pendingSettingKeys.add(settingKey);
 
-    // Clear any pending save
     if (this.saveTimeout) {
       clearTimeout(this.saveTimeout);
     }
 
-    // Show saving indicator
     this.showStatus("Saving...");
 
-    // Debounce the save - wait 800ms after last change
     this.saveTimeout = setTimeout(() => {
       this.submitForm();
     }, 800);

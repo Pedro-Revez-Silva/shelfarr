@@ -24,7 +24,6 @@ class RequestsController < ApplicationController
       Request.for_user(Current.user).includes(:book, :search_results)
     end
 
-    # Apply status filter
     if params[:status].present?
       case params[:status]
       when "active"
@@ -35,7 +34,6 @@ class RequestsController < ApplicationController
       end
     end
 
-    # Apply attention filter
     @requests = @requests.needs_attention if params[:attention] == "true"
 
     # Title/author search within the current filtered request list (#407).
@@ -53,7 +51,6 @@ class RequestsController < ApplicationController
 
     @requests = @requests.order(created_at: :desc)
 
-    # Counts for filter tabs
     base_requests = Current.user.admin? ? Request : Request.for_user(Current.user)
     @attention_count = base_requests.needs_attention.count
     @active_count = base_requests.active.where(attention_needed: false).count
@@ -230,7 +227,6 @@ class RequestsController < ApplicationController
     # activity-log side effect is attempted.
     @request.claim_destructive_cancellation!
 
-    # Optionally remove torrent from download client
     if params[:remove_torrent] == "1"
       remove_associated_torrents(@request)
     end
@@ -372,7 +368,7 @@ class RequestsController < ApplicationController
   def enabled_language_options
     enabled_codes = SettingsService.get(:enabled_languages) || [ "en" ]
     # Setting model's typed_value getter handles JSON parsing and error recovery
-    enabled_codes = Array(enabled_codes) # Ensure it's an array
+    enabled_codes = Array(enabled_codes)
 
     enabled_codes.filter_map do |code|
       info = ReleaseParserService.language_info(code)

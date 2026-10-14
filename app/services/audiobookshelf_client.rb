@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-# Client for interacting with Audiobookshelf API
-# https://api.audiobookshelf.org/
 class AudiobookshelfClient
   class Error < StandardError; end
   class ConnectionError < Error; end
@@ -23,7 +21,6 @@ class AudiobookshelfClient
   end
 
   class << self
-    # GET /api/libraries - List all libraries with folder paths
     def libraries
       ensure_configured!
 
@@ -33,7 +30,6 @@ class AudiobookshelfClient
       end
     end
 
-    # GET /api/libraries/:id - Get single library
     def library(id)
       ensure_configured!
 
@@ -41,7 +37,6 @@ class AudiobookshelfClient
       handle_response(response) { |data| parse_library(data) }
     end
 
-    # POST /api/libraries/:id/scan - Trigger library scan
     def scan_library(id)
       ensure_configured!
 
@@ -49,7 +44,6 @@ class AudiobookshelfClient
       response.status == 200
     end
 
-    # GET /api/libraries/:id/items - List all items in a library
     def library_items(id, page_size: 500)
       ensure_configured!
 
@@ -72,14 +66,11 @@ class AudiobookshelfClient
       items
     end
 
-    # GET /api/libraries/:id/items - Find item by path
     def find_item_by_path(path)
       ensure_configured!
 
-      # Normalize path for comparison
       normalized_path = File.expand_path(path)
 
-      # Search all configured libraries
       library_ids = [
         SettingsService.get(:audiobookshelf_audiobook_library_id),
         SettingsService.get(:audiobookshelf_ebook_library_id),
@@ -108,7 +99,6 @@ class AudiobookshelfClient
       nil
     end
 
-    # DELETE /api/library-items/:id - Delete a library item
     def delete_item(item_id)
       ensure_configured!
 
@@ -116,7 +106,6 @@ class AudiobookshelfClient
       response.status == 200
     end
 
-    # Find and delete item by path
     def delete_item_by_path(path)
       item = find_item_by_path(path)
       return false unless item

@@ -1,6 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
 
-// Handles inline search results expand/collapse and client-side pagination
 export default class extends Controller {
   static targets = ["content", "result", "pagination", "pageInfo", "prevBtn", "nextBtn", "toggleBtn"]
   static values = {
@@ -21,7 +20,6 @@ export default class extends Controller {
     this.expandedValue = !this.expandedValue
     this.contentTarget.classList.toggle("hidden", !this.expandedValue)
     
-    // Update button text
     if (this.hasToggleBtnTarget) {
       const count = this.resultTargets.length
       this.toggleBtnTarget.textContent = this.expandedValue 
@@ -52,7 +50,6 @@ export default class extends Controller {
     const currentPage = this.pageValue
     const totalPages = this.totalPages()
 
-    // Show/hide results based on current page
     results.forEach((result, index) => {
       const pageStart = (currentPage - 1) * perPage
       const pageEnd = pageStart + perPage
@@ -60,12 +57,10 @@ export default class extends Controller {
       result.classList.toggle("hidden", !isVisible)
     })
 
-    // Update page info
     if (this.hasPageInfoTarget) {
       this.pageInfoTarget.textContent = `Page ${currentPage} of ${totalPages}`
     }
 
-    // Update button states
     if (this.hasPrevBtnTarget) {
       this.prevBtnTarget.disabled = currentPage <= 1
       this.prevBtnTarget.classList.toggle("opacity-50", currentPage <= 1)
@@ -75,7 +70,6 @@ export default class extends Controller {
       this.nextBtnTarget.classList.toggle("opacity-50", currentPage >= totalPages)
     }
 
-    // Show/hide pagination if only one page
     if (this.hasPaginationTarget) {
       this.paginationTarget.classList.toggle("hidden", totalPages <= 1)
     }

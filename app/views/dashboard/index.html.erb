@@ -1,5 +1,4 @@
 <div class="mx-auto max-w-6xl">
-  <%# Quick Search Bar %>
   <div class="mb-8">
     <div class="relative">
       <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
@@ -13,9 +12,7 @@
     </div>
   </div>
 
-  <%# Stats Grid %>
   <div class="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-10">
-    <%# Pending Requests %>
     <%= link_to requests_path(status: "active"), class: "bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition" do %>
       <div class="flex items-center gap-4">
         <div class="p-3 rounded-lg bg-blue-500/20">
@@ -45,7 +42,6 @@
       </div>
     <% end %>
 
-    <%# Active Downloads %>
     <%= link_to requests_path(status: "downloading"), class: "bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition" do %>
       <div class="flex items-center gap-4">
         <div class="p-3 rounded-lg bg-purple-500/20">
@@ -60,7 +56,6 @@
       </div>
     <% end %>
 
-    <%# Attention Needed %>
     <%= link_to requests_path(attention: "true"), class: "bg-gray-900 rounded-xl border border-gray-800 p-5 hover:border-gray-700 transition" do %>
       <div class="flex items-center gap-4">
         <div class="p-3 rounded-lg <%= @attention_needed > 0 ? 'bg-red-500/20' : 'bg-gray-700' %>">
@@ -75,7 +70,6 @@
       </div>
     <% end %>
 
-    <%# System Status %>
     <% unhealthy_count = @system_health.values.count { |h| h.degraded? || h.down? } %>
     <% system_card_content = capture do %>
       <div class="flex items-center gap-4">
@@ -109,7 +103,6 @@
     <% end %>
   </div>
 
-  <%# Recently Added to Library %>
   <% if @recent_books.any? %>
     <div class="mb-10">
       <div class="flex justify-between items-center mb-4">
@@ -136,18 +129,15 @@
                   </div>
                 <% end %>
 
-                <%# Type Badge %>
                 <span class="absolute top-2 right-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm text-white <%= book.audiobook? ? 'bg-purple-500/90' : (book.comicbook? ? 'bg-emerald-500/90' : 'bg-blue-500/90') %>">
                   <%= book.audiobook? ? "Audio" : book.book_type_label %>
                 </span>
 
-                <%# Hover Overlay %>
                 <div class="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-2">
                   <span class="text-white text-xs font-medium">View Details</span>
                 </div>
               </div>
 
-              <%# Title & Author %>
               <div class="p-2 bg-gray-900">
                 <h3 class="font-semibold text-white text-xs leading-tight line-clamp-2"><%= book.title %></h3>
                 <% if book.author.present? %>
@@ -161,7 +151,6 @@
     </div>
   <% end %>
 
-  <%# Recent Requests %>
   <% if @recent_requests.any? %>
     <div class="mb-10">
       <div class="flex justify-between items-center mb-4">
@@ -189,7 +178,6 @@
                   </div>
                 <% end %>
 
-                <%# Status Badge %>
                 <%
                   status_colors = {
                     'pending' => 'bg-yellow-500/90',
@@ -219,18 +207,15 @@
                   <%= request.status.titleize %>
                 </span>
 
-                <%# Type Badge %>
                 <span class="absolute top-2 left-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm text-white <%= book.audiobook? ? 'bg-purple-500/90' : (book.comicbook? ? 'bg-emerald-500/90' : 'bg-blue-500/90') %>">
                   <%= book.audiobook? ? "Audio" : book.book_type_label %>
                 </span>
 
-                <%# Hover Overlay %>
                 <div class="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-3">
                   <span class="text-white text-sm font-medium">View Request</span>
                 </div>
               </div>
 
-              <%# Title & Author %>
               <div class="p-3 bg-gray-900">
                 <h3 class="font-semibold text-white text-sm leading-tight line-clamp-2"><%= book.title %></h3>
                 <% if book.author.present? %>
@@ -244,7 +229,6 @@
     </div>
   <% end %>
 
-  <%# Quick Actions (Admin) %>
   <% if Current.user&.admin? %>
     <div class="bg-gray-900 rounded-xl border border-gray-800 p-6">
       <h2 class="font-bold text-lg text-white mb-4">Quick Actions</h2>
@@ -266,7 +250,6 @@
     </div>
   <% end %>
 
-  <%# Empty State for New Users %>
   <% if @recent_books.empty? && @recent_requests.empty? %>
     <div class="text-center py-16">
       <svg class="mx-auto h-20 w-20 text-gray-700 mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

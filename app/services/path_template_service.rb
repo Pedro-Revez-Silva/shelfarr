@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-# Builds file paths and filenames from templates with variable substitution
-# Example path template: "{author}/{title}" -> "Stephen King/The Shining"
-# Example filename template: "{author} - {title}" -> "Stephen King - The Shining"
 class PathTemplateService
   VARIABLES = %w[
     author title year publisher language series narrator
@@ -15,7 +12,6 @@ class PathTemplateService
   class UnsafePathError < StandardError; end
 
   class << self
-    # Build a relative path from a template and book metadata
     def build_path(book, template, language: nil, request: nil, search_result: nil)
       resolved_language = language_for_template(
         book,
@@ -49,7 +45,6 @@ class PathTemplateService
       template_for(book).blank?
     end
 
-    # Validate a template string, returns [valid, error_message]
     def validate_template(template, mode: :path)
       return [ true, nil ] if mode == :path && template.blank?
       return [ false, "Template cannot be empty" ] if template.blank?
@@ -78,7 +73,6 @@ class PathTemplateService
         return [ false, "Template cannot use a Shelfarr internal staging directory" ]
       end
 
-      # Check for unknown variables
       unknown = variable_names - VARIABLES
       if unknown.any?
         return [ false, "Unknown variables: #{unknown.map { |v| "{#{v}}" }.join(', ')}" ]
@@ -98,7 +92,6 @@ class PathTemplateService
       [ true, nil ]
     end
 
-    # Get the appropriate template for a book type
     def template_for(book)
       if book.audiobook?
         SettingsService.get(:audiobook_path_template, default: "{author}/{title}")
@@ -109,7 +102,6 @@ class PathTemplateService
       end
     end
 
-    # Build the full destination path for a book
     def build_destination(book, base_path: nil, language: nil, request: nil, search_result: nil)
       base = base_path || default_base_path(book)
       template = template_for(book)
@@ -124,11 +116,6 @@ class PathTemplateService
       relative_path.present? ? File.join(base, relative_path) : base
     end
 
-    # Build a filename from a template and book metadata
-    # @param book [Book] the book to build filename for
-    # @param extension [String] the file extension (e.g., ".epub", ".m4b")
-    # @param template [String, nil] optional template override
-    # @return [String] the sanitized filename with extension
     def build_filename(book, extension, template: nil, language: nil, request: nil, search_result: nil)
       template ||= filename_template_for(book)
       template = sanitize_filename_template(template)
@@ -146,14 +133,12 @@ class PathTemplateService
       )
       result = "Unknown" if result.blank?
 
-      # Ensure extension starts with a dot
       ext = extension.to_s
       ext = ".#{ext}" unless ext.start_with?(".")
 
       "#{result}#{ext}"
     end
 
-    # Get the appropriate filename template for a book type
     def filename_template_for(book)
       if book.audiobook?
         SettingsService.get(:audiobook_filename_template, default: "{author} - {title}")
@@ -179,21 +164,19 @@ class PathTemplateService
     def sanitize_filename(name)
       name
         .to_s
-        .gsub(/[<>:"\/\\|?*]/, "")  # Remove invalid filename chars
-        .gsub(/[\x00-\x1f]/, "")    # Remove control characters
+        .gsub(/[<>:"\/\\|?*]/, "")
+        .gsub(/[\x00-\x1f]/, "")
         .strip
         .gsub(/\s+/, " ")           # Collapse whitespace
         .truncate(100, omission: "") # Limit length
     end
 
-    # Sanitize filename template (no path segments allowed)
     def sanitize_filename_template(template)
       return DEFAULT_FILENAME_TEMPLATE if template.blank?
 
       template.to_s
     end
 
-    # Final path sanitization after variable substitution
     def sanitize_path(path)
       sanitize_path_segments(path).presence || "Unknown"
     end
@@ -465,11 +448,11 @@ class PathTemplateService
 
     def cleanup_filename_result(result)
       result
-        .gsub(/\s*\(\s*\)\s*/, " ")     # Remove empty parentheses
-        .gsub(/\s*\[\s*\]\s*/, " ")     # Remove empty brackets
+        .gsub(/\s*\(\s*\)\s*/, " ")
+        .gsub(/\s*\[\s*\]\s*/, " ")
         .gsub(/\s*-\s*-\s*/, " - ")     # Collapse double dashes
-        .gsub(/\s*-\s*$/, "")           # Remove trailing dashes
-        .gsub(/^\s*-\s*/, "")           # Remove leading dashes
+        .gsub(/\s*-\s*$/, "")
+        .gsub(/^\s*-\s*/, "")
         .gsub(/\s+/, " ")               # Collapse whitespace
         .strip
     end

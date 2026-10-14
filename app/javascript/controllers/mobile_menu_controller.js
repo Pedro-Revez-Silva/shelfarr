@@ -1,6 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
 
-// Toggles the mobile navigation menu and its open/close icons
 export default class extends Controller {
   static targets = ["menu", "openIcon", "closeIcon"]
 

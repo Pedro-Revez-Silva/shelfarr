@@ -5,8 +5,7 @@ require "securerandom"
 require "time"
 require "timeout"
 
-# Client for interacting with the Hardcover GraphQL API
-# https://hardcover.app/account/api
+# Client for interacting with the Hardcover GraphQL API https://hardcover.app/account/api
 class HardcoverClient
   BASE_URL = "https://api.hardcover.app/v1/graphql"
   RATE_LIMIT_CACHE_VERSION = 1
@@ -34,7 +33,6 @@ class HardcoverClient
   MIN_BACKGROUND_DAILY_RESERVE = 100
   ACCOUNT_CACHE_TTL = 30.days
 
-  # Custom error classes
   class Error < StandardError; end
   class ConnectionError < Error; end
   class AuthenticationError < Error; end
@@ -67,7 +65,6 @@ class HardcoverClient
   # digest even when the token itself changes.
   Credential = Data.define(:authorization_header, :digest)
 
-  # Data structures for API responses
   SearchResult = Data.define(
     :id, :title, :author, :description, :release_year,
     :cover_url, :has_audiobook, :has_ebook, :series_name, :series_position
@@ -100,8 +97,6 @@ class HardcoverClient
       SettingsService.get(:hardcover_enabled, default: true) && SettingsService.hardcover_configured?
     end
 
-    # Search for books by query
-    # Returns array of SearchResult
     def search(query, limit: nil)
       ensure_configured!
       limit ||= SettingsService.get(:hardcover_search_limit, default: 10)
@@ -116,7 +111,6 @@ class HardcoverClient
 
       response = execute_query(query_string, { query: query, perPage: limit })
 
-      # Debug: log full response structure to understand format
       Rails.logger.info "[HardcoverClient] Response keys: #{response.keys rescue 'not a hash'}"
       Rails.logger.info "[HardcoverClient] Search data: #{response.dig('data', 'search')&.keys rescue 'not accessible'}"
 
@@ -132,8 +126,6 @@ class HardcoverClient
       results.filter_map { |result| parse_search_result(result) }
     end
 
-    # Get book details by Hardcover book ID
-    # Returns BookDetails
     def book(book_id)
       ensure_configured!
 
@@ -232,7 +224,6 @@ class HardcoverClient
       end
     end
 
-    # Test API connection
     def test_connection
       ensure_configured!
 
@@ -247,8 +238,7 @@ class HardcoverClient
 
       response = execute_query(query_string, {})
 
-      # Check if we got a valid response with data
-      # API returns me as an array: {"data"=>{"me"=>[{"id"=>69591}]}}
+      # Hardcover returns `me` as an array: {"data"=>{"me"=>[{"id"=>69591}]}}
       data = response["data"] if response.is_a?(Hash)
       me = data["me"] if data.is_a?(Hash)
       me = me.first if me.is_a?(Array)
@@ -305,8 +295,7 @@ class HardcoverClient
       active_rate_limit_retry_after(current_credential.digest).present?
     end
 
-    # Test/maintenance hook. Normal request paths must retain the
-    # server-advertised cooldown instead of bypassing it.
+    # Test/maintenance hook. Normal request paths must retain the server-advertised cooldown instead of bypassing it.
     def reset_rate_limit_state!
       credential_digest = current_credential.digest
       cache_keys = RATE_LIMIT_BUCKETS.map { |bucket| rate_limit_cache_key(bucket, credential_digest) }
@@ -502,8 +491,7 @@ class HardcoverClient
 
         cooldown = active_rate_limit_retry_after(credential_digest)
         if cooldown
-          # A short cooldown (an exhausted burst bucket) is waited out; a
-          # long one is reported so the job backs off.
+          # A short cooldown (an exhausted burst bucket) is waited out; a long one is reported so the job backs off.
           ensure_not_rate_limited!(credential_digest) if cooldown > BACKGROUND_MAX_PACING_SLEEP
           reserved = [ reserved, now + cooldown ].max
         end
@@ -550,8 +538,6 @@ class HardcoverClient
       pacing_value(:sent, credential_digest, ceiling: Time.current.to_f)
     end
 
-    # Records when the account's latest request attempt finished. Interactive
-    # requests are recorded too, so background work yields to them.
     def remember_send!(credential_digest)
       remember_pacing_value!(:sent, credential_digest, Time.current.to_f)
     end
@@ -565,8 +551,7 @@ class HardcoverClient
       [ local, safe_cache_read(key) ].compact.select { |value| value <= ceiling }.max
     end
 
-    # Written under the account's request lease, so the newest value is
-    # always the one to keep.
+    # Written under the account's request lease, so the newest value is always the one to keep.
     def remember_pacing_value!(kind, credential_digest, value)
       key = pacing_cache_key(kind, credential_digest)
       RATE_LIMIT_STATE_MUTEX.synchronize { local_pacing[key] = value }
@@ -965,12 +950,10 @@ class HardcoverClient
     end
 
     def parse_book_details(book)
-      # Extract author from contributions
       author = book.dig("contributions", 0, "author", "name")
 
       series = featured_or_first_series(book)
 
-      # Extract pages from default edition
       pages = book.dig("default_physical_edition", "pages")
 
       BookDetails.new(

@@ -32,16 +32,13 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Check if account is locked
     if user&.locked?
       log_security_event("login.blocked_locked", user, params[:username])
       redirect_to new_session_path, alert: "Account is locked. Try again in #{user.unlock_in_words}."
       return
     end
 
-    # Authenticate
     if user&.authenticate(params[:password])
-      # Check if 2FA is required
       if user.otp_enabled?
         session[:pending_user_id] = user.id
         redirect_to verify_otp_session_path
@@ -53,7 +50,6 @@ class SessionsController < ApplicationController
     end
   end
 
-  # Show OTP verification form
   def verify_otp
     unless session[:pending_user_id]
       redirect_to new_session_path
@@ -67,7 +63,6 @@ class SessionsController < ApplicationController
     end
   end
 
-  # Verify submitted OTP code or backup code
   def submit_otp
     user = User.active.find_by(id: session[:pending_user_id])
 
@@ -78,7 +73,6 @@ class SessionsController < ApplicationController
 
     code = params[:otp_code].to_s.strip
 
-    # Try OTP first, then backup code
     if user.verify_otp(code)
       session.delete(:pending_user_id)
       complete_login(user)

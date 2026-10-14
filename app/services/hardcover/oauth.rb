@@ -36,8 +36,7 @@ module Hardcover
     REFRESH_LOCK_TTL = 45.seconds
 
     class Error < StandardError; end
-    # The authorization was refused, expired, or the refresh token is no
-    # longer valid. The user must connect again.
+    # The authorization was refused, expired, or the refresh token is no longer valid. The user must connect again.
     class AuthorizationError < Error; end
     # The connection was replaced or removed while a refresh was in flight.
     class ConnectionChanged < Error; end
@@ -114,8 +113,7 @@ module Hardcover
         end
       end
 
-      # Revoking either token revokes the pair. Failures are logged and
-      # ignored: the local copy is deleted regardless.
+      # Revoking either token revokes the pair. Failures are logged and ignored: the local copy is deleted regardless.
       def revoke(token)
         return false if token.blank?
 
@@ -203,8 +201,7 @@ module Hardcover
         DEFAULT_ENDPOINTS
       end
 
-      # Discovery may update endpoint locations but must not redirect tokens
-      # or codes to a host outside Hardcover.
+      # Discovery may update endpoint locations but must not redirect tokens or codes to a host outside Hardcover.
       def fetch_discovery
         response = http.get(DISCOVERY_URL)
         raise Error, "discovery status #{response.status}" unless response.status == 200
@@ -217,8 +214,6 @@ module Hardcover
         end
       end
 
-      # Returns the endpoint rebuilt from one of Hardcover's own origins and a
-      # checked path, or nil for anything else.
       def hardcover_endpoint(value)
         value = value.to_s
         return if value.bytesize > MAX_ENDPOINT_BYTES || value.match?(/[^\x21-\x7e]|\\/)

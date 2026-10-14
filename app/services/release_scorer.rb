@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-# Scores search results based on how well they match a request.
-# Returns a confidence score (0-100) with a detailed breakdown.
 class ReleaseScorer
   COMIC_ISSUE_EXACT_BONUS = 15
   COMIC_ISSUE_UNKNOWN_MAX_SCORE = 49
@@ -24,7 +22,6 @@ class ReleaseScorer
     "XV" => "15"
   }.freeze
 
-  # Weight configuration for each scoring factor
   WEIGHTS = {
     title: 40,      # How well does the release title match the book title?
     author: 20,     # Is the author name present in the release title?
@@ -56,8 +53,6 @@ class ReleaseScorer
     @comic_issue_match = classify_comic_issue_match
   end
 
-  # Calculate the confidence score
-  # @return [Result] Score result with total, breakdown, and detected metadata
   def score
     issue_status = @comic_issue_match&.fetch(:status, nil)
     format_score = calculate_format_score
@@ -87,7 +82,6 @@ class ReleaseScorer
       )
     end
 
-    # Calculate weighted total
     base_total = WEIGHTS.sum do |key, weight|
       (breakdown[key] * weight) / 100.0
     end.round
@@ -105,10 +99,6 @@ class ReleaseScorer
   end
 
   class << self
-    # Score a search result against a request
-    # @param search_result [SearchResult] The search result to score
-    # @param request [Request] The request to match against
-    # @return [Result] Score result
     def score(search_result, request)
       new(search_result, request).score
     end
@@ -116,8 +106,7 @@ class ReleaseScorer
 
   private
 
-  # Title matching score (0-100)
-  # Uses trigram similarity like BookMatcherService
+  # Title matching score (0-100). Uses trigram similarity like BookMatcherService.
   def calculate_title_score
     return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
 
@@ -164,8 +153,7 @@ class ReleaseScorer
     !exact_normalized_title_match?(@book.title)
   end
 
-  # Author matching score (0-100)
-  # Checks if author name appears in release title
+  # Author matching score (0-100) Checks if author name appears in release title
   def calculate_author_score
     return 50 if @comic_issue_match&.fetch(:status, nil) == :exact
     return 50 if @book.author.blank?  # Neutral if no author to match
@@ -175,27 +163,23 @@ class ReleaseScorer
 
     return 0 if release_title.blank? || author.blank?
 
-    # Check for full author name
     return 100 if matching_text_variants(@search_result.title).any? do |title|
       matching_text_variants(@book.author).any? { |name| title.include?(name) }
     end
 
-    # Check for last name (common pattern)
     author_parts = author.split
     if author_parts.length > 1
       last_name = author_parts.last
       return 80 if release_title.include?(last_name) && last_name.length > 3
     end
 
-    # Check for first name (less reliable)
     first_name = author_parts.first
     return 40 if release_title.include?(first_name) && first_name.length > 3
 
     0
   end
 
-  # Language matching score (0-100)
-  # 100 = matches requested, 50 = unknown/multi, 0 = wrong language
+  # Language matching score (0-100) 100 = matches requested, 50 = unknown/multi, 0 = wrong language
   def calculate_language_score
     requested_language = @request.language || SettingsService.get(:default_language)
     detected = @parsed[:languages]
@@ -206,15 +190,13 @@ class ReleaseScorer
     # No language detected - treat as neutral (might match, might not)
     return 50 if detected.empty?
 
-    # Check if requested language is in detected languages
     return 100 if detected.include?(requested_language)
 
     # Wrong language detected
     0
   end
 
-  # Format matching score (0-100)
-  # Checks if release format matches book type
+  # Format matching score (0-100) Checks if release format matches book type
   def calculate_format_score
     detected = @parsed[:format]
     requested = @book.book_type&.to_sym
@@ -222,7 +204,6 @@ class ReleaseScorer
     # No format detected - neutral
     return 50 if detected.nil?
 
-    # Match check
     case requested
     when :audiobook
       detected == :audiobook ? 100 : 0
@@ -235,16 +216,13 @@ class ReleaseScorer
     end
   end
 
-  # Health/availability score (0-100)
-  # Based on seeders for torrents, always 100 for usenet
+  # Health/availability score (0-100) Based on seeders for torrents, always 100 for usenet
   def calculate_health_score
     # Usenet always has full availability
     return 100 if usenet?
 
     seeders = @search_result.seeders || 0
 
-    # Normalize seeders to 0-100 scale
-    # 0 seeders = 0, 1-5 = 20-60, 5-20 = 60-80, 20+ = 80-100
     case seeders
     when 0
       0
@@ -451,7 +429,6 @@ class ReleaseScorer
     tokens.map { |token| ROMAN_NUMBER_TOKENS.fetch(token.upcase, token) }.join(" ")
   end
 
-  # Trigram-based similarity score (0-100)
   def trigram_similarity(str1, str2)
     return 100 if str1 == str2
     return 0 if str1.blank? || str2.blank?

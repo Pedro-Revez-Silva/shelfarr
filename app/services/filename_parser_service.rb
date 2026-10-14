@@ -1,12 +1,5 @@
 # frozen_string_literal: true
 
-# Parses book filenames to extract title and author
-# Supports common naming conventions:
-#   - "Author Name - Book Title.m4b"
-#   - "Book Title - Author Name.epub"
-#   - "Book Title (Author Name).mp3"
-#   - "Author_Name-Book_Title.pdf"
-#   - "Book Title [Author Name].m4b"
 class FilenameParserService
   Result = Data.define(:title, :author, :confidence, :pattern_matched)
 
@@ -45,13 +38,11 @@ class FilenameParserService
 
   class << self
     def parse(filename)
-      # Remove extension
       basename = File.basename(filename, File.extname(filename))
 
       # Clean up common artifacts
       basename = clean_filename(basename)
 
-      # Try each pattern
       PATTERNS.each do |pattern|
         result = try_pattern(basename, pattern)
         return result if result
@@ -75,7 +66,6 @@ class FilenameParserService
       raw_author = match[pattern[:author_group]]
       raw_title = match[pattern[:title_group]]
 
-      # Apply transformation if present
       if pattern[:transform]
         raw_author = pattern[:transform].call(raw_author)
         raw_title = pattern[:transform].call(raw_title)
@@ -84,10 +74,8 @@ class FilenameParserService
       author = normalize_text(raw_author)
       title = normalize_text(raw_title)
 
-      # Validate we got reasonable values
       return nil if title.blank? || title.length < 2
 
-      # Calculate confidence based on pattern and result quality
       confidence = calculate_confidence(title, author, pattern[:name])
 
       Result.new(
@@ -100,10 +88,10 @@ class FilenameParserService
 
     def clean_filename(basename)
       basename
-        .gsub(/\s*\(\d{4}\)\s*/, " ")                     # Remove year in parens: "(2020)"
-        .gsub(/\s*\[\d{4}\]\s*/, " ")                     # Remove year in brackets: "[2020]"
-        .gsub(/\s*-\s*(?:Unabridged|Abridged)\s*/i, " ")  # Remove audiobook indicators
-        .gsub(/\s*(?:MP3|M4B|EPUB|PDF|MOBI)\s*/i, " ")    # Remove format indicators
+        .gsub(/\s*\(\d{4}\)\s*/, " ")
+        .gsub(/\s*\[\d{4}\]\s*/, " ")
+        .gsub(/\s*-\s*(?:Unabridged|Abridged)\s*/i, " ")
+        .gsub(/\s*(?:MP3|M4B|EPUB|PDF|MOBI)\s*/i, " ")
         .gsub(/\s+/, " ")                                  # Collapse whitespace
         .strip
     end
