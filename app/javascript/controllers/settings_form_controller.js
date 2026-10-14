@@ -351,41 +351,35 @@ export default class extends Controller {
     const field = event.target;
     if (!(field instanceof HTMLElement) || !field.matches("[data-settings-form-manual-save]")) return;
     if (field !== document.activeElement) return;
-    // Password managers fill without beforeinput. A real paste or keystroke
-    // still emits paste/input, including browsers that skip beforeinput on
-    // password fields. Autofill uses insertReplacementText or no inputType.
-    if (event.type === "input" && !this.directUserInput(event.inputType)) return;
+    // Password managers and spellcheck use insertReplacementText. Chrome autofill
+    // and programmatic fills dispatch input/change with no inputType. Both must
+    // stay out of manual_keys. Real edits (typing, paste, drop, IME, deletion)
+    // carry some other inputType on beforeinput and input.
+    if ((event.type === "input" || event.type === "beforeinput") && !this.directUserInput(event.inputType)) return;
+    // A paste event fires before the browser inserts text, and also fires when
+    // the clipboard does not change the value. Wait until after insertion and
+    // ignore a no-op so a prefilled autofill is not saved as a user edit.
+    if (event.type === "paste") {
+      this.capturePaste(field);
+      return;
+    }
 
     this.markManualField(field);
-    if (event.type === "paste") {
-      queueMicrotask(() => this.rememberSecretDraft(field));
-    } else if (event.type !== "beforeinput") {
-      this.rememberSecretDraft(field);
-    }
+    if (event.type !== "beforeinput") this.rememberSecretDraft(field);
   }
 
   directUserInput(inputType) {
-    return [
-      "insertText",
-      "insertFromPaste",
-      "insertFromDrop",
-      "insertCompositionText",
-      "insertFromYank",
-      "insertTranspose",
-      "deleteByCut",
-      "deleteByDrag",
-      "deleteContent",
-      "deleteContentBackward",
-      "deleteContentForward",
-      "deleteWordBackward",
-      "deleteWordForward",
-      "deleteSoftLineBackward",
-      "deleteSoftLineForward",
-      "deleteHardLineBackward",
-      "deleteHardLineForward",
-      "historyUndo",
-      "historyRedo"
-    ].includes(inputType);
+    return Boolean(inputType) && inputType !== "insertReplacementText";
+  }
+
+  capturePaste(field) {
+    const valueBeforePaste = field.value;
+    setTimeout(() => {
+      if (!field.isConnected || field.value === valueBeforePaste) return;
+
+      this.markManualField(field);
+      this.rememberSecretDraft(field);
+    }, 0);
   }
 
   handleBeforeUnload(event) {
