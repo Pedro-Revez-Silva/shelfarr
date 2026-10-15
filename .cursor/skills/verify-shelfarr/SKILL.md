@@ -26,9 +26,12 @@ bundle install
 bin/rails db:prepare > "$EVIDENCE/db-prepare.log"
 bin/rails runner 'abort "seeded admin missing" unless User.exists?(username: "admin") && User.find_by!(username: "admin").admin?'
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-PORT="$PORT" bin/dev > "$EVIDENCE/dev.log" 2>&1 < /dev/null &
+tail -f /dev/null | PORT="$PORT" bin/dev > "$EVIDENCE/dev.log" 2>&1 &
 echo $! > "$EVIDENCE/foreman.pid"
+disown || true
 ```
+
+`bin/dev` execs Foreman, so `$!` stays the Foreman PID. Keep that pipe open. `tailwindcss --watch` exits as soon as its stdin closes, and Foreman then stops Puma. Closing stdin with `< /dev/null` does that. `tail -f /dev/null` is the writer that keeps the watch alive.
 
 `bin/rails db:prepare` creates the development databases and loads `db/seeds.rb` when the primary database is new. The seed creates username `admin` with password `Password1234`. That first user is an admin.
 
@@ -125,12 +128,13 @@ Stop the Chrome process recorded in the state file, then stop the foreman PID th
 ```bash
 ruby "$WT/.cursor/skills/verify-shelfarr/drive.rb" stop --state "$STATE"
 PID="$(cat "$EVIDENCE/foreman.pid")"
-kill -TERM -"$PID"
+PGID="$(ps -o pgid= -p "$PID" | tr -d ' ')"
+kill -TERM -"$PGID"
 for _ in $(seq 1 20); do
   kill -0 "$PID" 2>/dev/null || break
   sleep 0.5
 done
-kill -KILL -"$PID" 2>/dev/null || true
+kill -KILL -"$PGID" 2>/dev/null || true
 test -s "$EVIDENCE/admin.png"
 test -s "$EVIDENCE/admin-session.txt"
 cd /
