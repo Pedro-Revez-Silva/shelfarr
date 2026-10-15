@@ -13,6 +13,10 @@ module IndexerClients
 
       private
 
+      def connection_settings_key
+        SettingsService.get(:newznab_url).to_s
+      end
+
       def base_url
         normalize_base_url(strip_api_path(SettingsService.get(:newznab_url)))
       end

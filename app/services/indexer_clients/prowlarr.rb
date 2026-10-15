@@ -151,8 +151,12 @@ module IndexerClients
         end.compact.map(&:to_s).map(&:downcase)
       end
 
-      def connection
-        @connection ||= Faraday.new(url: base_url) do |f|
+      def connection_settings_key
+        [ SettingsService.get(:prowlarr_url).to_s, SettingsService.get(:prowlarr_api_key).to_s ]
+      end
+
+      def build_connection
+        Faraday.new(url: base_url) do |f|
           f.options.params_encoder = Faraday::FlatParamsEncoder
           f.request :url_encoded
           f.response :json, parser_options: { symbolize_names: false }

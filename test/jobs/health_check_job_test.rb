@@ -135,6 +135,41 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "marks indexer healthy after an unreachable Prowlarr URL is corrected without resetting the connection" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://old-prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "old-key")
+    IndexerClients::Prowlarr.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://old-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "old-key" })
+        .to_raise(Faraday::ConnectionFailed.new("Failed to open TCP connection to old-prowlarr.example:9696"))
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health = SystemHealth.for_service("indexer")
+      assert health.down?
+      assert_includes health.message, "Failed to connect"
+
+      SettingsService.set(:prowlarr_url, "http://new-prowlarr.example:9696")
+      SettingsService.set(:prowlarr_api_key, "new-key")
+
+      stub_request(:get, "http://new-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "new-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health.reload
+      assert health.healthy?, health.message
+      assert_requested :get, "http://new-prowlarr.example:9696/api/v1/indexer", times: 1
+      assert_requested :get, "http://old-prowlarr.example:9696/api/v1/indexer", times: 2
+    end
+  ensure
+    IndexerClients::Prowlarr.reset_connection!
+  end
+
   test "marks indexer as healthy when jackett is selected and connected" do
     SettingsService.set(:indexer_provider, "jackett")
     SettingsService.set(:jackett_url, "http://localhost:9117")
