@@ -3,6 +3,7 @@
 require "fiddle"
 require "pathname"
 require "digest"
+require "openssl"
 require "set"
 
 # NFS-safe file copy operations.
@@ -146,8 +147,10 @@ class FileCopyService
       require_durable: false
     )
       if hardlink_mode
-        with_pinned_hardlink_source(src, source_root: source_root) do |source, parent, basename, parent_path, manifest|
-          validator = -> { validate_hardlink_source!(source, parent, basename, parent_path, manifest) }
+        with_pinned_hardlink_source(src, source_root: source_root, validate_content: false, heartbeat: heartbeat) do |source, parent, basename, parent_path, manifest|
+          validator = lambda do |validate_content: true|
+            validate_hardlink_source!(source, parent, basename, parent_path, manifest, validate_content: validate_content, heartbeat: heartbeat)
+          end
           publish_source_io_noreplace(
             source,
             dest,
@@ -155,16 +158,17 @@ class FileCopyService
             heartbeat: heartbeat,
             source_validator: validator,
             accepted_modes: LIBRARY_FILE_MODES,
-            require_durable: require_durable
+            require_durable: require_durable,
+            source_digest: file_manifest_digest(manifest)
           )
         end
       else
         source_operation = if source_snapshot
-          ->(&operation) { with_pinned_source_snapshot(source_snapshot, &operation) }
+          ->(&operation) { with_pinned_source_snapshot(source_snapshot, validate_content: false, heartbeat: heartbeat, &operation) }
         else
-          ->(&operation) { with_pinned_source(src, source_root: source_root, &operation) }
+          ->(&operation) { with_pinned_source(src, source_root: source_root, validate_content: false, heartbeat: heartbeat, &operation) }
         end
-        source_operation.call do |source, _parent, _basename, _parent_path, validator|
+        source_operation.call do |source, _parent, _basename, _parent_path, validator, source_digest|
           publish_source_io_noreplace(
             source,
             dest,
@@ -172,7 +176,8 @@ class FileCopyService
             heartbeat: heartbeat,
             source_validator: validator,
             accepted_modes: LIBRARY_FILE_MODES,
-            require_durable: require_durable
+            require_durable: require_durable,
+            source_digest: source_digest
           )
         end
       end
@@ -184,7 +189,7 @@ class FileCopyService
     # entry, which must match the already-open source descriptor before the
     # existing no-replace publication protocol can make it final.
     def hardlink_noreplace(src, dest, root:, source_root:, require_durable: false)
-      with_pinned_hardlink_source(src, source_root: source_root) do |source, source_parent, source_basename, source_parent_path, source_manifest|
+      with_pinned_hardlink_source(src, source_root: source_root, validate_content: false) do |source, source_parent, source_basename, source_parent_path, source_manifest|
         publish_hardlink_noreplace(
           source,
           source_parent,
@@ -370,7 +375,7 @@ class FileCopyService
       source_root: nil,
       heartbeat: nil
     )
-      source_snapshot = snapshot_source_file(src, source_root: source_root)
+      source_snapshot = snapshot_source_file(src, source_root: source_root, heartbeat: heartbeat)
       cp_noreplace(
         src,
         dest,
@@ -424,7 +429,7 @@ class FileCopyService
         source_directory = open_pinned_directory_child(source_parent, source_path.basename.to_s)
         begin
           unless file_identity(source_directory.stat) == [ source_root.device, source_root.inode ] &&
-              snapshot_pinned_regular_tree(source_directory) == source_root.entries
+              snapshot_pinned_regular_tree(source_directory, heartbeat: heartbeat) == source_root.entries
             raise Errno::ESTALE, "source directory changed before publication"
           end
           secure_pinned_library_tree!(source_directory, heartbeat: heartbeat)
@@ -499,7 +504,7 @@ class FileCopyService
       with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
         with_pinned_regular_child(parent, basename) do |file|
           stat = file.stat
-          digest = Digest::SHA256.new
+          digest = OpenSSL::Digest::SHA256.new
           buffer = +""
           while file.read(BUFFER_SIZE, buffer)
             digest << buffer
@@ -1261,10 +1266,10 @@ class FileCopyService
       end
     end
 
-    def snapshot_source_file(path, source_root: nil)
+    def snapshot_source_file(path, source_root: nil, heartbeat: nil)
       if source_root
         snapshot = nil
-        with_pinned_source(path, source_root: source_root) do |source, parent, _basename, parent_path|
+        with_pinned_source(path, source_root: source_root, heartbeat: heartbeat) do |source, parent, _basename, parent_path, _validator, digest|
           parent_stat = parent.stat
           snapshot = SourceFileSnapshot.new(
             path: Pathname(path).expand_path,
@@ -1272,7 +1277,8 @@ class FileCopyService
             canonical_parent_path: parent_path.realpath,
             parent_device: parent_stat.dev,
             parent_inode: parent_stat.ino,
-            manifest: file_manifest_entry(source.stat).freeze
+            manifest: file_manifest_entry(source.stat).freeze,
+            content_digest: digest
           ).freeze
         end
         return snapshot
@@ -1285,13 +1291,15 @@ class FileCopyService
         validate_current_directory_identity!(parent_path, parent)
         with_pinned_regular_child(parent, expanded.basename.to_s) do |source|
           parent_stat = parent.stat
+          manifest, digest = capture_pinned_file_content(source, heartbeat: heartbeat)
           return SourceFileSnapshot.new(
             path: expanded,
             parent_path: parent_path,
             canonical_parent_path: canonical_parent,
             parent_device: parent_stat.dev,
             parent_inode: parent_stat.ino,
-            manifest: file_manifest_entry(source.stat).freeze
+            manifest: manifest,
+            content_digest: digest
           ).freeze
         end
       end
@@ -1418,6 +1426,7 @@ class FileCopyService
           expanded.basename.to_s,
           source_snapshot.manifest.first(2),
           expected_manifest: source_snapshot.manifest,
+          expected_digest: source_snapshot.content_digest,
           before_remove: destination_validator,
           quarantine_kind: :source
         )
@@ -1587,19 +1596,27 @@ class FileCopyService
       result = nil
       source_operation = if hardlink_mode
         lambda do |&operation|
-          with_pinned_hardlink_source(source_path, source_root: source_root) do |source, parent, basename, parent_path, manifest|
-            validator = -> { validate_hardlink_source!(source, parent, basename, parent_path, manifest) }
-            operation.call(source, validator)
-            validator.call
+          with_pinned_hardlink_source(source_path, source_root: source_root, validate_content: false) do |source, parent, basename, parent_path, manifest|
+            verified = operation.call(source, file_manifest_digest(manifest))
+            validate_hardlink_source!(source, parent, basename, parent_path, manifest, validate_content: false)
+            verified
           end
         end
       elsif source_snapshot
-        ->(&operation) { with_pinned_source_snapshot(source_snapshot) { |source, *| operation.call(source, nil) } }
+        lambda do |&operation|
+          with_pinned_source_snapshot(source_snapshot, validate_content: false) do |source, _parent, _basename, _parent_path, _validator, digest|
+            operation.call(source, digest)
+          end
+        end
       else
-        ->(&operation) { with_pinned_source(source_path, source_root: source_root) { |source, *| operation.call(source, nil) } }
+        lambda do |&operation|
+          with_pinned_source(source_path, source_root: source_root, validate_content: false) do |source, _parent, _basename, _parent_path, _validator, digest|
+            operation.call(source, digest)
+          end
+        end
       end
 
-      source_operation.call do |source, source_validator|
+      source_operation.call do |source, expected_digest|
         with_pinned_destination_parent(destination_path, root: root) do |parent, basename, parent_path|
           file_durable = false
           manifest = nil
@@ -1619,8 +1636,14 @@ class FileCopyService
 
             source.rewind
             destination.rewind
-            digest = Digest::SHA256.new if unstable_timestamps
+            # Reuse the byte comparison as the content proof instead of
+            # separately hashing the source before and after this read.
+            digest = OpenSSL::Digest::SHA256.new
             next unless compare_io(source, destination, digest: digest)
+            content_digest = digest.hexdigest.freeze
+            if expected_digest && content_digest != expected_digest
+              raise Errno::ESTALE, "source file changed after it was snapshotted"
+            end
 
             unless hardlink_mode
               apply_file_mode!(
@@ -1633,13 +1656,11 @@ class FileCopyService
             end
             file_durable = sync_io(destination)
             manifest = file_manifest_entry(destination.stat).freeze
-            content_digest = digest&.hexdigest&.freeze
           end
           next unless manifest
 
-          source_validator&.call
           with_pinned_regular_child(parent, basename) do |current|
-            manifest = settled_file_manifest(current, manifest, content_digest)
+            manifest = settled_file_manifest(current, manifest, unstable_timestamps ? content_digest : nil)
             raise Errno::ESTALE, "library file changed after content validation" unless manifest
           end
           validate_current_directory_identity!(parent_path, parent)
@@ -1679,6 +1700,12 @@ class FileCopyService
         with_pinned_regular_child(parent, snapshot.path.basename.to_s) do |file|
           manifest = settled_file_manifest(file, manifest, snapshot.content_digest)
           return false unless manifest
+          # An unchanged stat tuple is not proof that the verified bytes are
+          # still present. Timestamp-settle verification already hashes them.
+          if manifest == snapshot.manifest && snapshot.content_digest
+            return false unless pinned_content_matches?(file, snapshot.content_digest, manifest.fetch(3))
+            return false unless file_manifest_entry(file.stat) == manifest
+          end
 
           durable = sync_io(file)
         end
@@ -2170,9 +2197,11 @@ class FileCopyService
       heartbeat: nil,
       source_validator: nil,
       accepted_modes: LIBRARY_FILE_MODES,
-      require_durable: false
+      require_durable: false,
+      source_digest: nil
     )
       raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
+      source_size = source.stat.size
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
       with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
@@ -2203,7 +2232,8 @@ class FileCopyService
                 accepted_modes: accepted_modes,
                 require_durable: require_durable,
                 path: destination,
-                root: root
+                root: root,
+                expected_source_digest: source_digest
               )
             end
           end
@@ -2261,7 +2291,12 @@ class FileCopyService
               if require_durable && !published_file_durable
                 raise DurabilityUnsupportedError, "destination file fsync is unsupported"
               end
-              source_validator&.call
+              if source_digest
+                verify_private_copy_content!(source, temporary, source_size, source_digest, heartbeat: heartbeat)
+                source_validator&.call(validate_content: false)
+              else
+                source_validator&.call
+              end
               identity_reliable = !hardlink_identity_unreliable?(parent)
 
               publication_method = if identity_reliable
@@ -2372,7 +2407,8 @@ class FileCopyService
               source_parent,
               source_basename,
               source_parent_path,
-              source_manifest
+              source_manifest,
+              validate_content: false
             )
             persist_copy_lock_identity!(lock, token, source_identity)
             verify_hardlink_identity_support!(
@@ -2485,11 +2521,25 @@ class FileCopyService
       parent,
       basename,
       parent_path,
-      expected_manifest
+      expected_manifest,
+      validate_content: true,
+      heartbeat: nil
     )
       expected = stable_hardlink_snapshot_entry(expected_manifest)
       unless stable_hardlink_manifest_entry(source.stat) == expected
         raise Errno::ESTALE, "source file changed during hardlink publication"
+      end
+      if validate_content
+        verify_pinned_content_digest!(
+          source,
+          expected_manifest,
+          nil,
+          "source file changed during hardlink publication",
+          heartbeat: heartbeat
+        )
+        unless stable_hardlink_manifest_entry(source.stat) == expected
+          raise Errno::ESTALE, "source file changed during hardlink publication"
+        end
       end
 
       validate_current_directory_identity!(parent_path, parent)
@@ -2550,19 +2600,22 @@ class FileCopyService
       end
     end
 
+    # Copy between pinned descriptors so the filesystem can accelerate it.
+    # The publication boundary verifies the actual private destination bytes.
     def copy_source_io(source, target, heartbeat: nil)
       source.rewind
-      if heartbeat
-        buffer = +""
-        while source.read(BUFFER_SIZE, buffer)
-          target.write(buffer)
-          heartbeat.call
-        end
-        return
-      end
-
       begin
-        IO.copy_stream(source, target)
+        return IO.copy_stream(source, target) unless heartbeat
+
+        copied = 0
+        loop do
+          heartbeat.call
+          bytes = IO.copy_stream(source, target, BUFFER_SIZE)
+          break if bytes.zero?
+
+          copied += bytes
+        end
+        copied
       rescue Errno::EACCES => error
         raise unless copy_file_range_error?(error)
 
@@ -2570,7 +2623,21 @@ class FileCopyService
         source.rewind
         target.rewind
         target.truncate(0)
-        buffered_copy_io(source, target)
+        buffered_copy_io(source, target, heartbeat: heartbeat)
+      end
+    end
+
+    # One comparison proves both that the source still matches authorization
+    # and that the private destination contains those bytes, including a
+    # transient rewrite that was copied and then restored in the source.
+    def verify_private_copy_content!(source, target, expected_size, expected_digest, heartbeat: nil)
+      source.rewind
+      target.rewind
+      digest = OpenSSL::Digest::SHA256.new
+      unless target.stat.size == expected_size &&
+          compare_io(source, target, digest: digest, heartbeat: heartbeat) &&
+          digest.hexdigest == expected_digest
+        raise Errno::ESTALE, "private copy does not match the source snapshot"
       end
     end
 
@@ -2622,9 +2689,13 @@ class FileCopyService
       accepted_modes:,
       require_durable:,
       path:,
-      root:
+      root:,
+      expected_source_digest: nil
     )
       source_size, source_digest = io_content_identity(source, heartbeat: heartbeat)
+      if expected_source_digest && source_digest != expected_source_digest
+        raise Errno::ESTALE, "source file changed while it was being copied"
+      end
       source_validator&.call
       token = SecureRandom.hex(16)
       destination_created = false
@@ -2674,7 +2745,7 @@ class FileCopyService
           if require_durable && !file_durable
             raise DurabilityUnsupportedError, "destination file fsync is unsupported"
           end
-          unless io_matches_identity?(destination, source_size, source_digest)
+          unless io_matches_identity?(destination, source_size, source_digest, heartbeat: heartbeat)
             raise Errno::ESTALE, "direct-copy destination changed while it was written"
           end
         end
@@ -2744,7 +2815,7 @@ class FileCopyService
       original_position = io.pos
       io.rewind
       size = 0
-      digest = Digest::SHA256.new
+      digest = OpenSSL::Digest::SHA256.new
       buffer = +""
       while io.read(BUFFER_SIZE, buffer)
         size += buffer.bytesize
@@ -2756,8 +2827,8 @@ class FileCopyService
       io.seek(original_position) if original_position
     end
 
-    def io_matches_identity?(io, expected_size, expected_digest)
-      size, digest = io_content_identity(io)
+    def io_matches_identity?(io, expected_size, expected_digest, heartbeat: nil)
+      size, digest = io_content_identity(io, heartbeat: heartbeat)
       size == expected_size && digest == expected_digest
     end
 
@@ -3190,10 +3261,11 @@ class FileCopyService
       false
     end
 
-    def compare_io(left, right, digest: nil)
+    def compare_io(left, right, digest: nil, heartbeat: nil)
       left_buffer = +""
       right_buffer = +""
       loop do
+        heartbeat&.call
         left_bytes = left.read(BUFFER_SIZE, left_buffer)
         right_bytes = right.read(BUFFER_SIZE, right_buffer)
         return true unless left_bytes || right_bytes
@@ -3296,26 +3368,34 @@ class FileCopyService
       path.to_s.start_with?("#{root.to_s.delete_suffix(File::SEPARATOR)}#{File::SEPARATOR}")
     end
 
-    def with_pinned_source(path, source_root: nil)
+    # Copy/publication callers validate content inside the private-file
+    # boundary. Their opener still checks source/path metadata on both sides
+    # of the operation, without repeating the same whole-file content read.
+    def with_pinned_source(path, source_root: nil, validate_content: true, heartbeat: nil)
       expanded = Pathname(path).expand_path
-      return with_pinned_source_root(expanded, source_root) { |*values| yield(*values) } if source_root
+      if source_root
+        return with_pinned_source_root(expanded, source_root, validate_content: validate_content, heartbeat: heartbeat) { |*values| yield(*values) }
+      end
 
       canonical_parent = expanded.parent.realpath
       with_pinned_absolute_directory(canonical_parent) do |parent|
         validate_current_directory_identity!(expanded.parent, parent)
         with_pinned_regular_child(parent, expanded.basename.to_s) do |source|
-          manifest = file_manifest_entry(source.stat)
-          validator = lambda do
+          manifest, digest = capture_pinned_file_content(source, heartbeat: heartbeat)
+          validator = lambda do |validate_content: true|
             validate_pinned_source_manifest!(
               source,
               parent,
               expanded.basename.to_s,
               expanded.parent,
-              manifest
+              manifest,
+              expected_digest: digest,
+              validate_content: validate_content,
+              heartbeat: heartbeat
             )
           end
-          result = yield source, parent, expanded.basename.to_s, expanded.parent, validator
-          validator.call
+          result = yield source, parent, expanded.basename.to_s, expanded.parent, validator, digest
+          validator.call(validate_content: validate_content)
           result
         end
       end
@@ -3323,7 +3403,7 @@ class FileCopyService
       raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
     end
 
-    def with_pinned_source_snapshot(source_snapshot)
+    def with_pinned_source_snapshot(source_snapshot, validate_content: true, heartbeat: nil)
       expanded = source_snapshot.path
       with_pinned_absolute_directory(source_snapshot.canonical_parent_path) do |parent|
         unless file_identity(parent.stat) == [ source_snapshot.parent_device, source_snapshot.parent_inode ]
@@ -3331,18 +3411,28 @@ class FileCopyService
         end
         validate_current_directory_identity!(source_snapshot.parent_path, parent)
         with_pinned_regular_child(parent, expanded.basename.to_s) do |source|
-          validator = lambda do
+          validator = lambda do |validate_content: true|
             validate_pinned_source_manifest!(
               source,
               parent,
               expanded.basename.to_s,
               source_snapshot.parent_path,
-              source_snapshot.manifest
+              source_snapshot.manifest,
+              expected_digest: source_snapshot.content_digest,
+              validate_content: validate_content,
+              heartbeat: heartbeat
             )
           end
-          validator.call
-          result = yield source, parent, expanded.basename.to_s, source_snapshot.parent_path, validator
-          validator.call
+          validator.call(validate_content: validate_content)
+          result = yield(
+            source,
+            parent,
+            expanded.basename.to_s,
+            source_snapshot.parent_path,
+            validator,
+            source_snapshot.content_digest
+          )
+          validator.call(validate_content: validate_content)
           result
         end
       end
@@ -3350,33 +3440,59 @@ class FileCopyService
       raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
     end
 
-    def validate_pinned_source_manifest!(source, parent, basename, parent_path, expected_manifest)
-      unless file_manifest_entry(source.stat) == expected_manifest
+    def validate_pinned_source_manifest!(
+      source, parent, basename, parent_path, expected_manifest,
+      expected_digest: nil, validate_content: true, heartbeat: nil
+    )
+      expected_stat = expected_manifest.first(7)
+      unless file_manifest_entry(source.stat) == expected_stat
         raise Errno::ESTALE, "source file changed while it was being imported"
+      end
+      if validate_content
+        verify_pinned_content_digest!(
+          source,
+          expected_manifest,
+          expected_digest,
+          "source file changed while it was being imported",
+          heartbeat: heartbeat
+        )
+        unless file_manifest_entry(source.stat) == expected_stat
+          raise Errno::ESTALE, "source file changed while it was being imported"
+        end
       end
       validate_current_directory_identity!(parent_path, parent)
       with_pinned_regular_child(parent, basename) do |current|
-        unless file_manifest_entry(current.stat) == expected_manifest
+        unless file_manifest_entry(current.stat) == expected_stat
           raise Errno::ESTALE, "source path changed while it was being imported"
         end
       end
       true
     end
 
-    def with_pinned_hardlink_source(path, source_root:)
+    def with_pinned_hardlink_source(path, source_root:, validate_content: true, heartbeat: nil)
       expanded = Pathname(path).expand_path
       if source_root
-        return with_pinned_hardlink_source_root(expanded, source_root) { |*values| yield(*values) }
+        return with_pinned_hardlink_source_root(expanded, source_root, validate_content: validate_content, heartbeat: heartbeat) { |*values| yield(*values) }
       end
 
       canonical_parent = expanded.parent.realpath
       with_pinned_absolute_directory(canonical_parent) do |parent|
         validate_current_directory_identity!(expanded.parent, parent)
         with_pinned_regular_child(parent, expanded.basename.to_s) do |source|
-          manifest = file_manifest_entry(source.stat)
+          stat_entry, digest = capture_pinned_file_content(source, heartbeat: heartbeat)
+          manifest = (stat_entry + [ digest ]).freeze
           result = yield source, parent, expanded.basename.to_s, expanded.parent, manifest
           unless stable_hardlink_manifest_entry(source.stat) == stable_hardlink_snapshot_entry(manifest)
             raise Errno::ESTALE, "source file changed while it was being hardlinked"
+          end
+          if validate_content
+            verify_pinned_content_digest!(
+              source,
+              manifest,
+              digest,
+              "source file changed while it was being hardlinked",
+              heartbeat: heartbeat
+            )
           end
           result
         end
@@ -3385,7 +3501,7 @@ class FileCopyService
       raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
     end
 
-    def with_pinned_hardlink_source_root(expanded, source_root)
+    def with_pinned_hardlink_source_root(expanded, source_root, validate_content: true, heartbeat: nil)
       relative = expanded.relative_path_from(source_root.path)
       if relative.to_s == ".." || relative.to_s.start_with?("..#{File::SEPARATOR}") || relative.to_s == "."
         raise UnsafePathError, "source file is outside the snapshotted download tree"
@@ -3416,9 +3532,27 @@ class FileCopyService
                 stable_hardlink_snapshot_entry(expected_source) == stable_hardlink_manifest_entry(source.stat)
               raise Errno::ESTALE, "source file changed after it was snapshotted"
             end
+            if validate_content
+              verify_pinned_content_digest!(
+                source,
+                expected_source,
+                nil,
+                "source file changed after it was snapshotted",
+                heartbeat: heartbeat
+              )
+            end
             result = yield source, parent, relative.basename.to_s, parent_path, expected_source
             unless stable_hardlink_manifest_entry(source.stat) == stable_hardlink_snapshot_entry(expected_source)
               raise Errno::ESTALE, "source file changed while it was being hardlinked"
+            end
+            if validate_content
+              verify_pinned_content_digest!(
+                source,
+                expected_source,
+                nil,
+                "source file changed while it was being hardlinked",
+                heartbeat: heartbeat
+              )
             end
             result
           end
@@ -3428,7 +3562,7 @@ class FileCopyService
       raise UnsafePathError, "source path contains a symbolic link or non-directory: #{error.message}"
     end
 
-    def with_pinned_source_root(expanded, source_root)
+    def with_pinned_source_root(expanded, source_root, validate_content: true, heartbeat: nil)
       relative = expanded.relative_path_from(source_root.path)
       if relative.to_s == ".." || relative.to_s.start_with?("..#{File::SEPARATOR}") || relative.to_s == "."
         raise UnsafePathError, "source file is outside the snapshotted download tree"
@@ -3454,20 +3588,29 @@ class FileCopyService
           end
           with_pinned_regular_child(parent, relative.basename.to_s) do |source|
             expected_source = source_root.entries[relative.to_s]
-            unless expected_source == file_manifest_entry(source.stat)
+            unless expected_source && file_manifest_entry(source.stat) == expected_source.first(7)
               raise Errno::ESTALE, "source file changed after it was snapshotted"
             end
-            validator = lambda do
+            validator = lambda do |validate_content: true|
               validate_pinned_source_manifest!(
                 source,
                 parent,
                 relative.basename.to_s,
                 parent_path,
-                expected_source
+                expected_source,
+                validate_content: validate_content,
+                heartbeat: heartbeat
               )
             end
-            result = yield source, parent, relative.basename.to_s, parent_path, validator
-            validator.call
+            result = yield(
+              source,
+              parent,
+              relative.basename.to_s,
+              parent_path,
+              validator,
+              file_manifest_digest(expected_source)
+            )
+            validator.call(validate_content: validate_content)
             result
           end
         end
@@ -3514,7 +3657,7 @@ class FileCopyService
               depth: depth + 1
             )
           elsif stat.file?
-            manifest[relative.to_s] = file_manifest_entry(stat)
+            manifest[relative.to_s] = pinned_regular_file_manifest(child, heartbeat: heartbeat)
           else
             raise UnsafePathError, "source tree contains a symbolic link or non-regular path"
           end
@@ -3587,7 +3730,7 @@ class FileCopyService
               depth: depth + 1
             )
           elsif stat.file?
-            manifest[relative.to_s] = file_manifest_entry(stat)
+            manifest[relative.to_s] = pinned_regular_file_manifest(child, heartbeat: heartbeat)
           else
             raise UnsafePathError, "source tree contains a symbolic link or non-regular path"
           end
@@ -3718,7 +3861,7 @@ class FileCopyService
             manifest[relative.to_s] = [ "directory" ]
             digest_pinned_regular_tree(child, relative, manifest: manifest, heartbeat: heartbeat)
           elsif stat.file?
-            digest = Digest::SHA256.new
+            digest = OpenSSL::Digest::SHA256.new
             buffer = +""
             while child.read(BUFFER_SIZE, buffer)
               digest << buffer
@@ -3797,7 +3940,17 @@ class FileCopyService
             native_unlinkat(directory.fileno, quarantine, AT_REMOVEDIR)
           else
             current = file_manifest_entry(stat)
+            digest = file_manifest_digest(expected)
             unless stat.file? && current.first(5) == expected.first(5)
+              restore_quarantined_replacement(
+                directory,
+                quarantine,
+                entry,
+                allow_nonatomic: allow_nonatomic
+              )
+              raise Errno::ESTALE, "source file changed during cleanup"
+            end
+            if digest && !pinned_content_matches?(child, digest, expected.fetch(3))
               restore_quarantined_replacement(
                 directory,
                 quarantine,
@@ -3858,6 +4011,45 @@ class FileCopyService
 
     def file_manifest_entry(stat)
       [ stat.dev, stat.ino, :file, stat.size, stat.mtime.to_r, stat.ctime.to_r, stat.mode & 0o7777 ]
+    end
+
+    # Stat fields are only a fast filter. ext4, NFS, and SMB stamp mtime/ctime
+    # from a coarse clock, so a same-size rewrite in that tick needs a digest.
+    def capture_pinned_file_content(io, heartbeat: nil)
+      TIMESTAMP_SETTLE_ATTEMPTS.times do
+        manifest = file_manifest_entry(io.stat)
+        size, digest = io_content_identity(io, heartbeat: heartbeat)
+        next unless size == manifest.fetch(3)
+        next unless file_manifest_entry(io.stat) == manifest
+
+        return [ manifest.freeze, digest.freeze ]
+      end
+      raise Errno::ESTALE, "source file changed while it was being snapshotted"
+    end
+
+    def pinned_regular_file_manifest(io, heartbeat: nil)
+      stat_entry, digest = capture_pinned_file_content(io, heartbeat: heartbeat)
+      (stat_entry + [ digest ]).freeze
+    end
+
+    def file_manifest_digest(manifest)
+      return nil unless manifest.is_a?(Array) && manifest[2] == :file
+
+      digest = manifest[7]
+      digest if digest.is_a?(String)
+    end
+
+    def pinned_content_matches?(io, expected_digest, expected_size, heartbeat: nil)
+      size, digest = io_content_identity(io, heartbeat: heartbeat)
+      size == expected_size && digest == expected_digest
+    end
+
+    def verify_pinned_content_digest!(io, expected_manifest, expected_digest, message, heartbeat: nil)
+      digest = expected_digest || file_manifest_digest(expected_manifest)
+      return true unless digest
+      return true if pinned_content_matches?(io, digest, expected_manifest.fetch(3), heartbeat: heartbeat)
+
+      raise Errno::ESTALE, message
     end
 
     # CIFS/SMB can keep the inode and size of a freshly written file while the
@@ -4281,6 +4473,7 @@ class FileCopyService
       basename,
       expected_identity,
       expected_manifest: nil,
+      expected_digest: nil,
       before_remove: nil,
       quarantine_kind: :copy,
       expected_owner_uid: nil
@@ -4291,7 +4484,7 @@ class FileCopyService
       begin
         with_pinned_regular_child(parent, basename) do |child|
           return :mismatch unless file_identity(child.stat) == expected_identity
-          return :mismatch if expected_manifest && file_manifest_entry(child.stat) != expected_manifest
+          return :mismatch if expected_manifest && file_manifest_entry(child.stat) != expected_manifest.first(7)
         end
       rescue Errno::ENOENT
         return :missing
@@ -4325,7 +4518,12 @@ class FileCopyService
             manifest_matches = !expected_manifest ||
               stable_hardlink_manifest_entry(stat) == stable_hardlink_snapshot_entry(expected_manifest)
             if quarantined_identity == expected_identity && manifest_matches
-              if before_remove && !before_remove.call
+              digest = expected_digest || file_manifest_digest(expected_manifest)
+              expected_size = expected_manifest ? expected_manifest.fetch(3) : stat.size
+              if digest && !pinned_content_matches?(child, digest, expected_size)
+                restore_quarantined_child!(quarantine, parent, basename)
+                :mismatch
+              elsif before_remove && !before_remove.call
                 restore_quarantined_child!(quarantine, parent, basename)
                 :mismatch
               else
@@ -4472,9 +4670,25 @@ class FileCopyService
           next unless pinned_directory_children(quarantine) == [ COPY_QUARANTINE_ENTRY ]
 
           matches = false
+          digest_mismatch = false
           with_pinned_regular_child(quarantine, COPY_QUARANTINE_ENTRY) do |entry|
             matches = file_identity(entry.stat) == expected_identity &&
               stable_hardlink_manifest_entry(entry.stat) == stable_hardlink_snapshot_entry(snapshot.manifest)
+            if matches && snapshot.content_digest &&
+                !pinned_content_matches?(entry, snapshot.content_digest, snapshot.manifest.fetch(3))
+              matches = false
+              digest_mismatch = true
+            end
+          end
+          if digest_mismatch
+            restore_quarantined_child!(quarantine, parent, original_basename)
+            remove_empty_cleanup_quarantine!(
+              parent,
+              basename,
+              quarantine,
+              file_identity(quarantine.stat)
+            )
+            return :mismatch
           end
           next unless matches
 
@@ -4724,9 +4938,12 @@ class FileCopyService
       File.utime(stat.atime, stat.mtime, dest)
     end
 
-    def buffered_copy_io(source, target)
+    def buffered_copy_io(source, target, heartbeat: nil)
       buffer = +""
-      target.write(buffer) while source.read(BUFFER_SIZE, buffer)
+      while source.read(BUFFER_SIZE, buffer)
+        target.write(buffer)
+        heartbeat&.call
+      end
     end
 
     def recursive_buffered_copy(src, dest)
