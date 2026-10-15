@@ -6,6 +6,7 @@ require:
 
 Shelfarr/SkippedTest:
   Enabled: true
+  Severity: warning
   Include:
     - "test/**/*_test.rb"
 

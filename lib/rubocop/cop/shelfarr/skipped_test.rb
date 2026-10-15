@@ -8,6 +8,7 @@ module Rubocop
           RuboCop::Cop.const_defined?(:Base, false)
         class SkippedTest < ::RuboCop::Cop::Base
           MSG = "Minitest will not run `%<method>s`. Move it above `private`."
+          FIXTURE = "test/lint/skipped_test_hidden_test.rb"
 
           class << self
             def prepare_test_runtime
@@ -32,6 +33,21 @@ module Rubocop
               @rails_root ||= Pathname.new(__dir__).join("../../../..").expand_path
             end
 
+            def fixture_path
+              @fixture_path ||= File.expand_path(FIXTURE, File.expand_path("../../../..", __dir__))
+            end
+
+            def fixture_explicitly_requested?
+              expected = fixture_path
+              ARGV.any? do |argument|
+                next false if argument.start_with?("-")
+
+                File.expand_path(argument) == expected
+              rescue ArgumentError
+                false
+              end
+            end
+
             def install_autorun_guard
               Minitest.define_singleton_method(:autorun) { nil }
             end
@@ -45,13 +61,22 @@ module Rubocop
             super
             path = processed_source.file_path
             return if path.nil? || !path.end_with?("_test.rb")
+            return if fixture?(path) && !self.class.fixture_explicitly_requested?
 
             self.class.prepare_test_runtime
             require File.expand_path(path)
             flag_skipped_tests(File.expand_path(path))
           end
 
+          def external_dependency_checksum
+            self.class.fixture_explicitly_requested? ? "requested" : "omitted"
+          end
+
           private
+
+          def fixture?(path)
+            File.expand_path(path) == self.class.fixture_path
+          end
 
           def flag_skipped_tests(path)
             test_classes_in(path).each do |klass|
