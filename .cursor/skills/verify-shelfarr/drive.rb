@@ -119,24 +119,14 @@ module ShelfarrDrive
   def fill(flags)
     placeholder = required(flags, "placeholder")
     text = required(flags, "text")
+    find_js, value_js = field_scripts(placeholder)
     with_page(flags) do |page|
-      point = page.eval(<<~JS)
-        (() => {
-          const el = document.querySelector(#{selector_for(placeholder).to_json});
-          if (!el) return { status: "missing" };
-          const rect = el.getBoundingClientRect();
-          if (rect.width < 1 || rect.height < 1) return { status: "hidden" };
-          el.focus();
-          return { status: "ok", x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-        })()
-      JS
+      point = page.eval(find_js)
       abort "field #{placeholder} is #{point["status"]}" unless point["status"] == "ok"
       page.click_at(point["x"], point["y"])
       page.select_all
       page.type_text(text)
-      actual = page.eval(<<~JS)
-        document.querySelector(#{selector_for(placeholder).to_json}).value
-      JS
+      actual = page.eval(value_js)
       abort "field #{placeholder} holds #{actual.inspect}" unless actual == text
     end
     0
@@ -245,9 +235,43 @@ module ShelfarrDrive
     current.host == wanted.host && current.port == wanted.port && current.path.chomp("/") == wanted.path.chomp("/")
   end
 
-  def selector_for(placeholder)
-    "input[placeholder=\"#{placeholder.gsub('"', '\\"')}\"]"
+  def field_scripts(placeholder)
+    case placeholder
+    when "Enter your username"
+      [ FIND_USERNAME, VALUE_USERNAME ]
+    when "Enter your password"
+      [ FIND_PASSWORD, VALUE_PASSWORD ]
+    else
+      abort "unknown placeholder"
+    end
   end
+
+  FIND_USERNAME = <<~JS
+    (() => {
+      const el = document.querySelector('input[placeholder="Enter your username"]');
+      if (!el) return { status: "missing" };
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return { status: "hidden" };
+      el.focus();
+      return { status: "ok", x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    })()
+  JS
+  VALUE_USERNAME = <<~JS
+    document.querySelector('input[placeholder="Enter your username"]').value
+  JS
+  FIND_PASSWORD = <<~JS
+    (() => {
+      const el = document.querySelector('input[placeholder="Enter your password"]');
+      if (!el) return { status: "missing" };
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return { status: "hidden" };
+      el.focus();
+      return { status: "ok", x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    })()
+  JS
+  VALUE_PASSWORD = <<~JS
+    document.querySelector('input[placeholder="Enter your password"]').value
+  JS
 
   def chrome_bin
     return ENV["CHROME_BIN"] if ENV["CHROME_BIN"] && File.executable?(ENV["CHROME_BIN"])
