@@ -192,6 +192,8 @@ class HealthCheckJob < ApplicationJob
 
   def qbittorrent_save_path_issues(client, local_path)
     return [] unless client.qbittorrent_compatible?
+    # Import remaps the client's own download path; that path is checked above.
+    return [] if client.download_path.present?
 
     diagnostics = client.adapter.connection_diagnostics
     return [] if diagnostics.blank?

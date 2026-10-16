@@ -384,9 +384,60 @@ class HealthCheckJobTest < ActiveJob::TestCase
         health = SystemHealth.for_service("download_paths")
         assert health.degraded?, health.message
         assert_includes health.message,
-          "qBittorrent save path /mnt/torrents/complete maps to /mnt/torrents/complete. " \
-            "That path is not inside /downloads or does not exist."
+          "qBittorrent saves to /mnt/torrents/complete, which is not inside #{download_dir} " \
+            "or does not exist in this container."
         refute health.down?
+      end
+    end
+  end
+
+  test "keeps download_paths healthy when import finds a host save path through the category folder" do
+    Dir.mktmpdir do |download_dir|
+      FileUtils.mkdir_p(File.join(download_dir, "shelfarr"))
+      setup_download_paths(download_dir)
+      create_download_client(name: "Host Save Path").update!(category: "shelfarr")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/media/torrents" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.healthy?, health.message
+      end
+    end
+  end
+
+  test "leaves qBittorrent save paths to the client download path when one is configured" do
+    Dir.mktmpdir do |download_dir|
+      client_dir = File.join(download_dir, "client")
+      FileUtils.mkdir_p(client_dir)
+      setup_download_paths(download_dir)
+      create_download_client(name: "Client Download Path").update!(download_path: client_dir)
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/media/torrents" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.healthy?, health.message
       end
     end
   end

@@ -44,8 +44,8 @@ class LibraryPathCheckTest < ActiveSupport::TestCase
       )
 
       assert_equal(
-        "qBittorrent save path /mnt/torrents/complete maps to /mnt/torrents/complete. " \
-          "That path is not inside /downloads or does not exist.",
+        "qBittorrent saves to /mnt/torrents/complete, which is not inside #{local_path} " \
+          "or does not exist in this container.",
         message
       )
     end
@@ -61,8 +61,11 @@ class LibraryPathCheckTest < ActiveSupport::TestCase
         remote_path: ""
       )
 
-      assert_includes message, "qBittorrent save path #{File.join(local_path, "missing-category")} maps to"
-      assert_includes message, "That path is not inside /downloads or does not exist."
+      assert_equal(
+        "qBittorrent saves to #{File.join(local_path, "missing-category")}, which is not inside #{local_path} " \
+          "or does not exist in this container.",
+        message
+      )
     end
   end
 
@@ -120,6 +123,59 @@ class LibraryPathCheckTest < ActiveSupport::TestCase
       audiobook_library_id: "audio",
       ebook_library_id: nil,
       audiobook_output_path: "/books/audiobooks",
+      ebook_output_path: nil
+    )
+
+    assert_empty messages
+  end
+
+  test "names the remapped path and the configured download directory" do
+    Dir.mktmpdir do |local_path|
+      message = LibraryPathCheck.qbittorrent_message(
+        save_path: "/mnt/torrents/complete",
+        category_save_path: nil,
+        category: nil,
+        local_path: local_path,
+        remote_path: "/mnt/torrents"
+      )
+
+      assert_equal(
+        "qBittorrent save path /mnt/torrents/complete maps to #{File.join(local_path, "complete")}, " \
+          "which is not inside #{local_path} or does not exist.",
+        message
+      )
+    end
+  end
+
+  test "accepts a host save path when import finds the category folder under the download directory" do
+    Dir.mktmpdir do |local_path|
+      FileUtils.mkdir_p(File.join(local_path, "shelfarr"))
+
+      message = LibraryPathCheck.qbittorrent_message(
+        save_path: "/mnt/media/torrents",
+        category_save_path: nil,
+        category: "shelfarr",
+        local_path: local_path,
+        remote_path: ""
+      )
+
+      assert_nil message
+    end
+  end
+
+  test "accepts a Shelfarr output path inside an Audiobookshelf library folder" do
+    library = AudiobookshelfClient::Library.new(
+      id: "audio",
+      name: "Audiobooks",
+      folders: [ { "fullPath" => "/audiobooks" } ],
+      media_type: "book"
+    )
+
+    messages = LibraryPathCheck.audiobookshelf_messages(
+      libraries: [ library ],
+      audiobook_library_id: "audio",
+      ebook_library_id: nil,
+      audiobook_output_path: "/audiobooks/Shelfarr",
       ebook_output_path: nil
     )
 

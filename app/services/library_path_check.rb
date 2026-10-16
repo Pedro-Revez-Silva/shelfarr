@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 class LibraryPathCheck
-  QBITTORRENT_MISMATCH = "That path is not inside /downloads or does not exist."
   ABS_MISSING_FOLDER = "ABS did not report a folder."
 
   class << self
@@ -13,7 +12,12 @@ class LibraryPathCheck
       return if mapped.blank?
       return if aligned?(mapped, local_path, save_path, category_save_path, category, remote_path)
 
-      "qBittorrent save path #{effective} maps to #{mapped}. #{QBITTORRENT_MISMATCH}"
+      local = normalize_path(local_path)
+      if mapped == normalize_path(effective)
+        "qBittorrent saves to #{effective}, which is not inside #{local} or does not exist in this container."
+      else
+        "qBittorrent save path #{effective} maps to #{mapped}, which is not inside #{local} or does not exist."
+      end
     end
 
     def audiobookshelf_messages(libraries:, audiobook_library_id:, ebook_library_id:, audiobook_output_path:, ebook_output_path:)
@@ -36,6 +40,8 @@ class LibraryPathCheck
     # qBittorrent creates category/save_path lazily, so a missing child of an
     # existing in-container save path is not a mount mismatch.
     def aligned?(mapped, local_path, save_path, category_save_path, category, remote_path)
+      # Without a remote path, import looks for downloads in local_path/category.
+      return true if remote_path.blank? && category.present? && directory_exists?(File.join(local_path.to_s, category.to_s))
       return false unless inside?(mapped, local_path)
       return true if directory_exists?(mapped)
       return false if category_save_path.present? || category.blank? || save_path.blank?
@@ -50,14 +56,11 @@ class LibraryPathCheck
       library = Array(libraries).find { |item| item.id.to_s == library_id.to_s }
       folders = library&.folder_paths.to_a.filter_map { |path| path.to_s.presence }
       return ABS_MISSING_FOLDER if folders.empty?
-      return if folders.any? { |folder| same_path?(folder, output_path) }
+      # Audiobookshelf scans subfolders, so an output path inside a library folder is fine.
+      return if folders.any? { |folder| inside?(output_path, folder) }
 
       "ABS folder is #{folders.first}; Shelfarr imports to #{output_path}. " \
         "Mount the same directory at the same path in both containers, or change the output path."
-    end
-
-    def same_path?(left, right)
-      normalize_path(left) == normalize_path(right)
     end
 
     def inside?(path, root)
