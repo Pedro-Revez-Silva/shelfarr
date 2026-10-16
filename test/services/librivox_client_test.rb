@@ -105,7 +105,7 @@ class LibrivoxClientTest < ActiveSupport::TestCase
       ))
       .to_raise(Faraday::ConnectionFailed.new("offline"))
 
-    assert_not LibrivoxClient.test_connection
+    assert RemoteResult.failed?(LibrivoxClient.test_connection)
   end
 
   test "search returns empty array when LibriVox reports no audiobooks" do

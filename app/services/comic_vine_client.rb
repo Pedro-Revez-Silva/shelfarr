@@ -116,8 +116,8 @@ class ComicVineClient
 
     def test_connection
       configured? && search("Batman", limit: 1).is_a?(Array)
-    rescue Error
-      false
+    rescue Error => error
+      RemoteResult::Failed.new(error)
     end
 
     private
@@ -215,7 +215,7 @@ class ComicVineClient
       response.dig("results", "start_year").presence&.to_i
     rescue Error => e
       Rails.logger.warn("[ComicVineClient] Volume start year lookup failed: #{e.message}")
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def resource_key(resource_type, id)

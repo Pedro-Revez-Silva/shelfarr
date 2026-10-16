@@ -229,8 +229,8 @@ class AudiobookBundleImportPlanner
       Marcel::MimeType.for(file, name: File.basename(path))
     end
     mime_type.to_s.start_with?("audio/")
-  rescue Errno::ENOENT, Errno::EACCES, IOError
-    false
+  rescue Errno::ENOENT, Errno::EACCES, IOError => error
+    RemoteResult::Failed.new(error)
   end
 
   def self_contained_book_file?(path)

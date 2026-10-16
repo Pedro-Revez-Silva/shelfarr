@@ -796,7 +796,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
           body: ""
         )
 
-      assert_not @client.test_connection
+      assert RemoteResult.failed?(@client.test_connection)
     end
   end
 
@@ -897,7 +897,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
 
     VCR.turned_off do
       stub_request(:get, "http://example.com/fail").to_timeout
-      assert_nil @client.send(:resolve_torrent_source, "http://example.com/fail")
+      assert RemoteResult.failed?(@client.send(:resolve_torrent_source, "http://example.com/fail"))
 
       stub_request(:get, %r{http://example.com/loop})
         .to_return(status: 302, headers: { "Location" => "http://example.com/loop" }, body: "")
@@ -910,11 +910,11 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     valid_torrent = { "info" => { "name" => "Book", "piece length" => 16_384, "pieces" => "x" * 20, "length" => 1 } }.bencode
 
     assert @client.send(:valid_torrent_data?, valid_torrent)
-    assert_not @client.send(:valid_torrent_data?, "not-bencode")
+    assert RemoteResult.failed?(@client.send(:valid_torrent_data?, "not-bencode"))
     assert_nil @client.send(:normalized_torrent_url, "ftp://example.com/file.torrent")
     assert_equal "magnet:?xt=urn:btih:abc", @client.send(:absolutize_redirect_url, "http://example.com/base", "magnet:?xt=urn:btih:abc")
     assert_nil @client.send(:absolutize_redirect_url, "http://example.com/base", "ftp://example.com/file")
-    assert_nil @client.send(:absolutize_redirect_url, "http://example.com/base", "http://[bad")
+    assert RemoteResult.failed?(@client.send(:absolutize_redirect_url, "http://example.com/base", "http://[bad"))
 
     assert_equal :paused, @client.send(:normalize_state, 0)
     assert_equal :queued, @client.send(:normalize_state, 1)

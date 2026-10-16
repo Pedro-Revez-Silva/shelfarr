@@ -33,8 +33,8 @@ class TelegramPollingJob < ApplicationJob
       scope = SolidQueue::Job.where(class_name: name, finished_at: nil)
       scope = scope.where.not(active_job_id: excluding_active_job_id) if excluding_active_job_id.present?
       scope.exists?
-    rescue ActiveRecord::StatementInvalid, NameError
-      false
+    rescue ActiveRecord::StatementInvalid, NameError => error
+      RemoteResult::Failed.new(error)
     end
 
     private

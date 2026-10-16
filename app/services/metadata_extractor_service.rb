@@ -392,8 +392,8 @@ class MetadataExtractorService
         cleaned << component.byteslice(0, remaining).to_s.scrub("")
       end
       cleaned.strip.presence
-    rescue RangeError, TypeError, ArgumentError
-      nil
+    rescue RangeError, TypeError, ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
 
     def clean_metadata_component(value, max_bytes)

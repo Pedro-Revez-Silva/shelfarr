@@ -413,16 +413,16 @@ class CustomAcquisitionProviderClientTest < ActiveSupport::TestCase
   test "test_connection returns false on failure responses and connection errors" do
     VCR.turned_off do
       stub_request(:get, "http://provider.test/health").to_return(status: 500)
-      assert_not @client.test_connection
+      assert_equal false, @client.test_connection
 
       stub_request(:get, "http://provider.test/health").to_raise(Errno::ECONNREFUSED)
-      assert_not @client.test_connection
+      assert RemoteResult.failed?(@client.test_connection)
     end
   end
 
   test "test_connection returns false for blocked provider URLs" do
     with_resolver(->(host) { [ "10.0.0.5" ] }) do
-      assert_not @client.test_connection
+      assert RemoteResult.failed?(@client.test_connection)
     end
   end
 

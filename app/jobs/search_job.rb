@@ -54,7 +54,7 @@ class SearchJob < ApplicationJob
     request = Request.find_by(id: request_id)
     return unless request
     search_generation = claim_search!(request)
-    return unless search_generation
+    return if RemoteResult.failed?(search_generation) || !search_generation
 
     Rails.logger.info "[SearchJob] Starting search for request ##{request.id}"
 
@@ -75,12 +75,15 @@ class SearchJob < ApplicationJob
     all_results = []
     all_store_offers = []
     indexer_error = nil
+    @source_failures = []
+    @saw_successful_source = false
 
     if indexer_available
       indexer_results, indexer_error = search_indexer_safely(request)
       return unless heartbeat_search!(request, search_generation)
 
       all_results.concat(indexer_results)
+      @saw_successful_source = true
       Rails.logger.info "[SearchJob] Found #{indexer_results.count} #{IndexerClient.display_name} results"
     end
 
@@ -88,57 +91,85 @@ class SearchJob < ApplicationJob
       anna_results = search_anna_archive(request, search_generation)
       return unless heartbeat_search!(request, search_generation)
 
-      all_results.concat(anna_results)
-      Rails.logger.info "[SearchJob] Found #{anna_results.count} Anna's Archive results"
+      collect_source_results(all_results, anna_results, "Anna's Archive")
     end
 
     if zlibrary_available
       zlibrary_results = search_zlibrary(request, search_generation)
       return unless heartbeat_search!(request, search_generation)
 
-      all_results.concat(zlibrary_results)
-      Rails.logger.info "[SearchJob] Found #{zlibrary_results.count} Z-Library results"
+      collect_source_results(all_results, zlibrary_results, "Z-Library")
     end
 
     if gutenberg_available
       gutenberg_results = search_gutenberg(request)
       return unless heartbeat_search!(request, search_generation)
 
-      all_results.concat(gutenberg_results)
-      Rails.logger.info "[SearchJob] Found #{gutenberg_results.count} Project Gutenberg results"
+      collect_source_results(all_results, gutenberg_results, "Project Gutenberg")
     end
 
     if librivox_available
       librivox_results = search_librivox(request)
       return unless heartbeat_search!(request, search_generation)
 
-      all_results.concat(librivox_results)
-      Rails.logger.info "[SearchJob] Found #{librivox_results.count} LibriVox results"
+      collect_source_results(all_results, librivox_results, "LibriVox")
     end
 
     custom_providers.each do |provider|
       provider_results = search_custom_provider(request, provider)
       return unless heartbeat_search!(request, search_generation)
 
-      all_results.concat(provider_results)
-      Rails.logger.info "[SearchJob] Found #{provider_results.count} custom provider results from #{provider.name}"
+      collect_source_results(all_results, provider_results, "custom provider results from #{provider.name}")
     end
 
     store_providers.each do |provider|
       provider_offers = search_store_provider(request, provider)
       return unless heartbeat_search!(request, search_generation)
 
-      all_store_offers.concat(provider_offers)
-      Rails.logger.info "[SearchJob] Found #{provider_offers.count} DRM-free store offers from #{provider.name}"
+      collect_source_results(all_store_offers, provider_offers, "DRM-free store offers from #{provider.name}")
     end
 
-    complete_search(
-      request,
-      search_generation,
-      results: all_results,
-      store_offers: all_store_offers,
-      indexer_error: indexer_error
-    )
+    if !@saw_successful_source && @source_failures.any?
+      fail_search_without_results(request, search_generation)
+    else
+      complete_search(
+        request,
+        search_generation,
+        results: all_results,
+        store_offers: all_store_offers,
+        indexer_error: indexer_error
+      )
+    end
+  end
+
+  def collect_source_results(bucket, results, label)
+    if RemoteResult.failed?(results)
+      @source_failures << results
+      return
+    end
+
+    @saw_successful_source = true
+    bucket.concat(results)
+    Rails.logger.info "[SearchJob] Found #{results.count} #{label}"
+  end
+
+  def fail_search_without_results(request, search_generation)
+    request.with_search_transition_lock do
+      unless owns_search_attempt?(request, search_generation)
+        log_stale_search(request)
+        next false
+      end
+
+      if @anna_archive_bot_protection_error
+        request.mark_for_attention!(@anna_archive_bot_protection_error)
+      else
+        request.mark_for_attention!("Search failed before any source returned results.")
+      end
+      clear_search_claim!(request)
+      true
+    end
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def claim_search!(request)
@@ -161,8 +192,8 @@ class SearchJob < ApplicationJob
     end
     request.broadcast_show_refresh_later if generation
     generation
-  rescue ActiveRecord::RecordNotFound
-    nil
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def handle_no_search_sources(request, search_generation)
@@ -177,8 +208,8 @@ class SearchJob < ApplicationJob
       clear_search_claim!(request)
       true
     end
-  rescue ActiveRecord::RecordNotFound
-    false
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def complete_search(request, search_generation, results:, store_offers:, indexer_error:)
@@ -210,8 +241,8 @@ class SearchJob < ApplicationJob
       clear_search_claim!(request)
       true
     end
-  rescue ActiveRecord::RecordNotFound
-    false
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def owns_search_attempt?(request, search_generation)
@@ -392,12 +423,12 @@ class SearchJob < ApplicationJob
     Rails.logger.warn "[SearchJob] Anna's Archive bot protection for request ##{request.id} (#{e.class})"
     # Store the error message to show user if no other results
     @anna_archive_bot_protection_error = e.message
-    []
-  rescue AnnaArchiveClient::SearchCancelled
-    []
+    RemoteResult::Failed.new(e)
+  rescue AnnaArchiveClient::SearchCancelled => error
+    RemoteResult::Failed.new(error)
   rescue AnnaArchiveClient::Error => e
     Rails.logger.warn "[SearchJob] Anna's Archive search failed for request ##{request.id} (#{e.class})"
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def search_zlibrary(request, search_generation)
@@ -414,11 +445,11 @@ class SearchJob < ApplicationJob
     end.map do |result|
       { result: result, source: SearchResult::SOURCE_ZLIBRARY }
     end
-  rescue ZLibraryClient::SearchCancelled
-    []
+  rescue ZLibraryClient::SearchCancelled => error
+    RemoteResult::Failed.new(error)
   rescue ZLibraryClient::Error => e
     Rails.logger.warn "[SearchJob] Z-Library search failed for request ##{request.id} (#{e.class})"
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def search_librivox(request)
@@ -433,7 +464,7 @@ class SearchJob < ApplicationJob
     end
   rescue LibrivoxClient::Error => e
     Rails.logger.warn "[SearchJob] LibriVox search failed for request ##{request.id} (#{e.class})"
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def search_gutenberg(request)
@@ -448,7 +479,7 @@ class SearchJob < ApplicationJob
     end
   rescue GutenbergClient::Error => e
     Rails.logger.warn "[SearchJob] Project Gutenberg search failed for request ##{request.id} (#{e.class})"
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def search_custom_provider(request, provider)
@@ -457,7 +488,7 @@ class SearchJob < ApplicationJob
     end
   rescue CustomAcquisitionProviderClient::Error => e
     Rails.logger.warn "[SearchJob] Custom provider #{provider.name} search failed for request ##{request.id} (#{e.class})"
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def search_store_provider(request, provider)
@@ -474,7 +505,7 @@ class SearchJob < ApplicationJob
     end
   rescue StoreProviderError => e
     Rails.logger.warn "[SearchJob] Store provider #{provider.name} search failed for request ##{request.id} (#{e.class})"
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def currently_eligible_store_offers(request, tagged_offers)

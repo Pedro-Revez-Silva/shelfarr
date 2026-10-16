@@ -67,7 +67,7 @@ module Admin
     end
 
     def test
-      if @download_client.test_connection
+      if RemoteResult.succeeded?(@download_client.test_connection)
         run_download_client_health_check
         redirect_to admin_download_clients_path, notice: "Connection to '#{@download_client.name}' successful!"
       else

@@ -25,7 +25,11 @@ class IndexerClient
     end
 
     def test_connection
-      current&.test_connection || false
+      result = current&.test_connection
+      return false if result.nil?
+      return result if RemoteResult.failed?(result)
+
+      result || false
     end
 
     def reset_connection!

@@ -70,7 +70,7 @@ class NotificationService
       )
     rescue => e
       Rails.logger.error "[NotificationService] Failed to create notification: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def dispatch_outbound_event(event:, request:, title:, message:)
@@ -82,7 +82,7 @@ class NotificationService
       )
     rescue => e
       Rails.logger.error "[NotificationService] Failed to enqueue outbound notification: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     end
   end
 end

@@ -69,8 +69,8 @@ class CustomAcquisitionProviderClient
     end
 
     response.is_a?(Net::HTTPSuccess)
-  rescue Error, *NETWORK_ERRORS
-    false
+  rescue Error, *NETWORK_ERRORS => error
+    RemoteResult::Failed.new(error)
   end
 
   private
@@ -319,7 +319,7 @@ class CustomAcquisitionProviderClient
     return if value.blank?
 
     Time.zone.parse(value.to_s)
-  rescue ArgumentError, TypeError
-    nil
+  rescue ArgumentError, TypeError => error
+    RemoteResult::Failed.new(error)
   end
 end

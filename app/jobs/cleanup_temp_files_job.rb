@@ -29,8 +29,8 @@ class CleanupTempFilesJob < ApplicationJob
     deleted_count = cleanup_download_directory(downloads_dir, max_age: 1.hour.ago)
 
     Rails.logger.info "[CleanupTempFilesJob] Deleted #{deleted_count} old download temp files" if deleted_count > 0
-  rescue Errno::ENOENT
-    nil
+  rescue Errno::ENOENT => error
+    RemoteResult::Failed.new(error)
   rescue FileCopyService::UnsafePathError, SystemCallError => error
     Rails.logger.warn "[CleanupTempFilesJob] Could not safely inspect download archives: #{error.class}"
   end
@@ -74,7 +74,7 @@ class CleanupTempFilesJob < ApplicationJob
       end
       removed = FileCopyService.remove_regular_file_safely(path, root: downloads_dir.to_s) if stale
     end
-    removed ? 1 : 0
+    RemoteResult.succeeded?(removed) ? 1 : 0
   rescue Errno::ENOENT
     0
   rescue FileCopyService::UnsafePathError, FileCopyService::AtomicPublicationUnsupportedError,
@@ -88,7 +88,7 @@ class CleanupTempFilesJob < ApplicationJob
     stat = File.lstat(path)
     return 0 unless stat.file? && stat.mtime <= max_age
 
-    FileCopyService.remove_regular_file_safely(path, root: downloads_dir.to_s) ? 1 : 0
+    RemoteResult.succeeded?(FileCopyService.remove_regular_file_safely(path, root: downloads_dir.to_s)) ? 1 : 0
   rescue Errno::ENOENT
     0
   rescue FileCopyService::UnsafePathError, FileCopyService::AtomicPublicationUnsupportedError,
@@ -138,15 +138,16 @@ class CleanupTempFilesJob < ApplicationJob
     historical_roots = Upload.where.not(destination_root: [ nil, "" ]).distinct.pluck(:destination_root)
     fingerprint = UploadImportFileService.send(:database_fingerprint)
 
-    (configured_roots + historical_roots).compact_blank.filter_map do |root|
+    directories = (configured_roots + historical_roots).compact_blank.filter_map do |root|
       root = Pathname(root).expand_path
       next unless root.directory?
 
       canonical_root = root.realpath
       [ canonical_root.join(UploadImportFileService::PRIVATE_DIRECTORY, fingerprint), canonical_root ]
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
-      nil
-    end.uniq
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP => error
+      RemoteResult::Failed.new(error)
+    end
+    directories.reject { |entry| RemoteResult.failed?(entry) }.uniq
   end
 
   def owned_staging_roots
@@ -199,7 +200,7 @@ class CleanupTempFilesJob < ApplicationJob
       next if stat.mtime > max_age
       next if protected_paths.include?(entry)
 
-      deleted_count += 1 if delete_upload_file_unless_active(entry, max_age: max_age)
+      deleted_count += 1 if delete_upload_file_unless_active(entry, max_age: max_age) == true
     rescue Errno::ENOENT
       next
     end
@@ -241,7 +242,7 @@ class CleanupTempFilesJob < ApplicationJob
         expected_identity: [ child.device, child.inode ],
         expected_parent_identity: parent_identity
       )
-      removed ? 1 : 0
+      RemoteResult.succeeded?(removed) ? 1 : 0
     end
   rescue Errno::ENOENT
     0
@@ -273,12 +274,12 @@ class CleanupTempFilesJob < ApplicationJob
       expected_parent_identity: expected_parent_identity,
       maximum_mtime: max_age
     )
-  rescue Errno::ENOENT
-    false
+  rescue Errno::ENOENT => error
+    RemoteResult::Failed.new(error)
   rescue FileCopyService::UnsafePathError, FileCopyService::AtomicPublicationUnsupportedError,
     SystemCallError => error
     Rails.logger.warn "[CleanupTempFilesJob] Could not safely clean an upload file: #{error.class}"
-    false
+    RemoteResult::Failed.new(error)
   end
 
   def cleanup_old_activity_logs

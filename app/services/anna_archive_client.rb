@@ -143,8 +143,8 @@ class AnnaArchiveClient
         validator: method(:validate_search_page!)
       )
       true
-    rescue Error, Faraday::Error
-      false
+    rescue Error, Faraday::Error => error
+      RemoteResult::Failed.new(error)
     end
 
     private
@@ -196,8 +196,9 @@ class AnnaArchiveClient
         raise unless FlaresolverrClient.configured?
 
         Rails.logger.info "[AnnaArchiveClient] Direct search unavailable: #{error.class}"
-        nil
+        RemoteResult::Failed.new(error)
       end
+      html = nil if RemoteResult.failed?(html)
       return html unless html.nil?
 
       if FlaresolverrClient.configured?
@@ -230,7 +231,7 @@ class AnnaArchiveClient
       return ungated_search_body!(response) unless gated_search_response?(response)
 
       Rails.logger.info "[AnnaArchiveClient] Search is gated on #{base_url}; attempting member sign-in"
-      return unless sign_in_member_session!(base_url)
+      return unless sign_in_member_session!(base_url) == true
 
       response = search_get(path, base_url: base_url)
       return response.body if usable_search_response?(response)
@@ -260,7 +261,7 @@ class AnnaArchiveClient
     end
 
     def gated_search_response?(response)
-      response.status == 403 || check_redirect?(response) || bot_protection_detected?(response.body)
+      response.status == 403 || check_redirect?(response) == true || bot_protection_detected?(response.body)
     end
 
     def check_redirect?(response)
@@ -271,8 +272,8 @@ class AnnaArchiveClient
 
       query = URI.decode_www_form(URI.parse(location).query.to_s)
       query.any? { |key, _value| key == "check" }
-    rescue URI::InvalidURIError
-      false
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
     end
 
     def sign_in_member_session!(base_url)
@@ -300,7 +301,7 @@ class AnnaArchiveClient
       true
     rescue ConnectionError, RetryableError, ResponseTooLargeError => e
       Rails.logger.info "[AnnaArchiveClient] Member sign-in failed on #{base_url}: #{e.class}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def extract_account_session_cookie(response)

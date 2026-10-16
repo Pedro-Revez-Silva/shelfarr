@@ -351,7 +351,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
       stub_request(:get, "https://annas-archive.org/search?q=shelfarr")
         .to_raise(Faraday::ConnectionFailed.new("Connection failed"))
 
-      assert_not AnnaArchiveClient.test_connection
+      assert RemoteResult.failed?(AnnaArchiveClient.test_connection)
     end
   end
 
@@ -360,7 +360,7 @@ class AnnaArchiveClientTest < ActiveSupport::TestCase
       stub_request(:get, "https://annas-archive.org/search?q=shelfarr")
         .to_return(status: 200, body: "<html><body>Not Anna's Archive</body></html>")
 
-      assert_not AnnaArchiveClient.test_connection
+      assert RemoteResult.failed?(AnnaArchiveClient.test_connection)
     end
   end
 

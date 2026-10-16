@@ -118,7 +118,7 @@ module Admin
         return
       end
 
-      if ConnectionProbe.indexer(provider: provider, url: url, api_key: api_key)
+      if RemoteResult.succeeded?(ConnectionProbe.indexer(provider: provider, url: url, api_key: api_key))
         health&.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "#{name} connection successful!")
       else
@@ -152,7 +152,7 @@ module Admin
         LibraryPlatformClient.test_connection(platform: platform)
       end
 
-      if connected
+      if RemoteResult.succeeded?(connected)
         health&.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "#{name} connection successful!")
       else
@@ -181,7 +181,7 @@ module Admin
         return
       end
 
-      if FlaresolverrClient.test_connection
+      if RemoteResult.succeeded?(FlaresolverrClient.test_connection)
         respond_with_flash(notice: "FlareSolverr connection successful!")
       else
         respond_with_flash(alert: "FlareSolverr connection failed.")
@@ -199,7 +199,7 @@ module Admin
         return
       end
 
-      if HardcoverClient.test_connection
+      if RemoteResult.succeeded?(HardcoverClient.test_connection)
         MetadataProviderStatus.for_provider("hardcover").record_success!
         health.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "Hardcover connection successful!")
@@ -222,7 +222,7 @@ module Admin
         return
       end
 
-      if GoogleBooksClient.test_connection
+      if RemoteResult.succeeded?(GoogleBooksClient.test_connection)
         MetadataProviderStatus.for_provider("google_books").record_success!
         respond_with_flash(notice: "Google Books connection successful!")
       else
@@ -238,7 +238,7 @@ module Admin
         return
       end
 
-      if OpenLibraryClient.test_connection
+      if RemoteResult.succeeded?(OpenLibraryClient.test_connection)
         MetadataProviderStatus.for_provider("openlibrary").record_success!
         respond_with_flash(notice: "Open Library connection successful!")
       else
@@ -254,7 +254,7 @@ module Admin
         return
       end
 
-      if ComicVineClient.test_connection
+      if RemoteResult.succeeded?(ComicVineClient.test_connection)
         MetadataProviderStatus.for_provider("comic_vine").record_success!
         respond_with_flash(notice: "Comic Vine connection successful!")
       else
@@ -285,7 +285,7 @@ module Admin
         return
       end
 
-      if LibrivoxClient.test_connection
+      if RemoteResult.succeeded?(LibrivoxClient.test_connection)
         respond_with_flash(notice: "LibriVox connection successful!")
       else
         respond_with_flash(alert: "LibriVox connection failed.")
@@ -298,7 +298,7 @@ module Admin
         return
       end
 
-      if GutenbergClient.test_connection
+      if RemoteResult.succeeded?(GutenbergClient.test_connection)
         respond_with_flash(notice: "Project Gutenberg connection successful!")
       else
         respond_with_flash(alert: "Project Gutenberg connection failed.")
@@ -311,7 +311,7 @@ module Admin
         return
       end
 
-      if EbooksComClient.test_connection
+      if RemoteResult.succeeded?(EbooksComClient.test_connection)
         respond_with_flash(notice: "eBooks.com catalog connection successful!")
       else
         respond_with_flash(alert: "eBooks.com catalog connection failed.")

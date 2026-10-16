@@ -110,8 +110,8 @@ class UploadCreator
       status: :pending
     )
 
-    if persist_upload(upload)
-      if enqueue_processing(upload)
+    if persist_upload(upload) == true
+      if enqueue_processing(upload) == true
         Result.new(upload: upload, notice: "File uploaded successfully. Processing started.")
       else
         upload.update!(
@@ -174,12 +174,12 @@ class UploadCreator
     true
   rescue Request::CancellationBlockedError => error
     upload.errors.add(:base, error.message)
-    false
-  rescue ActiveRecord::RecordNotFound
+    RemoteResult::Failed.new(error)
+  rescue ActiveRecord::RecordNotFound => error
     upload.errors.add(:base, "This request is no longer available for file fulfillment")
-    false
-  rescue ActiveRecord::RecordInvalid
-    false
+    RemoteResult::Failed.new(error)
+  rescue ActiveRecord::RecordInvalid => error
+    RemoteResult::Failed.new(error)
   end
 
   def enqueue_processing(upload)
@@ -189,6 +189,6 @@ class UploadCreator
     Rails.logger.error(
       "[UploadCreator] Could not enqueue upload ##{upload.id}: #{error.class}"
     )
-    false
+    RemoteResult::Failed.new(error)
   end
 end

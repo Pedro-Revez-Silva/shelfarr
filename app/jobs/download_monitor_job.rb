@@ -48,8 +48,8 @@ class DownloadMonitorJob < ApplicationJob
         .where.missing(:failed_execution)
       scope = scope.where.not(active_job_id: excluding_active_job_id) if excluding_active_job_id.present?
       scope.exists?
-    rescue ActiveRecord::ActiveRecordError, NameError
-      false
+    rescue ActiveRecord::ActiveRecordError, NameError => error
+      RemoteResult::Failed.new(error)
     end
 
     private
@@ -154,8 +154,8 @@ class DownloadMonitorJob < ApplicationJob
       download.update!(status: :failed)
       download.request.handle_download_failure!(download, reason: "Download failed in client")
     end
-  rescue ActiveRecord::RecordNotFound
-    nil
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def handle_missing(download)
@@ -185,8 +185,8 @@ class DownloadMonitorJob < ApplicationJob
         download.update!(not_found_count: new_count)
       end
     end
-  rescue ActiveRecord::RecordNotFound
-    nil
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def handle_stale_queued_download(download)
@@ -223,8 +223,8 @@ class DownloadMonitorJob < ApplicationJob
         "Download stayed queued in Shelfarr for more than #{timeout_minutes} minutes and was never sent to the download client. Retry the request and check the job queue/logs."
       )
     end
-  rescue ActiveRecord::RecordNotFound
-    nil
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def handle_stale_direct_download(download)
@@ -261,8 +261,8 @@ class DownloadMonitorJob < ApplicationJob
     download.request.mark_for_attention!(
       "Direct download stopped reporting progress. Retry the request and check the job queue/logs."
     )
-  rescue ActiveRecord::RecordNotFound
-    nil
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def schedule_next_run

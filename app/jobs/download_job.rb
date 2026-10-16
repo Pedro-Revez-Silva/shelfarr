@@ -69,7 +69,7 @@ class DownloadJob < ApplicationJob
       return
     end
     download.update!(search_result: search_result) unless download.search_result_id
-    return unless claim_dispatch!(download, search_result)
+    return unless claim_dispatch!(download, search_result) == true
 
     begin
       if search_result.from_anna_archive?
@@ -160,8 +160,8 @@ class DownloadJob < ApplicationJob
 
       yield
     end
-  rescue ActiveRecord::RecordNotFound
-    nil
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def handle_download_source_failure(download, error, message)
@@ -660,24 +660,24 @@ class DownloadJob < ApplicationJob
     return extension if allowed_extensions.include?(extension)
 
     nil
-  rescue URI::InvalidURIError
-    nil
+  rescue URI::InvalidURIError => error
+    RemoteResult::Failed.new(error)
   end
 
   def torrent_download_url?(url)
     return true if url.to_s.start_with?("magnet:")
 
     File.extname(URI.parse(url.to_s).path).casecmp?(".torrent")
-  rescue URI::InvalidURIError
-    false
+  rescue URI::InvalidURIError => error
+    RemoteResult::Failed.new(error)
   end
 
   def filename_from_url(url)
     uri = URI.parse(normalize_direct_download_url(url))
     filename = File.basename(uri.path)
     URI.decode_www_form_component(filename) if filename.present?
-  rescue URI::InvalidURIError
-    nil
+  rescue URI::InvalidURIError => error
+    RemoteResult::Failed.new(error)
   end
 
   def normalize_url_filename(filename, inferred_extension)
@@ -1090,8 +1090,8 @@ class DownloadJob < ApplicationJob
         max_duration: max_duration
       )
     end
-  rescue EOFError, Errno::ENOENT, Errno::EACCES
-    false
+  rescue EOFError, Errno::ENOENT, Errno::EACCES => error
+    RemoteResult::Failed.new(error)
   end
 
   def valid_audiobook_text?(path)
@@ -1102,16 +1102,16 @@ class DownloadJob < ApplicationJob
       content = file.read(size).to_s.force_encoding(Encoding::UTF_8)
       content.valid_encoding? && !content.include?("\0") && !content.match?(/[^\t\n\r[:print:]]/)
     end
-  rescue EOFError, Errno::ENOENT, Errno::EACCES
-    false
+  rescue EOFError, Errno::ENOENT, Errno::EACCES => error
+    RemoteResult::Failed.new(error)
   end
 
   def valid_audiobook_signature?(path)
     with_regular_download_io(path) do |file|
       valid_audiobook_io?(file, File.extname(path).delete(".").downcase)
     end
-  rescue EOFError, Errno::ENOENT, Errno::EACCES
-    false
+  rescue EOFError, Errno::ENOENT, Errno::EACCES => error
+    RemoteResult::Failed.new(error)
   end
 
   def valid_audiobook_io?(file, extension)
@@ -1133,7 +1133,7 @@ class DownloadJob < ApplicationJob
     else
       false
     end
-    structurally_valid && AudiobookProbeService.valid?(file.path)
+    structurally_valid && AudiobookProbeService.valid?(file.path) == true
   end
 
   def valid_mp3_stream?(file, head, file_size)
@@ -1385,7 +1385,9 @@ class DownloadJob < ApplicationJob
   end
 
   def send_to_usenet_client(download, search_result, nzb_url)
-    client_record = DownloadClient.usenet_clients.enabled.by_priority.find(&:test_connection)
+    client_record = DownloadClient.usenet_clients.enabled.by_priority.find { |client|
+      RemoteResult.succeeded?(client.test_connection)
+    }
     raise DownloadClientSelector::NoClientAvailableError, "No usenet client available (all failed connection test)" unless client_record
 
     client = client_record.adapter
@@ -1479,8 +1481,8 @@ class DownloadJob < ApplicationJob
     end
 
     claimed
-  rescue ActiveRecord::RecordNotFound
-    false
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def finalize_standard_dispatch!(download, search_result, client, client_record, external_id, download_type:)
@@ -1543,8 +1545,8 @@ class DownloadJob < ApplicationJob
 
     Rails.logger.error "[DownloadJob] Failed to add download ##{download.id}" if failed
     failed
-  rescue ActiveRecord::RecordNotFound
-    false
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def current_standard_dispatch?(download, search_result)
@@ -1572,8 +1574,8 @@ class DownloadJob < ApplicationJob
     end
 
     handled
-  rescue ActiveRecord::RecordNotFound
-    false
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   end
 
   def remove_stale_client_dispatch(client, client_record, external_id, download_id)

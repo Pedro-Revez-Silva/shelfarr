@@ -17,8 +17,8 @@ class LibraryPathSafety
     def internal_relative_path?(path)
       first = Pathname(path.to_s).each_filename.first
       first.present? && INTERNAL_DIRECTORY_KEYS.include?(first.downcase)
-    rescue ArgumentError
-      false
+    rescue ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
 
     def internal_path?(path, root:)
@@ -28,8 +28,8 @@ class LibraryPathSafety
       return false if relative.to_s.start_with?("..#{File::SEPARATOR}")
 
       internal_relative_path?(relative)
-    rescue ArgumentError
-      false
+    rescue ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
 
     def template_targets_internal_directory?(template)

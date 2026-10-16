@@ -42,8 +42,8 @@ module Integrations
           chat_id: chat_id,
           command: command_text
         )
-      rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
-        nil
+      rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid => error
+        RemoteResult::Failed.new(error)
       end
 
       def message

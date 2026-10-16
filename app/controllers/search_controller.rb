@@ -102,6 +102,7 @@ class SearchController < ApplicationController
       content_kind: @content_kind,
       provider_count: providers.size
     )
+    snapshot_id = nil if RemoteResult.failed?(snapshot_id)
     snapshot_expires_at = nil
 
     write_search_results_stream(
@@ -140,7 +141,7 @@ class SearchController < ApplicationController
           failed_providers: failed_providers,
           provider_count: providers.size
         )
-        if snapshot
+        if RemoteResult.succeeded?(snapshot)
           candidates = snapshot.results
           snapshot_expires_at = snapshot.expires_at
         else
@@ -195,7 +196,7 @@ class SearchController < ApplicationController
       query: @query,
       content_kind: @content_kind
     )
-    return head :not_found unless snapshot&.complete
+    return head :not_found if RemoteResult.failed?(snapshot) || !snapshot&.complete
 
     error = provider_failure_error(
       snapshot.results,

@@ -107,8 +107,8 @@ class UpdateCheckerService
 
     def parse_date(date_string)
       Time.parse(date_string)
-    rescue ArgumentError, TypeError
-      nil
+    rescue ArgumentError, TypeError => error
+      RemoteResult::Failed.new(error)
     end
 
     def newer_version?(current, latest)

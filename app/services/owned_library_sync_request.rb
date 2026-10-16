@@ -165,7 +165,7 @@ class OwnedLibrarySyncRequest
     Rails.logger.error(
       "[AudibleBackup] Failed to enqueue #{mode} sync for connection ##{connection.id}: #{e.class}"
     )
-    false
+    RemoteResult::Failed.new(e)
   end
 
   def mark_enqueue_failed(result)

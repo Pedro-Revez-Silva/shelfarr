@@ -153,7 +153,7 @@ class OwnedMediaImportFileService
     # extraction or finalization. The large copy deliberately occurs outside
     # the library database transaction.
     def ensure_persistent_staging!(media_import, upload)
-      if staging_path_syntax?(upload.file_path)
+      if staging_path_syntax?(upload.file_path) == true
         output_root_for_staged_path(upload.file_path)
         return upload.file_path
       end
@@ -162,7 +162,7 @@ class OwnedMediaImportFileService
       root = output_root
       with_lock(root, "import-#{media_import.id}") do
         upload.reload
-        if staging_path_syntax?(upload.file_path)
+        if staging_path_syntax?(upload.file_path) == true
           output_root_for_staged_path(upload.file_path)
           return upload.file_path
         end
@@ -212,7 +212,7 @@ class OwnedMediaImportFileService
     def recovery_source_path(media_import, upload)
       root = output_root_for_staged_path(upload.file_path)
       source = Pathname(upload.file_path).expand_path
-      if regular_file_with_size?(source, upload.file_size) &&
+      if regular_file_with_size?(source, upload.file_size) == true &&
           persisted_identity_matches?(media_import, File.lstat(source), allow_missing: true)
         return source.to_s
       end
@@ -221,8 +221,8 @@ class OwnedMediaImportFileService
       if destination_value.present?
         destination = Pathname(destination_value).expand_path
         staging_root = root.join(STAGING_DIRECTORY)
-        if safe_library_destination?(destination, root, staging_root) &&
-            regular_file_with_size?(destination, upload.file_size) &&
+        if safe_library_destination?(destination, root, staging_root) == true &&
+            regular_file_with_size?(destination, upload.file_size) == true &&
             persisted_identity_matches?(media_import, File.lstat(destination))
           return destination.to_s
         end
@@ -329,8 +329,8 @@ class OwnedMediaImportFileService
       end
 
       { path: path, root: resolved_staging_root.parent.realpath }
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
-      nil
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP => error
+      RemoteResult::Failed.new(error)
     end
 
     def secure_directory!(directory)
@@ -482,8 +482,8 @@ class OwnedMediaImportFileService
 
     def class_native_mkdirat(directory_fd, basename, mode)
       FilesystemSyscalls.mkdirat(directory_fd, basename, mode)
-    rescue Errno::EEXIST
-      nil
+    rescue Errno::EEXIST => error
+      RemoteResult::Failed.new(error)
     end
 
     def class_native_fchmod(descriptor, mode)
@@ -496,8 +496,8 @@ class OwnedMediaImportFileService
 
     def class_native_unlinkat(directory_fd, basename)
       FilesystemSyscalls.unlinkat(directory_fd, basename)
-    rescue Errno::ENOENT
-      nil
+    rescue Errno::ENOENT => error
+      RemoteResult::Failed.new(error)
     end
 
     def same_class_file_identity?(left, right)
@@ -511,8 +511,8 @@ class OwnedMediaImportFileService
         candidate.basename.to_s == UPLOADS_DIRECTORY &&
           candidate.parent.basename.to_s == STAGING_DIRECTORY
       end
-    rescue ArgumentError
-      false
+    rescue ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
 
     def validate_directory_chain!(first, last)
@@ -548,8 +548,8 @@ class OwnedMediaImportFileService
     def regular_file_with_size?(path, expected_size)
       stat = File.lstat(path)
       stat.file? && (expected_size.blank? || stat.size == expected_size.to_i)
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
-      false
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP => error
+      RemoteResult::Failed.new(error)
     end
 
     def persisted_identity_matches?(media_import, stat, allow_missing: false)
@@ -570,8 +570,8 @@ class OwnedMediaImportFileService
       path_within?(resolved_parent, root.realpath) &&
         !path_within?(resolved_parent, staging_root.realpath) &&
         !LibraryPathSafety.internal_path?(resolved_parent, root: root.realpath)
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
-      false
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP => error
+      RemoteResult::Failed.new(error)
     end
   end
 
@@ -647,8 +647,8 @@ class OwnedMediaImportFileService
     validate_staging_parent!
 
     with_pinned_destination_parent(destination, create: true) do |destination_parent|
-      destination_stat = pinned_child_stat(destination_parent, destination.basename.to_s)
-      if path_exists_without_following?(source_path)
+      destination_stat = present_stat(pinned_child_stat(destination_parent, destination.basename.to_s))
+      if path_exists_without_following?(source_path) == true
         with_verified_staged_source do |source, source_parent|
           source_stat = source.stat
           verify_persisted_staged_identity!(source_stat)
@@ -665,7 +665,7 @@ class OwnedMediaImportFileService
           end
 
           validate_pinned_destination_path_identity!(destination, destination_parent)
-          unless pinned_child_matches?(source_parent, source_path.basename.to_s, source_stat)
+          unless pinned_child_matches?(source_parent, source_path.basename.to_s, source_stat) == true
             raise Error, "The staged Libation audiobook changed during finalization"
           end
           native_unlinkat(source_parent.fileno, source_path.basename.to_s)
@@ -699,8 +699,8 @@ class OwnedMediaImportFileService
 
     with_pinned_absolute_directory(source_path.parent) do |source_parent|
       with_pinned_destination_parent(destination, create: false) do |destination_parent|
-        source_stat = pinned_child_stat(source_parent, source_path.basename.to_s)
-        destination_stat = pinned_child_stat(destination_parent, destination.basename.to_s)
+        source_stat = present_stat(pinned_child_stat(source_parent, source_path.basename.to_s))
+        destination_stat = present_stat(pinned_child_stat(destination_parent, destination.basename.to_s))
         if source_stat
           validate_stat!(source_stat, expected_size: upload.file_size)
           verify_persisted_staged_identity!(source_stat)
@@ -720,7 +720,7 @@ class OwnedMediaImportFileService
             source_path.basename.to_s
           )
           source_parent.fsync
-          restored_stat = pinned_child_stat(source_parent, source_path.basename.to_s)
+          restored_stat = present_stat(pinned_child_stat(source_parent, source_path.basename.to_s))
           return false unless restored_stat && same_file_identity?(restored_stat, destination_stat)
         end
         # Retain the finalized hard link and its durable reservation. Removing
@@ -730,8 +730,8 @@ class OwnedMediaImportFileService
       end
     end
     true
-  rescue Errno::EEXIST, Errno::EXDEV, Errno::EPERM, Errno::ENOTSUP, Errno::ENOENT
-    false
+  rescue Errno::EEXIST, Errno::EXDEV, Errno::EPERM, Errno::ENOTSUP, Errno::ENOENT => error
+    RemoteResult::Failed.new(error)
   end
 
   def clear_reservation!
@@ -835,7 +835,7 @@ class OwnedMediaImportFileService
   def destination_occupied?(candidate)
     tracked_path = book_library_path(candidate)
 
-    path_exists_without_following?(candidate) ||
+    path_exists_without_following?(candidate) == true ||
       Upload.blocking_reservations
         .where.not(id: upload.id)
         .where(destination_path: candidate.to_s)
@@ -913,7 +913,8 @@ class OwnedMediaImportFileService
   def remove_empty_created_directories!
     @created_directories.reverse_each do |directory|
       Dir.rmdir(directory)
-    rescue Errno::ENOENT, Errno::ENOTEMPTY, Errno::EEXIST
+    rescue Errno::ENOENT, Errno::ENOTEMPTY, Errno::EEXIST => error
+      RemoteResult::Failed.new(error)
       # A concurrent import may legitimately be using this shared directory.
     end
     @created_directories.clear
@@ -938,8 +939,8 @@ class OwnedMediaImportFileService
       Dir.rmdir(current)
       current = current.parent
     end
-  rescue Errno::ENOENT, Errno::ENOTEMPTY, Errno::EEXIST
-    nil
+  rescue Errno::ENOENT, Errno::ENOTEMPTY, Errno::EEXIST => error
+    RemoteResult::Failed.new(error)
   end
 
   def validate_staging_parent!
@@ -1098,14 +1099,14 @@ class OwnedMediaImportFileService
     with_pinned_child(directory, basename) do |child|
       return same_file_identity?(child.stat, expected_stat)
     end
-  rescue Error, SystemCallError
-    false
+  rescue Error, SystemCallError => error
+    RemoteResult::Failed.new(error)
   end
 
   def pinned_child_stat(directory, basename)
     with_pinned_child(directory, basename) { |child| child.stat }
-  rescue Errno::ENOENT
-    nil
+  rescue Errno::ENOENT => error
+    RemoteResult::Failed.new(error)
   end
 
   def native_linkat(source_directory_fd, source_basename, destination_directory_fd, destination_basename)
@@ -1123,8 +1124,8 @@ class OwnedMediaImportFileService
     with_audiobook_filesystem_syscall do
       FilesystemSyscalls.mkdirat(directory_fd, basename, mode)
     end
-  rescue Errno::EEXIST
-    nil
+  rescue Errno::EEXIST => error
+    RemoteResult::Failed.new(error)
   end
 
   def native_openat(directory_fd, basename, flags: File::RDONLY | File::NOFOLLOW)
@@ -1139,8 +1140,8 @@ class OwnedMediaImportFileService
     with_audiobook_filesystem_syscall do
       FilesystemSyscalls.unlinkat(directory_fd, basename)
     end
-  rescue Errno::ENOENT
-    nil
+  rescue Errno::ENOENT => error
+    RemoteResult::Failed.new(error)
   end
 
   def native_fchmod(descriptor, mode)
@@ -1186,8 +1187,8 @@ class OwnedMediaImportFileService
   def valid_regular_file?(path, expected_size:)
     validate_regular_file!(path, expected_size: expected_size)
     true
-  rescue Error
-    false
+  rescue Error => error
+    RemoteResult::Failed.new(error)
   end
 
   def validate_regular_file!(path, expected_size:)
@@ -1211,11 +1212,17 @@ class OwnedMediaImportFileService
     true
   end
 
+  def present_stat(stat)
+    return if RemoteResult.failed?(stat)
+
+    stat
+  end
+
   def path_exists_without_following?(path)
     File.lstat(path)
     true
-  rescue Errno::ENOENT
-    false
+  rescue Errno::ENOENT => error
+    RemoteResult::Failed.new(error)
   end
 
   def path_within?(path, root)

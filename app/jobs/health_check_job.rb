@@ -83,7 +83,7 @@ class HealthCheckJob < ApplicationJob
       return
     end
 
-    if IndexerClient.test_connection
+    if RemoteResult.succeeded?(IndexerClient.test_connection)
       health.check_succeeded!(message: "Connection successful")
     else
       health.check_failed!(message: "Failed to connect to #{IndexerClient.display_name}")
@@ -108,7 +108,8 @@ class HealthCheckJob < ApplicationJob
 
     results = clients.map do |client|
       begin
-        { client: client, success: client.test_connection, reason: nil }
+        connected = client.test_connection
+        { client: client, success: RemoteResult.succeeded?(connected), reason: nil }
       rescue => e
         Rails.logger.error "[HealthCheckJob] Download client #{client.name} check failed: #{ConnectionErrorClassifier.describe(e)}"
         { client: client, success: false, reason: ConnectionErrorClassifier.describe(e) }
@@ -164,7 +165,12 @@ class HealthCheckJob < ApplicationJob
         end
       end
 
-      issues.concat(qbittorrent_save_path_issues(client, local_path))
+      path_issues = qbittorrent_save_path_issues(client, local_path)
+      if RemoteResult.failed?(path_issues)
+        issues << "#{client.name}: save path could not be checked: #{path_issues.error.class}"
+      else
+        issues.concat(path_issues)
+      end
     end
 
     if issues.empty?
@@ -211,7 +217,7 @@ class HealthCheckJob < ApplicationJob
     warning.present? ? [ "#{client.name}: #{warning}" ] : []
   rescue StandardError => e
     Rails.logger.warn "[HealthCheckJob] Path diagnostics for #{client.name} failed: #{e.message}"
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def audiobookshelf_path_messages
@@ -226,7 +232,7 @@ class HealthCheckJob < ApplicationJob
     )
   rescue LibraryPlatformClient::Error => e
     Rails.logger.warn "[HealthCheckJob] Audiobookshelf path check failed: #{e.message}"
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def hard_download_path_failure?(issue)
@@ -319,7 +325,9 @@ class HealthCheckJob < ApplicationJob
 
     # Leave leftover-staging diagnostics intact; they already carry their own inspect failures.
     legacy_diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: path)
-    return { severity: :legacy, message: "#{name} #{legacy_diagnostic}" } if legacy_diagnostic
+    if legacy_diagnostic.is_a?(String)
+      return { severity: :legacy, message: "#{name} #{legacy_diagnostic}" }
+    end
 
     nil
   end
@@ -332,9 +340,14 @@ class HealthCheckJob < ApplicationJob
       return
     end
 
-    if LibraryPlatformClient.test_connection
+    if RemoteResult.succeeded?(LibraryPlatformClient.test_connection)
       messages = audiobookshelf_path_messages
-      if messages.any?
+      if RemoteResult.failed?(messages)
+        health.check_failed!(
+          message: "#{LibraryPlatformClient.display_name} paths could not be checked: #{messages.error.class}",
+          degraded: true
+        )
+      elsif messages.any?
         health.check_failed!(message: messages.join("; ").truncate(500), degraded: true)
       else
         health.check_succeeded!(message: "Connection successful")
@@ -359,7 +372,7 @@ class HealthCheckJob < ApplicationJob
       return
     end
 
-    if HardcoverClient.test_connection
+    if RemoteResult.succeeded?(HardcoverClient.test_connection)
       MetadataProviderStatus.for_provider("hardcover").record_success!
       health.check_succeeded!(message: "Connection successful")
     else

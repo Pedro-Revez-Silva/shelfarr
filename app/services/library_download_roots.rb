@@ -42,8 +42,8 @@ class LibraryDownloadRoots
     else
       canonicalize_roots(allowed_output_paths + allowed_download_paths).filter_map do |path|
         FileCopyService.snapshot_reference_root(path)
-      rescue FileCopyService::UnsafePathError
-        nil
+      rescue FileCopyService::UnsafePathError => error
+        RemoteResult::Failed.new(error)
       end
     end
   end
@@ -82,12 +82,12 @@ class LibraryDownloadRoots
       end
     end
     references
-  rescue Errno::ENOENT
+  rescue Errno::ENOENT => error
     # A manually removed copied file needs no reference provenance. When
     # client-backed history exists, keep it until its contents can be inspected.
     raise unless client_download_paths.empty?
 
-    []
+    RemoteResult::Failed.new(error)
   end
 
   def contained?(path, root)
@@ -122,8 +122,8 @@ class LibraryDownloadRoots
         device: root.device,
         inode: root.inode
       ).freeze
-    rescue SystemCallError, ArgumentError
-      nil
+    rescue SystemCallError, ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
   end
 
@@ -141,8 +141,8 @@ class LibraryDownloadRoots
       next unless candidate.lstat.directory?
 
       candidate
-    rescue SystemCallError, ArgumentError
-      nil
+    rescue SystemCallError, ArgumentError => error
+      RemoteResult::Failed.new(error)
     end.uniq
   end
 end

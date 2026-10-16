@@ -658,7 +658,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       stub_deluge_rpc("core.get_enabled_plugins", [])
       stub_deluge_rpc("core.get_available_plugins", [])
 
-      assert_not client.test_connection
+      assert RemoteResult.failed?(client.test_connection)
     end
   end
 

@@ -41,8 +41,8 @@ module IndexerClients
           conn.get(search_path, { apikey: key, t: "caps" })
         end
         response.status == 200
-      rescue IndexerClients::Base::Error
-        false
+      rescue IndexerClients::Base::Error => error
+        RemoteResult::Failed.new(error)
       end
 
       def display_name
@@ -169,8 +169,8 @@ module IndexerClients
         return nil if value.blank?
 
         Integer(value)
-      rescue ArgumentError, TypeError
-        nil
+      rescue ArgumentError, TypeError => error
+        RemoteResult::Failed.new(error)
       end
 
       def extract_download_url(enclosure_url)
@@ -189,8 +189,8 @@ module IndexerClients
         return nil if date_string.blank?
 
         Time.parse(date_string)
-      rescue ArgumentError
-        nil
+      rescue ArgumentError => error
+        RemoteResult::Failed.new(error)
       end
     end
   end

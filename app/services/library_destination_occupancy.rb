@@ -176,8 +176,8 @@ class LibraryDestinationOccupancy
           yield child
         end
       end
-    rescue Errno::ENOENT
-      nil
+    rescue Errno::ENOENT => error
+      RemoteResult::Failed.new(error)
     end
 
     def extension_for(path)

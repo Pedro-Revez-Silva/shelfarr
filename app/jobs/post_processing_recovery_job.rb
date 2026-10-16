@@ -85,17 +85,18 @@ class PostProcessingRecoveryJob < ApplicationJob
       source_snapshot,
       destination_snapshot: destination_snapshot
     )
-    unless removed
+    unless removed == true
       Rails.logger.warn(
         "[PostProcessingRecoveryJob] Source cleanup was no longer safe for download ##{download.id}; it was retained"
       )
-    end
-    if !removed && FileCopyService.source_file_quarantined?(source_snapshot)
-      Download.where(
-        id: download.id,
-        post_processing_cleanup_state: cleanup_state
-      ).update_all(updated_at: Time.current)
-      return
+      quarantined = FileCopyService.source_file_quarantined?(source_snapshot)
+      if RemoteResult.succeeded?(quarantined) || RemoteResult.failed?(removed) || RemoteResult.failed?(quarantined)
+        Download.where(
+          id: download.id,
+          post_processing_cleanup_state: cleanup_state
+        ).update_all(updated_at: Time.current)
+        return
+      end
     end
 
     Download.where(
@@ -143,8 +144,8 @@ class PostProcessingRecoveryJob < ApplicationJob
           "the durable owner will be retried"
       )
     end
-  rescue ActiveRecord::RecordNotFound
-    nil
+  rescue ActiveRecord::RecordNotFound => error
+    RemoteResult::Failed.new(error)
   rescue StandardError => error
     Rails.logger.error(
       "[PostProcessingRecoveryJob] Recovery failed for download ##{download.id}: #{error.class}"

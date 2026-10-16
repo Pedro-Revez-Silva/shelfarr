@@ -78,8 +78,8 @@ class BookOrbitClient
     def test_connection
       ensure_configured!
       libraries.any?
-    rescue Error
-      false
+    rescue Error => error
+      RemoteResult::Failed.new(error)
     end
 
     def reset_connection!

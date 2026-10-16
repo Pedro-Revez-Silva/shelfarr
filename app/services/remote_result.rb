@@ -38,4 +38,12 @@ module RemoteResult
   end
 
   Failed = Data.define(:error)
+
+  def self.failed?(result)
+    result.is_a?(Failed)
+  end
+
+  def self.succeeded?(result)
+    !failed?(result) && result
+  end
 end

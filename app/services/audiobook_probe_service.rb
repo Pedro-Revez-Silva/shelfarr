@@ -64,27 +64,27 @@ class AudiobookProbeService
         duration = audio_stream&.fetch("duration", nil).presence || data.dig("format", "duration")
         audio_stream.present? && duration.to_f.positive?
       end
-    rescue SystemCallError, ArgumentError, JSON::ParserError, TypeError
-      false
+    rescue SystemCallError, ArgumentError, JSON::ParserError, TypeError => error
+      RemoteResult::Failed.new(error)
     end
 
     def wait_for_probe(pid)
       Timeout.timeout(MAX_DURATION) { Process.wait2(pid).last }
-    rescue Timeout::Error
+    rescue Timeout::Error => error
       terminate_probe(pid)
-      nil
+      RemoteResult::Failed.new(error)
     end
 
     def terminate_probe(pid)
       Process.kill("TERM", -pid)
       Timeout.timeout(1.second) { Process.wait(pid) }
-    rescue Errno::ESRCH, Errno::ECHILD
-      nil
+    rescue Errno::ESRCH, Errno::ECHILD => error
+      RemoteResult::Failed.new(error)
     rescue Timeout::Error
       Process.kill("KILL", -pid)
       Process.wait(pid)
-    rescue Errno::ESRCH, Errno::ECHILD
-      nil
+    rescue Errno::ESRCH, Errno::ECHILD => error
+      RemoteResult::Failed.new(error)
     end
   end
 end

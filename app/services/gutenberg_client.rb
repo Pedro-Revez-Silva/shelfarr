@@ -61,8 +61,8 @@ class GutenbergClient
 
       search(title: "pride prejudice", language: "en", limit: 1)
       true
-    rescue Error
-      false
+    rescue Error => error
+      RemoteResult::Failed.new(error)
     end
 
     def reset_connection!

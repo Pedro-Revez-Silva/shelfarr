@@ -58,7 +58,7 @@ class RequestMetadataHandoff
       token if written
     rescue StandardError => e
       Rails.logger.warn("[RequestMetadataHandoff] Cache write failed: #{e.class}")
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def normalize(metadata)

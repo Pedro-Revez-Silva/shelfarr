@@ -36,7 +36,7 @@ class LibrivoxClient
       true
     rescue Error => e
       Rails.logger.error "[LibrivoxClient] Connection test failed: #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def search(title:, author: nil, language: nil, limit: nil)

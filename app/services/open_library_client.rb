@@ -145,7 +145,7 @@ class OpenLibraryClient
       true
     rescue Error => e
       Rails.logger.error "[OpenLibraryClient] Connection test failed: #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def reset_connection!

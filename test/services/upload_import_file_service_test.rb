@@ -82,7 +82,7 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
       UploadImportFileService.discard_ingress!(path)
     end
 
-    assert_not removed
+    assert RemoteResult.failed?(removed)
     assert_equal "replacement ingress", File.binread(path)
     assert_equal "original ingress", File.binread(held_original)
   ensure
@@ -369,7 +369,7 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
       UploadImportFileService.restore_and_clear!(@upload)
     end
 
-    assert_not restored
+    assert_not RemoteResult.succeeded?(restored)
     assert_equal "replacement library bytes", File.binread(destination)
     assert_equal "original ebook bytes", File.binread(held_original)
     assert_equal destination, @upload.reload.destination_path

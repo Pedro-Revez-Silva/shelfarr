@@ -154,19 +154,19 @@ class MetadataService
       results = {}
 
       if HardcoverClient.configured?
-        results[:hardcover] = HardcoverClient.test_connection rescue false
+        results[:hardcover] = HardcoverClient.test_connection rescue RemoteResult::Failed.new($!)
       end
 
       if GoogleBooksClient.configured?
-        results[:google_books] = GoogleBooksClient.test_connection rescue false
+        results[:google_books] = GoogleBooksClient.test_connection rescue RemoteResult::Failed.new($!)
       end
 
       if OpenLibraryClient.configured?
-        results[:openlibrary] = OpenLibraryClient.test_connection rescue false
+        results[:openlibrary] = OpenLibraryClient.test_connection rescue RemoteResult::Failed.new($!)
       end
 
       if ComicVineClient.configured?
-        results[:comic_vine] = ComicVineClient.test_connection rescue false
+        results[:comic_vine] = ComicVineClient.test_connection rescue RemoteResult::Failed.new($!)
       end
 
       results

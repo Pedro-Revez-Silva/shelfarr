@@ -79,7 +79,7 @@ module DownloadClients
       true
     rescue Base::Error, Base::AuthenticationError, Faraday::Error => e
       Rails.logger.warn "[Deluge] Connection test failed: #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def remove_torrent(hash, delete_files: false)
@@ -393,7 +393,7 @@ module DownloadClients
       else
         resolve_torrent_source(url)
       end
-      if source.blank?
+      if RemoteResult.failed?(source) || source.blank?
         raise Base::Error, "Could not safely fetch torrent source" if validate_source_url
 
         return { url: url }
@@ -403,7 +403,7 @@ module DownloadClients
       return { url: resolved_url } if resolved_url.start_with?("magnet:")
 
       torrent_data = source[:torrent_data]
-      unless valid_torrent_data?(torrent_data)
+      unless valid_torrent_data?(torrent_data) == true
         raise Base::Error, "Torrent source did not return a valid torrent file" if validate_source_url
 
         return { url: resolved_url }
@@ -437,7 +437,7 @@ module DownloadClients
 
     def resolve_torrent_source(raw_url)
       normalized_url = normalized_torrent_url(raw_url)
-      return nil unless normalized_url
+      return nil if RemoteResult.failed?(normalized_url) || normalized_url.blank?
 
       current_url = normalized_url
       max_redirects = 10
@@ -450,7 +450,7 @@ module DownloadClients
         location = response.headers["location"]
         if response.status.between?(300, 399) && location.present?
           redirected_url = absolutize_redirect_url(current_url, location)
-          return { url: current_url } if redirected_url.blank?
+          return { url: current_url } if RemoteResult.failed?(redirected_url) || redirected_url.blank?
           return { url: redirected_url } if redirected_url.start_with?("magnet:")
 
           current_url = redirected_url
@@ -468,10 +468,10 @@ module DownloadClients
       { url: current_url }
     rescue URI::InvalidURIError => e
       Rails.logger.warn "[Deluge] Invalid torrent URL: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     rescue Faraday::Error => e
       Rails.logger.warn "[Deluge] Failed to download torrent file for direct upload: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def valid_torrent_data?(torrent_data)
@@ -479,8 +479,8 @@ module DownloadClients
 
       parsed = BEncode.load(torrent_data.dup)
       parsed.is_a?(Hash) && parsed["info"].is_a?(Hash)
-    rescue BEncode::DecodeError
-      false
+    rescue BEncode::DecodeError => error
+      RemoteResult::Failed.new(error)
     end
 
     def normalized_torrent_url(raw_url)
@@ -490,7 +490,7 @@ module DownloadClients
       uri.to_s
     rescue URI::InvalidURIError => e
       Rails.logger.warn "[Deluge] Invalid torrent URL: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def torrent_download_connection
@@ -511,8 +511,8 @@ module DownloadClients
       return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
 
       resolved
-    rescue URI::InvalidURIError
-      nil
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
     end
 
     def extract_magnet_from_body(body)

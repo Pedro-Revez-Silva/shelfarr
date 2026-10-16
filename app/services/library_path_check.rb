@@ -41,13 +41,13 @@ class LibraryPathCheck
     # existing in-container save path is not a mount mismatch.
     def aligned?(mapped, local_path, save_path, category_save_path, category, remote_path)
       # Without a remote path, import looks for downloads in local_path/category.
-      return true if remote_path.blank? && category.present? && directory_exists?(File.join(local_path.to_s, category.to_s))
+      return true if remote_path.blank? && category.present? && directory_exists?(File.join(local_path.to_s, category.to_s)) == true
       return false unless inside?(mapped, local_path)
-      return true if directory_exists?(mapped)
+      return true if directory_exists?(mapped) == true
       return false if category_save_path.present? || category.blank? || save_path.blank?
 
       parent = remap(save_path, remote_path, local_path) || normalize_path(save_path)
-      inside?(parent, local_path) && directory_exists?(parent)
+      inside?(parent, local_path) && directory_exists?(parent) == true
     end
 
     def folder_message(libraries, library_id, output_path)
@@ -92,8 +92,8 @@ class LibraryPathCheck
 
     def directory_exists?(path)
       Dir.exist?(path.to_s)
-    rescue SystemCallError
-      false
+    rescue SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
   end
 end

@@ -49,7 +49,7 @@ class SearchResultSnapshot
       end
     rescue StandardError => e
       Rails.logger.warn("[SearchResultSnapshot] Cache write failed: #{e.class}")
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def write(user:, id:, query:, content_kind:, results:, complete:, failed_providers:, provider_count:)
@@ -72,7 +72,7 @@ class SearchResultSnapshot
       end
     rescue StandardError => e
       Rails.logger.warn("[SearchResultSnapshot] Cache update failed: #{e.class}")
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def fetch(user:, id:, query:, content_kind:)
@@ -86,7 +86,7 @@ class SearchResultSnapshot
       snapshot_from(payload)
     rescue StandardError => e
       Rails.logger.warn("[SearchResultSnapshot] Cache read failed: #{e.class}")
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def normalize_page(value)
@@ -157,8 +157,8 @@ class SearchResultSnapshot
       value = serialize_result(result)
       JSON.generate(value)
       value
-    rescue StandardError
-      nil
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def payload_matches?(payload, binding, token)
@@ -270,8 +270,8 @@ class SearchResultSnapshot
         issue_number: result["issue_number"],
         release_date: result["release_date"]
       )
-    rescue KeyError, TypeError, ArgumentError
-      nil
+    rescue KeyError, TypeError, ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
 
     def serialize_source(value)
@@ -283,8 +283,8 @@ class SearchResultSnapshot
         source_url: bounded_url(source[:source_url]),
         work_id: bounded_identity(source[:work_id])
       }.compact
-    rescue StandardError
-      nil
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def serialize_edition(value)
@@ -295,8 +295,8 @@ class SearchResultSnapshot
       edition.transform_values { |item| scalar(item, maximum: MAX_IDENTITY_BYTES) }
         .merge(publisher: bounded_text(edition[:publisher]))
         .compact
-    rescue StandardError
-      nil
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def bounded_list(values, limit: MAX_LIST_VALUES)

@@ -121,7 +121,7 @@ module Hardcover
         true
       rescue Error, Faraday::Error => e
         Rails.logger.warn("[Hardcover::Oauth] Token revocation failed: #{e.class}")
-        false
+        RemoteResult::Failed.new(e)
       end
 
       # Refresh tokens rotate and Hardcover revokes the whole chain if one is
@@ -183,8 +183,8 @@ module Hardcover
 
       def reset_discovery!
         Rails.cache.delete(DISCOVERY_CACHE_KEY)
-      rescue StandardError
-        nil
+      rescue StandardError => error
+        RemoteResult::Failed.new(error)
       end
 
       private
@@ -228,8 +228,8 @@ module Hardcover
         end
         path = uri.path.to_s
         "#{origin}#{path}" if origin && path.match?(ENDPOINT_PATH)
-      rescue URI::InvalidURIError
-        nil
+      rescue URI::InvalidURIError => error
+        RemoteResult::Failed.new(error)
       end
 
       def token_request(**fields)
@@ -309,8 +309,8 @@ module Hardcover
         return unless uri.is_a?(URI::HTTPS) && uri.port == URI::HTTPS::DEFAULT_PORT && uri.userinfo.nil?
 
         value.to_s if ALLOWED_HOSTS.include?(uri.host.to_s.downcase)
-      rescue URI::InvalidURIError
-        nil
+      rescue URI::InvalidURIError => error
+        RemoteResult::Failed.new(error)
       end
 
       def with_refresh_lock(connection)

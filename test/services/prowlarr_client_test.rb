@@ -209,22 +209,17 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "search falls back to a free-text book query when indexer capabilities are unavailable" do
+  test "search does not widen to every indexer when the indexer list is unavailable" do
     VCR.turned_off do
       stub_request(:get, %r{localhost:9696/api/v1/indexer}).to_return(status: 500, body: "")
 
       search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
-        .with do |req|
-          query = req.uri.query_values
 
-          query["type"] == "book" &&
-            query["query"] == "Inferno Dan Brown" &&
-            query["indexerIds"].nil?
-        end
-        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
-
-      assert_equal [], ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
-      assert_requested search_stub
+      error = assert_raises(IndexerClients::Base::Error) do
+        ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+      end
+      assert_match(/500/, error.message)
+      assert_not_requested search_stub
     end
   end
 

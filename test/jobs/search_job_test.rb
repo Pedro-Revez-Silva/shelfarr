@@ -268,14 +268,14 @@ class SearchJobTest < ActiveJob::TestCase
     generation = job.send(:claim_search!, @request)
     @request.destroy!
 
-    assert_not job.send(
+    assert RemoteResult.failed?(job.send(
       :complete_search,
       @request,
       generation,
       results: [],
       store_offers: [],
       indexer_error: nil
-    )
+    ))
   end
 
   test "does not schedule a retry when a manual NZB is submitted during an empty search" do
