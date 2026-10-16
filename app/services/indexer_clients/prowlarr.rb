@@ -101,10 +101,10 @@ module IndexerClients
         SettingsService.prowlarr_configured?
       end
 
-      def test_connection
-        ensure_configured!
-
-        response = request(idempotent: true) { connection.get("api/v1/indexer") }
+      def test_connection(url: nil, api_key: nil)
+        response = request(idempotent: true) do
+          probe_connection(url, api_key).get("api/v1/indexer")
+        end
         handle_response(response) { true }
       rescue IndexerClients::Base::Error => e
         ConnectionErrorClassifier.reraise!(
@@ -162,6 +162,31 @@ module IndexerClients
           f.response :json, parser_options: { symbolize_names: false }
           f.adapter Faraday.default_adapter
           f.headers["X-Api-Key"] = api_key
+          f.options.timeout = 30
+          f.options.open_timeout = 10
+        end
+      end
+
+      # A probe must not replace the memoized client searches keep using.
+      def probe_connection(url, api_key_override)
+        if url.nil? && api_key_override.nil?
+          ensure_configured!
+          return connection
+        end
+
+        key = api_key_override.nil? ? api_key : api_key_override
+        raise Base::NotConfiguredError, "#{display_name} is not configured" if url.blank? || key.blank?
+
+        open_connection(normalize_base_url(url), key)
+      end
+
+      def open_connection(normalized_url, key)
+        Faraday.new(url: normalized_url) do |f|
+          f.options.params_encoder = Faraday::FlatParamsEncoder
+          f.request :url_encoded
+          f.response :json, parser_options: { symbolize_names: false }
+          f.adapter Faraday.default_adapter
+          f.headers["X-Api-Key"] = key
           f.options.timeout = 30
           f.options.open_timeout = 10
         end

@@ -30,6 +30,21 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "test action explains a loopback address when the connection is refused" do
+    client = create_download_client
+
+    VCR.turned_off do
+      stub_request(:post, "#{client.url}/api/v2/auth/login")
+        .to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+      post test_admin_download_client_url(client)
+
+      assert_redirected_to admin_download_clients_path
+      assert_match "Connection refused", flash[:alert]
+      assert_match ConnectionErrorClassifier::LOCALHOST_HINT, flash[:alert]
+    end
+  end
+
   test "test action updates system health to healthy when connection succeeds" do
     client = create_download_client
 

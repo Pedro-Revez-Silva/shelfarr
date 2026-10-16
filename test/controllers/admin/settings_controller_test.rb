@@ -95,6 +95,18 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "select[name='settings[metadata_source]'] option[value='comic_vine']", text: "Comic Vine"
   end
 
+  test "index posts connection tests with the current form" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "button[formaction='#{test_indexer_admin_settings_path}'][formmethod='post'][data-connection-probe='true']", text: "Test Indexer Connection"
+    assert_select "button[formaction='#{test_audiobookshelf_admin_settings_path}'][formmethod='post'][data-connection-probe='true']", text: "Test Library Platform Connection"
+    assert_match "http://prowlarr:9696", response.body
+    assert_match "http://audiobookshelf:13378", response.body
+    assert_no_match "http://localhost:9696", response.body
+    assert_no_match "http://localhost:13378", response.body
+  end
+
   test "index shows beta eBooks.com store settings" do
     get admin_settings_url
 
@@ -1223,6 +1235,145 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "test_indexer probes posted prowlarr fields without saving them" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://saved.example:9696")
+    SettingsService.set(:prowlarr_api_key, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "typed-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      post test_indexer_admin_settings_url, params: {
+        settings: {
+          indexer_provider: "prowlarr",
+          prowlarr_url: "http://prowlarr.example:9696",
+          prowlarr_api_key: "typed-key"
+        }
+      }
+
+      assert_redirected_to admin_settings_path
+      assert_match(/successful/i, flash[:notice])
+      assert_equal "http://saved.example:9696", SettingsService.get(:prowlarr_url)
+      assert_equal "saved-key", SettingsService.get(:prowlarr_api_key)
+      assert_not_requested :get, %r{saved\.example}
+    end
+  end
+
+  test "test_indexer keeps the saved api key when the posted secret is blank" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://saved.example:9696")
+    SettingsService.set(:prowlarr_api_key, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "saved-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      post test_indexer_admin_settings_url, params: {
+        settings: {
+          indexer_provider: "prowlarr",
+          prowlarr_url: "http://prowlarr.example:9696",
+          prowlarr_api_key: ""
+        }
+      }
+
+      assert_redirected_to admin_settings_path
+      assert_match(/successful/i, flash[:notice])
+      assert_equal "saved-key", SettingsService.get(:prowlarr_api_key)
+    end
+  end
+
+  test "test_indexer explains a loopback address when the connection is refused" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://saved.example:9696")
+    SettingsService.set(:prowlarr_api_key, "saved-key")
+
+    VCR.turned_off do
+      %w[http://localhost:9696 http://127.0.0.1:9696 http://[::1]:9696].each do |url|
+        stub_request(:get, "#{url}/api/v1/indexer").to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+        post test_indexer_admin_settings_url, params: {
+          settings: {
+            indexer_provider: "prowlarr",
+            prowlarr_url: url,
+            prowlarr_api_key: "typed-key"
+          }
+        }
+
+        assert_redirected_to admin_settings_path
+        assert_match "Connection refused", flash[:alert]
+        assert_match ConnectionErrorClassifier::LOCALHOST_HINT, flash[:alert]
+        assert_equal "http://saved.example:9696", SettingsService.get(:prowlarr_url)
+      end
+    end
+  end
+
+  test "test_indexer does not add the loopback hint for a remote timeout or a localhost rejection" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://saved.example:9696")
+    SettingsService.set(:prowlarr_api_key, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://prowlarr.example:9696/api/v1/indexer").to_timeout
+
+      post test_indexer_admin_settings_url, params: {
+        settings: {
+          indexer_provider: "prowlarr",
+          prowlarr_url: "http://prowlarr.example:9696",
+          prowlarr_api_key: "typed-key"
+        }
+      }
+
+      assert_match "Connection timed out", flash[:alert]
+      assert_no_match ConnectionErrorClassifier::LOCALHOST_HINT, flash[:alert]
+
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_return(status: 401)
+
+      post test_indexer_admin_settings_url, params: {
+        settings: {
+          indexer_provider: "prowlarr",
+          prowlarr_url: "http://localhost:9696",
+          prowlarr_api_key: "typed-key"
+        }
+      }
+
+      assert_match "Unauthorized", flash[:alert]
+      assert_no_match ConnectionErrorClassifier::LOCALHOST_HINT, flash[:alert]
+    end
+  end
+
+  test "test_audiobookshelf probes posted fields without saving them" do
+    SettingsService.set(:library_platform, "audiobookshelf")
+    SettingsService.set(:audiobookshelf_url, "http://saved.example:13378")
+    SettingsService.set(:audiobookshelf_api_key, "saved-token")
+
+    VCR.turned_off do
+      stub_request(:get, "http://audiobookshelf.example:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer typed-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "libraries" => [ { "id" => "lib-1", "name" => "Books", "folders" => [] } ] }.to_json
+        )
+
+      post test_audiobookshelf_admin_settings_url, params: {
+        settings: {
+          library_platform: "audiobookshelf",
+          audiobookshelf_url: "http://audiobookshelf.example:13378",
+          audiobookshelf_api_key: "typed-token"
+        }
+      }
+
+      assert_redirected_to admin_settings_path
+      assert_match(/successful/i, flash[:notice])
+      assert_equal "http://saved.example:13378", SettingsService.get(:audiobookshelf_url)
+      assert_equal "saved-token", SettingsService.get(:audiobookshelf_api_key)
+      assert_not_requested :get, %r{saved\.example}
+    end
+  end
+
   test "test_prowlarr names a timeout" do
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "test-api-key")
@@ -1810,7 +1961,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
 
-    LibraryPlatformClient.stub(:test_connection, -> { raise LibraryPlatformClient::Error, "abs boom" }) do
+    ConnectionProbe.stub(:audiobookshelf, ->(**) { raise AudiobookshelfClient::Error, "abs boom" }) do
       post test_audiobookshelf_admin_settings_url
     end
 

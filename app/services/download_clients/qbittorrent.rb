@@ -109,7 +109,6 @@ module DownloadClients
 
       if response.status == 200
         Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
-        ensure_category_exists!
         return true
       end
 

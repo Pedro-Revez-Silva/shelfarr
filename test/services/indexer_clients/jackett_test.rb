@@ -101,6 +101,20 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection uses a supplied url and api key without saving them" do
+    VCR.turned_off do
+      stub = stub_request(:get, %r{http://jackett\.example:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "fresh-key", "t" => "caps"))
+        .to_return(status: 200, body: "<caps />", headers: { "Content-Type" => "application/xml" })
+
+      assert IndexerClients::Jackett.test_connection(url: "http://jackett.example:9117", api_key: "fresh-key")
+      assert_requested stub
+      assert_not_requested :get, %r{localhost:9117}
+      assert_equal "http://localhost:9117", SettingsService.get(:jackett_url)
+      assert_equal "jackett-api-key", SettingsService.get(:jackett_api_key)
+    end
+  end
+
   test "test_connection returns true when caps request succeeds" do
     VCR.turned_off do
       stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})

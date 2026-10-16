@@ -68,7 +68,7 @@
       <p class="text-sm text-gray-500">Verify the active library platform is reachable</p>
     </div>
     <div class="md:w-2/3">
-      <%= link_to "Test Library Platform Connection", test_audiobookshelf_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+      <%= button_tag "Test Library Platform Connection", type: "submit", formaction: test_audiobookshelf_admin_settings_path, formmethod: "post", formnovalidate: true, name: "_method", value: "post", data: { connection_probe: true, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
     </div>
   </div>
 <% elsif category == "hardcover" %>

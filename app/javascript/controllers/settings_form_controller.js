@@ -183,6 +183,7 @@ export default class extends Controller {
 
   handleSubmit(event) {
     if (event.submitter === this.autosaveSubmitTarget) return;
+    if (event.submitter?.dataset?.connectionProbe === "true") return;
 
     const saveAll = event.submitter?.name === "commit";
     if (!saveAll && this.manualChangesPending) {

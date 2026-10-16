@@ -77,7 +77,7 @@ module Admin
     rescue StandardError => e
       run_download_client_health_check
       redirect_to admin_download_clients_path,
-        alert: "Connection to '#{@download_client.name}' failed: #{ConnectionErrorClassifier.describe(e)}"
+        alert: "Connection to '#{@download_client.name}' failed: #{ConnectionErrorClassifier.with_localhost_hint(ConnectionErrorClassifier.describe(e), @download_client.url)}"
     end
 
     def move_up

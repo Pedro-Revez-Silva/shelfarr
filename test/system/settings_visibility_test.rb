@@ -309,6 +309,23 @@ class SettingsVisibilityTest < ApplicationSystemTestCase
     assert_no_match "retry-prowlarr-key", page.html
   end
 
+  test "testing the indexer uses the unsaved url and does not save it" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://saved.example:9696")
+    SettingsService.set(:prowlarr_api_key, "saved-key")
+    stub_request(:get, "http://prowlarr.example:9696/api/v1/indexer")
+      .with(headers: { "X-Api-Key" => "saved-key" })
+      .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+    open_settings
+
+    fill_in "Prowlarr Url", with: "http://prowlarr.example:9696"
+    click_on "Test Indexer Connection"
+
+    assert_text "Prowlarr connection successful!"
+    assert_equal "http://saved.example:9696", SettingsService.get(:prowlarr_url)
+    assert_equal "saved-key", SettingsService.get(:prowlarr_api_key)
+  end
+
   test "pasting a prowlarr api key saves it, masks the field, and the connection check uses it" do
     SettingsService.set(:indexer_provider, "prowlarr")
     SettingsService.set(:prowlarr_url, "http://prowlarr-save.example.test")
