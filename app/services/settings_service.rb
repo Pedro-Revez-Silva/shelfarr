@@ -15,7 +15,7 @@ class SettingsService
       audiobookshelf_ebook_scan_library_ids audiobookshelf_comicbook_scan_library_ids
     ],
     anna_archive: %w[anna_archive_enabled anna_archive_url anna_archive_api_key],
-    zlibrary: %w[zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password],
+    zlibrary: %w[zlibrary_enabled zlibrary_url zlibrary_email zlibrary_password zlibrary_remix_userid zlibrary_remix_userkey],
     hardcover: %w[
       hardcover_enabled hardcover_api_token hardcover_oauth_client_id hardcover_oauth_client_secret
       hardcover_oauth_redirect_uri hardcover_oauth_device_flow_enabled hardcover_allow_personal_access
@@ -37,7 +37,18 @@ class SettingsService
   }.freeze
   MANUAL_SAVE_SETTING_KEYS = MANUAL_SAVE_SETTING_GROUPS.values.flatten.uniq.freeze
   DEFAULT_ANNA_ARCHIVE_URL = "https://annas-archive.gl"
-  DEFAULT_ZLIBRARY_URLS = "https://z-library.sk\nhttps://z-library.bz\nhttps://z-library.rs"
+  PREFERRED_EAPI_HOSTS = %w[
+    z-lib.gd
+    z-lib.gl
+    z-library.ec
+    zlib.bz
+    article.sk
+    articles.sk
+  ].freeze
+  LEGACY_ZLIBRARY_URLS = %w[https://z-library.sk https://z-library.bz https://z-library.rs].freeze
+  DEFAULT_ZLIBRARY_URLS = (
+    PREFERRED_EAPI_HOSTS.map { |host| "https://#{host}" } + LEGACY_ZLIBRARY_URLS
+  ).join("\n")
   ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
@@ -83,6 +94,7 @@ class SettingsService
     }
   }.freeze
 
+  # Define all expected settings with their defaults and types
   DEFINITIONS = {
     # Indexer Integration
     indexer_provider: { type: "string", default: "", category: "indexer", description: "Active indexer provider. Leave unset on upgrades to keep legacy Prowlarr configuration." },
@@ -90,7 +102,7 @@ class SettingsService
     indexer_custom_audiobook_categories: { type: "string", default: "", category: "indexer", description: "Audiobook category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
     indexer_custom_ebook_categories: { type: "string", default: "", category: "indexer", description: "Ebook category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
     indexer_custom_comicbook_categories: { type: "string", default: "", category: "indexer", description: "Comics & Manga category IDs separated by commas, spaces, or new lines. Used when search scope is Custom. Leave blank to use Shelfarr defaults." },
-    prowlarr_url: { type: "string", default: "", category: "indexer", description: "Base URL for Prowlarr instance (e.g., http://localhost:9696)" },
+    prowlarr_url: { type: "string", default: "", category: "indexer", description: "Base URL for the Prowlarr service. Use the Docker service name or a LAN IP (for example, http://prowlarr:9696)." },
     prowlarr_api_key: { type: "string", default: "", category: "indexer", description: "API key from Prowlarr Settings > General" },
     prowlarr_tags: { type: "string", default: "", category: "indexer", description: "Comma-separated tag IDs or names to filter Prowlarr indexers (leave empty for all indexers)" },
     jackett_url: { type: "string", default: "", category: "indexer", description: "Base URL for Jackett instance (e.g., http://localhost:9117)" },
@@ -99,6 +111,7 @@ class SettingsService
     newznab_url: { type: "string", default: "", category: "indexer", description: "Newznab-compatible API URL for NZBHydra2 or another Newznab provider (e.g., http://localhost:5076)" },
     newznab_api_key: { type: "string", default: "", category: "indexer", description: "API key from NZBHydra2 or your Newznab provider" },
 
+    # Download Settings (clients are now managed separately via Admin > Download Clients)
     preferred_download_types: { type: "json", default: '["torrent","usenet","direct"]', category: "download", description: "Download types in preference order. Higher-ranked types are preferred when multiple result types are available." },
     download_check_interval: { type: "integer", default: 60, category: "download", description: "Seconds between download status checks" },
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
@@ -110,7 +123,7 @@ class SettingsService
 
     # Library Platform Integration
     library_platform: { type: "string", default: "audiobookshelf", category: "audiobookshelf", description: "Library platform to sync and scan: audiobookshelf, bookorbit, or grimmory" },
-    audiobookshelf_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for Audiobookshelf (e.g., http://localhost:13378)" },
+    audiobookshelf_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for Audiobookshelf. Use the Docker service name or a LAN IP (for example, http://audiobookshelf:13378)." },
     audiobookshelf_api_key: { type: "string", default: "", category: "audiobookshelf", description: "API token from Audiobookshelf user settings" },
     bookorbit_url: { type: "string", default: "", category: "audiobookshelf", description: "Base URL for BookOrbit (e.g., http://localhost:3000)" },
     bookorbit_username: { type: "string", default: "", category: "audiobookshelf", description: "BookOrbit username with library access and scan permissions" },
@@ -126,6 +139,7 @@ class SettingsService
     audiobookshelf_comicbook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for Comics & Manga duplicate detection (comma-separated). Delivery still goes to the Comics & Manga Library above." },
     audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
 
+    # Output Paths
     audiobook_output_path: { type: "string", default: "/audiobooks", category: "paths", description: "Directory for completed audiobooks" },
     ebook_output_path: { type: "string", default: "/ebooks", category: "paths", description: "Directory for completed ebooks" },
     comicbook_output_path: { type: "string", default: "/comics", category: "paths", description: "Directory for completed Comics & Manga" },
@@ -145,12 +159,15 @@ class SettingsService
       description: "Allow directory imports and source cleanup on NFS filesystems that reject atomic no-replace renames. Enable only when Shelfarr is the sole writer: a concurrently created empty destination or quarantine name could otherwise be replaced."
     },
 
-    immediate_search_enabled: { type: "boolean", default: false, category: "queue", description: "Start searching immediately when a request is created (instead of waiting for queue cycle)" },
+    # Queue Settings
+    setup_wizard_completed: { type: "boolean", default: false, category: "setup", description: "The first-run setup wizard has been finished or skipped" },
+    immediate_search_enabled: { type: "boolean", default: true, category: "queue", description: "Start searching immediately when a request is created (instead of waiting for queue cycle)" },
     auto_approve_requests: { type: "boolean", default: false, category: "queue", description: "Automatically enqueue search immediately for requests created by non-admin users" },
     queue_batch_size: { type: "integer", default: 5, category: "queue", description: "Number of requests to process per queue run" },
     rate_limit_delay: { type: "integer", default: 2, category: "queue", description: "Seconds between API calls" },
     max_retries: { type: "integer", default: 10, category: "queue", description: "Maximum retry attempts before flagging for attention" },
 
+    # Retry Settings
     retry_base_delay_hours: { type: "integer", default: 24, category: "queue", description: "Base delay in hours before retrying not_found requests" },
     retry_max_delay_days: { type: "integer", default: 7, category: "queue", description: "Maximum delay in days between retries" },
 
@@ -171,6 +188,7 @@ class SettingsService
     # Health Monitoring
     health_check_interval: { type: "integer", default: 300, category: "health", description: "Seconds between system health checks (minimum: 60; default: 300)" },
 
+    # Auto-Selection
     auto_select_enabled: { type: "boolean", default: false, category: "auto_select", description: "Automatically select the best search result without admin intervention" },
     auto_select_min_seeders: { type: "integer", default: 1, category: "auto_select", description: "Minimum seeders required for auto-selection (torrent only)" },
     auto_select_confidence_threshold: { type: "integer", default: 90, category: "auto_select", description: "Minimum confidence score (0-100) for auto-selection" },
@@ -190,6 +208,7 @@ class SettingsService
     enabled_languages: { type: "json", default: '["en"]', category: "language", description: "Languages available for selection when creating requests" },
     min_match_confidence: { type: "integer", default: 50, category: "language", description: "Minimum confidence score (0-100) for keeping results from category-less indexer searches. When nothing clears it, the best few low-confidence results are kept for manual review instead of returning an empty search." },
 
+    # Updates
     github_repo: { type: "string", default: "Pedro-Revez-Silva/shelfarr", category: "updates", description: "GitHub repository for update notifications" },
 
     # Security
@@ -208,9 +227,11 @@ class SettingsService
 
     # Z-Library
     zlibrary_enabled: { type: "boolean", default: false, category: "zlibrary", description: "Enable Z-Library as an additional ebook search and direct download source. This unofficial integration may break if the service changes." },
-    zlibrary_url: { type: "string", default: DEFAULT_ZLIBRARY_URLS, category: "zlibrary", description: "Z-Library base URLs to try. Shelfarr uses the first URL that accepts your login." },
+    zlibrary_url: { type: "string", default: DEFAULT_ZLIBRARY_URLS, category: "zlibrary", description: "Z-Library base URLs to try. Shelfarr probes each one and uses the first domain that serves the eAPI. Add or remove domains to match the mirrors that work for you." },
     zlibrary_email: { type: "string", default: "", category: "zlibrary", description: "Z-Library account email used for login" },
     zlibrary_password: { type: "string", default: "", category: "zlibrary", description: "Z-Library account password used for login" },
+    zlibrary_remix_userid: { type: "string", default: "", category: "zlibrary", description: "Optional saved session: the remix_userid cookie from a browser signed in to Z-Library. Used only when Email or Password is blank, so clear Email to switch from password login." },
+    zlibrary_remix_userkey: { type: "string", default: "", category: "zlibrary", description: "The remix_userkey cookie from the same browser session. Set it with the user ID to use the saved session." },
 
     # LibriVox
     librivox_enabled: { type: "boolean", default: false, category: "librivox", description: "Enable LibriVox as a free public-domain audiobook source" },
@@ -300,10 +321,12 @@ class SettingsService
     "webhook" => "Webhook Notifications",
     "discord" => "Discord Notifications",
     "telegram" => "Telegram Bot",
-    "oidc" => "OIDC/SSO Authentication"
+    "oidc" => "OIDC/SSO Authentication",
+    "setup" => "Setup"
   }.freeze
 
   LABELS = {
+    setup_wizard_completed: "Setup Wizard Completed",
     prowlarr_url: "Prowlarr URL",
     jackett_url: "Jackett URL",
     newznab_url: "Newznab URL",
@@ -328,6 +351,8 @@ class SettingsService
     audiobookshelf_ebook_scan_library_ids: "Additional Ebook Libraries to Scan",
     audiobookshelf_comicbook_scan_library_ids: "Additional Comics & Manga Libraries to Scan",
     audiobookshelf_library_sync_interval: "Library Sync Interval",
+    zlibrary_remix_userid: "Z-Library User ID",
+    zlibrary_remix_userkey: "Z-Library User Key",
     hardcover_oauth_client_id: "Hardcover OAuth Client ID",
     hardcover_oauth_client_secret: "Hardcover OAuth Client Secret",
     hardcover_oauth_redirect_uri: "Hardcover OAuth Redirect URI",
@@ -389,13 +414,14 @@ class SettingsService
 
     def secret_setting_key?(key)
       key = key.to_s
-      key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret")
+      key == "discord_webhook_url" || key.include?("password") || key.include?("api_key") || key.include?("token") || key.include?("secret") || key.include?("userkey")
     end
 
     def manual_save_setting_key?(key)
       secret_setting_key?(key) || MANUAL_SAVE_SETTING_KEYS.include?(key.to_s)
     end
 
+    # Primary getter with default fallback
     def get(key, default: nil)
       key = key.to_sym
       return env_override_value(key) if env_managed?(key)
@@ -413,6 +439,7 @@ class SettingsService
       definition ? definition[:default] : default
     end
 
+    # Primary setter
     def set(key, value)
       key = key.to_sym
       definition = DEFINITIONS[key]
@@ -453,12 +480,14 @@ class SettingsService
       end
     end
 
+    # Bulk getter for a category
     def for_category(category)
       DEFINITIONS.select { |_, v| v[:category] == category }.keys.each_with_object({}) do |key, hash|
         hash[key] = get(key)
       end
     end
 
+    # Check if a setting is configured (non-empty for strings)
     def configured?(key)
       value = get(key)
       return false if value.nil?
@@ -466,6 +495,7 @@ class SettingsService
       true
     end
 
+    # Get all settings organized by category
     def all_by_category
       DEFINITIONS.keys.group_by { |key| DEFINITIONS[key][:category] }.transform_values do |keys|
         keys.each_with_object({}) do |key, hash|
@@ -494,6 +524,7 @@ class SettingsService
       end
     end
 
+    # Check if integrations are configured
     def prowlarr_configured?
       configured?(:prowlarr_url) && configured?(:prowlarr_api_key)
     end
@@ -613,10 +644,11 @@ class SettingsService
     end
 
     def zlibrary_configured?
-      get(:zlibrary_enabled, default: false) &&
-        configured?(:zlibrary_url) &&
-        configured?(:zlibrary_email) &&
-        configured?(:zlibrary_password)
+      return false unless get(:zlibrary_enabled, default: false) && configured?(:zlibrary_url)
+
+      password_login = configured?(:zlibrary_email) && configured?(:zlibrary_password)
+      saved_session = configured?(:zlibrary_remix_userid) && configured?(:zlibrary_remix_userkey)
+      password_login || saved_session
     end
 
     def librivox_configured?

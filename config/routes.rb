@@ -115,6 +115,10 @@ Rails.application.routes.draw do
         post :match_and_retry
       end
     end
+    resource :setup_wizard, only: [ :show, :update ], controller: "setup_wizard" do
+      post :skip
+      post :restart
+    end
     resources :download_clients do
       member do
         post :test

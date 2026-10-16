@@ -48,4 +48,16 @@ class UrlRedactorTest < ActiveSupport::TestCase
     assert_equal "[FILTERED]", filtered[:account]
     assert_equal "[FILTERED]", filtered[:session_id]
   end
+
+  test "Rails parameter filtering hides saved Z-Library session keys" do
+    filter = ActiveSupport::ParameterFilter.new(Rails.application.config.filter_parameters)
+    filtered = filter.filter(
+      "settings" => { "zlibrary_remix_userkey" => "dummy-saved-session", "zlibrary_remix_userid" => "12345" },
+      "remix_userkey" => "dummy-session-cookie"
+    )
+
+    assert_equal "[FILTERED]", filtered.dig("settings", "zlibrary_remix_userkey")
+    assert_equal "[FILTERED]", filtered["remix_userkey"]
+    assert_equal "12345", filtered.dig("settings", "zlibrary_remix_userid")
+  end
 end

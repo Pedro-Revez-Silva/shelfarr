@@ -68,6 +68,36 @@ class IndexerClients::NewznabTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_all_connections!.
+  test "search uses the corrected Newznab URL without resetting the connection" do
+    SettingsService.set(:newznab_url, "http://old-newznab.example:5076")
+    SettingsService.set(:newznab_api_key, "old-newznab-key")
+    IndexerClients::Newznab.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://old-newznab.example:5076/api")
+        .with(query: hash_including("apikey" => "old-newznab-key", "t" => "caps"))
+        .to_return(status: 200, body: "<caps />", headers: { "Content-Type" => "application/xml" })
+
+      assert IndexerClients::Newznab.test_connection
+
+      SettingsService.set(:newznab_url, "http://new-newznab.example:5076/api")
+      SettingsService.set(:newznab_api_key, "new-newznab-key")
+
+      search = stub_request(:get, "http://new-newznab.example:5076/api")
+        .with(query: hash_including("apikey" => "new-newznab-key", "t" => "search"))
+        .to_return(
+          status: 200,
+          body: "<rss><channel></channel></rss>",
+          headers: { "Content-Type" => "application/xml" }
+        )
+
+      assert_empty IndexerClients::Newznab.search("test", book_type: :ebook)
+      assert_requested search, times: 1
+      assert_not_requested :get, %r{old-newznab\.example.+t=search}
+    end
+  end
+
   test "preserves reverse proxy subpath when configured URL ends with api" do
     SettingsService.set(:newznab_url, "http://localhost:5076/nzbhydra2/api")
     IndexerClients::Newznab.reset_connection!

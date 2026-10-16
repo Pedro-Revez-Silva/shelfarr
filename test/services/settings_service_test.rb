@@ -29,6 +29,20 @@ class SettingsServiceTest < ActiveSupport::TestCase
     restore_settings_env!
   end
 
+  test "immediate search defaults on for a new install and leaves an existing row alone" do
+    Setting.where(key: "immediate_search_enabled").delete_all
+
+    assert_equal true, SettingsService::DEFINITIONS[:immediate_search_enabled][:default]
+    assert_equal true, SettingsService.get(:immediate_search_enabled)
+
+    SettingsService.seed_defaults!
+    assert_equal true, SettingsService.get(:immediate_search_enabled)
+
+    SettingsService.set(:immediate_search_enabled, false)
+    SettingsService.seed_defaults!
+    assert_equal false, SettingsService.get(:immediate_search_enabled)
+  end
+
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "legacy-key")
@@ -52,7 +66,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
       oidc_client_secret oidc_default_role oidc_enabled oidc_issuer oidc_link_existing_users
       oidc_provider_name oidc_scopes prowlarr_api_key prowlarr_tags prowlarr_url telegram_bot_token telegram_bot_username telegram_enabled
       telegram_request_username telegram_update_mode telegram_webhook_secret webhook_enabled
-      webhook_token webhook_url zlibrary_email zlibrary_enabled zlibrary_password zlibrary_url
+      webhook_token webhook_url zlibrary_email zlibrary_enabled zlibrary_password zlibrary_remix_userid zlibrary_remix_userkey zlibrary_url
       hardcover_api_token hardcover_enabled hardcover_oauth_client_id hardcover_oauth_client_secret
       hardcover_oauth_redirect_uri hardcover_oauth_device_flow_enabled hardcover_allow_personal_access
       google_books_api_key google_books_enabled

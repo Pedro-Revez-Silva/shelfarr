@@ -1184,6 +1184,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "create does not auto-approve admin requests when only auto approve requests is enabled" do
+    SettingsService.set(:immediate_search_enabled, false)
     SettingsService.set(:auto_approve_requests, true)
     sign_out
     sign_in_as(@admin)

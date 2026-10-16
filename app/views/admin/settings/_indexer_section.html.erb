@@ -139,7 +139,7 @@
       <div class="md:w-2/3">
         <p class="mb-2 text-sm text-gray-400 hidden" data-settings-form-target="indexerTestHint">Choose and save an indexer provider before testing.</p>
         <span data-settings-form-target="indexerTestAction">
-        <%= link_to "Test Indexer Connection", test_indexer_admin_settings_path, data: { turbo_method: :post, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
+        <%= button_tag "Test Indexer Connection", type: "submit", formaction: test_indexer_admin_settings_path, formmethod: "post", formnovalidate: true, name: "_method", value: "post", data: { connection_probe: true, turbo_preserve_scroll: true }, class: "inline-block rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm cursor-pointer" %>
         </span>
       </div>
     </div>

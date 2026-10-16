@@ -350,6 +350,57 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "scores elided apostrophe titles as exact matches against dotted scene releases" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    @request.update!(language: "fr")
+    threshold = SettingsService.get(:auto_select_confidence_threshold, default: 90)
+
+    [ "'", "’", "‘" ].each do |apostrophe|
+      [
+        [ "C#{apostrophe}est Random Title", "Some Author", "C.est.Random.Title.Some.Author.2026.Fr.[ePub]" ],
+        [ "D#{apostrophe}Artagnan", "Alexandre Dumas", "D.Artagnan.Alexandre.Dumas.2026.Fr.[ePub]" ],
+        [ "L#{apostrophe}Étranger", "Albert Camus", "L.Etranger.Albert.Camus.2026.Fr.[ePub]" ],
+        [ "J#{apostrophe}irai cracher sur vos tombes", "Boris Vian", "J.irai.cracher.sur.vos.tombes.Boris.Vian.2026.Fr.[ePub]" ],
+        [ "N#{apostrophe}importe quoi", "Some Author", "N.importe.quoi.Some.Author.2026.Fr.[ePub]" ],
+        [ "S#{apostrophe}il vous plait", "Some Author", "S.il.vous.plait.Some.Author.2026.Fr.[ePub]" ],
+        [ "Qu#{apostrophe}est-ce que c#{apostrophe}est", "Some Author", "Qu.est.ce.que.c.est.Some.Author.2026.Fr.[ePub]" ]
+      ].each do |title, author, release_title|
+        @book.update!(title: title, author: author, book_type: :ebook)
+        score = ReleaseScorer.score(
+          @request.search_results.new(title: release_title, seeders: 50),
+          @request
+        )
+
+        assert_equal 100, score.breakdown[:title], "#{title} => #{score.breakdown.inspect}"
+        assert_operator score.total, :>=, threshold, "#{title} total #{score.total} is below auto-select confidence"
+        assert score.high_confidence?, "#{title} total #{score.total}"
+        assert score.breakdown[:auto_select_allowed], title
+      end
+    end
+  end
+
+  test "keeps exact matches for English contractions" do
+    @book.update!(title: "Ender's Game", author: "Orson Scott Card")
+    [
+      "Ender's Game Orson Scott Card English Audiobook M4B",
+      "Enders Game Orson Scott Card English Audiobook M4B",
+      "Enders.Game.Orson.Scott.Card.English.Audiobook.M4B"
+    ].each do |release_title|
+      score = ReleaseScorer.score(
+        @request.search_results.new(title: release_title, seeders: 50),
+        @request
+      )
+
+      assert_equal 100, score.breakdown[:title], release_title
+      assert_equal 100, score.breakdown[:author], release_title
+      assert score.high_confidence?, "#{release_title} total #{score.total}"
+      assert score.breakdown[:auto_select_allowed], release_title
+    end
+  end
+
   test "matches canonically decomposed accents in titles and authors" do
     @book.update!(
       title: "Die Bücherdiebin".unicode_normalize(:nfd),

@@ -15,7 +15,7 @@ class DownloadClientSelector
     end
 
     available_clients.each do |client|
-      return client if client.test_connection
+      return client if reachable?(client)
     end
 
     # If no client passed connection test, raise error
@@ -47,11 +47,19 @@ class DownloadClientSelector
     end
 
     ordered_clients.each do |client|
-      return client if client.test_connection
+      return client if self.class.reachable?(client)
     end
 
     # If no client passed connection test, raise error
     raise NoClientAvailableError, "No #{download_type} client available (all failed connection test)"
+  end
+
+  # Probes raise on failure; keep trying the next client.
+  def self.reachable?(client)
+    client.test_connection
+  rescue StandardError => e
+    Rails.logger.warn "[DownloadClientSelector] #{client.name} connection failed: #{ConnectionErrorClassifier.describe(e)}"
+    false
   end
 
   private

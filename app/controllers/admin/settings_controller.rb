@@ -107,24 +107,27 @@ module Admin
     end
 
     def test_indexer
-      health = SystemHealth.for_service("indexer")
+      provider = probe_indexer_provider
+      name = indexer_probe_name(provider)
+      url, api_key = indexer_probe_credentials(provider)
+      health = probe_health("indexer", saved: saved_indexer_probe?(provider, url, api_key))
 
-      unless IndexerClient.configured?
-        health.mark_not_configured!
-        respond_with_flash(alert: "#{IndexerClient.display_name} is not configured. Select a provider and enter connection details first.")
+      unless url.present? && api_key.present?
+        health&.mark_not_configured!
+        respond_with_flash(alert: "#{name} is not configured. Select a provider and enter connection details first.")
         return
       end
 
-      if IndexerClient.test_connection
-        health.check_succeeded!(message: "Connection successful")
-        respond_with_flash(notice: "#{IndexerClient.display_name} connection successful!")
+      if ConnectionProbe.indexer(provider: provider, url: url, api_key: api_key)
+        health&.check_succeeded!(message: "Connection successful")
+        respond_with_flash(notice: "#{name} connection successful!")
       else
-        health.check_failed!(message: "Failed to connect to #{IndexerClient.display_name}")
-        respond_with_flash(alert: "#{IndexerClient.display_name} connection failed.")
+        health&.check_failed!(message: "Failed to connect to #{name}")
+        respond_with_flash(alert: "#{name} connection failed.")
       end
     rescue IndexerClients::Base::Error => e
       health&.check_failed!(message: e.message)
-      respond_with_flash(alert: "#{IndexerClient.display_name} error: #{e.message}")
+      respond_with_flash(alert: "#{name} error: #{e.message}")
     end
 
     def test_prowlarr
@@ -132,24 +135,33 @@ module Admin
     end
 
     def test_audiobookshelf
-      health = SystemHealth.for_service("audiobookshelf")
+      platform = probe_library_platform
+      name = LibraryPlatformClient.display_name(platform)
+      url, api_key = library_probe_credentials(platform)
+      health = probe_health("audiobookshelf", saved: saved_library_probe?(platform, url, api_key))
 
-      unless LibraryPlatformClient.configured?
-        health.mark_not_configured!
-        respond_with_flash(alert: "#{LibraryPlatformClient.display_name} is not configured. Enter connection details first.")
+      unless library_probe_configured?(platform, url, api_key)
+        health&.mark_not_configured!
+        respond_with_flash(alert: "#{name} is not configured. Enter connection details first.")
         return
       end
 
-      if LibraryPlatformClient.test_connection
-        health.check_succeeded!(message: "Connection successful")
-        respond_with_flash(notice: "#{LibraryPlatformClient.display_name} connection successful!")
+      connected = if platform == "audiobookshelf"
+        ConnectionProbe.audiobookshelf(url: url, api_key: api_key)
       else
-        health.check_failed!(message: "Failed to connect to #{LibraryPlatformClient.display_name}")
-        respond_with_flash(alert: "#{LibraryPlatformClient.display_name} connection failed.")
+        LibraryPlatformClient.test_connection(platform: platform)
       end
-    rescue LibraryPlatformClient::Error => e
+
+      if connected
+        health&.check_succeeded!(message: "Connection successful")
+        respond_with_flash(notice: "#{name} connection successful!")
+      else
+        health&.check_failed!(message: "Failed to connect to #{name}")
+        respond_with_flash(alert: "#{name} connection failed.")
+      end
+    rescue LibraryPlatformClient::Error, AudiobookshelfClient::Error => e
       health&.check_failed!(message: e.message)
-      respond_with_flash(alert: "#{LibraryPlatformClient.display_name} error: #{e.message}")
+      respond_with_flash(alert: "#{name} error: #{e.message}")
     end
 
     def sync_audiobookshelf_library
@@ -662,6 +674,95 @@ module Admin
 
     def ebooks_com_country_for_validation
       setting_value_for_validation(:ebooks_com_country_code).to_s.strip
+    end
+
+    INDEXER_PROBE_KEYS = {
+      "prowlarr" => [ :prowlarr_url, :prowlarr_api_key ],
+      "jackett" => [ :jackett_url, :jackett_api_key ],
+      "newznab" => [ :newznab_url, :newznab_api_key ]
+    }.freeze
+
+    def probe_indexer_provider
+      if settings_param_posted?(:indexer_provider)
+        posted = params[:settings][:indexer_provider].to_s.strip
+        return posted if %w[none prowlarr jackett newznab].include?(posted)
+      end
+
+      SettingsService.active_indexer_provider
+    end
+
+    def indexer_probe_name(provider)
+      IndexerClient::PROVIDERS[provider]&.display_name || "Indexer"
+    end
+
+    def indexer_probe_credentials(provider)
+      url_key, secret_key = INDEXER_PROBE_KEYS[provider]
+      return [ "", "" ] unless url_key
+
+      [ posted_or_saved_setting(url_key).to_s.strip, posted_or_saved_secret(secret_key).to_s ]
+    end
+
+    def probe_library_platform
+      if settings_param_posted?(:library_platform)
+        posted = params[:settings][:library_platform].to_s.strip
+        return posted if posted.present?
+      end
+
+      LibraryPlatformClient.active_platform
+    end
+
+    def library_probe_credentials(platform)
+      return [ nil, nil ] unless platform == "audiobookshelf"
+
+      [
+        posted_or_saved_setting(:audiobookshelf_url).to_s.strip,
+        posted_or_saved_secret(:audiobookshelf_api_key).to_s
+      ]
+    end
+
+    def library_probe_configured?(platform, url, api_key)
+      return url.present? && api_key.present? if platform == "audiobookshelf"
+
+      LibraryPlatformClient.configured?(platform: platform)
+    end
+
+    # Unsaved form values must not overwrite the dashboard's record of the saved connection.
+    def probe_health(service, saved:)
+      SystemHealth.for_service(service) if saved
+    end
+
+    def saved_indexer_probe?(provider, url, api_key)
+      url_key, secret_key = INDEXER_PROBE_KEYS[provider]
+      return provider == SettingsService.active_indexer_provider if url_key.nil?
+
+      provider == SettingsService.active_indexer_provider &&
+        url == SettingsService.get(url_key).to_s.strip &&
+        api_key == SettingsService.get(secret_key).to_s
+    end
+
+    def saved_library_probe?(platform, url, api_key)
+      return false unless platform == LibraryPlatformClient.active_platform
+      return true unless platform == "audiobookshelf"
+
+      url == SettingsService.get(:audiobookshelf_url).to_s.strip &&
+        api_key == SettingsService.get(:audiobookshelf_api_key).to_s
+    end
+
+    def settings_param_posted?(key)
+      params[:settings].respond_to?(:key?) && params[:settings].key?(key.to_s)
+    end
+
+    def posted_or_saved_setting(key)
+      return params[:settings][key.to_s] if settings_param_posted?(key)
+
+      SettingsService.get(key)
+    end
+
+    def posted_or_saved_secret(key)
+      value = posted_or_saved_setting(key)
+      return SettingsService.get(key) if value.blank?
+
+      value
     end
 
     def setting_value_for_validation(key)
