@@ -110,7 +110,6 @@ module DownloadClients
 
       if response.status == 200
         Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
-        ensure_category_exists!
         return true
       end
 
@@ -153,23 +152,6 @@ module DownloadClients
       end
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
-    end
-
-    # Auto-create the configured category in qBittorrent (idempotent)
-    def ensure_category_exists!
-      return unless config.category.present?
-
-      response = connection.post("api/v2/torrents/createCategory", { category: config.category })
-      case response.status
-      when 200
-        Rails.logger.info "[Qbittorrent] Category '#{config.category}' created in #{config.name}"
-      when 409
-        # Already exists — expected
-      else
-        Rails.logger.warn "[Qbittorrent] Failed to create category '#{config.category}': HTTP #{response.status}"
-      end
-    rescue => e
-      Rails.logger.warn "[Qbittorrent] Failed to ensure category (non-fatal): #{e.message}"
     end
 
     # Fetch qBittorrent's save path and category info for diagnostics
@@ -479,7 +461,7 @@ module DownloadClients
     end
 
     def authenticate!
-      login_url = "#{base_url}/api/v2/auth/login"
+      login_url = "#{base_url.to_s.chomp("/")}/api/v2/auth/login"
       Rails.logger.info "[Qbittorrent] Authenticating to #{config.name} at #{login_url} (username: #{username})"
 
       auth_response = login_connection.post(
@@ -510,6 +492,10 @@ module DownloadClients
     end
 
     def session_key
+      # An unsaved probe has no id, so keep its login on this adapter instead of
+      # sharing one nil-keyed session with every other probe on the thread.
+      return @unsaved_session ||= {} if config.id.nil?
+
       # Use config.id to store session per client instance
       Thread.current[:qbittorrent_sessions] ||= {}
       Thread.current[:qbittorrent_sessions][config.id] ||= {}

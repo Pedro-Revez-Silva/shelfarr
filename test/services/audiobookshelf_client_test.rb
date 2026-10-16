@@ -298,6 +298,25 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection uses a supplied url and api key without saving them" do
+    VCR.turned_off do
+      saved = stub_request(:get, "http://localhost:13378/api/libraries")
+      unsaved = stub_request(:get, "http://audiobookshelf.example:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer fresh-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "libraries" => [ { "id" => "lib-1", "name" => "Test", "mediaType" => "book", "folders" => [] } ] }.to_json
+        )
+
+      assert AudiobookshelfClient.test_connection(url: "http://audiobookshelf.example:13378", api_key: "fresh-token")
+      assert_requested unsaved
+      assert_not_requested saved
+      assert_equal "http://localhost:13378", SettingsService.get(:audiobookshelf_url)
+      assert_equal "test-api-key-12345", SettingsService.get(:audiobookshelf_api_key)
+    end
+  end
+
   test "test_connection returns true when libraries exist" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries")

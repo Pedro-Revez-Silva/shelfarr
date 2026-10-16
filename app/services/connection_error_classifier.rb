@@ -8,6 +8,9 @@ class ConnectionErrorClassifier
     tls: "TLS connection failed",
     unauthorized: "Unauthorized"
   }.freeze
+  LOCALHOST_HINT = "That address points to Shelfarr's own container. Use the Docker service name or a LAN IP instead."
+  CONNECTION_FAILURE_MESSAGES = MESSAGES.except(:unauthorized).values.freeze
+  LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
 
   Classification = Data.define(:reason, :message)
 
@@ -23,6 +26,16 @@ class ConnectionErrorClassifier
       classify(error)&.message || error.message.to_s
     end
 
+    def with_localhost_hint(message, url)
+      text = message.to_s
+      return text if text.include?(LOCALHOST_HINT)
+      return text unless loopback_url?(url)
+      return text unless CONNECTION_FAILURE_MESSAGES.any? { |known| text.include?(known) }
+
+      text = "#{text}." unless text.end_with?(".")
+      "#{text} #{LOCALHOST_HINT}"
+    end
+
     def reraise!(error, connection_error:, authentication_error:)
       classification = classify(error)
       if classification.nil?
@@ -35,6 +48,13 @@ class ConnectionErrorClassifier
     end
 
     private
+
+    def loopback_url?(url)
+      host = URI.parse(url.to_s).host.to_s.downcase.delete_prefix("[").delete_suffix("]")
+      LOOPBACK_HOSTS.include?(host)
+    rescue URI::InvalidURIError
+      false
+    end
 
     def reason_for_status(status)
       return if status.blank?

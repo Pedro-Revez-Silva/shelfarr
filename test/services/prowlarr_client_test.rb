@@ -654,6 +654,26 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection uses a supplied url and api key without replacing the saved connection" do
+    VCR.turned_off do
+      saved = stub_request(:get, "http://localhost:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "test-api-key-12345" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+      unsaved = stub_request(:get, "http://prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "fresh-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert ProwlarrClient.test_connection(url: "http://prowlarr.example:9696", api_key: "fresh-key")
+      assert_requested unsaved
+      assert_not_requested saved
+      assert_equal "http://localhost:9696", SettingsService.get(:prowlarr_url)
+      assert_equal "test-api-key-12345", SettingsService.get(:prowlarr_api_key)
+
+      assert ProwlarrClient.test_connection
+      assert_requested saved
+    end
+  end
+
   test "test_connection raises unauthorized when the API key is rejected" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:9696/api/v1/indexer").to_return(status: 401)
