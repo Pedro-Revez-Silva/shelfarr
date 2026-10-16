@@ -131,8 +131,12 @@ class AudiobookshelfClient
     def test_connection
       ensure_configured!
       libraries.any?
-    rescue Error
-      false
+    rescue Error => e
+      ConnectionErrorClassifier.reraise!(
+        e,
+        connection_error: ConnectionError,
+        authentication_error: AuthenticationError
+      )
     end
 
     def reset_connection!

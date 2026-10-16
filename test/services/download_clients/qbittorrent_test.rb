@@ -540,7 +540,11 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
         .with(headers: { "Authorization" => "Bearer #{QBITTORRENT_API_KEY}" })
         .to_return(status: 403, body: "Forbidden")
 
-      assert_not @client.test_connection
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
       assert_not_requested(:post, "http://localhost:8080/api/v2/auth/login")
     end
   end
@@ -584,16 +588,85 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
-  test "test_connection returns false on authentication failure" do
+  test "test_connection raises unauthorized when login is rejected" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")
         .to_return(status: 401, body: "Fails.")
 
-      assert_not @client.test_connection
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
     end
   end
 
-  test "test_connection returns false when API endpoint returns 404" do
+  test "test_connection raises connection refused" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.test_connection
+      end
+
+      assert_equal "Connection refused", error.message
+    end
+  end
+
+  test "test_connection raises a timeout" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login").to_timeout
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.test_connection
+      end
+
+      assert_equal "Connection timed out", error.message
+    end
+  end
+
+  test "test_connection raises DNS failures" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login").to_raise(
+        SocketError.new("Failed to open TCP connection to localhost:8080 (getaddrinfo: Name or service not known)")
+      )
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.test_connection
+      end
+
+      assert_equal "Could not resolve host", error.message
+    end
+  end
+
+  test "test_connection raises TLS failures" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.test_connection
+      end
+
+      assert_equal "TLS connection failed", error.message
+    end
+  end
+
+  test "test_connection reports an authentication failure" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(status: 401, body: "Fails.")
+
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
+    end
+  end
+
+  test "test_connection raises when the API endpoint returns 404" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")
         .to_return(
@@ -606,7 +679,12 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:get, "http://localhost:8080/api/v2/app/version")
         .to_return(status: 404, body: "<html><head><title>404 Not Found</title></head></html>")
 
-      assert_not @client.test_connection
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.test_connection
+      end
+
+      assert_equal DownloadClients::Base::Error, error.class
+      assert_equal "qBittorrent API error: 404", error.message
     end
   end
 
@@ -1324,7 +1402,12 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:get, "http://localhost:8080/api/v2/app/version")
         .to_return(status: 403, body: "Forbidden")
 
-      assert_not @client.test_connection
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
+      assert_nil Thread.current[:qbittorrent_sessions][@client_record.id][:cookie_value]
     end
   end
 
