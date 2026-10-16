@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "digest"
+require "pathname"
+
 module Rubocop
   module Cop
     module Shelfarr
@@ -7,7 +10,7 @@ module Rubocop
           RuboCop.const_defined?(:Cop, false) &&
           RuboCop::Cop.const_defined?(:Base, false)
         class SkippedTest < ::RuboCop::Cop::Base
-          MSG = "Minitest will not run `%<method>s`. Move it above `private`."
+          MSG = "Minitest will not run `%<method>s`. Make it public or move it above `private`/`protected`."
           FIXTURE = "test/lint/skipped_test_hidden_test.rb"
 
           class << self
@@ -55,6 +58,14 @@ module Rubocop
             def mutex
               @mutex ||= Mutex.new
             end
+
+            def runtime_checksum
+              @runtime_checksum ||= begin
+                files = Dir.glob(rails_root.join("{app,config,lib,test}/**/*.rb")).sort
+                files << rails_root.join("Gemfile.lock").to_s
+                Digest::SHA256.hexdigest(files.map { |file| "#{file}\0#{Digest::SHA256.file(file).hexdigest}" }.join("\0"))
+              end
+            end
           end
 
           def on_new_investigation
@@ -69,7 +80,7 @@ module Rubocop
           end
 
           def external_dependency_checksum
-            self.class.fixture_explicitly_requested? ? "requested" : "omitted"
+            [ self.class.fixture_explicitly_requested?, self.class.runtime_checksum ].join(":")
           end
 
           private
@@ -91,7 +102,9 @@ module Rubocop
 
           def test_classes_in(path)
             ObjectSpace.each_object(Class).select do |klass|
-              test_subclass?(klass) && own_test_methods(klass).any? { |name| method_defined_in?(klass, name, path) }
+              test_subclass?(klass) && (
+                class_defined_in?(klass, path) || own_test_methods(klass).any? { |name| method_defined_in?(klass, name, path) }
+              )
             end
           end
 
@@ -99,10 +112,14 @@ module Rubocop
             Minitest.seed ||= 0
             runnable = klass.runnable_methods
             own_test_methods(klass).filter_map do |method_name|
-              next unless method_defined_in?(klass, method_name, path)
               next if runnable.include?(method_name)
 
-              [ method_name, method_line(klass, method_name) ]
+              if method_defined_in?(klass, method_name, path)
+                [ method_name, method_line(klass, method_name) ]
+              elsif class_defined_in?(klass, path)
+                # A local visibility override retains the inherited method's source location.
+                [ method_name, Object.const_source_location(klass.name).last ]
+              end
             end
           end
 
@@ -129,6 +146,15 @@ module Rubocop
           def test_subclass?(klass)
             klass < Minitest::Test
           rescue TypeError
+            false
+          end
+
+          def class_defined_in?(klass, path)
+            return false unless klass.name
+
+            file, = Object.const_source_location(klass.name)
+            file && File.expand_path(file) == path
+          rescue NameError
             false
           end
 
