@@ -469,7 +469,7 @@ module DownloadClients
     end
 
     def authenticate!
-      login_url = "#{base_url}/api/v2/auth/login"
+      login_url = "#{base_url.to_s.chomp("/")}/api/v2/auth/login"
       Rails.logger.info "[Qbittorrent] Authenticating to #{config.name} at #{login_url} (username: #{username})"
 
       auth_response = Faraday.post(
@@ -503,6 +503,10 @@ module DownloadClients
     end
 
     def session_key
+      # An unsaved probe has no id, so keep its login on this adapter instead of
+      # sharing one nil-keyed session with every other probe on the thread.
+      return @unsaved_session ||= {} if config.id.nil?
+
       # Use config.id to store session per client instance
       Thread.current[:qbittorrent_sessions] ||= {}
       Thread.current[:qbittorrent_sessions][config.id] ||= {}

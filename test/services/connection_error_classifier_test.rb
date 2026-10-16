@@ -71,12 +71,12 @@ class ConnectionErrorClassifierTest < ActiveSupport::TestCase
     hint = ConnectionErrorClassifier::LOCALHOST_HINT
 
     %w[http://localhost:9696 http://127.0.0.1:8080 http://[::1]:9696].each do |url|
-      assert_equal "Connection refused #{hint}", ConnectionErrorClassifier.with_localhost_hint("Connection refused", url)
+      assert_equal "Connection refused. #{hint}", ConnectionErrorClassifier.with_localhost_hint("Connection refused", url)
     end
 
     assert_equal "Connection timed out", ConnectionErrorClassifier.with_localhost_hint("Connection timed out", "http://prowlarr:9696")
     assert_equal "Unauthorized", ConnectionErrorClassifier.with_localhost_hint("Unauthorized", "http://localhost:9696")
     assert_equal "Prowlarr API error: 500", ConnectionErrorClassifier.with_localhost_hint("Prowlarr API error: 500", "http://localhost:9696")
-    assert_equal "Connection refused #{hint}", ConnectionErrorClassifier.with_localhost_hint("Connection refused #{hint}", "http://localhost:9696")
+    assert_equal "Connection refused. #{hint}", ConnectionErrorClassifier.with_localhost_hint("Connection refused. #{hint}", "http://localhost:9696")
   end
 end
