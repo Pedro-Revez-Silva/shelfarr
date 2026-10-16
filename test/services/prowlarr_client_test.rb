@@ -780,6 +780,7 @@ class ProwlarrClientTest < ActiveSupport::TestCase
   end
 
   test "search uses the corrected Prowlarr URL after the worker health check hit an unreachable host" do
+    SettingsService.set(:indexer_provider, "prowlarr")
     SettingsService.set(:prowlarr_url, "http://old-prowlarr.example:9696")
     SettingsService.set(:prowlarr_api_key, "old-key")
     ProwlarrClient.reset_connection!
@@ -789,7 +790,8 @@ class ProwlarrClientTest < ActiveSupport::TestCase
         .with(headers: { "X-Api-Key" => "old-key" })
         .to_raise(Faraday::ConnectionFailed.new("Failed to open TCP connection to old-prowlarr.example:9696"))
 
-      assert_not ProwlarrClient.test_connection
+      HealthCheckJob.perform_now(service: "indexer")
+      assert SystemHealth.for_service("indexer").down?
 
       SettingsService.set(:prowlarr_url, "http://new-prowlarr.example:9696")
       SettingsService.set(:prowlarr_api_key, "new-key")
