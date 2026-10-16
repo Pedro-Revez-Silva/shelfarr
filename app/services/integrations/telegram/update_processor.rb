@@ -15,7 +15,7 @@ module Integrations
 
       def call
         update = record_update
-        return nil unless update
+        return nil unless RemoteResult.succeeded?(update)
 
         unless RateLimiter.allowed?(update.telegram_user_id)
           return CommandHandler::Response.new(

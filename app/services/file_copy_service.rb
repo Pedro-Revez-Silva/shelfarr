@@ -3344,6 +3344,8 @@ class FileCopyService
 
     def canonical_reference_roots(paths)
       Array(paths).filter_map do |path|
+        next if RemoteResult.failed?(path)
+
         expanded = Pathname(path).expand_path
         canonical = expanded.realpath
         next if canonical.root? || !canonical.lstat.directory?
@@ -3359,7 +3361,7 @@ class FileCopyService
         end
       rescue ArgumentError, SystemCallError => error
         RemoteResult::Failed.new(error)
-      end.uniq(&:path)
+      end.reject { |root| RemoteResult.failed?(root) }.uniq(&:path)
     end
 
     def path_beneath_root?(path, root)

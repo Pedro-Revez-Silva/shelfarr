@@ -13,7 +13,7 @@ class LibraryDownloadRoots
     return if !book.acquired? || book.reference_target_roots_recorded?
 
     references = legacy_reference_leaves
-    return if references.empty?
+    return if RemoteResult.failed?(references) || references.empty?
 
     # Capture once and retain those identities. Re-querying after a directory
     # disappears can silently freeze a partial authorization set on the Book.
@@ -44,7 +44,7 @@ class LibraryDownloadRoots
         FileCopyService.snapshot_reference_root(path)
       rescue FileCopyService::UnsafePathError => error
         RemoteResult::Failed.new(error)
-      end
+      end.reject { |root| RemoteResult.failed?(root) }
     end
   end
 
@@ -124,7 +124,7 @@ class LibraryDownloadRoots
       ).freeze
     rescue SystemCallError, ArgumentError => error
       RemoteResult::Failed.new(error)
-    end
+    end.reject { |root| RemoteResult.failed?(root) }
   end
 
   def client_download_paths
@@ -136,6 +136,8 @@ class LibraryDownloadRoots
 
   def canonicalize_roots(paths)
     paths.filter_map do |configured_root|
+      next if RemoteResult.failed?(configured_root)
+
       candidate = Pathname(configured_root).expand_path.realpath
       next if candidate.root?
       next unless candidate.lstat.directory?
@@ -143,6 +145,6 @@ class LibraryDownloadRoots
       candidate
     rescue SystemCallError, ArgumentError => error
       RemoteResult::Failed.new(error)
-    end.uniq
+    end.reject { |root| RemoteResult.failed?(root) }.uniq
   end
 end
