@@ -160,6 +160,7 @@ class SettingsService
     },
 
     # Queue Settings
+    setup_wizard_completed: { type: "boolean", default: false, category: "setup", description: "The first-run setup wizard has been finished or skipped" },
     immediate_search_enabled: { type: "boolean", default: true, category: "queue", description: "Start searching immediately when a request is created (instead of waiting for queue cycle)" },
     auto_approve_requests: { type: "boolean", default: false, category: "queue", description: "Automatically enqueue search immediately for requests created by non-admin users" },
     queue_batch_size: { type: "integer", default: 5, category: "queue", description: "Number of requests to process per queue run" },
@@ -320,10 +321,12 @@ class SettingsService
     "webhook" => "Webhook Notifications",
     "discord" => "Discord Notifications",
     "telegram" => "Telegram Bot",
-    "oidc" => "OIDC/SSO Authentication"
+    "oidc" => "OIDC/SSO Authentication",
+    "setup" => "Setup"
   }.freeze
 
   LABELS = {
+    setup_wizard_completed: "Setup Wizard Completed",
     prowlarr_url: "Prowlarr URL",
     jackett_url: "Jackett URL",
     newznab_url: "Newznab URL",

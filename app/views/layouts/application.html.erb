@@ -64,6 +64,7 @@
             <% if authenticated? %>
               <% if Current.user&.admin? %>
                 <%= link_to "Admin", admin_root_path, class: "text-gray-400 hover:text-white transition" %>
+                <%= button_to "Setup", restart_admin_setup_wizard_path, method: :post, form_class: "inline", class: "text-gray-400 hover:text-white transition" %>
               <% end %>
               <%= link_to notifications_path, class: "relative text-gray-400 hover:text-white transition", title: "Notifications" do %>
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -143,6 +144,7 @@
             <% end %>
             <% if Current.user&.admin? %>
               <%= link_to "Admin", admin_root_path, class: "py-2 text-gray-300 hover:text-white font-medium transition", data: { action: "mobile-menu#close" } %>
+              <%= button_to "Setup", restart_admin_setup_wizard_path, method: :post, form_class: "inline", class: "py-2 text-left text-gray-300 hover:text-white font-medium transition" %>
             <% end %>
             <div class="border-t border-gray-800 mt-2 pt-2 flex flex-col">
               <%= link_to profile_path, class: "py-2 text-gray-300 hover:text-white flex items-center gap-2 transition", data: { action: "mobile-menu#close" } do %>
