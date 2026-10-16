@@ -4,6 +4,7 @@ require "digest"
 require "cgi"
 require "ipaddr"
 require "nokogiri"
+require "public_suffix"
 require "uri"
 
 # Client for interacting with Z-Library's internal eAPI.
@@ -35,18 +36,6 @@ class ZLibraryClient
   # password is not replayed to the next URL.
   LOGIN_METHOD_PRESERVING_STATUSES = [ 307, 308 ].freeze
   COOKIE_NAME_PATTERN = "[!#$%&'*+\\-.0-9A-Z^_`a-z|~]+"
-  # Keep eTLD+1 comparisons from treating every host under a multi-label
-  # suffix (for example co.uk) as the same site.
-  MULTI_LABEL_PUBLIC_SUFFIXES = %w[
-    co.uk org.uk ac.uk gov.uk
-    com.au net.au org.au edu.au
-    co.nz net.nz org.nz
-    com.br com.mx com.ar
-    co.jp ne.jp or.jp
-    com.cn com.hk com.tw com.sg
-    co.za co.kr co.in
-    com.tr com.ua
-  ].freeze
   DOMAIN_HEALTH_TTL_SECONDS = 5.minutes
   # Mirrors that are not in the preferred default list, but are still Z-Library
   # hosts a login redirect may land on.
@@ -76,7 +65,8 @@ class ZLibraryClient
 
     def test_connection!
       ensure_configured!
-      login
+      auth = login
+      validate_saved_session!(auth) if saved_remix_auth
       true
     end
 
@@ -148,6 +138,29 @@ class ZLibraryClient
 
     private
 
+    def validate_saved_session!(auth)
+      response = connection.get("#{auth[:base_url]}/eapi/user/profile") do |req|
+        req.headers["Cookie"] = cookie_header(auth)
+      end
+
+      if [ 401, 403 ].include?(response.status)
+        raise AuthenticationError, "Invalid Z-Library saved session"
+      end
+      unless response.status == 200
+        raise ConnectionError, "Z-Library session validation failed with status #{response.status}"
+      end
+
+      data = parse_json_body(response)
+      unless data.is_a?(Hash) && data["success"] == 1 &&
+          data["user"].is_a?(Hash) && data.dig("user", "id").to_s == auth[:remix_userid]
+        raise AuthenticationError, "Invalid Z-Library saved session"
+      end
+    rescue JSON::ParserError, Faraday::ParsingError
+      raise ConnectionError, "Z-Library session validation returned an invalid response"
+    rescue Faraday::Error
+      raise ConnectionError, "Failed to connect to Z-Library for session validation"
+    end
+
     def login(after_attempt: nil)
       cached = @auth_cache
       signature = credential_signature
@@ -186,12 +199,12 @@ class ZLibraryClient
         if health == :bot_wall
           bot_walled << domain
           next
-        elsif health != :healthy
+        elsif !health.is_a?(URI::HTTP)
           errors << "#{domain}: #{health}"
           next
         end
 
-        auth = auth_for_domain(uri, after_attempt: after_attempt)
+        auth = auth_for_domain(health, after_attempt: after_attempt)
 
         if auth.nil?
           next
@@ -206,7 +219,7 @@ class ZLibraryClient
 
         Rails.logger.info "[ZLibraryClient] Login succeeded via #{domain}"
         cache_auth(signature, auth)
-        remember_healthy_domain(uri)
+        remember_healthy_domain(uri, health)
         return auth
       rescue JSON::ParserError, Faraday::Error => e
         Rails.logger.debug "[ZLibraryClient] Login failed on #{domain}: #{e.message}"
@@ -283,7 +296,7 @@ class ZLibraryClient
       redirects_followed = 0
 
       loop do
-        normalized = normalize_login_url(url)
+        normalized = [ method, normalize_login_url(url) ]
         return { error: "redirect loop" } if visited[normalized]
 
         visited[normalized] = true
@@ -411,22 +424,7 @@ class ZLibraryClient
       normalized = normalized_host(host)
       return if normalized.blank? || ip_address_host?(normalized)
 
-      labels = normalized.split(".")
-      return if labels.length < 2 || labels.any?(&:blank?)
-
-      suffix_labels = multi_label_public_suffix_size(labels)
-      return if labels.length <= suffix_labels
-
-      labels.last(suffix_labels + 1).join(".")
-    end
-
-    def multi_label_public_suffix_size(labels)
-      [ 3, 2 ].each do |size|
-        next if labels.length < size
-        return size if MULTI_LABEL_PUBLIC_SUFFIXES.include?(labels.last(size).join("."))
-      end
-
-      1
+      PublicSuffix.domain(normalized, default_rule: nil)
     end
 
     def ip_address_host?(host)
@@ -592,7 +590,7 @@ class ZLibraryClient
     end
 
     def domain_health(uri, after_attempt:)
-      return :healthy if remembered_uri && same_site_uri?(uri, remembered_uri)
+      return @domain_health_cache[:healthy_uri] if remembered_uri && same_site_uri?(uri, remembered_uri)
 
       probe_domain(uri, after_attempt: after_attempt)
     end
@@ -604,7 +602,7 @@ class ZLibraryClient
 
       response = exchange[:response]
       return exchange[:error] || "unhealthy" if response.nil?
-      return :healthy if domains_json_body?(response)
+      return normalized_uri(login_base_url(URI.parse(exchange[:url]), uri)) if domains_json_body?(response)
       return :bot_wall if bot_wall_response?(response)
 
       response.status == 200 ? "invalid response" : "HTTP #{response.status}"
@@ -659,10 +657,11 @@ class ZLibraryClient
       configured_uris.find { |uri| same_site_uri?(uri, cached[:uri]) }
     end
 
-    def remember_healthy_domain(uri)
+    def remember_healthy_domain(uri, healthy_uri)
       @domain_health_cache = {
         signature: domain_list_signature,
         uri: uri,
+        healthy_uri: healthy_uri,
         expires_at: Time.current + DOMAIN_HEALTH_TTL_SECONDS
       }
     end
@@ -866,9 +865,11 @@ class ZLibraryClient
       configured_uris.each do |uri|
         base_url = uri.to_s.delete_suffix("/")
         next if base_url == current_auth[:base_url]
-        next unless probe_domain(uri, after_attempt: after_attempt) == :healthy
+        healthy_uri = probe_domain(uri, after_attempt: after_attempt)
+        next unless healthy_uri.is_a?(URI::HTTP)
+        next if healthy_uri.to_s.delete_suffix("/") == current_auth[:base_url]
 
-        auth = auth_for_domain(uri, after_attempt: after_attempt)
+        auth = auth_for_domain(healthy_uri, after_attempt: after_attempt)
         next if auth.nil? || (auth.is_a?(Hash) && auth[:error].present?)
 
         Rails.logger.info "[ZLibraryClient] Retrying eAPI via #{auth[:domain]}"

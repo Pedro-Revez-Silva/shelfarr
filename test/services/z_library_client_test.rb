@@ -150,6 +150,61 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "login follows a 303 back to the same URL as a GET" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .to_return(status: 303, headers: { "Location" => "/eapi/user/login" })
+      stub_request(:get, "https://z-library.sk/eapi/user/login")
+        .to_return(status: 200, body: zlibrary_login_success_body, headers: json_headers)
+
+      assert_equal "12345", ZLibraryClient.send(:login)[:remix_userid]
+    end
+  end
+
+  test "login rejects redirects across unlisted public and private suffixes" do
+    %w[co.il github.io pages.dev].each do |suffix|
+      SettingsService.set(:zlibrary_url, "https://books.example.#{suffix}")
+      ZLibraryClient.reset_connection!
+
+      VCR.turned_off do
+        stub_request(:post, "https://books.example.#{suffix}/eapi/user/login")
+          .to_return(status: 307, headers: { "Location" => "https://evil.other.#{suffix}/eapi/user/login" })
+        untrusted = stub_request(:post, "https://evil.other.#{suffix}/eapi/user/login")
+          .to_return(status: 200, body: zlibrary_login_success_body, headers: json_headers)
+
+        error = assert_raises(ZLibraryClient::AuthenticationError) { ZLibraryClient.send(:login) }
+
+        assert_match(/untrusted redirect/, error.message)
+        assert_not_requested untrusted
+      end
+    end
+  end
+
+  test "saved sessions use and remember the origin reached by the domain probe" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-library.sk/eapi/info/domains")
+        .to_return(status: 307, headers: { "Location" => "https://z-lib.gd/eapi/info/domains" })
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(status: 307, headers: { "Location" => "https://z-lib.gd/eapi/book/search" })
+      search = stub_request(:post, "https://z-lib.gd/eapi/book/search")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(status: 200, body: { success: 1, books: [] }.to_json, headers: json_headers)
+
+      assert_empty ZLibraryClient.search("Test Book")
+      ZLibraryClient.instance_variable_set(:@auth_cache, nil)
+      assert_empty ZLibraryClient.search("Another Book")
+
+      assert_requested search, times: 2
+      assert_requested :get, "https://z-library.sk/eapi/info/domains", times: 1
+      assert_not_requested :post, "https://z-library.sk/eapi/book/search"
+    end
+  end
+
   test "login follows a 307 to another configured Z-Library domain and searches there" do
     SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://1lib.sk")
 
@@ -466,6 +521,36 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       assert_equal "saved-key", auth[:remix_userkey]
       assert_equal "z-library.sk", auth[:domain]
       assert_not_requested login_post
+    end
+  end
+
+  test "connection test validates saved sessions against the authenticated profile" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "dummy-saved-key")
+
+    VCR.turned_off do
+      profile = stub_request(:get, "https://z-library.sk/eapi/user/profile")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=dummy-saved-key" })
+
+      [
+        [ 401, {} ],
+        [ 200, { success: 0, error: "Rejected dummy-saved-key" } ],
+        [ 200, { success: 1, user: { id: "0" } } ],
+        [ 200, { success: 1 } ]
+      ].each do |status, body|
+        profile.to_return(status: status, body: body.to_json, headers: json_headers)
+
+        error = assert_raises(ZLibraryClient::AuthenticationError) { ZLibraryClient.test_connection! }
+        assert_not_includes error.message, "dummy-saved-key"
+      end
+
+      profile.to_return(status: 200, body: { success: 1, user: { id: 12345 } }.to_json, headers: json_headers)
+
+      assert ZLibraryClient.test_connection!
+      assert_requested profile, times: 5
+      assert_not_requested :post, "https://z-library.sk/eapi/user/login"
     end
   end
 

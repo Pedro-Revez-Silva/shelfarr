@@ -44,6 +44,8 @@ gem "image_processing", "~> 1.2"
 gem "faraday"
 # Multipart file upload support for qBittorrent torrent file submissions
 gem "faraday-multipart"
+# Public and private suffix boundaries for credential-bearing redirects
+gem "public_suffix", "~> 7.0"
 # Fast JSON parser
 gem "oj"
 # Create zip archives for directory downloads
