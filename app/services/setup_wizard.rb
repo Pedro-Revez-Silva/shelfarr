@@ -165,6 +165,7 @@ class SetupWizard
         SettingsService.set(:library_platform, "audiobookshelf")
         SettingsService.set(:audiobookshelf_audiobook_library_id, params[:audiobook_library_id].to_s)
         SettingsService.set(:audiobookshelf_ebook_library_id, params[:ebook_library_id].to_s)
+        sync_library_inventory if params[:audiobook_library_id].present? || params[:ebook_library_id].present?
         return success(notice: "Audiobookshelf libraries saved.")
       end
 
@@ -208,6 +209,12 @@ class SetupWizard
       else
         DownloadClient.create!(attributes.merge(name: available_client_name, client_type: "qbittorrent", priority: 0, download_path: nil))
       end
+    end
+
+    # Same side effect as changing the library on the settings page.
+    def sync_library_inventory
+      LibraryPlatformClient.reset_connections!
+      AudiobookshelfLibrarySyncJob.perform_later if LibraryPlatformClient.configured?
     end
 
     def start_download_monitor

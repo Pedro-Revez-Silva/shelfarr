@@ -495,6 +495,24 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     assert_equal QBITTORRENT_API_KEY, DownloadClient.qbittorrent.sole.api_key
   end
 
+  test "saving audiobookshelf libraries syncs the library once and a blank choice does not" do
+    SettingsService.set(:library_platform, "audiobookshelf")
+    SettingsService.set(:audiobookshelf_url, "http://audiobookshelf:13378")
+    SettingsService.set(:audiobookshelf_api_key, "abs-token")
+
+    assert_enqueued_jobs 1, only: AudiobookshelfLibrarySyncJob do
+      patch admin_setup_wizard_url(step: "audiobookshelf"), params: {
+        wizard: { phase: "libraries", audiobook_library_id: "lib-audio", ebook_library_id: "" }
+      }
+    end
+
+    assert_no_enqueued_jobs only: AudiobookshelfLibrarySyncJob do
+      patch admin_setup_wizard_url(step: "audiobookshelf"), params: {
+        wizard: { phase: "libraries", audiobook_library_id: "", ebook_library_id: "" }
+      }
+    end
+  end
+
   private
 
   def reset_client_caches
