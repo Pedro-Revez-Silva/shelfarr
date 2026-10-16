@@ -12,6 +12,24 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     Thread.current[:qbittorrent_sessions] = {}
   end
 
+  test "test action names the connection failure" do
+    client = create_download_client
+
+    VCR.turned_off do
+      stub_request(:post, "#{client.url}/api/v2/auth/login")
+        .to_return(status: 401, body: "Fails.")
+
+      post test_admin_download_client_url(client)
+
+      assert_redirected_to admin_download_clients_path
+      assert_match "Unauthorized", flash[:alert]
+
+      health = SystemHealth.for_service("download_client")
+      assert health.down?
+      assert_includes health.message, "Unauthorized"
+    end
+  end
+
   test "test action updates system health to healthy when connection succeeds" do
     client = create_download_client
 

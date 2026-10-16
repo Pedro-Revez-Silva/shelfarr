@@ -105,9 +105,13 @@ module IndexerClients
         ensure_configured!
 
         response = request(idempotent: true) { connection.get("api/v1/indexer") }
-        response.status == 200
-      rescue IndexerClients::Base::Error
-        false
+        handle_response(response) { true }
+      rescue IndexerClients::Base::Error => e
+        ConnectionErrorClassifier.reraise!(
+          e,
+          connection_error: IndexerClients::Base::ConnectionError,
+          authentication_error: IndexerClients::Base::AuthenticationError
+        )
       end
 
       def display_name

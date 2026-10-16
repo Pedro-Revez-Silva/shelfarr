@@ -106,30 +106,28 @@ module DownloadClients
     def test_connection
       ensure_authenticated!
 
-      # Actually call an API endpoint to verify the full path works
-      # (not just authentication which uses a different code path)
-      url = "#{base_url}/api/v2/app/version"
       response = connection.get("api/v2/app/version")
 
       if response.status == 200
         Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
         ensure_category_exists!
-        true
-      else
-        # Clear stale session so next attempt re-authenticates
-        clear_session! if response.status == 401 || response.status == 403
-        Rails.logger.error "[Qbittorrent] Connection test failed: GET #{url} returned #{response.status} (#{response.body.to_s.truncate(200)})"
-        false
+        return true
       end
-    rescue AuthenticationError => e
-      Rails.logger.error "[Qbittorrent] Authentication failed for #{config.name} at #{base_url}: #{e.message}"
-      false
-    rescue ConnectionError => e
-      Rails.logger.error "[Qbittorrent] Connection failed for #{config.name} at #{base_url}: #{e.message}"
-      false
-    rescue Error => e
-      Rails.logger.error "[Qbittorrent] Unexpected error for #{config.name} at #{base_url}: #{e.message}"
-      false
+
+      clear_session! if response.status == 401 || response.status == 403
+      classified = ConnectionErrorClassifier.classify(status: response.status)
+      if classified
+        raise Base::AuthenticationError, classified.message
+      end
+
+      raise Base::Error, "qBittorrent API error: #{response.status}"
+    rescue Base::Error, Faraday::Error => e
+      Rails.logger.error "[Qbittorrent] Connection test failed for #{config.name} at #{base_url}: #{ConnectionErrorClassifier.describe(e)}"
+      ConnectionErrorClassifier.reraise!(
+        e,
+        connection_error: Base::ConnectionError,
+        authentication_error: Base::AuthenticationError
+      )
     end
 
     # Remove a torrent by hash

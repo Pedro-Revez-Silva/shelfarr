@@ -7,6 +7,30 @@ class DownloadClientTest < ActiveSupport::TestCase
     DownloadClient.destroy_all
   end
 
+  test "test_connection reports a classified qBittorrent failure" do
+    Thread.current[:qbittorrent_sessions] = {}
+    client = DownloadClient.create!(
+      name: "Typed Failure Client",
+      client_type: "qbittorrent",
+      url: "http://localhost:8080",
+      username: "admin",
+      password: "password",
+      priority: 0,
+      enabled: true
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(status: 403, body: "Forbidden")
+
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
+    end
+  end
+
   test "validates presence of name" do
     client = DownloadClient.new(client_type: "qbittorrent", url: "http://localhost:8080")
     assert_not client.valid?
