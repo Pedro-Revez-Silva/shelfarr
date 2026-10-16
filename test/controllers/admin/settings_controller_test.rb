@@ -925,6 +925,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='settings[zlibrary_password]']"
     assert_select "input[name='settings[zlibrary_remix_userid]']"
     assert_select "input[type='password'][name='settings[zlibrary_remix_userkey]']"
+    assert_select "p", text: /clear Email to switch from password login/
     assert_select "a", text: "Test Z-Library Connection"
   end
 

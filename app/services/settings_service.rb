@@ -229,8 +229,8 @@ class SettingsService
     zlibrary_url: { type: "string", default: DEFAULT_ZLIBRARY_URLS, category: "zlibrary", description: "Z-Library base URLs to try. Shelfarr probes each one and uses the first domain that serves the eAPI. Add or remove domains to match the mirrors that work for you." },
     zlibrary_email: { type: "string", default: "", category: "zlibrary", description: "Z-Library account email used for login" },
     zlibrary_password: { type: "string", default: "", category: "zlibrary", description: "Z-Library account password used for login" },
-    zlibrary_remix_userid: { type: "string", default: "", category: "zlibrary", description: "Optional saved remix_userid. Used instead of email and password when both the user id and user key are set and the password login is blank." },
-    zlibrary_remix_userkey: { type: "string", default: "", category: "zlibrary", description: "Optional saved remix_userkey. Pair this with the user id to skip the password login." },
+    zlibrary_remix_userid: { type: "string", default: "", category: "zlibrary", description: "Optional saved session: the remix_userid cookie from a browser signed in to Z-Library. Used only when Email or Password is blank, so clear Email to switch from password login." },
+    zlibrary_remix_userkey: { type: "string", default: "", category: "zlibrary", description: "The remix_userkey cookie from the same browser session. Set it with the user ID to use the saved session." },
 
     # LibriVox
     librivox_enabled: { type: "boolean", default: false, category: "librivox", description: "Enable LibriVox as a free public-domain audiobook source" },
