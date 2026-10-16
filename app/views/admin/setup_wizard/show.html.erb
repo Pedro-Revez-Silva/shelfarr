@@ -105,7 +105,7 @@
       <% end %>
     <% end %>
 
-    <%= tag.details(class: connected ? "mt-8 rounded-md border border-gray-700 p-4" : nil, open: !connected || @error.present?) do %>
+    <%= content_tag(connected ? :details : :div, class: connected ? "mt-8 rounded-md border border-gray-700 p-4" : nil, open: (connected && @error.present?) || nil) do %>
       <% if connected %>
         <summary class="cursor-pointer font-medium text-gray-200">Change the Audiobookshelf connection</summary>
       <% end %>

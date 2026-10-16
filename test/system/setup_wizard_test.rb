@@ -13,7 +13,12 @@ class SetupWizardTest < ApplicationSystemTestCase
       audiobook_output_path ebook_output_path download_local_path download_remote_path
       immediate_search_enabled auto_select_enabled
     ]).delete_all
-    Thread.current[:qbittorrent_sessions] = {}
+    reset_client_caches
+  end
+
+  # The wizard warms process-wide client connections that outlive the rolled-back settings.
+  teardown do
+    reset_client_caches
   end
 
   test "admin connects prowlarr, qbittorrent, and audiobookshelf" do
@@ -84,5 +89,13 @@ class SetupWizardTest < ApplicationSystemTestCase
     click_button "Setup"
     assert_text "Prowlarr URL"
     assert_equal false, SettingsService.get(:setup_wizard_completed)
+  end
+
+  private
+
+  def reset_client_caches
+    LibraryPlatformClient.reset_connections!
+    IndexerClient.reset_all_connections!
+    Thread.current[:qbittorrent_sessions] = {}
   end
 end

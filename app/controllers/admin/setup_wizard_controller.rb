@@ -38,7 +38,8 @@ module Admin
 
     def redirect_after_save(result)
       if result.stay?
-        redirect_to admin_setup_wizard_path(step: @step), notice: result.notice
+        # Preselect libraries only right after connecting, so a saved "Not now" stays.
+        redirect_to admin_setup_wizard_path(step: @step), notice: result.notice, flash: { suggest_libraries: true }
       elsif @step == "search"
         redirect_to root_path, notice: "Setup complete."
       else
@@ -104,7 +105,10 @@ module Admin
     end
 
     def saved_or_suggested_library(key, output_path)
-      SettingsService.get(key).presence || SetupWizard.suggested_library_id(@libraries, output_path).to_s
+      saved = SettingsService.get(key).to_s
+      return saved if saved.present? || !flash[:suggest_libraries]
+
+      SetupWizard.suggested_library_id(@libraries, output_path).to_s
     end
 
     def saved_url(client)

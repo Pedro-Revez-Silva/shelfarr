@@ -8,7 +8,7 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
   setup do
     @admin = users(:two)
     sign_in_as(@admin)
-    Thread.current[:qbittorrent_sessions] = {}
+    reset_client_caches
     Setting.where(key: %w[
       setup_wizard_completed indexer_provider prowlarr_url prowlarr_api_key
       library_platform audiobookshelf_url audiobookshelf_api_key
@@ -17,6 +17,11 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
       immediate_search_enabled auto_select_enabled auto_select_confidence_threshold auto_select_min_seeders
     ]).delete_all
     DownloadClient.delete_all
+  end
+
+  # The wizard warms process-wide client connections that outlive the rolled-back settings.
+  teardown do
+    reset_client_caches
   end
 
   test "non admin cannot open the wizard" do
@@ -433,10 +438,7 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "a connected audiobookshelf step leads with one library form and preselects the matching folder" do
-    SettingsService.set(:library_platform, "audiobookshelf")
-    SettingsService.set(:audiobookshelf_url, "http://audiobookshelf:13378")
-    SettingsService.set(:audiobookshelf_api_key, "abs-token")
+  test "a connected audiobookshelf step leads with one library form and preselects the matching folder once" do
     SettingsService.set(:audiobook_output_path, "/audiobooks/Shelfarr")
     SettingsService.set(:ebook_output_path, "/books")
 
@@ -451,20 +453,53 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
       )
 
       get admin_setup_wizard_url(step: "audiobookshelf")
+      assert_select "details", count: 0
+      assert_select "input[type=submit][value='Test and continue']", count: 1
+
+      patch admin_setup_wizard_url(step: "audiobookshelf"), params: { wizard: { url: "http://audiobookshelf:13378", api_key: "abs-token" } }
+      follow_redirect!
 
       assert_select "input[type=submit][value='Save and continue']", count: 1
       assert_select "details:not([open]) summary", "Change the Audiobookshelf connection"
       assert_select "select[name='wizard[audiobook_library_id]'] option[selected][value='lib-audio']"
       assert_select "select[name='wizard[ebook_library_id]'] option[selected][value='']"
 
-      stub_request(:get, "http://audiobookshelf:13378/api/libraries")
-        .with(headers: { "Authorization" => "Bearer abs-token" })
-        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { "libraries" => [ { "id" => "lib-audio", "name" => "Audiobooks", "folders" => [] } ] }.to_json)
+      patch admin_setup_wizard_url(step: "audiobookshelf"), params: { wizard: { phase: "libraries", audiobook_library_id: "", ebook_library_id: "" } }
+      get admin_setup_wizard_url(step: "audiobookshelf")
+
+      assert_select "select[name='wizard[audiobook_library_id]'] option[selected][value='']"
 
       patch admin_setup_wizard_url(step: "audiobookshelf"), params: { wizard: { url: "http://audiobookshelf:13378", api_key: "" } }
 
       assert_redirected_to admin_setup_wizard_path(step: "audiobookshelf")
       assert_equal "abs-token", SettingsService.get(:audiobookshelf_api_key)
     end
+  end
+
+  test "a qbittorrent rerun keeps a saved api key when the username is filled in" do
+    DownloadClient.create!(name: "qBittorrent", client_type: "qbittorrent", url: "http://qbittorrent:8080", username: "admin", api_key: QBITTORRENT_API_KEY, category: "", enabled: true)
+
+    get admin_setup_wizard_url(step: "qbittorrent")
+    assert_select "input[name='wizard[username]'][value='admin']"
+
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://qbittorrent:8080")
+
+      patch admin_setup_wizard_url(step: "qbittorrent"), params: {
+        wizard: { url: "http://qbittorrent:8080", username: "admin", password: "", api_key: "", category: "" }
+      }
+
+      assert_redirected_to admin_setup_wizard_path(step: "folders")
+      assert_not_requested :post, "http://qbittorrent:8080/api/v2/auth/login"
+    end
+    assert_equal QBITTORRENT_API_KEY, DownloadClient.qbittorrent.sole.api_key
+  end
+
+  private
+
+  def reset_client_caches
+    LibraryPlatformClient.reset_connections!
+    IndexerClient.reset_all_connections!
+    Thread.current[:qbittorrent_sessions] = {}
   end
 end

@@ -222,7 +222,8 @@ class SetupWizard
 
     def credentials_present?(existing, username, password, api_key)
       return true if api_key.present?
-      return true if existing&.valid_qbittorrent_api_key? && username.blank? && password.blank?
+      # A blank password keeps a saved API key, even when the username is filled in.
+      return true if existing&.valid_qbittorrent_api_key? && password.blank?
 
       (username.presence || existing&.username).present? && (password.presence || existing&.password).present?
     end
