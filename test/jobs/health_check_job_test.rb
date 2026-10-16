@@ -121,6 +121,35 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "records the indexer failure reason" do
+    setup_prowlarr_settings
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_return(status: 401)
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health = SystemHealth.for_service("indexer")
+      assert health.down?
+      assert_includes health.message, "Unauthorized"
+    end
+  end
+
+  test "records an indexer timeout" do
+    setup_prowlarr_settings
+    IndexerClients::Prowlarr.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_timeout
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health = SystemHealth.for_service("indexer")
+      assert health.down?
+      assert_includes health.message, "Connection timed out"
+    end
+  end
+
   test "marks prowlarr as down when connection fails" do
     setup_prowlarr_settings
 
@@ -133,6 +162,41 @@ class HealthCheckJobTest < ActiveJob::TestCase
       health = SystemHealth.for_service("prowlarr")
       assert health.down?
     end
+  end
+
+  test "marks indexer healthy after an unreachable Prowlarr URL is corrected without resetting the connection" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://old-prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "old-key")
+    IndexerClients::Prowlarr.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://old-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "old-key" })
+        .to_raise(Faraday::ConnectionFailed.new("Failed to open TCP connection to old-prowlarr.example:9696"))
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health = SystemHealth.for_service("indexer")
+      assert health.down?
+      assert_includes health.message, "Failed to connect"
+
+      SettingsService.set(:prowlarr_url, "http://new-prowlarr.example:9696")
+      SettingsService.set(:prowlarr_api_key, "new-key")
+
+      stub_request(:get, "http://new-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "new-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health.reload
+      assert health.healthy?, health.message
+      assert_requested :get, "http://new-prowlarr.example:9696/api/v1/indexer", times: 1
+      assert_requested :get, "http://old-prowlarr.example:9696/api/v1/indexer", times: 2
+    end
+  ensure
+    IndexerClients::Prowlarr.reset_connection!
   end
 
   test "marks indexer as healthy when jackett is selected and connected" do
@@ -175,6 +239,22 @@ class HealthCheckJobTest < ActiveJob::TestCase
       health = SystemHealth.for_service("download_client")
       assert health.healthy?
       assert_includes health.message, "1 clients connected"
+    end
+  end
+
+  test "records the download client failure reason" do
+    client = create_download_client
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+      HealthCheckJob.perform_now(service: "download_client")
+
+      health = SystemHealth.for_service("download_client")
+      assert health.down?
+      assert_includes health.message, client.name
+      assert_includes health.message, "Connection refused"
     end
   end
 
@@ -739,6 +819,20 @@ class HealthCheckJobTest < ActiveJob::TestCase
       health = SystemHealth.for_service("audiobookshelf")
       assert health.healthy?
       assert_includes health.message, "successful"
+    end
+  end
+
+  test "records an audiobookshelf unauthorized failure" do
+    setup_audiobookshelf_settings
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries").to_return(status: 403)
+
+      HealthCheckJob.perform_now(service: "audiobookshelf")
+
+      health = SystemHealth.for_service("audiobookshelf")
+      assert health.down?
+      assert_includes health.message, "Unauthorized"
     end
   end
 

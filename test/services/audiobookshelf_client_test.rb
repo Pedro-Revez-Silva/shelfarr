@@ -311,21 +311,93 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "test_connection returns false on authentication error" do
+  test "test_connection raises unauthorized when the API key is rejected" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries").to_return(status: 401)
+
+      error = assert_raises(AudiobookshelfClient::AuthenticationError) do
+        AudiobookshelfClient.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
+    end
+  end
+
+  test "test_connection raises a timeout instead of returning false" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries").to_timeout
+
+      error = assert_raises(AudiobookshelfClient::ConnectionError) do
+        AudiobookshelfClient.test_connection
+      end
+
+      assert_equal "Connection timed out", error.message
+    end
+  end
+
+  test "test_connection raises connection refused" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+      error = assert_raises(AudiobookshelfClient::ConnectionError) do
+        AudiobookshelfClient.test_connection
+      end
+
+      assert_equal "Connection refused", error.message
+    end
+  end
+
+  test "test_connection raises DNS failures" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries").to_raise(
+        SocketError.new("Failed to open TCP connection to audiobookshelf:13378 (getaddrinfo: Name or service not known)")
+      )
+
+      error = assert_raises(AudiobookshelfClient::ConnectionError) do
+        AudiobookshelfClient.test_connection
+      end
+
+      assert_equal "Could not resolve host", error.message
+    end
+  end
+
+  test "test_connection raises TLS failures" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      error = assert_raises(AudiobookshelfClient::ConnectionError) do
+        AudiobookshelfClient.test_connection
+      end
+
+      assert_equal "TLS connection failed", error.message
+    end
+  end
+
+  test "test_connection reports an authentication error" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries")
         .to_return(status: 401)
 
-      assert_not AudiobookshelfClient.test_connection
+      error = assert_raises(AudiobookshelfClient::AuthenticationError) do
+        AudiobookshelfClient.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
     end
   end
 
-  test "test_connection returns false on connection error" do
+  test "test_connection reports a connection error" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries")
         .to_timeout
 
-      assert_not AudiobookshelfClient.test_connection
+      error = assert_raises(AudiobookshelfClient::ConnectionError) do
+        AudiobookshelfClient.test_connection
+      end
+
+      assert_equal "Connection timed out", error.message
     end
   end
 
@@ -379,12 +451,16 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
   end
 
   # SSL error handling tests
-  test "test_connection returns false on SSL error" do
+  test "test_connection reports an SSL error" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries")
         .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
 
-      assert_not AudiobookshelfClient.test_connection
+      error = assert_raises(AudiobookshelfClient::ConnectionError) do
+        AudiobookshelfClient.test_connection
+      end
+
+      assert_equal "TLS connection failed", error.message
     end
   end
 
@@ -399,10 +475,12 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "test_connection returns false on malformed url" do
+  test "test_connection raises on a malformed url" do
     SettingsService.set(:audiobookshelf_url, "audiobookshelf:13378")
 
-    assert_not AudiobookshelfClient.test_connection
+    assert_raises(AudiobookshelfClient::ConnectionError) do
+      AudiobookshelfClient.test_connection
+    end
   end
 
   test "library_items returns empty array on page 0 404 or 410 response" do

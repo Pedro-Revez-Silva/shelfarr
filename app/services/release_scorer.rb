@@ -24,6 +24,13 @@ class ReleaseScorer
     "XV" => "15"
   }.freeze
 
+  # Quotes are removed before transliteration, which would otherwise turn
+  # curly apostrophes into "?". Apostrophes specifically can also be a word
+  # break; that form is kept only for title scoring.
+  MATCHING_QUOTE_CHARACTERS = "'\"`´’‘"
+  APOSTROPHE_PATTERN = /['`´’‘]/
+  private_constant :MATCHING_QUOTE_CHARACTERS, :APOSTROPHE_PATTERN
+
   # Weight configuration for each scoring factor
   WEIGHTS = {
     title: 40,      # How well does the release title match the book title?
@@ -148,9 +155,9 @@ class ReleaseScorer
   end
 
   def exact_normalized_title_match?(book_title)
-    title_variants = matching_text_variants(book_title)
+    title_variants = title_matching_text_variants(book_title)
     short_title = title_variants.any? { |title| title.length < 4 }
-    matching_text_variants(@search_result.title).any? do |release_title|
+    title_matching_text_variants(@search_result.title).any? do |release_title|
       title_variants.any? do |title|
         exact_title_phrase_match?(release_title, title, short_title: short_title)
       end
@@ -429,7 +436,7 @@ class ReleaseScorer
     return "" if text.blank?
 
     # Remove quotes first: transliteration replaces curly apostrophes with "?".
-    normalized = ActiveSupport::Inflector.transliterate(text.to_s.delete("'\"`´’‘"))
+    normalized = ActiveSupport::Inflector.transliterate(text.to_s.delete(MATCHING_QUOTE_CHARACTERS))
       .downcase
       .gsub(/[^a-z0-9]+/, " ")
       .strip
@@ -440,10 +447,23 @@ class ReleaseScorer
   # Keep the previous punctuation-omitted representation for names such as
   # Catch-22, R.U.R. and J.R.R. while retaining real whitespace boundaries.
   def matching_text_variants(text)
-    punctuationless = ActiveSupport::Inflector.transliterate(text.to_s.delete("'\"`´’‘"))
+    punctuationless = ActiveSupport::Inflector.transliterate(text.to_s.delete(MATCHING_QUOTE_CHARACTERS))
       .downcase.gsub(/[^a-z0-9\s]/, "").squish
 
     [ normalize_for_matching(text), normalize_number_tokens(punctuationless) ].compact_blank.uniq
+  end
+
+  # Title scoring compares both apostrophe forms. Deleting the mark keeps
+  # English contractions as one token ("Ender's" -> "enders"). Treating it as
+  # a word break keeps elisions ("C'est" -> "c est") aligned with scene names
+  # that replace the apostrophe with a dot.
+  def title_matching_text_variants(text)
+    variants = matching_text_variants(text)
+    source = text.to_s
+    return variants unless source.match?(APOSTROPHE_PATTERN)
+
+    boundary = normalize_for_matching(source.gsub(APOSTROPHE_PATTERN, " "))
+    (variants + [ boundary ]).compact_blank.uniq
   end
 
   def normalize_number_tokens(text)

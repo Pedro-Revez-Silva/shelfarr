@@ -415,6 +415,14 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     )
   end
 
+  test "auto-selects a 100-confidence release whose title contains FRENCH" do
+    assert_french_release_auto_selected("The Pending Ebook.Another.Author.2026.FRENCH.ePUB.")
+  end
+
+  test "auto-selects a 100-confidence release whose title contains TRUEFRENCH" do
+    assert_french_release_auto_selected("The Pending Ebook.Another.Author.2024.TRUEFRENCH.EPUB")
+  end
+
   test "selection result error reason works" do
     # Test that the SelectionResult with error reason works correctly
     result = AutoSelectService::SelectionResult.new(selected: false, reason: :error)
@@ -425,6 +433,30 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  def assert_french_release_auto_selected(title)
+    @request.update!(language: "fr")
+    result = create_search_result(
+      title: title,
+      seeders: nil,
+      download_url: "http://example.com/#{SecureRandom.hex(8)}.nzb",
+      magnet_url: nil,
+      confidence_score: nil,
+      detected_language: nil
+    )
+    result.calculate_score!
+
+    assert_equal 100, result.score_breakdown["language"], title
+    assert_equal 100, result.confidence_score, title
+    assert_equal "fr", result.detected_language, title
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?, selection.reason.to_s
+      assert_equal result, selection.search_result
+    end
+  end
 
   def assert_comic_title_not_auto_selected(
     series:,

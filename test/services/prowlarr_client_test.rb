@@ -654,13 +654,93 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection raises unauthorized when the API key is rejected" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_return(status: 401)
+
+      error = assert_raises(IndexerClients::Base::AuthenticationError) do
+        ProwlarrClient.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
+    end
+  end
+
+  test "test_connection raises a timeout instead of returning false" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_timeout
+
+      error = assert_raises(IndexerClients::Base::ConnectionError) do
+        ProwlarrClient.test_connection
+      end
+
+      assert_equal "Connection timed out", error.message
+    end
+  end
+
+  test "test_connection raises connection refused" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
+        .to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+      error = assert_raises(IndexerClients::Base::ConnectionError) do
+        ProwlarrClient.test_connection
+      end
+
+      assert_equal "Connection refused", error.message
+    end
+  end
+
+  test "test_connection raises DNS failures" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_raise(
+        SocketError.new("Failed to open TCP connection to prowlarr:9696 (getaddrinfo: Name or service not known)")
+      )
+
+      error = assert_raises(IndexerClients::Base::ConnectionError) do
+        ProwlarrClient.test_connection
+      end
+
+      assert_equal "Could not resolve host", error.message
+    end
+  end
+
+  test "test_connection raises TLS failures" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      error = assert_raises(IndexerClients::Base::ConnectionError) do
+        ProwlarrClient.test_connection
+      end
+
+      assert_equal "TLS connection failed", error.message
+    end
+  end
+
+  test "test_connection still raises unclassified API errors" do
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_return(status: 500, body: "")
+
+      error = assert_raises(IndexerClients::Base::Error) do
+        ProwlarrClient.test_connection
+      end
+
+      assert_match "500", error.message
+    end
+  end
+
   # SSL error handling tests
-  test "test_connection returns false on SSL error" do
+  test "test_connection does not retry TLS failures" do
     VCR.turned_off do
       request = stub_request(:get, "http://localhost:9696/api/v1/indexer")
         .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
 
-      assert_not ProwlarrClient.test_connection
+      error = assert_raises(IndexerClients::Base::ConnectionError) do
+        ProwlarrClient.test_connection
+      end
+
+      assert_equal "TLS connection failed", error.message
       assert_requested request, times: 1
     end
   end
@@ -722,6 +802,87 @@ class ProwlarrClientTest < ActiveSupport::TestCase
         ProwlarrClient.search("test")
       end
       assert_requested request, times: 1
+    end
+  end
+
+  # The jobs process never sees the web process's reset_all_connections!.
+  test "search sends the corrected Prowlarr API key without resetting the connection" do
+    SettingsService.set(:prowlarr_url, "http://prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "old-key")
+    ProwlarrClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "old-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert ProwlarrClient.test_connection
+
+      SettingsService.set(:prowlarr_api_key, "new-key")
+
+      corrected = stub_request(:get, %r{\Ahttp://prowlarr\.example:9696/api/v1/search})
+        .with(headers: { "X-Api-Key" => "new-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert_empty ProwlarrClient.search("atomic habits")
+      assert_requested corrected, times: 1
+    end
+  end
+
+  test "search uses the corrected Prowlarr URL and API key without resetting the connection" do
+    SettingsService.set(:prowlarr_url, "http://old-prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "old-key")
+    ProwlarrClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://old-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "old-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert ProwlarrClient.test_connection
+
+      SettingsService.set(:prowlarr_url, "http://new-prowlarr.example:9696")
+      SettingsService.set(:prowlarr_api_key, "new-key")
+
+      corrected_indexer = stub_request(:get, "http://new-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "new-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+      corrected_search = stub_request(:get, %r{\Ahttp://new-prowlarr\.example:9696/api/v1/search})
+        .with(headers: { "X-Api-Key" => "new-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert ProwlarrClient.test_connection
+      assert_empty ProwlarrClient.search("atomic habits")
+      assert_requested corrected_indexer, times: 1
+      assert_requested corrected_search, times: 1
+      assert_requested :get, %r{old-prowlarr\.example}, times: 1
+    end
+  end
+
+  test "search uses the corrected Prowlarr URL after the worker health check hit an unreachable host" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://old-prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "old-key")
+    ProwlarrClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://old-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "old-key" })
+        .to_raise(Faraday::ConnectionFailed.new("Failed to open TCP connection to old-prowlarr.example:9696"))
+
+      HealthCheckJob.perform_now(service: "indexer")
+      assert SystemHealth.for_service("indexer").down?
+
+      SettingsService.set(:prowlarr_url, "http://new-prowlarr.example:9696")
+      SettingsService.set(:prowlarr_api_key, "new-key")
+
+      corrected_search = stub_request(:get, %r{\Ahttp://new-prowlarr\.example:9696/api/v1/search})
+        .with(headers: { "X-Api-Key" => "new-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert_empty ProwlarrClient.search("atomic habits")
+      assert_requested corrected_search, times: 1
+      assert_requested :get, "http://old-prowlarr.example:9696/api/v1/indexer", times: 2
     end
   end
 

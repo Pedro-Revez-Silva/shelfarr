@@ -52,8 +52,12 @@ module IndexerClients
 
       private
 
-      def connection
-        @connection ||= Faraday.new(url: base_url) do |f|
+      def connection_settings_key
+        SettingsService.get(:jackett_url).to_s
+      end
+
+      def build_connection
+        Faraday.new(url: base_url) do |f|
           f.request :url_encoded
           f.adapter Faraday.default_adapter
           f.options.timeout = 30

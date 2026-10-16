@@ -540,7 +540,11 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
         .with(headers: { "Authorization" => "Bearer #{QBITTORRENT_API_KEY}" })
         .to_return(status: 403, body: "Forbidden")
 
-      assert_not @client.test_connection
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
       assert_not_requested(:post, "http://localhost:8080/api/v2/auth/login")
     end
   end
@@ -584,16 +588,85 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
-  test "test_connection returns false on authentication failure" do
+  test "test_connection raises unauthorized when login is rejected" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")
         .to_return(status: 401, body: "Fails.")
 
-      assert_not @client.test_connection
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
     end
   end
 
-  test "test_connection returns false when API endpoint returns 404" do
+  test "test_connection raises connection refused" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.test_connection
+      end
+
+      assert_equal "Connection refused", error.message
+    end
+  end
+
+  test "test_connection raises a timeout" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login").to_timeout
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.test_connection
+      end
+
+      assert_equal "Connection timed out", error.message
+    end
+  end
+
+  test "test_connection raises DNS failures" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login").to_raise(
+        SocketError.new("Failed to open TCP connection to localhost:8080 (getaddrinfo: Name or service not known)")
+      )
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.test_connection
+      end
+
+      assert_equal "Could not resolve host", error.message
+    end
+  end
+
+  test "test_connection raises TLS failures" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_raise(Faraday::SSLError.new("SSL certificate verify failed"))
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.test_connection
+      end
+
+      assert_equal "TLS connection failed", error.message
+    end
+  end
+
+  test "test_connection reports an authentication failure" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(status: 401, body: "Fails.")
+
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
+    end
+  end
+
+  test "test_connection raises when the API endpoint returns 404" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")
         .to_return(
@@ -606,7 +679,12 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:get, "http://localhost:8080/api/v2/app/version")
         .to_return(status: 404, body: "<html><head><title>404 Not Found</title></head></html>")
 
-      assert_not @client.test_connection
+      error = assert_raises(DownloadClients::Base::Error) do
+        @client.test_connection
+      end
+
+      assert_equal DownloadClients::Base::Error, error.class
+      assert_equal "qBittorrent API error: 404", error.message
     end
   end
 
@@ -1324,7 +1402,12 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:get, "http://localhost:8080/api/v2/app/version")
         .to_return(status: 403, body: "Forbidden")
 
-      assert_not @client.test_connection
+      error = assert_raises(DownloadClients::Base::AuthenticationError) do
+        @client.test_connection
+      end
+
+      assert_equal "Unauthorized", error.message
+      assert_nil Thread.current[:qbittorrent_sessions][@client_record.id][:cookie_value]
     end
   end
 
@@ -1639,7 +1722,152 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "test_connection logs in when IPv6 localhost blackholes" do
+    server = Ipv4OnlyQbittorrentApi.start
+    addresses = Addrinfo.getaddrinfo("localhost", server.port, nil, :STREAM).map(&:ip_address)
+    assert_includes addresses, "::1"
+    assert_includes addresses, "127.0.0.1"
+
+    client_record = DownloadClient.create!(
+      name: "IPv6 blackhole qBittorrent",
+      client_type: "qbittorrent",
+      url: "http://localhost:#{server.port}",
+      username: "admin",
+      password: "adminadmin",
+      priority: 1,
+      enabled: true
+    )
+    client = client_record.adapter
+    log = StringIO.new
+    previous_logger = Rails.logger
+    Rails.logger = ActiveSupport::Logger.new(log)
+    WebMock.allow_net_connect!
+
+    with_blackholed_ipv6_localhost(server.port) do
+      assert client.test_connection, log.string
+    end
+
+    login_params = URI.decode_www_form(server.login_body.to_s).to_h
+    assert_equal "admin", login_params["username"]
+    assert_equal "adminadmin", login_params["password"]
+    assert_match(/SID=test_session_id/, server.version_cookie.to_s)
+  ensure
+    Rails.logger = previous_logger if previous_logger
+    WebMock.disable_net_connect!
+    server&.stop
+  end
+
+  test "HTTPS proxy connections retain the hostname without direct address probes" do
+    @client_record.update!(url: "https://qbittorrent.example.test")
+    connections = []
+    probes = []
+    new_http = Net::HTTP.method(:new)
+
+    with_env("https_proxy" => "http://127.0.0.1:8888", "HTTPS_PROXY" => nil,
+      "http_proxy" => nil, "HTTP_PROXY" => nil, "no_proxy" => nil, "NO_PROXY" => nil) do
+      VCR.turned_off do
+        stub_qbittorrent_connection(@client_record.url)
+
+        Net::HTTP.stub(:new, ->(*args) { new_http.call(*args).tap { |http| connections << http } }) do
+          @client.stub(:reachable_ipaddr, ->(*) { probes << true; "203.0.113.10" }) do
+            assert @client.test_connection
+          end
+        end
+      end
+    end
+
+    assert_not_empty connections
+    connections.each do |http|
+      assert http.proxy?
+      assert_nil http.ipaddr, "IP pinning changes the proxy CONNECT destination from the configured hostname"
+      assert_equal "qbittorrent.example.test", http.address
+    end
+    assert_empty probes, "Proxied requests must not open direct probe connections"
+  end
+
   private
+
+  def with_blackholed_ipv6_localhost(port)
+    rule = [ "-p", "tcp", "-d", "::1", "--dport", port.to_s, "-j", "DROP" ]
+    installed = system("sudo", "-n", "ip6tables", "-I", "INPUT", *rule, out: File::NULL, err: File::NULL)
+    raise "ip6tables could not blackhole ::1:#{port}" unless installed
+
+    yield
+  ensure
+    system("sudo", "-n", "ip6tables", "-D", "INPUT", *rule, out: File::NULL, err: File::NULL) if installed
+  end
+
+  # qBittorrent WebAPI bound to IPv4 loopback only. curl reaches it when ::1
+  # is blackholed; Net::HTTP's single open timeout does not.
+  class Ipv4OnlyQbittorrentApi
+    attr_reader :port, :login_body, :version_cookie
+
+    def self.start
+      server = new
+      server.start
+      server
+    end
+
+    def initialize
+      @tcp = TCPServer.new("127.0.0.1", 0)
+      @port = @tcp.addr[1]
+    end
+
+    def start
+      @thread = Thread.new do
+        loop do
+          client = @tcp.accept
+          serve(client)
+        rescue IOError, Errno::EBADF
+          break
+        rescue StandardError
+          client&.close
+        end
+      end
+    end
+
+    def stop
+      @tcp.close
+      @thread&.join(1)
+    end
+
+    private
+
+    def serve(client)
+      head = +""
+      while (line = client.gets)
+        head << line
+        break if line == "\r\n"
+      end
+      headers = head.lines.map(&:strip)
+      length = headers.grep(/\AContent-Length:/i).first.to_s.split(":", 2).last.to_i
+      body = length.positive? ? client.read(length).to_s : ""
+      path = headers.first.to_s.split[1]
+      response = response_for(path, headers, body)
+      client.write(response)
+    ensure
+      client&.close
+    end
+
+    def response_for(path, headers, body)
+      case path
+      when "/api/v2/auth/login"
+        @login_body = body
+        http_response(200, "Ok.", "Set-Cookie" => "SID=test_session_id; path=/")
+      when "/api/v2/app/version"
+        @version_cookie = headers.grep(/\ACookie:/i).first
+        http_response(200, "v4.6.0")
+      else
+        http_response(404, "")
+      end
+    end
+
+    def http_response(status, body, headers = {})
+      reason = status == 200 ? "OK" : "Not Found"
+      extra = headers.map { |key, value| "#{key}: #{value}\r\n" }.join
+      "HTTP/1.1 #{status} #{reason}\r\nContent-Length: #{body.bytesize}\r\n#{extra}Connection: close\r\n\r\n#{body}"
+    end
+  end
 
   def capture_add_torrent_request(url, **options)
     hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"

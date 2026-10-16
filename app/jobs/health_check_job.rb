@@ -108,13 +108,12 @@ class HealthCheckJob < ApplicationJob
     end
 
     results = clients.map do |client|
-      success = begin
-        client.test_connection
+      begin
+        { client: client, success: client.test_connection, reason: nil }
       rescue => e
-        Rails.logger.error "[HealthCheckJob] Download client #{client.name} check failed: #{e.message}"
-        false
+        Rails.logger.error "[HealthCheckJob] Download client #{client.name} check failed: #{ConnectionErrorClassifier.describe(e)}"
+        { client: client, success: false, reason: ConnectionErrorClassifier.describe(e) }
       end
-      { client: client, success: success }
     end
 
     successful = results.count { |r| r[:success] }
@@ -123,12 +122,10 @@ class HealthCheckJob < ApplicationJob
     if failed == 0
       health.check_succeeded!(message: "All #{successful} clients connected")
     elsif successful == 0
-      names = results.reject { |r| r[:success] }.map { |r| r[:client].name }.join(", ")
-      health.check_failed!(message: "All clients failed: #{names}")
+      health.check_failed!(message: "All clients failed: #{download_client_failure_labels(results)}")
     else
-      names = results.reject { |r| r[:success] }.map { |r| r[:client].name }.join(", ")
       health.check_failed!(
-        message: "#{successful}/#{clients.size} working. Failed: #{names}",
+        message: "#{successful}/#{clients.size} working. Failed: #{download_client_failure_labels(results)}",
         degraded: true
       )
     end
@@ -211,6 +208,13 @@ class HealthCheckJob < ApplicationJob
       message: "Download paths could not be checked: #{e.message}".truncate(500)
     )
     Rails.logger.error "[HealthCheckJob] Download paths check failed: #{e.message}"
+  end
+
+  def download_client_failure_labels(results)
+    results.reject { |result| result[:success] }.map do |result|
+      reason = result[:reason]
+      reason.present? ? "#{result[:client].name} (#{reason})" : result[:client].name
+    end.join(", ")
   end
 
   def hard_download_path_failure?(issue)

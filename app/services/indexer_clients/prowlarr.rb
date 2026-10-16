@@ -105,9 +105,13 @@ module IndexerClients
         ensure_configured!
 
         response = request(idempotent: true) { connection.get("api/v1/indexer") }
-        response.status == 200
-      rescue IndexerClients::Base::Error
-        false
+        handle_response(response) { true }
+      rescue IndexerClients::Base::Error => e
+        ConnectionErrorClassifier.reraise!(
+          e,
+          connection_error: IndexerClients::Base::ConnectionError,
+          authentication_error: IndexerClients::Base::AuthenticationError
+        )
       end
 
       def display_name
@@ -151,8 +155,12 @@ module IndexerClients
         end.compact.map(&:to_s).map(&:downcase)
       end
 
-      def connection
-        @connection ||= Faraday.new(url: base_url) do |f|
+      def connection_settings_key
+        [ SettingsService.get(:prowlarr_url).to_s, SettingsService.get(:prowlarr_api_key).to_s ]
+      end
+
+      def build_connection
+        Faraday.new(url: base_url) do |f|
           f.options.params_encoder = Faraday::FlatParamsEncoder
           f.request :url_encoded
           f.response :json, parser_options: { symbolize_names: false }

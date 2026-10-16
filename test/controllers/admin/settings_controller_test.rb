@@ -923,6 +923,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "button[aria-label='Add Z-Library URL']"
     assert_select "input[name='settings[zlibrary_email]']"
     assert_select "input[name='settings[zlibrary_password]']"
+    assert_select "input[name='settings[zlibrary_remix_userid]']"
+    assert_select "input[type='password'][name='settings[zlibrary_remix_userkey]']"
+    assert_select "p", text: /clear Email to switch from password login/
     assert_select "a", text: "Test Z-Library Connection"
   end
 
@@ -1207,6 +1210,36 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "test_prowlarr names an unauthorized API key" do
+    SettingsService.set(:prowlarr_url, "http://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "test-api-key" })
+        .to_return(status: 401)
+
+      post test_prowlarr_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match "Unauthorized", flash[:alert]
+    end
+  end
+
+  test "test_prowlarr names a timeout" do
+    SettingsService.set(:prowlarr_url, "http://localhost:9696")
+    SettingsService.set(:prowlarr_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_timeout
+
+      post test_prowlarr_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match "Connection timed out", flash[:alert]
+    end
+  end
+
   test "test_prowlarr fails when connection fails" do
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "test-api-key")
@@ -1237,7 +1270,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       post test_indexer_admin_settings_url
 
       assert_redirected_to admin_settings_path
-      assert_match(/connection failed/i, flash[:alert], "expected #{provider} to fail without a server error")
+      assert_match(/connection failed|must be a valid http/i, flash[:alert], "expected #{provider} to fail without a server error")
     end
   end
 
@@ -1587,6 +1620,12 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:zlibrary_password, "secret")
 
     VCR.turned_off do
+      stub_request(:get, "https://z-library.sk/eapi/info/domains")
+        .to_return(
+          status: 200,
+          body: { success: 1 }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
       stub_request(:post, "https://z-library.sk/eapi/user/login")
         .with(body: "email=reader%40example.com&password=secret")
         .to_return(
@@ -1726,6 +1765,22 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
       assert_redirected_to admin_settings_path
       assert_match /successful/i, flash[:notice]
+    end
+  end
+
+  test "test_audiobookshelf names an unauthorized token" do
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(status: 401)
+
+      post test_audiobookshelf_admin_settings_url
+
+      assert_redirected_to admin_settings_path
+      assert_match "Unauthorized", flash[:alert]
     end
   end
 
