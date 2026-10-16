@@ -25,6 +25,7 @@ module IndexerClients
 
       def reset_connection!
         @connection = nil
+        @connection_settings_key = nil
       end
 
       def display_name
@@ -37,6 +38,27 @@ module IndexerClients
       end
 
       private
+
+      # Faraday keeps the settings it was built with. The jobs process does
+      # not see reset_all_connections! from the web process, so rebuild when
+      # those settings change.
+      def connection
+        settings_key = connection_settings_key
+        return @connection if @connection && @connection_settings_key == settings_key
+
+        built = build_connection
+        @connection = built
+        @connection_settings_key = settings_key
+        built
+      end
+
+      def connection_settings_key
+        raise NotImplementedError
+      end
+
+      def build_connection
+        raise NotImplementedError
+      end
 
       def categories_for_type(book_type)
         SettingsService.indexer_category_ids_for(book_type)

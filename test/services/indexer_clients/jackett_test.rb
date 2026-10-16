@@ -125,6 +125,36 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_all_connections!.
+  test "search uses the corrected Jackett URL without resetting the connection" do
+    SettingsService.set(:jackett_url, "http://old-jackett.example:9117")
+    SettingsService.set(:jackett_api_key, "old-jackett-key")
+    IndexerClients::Jackett.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, %r{old-jackett\.example:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "old-jackett-key", "t" => "caps"))
+        .to_return(status: 200, body: "<caps />", headers: { "Content-Type" => "application/xml" })
+
+      assert IndexerClients::Jackett.test_connection
+
+      SettingsService.set(:jackett_url, "http://new-jackett.example:9117")
+      SettingsService.set(:jackett_api_key, "new-jackett-key")
+
+      search = stub_request(:get, %r{new-jackett\.example:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "new-jackett-key", "t" => "search"))
+        .to_return(
+          status: 200,
+          body: "<rss><channel></channel></rss>",
+          headers: { "Content-Type" => "application/xml" }
+        )
+
+      assert_empty IndexerClients::Jackett.search("test", book_type: :ebook)
+      assert_requested search, times: 1
+      assert_not_requested :get, %r{old-jackett\.example.+t=search}
+    end
+  end
+
   test "search retries one transient connection failure" do
     VCR.turned_off do
       request = stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
