@@ -6,7 +6,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   setup do
     @user = users(:one)
-    # Ensure user is not locked
     @user.update!(failed_login_count: 0, locked_until: nil)
     SettingsService.set(:auth_disabled, false)
     SettingsService.set(:oidc_enabled, false)
@@ -177,14 +176,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to verify_otp_session_path
     assert_nil cookies[:session_id]
-    # Session should have pending_user_id set for OTP verification
     assert_equal @user.id, session[:pending_user_id]
   end
 
   test "submit_otp with valid code completes login" do
     @user.update!(otp_secret: ROTP::Base32.random, otp_required: true)
 
-    # Set up pending session
     post session_path, params: { username: @user.username, password: FIXTURE_PASSWORD }
     assert_redirected_to verify_otp_session_path
 
@@ -199,10 +196,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "submit_otp with invalid code shows error" do
     @user.update!(otp_secret: ROTP::Base32.random, otp_required: true)
 
-    # Set up pending session
     post session_path, params: { username: @user.username, password: FIXTURE_PASSWORD }
 
-    # Submit invalid OTP
     post submit_otp_session_path, params: { otp_code: "000000" }
 
     assert_redirected_to verify_otp_session_path

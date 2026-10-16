@@ -306,7 +306,6 @@ class OwnedMediaBackupJob < ApplicationJob
 
       # Re-resolve both paths after opening, then prove the pathname still
       # identifies the held descriptor. The descriptor remains authoritative
-      # if the shared path is changed after this point.
       current_root = import_root.realpath
       resolved_path = candidate.realpath
       path_stat = resolved_path.stat

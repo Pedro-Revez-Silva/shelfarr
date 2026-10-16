@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-# Builds a conservative, filesystem-only import plan for audiobook releases
-# that contain one self-contained audio file per book. Chaptered and multipart
-# releases deliberately fall back to the normal single-directory import.
 class AudiobookBundleImportPlanner
   KNOWN_AUDIO_EXTENSIONS = %w[
     aa aac aax aaxc aiff alac flac m4a m4b mp3 ogg opus wav wma
@@ -292,8 +289,7 @@ class AudiobookBundleImportPlanner
     path.to_s.unicode_normalize(:nfkc).downcase(:fold)
   end
 
-  # Resolve symlinks in the existing portion of a path while retaining any
-  # not-yet-created destination segments.
+  # Resolve symlinks in the existing portion of a path while retaining any not-yet-created destination segments.
   def canonical_path(path)
     expanded_path = File.expand_path(path)
     existing_path = expanded_path

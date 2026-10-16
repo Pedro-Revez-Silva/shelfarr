@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-# Recurring job that monitors system health by checking all configured services
 class HealthCheckJob < ApplicationJob
   queue_as :default
 

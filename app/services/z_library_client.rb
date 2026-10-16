@@ -7,8 +7,6 @@ require "nokogiri"
 require "public_suffix"
 require "uri"
 
-# Client for interacting with Z-Library's internal eAPI.
-# This integration is unofficial and may break if the service changes.
 class ZLibraryClient
   class Error < StandardError; end
   class ConnectionError < Error; end

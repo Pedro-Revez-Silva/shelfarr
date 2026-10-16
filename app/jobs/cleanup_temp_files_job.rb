@@ -2,9 +2,7 @@
 
 require "find"
 
-# Cleans up temporary files:
-# - ZIP downloads older than 1 hour
-# - Orphaned upload files older than 24 hours
+# Cleans up temporary files: - ZIP downloads older than 1 hour - Orphaned upload files older than 24 hours
 class CleanupTempFilesJob < ApplicationJob
   queue_as :default
 

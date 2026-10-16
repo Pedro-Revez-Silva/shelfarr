@@ -43,7 +43,6 @@ module Auth
     end
 
     def complete_oidc_login(user, auth_hash)
-      # Check if account is locked
       if user.locked?
         log_security_event("oidc_login.blocked_locked", user)
         redirect_to oidc_failure_redirect_path, alert: "Account is locked. Try again in #{user.unlock_in_words}."

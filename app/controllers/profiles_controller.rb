@@ -110,7 +110,6 @@ class ProfilesController < ApplicationController
     redirect_to profile_path, notice: "API token revoked."
   end
 
-  # Two-factor authentication setup
   def two_factor
     @user = Current.user
 
@@ -130,7 +129,6 @@ class ProfilesController < ApplicationController
       return
     end
 
-    # Verify the code before enabling
     if @user.verify_otp(params[:otp_code])
       @backup_codes = @user.enable_otp!
       render :backup_codes

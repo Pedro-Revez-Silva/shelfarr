@@ -17,8 +17,7 @@ class ActiveRecordEncryptionTest < ActiveSupport::TestCase
     config = ActiveRecord::Encryption.config
     original_salt = config.key_derivation_salt
     config.key_derivation_salt = keys["ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"]
-    # A new generator, as in a freshly booted process; the shared one keeps
-    # the salt it first read.
+    # A new generator, as in a freshly booted process; the shared one keeps the salt it first read.
     provider = ActiveRecord::Encryption::DerivedSecretKeyProvider.new(keys["ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"],
       key_generator: ActiveRecord::Encryption::KeyGenerator.new)
     ActiveRecord::Encryption.encryptor.encrypt(value, key_provider: provider)
@@ -123,8 +122,7 @@ class ActiveRecordEncryptionTest < ActiveSupport::TestCase
         puts out.lines.grep(/RESULT=/).last
       RUBY
 
-      # COVERAGE would make bin/rails start SimpleCov, and its coverage gate,
-      # in these probe processes.
+      # COVERAGE would make bin/rails start SimpleCov, and its coverage gate, in these probe processes.
       process_env = { "RAILS_ENV" => "development", "COVERAGE" => nil }
       ShelfarrEncryptionKeys::REQUIRED.each { |name| process_env[name] = env[name] }
       out, status = Open3.capture2e(process_env, Gem.ruby, "bin/rails", "runner", parent, stdin_data: legacy, chdir: dir)

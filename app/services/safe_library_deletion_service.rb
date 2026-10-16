@@ -41,8 +41,7 @@ class SafeLibraryDeletionService
   rescue OwnedMediaImportFileService::Error => error
     raise Error, "Shelfarr could not coordinate library deletion: #{error.message}"
   rescue Errno::ENOENT
-    # A path which was authorized from durable provenance and is already gone
-    # needs no further filesystem work.
+    # A path which was authorized from durable provenance and is already gone needs no further filesystem work.
     true
   rescue Errno::ELOOP, Errno::EACCES, Errno::ENOTDIR, Errno::EPERM => error
     raise Error, "Shelfarr could not safely remove the library path: #{error.message}"

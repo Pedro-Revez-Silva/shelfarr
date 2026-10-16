@@ -9,21 +9,18 @@ class PostProcessingJobTest < ActiveJob::TestCase
   setup do
     LibraryPlatformClient.reset_connections!
 
-    # Create an audiobook for testing (not ebook)
     @book = Book.create!(
       title: "Test Audiobook",
       author: "Test Author",
       book_type: :audiobook
     )
 
-    # Create a request for the audiobook
     @request = Request.create!(
       book: @book,
       user: users(:one),
       status: :downloading
     )
 
-    # Create a completed download
     @download = @request.downloads.create!(
       name: @book.title,
       size_bytes: 1073741824,
@@ -37,22 +34,18 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-123")
 
-    # Create temp directories for testing file operations
     @temp_download_base = Dir.mktmpdir("downloads")
     @temp_source = File.join(@temp_download_base, "source")
     FileUtils.mkdir_p(@temp_source)
     @temp_dest_base = Dir.mktmpdir("dest")
 
-    # Set output path to temp destination (Shelfarr always uses its own settings)
     SettingsService.set(:audiobook_output_path, @temp_dest_base)
     SettingsService.set(:download_local_path, @temp_download_base)
     SettingsService.set(:completed_download_import_mode, "copy")
     Setting.where(key: "precreate_download_archives").delete_all
 
-    # Update download path to temp source
     @download.update!(download_path: @temp_source)
 
-    # Create test file in source
     File.write(File.join(@temp_source, "audiobook.mp3"), "test audio content")
   end
 
@@ -572,7 +565,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
       PostProcessingJob.perform_now(@download.id)
 
-      # Original file should still exist (copy, not move)
       assert File.exist?(original_file), "Source file should still exist after processing (copy, not move)"
 
       # Destination file should also exist
@@ -2373,7 +2365,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
       stub_request(:post, "http://localhost:13378/api/libraries/lib-123/scan")
         .to_return(status: 500)
 
-      # Should not raise, just log warning
       assert_nothing_raised do
         PostProcessingJob.perform_now(@download.id)
       end
@@ -2417,17 +2408,14 @@ class PostProcessingJobTest < ActiveJob::TestCase
       PostProcessingJob.perform_now(@download.id)
       @book.reload
 
-      # Extract just the folder names from the path
       path_parts = @book.file_path.split(File::SEPARATOR)
       author_folder = path_parts[-2]
       title_folder = path_parts[-1]
 
-      # Author folder should have invalid chars removed
       assert_not_includes author_folder, ":"
       assert_not_includes author_folder, "|"
       assert_not_includes author_folder, "*"
 
-      # Title folder should have invalid chars removed
       assert_not_includes title_folder, "<"
       assert_not_includes title_folder, ">"
       assert_not_includes title_folder, "?"
@@ -2435,8 +2423,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
   end
 
   test "succeeds even when audiobookshelf library fetch fails" do
-    # Shelfarr now uses its own configured paths, not Audiobookshelf's.
-    # Processing should succeed regardless of ABS API issues.
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries/lib-123")
         .to_return(status: 500)
@@ -2446,7 +2432,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
       PostProcessingJob.perform_now(@download.id)
       @request.reload
 
-      # Request should complete successfully since we use Shelfarr's output path
       assert @request.completed?
       expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
       assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
@@ -2486,12 +2471,10 @@ class PostProcessingJobTest < ActiveJob::TestCase
   end
 
   test "uses per-client download path when configured" do
-    # Create a subdirectory in temp_source to simulate a download folder
     download_subdir = File.join(@temp_source, "Test Audiobook")
     FileUtils.mkdir_p(download_subdir)
     File.write(File.join(download_subdir, "audiobook.mp3"), "test audio content")
 
-    # Create a download client with a specific download path
     client = DownloadClient.create!(
       name: "Test Client",
       client_type: :qbittorrent,
@@ -2529,7 +2512,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_url, "")
 
     VCR.turned_off do
-      # Stub the SABnzbd queue delete API call
       remove_stub = stub_request(:get, "http://localhost:8080/api")
         .with(query: hash_including("mode" => "queue", "name" => "delete", "value" => "SABnzbd_nzo_abc123", "del_files" => "1"))
         .to_return(status: 200, body: { "status" => true }.to_json, headers: { "Content-Type" => "application/json" })
@@ -2628,7 +2610,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
     PostProcessingJob.perform_now(@download.id)
 
     assert @request.reload.completed?
-    # Source files should still exist (copied, not removed)
     assert File.exist?(File.join(@temp_source, "audiobook.mp3"))
   end
 
@@ -2645,7 +2626,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
     SettingsService.set(:audiobookshelf_url, "")
 
-    # No HTTP stubs for SABnzbd - if cleanup ran, it would hit VCR and fail
     PostProcessingJob.perform_now(@download.id)
 
     assert @request.reload.completed?
@@ -2663,7 +2643,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:audiobookshelf_url, "")
 
     VCR.turned_off do
-      # Stub SABnzbd to return an error
       stub_request(:get, "http://localhost:8080/api")
         .with(query: hash_including("mode" => "queue", "name" => "delete"))
         .to_return(status: 500)
@@ -2673,7 +2652,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
       PostProcessingJob.perform_now(@download.id)
 
-      # Import should still complete despite cleanup failure
       assert @request.reload.completed?
     end
   end
@@ -2761,7 +2739,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
     # but download_remote_path is /mnt/media/Torrents/Completed (SABnzbd path)
     # The category-aware remapping should detect the shared parent and remap correctly
 
-    # Create a subdirectory simulating the category-based download path
     category_dir = File.join(@temp_source, "shelfarr")
     download_dir = File.join(category_dir, "Test Audiobook")
     FileUtils.mkdir_p(download_dir)

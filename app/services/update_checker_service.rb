@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-# Checks GitHub releases for available updates
 class UpdateCheckerService
   class Error < StandardError; end
 
@@ -14,7 +13,6 @@ class UpdateCheckerService
   CACHE_TTL = 1.hour
 
   class << self
-    # Check for updates (cached)
     def check(force: false)
       version = current_version
       cache_key = cache_key_for(version)
@@ -31,7 +29,6 @@ class UpdateCheckerService
       Rails.cache.read(cache_key_for(current_version))
     end
 
-    # Clear cache
     def clear_cache
       Rails.cache.delete(cache_key_for(current_version))
       Rails.cache.delete(CACHE_KEY)

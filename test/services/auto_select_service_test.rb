@@ -171,7 +171,6 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
   end
 
   test "selects best result first based on ordering" do
-    # Create results with different quality levels
     low_seeder = create_search_result(seeders: 5, magnet_url: "magnet:?low")
     high_seeder = create_search_result(seeders: 100, magnet_url: "magnet:?high")
 
@@ -424,7 +423,6 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
   end
 
   test "selection result error reason works" do
-    # Test that the SelectionResult with error reason works correctly
     result = AutoSelectService::SelectionResult.new(selected: false, reason: :error)
 
     refute result.success?

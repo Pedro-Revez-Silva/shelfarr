@@ -584,7 +584,6 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
 
       result = AudiobookshelfLibrarySyncService.new.sync!
 
-      # It should capture the failure for lib-audio in result.errors
       assert_includes result.errors.first, "returned status 500"
 
       # The existing item in lib-audio should NOT be pruned because the sync failed!
@@ -596,7 +595,6 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
   end
 
   test "prunes cached items for libraries no longer in the configured set" do
-    # Create library items for a library that is not configured (e.g. lib-old)
     LibraryItem.create!(
       library_platform: "audiobookshelf",
       library_id: "lib-old",
@@ -649,7 +647,6 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
   end
 
   test "does not prune cached items written after this run started" do
-    # Create library items for a library that is not configured, but synced_at is in the future (written after this run started)
     LibraryItem.create!(
       library_platform: "audiobookshelf",
       library_id: "lib-newly-added",

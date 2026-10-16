@@ -436,7 +436,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       get admin_settings_url
       assert_response :success
 
-      # Check that library options appear in the page
       assert_select "select[name='settings[audiobookshelf_audiobook_library_id]']" do
         assert_select "option[value='lib-audio']", text: "Audiobooks (book)"
         assert_select "option[value='lib-ebook']", text: "Ebooks (book)"
@@ -467,7 +466,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       get admin_settings_url
       assert_response :success
 
-      # Check that library options appear in the page as a multi-select
       assert_select "select[name='settings[audiobookshelf_audiobook_scan_library_ids][]'][multiple]" do
         assert_select "option[value='lib-audio'][selected]", text: "Audiobooks (book)"
         assert_select "option[value='lib-ebook']", text: "Ebooks (book)"
@@ -528,7 +526,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     get admin_settings_url
     assert_response :success
 
-    # Should show text input instead of select
     assert_select "input[name='settings[audiobookshelf_audiobook_library_id]']"
   end
 
@@ -540,7 +537,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       stub_request(:get, "http://localhost:13378/api/libraries")
         .to_return(status: 500)
 
-      # Should not raise, should show text input as fallback
       get admin_settings_url
       assert_response :success
       assert_select "input[name='settings[audiobookshelf_audiobook_library_id]']"
@@ -1195,7 +1191,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_includes health.message, "does not exist"
   end
 
-  # Test connection tests for Prowlarr
   test "test_prowlarr fails when not configured" do
     SettingsService.set(:prowlarr_url, "")
     SettingsService.set(:prowlarr_api_key, "")
@@ -1916,7 +1911,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_match /failed/i, flash[:alert]
   end
 
-  # Test connection tests for Audiobookshelf
   test "test_audiobookshelf fails when not configured" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobookshelf_api_key, "")
@@ -2038,7 +2032,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_match /sync started/i, flash[:notice]
   end
 
-  # Test connection tests for OIDC
   test "test_oidc fails when not enabled" do
     SettingsService.set(:oidc_enabled, false)
 
@@ -2350,8 +2343,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:audiobookshelf_api_key, "test-key")
 
     VCR.turned_off do
-      # The controller should use the NEW url after updating settings
-      # This verifies the connection was reset and recreated with new credentials
       stub_request(:get, "http://new.example.com/api/libraries")
         .to_return(status: 200, body: { "libraries" => [] }.to_json, headers: { "Content-Type" => "application/json" })
 
@@ -2380,12 +2371,10 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       settings: { prowlarr_api_key: "new-key" }
     }
 
-    # Connection should be reset - either nil or a different object
     new_connection = ProwlarrClient.instance_variable_get(:@connection)
     assert_nil new_connection, "Connection should be reset after prowlarr settings change"
   end
 
-  # Test connection tests for FlareSolverr
   test "test_flaresolverr fails when not configured" do
     SettingsService.set(:flaresolverr_url, "")
 
@@ -2741,7 +2730,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       settings: { flaresolverr_url: "http://new.example.com:8191" }
     }
 
-    # Connection should be reset
     new_connection = FlaresolverrClient.instance_variable_get(:@connection)
     assert_nil new_connection, "Connection should be reset after flaresolverr settings change"
 
@@ -2749,16 +2737,13 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index merges unavailable persisted library IDs into select options and preserves them on bulk_update" do
-    # Configure API details
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
 
-    # Set persisted values containing library IDs that are NOT in the stubbed api response
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-unavailable-delivery")
     SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "lib-audio,lib-unavailable-scan")
 
     VCR.turned_off do
-      # Mock the API response to return only "lib-audio"
       stub_request(:get, "http://localhost:13378/api/libraries")
         .with(headers: { "Authorization" => "Bearer test-api-key" })
         .to_return(
@@ -2774,7 +2759,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       get admin_settings_url
       assert_response :success
 
-      # Verify both unavailable and available options are present and selected in the rendered HTML
       assert_select "select[name='settings[audiobookshelf_audiobook_library_id]']" do
         assert_select "option[value='lib-audio']", text: "Audiobooks (book)"
         assert_select "option[value='lib-unavailable-delivery'][selected]", text: "lib-unavailable-delivery (Unavailable)"

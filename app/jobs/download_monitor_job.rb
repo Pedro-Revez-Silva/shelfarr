@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-# Recurring job that monitors active downloads and triggers post-processing on completion
 class DownloadMonitorJob < ApplicationJob
   CONCURRENCY_KEY = "download_monitor"
   NOT_FOUND_THRESHOLD = 3
@@ -142,7 +141,6 @@ class DownloadMonitorJob < ApplicationJob
     Rails.logger.info "[DownloadMonitorJob] Download #{download.id} completed"
     track_request_event(download.request, "completed", download: download, message: "Download completed in client", details: { download_path: info.download_path })
 
-    # Trigger post-processing
     PostProcessingJob.perform_later(download.id)
   end
 

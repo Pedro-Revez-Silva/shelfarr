@@ -1,18 +1,14 @@
 # frozen_string_literal: true
 
-# Client for interacting with the Open Library API
-# https://openlibrary.org/developers/api
 class OpenLibraryClient
   BASE_URL = "https://openlibrary.org"
   COVERS_URL = "https://covers.openlibrary.org"
 
-  # Custom error classes
   class Error < StandardError; end
   class ConnectionError < Error; end
   class NotFoundError < Error; end
   class RateLimitError < Error; end
 
-  # Data structures for API responses
   SearchResult = Data.define(:work_id, :title, :author, :first_publish_year, :cover_id, :edition_count, :subjects) do
     def initialize(work_id:, title:, author:, first_publish_year:, cover_id:, edition_count:, subjects: [])
       super
@@ -56,8 +52,6 @@ class OpenLibraryClient
       SettingsService.get(:open_library_enabled, default: true)
     end
 
-    # Search for books by query
-    # Returns array of SearchResult
     def search(query, limit: nil)
       limit ||= SettingsService.get("open_library_search_limit", default: 20)
 
@@ -82,8 +76,6 @@ class OpenLibraryClient
       end
     end
 
-    # Get work details by work ID (e.g., "OL45804W")
-    # Returns WorkDetails
     def work(work_id)
       work_id = normalize_work_id(work_id)
       response = connection.get("/works/#{work_id}.json")
@@ -100,8 +92,6 @@ class OpenLibraryClient
       end
     end
 
-    # Get edition details by edition ID (e.g., "OL7353617M")
-    # Returns EditionDetails
     def edition(edition_id)
       edition_id = normalize_edition_id(edition_id)
       response = connection.get("/books/#{edition_id}.json")
@@ -125,8 +115,6 @@ class OpenLibraryClient
       end
     end
 
-    # Get editions for a work
-    # Returns array of EditionDetails
     def work_editions(work_id, limit: 10)
       work_id = normalize_work_id(work_id)
       response = connection.get("/works/#{work_id}/editions.json", { limit: limit })
@@ -164,8 +152,6 @@ class OpenLibraryClient
       @connection = nil
     end
 
-    # Generate cover image URL
-    # size: :s (small), :m (medium), :l (large)
     def cover_url(cover_id, size: :m)
       return nil if cover_id.blank?
       "#{COVERS_URL}/b/id/#{cover_id}-#{size.to_s.upcase}.jpg"

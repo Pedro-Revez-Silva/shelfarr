@@ -1,11 +1,8 @@
 # frozen_string_literal: true
 
-# Initialize health check records when the application boots
 Rails.application.config.after_initialize do
-  # Only run in server mode, not in console or rake tasks
   if defined?(Rails::Server)
-    # Ensure SystemHealth records exist for all services so the dashboard
-    # never shows a blank "Not checked" state
+    # Ensure SystemHealth records exist for all services so the dashboard never shows a blank "Not checked" state
     begin
       SystemHealth::SERVICES.each do |service|
         SystemHealth.find_or_create_by!(service: service) do |health|

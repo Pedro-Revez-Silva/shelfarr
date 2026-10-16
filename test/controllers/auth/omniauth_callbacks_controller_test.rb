@@ -247,7 +247,6 @@ class Auth::OmniauthCallbacksControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "OIDC callback without auth hash redirects with error" do
-    # Clear any mock auth to simulate missing data
     OmniAuth.config.mock_auth[:oidc] = :invalid_credentials
 
     get "/auth/oidc/callback"

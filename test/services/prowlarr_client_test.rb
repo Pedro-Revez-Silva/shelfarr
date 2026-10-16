@@ -19,13 +19,11 @@ class ProwlarrClientTest < ActiveSupport::TestCase
   }.freeze
 
   setup do
-    # Configure Prowlarr settings for tests
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "test-api-key-12345")
   end
 
   teardown do
-    # Reset connection between tests
     ProwlarrClient.instance_variable_set(:@connection, nil)
   end
 
@@ -443,7 +441,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     ProwlarrClient.instance_variable_set(:@connection, nil)
 
     VCR.turned_off do
-      # Should request /prowlarr/api/v1/indexer, not /api/v1/indexer
       stub_request(:get, "http://localhost:9696/prowlarr/api/v1/indexer")
         .to_return(status: 200, body: "[]")
 
@@ -514,7 +511,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     ProwlarrClient.instance_variable_set(:@connection, nil)
 
     VCR.turned_off do
-      # Stub tags endpoint to map tag name to ID
       stub_request(:get, %r{localhost:9696/api/v1/tag})
         .to_return(
           status: 200,
@@ -525,7 +521,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
           ].to_json
         )
 
-      # Stub indexers endpoint
       stub_request(:get, %r{localhost:9696/api/v1/indexer})
         .to_return(
           status: 200,
@@ -545,7 +540,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     ProwlarrClient.instance_variable_set(:@connection, nil)
 
     VCR.turned_off do
-      # Stub indexers endpoint
       stub_request(:get, %r{localhost:9696/api/v1/indexer})
         .to_return(
           status: 200,
@@ -575,7 +569,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     ProwlarrClient.instance_variable_set(:@connection, nil)
 
     VCR.turned_off do
-      # Stub tags endpoint to map tag name to ID
       stub_request(:get, %r{localhost:9696/api/v1/tag})
         .to_return(
           status: 200,
@@ -586,7 +579,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
           ].to_json
         )
 
-      # Stub indexers endpoint
       stub_request(:get, %r{localhost:9696/api/v1/indexer})
         .to_return(
           status: 200,

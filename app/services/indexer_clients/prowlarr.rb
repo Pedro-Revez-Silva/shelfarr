@@ -4,8 +4,7 @@ module IndexerClients
   class Prowlarr < Base
     Result = IndexerClients::Result
 
-    # Prowlarr's own default when a definition carries no priority, so
-    # de-duplication always has something to order by.
+    # Prowlarr's own default when a definition carries no priority, so de-duplication always has something to order by.
     DEFAULT_INDEXER_PRIORITY = 25
 
     class << self
@@ -371,7 +370,6 @@ module IndexerClients
       # Group the indexers we are about to search by what they can actually
       # accept and give each group the richest query it supports. A token is
       # only ever emitted when the indexer is known to support it; everything
-      # else falls back to free text, which every indexer accepts.
       def book_search_plans(query, title:, author:, tags: indexer_filter_tags, indexers: scoped_indexers(tags: tags))
         free_text_query = build_free_text_query(query, title: title, author: author)
 

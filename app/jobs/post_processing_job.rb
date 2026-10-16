@@ -319,8 +319,7 @@ class PostProcessingJob < ApplicationJob
 
     Rails.logger.info "[PostProcessingJob] Completed processing for download #{download.id}"
   rescue => error
-    # These are post-commit conveniences. Their failure must never reopen or
-    # overwrite the completed acquisition state.
+    # These are post-commit conveniences. Their failure must never reopen or overwrite the completed acquisition state.
     Rails.logger.warn(
       "[PostProcessingJob] Completion side effect failed for download #{download.id}: #{error.class}"
     )
@@ -1492,7 +1491,6 @@ class PostProcessingJob < ApplicationJob
     end
     candidates = deduplicate_path_candidates(candidates)
 
-    # Return the first candidate that actually exists on disk.
     candidates.each do |candidate|
       next if candidate[:path].blank?
 
@@ -1502,12 +1500,10 @@ class PostProcessingJob < ApplicationJob
       end
     end
 
-    # None found - log all candidates for debugging
     Rails.logger.warn(
       "[PostProcessingJob] No remapped path exists on disk; tried #{candidates.size} strategies"
     )
 
-    # Return the first non-nil candidate so import_files produces a clear "not found" error
     best_guess = candidates.find { |c| c[:path].present? }
     best_guess || { path: path, authorized_roots: [] }
   end
@@ -1706,10 +1702,9 @@ class PostProcessingJob < ApplicationJob
   end
 
   def sanitize_filename(name)
-    # Remove invalid filename characters, collapse whitespace
     name
-      .gsub(/[<>:"\/\\|?*]/, "")  # Remove invalid chars
-      .gsub(/[\x00-\x1f]/, "")    # Remove control characters
+      .gsub(/[<>:"\/\\|?*]/, "")
+      .gsub(/[\x00-\x1f]/, "")
       .strip
       .gsub(/\s+/, " ")           # Collapse whitespace
       .truncate(100, omission: "") # Limit length

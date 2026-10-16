@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-# Client for Grimmory's documented /api/v1 endpoints.
 class GrimmoryClient
   class Error < StandardError; end
   class ConnectionError < Error; end

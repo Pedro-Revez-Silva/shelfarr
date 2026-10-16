@@ -477,13 +477,10 @@ class LibraryController < ApplicationController
       return
     end
 
-    # Optionally remove torrents from download clients
     if params[:remove_torrent] == "1"
       remove_associated_torrents(@book)
     end
 
-    # Delete book files from disk if requested.
-    # Also asks the active library platform to remove its item if supported.
     if params[:delete_files] == "1" && @book.file_path.present?
       unless delete_book_files(@book)
         redirect_to library_path(@book),

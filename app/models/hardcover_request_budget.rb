@@ -18,8 +18,7 @@ class HardcoverRequestBudget < ApplicationRecord
       .where("used >= ?", HardcoverIntegration.max_automatic_requests_per_run)
   }
 
-  # The user's budget, locked for the rest of the caller's transaction. A
-  # window that has ended starts over from now.
+  # The user's budget, locked for the rest of the caller's transaction. A window that has ended starts over from now.
   def self.current_for!(user, now: Time.current)
     budget = lock.find_by(user_id: user.id) || create!(user: user, window_started_at: now)
     budget.update!(window_started_at: now, used: 0) if budget.window_ends_at <= now

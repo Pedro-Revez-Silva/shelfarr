@@ -68,7 +68,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_out
     sign_in_as(@admin)
 
-    # Create requests with different statuses
     completed_request = Request.create!(
       book: books(:audiobook_acquired),
       user: @user,
@@ -78,7 +77,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     get requests_path(status: "completed")
     assert_response :success
 
-    # Should only show completed requests
     assert_select "h3", completed_request.book.title
   end
 
@@ -86,7 +84,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_out
     sign_in_as(@admin)
 
-    # Create unique books for this test
     active_book = Book.create!(
       title: "Active Test Book Unique",
       book_type: :ebook,
@@ -106,7 +103,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       attention_needed: false
     )
 
-    # Create an active request with attention needed
     attention_request = Request.create!(
       book: attention_book,
       user: @user,
@@ -117,7 +113,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     get requests_path(status: "active")
     assert_response :success
 
-    # Active filter should exclude requests needing attention
     assert_select "h3", text: "Active Test Book Unique"
     assert_select "h3", text: "Attention Test Book Unique", count: 0
   end
@@ -126,7 +121,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_out
     sign_in_as(@admin)
 
-    # Create a request needing attention
     attention_request = Request.create!(
       book: books(:audiobook_acquired),
       user: @user,
@@ -138,7 +132,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     get requests_path(attention: "true")
     assert_response :success
 
-    # Should show requests needing attention
     assert_select "h3", attention_request.book.title
   end
 
@@ -195,7 +188,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     get requests_path
     assert_response :success
 
-    # Should have filter tabs rendered
     assert_select "a", text: /Need Attention/
     assert_select "a", text: /Active/
   end
@@ -204,10 +196,8 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_out
     sign_in_as(@admin)
 
-    # Delete existing requests to have a clean count
     Request.destroy_all
 
-    # Create 30 requests
     30.times do |i|
       book = Book.create!(
         title: "Book #{i}",
@@ -221,7 +211,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       )
     end
 
-    # First page should show 25 requests (descending order, so Book 29 to Book 5)
     get requests_path(page: 1)
     assert_response :success
     assert_select "h3", count: 25
@@ -229,7 +218,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", text: "Book 5"
     assert_select "h3", text: "Book 4", count: 0
 
-    # Second page should show the remaining 5 requests (Book 4 to Book 0)
     get requests_path(page: 2)
     assert_response :success
     assert_select "h3", count: 5
@@ -243,7 +231,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
     Request.destroy_all
 
-    # Create 30 requests -> 2 pages
     30.times do |i|
       book = Book.create!(
         title: "Book #{i}",
@@ -257,7 +244,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       )
     end
 
-    # Requesting page 999 should be clamped to page 2 and show the remaining 5 requests
     get requests_path(page: 999)
     assert_response :success
     assert_select "h3", count: 5
@@ -1843,7 +1829,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
 
   # Retry tests
   test "retry requires admin" do
-    # Regular user should be rejected
     post retry_request_path(@failed_request)
 
     assert_response :redirect
@@ -1898,7 +1883,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_out
     sign_in_as(@admin)
 
-    # Set referer header to simulate coming from requests index
     post retry_request_path(@failed_request), headers: { "HTTP_REFERER" => requests_path }
 
     assert_redirected_to requests_path
@@ -1952,7 +1936,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     temp_file = File.join(temp_dir, "test_audiobook.m4b")
     File.write(temp_file, "test audio content")
 
-    # Set output path to temp dir for path validation
     SettingsService.set(:audiobook_output_path, temp_dir)
 
     book = Book.create!(
@@ -2577,7 +2560,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     File.write(File.join(book_dir, "part1.m4b"), "audio part 1")
     File.write(File.join(book_dir, "part2.m4b"), "audio part 2")
 
-    # Set output path to temp dir for path validation
     SettingsService.set(:audiobook_output_path, temp_dir)
 
     book = Book.create!(
@@ -2862,7 +2844,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     temp_file = File.join(temp_dir, "test.m4b")
     File.write(temp_file, "content")
 
-    # Set output path to temp dir for path validation
     SettingsService.set(:audiobook_output_path, temp_dir)
 
     book = Book.create!(
@@ -2888,7 +2869,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     temp_file = File.join(temp_dir, "test.m4b")
     File.write(temp_file, "content")
 
-    # Set output path to temp dir for path validation
     SettingsService.set(:audiobook_output_path, temp_dir)
 
     book = Book.create!(
@@ -2920,7 +2900,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     book = Book.create!(title: "Discovery Book", author: "Discovery Author", book_type: :ebook)
     Request.create!(book: book, user: @user)
 
-    # Create a library item that matches
     LibraryItem.create!(
       library_platform: "audiobookshelf",
       library_id: "discovered-lib-id",
@@ -2945,7 +2924,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     comic_book = Book.create!(title: "Comic Title", author: "Comic Author", book_type: :comicbook)
     Request.create!(book: comic_book, user: @user)
 
-    # Create matching library item in lib-ebook library
     LibraryItem.create!(
       library_platform: "audiobookshelf",
       library_id: "lib-ebook",

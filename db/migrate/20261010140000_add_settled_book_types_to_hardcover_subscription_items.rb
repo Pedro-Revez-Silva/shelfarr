@@ -7,8 +7,7 @@ class AddSettledBookTypesToHardcoverSubscriptionItems < ActiveRecord::Migration[
     # whose other formats wait for a later run never requests them again.
     add_column :hardcover_subscription_items, :settled_book_types, :json, null: false, default: []
 
-    # Items still waiting on some of their formats settle the formats of the
-    # requests they already recorded.
+    # Items still waiting on some of their formats settle the formats of the requests they already recorded.
     select_rows("SELECT id, request_ids FROM hardcover_subscription_items WHERE state <> 'requested'").each do |id, raw_ids|
       ids = Array(JSON.parse(raw_ids.presence || "[]")).map(&:to_i).select(&:positive?)
       next if ids.empty?
