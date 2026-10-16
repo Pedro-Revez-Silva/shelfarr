@@ -555,6 +555,102 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "does not prune cached items when the library client returns a non-200" do
+    existing = LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-existing",
+      title: "Existing Title",
+      author: "Author",
+      synced_at: 1.day.ago
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .to_return(status: 404)
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [ { "id" => "ab-2", "title" => "Good Omens", "author" => "Neil Gaiman" } ],
+            "total" => 1
+          }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert_includes result.errors.first, "returned status 404"
+      assert_equal "Existing Title", existing.reload.title
+      assert LibraryItem.exists?(audiobookshelf_id: "ab-2")
+    end
+  end
+
+  test "prunes cached items when the library client returns an empty inventory" do
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-existing",
+      title: "Existing Title",
+      author: "Author",
+      synced_at: 1.day.ago
+    )
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "results" => [], "total" => 0 }.to_json
+        )
+      stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "results" => [], "total" => 0 }.to_json
+        )
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?
+      assert_not LibraryItem.exists?(audiobookshelf_id: "ab-existing")
+    end
+  end
+
+  test "does not prune cached BookOrbit items when the library client returns a non-200" do
+    SettingsService.set(:library_platform, "bookorbit")
+    SettingsService.set(:bookorbit_url, "http://localhost:3000")
+    SettingsService.set(:bookorbit_username, "admin")
+    SettingsService.set(:bookorbit_password, "secret")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "42")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    LibraryPlatformClient.reset_connections!
+    existing = LibraryItem.create!(
+      library_platform: "bookorbit",
+      library_id: "42",
+      audiobookshelf_id: "101",
+      title: "Existing BookOrbit Item",
+      synced_at: 1.day.ago
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { accessToken: "bookorbit-token" }.to_json)
+      stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
+        .to_return(status: 404)
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert_includes result.errors.first, "returned status 404"
+      assert_equal "Existing BookOrbit Item", existing.reload.title
+    end
+  ensure
+    LibraryPlatformClient.reset_connections!
+  end
+
   test "does not prune cached items when library sync fails with a transient API failure" do
     LibraryItem.create!(
       library_platform: "audiobookshelf",

@@ -4,6 +4,7 @@ inherit_gem: { rubocop-rails-omakase: rubocop.yml }
 require:
   - ./lib/rubocop/cop/shelfarr/skipped_test.rb
   - ./lib/rubocop/cop/shelfarr/root_relative_path.rb
+  - ./lib/rubocop/cop/shelfarr/rescue_to_empty.rb
 
 Shelfarr/SkippedTest:
   Enabled: true
@@ -18,6 +19,81 @@ Shelfarr/RootRelativePath:
     - "app/views/**/*.erb"
     - "app/javascript/**/*.js"
     - "app/controllers/**/*.rb"
+
+Shelfarr/RescueToEmpty:
+  Enabled: true
+  Severity: warning
+  Include:
+    - "app/services/**/*.rb"
+    - "app/jobs/**/*.rb"
+  # These files already rescue to [], nil, or false. Rewriting them changes
+  # search, download, and filesystem results, which this pull request does not do.
+  # A file that is not listed here is checked.
+  Exclude:
+    - "app/jobs/cleanup_temp_files_job.rb"
+    - "app/jobs/download_job.rb"
+    - "app/jobs/download_monitor_job.rb"
+    - "app/jobs/hardcover_subscription_sync_job.rb"
+    - "app/jobs/health_check_job.rb"
+    - "app/jobs/owned_media_backup_job.rb"
+    - "app/jobs/post_processing_job.rb"
+    - "app/jobs/post_processing_recovery_job.rb"
+    - "app/jobs/search_job.rb"
+    - "app/jobs/telegram_polling_job.rb"
+    - "app/jobs/upload_processing_job.rb"
+    - "app/services/anna_archive_client.rb"
+    - "app/services/audiobook_bundle_import_planner.rb"
+    - "app/services/audiobook_image_probe_service.rb"
+    - "app/services/audiobook_probe_service.rb"
+    - "app/services/book_metadata_lookup_service.rb"
+    - "app/services/book_orbit_client.rb"
+    - "app/services/comic_vine_client.rb"
+    - "app/services/connection_error_classifier.rb"
+    - "app/services/custom_acquisition_provider_client.rb"
+    - "app/services/direct_download_file_service.rb"
+    - "app/services/download_client_selector.rb"
+    - "app/services/download_clients/deluge.rb"
+    - "app/services/download_clients/nzbget.rb"
+    - "app/services/download_clients/qbittorrent.rb"
+    - "app/services/download_clients/sabnzbd.rb"
+    - "app/services/download_clients/transmission.rb"
+    - "app/services/ebooks_com_client.rb"
+    - "app/services/file_copy_service.rb"
+    - "app/services/flaresolverr_client.rb"
+    - "app/services/google_books_client.rb"
+    - "app/services/grimmory_client.rb"
+    - "app/services/gutenberg_client.rb"
+    - "app/services/hardcover/api.rb"
+    - "app/services/hardcover/oauth.rb"
+    - "app/services/hardcover_client.rb"
+    - "app/services/indexer_clients/jackett.rb"
+    - "app/services/indexer_clients/prowlarr.rb"
+    - "app/services/integrations/telegram/update_processor.rb"
+    - "app/services/libation_companion_client.rb"
+    - "app/services/library_destination_occupancy.rb"
+    - "app/services/library_download_archive_service.rb"
+    - "app/services/library_download_roots.rb"
+    - "app/services/library_path_check.rb"
+    - "app/services/library_path_safety.rb"
+    - "app/services/librivox_client.rb"
+    - "app/services/magnet_link.rb"
+    - "app/services/metadata_extractor_service.rb"
+    - "app/services/metadata_service.rb"
+    - "app/services/notification_service.rb"
+    - "app/services/open_library_client.rb"
+    - "app/services/outbound_url_guard.rb"
+    - "app/services/owned_library_backlog_backup.rb"
+    - "app/services/owned_library_sync_request.rb"
+    - "app/services/owned_media_import_file_service.rb"
+    - "app/services/request_metadata_handoff.rb"
+    - "app/services/safe_library_deletion_service.rb"
+    - "app/services/search_result_snapshot.rb"
+    - "app/services/setup_wizard.rb"
+    - "app/services/update_checker_service.rb"
+    - "app/services/upload_creator.rb"
+    - "app/services/upload_import_file_service.rb"
+    - "app/services/upload_zip_import_file_service.rb"
+    - "app/services/z_library_client.rb"
 
 AllCops:
   inherit_mode:

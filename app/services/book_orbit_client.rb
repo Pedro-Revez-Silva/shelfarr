@@ -54,14 +54,17 @@ class BookOrbitClient
       query_page_size = [ page_size.to_i, 200 ].min
       query_page_size = 200 if query_page_size <= 0
       items = fetch_library_items(id, query_page_size)
-      return items if items.size <= query_page_size
+      return items if items.is_a?(RemoteResult::Failed)
+      return RemoteResult::Empty.new if items.empty?
+      return RemoteResult::Ok.new(items) if items.size <= query_page_size
 
       verified_items = fetch_library_items(id, query_page_size)
+      return verified_items if verified_items.is_a?(RemoteResult::Failed)
       if items.pluck("audiobookshelf_id").sort != verified_items.pluck("audiobookshelf_id").sort
         raise Error, "BookOrbit library inventory changed during synchronization"
       end
 
-      verified_items
+      RemoteResult::Ok.new(verified_items)
     end
 
     def delete_item_by_path(_path)
@@ -100,7 +103,9 @@ class BookOrbitClient
           })
         end
         if (response.status == 404 || response.status == 410) && page == 0
-          return []
+          return RemoteResult::Failed.new(
+            Error.new("BookOrbit library #{id} returned status #{response.status}")
+          )
         end
 
         data = handle_response(response, success_statuses: [ 200, 201 ]) { |body| body }

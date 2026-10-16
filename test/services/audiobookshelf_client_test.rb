@@ -502,15 +502,19 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "library_items returns empty array on page 0 404 or 410 response" do
+  test "library_items returns a failure on page 0 404 or 410 response" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries/nonexistent/items?limit=500&page=0")
         .to_return(status: 404)
-      assert_equal [], AudiobookshelfClient.library_items("nonexistent")
+      missing = AudiobookshelfClient.library_items("nonexistent")
+      assert_instance_of RemoteResult::Failed, missing
+      assert_match(/404/, missing.error.message)
 
       stub_request(:get, "http://localhost:13378/api/libraries/nonexistent/items?limit=500&page=0")
         .to_return(status: 410)
-      assert_equal [], AudiobookshelfClient.library_items("nonexistent")
+      gone = AudiobookshelfClient.library_items("nonexistent")
+      assert_instance_of RemoteResult::Failed, gone
+      assert_match(/410/, gone.error.message)
     end
   end
 

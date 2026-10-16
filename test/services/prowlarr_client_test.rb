@@ -603,6 +603,34 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "a tag endpoint 500 does not clear the tag scope" do
+    SettingsService.set(:prowlarr_tags, "books")
+    ProwlarrClient.instance_variable_set(:@connection, nil)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/tag})
+        .to_return(
+          status: 500,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "boom" }.to_json
+        )
+      stub_indexers(
+        { "id" => 1, "name" => "Untagged", "tags" => [ 7 ],
+          "capabilities" => { "bookSearchParams" => [ "q" ] } },
+        { "id" => 2, "name" => "Tagged", "tags" => [ 42 ],
+          "capabilities" => { "bookSearchParams" => [ "q" ] } }
+      )
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+
+      error = assert_raises(IndexerClients::Base::Error) do
+        ProwlarrClient.search("", title: "Frankenstein", author: "Mary Shelley")
+      end
+
+      assert_match(/500/, error.message)
+      assert_not_requested search_stub
+    end
+  end
+
   test "book search keeps a name-resolved tag scope when the tag endpoint fails again" do
     SettingsService.set(:prowlarr_tags, "books")
     ProwlarrClient.instance_variable_set(:@connection, nil)

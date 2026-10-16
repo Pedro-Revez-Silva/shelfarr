@@ -55,10 +55,10 @@ class ZLibraryClient
     end
 
     def test_connection
-      test_connection!
+      RemoteResult::Ok.new(test_connection!)
     rescue Error => e
       Rails.logger.error "[ZLibraryClient] Connection test failed: #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def test_connection!
