@@ -80,7 +80,7 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "form[action='#{admin_download_clients_path}']"
-    assert_select "input[name='download_client[category]'][value='shelfarr']"
+    assert_select "input[name='download_client[category]'][value='']"
   end
 
   test "show displays client details without secrets" do

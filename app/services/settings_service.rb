@@ -160,7 +160,7 @@ class SettingsService
     },
 
     # Queue Settings
-    immediate_search_enabled: { type: "boolean", default: false, category: "queue", description: "Start searching immediately when a request is created (instead of waiting for queue cycle)" },
+    immediate_search_enabled: { type: "boolean", default: true, category: "queue", description: "Start searching immediately when a request is created (instead of waiting for queue cycle)" },
     auto_approve_requests: { type: "boolean", default: false, category: "queue", description: "Automatically enqueue search immediately for requests created by non-admin users" },
     queue_batch_size: { type: "integer", default: 5, category: "queue", description: "Number of requests to process per queue run" },
     rate_limit_delay: { type: "integer", default: 2, category: "queue", description: "Seconds between API calls" },

@@ -29,6 +29,20 @@ class SettingsServiceTest < ActiveSupport::TestCase
     restore_settings_env!
   end
 
+  test "immediate search defaults on for a new install and leaves an existing row alone" do
+    Setting.where(key: "immediate_search_enabled").delete_all
+
+    assert_equal true, SettingsService::DEFINITIONS[:immediate_search_enabled][:default]
+    assert_equal true, SettingsService.get(:immediate_search_enabled)
+
+    SettingsService.seed_defaults!
+    assert_equal true, SettingsService.get(:immediate_search_enabled)
+
+    SettingsService.set(:immediate_search_enabled, false)
+    SettingsService.seed_defaults!
+    assert_equal false, SettingsService.get(:immediate_search_enabled)
+  end
+
   test "active_indexer_provider falls back to prowlarr for legacy installs" do
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "legacy-key")
