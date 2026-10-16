@@ -1674,6 +1674,34 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     server&.stop
   end
 
+  test "HTTPS proxy connections retain the hostname without direct address probes" do
+    @client_record.update!(url: "https://qbittorrent.example.test")
+    connections = []
+    probes = []
+    new_http = Net::HTTP.method(:new)
+
+    with_env("https_proxy" => "http://127.0.0.1:8888", "HTTPS_PROXY" => nil,
+      "http_proxy" => nil, "HTTP_PROXY" => nil, "no_proxy" => nil, "NO_PROXY" => nil) do
+      VCR.turned_off do
+        stub_qbittorrent_connection(@client_record.url)
+
+        Net::HTTP.stub(:new, ->(*args) { new_http.call(*args).tap { |http| connections << http } }) do
+          @client.stub(:reachable_ipaddr, ->(*) { probes << true; "203.0.113.10" }) do
+            assert @client.test_connection
+          end
+        end
+      end
+    end
+
+    assert_not_empty connections
+    connections.each do |http|
+      assert http.proxy?
+      assert_nil http.ipaddr, "IP pinning changes the proxy CONNECT destination from the configured hostname"
+      assert_equal "qbittorrent.example.test", http.address
+    end
+    assert_empty probes, "Proxied requests must not open direct probe connections"
+  end
+
   private
 
   def with_blackholed_ipv6_localhost(port)

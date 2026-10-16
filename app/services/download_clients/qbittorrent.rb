@@ -571,7 +571,9 @@ module DownloadClients
     # Net::HTTP uses one open timeout for every getaddrinfo result. A blackholed
     # first address — IPv6 localhost in Docker — expires before IPv4 is tried.
     def install_reachable_address_adapter(builder, open_timeout)
-      ipaddr = reachable_ipaddr(open_timeout)
+      # A proxy resolves the target itself. Pinning here also replaces the
+      # HTTPS CONNECT hostname, which can break proxy DNS and host allowlists.
+      ipaddr = reachable_ipaddr(open_timeout) unless builder.proxy
       builder.adapter :net_http do |http|
         http.ipaddr = ipaddr if ipaddr
       end
