@@ -181,4 +181,23 @@ class LibraryPathCheckTest < ActiveSupport::TestCase
 
     assert_empty messages
   end
+
+  test "accepts any output path inside an Audiobookshelf library at the filesystem root" do
+    library = AudiobookshelfClient::Library.new(
+      id: "audio",
+      name: "Everything",
+      folders: [ { "fullPath" => "/" } ],
+      media_type: "book"
+    )
+
+    messages = LibraryPathCheck.audiobookshelf_messages(
+      libraries: [ library ],
+      audiobook_library_id: "audio",
+      ebook_library_id: nil,
+      audiobook_output_path: "/audiobooks",
+      ebook_output_path: nil
+    )
+
+    assert_empty messages
+  end
 end

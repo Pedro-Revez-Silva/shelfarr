@@ -67,6 +67,7 @@ class LibraryPathCheck
       candidate = normalize_path(path)
       base = normalize_path(root)
       return false if candidate.blank? || base.blank?
+      return true if base == "/"
 
       candidate == base || candidate.start_with?("#{base}/")
     end
