@@ -35,6 +35,62 @@ class ReleaseParserServiceTest < ActiveSupport::TestCase
     assert_includes ReleaseParserService.detect_languages("Book.Title.TRUEFRENCH.M4B"), "fr"
   end
 
+  test "all-caps French titles detect only French as the primary language" do
+    {
+      "Random.Book.Name.2026.FRENCH.ePUB." => "fr",
+      "Title.2024.TRUEFRENCH.EPUB" => "fr"
+    }.each do |title, code|
+      languages = ReleaseParserService.detect_languages(title)
+
+      assert_equal [ code ], languages, title
+      assert_equal code, languages.first, title
+    end
+  end
+
+  test "does not detect two-letter codes inside longer all-caps words" do
+    {
+      "Release.DOWNLOAD.EPUB" => "nl",
+      "Release.ONLY.EPUB" => "nl",
+      "Release.DECODED.EPUB" => "de",
+      "Release.DELUXE.EPUB" => "de",
+      "Release.FREE.EPUB" => "fr",
+      "Release.SERIES.EPUB" => "es",
+      "Release.PORTUGUESE.EPUB" => "es",
+      "Release.EDITION.EPUB" => "it",
+      "Release.DIGITAL.EPUB" => "it",
+      "Release.SCRIPT.EPUB" => "pt",
+      "Release.TRUE.EPUB" => "ru",
+      "Release.COMPLETE.EPUB" => "pl",
+      "Release.SAMPLE.EPUB" => "pl",
+      "Release.XXCZXX.EPUB" => "cs",
+      "Release.XXBGXX.EPUB" => "bg"
+    }.each do |title, unexpected|
+      refute_includes ReleaseParserService.detect_languages(title), unexpected, title
+    end
+  end
+
+  test "detects short delimited two-letter language codes" do
+    {
+      "Book.Title.FR.M4B" => "fr",
+      "Book.Title.EN.M4B" => "en",
+      "Book Title [EN] M4B" => "en",
+      "Book.Title.RU.M4B" => "ru",
+      "Book.Title.DE.MP3" => "de",
+      "Book.Title.NL.M4B" => "nl",
+      "Book.Title.ES.MP3" => "es",
+      "Book.Title.IT.MP3" => "it",
+      "Book.Title.PT.EPUB" => "pt",
+      "Book.Title.PL.EPUB" => "pl",
+      "Book.Title.CZ.EPUB" => "cs",
+      "Book.Title.BG.EPUB" => "bg"
+    }.each do |title, code|
+      languages = ReleaseParserService.detect_languages(title)
+
+      assert_equal [ code ], languages, title
+      assert_equal code, languages.first, title
+    end
+  end
+
   test "detects French from VF" do
     assert_includes ReleaseParserService.detect_languages("Book.Title.VF.Audiobook"), "fr"
   end
