@@ -1261,6 +1261,34 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "test_indexer records health only when it probes the saved connection" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://saved.example:9696")
+    SettingsService.set(:prowlarr_api_key, "saved-key")
+    SystemHealth.for_service("indexer").check_succeeded!(message: "Connection successful")
+
+    VCR.turned_off do
+      stub_request(:get, "http://typo.example:9696/api/v1/indexer")
+        .to_raise(Faraday::ConnectionFailed.new("Failed to open TCP connection (getaddrinfo: Name or service not known)"))
+      stub_request(:get, "http://saved.example:9696/api/v1/indexer")
+        .to_return(status: 401, body: "{}", headers: { "Content-Type" => "application/json" })
+
+      post test_indexer_admin_settings_url, params: {
+        settings: { indexer_provider: "prowlarr", prowlarr_url: "http://typo.example:9696", prowlarr_api_key: "" }
+      }
+
+      assert_match(/Could not resolve host/, flash[:alert])
+      assert SystemHealth.for_service("indexer").healthy?
+
+      post test_indexer_admin_settings_url, params: {
+        settings: { indexer_provider: "prowlarr", prowlarr_url: "http://saved.example:9696", prowlarr_api_key: "" }
+      }
+
+      assert_match(/Unauthorized/, flash[:alert])
+      assert SystemHealth.for_service("indexer").down?
+    end
+  end
+
   test "test_indexer keeps the saved api key when the posted secret is blank" do
     SettingsService.set(:indexer_provider, "prowlarr")
     SettingsService.set(:prowlarr_url, "http://saved.example:9696")

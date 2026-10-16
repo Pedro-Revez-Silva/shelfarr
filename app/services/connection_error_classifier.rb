@@ -8,7 +8,7 @@ class ConnectionErrorClassifier
     tls: "TLS connection failed",
     unauthorized: "Unauthorized"
   }.freeze
-  LOCALHOST_HINT = "That address is this container, not Prowlarr or qBittorrent. Use the Docker service name or a LAN IP."
+  LOCALHOST_HINT = "That address points to Shelfarr's own container. Use the Docker service name or a LAN IP instead."
   CONNECTION_FAILURE_MESSAGES = MESSAGES.except(:unauthorized).values.freeze
   LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
 
@@ -32,6 +32,7 @@ class ConnectionErrorClassifier
       return text unless loopback_url?(url)
       return text unless CONNECTION_FAILURE_MESSAGES.any? { |known| text.include?(known) }
 
+      text = "#{text}." unless text.end_with?(".")
       "#{text} #{LOCALHOST_HINT}"
     end
 
