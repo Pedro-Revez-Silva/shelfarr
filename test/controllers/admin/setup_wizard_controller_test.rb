@@ -241,7 +241,7 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     get admin_setup_wizard_url(step: "search")
 
     assert_response :success
-    assert_match "90 out of 100", response.body
+    assert_match "at least 90 out of 100 and have at least 1 seeder", response.body
     assert_select "input[name='wizard[immediate_search_enabled]'][value='1'][checked]"
     assert_select "input[name='wizard[auto_select_enabled]'][value='1']:not([checked])"
 
@@ -255,7 +255,7 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     assert_equal true, SettingsService.get(:setup_wizard_completed)
   end
 
-  test "turning auto select on stores the default score and seeder minimum" do
+  test "turning auto select on uses the default score and seeder minimum" do
     patch admin_setup_wizard_url(step: "search"), params: {
       wizard: { immediate_search_enabled: "1", auto_select_enabled: "1" }
     }
@@ -264,6 +264,37 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     assert_equal 90, SettingsService.get(:auto_select_confidence_threshold)
     assert_equal 1, SettingsService.get(:auto_select_min_seeders)
     assert_equal true, SettingsService.get(:setup_wizard_completed)
+  end
+
+  test "a rerun keeps and shows an existing auto select policy" do
+    SettingsService.set(:auto_select_confidence_threshold, 100)
+    SettingsService.set(:auto_select_min_seeders, 10)
+
+    get admin_setup_wizard_url(step: "search")
+    assert_match "at least 100 out of 100 and have at least 10 seeders", response.body
+
+    patch admin_setup_wizard_url(step: "search"), params: {
+      wizard: { immediate_search_enabled: "1", auto_select_enabled: "1" }
+    }
+
+    assert_equal 100, SettingsService.get(:auto_select_confidence_threshold)
+    assert_equal 10, SettingsService.get(:auto_select_min_seeders)
+  end
+
+  test "search does not warn about qBittorrent paths for a client with its own download path" do
+    DownloadClient.create!(name: "qBittorrent", client_type: "qbittorrent", url: "http://qbittorrent:8080", username: "admin", password: "secret", category: "", download_path: "/mnt/torrents", enabled: true)
+    Dir.mktmpdir do |local_path|
+      SettingsService.set(:download_local_path, local_path)
+      VCR.turned_off do
+        stub_qbittorrent_connection("http://qbittorrent:8080")
+        stub_request(:get, "http://qbittorrent:8080/api/v2/app/preferences")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { "save_path" => "/mnt/torrents" }.to_json)
+
+        get admin_setup_wizard_url(step: "search")
+
+        assert_select "[role=status]", count: 0
+      end
+    end
   end
 
   test "a fresh install still needs the wizard until setup is finished" do

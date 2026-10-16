@@ -191,10 +191,6 @@ class SetupWizard
       auto_select = ActiveModel::Type::Boolean.new.cast(params.fetch(:auto_select_enabled, "0"))
       SettingsService.set(:immediate_search_enabled, immediate)
       SettingsService.set(:auto_select_enabled, auto_select)
-      if auto_select
-        SettingsService.set(:auto_select_confidence_threshold, 90)
-        SettingsService.set(:auto_select_min_seeders, 1)
-      end
       complete!
       success(notice: "Setup complete.")
     end
@@ -275,8 +271,11 @@ class SetupWizard
 
     def qbittorrent_warning(paths)
       client = qbittorrent_client
+      # Import remaps the client's own download path, as the health check allows.
+      return if client.nil? || client.download_path.present?
+
       diagnostics = diagnostics_for(client)
-      return if client.nil? || diagnostics.nil?
+      return if diagnostics.nil?
 
       LibraryPathCheck.qbittorrent_message(
         save_path: diagnostics[:save_path],

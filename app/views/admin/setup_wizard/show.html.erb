@@ -131,7 +131,7 @@
         <%= check_box_tag "wizard[auto_select_enabled]", "1", @auto_select, class: "mt-1" %>
         <span>
           Download the best match automatically.
-          <span class="block mt-1 text-sm text-gray-400">Off by default, so you pick each release. When on, a release must score at least 90 out of 100 and have one seeder before Shelfarr grabs it.</span>
+          <span class="block mt-1 text-sm text-gray-400">Off by default, so you pick each release. When on, a release must score at least <%= @auto_select_threshold %> out of 100 and have at least <%= pluralize(@auto_select_min_seeders, "seeder") %> before Shelfarr grabs it. Change these in Settings.</span>
         </span>
       </label>
       <%= form.submit "Finish", class: primary_class %>

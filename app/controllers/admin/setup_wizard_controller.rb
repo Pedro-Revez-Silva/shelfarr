@@ -67,6 +67,8 @@ module Admin
       @download_remote_path = text_field(:download_remote_path, @step == "folders" ? saved_remote_path : SettingsService.get(:download_remote_path).to_s)
       @immediate_search = boolean_field(:immediate_search_enabled, SettingsService.get(:immediate_search_enabled) != false)
       @auto_select = boolean_field(:auto_select_enabled, SettingsService.get(:auto_select_enabled) == true)
+      @auto_select_threshold = SettingsService.get(:auto_select_confidence_threshold).to_i
+      @auto_select_min_seeders = SettingsService.get(:auto_select_min_seeders).to_i
       @warnings = step_warnings
 
       return unless @step == "audiobookshelf"
