@@ -67,6 +67,26 @@ class SkippedTestCopTest < ActiveSupport::TestCase
     end
   end
 
+  test "unsaved stdin cannot silently inspect different code on disk" do
+    with_cop_fixture do |test_path, _, cache|
+      saved = <<~SOURCE
+        require "test_helper"
+        class AgentDiscovery#{Process.pid}Test < ActiveSupport::TestCase
+          def test_visible; end
+        end
+      SOURCE
+      File.write(test_path, saved)
+      buffer = saved.sub("  def test_visible", "  private\n  def test_visible")
+      report, status = lint(test_path, cache, source: buffer)
+      assert_equal 1, status.exitstatus, report.inspect
+      assert_includes offenses(report).first.fetch("message"), "Save this test file"
+
+      report, status = lint(test_path, cache, source: saved)
+      assert status.success?, report.inspect
+      assert_empty offenses(report)
+    end
+  end
+
   private
 
   def with_cop_fixture
@@ -81,12 +101,13 @@ class SkippedTestCopTest < ActiveSupport::TestCase
     FileUtils.rm_f(helper_path)
   end
 
-  def lint(path, cache)
+  def lint(path, cache, source: nil)
     output, errors, status = Open3.capture3(
       { "RAILS_ENV" => "test" },
       Rails.root.join("bin/rubocop").to_s, "--only", "Shelfarr/SkippedTest",
       "--force-exclusion", "--format", "json", "--fail-level", "warning", "--cache-root", cache,
-      path.to_s
+      *(source ? [ "--stdin", path.to_s ] : [ path.to_s ]),
+      stdin_data: source
     )
     assert_empty errors
     [ JSON.parse(output), status ]

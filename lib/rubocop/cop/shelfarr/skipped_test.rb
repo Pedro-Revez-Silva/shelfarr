@@ -11,6 +11,7 @@ module Rubocop
           RuboCop::Cop.const_defined?(:Base, false)
         class SkippedTest < ::RuboCop::Cop::Base
           MSG = "Minitest will not run `%<method>s`. Make it public or move it above `private`/`protected`."
+          UNSAVED_MSG = "Save this test file before checking runtime Minitest discovery."
           FIXTURE = "test/lint/skipped_test_hidden_test.rb"
 
           class << self
@@ -73,6 +74,10 @@ module Rubocop
             path = processed_source.file_path
             return if path.nil? || !path.end_with?("_test.rb")
             return if fixture?(path) && !self.class.fixture_explicitly_requested?
+            unless File.file?(path) && File.binread(path) == processed_source.raw_source.b
+              add_offense(processed_source.buffer.line_range(1), message: UNSAVED_MSG)
+              return
+            end
 
             self.class.prepare_test_runtime
             require File.expand_path(path)
