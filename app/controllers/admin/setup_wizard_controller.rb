@@ -49,7 +49,7 @@ module Admin
     end
 
     def prepare_step
-      @warnings = %w[folders search].include?(@step) ? SetupWizard.path_warnings : []
+      @previous_step = SetupWizard.previous_step(@step)
       @libraries = []
       @library_error = nil
       client = SetupWizard.qbittorrent_client
@@ -59,19 +59,50 @@ module Admin
       @username = text_field(:username, client&.username.to_s)
       @password = params.dig(:wizard, :password).to_s
       @category = text_field(:category, client&.category.to_s)
+      @saved_secret = saved_secret?(client)
+      @saved_qbittorrent_api_key = client&.api_key.present?
       @audiobook_output_path = text_field(:audiobook_output_path, SettingsService.get(:audiobook_output_path))
       @ebook_output_path = text_field(:ebook_output_path, SettingsService.get(:ebook_output_path))
       @download_local_path = text_field(:download_local_path, SettingsService.get(:download_local_path))
       @download_remote_path = text_field(:download_remote_path, @step == "folders" ? saved_remote_path : SettingsService.get(:download_remote_path).to_s)
-      @audiobook_library_id = text_field(:audiobook_library_id, SettingsService.get(:audiobookshelf_audiobook_library_id))
-      @ebook_library_id = text_field(:ebook_library_id, SettingsService.get(:audiobookshelf_ebook_library_id))
       @immediate_search = boolean_field(:immediate_search_enabled, SettingsService.get(:immediate_search_enabled) != false)
       @auto_select = boolean_field(:auto_select_enabled, SettingsService.get(:auto_select_enabled) == true)
+      @warnings = step_warnings
 
       return unless @step == "audiobookshelf"
       return unless SettingsService.configured?(:audiobookshelf_url) && SettingsService.configured?(:audiobookshelf_api_key)
 
       @libraries, @library_error = SetupWizard.library_choices
+      @audiobook_library_id = text_field(:audiobook_library_id, saved_or_suggested_library(:audiobookshelf_audiobook_library_id, @audiobook_output_path))
+      @ebook_library_id = text_field(:ebook_library_id, saved_or_suggested_library(:audiobookshelf_ebook_library_id, @ebook_output_path))
+    end
+
+    # Folders checks the paths on its form, including a suggested remote path, before they are saved.
+    def step_warnings
+      case @step
+      when "folders"
+        SetupWizard.path_warnings(
+          download_local_path: @download_local_path,
+          download_remote_path: @download_remote_path,
+          audiobook_output_path: @audiobook_output_path,
+          ebook_output_path: @ebook_output_path
+        )
+      when "search" then SetupWizard.path_warnings
+      else []
+      end
+    end
+
+    def saved_secret?(client)
+      case @step
+      when "prowlarr" then SettingsService.configured?(:prowlarr_api_key)
+      when "qbittorrent" then client&.password.present?
+      when "audiobookshelf" then SettingsService.configured?(:audiobookshelf_api_key)
+      else false
+      end
+    end
+
+    def saved_or_suggested_library(key, output_path)
+      SettingsService.get(key).presence || SetupWizard.suggested_library_id(@libraries, output_path).to_s
     end
 
     def saved_url(client)

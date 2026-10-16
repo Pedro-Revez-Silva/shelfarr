@@ -1,26 +1,42 @@
 <% field_class = "block w-full rounded-lg border border-gray-700 bg-gray-800 text-white placeholder-gray-500 px-4 py-3 mt-2" %>
 <% label_class = "block text-gray-300 font-medium" %>
+<% help_class = "mt-1 text-sm text-gray-400" %>
+<% primary_class = "mt-6 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+<% saved_secret_placeholder = "Saved. Leave blank to keep it." %>
 
 <div class="mx-auto max-w-2xl">
   <p class="text-sm text-gray-400 mb-2">Step <%= SetupWizard::STEPS.index(@step).to_i + 1 %> of <%= SetupWizard::STEPS.size %></p>
   <h1 class="font-bold text-4xl text-white mb-2">Set up Shelfarr</h1>
   <p class="text-gray-400 mb-8">Prowlarr, qBittorrent, and Audiobookshelf. Jackett, usenet, and other libraries stay on the settings page. Every step can be skipped.</p>
 
-  <ol class="flex flex-wrap gap-3 mb-8 text-sm">
-    <% SetupWizard::STEPS.each do |step| %>
-      <li class="<%= step == @step ? "text-white" : "text-gray-500" %>"><%= SetupWizard::STEP_LABELS[step] %></li>
-    <% end %>
-  </ol>
+  <nav aria-label="Setup steps" class="mb-8">
+    <ol class="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+      <% SetupWizard::STEPS.each_with_index do |step, index| %>
+        <li>
+          <%= link_to "#{index + 1}. #{SetupWizard::STEP_LABELS[step]}", admin_setup_wizard_path(step: step),
+                class: step == @step ? "font-medium text-white" : "text-gray-400 hover:text-white transition",
+                aria: { current: (step == @step ? "step" : nil) } %>
+        </li>
+      <% end %>
+    </ol>
+  </nav>
 
   <% if @error.present? %>
-    <p role="alert" class="mb-6 rounded-lg border border-red-500/40 bg-red-950/40 px-4 py-3 text-red-300"><%= @error %></p>
+    <p id="setup-error" role="alert" class="mb-6 rounded-lg border border-red-500/40 bg-red-950/40 px-4 py-3 text-red-300"><%= @error %></p>
   <% end %>
 
   <% if @warnings.present? %>
     <% @warnings.each do |warning| %>
       <p role="status" class="mb-4 rounded-lg border border-amber-500/40 bg-amber-950/40 px-4 py-3 text-amber-200"><%= warning %></p>
     <% end %>
-    <p class="mb-6 text-sm text-gray-400">This does not block Finish. Mount the same directory at the same path in every container, or change the path below.</p>
+    <% if @step == "folders" %>
+      <p class="mb-6 text-sm text-gray-400">This does not block setup. Mount the same directory at the same path in every container, or change the paths below.</p>
+    <% else %>
+      <p class="mb-6 text-sm text-gray-400">
+        This does not block Finish. Mount the same directory at the same path in every container, or
+        <%= link_to "review the folders", admin_setup_wizard_path(step: "folders"), class: "text-blue-400 hover:text-blue-300 font-medium" %>.
+      </p>
+    <% end %>
   <% end %>
 
   <h2 class="font-bold text-2xl text-white mb-4"><%= SetupWizard::STEP_LABELS[@step] %></h2>
@@ -29,83 +45,103 @@
   <% when "prowlarr" %>
     <%= form_with url: admin_setup_wizard_path(step: @step), method: :patch, scope: :wizard do |form| %>
       <%= form.label :url, "Prowlarr URL", class: label_class %>
-      <%= form.url_field :url, value: @url, required: false, autocomplete: "off", placeholder: "http://prowlarr:9696", class: field_class %>
+      <%= form.url_field :url, value: @url, required: false, autocomplete: "off", placeholder: "http://prowlarr:9696", aria: { describedby: "prowlarr-url-help" }, class: field_class %>
+      <p id="prowlarr-url-help" class="<%= help_class %>">Use the Docker service name or a LAN IP. localhost is Shelfarr's own container.</p>
       <%= form.label :api_key, "Prowlarr API key", class: "#{label_class} mt-5" %>
-      <%= form.password_field :api_key, value: @api_key, required: false, autocomplete: "new-password", class: field_class %>
-      <%= form.submit "Continue", class: "mt-6 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+      <%= form.password_field :api_key, value: @api_key, required: false, autocomplete: "new-password", placeholder: (saved_secret_placeholder if @saved_secret), aria: { describedby: "prowlarr-key-help" }, class: field_class %>
+      <p id="prowlarr-key-help" class="<%= help_class %>">In Prowlarr, open Settings &gt; General and copy the API key.</p>
+      <%= form.submit "Test and continue", class: primary_class %>
     <% end %>
   <% when "qbittorrent" %>
     <%= form_with url: admin_setup_wizard_path(step: @step), method: :patch, scope: :wizard do |form| %>
       <%= form.label :url, "qBittorrent URL", class: label_class %>
-      <%= form.url_field :url, value: @url, required: false, autocomplete: "off", placeholder: "http://qbittorrent:8080", class: field_class %>
+      <%= form.url_field :url, value: @url, required: false, autocomplete: "off", placeholder: "http://qbittorrent:8080", aria: { describedby: "qbittorrent-url-help" }, class: field_class %>
+      <p id="qbittorrent-url-help" class="<%= help_class %>">The address of the qBittorrent web UI, as Shelfarr's container reaches it.</p>
       <%= form.label :username, "Username", class: "#{label_class} mt-5" %>
       <%= form.text_field :username, value: @username, required: false, autocomplete: "off", class: field_class %>
       <%= form.label :password, "Password", class: "#{label_class} mt-5" %>
-      <%= form.password_field :password, value: @password, required: false, autocomplete: "new-password", class: field_class %>
-      <%= form.label :api_key, "qBittorrent API key", class: "#{label_class} mt-5" %>
-      <%= form.password_field :api_key, value: @api_key, required: false, autocomplete: "new-password", placeholder: "qbt_…", class: field_class %>
-      <p class="mt-1 text-sm text-gray-500">Use a username and password, or an API key that starts with qbt_.</p>
-      <%= form.label :category, "Category", class: "#{label_class} mt-5" %>
-      <%= form.text_field :category, value: @category, required: false, autocomplete: "off", class: field_class %>
-      <p class="mt-1 text-sm text-gray-500">Leave this blank. qBittorrent creates a category folder when it needs one.</p>
-      <%= form.submit "Continue", class: "mt-6 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+      <%= form.password_field :password, value: @password, required: false, autocomplete: "new-password", placeholder: (saved_secret_placeholder if @saved_secret), class: field_class %>
+      <%= form.label :api_key, "Or a qBittorrent API key", class: "#{label_class} mt-5" %>
+      <%= form.password_field :api_key, value: @api_key, required: false, autocomplete: "new-password", placeholder: (@saved_qbittorrent_api_key ? saved_secret_placeholder : "qbt_…"), aria: { describedby: "qbittorrent-key-help" }, class: field_class %>
+      <p id="qbittorrent-key-help" class="<%= help_class %>">Use a username and password, or an API key that starts with qbt_. A new password replaces a saved API key.</p>
+      <%= form.label :category, "Category (optional)", class: "#{label_class} mt-5" %>
+      <%= form.text_field :category, value: @category, required: false, autocomplete: "off", aria: { describedby: "qbittorrent-category-help" }, class: field_class %>
+      <p id="qbittorrent-category-help" class="<%= help_class %>">Leave this blank. qBittorrent creates a category folder when it needs one.</p>
+      <%= form.submit "Test and continue", class: primary_class %>
     <% end %>
   <% when "folders" %>
     <%= form_with url: admin_setup_wizard_path(step: @step), method: :patch, scope: :wizard do |form| %>
       <p class="mb-5 text-sm text-gray-400">Mount the same directory at the same path in Shelfarr, qBittorrent, and Audiobookshelf. Leave the download client's own download path blank.</p>
       <%= form.label :audiobook_output_path, "Audiobook folder", class: label_class %>
-      <%= form.text_field :audiobook_output_path, value: @audiobook_output_path, required: false, autocomplete: "off", class: field_class %>
+      <%= form.text_field :audiobook_output_path, value: @audiobook_output_path, required: false, autocomplete: "off", aria: { describedby: "audiobook-folder-help" }, class: field_class %>
+      <p id="audiobook-folder-help" class="<%= help_class %>">Where Shelfarr puts finished audiobooks. Audiobookshelf should scan this folder.</p>
       <%= form.label :ebook_output_path, "Ebook folder", class: "#{label_class} mt-5" %>
       <%= form.text_field :ebook_output_path, value: @ebook_output_path, required: false, autocomplete: "off", class: field_class %>
       <%= form.label :download_local_path, "Download folder in this container", class: "#{label_class} mt-5" %>
-      <%= form.text_field :download_local_path, value: @download_local_path, required: false, autocomplete: "off", class: field_class %>
-      <%= form.label :download_remote_path, "qBittorrent save path on the host", class: "#{label_class} mt-5" %>
-      <%= form.text_field :download_remote_path, value: @download_remote_path, required: false, autocomplete: "off", placeholder: "Blank when qBittorrent already saves inside this container", class: field_class %>
-      <%= form.submit "Continue", class: "mt-6 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+      <%= form.text_field :download_local_path, value: @download_local_path, required: false, autocomplete: "off", aria: { describedby: "download-local-help" }, class: field_class %>
+      <p id="download-local-help" class="<%= help_class %>">Where Shelfarr finds qBittorrent's finished downloads.</p>
+      <%= form.label :download_remote_path, "qBittorrent's path for the same folder (optional)", class: "#{label_class} mt-5" %>
+      <%= form.text_field :download_remote_path, value: @download_remote_path, required: false, autocomplete: "off", placeholder: "Blank when qBittorrent already saves inside this container", aria: { describedby: "download-remote-help" }, class: field_class %>
+      <p id="download-remote-help" class="<%= help_class %>">Only when qBittorrent reports a different path for the same files, such as /data/torrents. Filled in from qBittorrent when it differs.</p>
+      <%= form.submit "Save and continue", class: primary_class %>
     <% end %>
   <% when "audiobookshelf" %>
-    <%= form_with url: admin_setup_wizard_path(step: @step), method: :patch, scope: :wizard do |form| %>
-      <%= form.label :url, "Audiobookshelf URL", class: label_class %>
-      <%= form.url_field :url, value: @url, required: false, autocomplete: "off", placeholder: "http://audiobookshelf:13378", class: field_class %>
-      <%= form.label :api_key, "Audiobookshelf API token", class: "#{label_class} mt-5" %>
-      <%= form.password_field :api_key, value: @api_key, required: false, autocomplete: "new-password", class: field_class %>
-      <%= form.submit "Continue", class: "mt-6 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
-    <% end %>
+    <% connected = @libraries.present? && @library_error.blank? %>
 
     <% if @library_error.present? %>
-      <p role="alert" class="mt-6 text-red-300"><%= @library_error %></p>
-    <% elsif @libraries.present? %>
-      <%= form_with url: admin_setup_wizard_path(step: @step), method: :patch, scope: :wizard, html: { class: "mt-8" } do |form| %>
+      <p role="alert" class="mb-6 rounded-lg border border-red-500/40 bg-red-950/40 px-4 py-3 text-red-300">The saved connection did not list libraries: <%= @library_error %></p>
+    <% end %>
+
+    <% if connected %>
+      <%= form_with url: admin_setup_wizard_path(step: @step), method: :patch, scope: :wizard do |form| %>
         <%= form.hidden_field :phase, value: "libraries" %>
-        <p class="text-gray-300 mb-4">Choose the libraries Shelfarr should scan.</p>
+        <p class="text-gray-300 mb-4">Connected to <%= SettingsService.get(:audiobookshelf_url) %>. Choose the libraries Shelfarr should scan.</p>
         <%= form.label :audiobook_library_id, "Audiobook library", class: label_class %>
         <%= form.select :audiobook_library_id, options_for_select([ [ "Not now", "" ] ] + @libraries.map { |library| [ library.name, library.id ] }, @audiobook_library_id), {}, class: field_class %>
         <%= form.label :ebook_library_id, "Ebook library", class: "#{label_class} mt-5" %>
-        <%= form.select :ebook_library_id, options_for_select([ [ "Not now", "" ] ] + @libraries.map { |library| [ library.name, library.id ] }, @ebook_library_id), {}, class: field_class %>
-        <p class="mt-2 text-sm text-gray-500">A blank library is skipped. Shelfarr does not scan it until an id is saved.</p>
-        <%= form.submit "Continue", class: "mt-6 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+        <%= form.select :ebook_library_id, options_for_select([ [ "Not now", "" ] ] + @libraries.map { |library| [ library.name, library.id ] }, @ebook_library_id), {}, aria: { describedby: "library-help" }, class: field_class %>
+        <p id="library-help" class="<%= help_class %>">Choose Not now to skip a library. You can pick one later in Settings.</p>
+        <%= form.submit "Save and continue", class: primary_class %>
+      <% end %>
+    <% end %>
+
+    <%= tag.details(class: connected ? "mt-8 rounded-md border border-gray-700 p-4" : nil, open: !connected || @error.present?) do %>
+      <% if connected %>
+        <summary class="cursor-pointer font-medium text-gray-200">Change the Audiobookshelf connection</summary>
+      <% end %>
+      <%= form_with url: admin_setup_wizard_path(step: @step), method: :patch, scope: :wizard, html: { class: connected ? "mt-4" : nil } do |form| %>
+        <%= form.label :url, "Audiobookshelf URL", class: label_class %>
+        <%= form.url_field :url, value: @url, required: false, autocomplete: "off", placeholder: "http://audiobookshelf:13378", aria: { describedby: "abs-url-help" }, class: field_class %>
+        <p id="abs-url-help" class="<%= help_class %>">Use the Docker service name or a LAN IP. localhost is Shelfarr's own container.</p>
+        <%= form.label :api_key, "Audiobookshelf API token", class: "#{label_class} mt-5" %>
+        <%= form.password_field :api_key, value: @api_key, required: false, autocomplete: "new-password", placeholder: (saved_secret_placeholder if @saved_secret), aria: { describedby: "abs-token-help" }, class: field_class %>
+        <p id="abs-token-help" class="<%= help_class %>">In Audiobookshelf, open Settings &gt; Users, choose your user, and copy the API token.</p>
+        <%= form.submit (connected ? "Test and save connection" : "Test and continue"), class: connected ? "mt-6 rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white cursor-pointer" : primary_class %>
       <% end %>
     <% end %>
   <% when "search" %>
     <%= form_with url: admin_setup_wizard_path(step: @step), method: :patch, scope: :wizard do |form| %>
       <label class="flex items-start gap-3 text-gray-200">
-        <%= hidden_field_tag "wizard[immediate_search_enabled]", "0" %>
+        <%= hidden_field_tag "wizard[immediate_search_enabled]", "0", id: nil %>
         <%= check_box_tag "wizard[immediate_search_enabled]", "1", @immediate_search, class: "mt-1" %>
         <span>Start searching as soon as a request is created.</span>
       </label>
       <label class="flex items-start gap-3 text-gray-200 mt-5">
-        <%= hidden_field_tag "wizard[auto_select_enabled]", "0" %>
+        <%= hidden_field_tag "wizard[auto_select_enabled]", "0", id: nil %>
         <%= check_box_tag "wizard[auto_select_enabled]", "1", @auto_select, class: "mt-1" %>
         <span>
-          Auto-select a release. Off by default.
-          <span class="block mt-1 text-sm text-gray-400">A score of 90 means the release must match at least 90 out of 100 before Shelfarr grabs it. One seeder is enough.</span>
+          Download the best match automatically.
+          <span class="block mt-1 text-sm text-gray-400">Off by default, so you pick each release. When on, a release must score at least 90 out of 100 and have one seeder before Shelfarr grabs it.</span>
         </span>
       </label>
-      <%= form.submit "Finish", class: "mt-6 rounded-md px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white cursor-pointer" %>
+      <%= form.submit "Finish", class: primary_class %>
     <% end %>
   <% end %>
 
-  <div class="mt-8 flex gap-3">
+  <div class="mt-8 flex flex-wrap gap-3">
+    <% if @previous_step %>
+      <%= link_to "Back", admin_setup_wizard_path(step: @previous_step), class: "rounded-md px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200" %>
+    <% end %>
     <% unless @step == "search" %>
       <%= button_to "Skip this step", skip_admin_setup_wizard_path(step: @step), method: :post, class: "rounded-md px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white cursor-pointer" %>
     <% end %>

@@ -37,32 +37,30 @@ class SetupWizardTest < ApplicationSystemTestCase
     assert_text "Set up Shelfarr"
     fill_in "Prowlarr URL", with: "http://prowlarr:9696"
     fill_in "Prowlarr API key", with: "prowlarr-key"
-    click_button "Continue"
+    click_button "Test and continue"
 
     assert_text "qBittorrent"
     fill_in "qBittorrent URL", with: "http://qbittorrent:8080"
     fill_in "Username", with: "admin"
     fill_in "Password", with: "secret"
-    click_button "Continue"
+    click_button "Test and continue"
 
     assert_text "Audiobook folder"
     fill_in "Audiobook folder", with: "/audiobooks"
     fill_in "Ebook folder", with: "/ebooks"
     fill_in "Download folder in this container", with: "/downloads"
-    fill_in "qBittorrent save path on the host", with: ""
-    click_button "Continue"
+    fill_in "qBittorrent's path for the same folder (optional)", with: ""
+    click_button "Save and continue"
 
     assert_text "Audiobookshelf URL"
     fill_in "Audiobookshelf URL", with: "http://audiobookshelf:13378"
     fill_in "Audiobookshelf API token", with: "abs-token"
-    click_button "Continue"
+    click_button "Test and continue"
 
     assert_text "Choose the libraries Shelfarr should scan."
-    within("form", text: "Audiobook library") do
-      select "Audiobooks", from: "Audiobook library"
-      select "Ebooks", from: "Ebook library"
-      click_button "Continue"
-    end
+    assert_equal "lib-audio", find_field("Audiobook library").value
+    select "Ebooks", from: "Ebook library"
+    click_button "Save and continue"
 
     assert_text "90 out of 100"
     click_button "Finish"

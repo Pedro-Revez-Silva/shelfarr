@@ -29,6 +29,11 @@ class SetupWizard
       STEPS[STEPS.index(normalize_step(step)).to_i + 1] || STEPS.last
     end
 
+    def previous_step(step)
+      index = STEPS.index(normalize_step(step)).to_i
+      STEPS[index - 1] if index.positive?
+    end
+
     def pending?
       !completed? && !SettingsService.active_indexer_configured? && !DownloadClient.enabled.exists?
     end
@@ -59,8 +64,10 @@ class SetupWizard
       DownloadClient.qbittorrent.order(:priority, :id).first
     end
 
-    def path_warnings
-      [ qbittorrent_warning, *audiobookshelf_warnings ].compact
+    # Overrides let a step check the values on its form before they are saved.
+    def path_warnings(overrides = {})
+      paths = saved_paths.merge(overrides.compact)
+      [ qbittorrent_warning(paths), *audiobookshelf_warnings(paths) ].compact
     end
 
     def library_choices
@@ -71,17 +78,25 @@ class SetupWizard
     end
 
     def suggested_remote_path(local_path)
-      save_path = diagnostics_for&.dig(:save_path)
-      return if save_path.blank? || same_path?(save_path, local_path)
+      diagnostics = diagnostics_for
+      return if diagnostics.nil? || visible_save_path?(diagnostics, local_path)
 
-      save_path
+      mapping_save_path(diagnostics)
+    end
+
+    # Preselect the library whose folder holds the output path, as the path check expects.
+    def suggested_library_id(libraries, output_path)
+      library = Array(libraries).find do |item|
+        item.folder_paths.to_a.any? { |folder| inside_path?(output_path, folder) }
+      end
+      library&.id
     end
 
     private
 
     def save_prowlarr(params)
       url = params[:url].to_s.strip
-      api_key = params[:api_key].to_s.strip
+      api_key = params[:api_key].to_s.strip.presence || SettingsService.get(:prowlarr_api_key).to_s
       return failure("Enter the Prowlarr URL and API key.") if url.blank? || api_key.blank?
       return failure("Prowlarr connection failed.") unless ConnectionProbe.indexer(provider: "prowlarr", url: url, api_key: api_key)
 
@@ -90,8 +105,10 @@ class SetupWizard
       SettingsService.set(:prowlarr_api_key, api_key)
       IndexerClient.reset_all_connections!
       success(notice: "Prowlarr connected.")
+    rescue IndexerClients::Base::AuthenticationError
+      failure("Prowlarr rejected the API key. Copy it from Prowlarr under Settings > General.")
     rescue IndexerClients::Base::Error => e
-      failure(e.message)
+      failure("Could not connect to Prowlarr: #{e.message}")
     end
 
     def save_qbittorrent(params)
@@ -109,17 +126,23 @@ class SetupWizard
       end
       return failure("Enter a username and password, or a qBittorrent API key.") unless credentials_present?(existing, username, password, api_key)
 
-      probe_key = api_key.presence || existing&.api_key
+      # A new password switches a client that used an API key back to a login.
+      password_login = api_key.blank? && password.present?
+      probe_key = api_key.presence || (existing&.api_key unless password_login)
       probe_password = password.presence || existing&.password
       probe_username = username.presence || existing&.username
       unless ConnectionProbe.qbittorrent(url: url, username: probe_username, password: probe_password, api_key: probe_key, category: category)
         return failure("qBittorrent connection failed.")
       end
 
-      persist_qbittorrent!(existing, url: url, username: probe_username, password: password, api_key: api_key, category: category)
+      persist_qbittorrent!(existing, url: url, username: probe_username, password: password, api_key: api_key, category: category,
+        clear_api_key: password_login)
+      start_download_monitor
       success(notice: "qBittorrent connected.")
+    rescue DownloadClients::Base::AuthenticationError
+      failure("qBittorrent rejected the login. Check the username and password, or the API key.")
     rescue DownloadClients::Base::Error => e
-      failure(e.message)
+      failure("Could not connect to qBittorrent: #{e.message}")
     rescue ActiveRecord::RecordInvalid => e
       failure(e.record.errors.full_messages.to_sentence)
     end
@@ -146,17 +169,21 @@ class SetupWizard
       end
 
       url = params[:url].to_s.strip
-      api_key = params[:api_key].to_s.strip
+      api_key = params[:api_key].to_s.strip.presence || SettingsService.get(:audiobookshelf_api_key).to_s
       return failure("Enter the Audiobookshelf URL and API token.") if url.blank? || api_key.blank?
-      return failure("Audiobookshelf connection failed.") unless ConnectionProbe.audiobookshelf(url: url, api_key: api_key)
+      unless ConnectionProbe.audiobookshelf(url: url, api_key: api_key)
+        return failure("Audiobookshelf has no libraries yet. Create one in Audiobookshelf, then try again, or skip this step.")
+      end
 
       SettingsService.set(:library_platform, "audiobookshelf")
       SettingsService.set(:audiobookshelf_url, url)
       SettingsService.set(:audiobookshelf_api_key, api_key)
       LibraryPlatformClient.reset_connections!
       success(notice: "Audiobookshelf connected. Choose the libraries Shelfarr should scan.", stay: true)
+    rescue AudiobookshelfClient::AuthenticationError
+      failure("Audiobookshelf rejected the API token. Copy it from your user in Audiobookshelf under Settings > Users.")
     rescue AudiobookshelfClient::Error => e
-      failure(e.message)
+      failure("Could not connect to Audiobookshelf: #{e.message}")
     end
 
     def save_search(params)
@@ -173,16 +200,24 @@ class SetupWizard
     end
 
     # One download client: a later pass updates the qBittorrent row instead of adding another.
-    def persist_qbittorrent!(existing, url:, username:, password:, api_key:, category:)
-      attributes = { url: url, username: username, category: category, enabled: true, download_path: nil }
+    def persist_qbittorrent!(existing, url:, username:, password:, api_key:, category:, clear_api_key:)
+      attributes = { url: url, username: username, category: category, enabled: true }
       attributes[:password] = password if password.present?
       attributes[:api_key] = api_key if api_key.present?
+      attributes[:api_key] = nil if clear_api_key
 
       if existing
+        # Keep an existing client's own download path; import remaps through it.
         existing.update!(attributes)
       else
-        DownloadClient.create!(attributes.merge(name: available_client_name, client_type: "qbittorrent", priority: 0))
+        DownloadClient.create!(attributes.merge(name: available_client_name, client_type: "qbittorrent", priority: 0, download_path: nil))
       end
+    end
+
+    def start_download_monitor
+      DownloadMonitorJob.ensure_running!
+    rescue StandardError => e
+      Rails.logger.warn "[SetupWizard] Failed to start the download monitor: #{e.message}"
     end
 
     def available_client_name
@@ -201,10 +236,44 @@ class SetupWizard
     end
 
     def container_save_path?(local_path)
-      same_path?(diagnostics_for&.dig(:save_path), local_path)
+      diagnostics = diagnostics_for
+      diagnostics.present? && visible_save_path?(diagnostics, local_path)
     end
 
-    def qbittorrent_warning
+    # qBittorrent already writes inside this container when the path it uses
+    # (the category's own save path, or the global one) is under local_path.
+    def visible_save_path?(diagnostics, local_path)
+      inside_path?(diagnostics[:category_save_path].presence || diagnostics[:save_path], local_path)
+    end
+
+    # Map from the global save path, unless the category saves somewhere outside it.
+    def mapping_save_path(diagnostics)
+      save_path = diagnostics[:save_path]
+      category_save_path = diagnostics[:category_save_path]
+      return save_path if category_save_path.blank? || inside_path?(category_save_path, save_path)
+
+      category_save_path
+    end
+
+    def inside_path?(path, root)
+      candidate = normalize_path(path)
+      base = normalize_path(root)
+      return false if candidate.blank? || base.blank?
+      return true if base == "/"
+
+      candidate == base || candidate.start_with?("#{base}/")
+    end
+
+    def saved_paths
+      {
+        download_local_path: SettingsService.get(:download_local_path),
+        download_remote_path: SettingsService.get(:download_remote_path),
+        audiobook_output_path: SettingsService.get(:audiobook_output_path),
+        ebook_output_path: SettingsService.get(:ebook_output_path)
+      }
+    end
+
+    def qbittorrent_warning(paths)
       client = qbittorrent_client
       diagnostics = diagnostics_for(client)
       return if client.nil? || diagnostics.nil?
@@ -213,14 +282,14 @@ class SetupWizard
         save_path: diagnostics[:save_path],
         category_save_path: diagnostics[:category_save_path],
         category: client.category,
-        local_path: SettingsService.get(:download_local_path),
-        remote_path: SettingsService.get(:download_remote_path)
+        local_path: paths[:download_local_path],
+        remote_path: paths[:download_remote_path]
       )
     rescue StandardError
       nil
     end
 
-    def audiobookshelf_warnings
+    def audiobookshelf_warnings(paths)
       return [] unless SettingsService.active_library_platform == "audiobookshelf"
       return [] unless SettingsService.configured?(:audiobookshelf_url) && SettingsService.configured?(:audiobookshelf_api_key)
 
@@ -229,8 +298,8 @@ class SetupWizard
         libraries: libraries,
         audiobook_library_id: SettingsService.get(:audiobookshelf_audiobook_library_id),
         ebook_library_id: SettingsService.get(:audiobookshelf_ebook_library_id),
-        audiobook_output_path: SettingsService.get(:audiobook_output_path),
-        ebook_output_path: SettingsService.get(:ebook_output_path)
+        audiobook_output_path: paths[:audiobook_output_path],
+        ebook_output_path: paths[:ebook_output_path]
       )
     rescue StandardError
       []
@@ -242,11 +311,6 @@ class SetupWizard
       client.adapter.connection_diagnostics
     rescue StandardError
       nil
-    end
-
-    def same_path?(left, right)
-      normalized_left = normalize_path(left)
-      normalized_left.present? && normalized_left == normalize_path(right)
     end
 
     def normalize_path(path)

@@ -77,7 +77,7 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
       patch admin_setup_wizard_url(step: "prowlarr"), params: { wizard: { url: "http://127.0.0.1:9696", api_key: "typed-key" } }
 
       assert_response :unprocessable_entity
-      assert_match ConnectionErrorClassifier::LOCALHOST_HINT, response.body
+      assert_select "[role=alert]", text: "Could not connect to Prowlarr: Connection refused. #{ConnectionErrorClassifier::LOCALHOST_HINT}"
       assert_not SettingsService.active_indexer_configured?
     end
   end
@@ -153,7 +153,7 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
         }
 
         assert_redirected_to admin_setup_wizard_path(step: "audiobookshelf")
-        assert_match "qBittorrent save path /mnt/torrents maps to /mnt/torrents. That path is not inside /downloads or does not exist.", flash[:alert]
+        assert_equal "qBittorrent saves to /mnt/torrents, which is not inside #{local_path} or does not exist in this container.", flash[:alert]
         assert_equal "", SettingsService.get(:download_remote_path)
         assert_equal local_path, SettingsService.get(:download_local_path)
         assert_nil client.reload.download_path
@@ -272,5 +272,168 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:setup_wizard_completed, true)
 
     assert_not SetupWizard.pending?
+  end
+
+  test "steps link to each other and a rerun keeps the saved prowlarr key" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://prowlarr:9696")
+    SettingsService.set(:prowlarr_api_key, "saved-key")
+
+    get admin_setup_wizard_url(step: "qbittorrent")
+
+    assert_select "nav[aria-label='Setup steps'] a[aria-current='step']", "2. qBittorrent"
+    assert_select "nav[aria-label='Setup steps'] a[href=?]", admin_setup_wizard_path(step: "folders"), text: "3. Folders"
+    assert_select "a[href=?]", admin_setup_wizard_path(step: "prowlarr"), text: "Back"
+
+    get admin_setup_wizard_url(step: "prowlarr")
+    assert_select "input[name='wizard[api_key]'][placeholder='Saved. Leave blank to keep it.']"
+
+    VCR.turned_off do
+      stub_request(:get, "http://prowlarr:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "saved-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      patch admin_setup_wizard_url(step: "prowlarr"), params: { wizard: { url: "http://prowlarr:9696", api_key: "" } }
+
+      assert_redirected_to admin_setup_wizard_path(step: "qbittorrent")
+      assert_equal "saved-key", SettingsService.get(:prowlarr_api_key)
+    end
+  end
+
+  test "prowlarr names a rejected api key" do
+    VCR.turned_off do
+      stub_request(:get, "http://prowlarr:9696/api/v1/indexer").to_return(status: 401, body: "{}", headers: { "Content-Type" => "application/json" })
+
+      patch admin_setup_wizard_url(step: "prowlarr"), params: { wizard: { url: "http://prowlarr:9696", api_key: "wrong" } }
+
+      assert_response :unprocessable_entity
+      assert_select "[role=alert]", "Prowlarr rejected the API key. Copy it from Prowlarr under Settings > General."
+      assert_not SettingsService.active_indexer_configured?
+    end
+  end
+
+  test "qbittorrent continue starts the download monitor" do
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://qbittorrent:8080")
+
+      assert_enqueued_with(job: DownloadMonitorJob) do
+        patch admin_setup_wizard_url(step: "qbittorrent"), params: {
+          wizard: { url: "http://qbittorrent:8080", username: "admin", password: "secret", category: "" }
+        }
+      end
+    end
+  end
+
+  test "a qbittorrent rerun keeps the client download path and a new password replaces an api key" do
+    client = DownloadClient.create!(
+      name: "qBittorrent", client_type: "qbittorrent", url: "http://qbittorrent:8080",
+      api_key: QBITTORRENT_API_KEY, category: "", download_path: "/mnt/torrents", enabled: true
+    )
+
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://qbittorrent:8080")
+
+      patch admin_setup_wizard_url(step: "qbittorrent"), params: {
+        wizard: { url: "http://qbittorrent:8080", username: "admin", password: "secret", api_key: "", category: "" }
+      }
+
+      assert_redirected_to admin_setup_wizard_path(step: "folders")
+      assert_requested :post, "http://qbittorrent:8080/api/v2/auth/login", body: hash_including("username" => "admin", "password" => "secret")
+    end
+
+    client.reload
+    assert_nil client.api_key
+    assert_equal "secret", client.password
+    assert_equal "/mnt/torrents", client.download_path
+  end
+
+  test "folders do not map a category path that is already inside the download folder" do
+    DownloadClient.create!(name: "qBittorrent", client_type: "qbittorrent", url: "http://qbittorrent:8080", username: "admin", password: "secret", category: "books", enabled: true)
+    Dir.mktmpdir do |local_path|
+      SettingsService.set(:download_local_path, local_path)
+      VCR.turned_off do
+        stub_qbittorrent_connection("http://qbittorrent:8080")
+        stub_request(:get, "http://qbittorrent:8080/api/v2/app/preferences")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { "save_path" => local_path }.to_json)
+        stub_request(:get, "http://qbittorrent:8080/api/v2/torrents/categories")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { "books" => { "savePath" => "#{local_path}/books" } }.to_json)
+
+        get admin_setup_wizard_url(step: "folders")
+        assert_select "input[name='wizard[download_remote_path]']" do |inputs|
+          assert_equal "", inputs.first["value"].to_s
+        end
+
+        patch admin_setup_wizard_url(step: "folders"), params: {
+          wizard: { audiobook_output_path: "/audiobooks", ebook_output_path: "/ebooks", download_local_path: local_path, download_remote_path: "#{local_path}/books" }
+        }
+
+        assert_equal "", SettingsService.get(:download_remote_path)
+      end
+    end
+  end
+
+  test "folders suggest the qBittorrent save path and check the suggestion before it is saved" do
+    DownloadClient.create!(name: "qBittorrent", client_type: "qbittorrent", url: "http://qbittorrent:8080", username: "admin", password: "secret", category: "", enabled: true)
+    Dir.mktmpdir do |local_path|
+      SettingsService.set(:download_local_path, local_path)
+      VCR.turned_off do
+        stub_qbittorrent_connection("http://qbittorrent:8080")
+        stub_request(:get, "http://qbittorrent:8080/api/v2/app/preferences")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { "save_path" => "/mnt/torrents" }.to_json)
+
+        get admin_setup_wizard_url(step: "folders")
+
+        assert_select "input[name='wizard[download_remote_path]'][value='/mnt/torrents']"
+        assert_select "[role=status]", count: 0
+      end
+    end
+  end
+
+  test "audiobookshelf with no libraries is not saved and says what to do" do
+    VCR.turned_off do
+      stub_request(:get, "http://audiobookshelf:13378/api/libraries")
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { "libraries" => [] }.to_json)
+
+      patch admin_setup_wizard_url(step: "audiobookshelf"), params: { wizard: { url: "http://audiobookshelf:13378", api_key: "abs-token" } }
+
+      assert_response :unprocessable_entity
+      assert_select "[role=alert]", /has no libraries yet/
+      assert_not SettingsService.configured?(:audiobookshelf_api_key)
+    end
+  end
+
+  test "a connected audiobookshelf step leads with one library form and preselects the matching folder" do
+    SettingsService.set(:library_platform, "audiobookshelf")
+    SettingsService.set(:audiobookshelf_url, "http://audiobookshelf:13378")
+    SettingsService.set(:audiobookshelf_api_key, "abs-token")
+    SettingsService.set(:audiobook_output_path, "/audiobooks/Shelfarr")
+    SettingsService.set(:ebook_output_path, "/books")
+
+    VCR.turned_off do
+      stub_request(:get, "http://audiobookshelf:13378/api/libraries").to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "libraries" => [
+          { "id" => "lib-audio", "name" => "Audiobooks", "mediaType" => "book", "folders" => [ { "fullPath" => "/audiobooks" } ] },
+          { "id" => "lib-ebooks", "name" => "Ebooks", "mediaType" => "book", "folders" => [ { "fullPath" => "/ebooks" } ] }
+        ] }.to_json
+      )
+
+      get admin_setup_wizard_url(step: "audiobookshelf")
+
+      assert_select "input[type=submit][value='Save and continue']", count: 1
+      assert_select "details:not([open]) summary", "Change the Audiobookshelf connection"
+      assert_select "select[name='wizard[audiobook_library_id]'] option[selected][value='lib-audio']"
+      assert_select "select[name='wizard[ebook_library_id]'] option[selected][value='']"
+
+      stub_request(:get, "http://audiobookshelf:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer abs-token" })
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { "libraries" => [ { "id" => "lib-audio", "name" => "Audiobooks", "folders" => [] } ] }.to_json)
+
+      patch admin_setup_wizard_url(step: "audiobookshelf"), params: { wizard: { url: "http://audiobookshelf:13378", api_key: "" } }
+
+      assert_redirected_to admin_setup_wizard_path(step: "audiobookshelf")
+      assert_equal "abs-token", SettingsService.get(:audiobookshelf_api_key)
+    end
   end
 end
