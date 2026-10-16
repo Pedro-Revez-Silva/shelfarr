@@ -40,8 +40,8 @@ class RegistrationsControllerTest < ActionDispatch::IntegrationTest
       }
     end
 
-    assert_redirected_to admin_settings_path
-    assert_equal "Welcome! You are the admin. Please configure your settings.", flash[:notice]
+    assert_redirected_to admin_setup_wizard_path
+    assert_equal "Welcome! You are the admin. Let's set up Shelfarr.", flash[:notice]
     assert User.find_by!(username: "first_admin").admin?
     assert cookies["session_id"].present?
   end

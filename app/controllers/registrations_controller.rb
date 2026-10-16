@@ -13,7 +13,7 @@ class RegistrationsController < ApplicationController
     if @user.save
       if first_user?
         start_new_session_for(@user)
-        redirect_to admin_settings_path, notice: "Welcome! You are the admin. Please configure your settings."
+        redirect_to admin_setup_wizard_path, notice: "Welcome! You are the admin. Let's set up Shelfarr."
       else
         redirect_to admin_users_path, notice: "User created successfully."
       end
