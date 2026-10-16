@@ -337,8 +337,7 @@ class Hardcover::ItemImporterTest < ActiveSupport::TestCase
     assert_equal HardcoverSubscription::PAUSE_OTHER_ACCOUNT, shelf.reload.pause_reason
   end
 
-  # A list sync queues a newly added book in both formats; the request limit
-  # lets one format through per window.
+  # A list sync queues a newly added book in both formats; the request limit lets one format through per window.
   def sync_two_format_book(book_id)
     configure_hardcover_instance_token
     SettingsService.set(:hardcover_max_requests_per_run, 1)

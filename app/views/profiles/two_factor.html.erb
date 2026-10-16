@@ -13,7 +13,6 @@
     <% end %>
 
     <% if @user.otp_enabled? %>
-      <!-- 2FA is enabled -->
       <div class="bg-green-900/30 border border-green-800/50 rounded-lg p-4 mb-6">
         <div class="flex items-center">
           <svg class="w-5 h-5 text-green-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
@@ -27,7 +26,6 @@
         Your account is protected with two-factor authentication. You'll need to enter a code from your authenticator app each time you sign in.
       </p>
 
-      <!-- Backup Codes Section -->
       <div class="border-t border-gray-700 pt-6 mb-6">
         <h3 class="font-medium text-white mb-4">Backup Codes</h3>
         <% if @user.backup_codes_remaining > 0 %>
@@ -78,7 +76,6 @@
       </div>
 
     <% else %>
-      <!-- 2FA setup -->
       <p class="text-gray-400 mb-6">
         Add an extra layer of security to your account by enabling two-factor authentication.
       </p>

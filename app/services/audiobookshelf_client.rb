@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-# Client for interacting with Audiobookshelf API
-# https://api.audiobookshelf.org/
 class AudiobookshelfClient
   class Error < StandardError; end
   class ConnectionError < Error; end
@@ -23,7 +21,6 @@ class AudiobookshelfClient
   end
 
   class << self
-    # GET /api/libraries - List all libraries with folder paths
     def libraries
       ensure_configured!
 
@@ -33,7 +30,6 @@ class AudiobookshelfClient
       end
     end
 
-    # GET /api/libraries/:id - Get single library
     def library(id)
       ensure_configured!
 
@@ -41,7 +37,6 @@ class AudiobookshelfClient
       handle_response(response) { |data| parse_library(data) }
     end
 
-    # POST /api/libraries/:id/scan - Trigger library scan
     def scan_library(id)
       ensure_configured!
 
@@ -49,7 +44,6 @@ class AudiobookshelfClient
       response.status == 200
     end
 
-    # GET /api/libraries/:id/items - List all items in a library
     def library_items(id, page_size: 500)
       ensure_configured!
 
@@ -72,14 +66,11 @@ class AudiobookshelfClient
       items
     end
 
-    # GET /api/libraries/:id/items - Find item by path
     def find_item_by_path(path)
       ensure_configured!
 
-      # Normalize path for comparison
       normalized_path = File.expand_path(path)
 
-      # Search all configured libraries
       library_ids = [
         SettingsService.get(:audiobookshelf_audiobook_library_id),
         SettingsService.get(:audiobookshelf_ebook_library_id),
@@ -108,7 +99,6 @@ class AudiobookshelfClient
       nil
     end
 
-    # DELETE /api/library-items/:id - Delete a library item
     def delete_item(item_id)
       ensure_configured!
 
@@ -116,7 +106,6 @@ class AudiobookshelfClient
       response.status == 200
     end
 
-    # Find and delete item by path
     def delete_item_by_path(path)
       item = find_item_by_path(path)
       return false unless item
@@ -128,11 +117,23 @@ class AudiobookshelfClient
       SettingsService.audiobookshelf_credentials_configured?
     end
 
-    def test_connection
-      ensure_configured!
-      libraries.any?
-    rescue Error
-      false
+    def test_connection(url: nil, api_key: nil)
+      if url.nil? && api_key.nil?
+        ensure_configured!
+        return libraries.any?
+      end
+
+      key = api_key.nil? ? self.api_key : api_key
+      raise NotConfiguredError, "#{display_name} is not configured" if url.blank? || key.blank?
+
+      response = request { open_connection(validate_base_url!(url), key).get("/api/libraries") }
+      handle_response(response) { |data| Array(data["libraries"]).any? }
+    rescue Error => e
+      ConnectionErrorClassifier.reraise!(
+        e,
+        connection_error: ConnectionError,
+        authentication_error: AuthenticationError
+      )
     end
 
     def reset_connection!
@@ -156,25 +157,33 @@ class AudiobookshelfClient
     end
 
     def connection
-      @connection ||= Faraday.new(url: base_url) do |f|
+      @connection ||= open_connection(base_url, api_key)
+    end
+
+    def open_connection(url, key)
+      Faraday.new(url: url) do |f|
         f.request :json
         f.response :json, parser_options: { symbolize_names: false }
         f.adapter Faraday.default_adapter
-        f.headers["Authorization"] = "Bearer #{api_key}"
+        f.headers["Authorization"] = "Bearer #{key}"
         f.options.timeout = 15
         f.options.open_timeout = 5
       end
     end
 
     def base_url
-      url = SettingsService.get(:audiobookshelf_url).to_s.strip
-      parsed_url = URI.parse(url)
+      validate_base_url!(SettingsService.get(:audiobookshelf_url))
+    end
+
+    def validate_base_url!(url)
+      value = url.to_s.strip
+      parsed_url = URI.parse(value)
 
       unless parsed_url.is_a?(URI::HTTP) && parsed_url.host.present?
         raise URI::InvalidURIError, "Audiobookshelf URL must include http:// or https://"
       end
 
-      url
+      value
     end
 
     def api_key

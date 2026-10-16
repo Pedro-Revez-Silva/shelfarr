@@ -12,7 +12,6 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
   end
 
   test "returns empty result for unsupported file type" do
-    # Create a temp file with unsupported extension
     file = Tempfile.new([ "test", ".txt" ])
     file.write("Hello world")
     file.close
@@ -105,7 +104,6 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
   end
 
   test "extracts metadata from EPUB file" do
-    # Create a minimal EPUB file structure
     epub_path = create_test_epub(
       title: "The Great Gatsby",
       author: "F. Scott Fitzgerald",
@@ -123,7 +121,6 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
   end
 
   test "handles EPUB without metadata gracefully" do
-    # Create an EPUB with missing metadata
     epub_path = create_test_epub(title: nil, author: nil, date: nil)
 
     result = MetadataExtractorService.extract(epub_path)
@@ -547,7 +544,6 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
       # Add mimetype (must be first and uncompressed)
       zipfile.get_output_stream("mimetype") { |f| f.write "application/epub+zip" }
 
-      # Add container.xml
       container_xml = <<~XML
         <?xml version="1.0" encoding="UTF-8"?>
         <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -558,7 +554,6 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
       XML
       zipfile.get_output_stream("META-INF/container.xml") { |f| f.write container_xml }
 
-      # Add content.opf with metadata
       opf_xml = <<~XML
         <?xml version="1.0" encoding="UTF-8"?>
         <package xmlns="http://www.idpf.org/2007/opf" version="3.0">

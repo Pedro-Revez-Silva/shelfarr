@@ -13,7 +13,6 @@ class SearchResult < ApplicationRecord
     rejected: 2
   }
 
-  # Source constants
   SOURCE_PROWLARR = "prowlarr"
   SOURCE_JACKETT = "jackett"
   SOURCE_NEWZNAB = "newznab"
@@ -116,14 +115,10 @@ class SearchResult < ApplicationRecord
     magnet_url.presence || download_url
   end
 
-  # Check if this is a usenet/NZB result
-  # Usenet results have: download URL, no magnet URL, no seeders
-  # Torrent results have: magnet URL or seeders count
   def usenet?
     download_url.present? && magnet_url.blank? && seeders.nil?
   end
 
-  # Check if this is a torrent result
   def torrent?
     magnet_url.present? || (download_url.present? && !usenet?)
   end
@@ -233,7 +228,6 @@ class SearchResult < ApplicationRecord
     score_detail(:preference_adjustment).to_i
   end
 
-  # Source helpers
   def from_prowlarr?
     source == SOURCE_PROWLARR || source.blank?
   end

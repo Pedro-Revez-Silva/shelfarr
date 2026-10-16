@@ -12,7 +12,7 @@ module Admin
     end
 
     def new
-      @download_client = DownloadClient.new(category: "shelfarr")
+      @download_client = DownloadClient.new(category: "")
     end
 
     def create
@@ -67,14 +67,17 @@ module Admin
     end
 
     def test
-      success = @download_client.test_connection
-      run_download_client_health_check
-
-      if success
+      if @download_client.test_connection
+        run_download_client_health_check
         redirect_to admin_download_clients_path, notice: "Connection to '#{@download_client.name}' successful!"
       else
+        run_download_client_health_check
         redirect_to admin_download_clients_path, alert: "Connection to '#{@download_client.name}' failed."
       end
+    rescue StandardError => e
+      run_download_client_health_check
+      redirect_to admin_download_clients_path,
+        alert: "Connection to '#{@download_client.name}' failed: #{ConnectionErrorClassifier.with_localhost_hint(ConnectionErrorClassifier.describe(e), @download_client.url)}"
     end
 
     def move_up

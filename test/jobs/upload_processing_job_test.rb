@@ -23,7 +23,6 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     # Disable Audiobookshelf
     Setting.where(key: "audiobookshelf_url").destroy_all
 
-    # Create test file
     @test_file = File.join(@temp_source, "Brandon Sanderson - Mistborn.m4b")
     File.write(@test_file, "test audio content")
 
@@ -287,8 +286,7 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(@test_file), "publication preserves the source until database completion"
     assert_equal "test audio content", File.binread(destination)
 
-    # The stale watchdog performs this single state transition before the
-    # replacement job begins.
+    # The stale watchdog performs this single state transition before the replacement job begins.
     @upload.update!(status: :pending)
     VCR.turned_off do
       stub_open_library_search("Mistborn Brandon Sanderson")
@@ -1670,8 +1668,6 @@ class UploadProcessingJobTest < ActiveJob::TestCase
         body: { items: [] }.to_json
       )
 
-    # Stub Open Library search to return empty results
-    # This allows tests to focus on file operations and book creation
     stub_request(:get, %r{https://openlibrary\.org/search\.json})
       .to_return(
         status: 200,

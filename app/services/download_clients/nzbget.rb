@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
 module DownloadClients
-  # NZBGet JSON-RPC API client for usenet downloads
-  # https://nzbget.net/api
+  # NZBGet JSON-RPC API client for usenet downloads https://nzbget.net/api
   class Nzbget < Base
     # Add an NZB by URL (method named add_torrent for interface compatibility with Base)
     def add_torrent(url, options = {})
@@ -13,7 +12,7 @@ module DownloadClients
       # Content may be either an NZB payload or a URL for NZBGet to fetch.
       result = rpc_call("append", [
         nzb_filename(options[:nzbname]),  # Filename
-        url,                              # Content (URL)
+        url,
         config.category.presence || "",   # Category
         0,                                # Priority
         false,                            # AddToTop
@@ -46,7 +45,6 @@ module DownloadClients
       raise Base::ConnectionError, "Failed to connect to NZBGet: #{e.message}"
     end
 
-    # Get info for a specific download by ID
     def torrent_info(nzbget_id)
       # Check queue first, then history
       queue_item = find_in_queue(nzbget_id)
@@ -55,14 +53,12 @@ module DownloadClients
       find_in_history(nzbget_id)
     end
 
-    # List all downloads (queue + recent history)
     def list_torrents(filter = {})
       queue = list_queue
       history = list_history(limit: filter[:limit] || 50)
       queue + history
     end
 
-    # Test connection to NZBGet
     def test_connection
       # Add-only NZBGet credentials can call version and append but cannot
       # monitor queue/history. Probe status so accepted credentials cover the
@@ -80,14 +76,9 @@ module DownloadClients
       false
     end
 
-    # Remove a download by ID
-    # delete_files: if true, also delete downloaded files
     def remove_torrent(nzbget_id, delete_files: false)
       id = nzbget_id.to_i
 
-      # Try to delete from queue first using editqueue
-      # EditQueue(Command, Offset, EditText, IDs)
-      # GroupDelete removes the group and its files
       result = rpc_call("editqueue", [ "GroupDelete", 0, "", [ id ] ])
 
       if result == true
@@ -193,7 +184,7 @@ module DownloadClients
     end
 
     def list_queue
-      result = rpc_call("listgroups", [ 0 ])  # 0 = return all fields
+      result = rpc_call("listgroups", [ 0 ])
       return [] unless result.is_a?(Array)
 
       result.map { |item| parse_queue_item(item) }

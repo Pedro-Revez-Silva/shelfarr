@@ -104,7 +104,6 @@ module Hardcover
       connection.oauth? ? (connection.refresh_token.presence || connection.access_token) : nil
     end
 
-    # Returns the ids of subscriptions that need a fresh preview.
     def rebind_personal_subscriptions(user, account)
       previews = []
       user.hardcover_subscriptions.requiring_connection.find_each do |subscription|

@@ -12,6 +12,39 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     Thread.current[:qbittorrent_sessions] = {}
   end
 
+  test "test action names the connection failure" do
+    client = create_download_client
+
+    VCR.turned_off do
+      stub_request(:post, "#{client.url}/api/v2/auth/login")
+        .to_return(status: 401, body: "Fails.")
+
+      post test_admin_download_client_url(client)
+
+      assert_redirected_to admin_download_clients_path
+      assert_match "Unauthorized", flash[:alert]
+
+      health = SystemHealth.for_service("download_client")
+      assert health.down?
+      assert_includes health.message, "Unauthorized"
+    end
+  end
+
+  test "test action explains a loopback address when the connection is refused" do
+    client = create_download_client
+
+    VCR.turned_off do
+      stub_request(:post, "#{client.url}/api/v2/auth/login")
+        .to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+      post test_admin_download_client_url(client)
+
+      assert_redirected_to admin_download_clients_path
+      assert_match "Connection refused", flash[:alert]
+      assert_match ConnectionErrorClassifier::LOCALHOST_HINT, flash[:alert]
+    end
+  end
+
   test "test action updates system health to healthy when connection succeeds" do
     client = create_download_client
 
@@ -47,7 +80,7 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "form[action='#{admin_download_clients_path}']"
-    assert_select "input[name='download_client[category]'][value='shelfarr']"
+    assert_select "input[name='download_client[category]'][value='']"
   end
 
   test "show displays client details without secrets" do

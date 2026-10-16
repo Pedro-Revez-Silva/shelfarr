@@ -31,7 +31,6 @@ module Authentication
       session = Session.find_by(id: cookies.signed[:session_id])
       return nil unless session
 
-      # Check if session has expired (default 30 days)
       max_age_days = SettingsService.get(:session_max_age_days, default: 30)
       if session.created_at < max_age_days.days.ago
         session.destroy
@@ -39,7 +38,6 @@ module Authentication
         return nil
       end
 
-      # Block soft-deleted users
       if session.user&.deleted?
         session.destroy
         cookies.delete(:session_id)
@@ -50,7 +48,6 @@ module Authentication
     end
 
     def request_authentication
-      # Redirect to setup if no users exist
       if User.active.none?
         redirect_to sign_up_path
         return

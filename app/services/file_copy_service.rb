@@ -16,7 +16,7 @@ require "set"
 #
 # See: https://github.com/Pedro-Revez-Silva/shelfarr/issues/131
 class FileCopyService
-  BUFFER_SIZE = 1024 * 1024 # 1 MB
+  BUFFER_SIZE = 1024 * 1024
   LIBRARY_FILE_MODE = 0o640
   DIRECTORY_MODE = 0o750
   # Windows ACL-backed mounts can ignore chmod and synthesize broad Unix mode
@@ -746,8 +746,7 @@ class FileCopyService
       raise UnsafePathError, "download path contains a symbolic link or non-directory: #{error.message}"
     end
 
-    # Yield a regular file through a pinned parent and reject any identity/stat
-    # change across the read.
+    # Yield a regular file through a pinned parent and reject any identity/stat change across the read.
     def with_regular_file(path, root:, authorized_root_snapshot: nil)
       raise ArgumentError, "a file block is required" unless block_given?
 
@@ -844,8 +843,6 @@ class FileCopyService
       destination.to_s
     end
 
-    # Remove only the still-identical staging pathname associated with a
-    # PrivateFile. A replacement at the same name is retained.
     def remove_private_file(private_file, root:)
       source = Pathname(private_file.name).expand_path
       removed = false

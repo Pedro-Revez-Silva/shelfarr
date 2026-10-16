@@ -69,8 +69,7 @@ module HardcoverIntegration
     value.is_a?(Numeric) ? [ value.to_f, 0.0 ].max : default
   end
 
-  # Time between automatic checks of a subscription. The automatic request
-  # limit applies to windows of the same length.
+  # Time between automatic checks of a subscription. The automatic request limit applies to windows of the same length.
   def sync_interval
     SettingsService.get(:hardcover_sync_interval_hours, default: 6).to_i.clamp(1, 168).hours
   end

@@ -170,7 +170,6 @@ class Book < ApplicationRecord
     "Metadata from #{metadata_source_name}"
   end
 
-  # Returns unified work_id in format "source:id"
   def unified_work_id
     if hardcover_id.present?
       "hardcover:#{hardcover_id}"
@@ -183,8 +182,7 @@ class Book < ApplicationRecord
     end
   end
 
-  # Parse a work_id into [source, source_id]
-  # Handles both prefixed ("hardcover:123") and legacy ("OL45804W") formats
+  # Parse a work_id into [source, source_id]. Handles both prefixed ("hardcover:123") and legacy ("OL45804W") formats
   def self.parse_work_id(work_id)
     parts = work_id.to_s.split(":", 2)
     if parts.length == 2
@@ -195,7 +193,6 @@ class Book < ApplicationRecord
     end
   end
 
-  # Find a book by work_id and book_type
   def self.find_by_work_id(work_id, book_type:)
     source, source_id = parse_work_id(work_id)
     case source
@@ -278,7 +275,6 @@ class Book < ApplicationRecord
     ].compact
   end
 
-  # Find or initialize a book by work_id and book_type
   def self.find_or_initialize_by_work_id(work_id, book_type:)
     source, source_id = parse_work_id(work_id)
     case source

@@ -10,8 +10,6 @@ class SearchResultTest < ActiveSupport::TestCase
     Setting.where(key: %w[preferred_download_types preferred_download_type]).delete_all
   end
 
-  # === Validations ===
-
   test "requires guid" do
     result = SearchResult.new(request: requests(:pending_request), title: "Test")
     assert_not result.valid?
@@ -43,8 +41,6 @@ class SearchResultTest < ActiveSupport::TestCase
     )
     assert result.valid?
   end
-
-  # === Scopes ===
 
   test "selectable returns only pending results" do
     selectable = SearchResult.selectable
@@ -214,8 +210,6 @@ class SearchResultTest < ActiveSupport::TestCase
 
     assert_equal [ usenet_result, torrent_result ], request.search_results.best_first.to_a
   end
-
-  # === Methods ===
 
   test "downloadable? returns true when magnet_url present" do
     assert @pending_result.downloadable?

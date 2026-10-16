@@ -3,6 +3,7 @@
 require "bencode"
 require "digest/sha1"
 require "faraday/multipart"
+require "socket"
 require "stringio"
 
 module DownloadClients
@@ -105,30 +106,27 @@ module DownloadClients
     def test_connection
       ensure_authenticated!
 
-      # Actually call an API endpoint to verify the full path works
-      # (not just authentication which uses a different code path)
-      url = "#{base_url}/api/v2/app/version"
       response = connection.get("api/v2/app/version")
 
       if response.status == 200
         Rails.logger.info "[Qbittorrent] Connection test passed - version: #{response.body}"
-        ensure_category_exists!
-        true
-      else
-        # Clear stale session so next attempt re-authenticates
-        clear_session! if response.status == 401 || response.status == 403
-        Rails.logger.error "[Qbittorrent] Connection test failed: GET #{url} returned #{response.status} (#{response.body.to_s.truncate(200)})"
-        false
+        return true
       end
-    rescue AuthenticationError => e
-      Rails.logger.error "[Qbittorrent] Authentication failed for #{config.name} at #{base_url}: #{e.message}"
-      false
-    rescue ConnectionError => e
-      Rails.logger.error "[Qbittorrent] Connection failed for #{config.name} at #{base_url}: #{e.message}"
-      false
-    rescue Error => e
-      Rails.logger.error "[Qbittorrent] Unexpected error for #{config.name} at #{base_url}: #{e.message}"
-      false
+
+      clear_session! if response.status == 401 || response.status == 403
+      classified = ConnectionErrorClassifier.classify(status: response.status)
+      if classified
+        raise Base::AuthenticationError, classified.message
+      end
+
+      raise Base::Error, "qBittorrent API error: #{response.status}"
+    rescue Base::Error, Faraday::Error => e
+      Rails.logger.error "[Qbittorrent] Connection test failed for #{config.name} at #{base_url}: #{ConnectionErrorClassifier.describe(e)}"
+      ConnectionErrorClassifier.reraise!(
+        e,
+        connection_error: Base::ConnectionError,
+        authentication_error: Base::AuthenticationError
+      )
     end
 
     # Remove a torrent by hash
@@ -154,23 +152,6 @@ module DownloadClients
       end
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
-    end
-
-    # Auto-create the configured category in qBittorrent (idempotent)
-    def ensure_category_exists!
-      return unless config.category.present?
-
-      response = connection.post("api/v2/torrents/createCategory", { category: config.category })
-      case response.status
-      when 200
-        Rails.logger.info "[Qbittorrent] Category '#{config.category}' created in #{config.name}"
-      when 409
-        # Already exists — expected
-      else
-        Rails.logger.warn "[Qbittorrent] Failed to create category '#{config.category}': HTTP #{response.status}"
-      end
-    rescue => e
-      Rails.logger.warn "[Qbittorrent] Failed to ensure category (non-fatal): #{e.message}"
     end
 
     # Fetch qBittorrent's save path and category info for diagnostics
@@ -389,16 +370,7 @@ module DownloadClients
 
     # Upload a .torrent file directly to qBittorrent via multipart form upload.
     def upload_torrent_file(torrent_data, options = {})
-      upload_conn = Faraday.new(url: base_url) do |f|
-        f.request :multipart
-        f.request :url_encoded
-        f.adapter Faraday.default_adapter
-        apply_authentication_headers(f.headers)
-        f.headers["Referer"] = base_url
-        f.headers["Origin"] = base_url
-        f.options.timeout = 30
-        f.options.open_timeout = 10
-      end
+      upload_conn = api_connection(timeout: 30, open_timeout: 10, multipart: true, authenticate: true)
 
       payload = {
         torrents: Faraday::Multipart::FilePart.new(
@@ -489,16 +461,13 @@ module DownloadClients
     end
 
     def authenticate!
-      login_url = "#{base_url}/api/v2/auth/login"
+      login_url = "#{base_url.to_s.chomp("/")}/api/v2/auth/login"
       Rails.logger.info "[Qbittorrent] Authenticating to #{config.name} at #{login_url} (username: #{username})"
 
-      auth_response = Faraday.post(
+      auth_response = login_connection.post(
         login_url,
         { username: username, password: password }
-      ) do |req|
-        req.headers["Referer"] = base_url
-        req.headers["Origin"] = base_url
-      end
+      )
 
       if (auth_response.status == 200 && auth_response.body == "Ok.") ||
          (auth_response.status == 204 && auth_response.headers["set-cookie"].present?)
@@ -523,6 +492,10 @@ module DownloadClients
     end
 
     def session_key
+      # An unsaved probe has no id, so keep its login on this adapter instead of
+      # sharing one nil-keyed session with every other probe on the thread.
+      return @unsaved_session ||= {} if config.id.nil?
+
       # Use config.id to store session per client instance
       Thread.current[:qbittorrent_sessions] ||= {}
       Thread.current[:qbittorrent_sessions][config.id] ||= {}
@@ -557,17 +530,116 @@ module DownloadClients
       end
     end
 
+    def login_connection
+      api_connection(timeout: 15, open_timeout: 5)
+    end
+
     def connection
-      Faraday.new(url: base_url) do |f|
-        f.request :url_encoded
-        f.response :json, parser_options: { symbolize_names: false }
-        f.adapter Faraday.default_adapter
-        apply_authentication_headers(f.headers)
-        f.headers["Referer"] = base_url
-        f.headers["Origin"] = base_url
-        f.options.timeout = 15
-        f.options.open_timeout = 5
+      api_connection(timeout: 15, open_timeout: 5, json: true, authenticate: true)
+    end
+
+    def api_connection(timeout:, open_timeout:, json: false, multipart: false, authenticate: false)
+      Faraday.new(url: base_url) do |builder|
+        builder.request :multipart if multipart
+        builder.request :url_encoded
+        builder.response :json, parser_options: { symbolize_names: false } if json
+        install_reachable_address_adapter(builder, open_timeout)
+        apply_authentication_headers(builder.headers) if authenticate
+        builder.headers["Referer"] = base_url
+        builder.headers["Origin"] = base_url
+        builder.options.timeout = timeout
+        builder.options.open_timeout = open_timeout
       end
+    end
+
+    # Net::HTTP uses one open timeout for every getaddrinfo result. A blackholed
+    # first address — IPv6 localhost in Docker — expires before IPv4 is tried.
+    def install_reachable_address_adapter(builder, open_timeout)
+      # A proxy resolves the target itself. Pinning here also replaces the
+      # HTTPS CONNECT hostname, which can break proxy DNS and host allowlists.
+      ipaddr = reachable_ipaddr(open_timeout) unless builder.proxy
+      builder.adapter :net_http do |http|
+        http.ipaddr = ipaddr if ipaddr
+      end
+    end
+
+    def reachable_ipaddr(open_timeout)
+      uri = URI(base_url)
+      return if uri.host.blank?
+
+      addresses = Addrinfo.getaddrinfo(uri.host, uri.port, nil, :STREAM)
+      return if addresses.size < 2
+
+      select_reachable_ipaddr(addresses, open_timeout)
+    rescue SocketError, SystemCallError
+      nil
+    end
+
+    def select_reachable_ipaddr(addresses, open_timeout)
+      pending = begin_address_probes(addresses)
+      return if pending.empty?
+
+      winner = nil
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + open_timeout
+      begin
+        until pending.empty? || winner
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          break if remaining <= 0
+
+          _readable, writable, erroneous = IO.select(nil, pending.map(&:first), pending.map(&:first), remaining)
+          ready = Array(writable) | Array(erroneous)
+          break if ready.empty?
+
+          ready.each do |sock|
+            winner = take_connected_ipaddr(pending, sock)
+            break if winner
+          end
+        end
+        winner
+      ensure
+        pending.each { |socket, _addr| close_probe_socket(socket) }
+      end
+    end
+
+    def begin_address_probes(addresses)
+      addresses.filter_map do |addr|
+        socket = Socket.new(addr.afamily, Socket::SOCK_STREAM, 0)
+        socket.connect_nonblock(addr, exception: false)
+        [ socket, addr ]
+      rescue SystemCallError
+        close_probe_socket(socket)
+        nil
+      end
+    end
+
+    def take_connected_ipaddr(pending, sock)
+      pair = pending.find { |candidate, _addr| candidate == sock }
+      return unless pair
+
+      socket, addr = pair
+      result = socket.connect_nonblock(addr, exception: false)
+      error = socket.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).int
+      return addr.ip_address if result != :wait_writable && error.zero?
+
+      return if result == :wait_writable && error.zero?
+
+      close_probe_socket(socket)
+      pending.delete(pair)
+      nil
+    rescue Errno::EISCONN
+      addr.ip_address
+    rescue IO::WaitWritable, Errno::EINPROGRESS, Errno::EALREADY
+      nil
+    rescue SystemCallError
+      close_probe_socket(socket)
+      pending.delete(pair)
+      nil
+    end
+
+    def close_probe_socket(socket)
+      socket&.close
+    rescue IOError, SystemCallError
+      nil
     end
 
     def handle_response(response)

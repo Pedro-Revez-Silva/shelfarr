@@ -1,21 +1,4 @@
-<%#
-  Shared book card component for poster-style display
-
-  Required locals:
-    - book: Book record OR OpenLibraryResult object
-
-  Optional locals:
-    - link_path: Path to link to (default: library_path if book is persisted)
-    - show_status: Show status badge (default: false)
-    - status: Status to display (if show_status is true)
-    - status_icon: SVG path for status icon
-    - show_actions: Show action buttons on hover (default: false)
-    - actions_partial: Partial to render for actions
-    - size: Card size - :small, :medium (default: :medium)
-    - hover_text: Text to show on hover (default: "View Details")
-%>
 <%
-  # Default values
   link_path ||= defined?(book.persisted?) && book.persisted? ? library_path(book) : nil
   show_status ||= false
   status ||= nil
@@ -25,7 +8,6 @@
   size ||= :medium
   hover_text ||= "View Details"
 
-  # Extract common book properties
   title = book.respond_to?(:title) ? book.title : nil
   author = book.respond_to?(:author) ? book.author : nil
   cover_url = book.respond_to?(:cover_url) ? book.cover_url : nil
@@ -76,7 +58,6 @@
 <%= content_tag(:div, class: "group #{size_classes[:card]}") do %>
   <% card_content = capture do %>
     <div class="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 hover:scale-[1.02] bg-gray-900">
-      <%# Poster Image %>
       <div class="aspect-[2/3] relative">
         <% if cover_url.present? %>
           <img
@@ -94,7 +75,6 @@
           </div>
         <% end %>
 
-        <%# Status Badge (top right) %>
         <% if show_status && status.present? %>
           <span class="absolute top-2 right-2 inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm text-white <%= status_colors[status.to_s] || 'bg-gray-500/90' %>">
             <% if status_icon.present? %>
@@ -105,20 +85,17 @@
             <%= status.to_s.titleize %>
           </span>
         <% else %>
-          <%# Type Badge when no status %>
           <span class="absolute top-2 right-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium backdrop-blur-sm text-white <%= book_type_color %>">
             <%= book_type_label %>
           </span>
         <% end %>
 
-        <%# Year Badge (top left) %>
         <% if year.present? %>
           <span class="absolute top-2 left-2 px-2 py-0.5 rounded text-xs font-medium bg-black/60 text-white backdrop-blur-sm">
             <%= year %>
           </span>
         <% end %>
 
-        <%# Hover Overlay %>
         <div class="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end <%= size_classes[:padding] %>">
           <% if show_actions && actions_partial.present? %>
             <%= render actions_partial, book: book %>
@@ -128,7 +105,6 @@
         </div>
       </div>
 
-      <%# Title & Author %>
       <div class="<%= size_classes[:padding] %> bg-white">
         <h3 class="font-semibold text-gray-900 <%= size_classes[:title] %> leading-tight line-clamp-2"><%= title %></h3>
         <% if author.present? %>

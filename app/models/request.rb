@@ -125,8 +125,6 @@ class Request < ApplicationRecord
     ActivityTracker.track("request.completed", trackable: self, user: user)
   end
 
-  # Schedule retry with exponential backoff
-  # Formula: min(base_delay * 2^retry_count, max_delay)
   def schedule_retry!
     max_retries = SettingsService.get(:max_retries)
 
@@ -156,7 +154,6 @@ class Request < ApplicationRecord
     true
   end
 
-  # Re-queue a not_found request back to pending
   def requeue!
     with_search_transition_lock do
       queue_fresh_search_under_lock!(next_retry_at: nil)
@@ -306,8 +303,7 @@ class Request < ApplicationRecord
     attempt_next_candidate!(failure_reason: reason)
   end
 
-  # Cancel/fail request permanently
-  # Also cancels any active downloads and removes them from download clients
+  # Cancel/fail request permanently. Also cancels any active downloads and removes them from download clients
   def cancel!(allow_direct_recovery: false)
     cancelled_download_ids = with_acquisition_transition_lock do
       raise CancellationBlockedError, upload_cancellation_blocked_message if upload_cancellation_blocked?
@@ -416,7 +412,6 @@ class Request < ApplicationRecord
   end
 
   def remove_download_from_client(download)
-    # Try to remove from download client if we have an external_id
     if download.external_id.present? && download.download_client.present?
       begin
         client = download.download_client.client_instance
@@ -434,20 +429,15 @@ class Request < ApplicationRecord
     end
   end
 
-  # Check if request can be retried
-  # Allow retry if already in retryable state OR if attention is needed
   def can_retry?
     return false if completed?
     pending? || awaiting_purchase? || not_found? || failed? || attention_needed?
   end
 
-  # Check if request needs manual selection of search results
   def needs_manual_selection?
     searching? && search_results.pending.any?
   end
 
-  # Check if request can be cancelled/deleted
-  # Allow cancellation for any request that isn't already completed
   def can_be_cancelled?
     !completed? &&
       !upload_cancellation_blocked? &&
@@ -534,7 +524,6 @@ class Request < ApplicationRecord
       "Wait for recovery to finish before deleting the request."
   end
 
-  # Check if retry is due
   def retry_due?
     not_found? && next_retry_at.present? && next_retry_at <= Time.current
   end
@@ -546,8 +535,6 @@ class Request < ApplicationRecord
   alias_method :manual_magnet_allowed?, :manual_download_allowed?
   alias_method :manual_nzb_allowed?, :manual_download_allowed?
 
-  # Select a search result and initiate download
-  # Returns the created Download record
   def select_result!(search_result)
     raise ArgumentError, "Result not downloadable" unless search_result.downloadable?
     raise ArgumentError, "Result does not belong to this request" unless search_result.request_id == id

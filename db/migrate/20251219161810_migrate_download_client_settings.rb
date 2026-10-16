@@ -17,7 +17,6 @@ class MigrateDownloadClientSettings < ActiveRecord::Migration[8.1]
     password = Setting.find_by(key: "download_client_password")&.value
     api_key = Setting.find_by(key: "download_client_api_key")&.value
 
-    # Create a DownloadClient record
     MigratedDownloadClient.create!(
       name: "#{client_type.titleize} (Migrated)",
       client_type: client_type,
@@ -29,7 +28,6 @@ class MigrateDownloadClientSettings < ActiveRecord::Migration[8.1]
       enabled: true
     )
 
-    # Remove old settings
     Setting.where(key: %w[
       download_client_type
       download_client_url

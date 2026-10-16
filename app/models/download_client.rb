@@ -58,8 +58,6 @@ class DownloadClient < ApplicationRecord
 
   def test_connection
     adapter.test_connection
-  rescue StandardError
-    false
   end
 
   def torrent_client?

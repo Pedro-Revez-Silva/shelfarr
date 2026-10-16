@@ -7,11 +7,19 @@ module IndexerClients
         SettingsService.newznab_configured?
       end
 
+      def test_connection(url: nil, api_key: nil)
+        super(url: url.nil? ? nil : strip_api_path(url), api_key: api_key)
+      end
+
       def display_name
         "Newznab"
       end
 
       private
+
+      def connection_settings_key
+        SettingsService.get(:newznab_url).to_s
+      end
 
       def base_url
         normalize_base_url(strip_api_path(SettingsService.get(:newznab_url)))

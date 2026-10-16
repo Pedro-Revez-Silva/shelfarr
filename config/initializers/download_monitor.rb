@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
-# Start the download monitor job chain when the application boots
 Rails.application.config.after_initialize do
-  # Only start in server mode, not in console or rake tasks
   if defined?(Rails::Server)
     if DownloadMonitorJob.monitoring_required?
       Rails.logger.info "[Shelfarr] Starting DownloadMonitorJob chain"

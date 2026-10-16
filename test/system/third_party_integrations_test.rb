@@ -564,12 +564,22 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
 
     page.execute_script <<~JAVASCRIPT
       const originalFetch = window.fetch.bind(window)
-      let failed = false
+      let explicitFailed = false
       window.fetch = (input, options) => {
         const url = typeof input === "string" ? input : input.url
-        if (!failed && url.includes("/admin/settings/bulk_update")) {
-          failed = true
-          document.documentElement.dataset.explicitSaveFailed = "true"
+        if (!url.includes("/admin/settings/bulk_update")) return originalFetch(input, options)
+
+        const body = options && options.body
+        const autosave = body instanceof FormData
+          ? body.get("autosave") === "true"
+          : typeof body === "string" && body.includes("autosave=true")
+        // A debounced field save can race the explicit Save All. Reject that
+        // autosave too, or the failed explicit save is no longer the first request.
+        if (autosave || !explicitFailed) {
+          if (!autosave) {
+            explicitFailed = true
+            document.documentElement.dataset.explicitSaveFailed = "true"
+          }
           return Promise.reject(new TypeError("simulated network failure"))
         }
         return originalFetch(input, options)

@@ -3,7 +3,6 @@
     <h1 class="font-bold text-4xl text-white"><%= Current.user.admin? ? "All Requests" : "My Requests" %></h1>
   </div>
 
-  <%# Filter Tabs %>
   <nav class="mb-6" aria-label="Request filters">
     <div class="flex flex-wrap gap-2">
       <%
@@ -169,7 +168,6 @@
                 </div>
               <% end %>
 
-              <%# Metadata row %>
               <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
                 <% if Current.user.admin? && request.user != Current.user %>
                   <span>Requested by <%= request.user.name %></span>
@@ -180,7 +178,6 @@
                 <% end %>
               </div>
 
-              <%# Error description and action buttons row %>
               <% if Current.user.admin? %>
                 <% has_retry = request.can_retry? %>
                 <% has_cancel = request.can_be_cancelled? || request.can_delete_completed_history? %>
@@ -225,14 +222,12 @@
             </div>
           </div>
 
-          <%# Expandable search results section - full width %>
           <% if has_view_results %>
             <div data-search-results-target="content" class="hidden mt-3 pt-3 border-t border-gray-800 space-y-2">
               <% request.search_results.best_first.each do |result| %>
                 <%= render "requests/search_result_row", result: result, request: request %>
               <% end %>
 
-              <%# Pagination controls %>
               <div data-search-results-target="pagination" class="flex items-center justify-center gap-4 pt-2 text-xs">
                 <button type="button"
                     data-action="click->search-results#prevPage"

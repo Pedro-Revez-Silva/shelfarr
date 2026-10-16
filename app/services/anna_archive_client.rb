@@ -7,7 +7,6 @@ require "net/http"
 # Client for interacting with Anna's Archive
 # Search via HTML scraping (member session, FlareSolverr fallback), downloads via member API
 class AnnaArchiveClient
-  # Custom error classes
   class Error < StandardError; end
   class ConnectionError < Error; end
   class AuthenticationError < Error; end
@@ -61,20 +60,15 @@ class AnnaArchiveClient
   HttpResponse = Data.define(:status, :body, :headers)
 
   class << self
-    # Check if Anna's Archive is configured (has API key)
     def configured?
       SettingsService.configured?(:anna_archive_api_key) &&
         SettingsService.get(:anna_archive_enabled, default: false)
     end
 
-    # Check if Anna's Archive is enabled but not necessarily with key
     def enabled?
       SettingsService.get(:anna_archive_enabled, default: false)
     end
 
-    # Search for books via HTML scraping
-    # Returns array of Result
-    # @param language [String] ISO 639-1 language code (e.g., "en", "fr", "de")
     def search(query, file_types: EBOOK_FILE_TYPES, content_types: BOOK_CONTENT_TYPES, limit: 50, language: nil, after_attempt: nil)
       ensure_configured!
 
@@ -90,8 +84,6 @@ class AnnaArchiveClient
       parse_search_results(html, limit, file_types: file_types, preferred_language: language)
     end
 
-    # Get download URL (torrent) via fast_download API
-    # Requires member API key
     def get_download_url(md5, path_index: 0, domain_index: 0)
       ensure_configured!
       unless md5.to_s.match?(/\A[0-9a-f]{32}\z/i)
@@ -144,7 +136,6 @@ class AnnaArchiveClient
       @member_sessions = nil
     end
 
-    # Test the search interface rather than accepting any homepage returning 200.
     def test_connection
       fetch_with_rotation(
         "/search?q=shelfarr",
@@ -578,21 +569,17 @@ class AnnaArchiveClient
       href = link["href"]
       return nil unless href
 
-      # Extract MD5 from URL like /md5/abc123def456...
       md5_match = href.match(%r{/md5/([a-f0-9]{32})(?:\z|[/?#])}i)
       return nil unless md5_match
 
       md5 = md5_match[1]
 
-      # Get the parent container that holds all result info
       container = find_result_container(link)
       return nil unless container
 
-      # Extract text content
       text = container.text.to_s
       return nil if text.bytesize > MAX_RESULT_TEXT_BYTES
 
-      # Try to parse title, author, and metadata from the text
       title = extract_title(container, link)
       author = extract_author(container, text)
       file_type = extract_file_type(container, text)
@@ -615,16 +602,12 @@ class AnnaArchiveClient
     end
 
     def find_result_container(link)
-      # Walk up the DOM to find the containing element
-      # Anna's Archive typically wraps each result in a container
       parent = link
       5.times do
         break if parent.nil? || parent.is_a?(Nokogiri::HTML4::Document)
         parent = parent.parent
         break if parent.nil? || parent.is_a?(Nokogiri::HTML4::Document)
-        # Look for a container that seems like a search result item
         if parent.name == "div" || parent.name == "article"
-          # Check if it has enough content to be a result
           return parent if parent.text.to_s.length > 50
         end
       end
@@ -643,11 +626,9 @@ class AnnaArchiveClient
         return link.text.strip if link.text.present?
       end
 
-      # Try to find a heading or prominent text
       heading = container.at_css("h3, h4, .title, [class*='title']")
       return heading.text.strip if heading && heading.text.present?
 
-      # Look for data-content attribute which holds fallback title
       fallback = container.at_css("[data-content]")
       if fallback && fallback["data-content"].present?
         return fallback["data-content"]
@@ -657,24 +638,20 @@ class AnnaArchiveClient
     end
 
     def extract_author(container, text)
-      # Look for author link with user-edit icon
       author_link = container.at_css('a[href^="/search?q="] span[class*="user-edit"]')
       if author_link
         parent = author_link.parent
         return parent.text.strip if parent && parent.text.present?
       end
 
-      # Look for author-specific elements
       author_el = container.at_css(".author, [class*='author']")
       return author_el.text.strip if author_el && author_el.text.present?
 
-      # Look for data-content with author info
-      author_fallback = container.css("[data-content]")[1]  # Second data-content is usually author
+      author_fallback = container.css("[data-content]")[1]
       if author_fallback && author_fallback["data-content"].present?
         return author_fallback["data-content"]
       end
 
-      # Try common patterns: "by Author Name"
       if text =~ /\bby\s+([A-Z][^,\n\d]{3,50})/i
         return $1.strip
       end
@@ -683,14 +660,12 @@ class AnnaArchiveClient
     end
 
     def extract_file_type(container, text)
-      # Look for file extension badges
       badge = container.at_css("[class*='badge'], [class*='ext'], [class*='format']")
       if badge
         ext = badge.text.strip.downcase
         return ext if %w[epub pdf mobi azw3 djvu zip].include?(ext)
       end
 
-      # Match from text
       if text =~ /\b(epub|pdf|mobi|azw3|djvu|zip)\b/i
         return $1.downcase
       end
@@ -699,7 +674,6 @@ class AnnaArchiveClient
     end
 
     def extract_file_size(text)
-      # Match patterns like "15.2 MB", "1.5 GB"
       if text =~ /(\d+(?:\.\d+)?)\s*(KB|MB|GB)/i
         "#{$1} #{$2.upcase}"
       end
@@ -772,7 +746,6 @@ class AnnaArchiveClient
     end
 
     def extract_year(text)
-      # Match 4-digit years between 1800 and 2030
       if text =~ /\b(1[89]\d{2}|20[0-2]\d)\b/
         $1.to_i
       end

@@ -257,7 +257,6 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
 
   test "list_torrents returns queue and history items" do
     VCR.turned_off do
-      # Stub listgroups (queue)
       stub_request(:post, "http://localhost:6789/jsonrpc")
         .with(
           body: hash_including("method" => "listgroups"),
@@ -280,7 +279,6 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
           }.to_json
         )
 
-      # Stub history
       stub_request(:post, "http://localhost:6789/jsonrpc")
         .with(
           body: hash_including("method" => "history"),
@@ -418,7 +416,6 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
 
   test "torrent_info returns item from history when not in queue" do
     VCR.turned_off do
-      # Queue returns empty
       stub_request(:post, "http://localhost:6789/jsonrpc")
         .with(
           body: hash_including("method" => "listgroups"),

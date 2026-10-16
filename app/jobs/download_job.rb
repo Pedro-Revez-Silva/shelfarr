@@ -72,7 +72,6 @@ class DownloadJob < ApplicationJob
     return unless claim_dispatch!(download, search_result)
 
     begin
-      # Handle Anna's Archive downloads differently
       if search_result.from_anna_archive?
         handle_anna_archive_download(download, search_result)
       elsif search_result.from_zlibrary?
@@ -257,24 +256,20 @@ class DownloadJob < ApplicationJob
   end
 
   def handle_anna_archive_download(download, search_result)
-    # Fetch actual download URL from Anna's Archive API
     md5 = search_result.guid
     Rails.logger.info "[DownloadJob] Fetching download URL from Anna's Archive for MD5: #{md5}"
 
     download_url = AnnaArchiveClient.get_download_url(md5)
     Rails.logger.info "[DownloadJob] Received Anna's Archive download artifact"
 
-    # Check if it's a torrent/magnet link or direct download
     if torrent_download_url?(download_url)
       if download.request.book.audiobook?
         raise AnnaArchiveClient::Error,
           "Anna's Archive audiobook torrents require verified post-download archive processing and are not supported"
       end
 
-      # Send to torrent client
       send_to_torrent_client(download, search_result, download_url)
     else
-      # Direct HTTP download - download file directly
       Rails.logger.info "[DownloadJob] Anna's Archive returned direct link, downloading via HTTP"
       if download.request.book.audiobook?
         begin
@@ -510,7 +505,6 @@ class DownloadJob < ApplicationJob
     finalized = false
     book = download.request.book
 
-    # Build destination path similar to how PostProcessingJob does it
     base_path = SettingsService.get(:ebook_output_path, default: "/ebooks")
     destination_dir = PathTemplateService.build_destination(
       book,
@@ -519,7 +513,6 @@ class DownloadJob < ApplicationJob
       search_result: search_result
     )
 
-    # Infer filename from URL or search result
     filename = infer_filename_from_url(download_url, search_result)
     destination_path = File.join(destination_dir, filename)
 
@@ -561,10 +554,8 @@ class DownloadJob < ApplicationJob
     file_service.cleanup_after_run!
     return unless finalized
 
-    # Trigger library scan if configured
     trigger_library_scan(book) if LibraryPlatformClient.configured?
 
-    # Send notification
     NotificationService.request_completed(download.request)
     track_request_event(download.request, "completed", download: download, message: "Direct download completed")
 
@@ -579,7 +570,6 @@ class DownloadJob < ApplicationJob
   end
 
   def infer_filename_from_url(url, search_result)
-    # Try to get filename from URL path
     uri = URI.parse(url)
     filename_from_url = File.basename(uri.path)
 
@@ -1360,13 +1350,11 @@ class DownloadJob < ApplicationJob
   end
 
   def send_to_torrent_client(download, search_result, download_url)
-    # Select torrent client
     client_record = DownloadClientSelector.for_torrent
     client = client_record.adapter
 
     Rails.logger.info "[DownloadJob] Using client '#{client_record.name}' for download ##{download.id}"
 
-    # add_torrent now returns the hash directly (or nil on failure)
     torrent_hash = client.add_torrent(download_url, torrent_client_options(search_result))
 
     if torrent_hash.present?
@@ -1432,7 +1420,6 @@ class DownloadJob < ApplicationJob
     download_link = search_result.download_link
     validate_manual_nzb_dispatch_url!(download_link) if search_result.from_manual_nzb?
 
-    # Select best available client based on download type and priority
     client_record = DownloadClientSelector.for_download(search_result)
     client = client_record.adapter
     is_usenet = search_result.usenet?
@@ -1456,7 +1443,6 @@ class DownloadJob < ApplicationJob
       external_id = result.is_a?(Hash) ? result["nzo_ids"]&.first : nil
       success = external_id.present?
     else
-      # qBittorrent now returns the torrent hash directly
       external_id = client.add_torrent(download_link, torrent_client_options(search_result))
       success = external_id.present?
     end

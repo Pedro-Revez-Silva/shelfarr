@@ -35,11 +35,10 @@ module IndexerClients
         SettingsService.jackett_configured?
       end
 
-      def test_connection
-        ensure_configured!
-
+      def test_connection(url: nil, api_key: nil)
         response = request(idempotent: true) do
-          connection.get(search_path, { apikey: api_key, t: "caps" })
+          conn, key = probe_connection(url, api_key)
+          conn.get(search_path, { apikey: key, t: "caps" })
         end
         response.status == 200
       rescue IndexerClients::Base::Error
@@ -52,8 +51,33 @@ module IndexerClients
 
       private
 
-      def connection
-        @connection ||= Faraday.new(url: base_url) do |f|
+      def connection_settings_key
+        SettingsService.get(:jackett_url).to_s
+      end
+
+      def build_connection
+        Faraday.new(url: base_url) do |f|
+          f.request :url_encoded
+          f.adapter Faraday.default_adapter
+          f.options.timeout = 30
+          f.options.open_timeout = 10
+        end
+      end
+
+      def probe_connection(url, api_key_override)
+        if url.nil? && api_key_override.nil?
+          ensure_configured!
+          return [ connection, api_key ]
+        end
+
+        key = api_key_override.nil? ? api_key : api_key_override
+        raise Base::NotConfiguredError, "#{display_name} is not configured" if url.blank? || key.blank?
+
+        [ open_connection(normalize_base_url(url)), key ]
+      end
+
+      def open_connection(normalized_url)
+        Faraday.new(url: normalized_url) do |f|
           f.request :url_encoded
           f.adapter Faraday.default_adapter
           f.options.timeout = 30

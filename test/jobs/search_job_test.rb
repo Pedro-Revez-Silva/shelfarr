@@ -804,7 +804,6 @@ class SearchJobTest < ActiveJob::TestCase
   end
 
   test "skips non-existent requests" do
-    # Should not raise error
     assert_nothing_raised do
       SearchJob.perform_now(999999)
     end
@@ -815,7 +814,6 @@ class SearchJobTest < ActiveJob::TestCase
     request = Request.create!(book: audiobook_book, user: users(:one), status: :pending)
 
     VCR.turned_off do
-      # Stub that verifies "audiobook" is in the query
       stub_request(:get, %r{localhost:9696/api/v1/search.*audiobook}i)
         .to_return(
           status: 200,
@@ -866,7 +864,6 @@ class SearchJobTest < ActiveJob::TestCase
     VCR.turned_off do
       stub_prowlarr_search_with_results
 
-      # Mock AutoSelectService to return failure
       AutoSelectService.stub :call, OpenStruct.new(success?: false) do
         SearchJob.perform_now(@request.id)
       end
@@ -932,7 +929,6 @@ class SearchJobTest < ActiveJob::TestCase
     VCR.turned_off do
       stub_prowlarr_search_with_results
 
-      # Mock AutoSelectService to return success
       AutoSelectService.stub :call, OpenStruct.new(success?: true) do
         SearchJob.perform_now(@request.id)
       end
@@ -944,7 +940,6 @@ class SearchJobTest < ActiveJob::TestCase
   end
 
   test "uses scene language codes instead of English names for non-English requests" do
-    # Set request language to German
     @request.update!(language: "de")
     SettingsService.set(:indexer_search_scope, "strict")
 
@@ -1062,7 +1057,6 @@ class SearchJobTest < ActiveJob::TestCase
   end
 
   test "does not add language to search query for English requests" do
-    # Set request language to English
     @request.update!(language: "en")
 
     VCR.turned_off do
@@ -1549,7 +1543,6 @@ class SearchJobTest < ActiveJob::TestCase
       saved = request.search_results.find_by!(guid: weak_payload["guid"])
       raw_score = saved.confidence_score + saved.score_breakdown["search_penalty"]
 
-      # Sanity-check the scenario: strong before the penalty, weak after it.
       assert_operator raw_score, :>=, threshold
       assert_operator saved.confidence_score, :<, threshold
 
@@ -2553,11 +2546,9 @@ class SearchJobTest < ActiveJob::TestCase
   end
 
   test "handles unknown language code gracefully" do
-    # Set request language to unknown code
     @request.update!(language: "xyz")
 
     VCR.turned_off do
-      # Stub search - unknown language should not be added to query
       stub_request(:get, %r{localhost:9696/api/v1/search})
         .with { |req| !req.uri.query_values["query"].include?("xyz") }
         .to_return(

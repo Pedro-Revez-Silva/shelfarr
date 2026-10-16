@@ -13,8 +13,7 @@ class HardcoverSyncSchedulerJob < ApplicationJob
     return unless HardcoverIntegration.enabled?
 
     changed = promote_released_items + requeue_failed_items
-    # Open subscription pages show item states; refresh each changed one once,
-    # after its items are saved.
+    # Open subscription pages show item states; refresh each changed one once, after its items are saved.
     HardcoverSubscription.where(id: changed.uniq).find_each(&:broadcast_progress)
     enqueue_due_subscriptions
     HardcoverSubscription.stale_drafts.find_each(&:destroy)

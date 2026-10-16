@@ -86,7 +86,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
   test "checks only the specified service when service param is given" do
     Setting.where(key: %w[prowlarr_url prowlarr_api_key]).destroy_all
 
-    # Should only check prowlarr and NOT schedule next run
     assert_no_enqueued_jobs(only: HealthCheckJob) do
       HealthCheckJob.perform_now(service: "prowlarr")
     end
@@ -121,6 +120,35 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
+  test "records the indexer failure reason" do
+    setup_prowlarr_settings
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_return(status: 401)
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health = SystemHealth.for_service("indexer")
+      assert health.down?
+      assert_includes health.message, "Unauthorized"
+    end
+  end
+
+  test "records an indexer timeout" do
+    setup_prowlarr_settings
+    IndexerClients::Prowlarr.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer").to_timeout
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health = SystemHealth.for_service("indexer")
+      assert health.down?
+      assert_includes health.message, "Connection timed out"
+    end
+  end
+
   test "marks prowlarr as down when connection fails" do
     setup_prowlarr_settings
 
@@ -133,6 +161,41 @@ class HealthCheckJobTest < ActiveJob::TestCase
       health = SystemHealth.for_service("prowlarr")
       assert health.down?
     end
+  end
+
+  test "marks indexer healthy after an unreachable Prowlarr URL is corrected without resetting the connection" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://old-prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "old-key")
+    IndexerClients::Prowlarr.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://old-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "old-key" })
+        .to_raise(Faraday::ConnectionFailed.new("Failed to open TCP connection to old-prowlarr.example:9696"))
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health = SystemHealth.for_service("indexer")
+      assert health.down?
+      assert_includes health.message, "Failed to connect"
+
+      SettingsService.set(:prowlarr_url, "http://new-prowlarr.example:9696")
+      SettingsService.set(:prowlarr_api_key, "new-key")
+
+      stub_request(:get, "http://new-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "new-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      HealthCheckJob.perform_now(service: "indexer")
+
+      health.reload
+      assert health.healthy?, health.message
+      assert_requested :get, "http://new-prowlarr.example:9696/api/v1/indexer", times: 1
+      assert_requested :get, "http://old-prowlarr.example:9696/api/v1/indexer", times: 2
+    end
+  ensure
+    IndexerClients::Prowlarr.reset_connection!
   end
 
   test "marks indexer as healthy when jackett is selected and connected" do
@@ -175,6 +238,22 @@ class HealthCheckJobTest < ActiveJob::TestCase
       health = SystemHealth.for_service("download_client")
       assert health.healthy?
       assert_includes health.message, "1 clients connected"
+    end
+  end
+
+  test "records the download client failure reason" do
+    client = create_download_client
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_raise(Errno::ECONNREFUSED.new("Connection refused - connect(2)"))
+
+      HealthCheckJob.perform_now(service: "download_client")
+
+      health = SystemHealth.for_service("download_client")
+      assert health.down?
+      assert_includes health.message, client.name
+      assert_includes health.message, "Connection refused"
     end
   end
 
@@ -236,12 +315,11 @@ class HealthCheckJobTest < ActiveJob::TestCase
       VCR.turned_off do
         stub_qbittorrent_auth_success
 
-        # Stub diagnostics endpoints
         stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
           .to_return(
             status: 200,
             headers: { "Content-Type" => "application/json" },
-            body: { "save_path" => "/mnt/media/Torrents" }.to_json
+            body: { "save_path" => download_dir }.to_json
           )
         stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
           .to_return(
@@ -287,9 +365,8 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
-  test "marks download_paths as degraded when category folder is missing for qbittorrent" do
+  test "does not degrade download_paths when the qBittorrent category folder is missing" do
     Dir.mktmpdir do |download_dir|
-      # Don't create the category subfolder
       setup_download_paths(download_dir)
       client = create_download_client(name: "Cat Missing Client")
       client.update!(category: "shelfarr")
@@ -313,8 +390,87 @@ class HealthCheckJobTest < ActiveJob::TestCase
         HealthCheckJob.perform_now(service: "download_paths")
 
         health = SystemHealth.for_service("download_paths")
-        assert health.degraded?
-        assert_includes health.message, "category folder"
+        assert health.healthy?, health.message
+        refute_includes health.message, "category folder"
+      end
+    end
+  end
+
+  test "degrades download_paths when the qBittorrent save path is outside the download directory" do
+    Dir.mktmpdir do |download_dir|
+      setup_download_paths(download_dir)
+      create_download_client(name: "Outside Save Path")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/torrents/complete" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.degraded?, health.message
+        assert_includes health.message,
+          "qBittorrent saves to /mnt/torrents/complete, which is not inside #{download_dir} " \
+            "or does not exist in this container."
+        refute health.down?
+      end
+    end
+  end
+
+  test "keeps download_paths healthy when import finds a host save path through the category folder" do
+    Dir.mktmpdir do |download_dir|
+      FileUtils.mkdir_p(File.join(download_dir, "shelfarr"))
+      setup_download_paths(download_dir)
+      create_download_client(name: "Host Save Path").update!(category: "shelfarr")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/media/torrents" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.healthy?, health.message
+      end
+    end
+  end
+
+  test "leaves qBittorrent save paths to the client download path when one is configured" do
+    Dir.mktmpdir do |download_dir|
+      client_dir = File.join(download_dir, "client")
+      FileUtils.mkdir_p(client_dir)
+      setup_download_paths(download_dir)
+      create_download_client(name: "Client Download Path").update!(download_path: client_dir)
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/media/torrents" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.healthy?, health.message
       end
     end
   end
@@ -352,6 +508,12 @@ class HealthCheckJobTest < ActiveJob::TestCase
 
         VCR.turned_off do
           stub_qbittorrent_auth_success
+          stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+            .to_return(
+              status: 200,
+              headers: { "Content-Type" => "application/json" },
+              body: { "save_path" => local_path }.to_json
+            )
 
           HealthCheckJob.perform_now(service: "download_paths")
 
@@ -414,6 +576,12 @@ class HealthCheckJobTest < ActiveJob::TestCase
 
       VCR.turned_off do
         stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => local_path }.to_json
+          )
         HealthCheckJob.perform_now(service: "download_paths")
         assert SystemHealth.for_service("download_paths").healthy?
       end
@@ -428,6 +596,12 @@ class HealthCheckJobTest < ActiveJob::TestCase
 
       VCR.turned_off do
         stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/torrents/complete" }.to_json
+          )
 
         HealthCheckJob.perform_now(service: "download_paths")
 
@@ -439,7 +613,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
-  # Output paths tests
   test "marks output_paths as healthy when paths exist and are writable" do
     Dir.mktmpdir do |audiobook_dir|
       Dir.mktmpdir do |ebook_dir|
@@ -517,7 +690,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
   end
 
   test "marks output_paths as down when paths not configured" do
-    # Set paths to empty strings (blank = not configured)
     Setting.find_or_create_by(key: "audiobook_output_path").update!(
       value: "",
       value_type: "string",
@@ -723,6 +895,58 @@ class HealthCheckJobTest < ActiveJob::TestCase
     assert_includes health.message, "Not configured"
   end
 
+  test "degrades audiobookshelf when a library folder is not the import path" do
+    setup_audiobookshelf_settings
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
+    SettingsService.set(:audiobook_output_path, "/shelfarr/audiobooks")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [
+              { "id" => "lib-audio", "name" => "Audiobooks", "mediaType" => "book",
+                "folders" => [ { "fullPath" => "/abs/audiobooks" } ] }
+            ]
+          }.to_json
+        )
+
+      HealthCheckJob.perform_now(service: "audiobookshelf")
+
+      health = SystemHealth.for_service("audiobookshelf")
+      assert health.degraded?, health.message
+      assert_includes health.message,
+        "ABS folder is /abs/audiobooks; Shelfarr imports to /shelfarr/audiobooks. " \
+          "Mount the same directory at the same path in both containers, or change the output path."
+      refute health.down?
+    end
+  end
+
+  test "degrades audiobookshelf when the selected library has no folder" do
+    setup_audiobookshelf_settings
+    SettingsService.set(:audiobookshelf_ebook_library_id, "lib-ebooks")
+    SettingsService.set(:ebook_output_path, "/shelfarr/ebooks")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [ { "id" => "lib-ebooks", "name" => "Ebooks", "mediaType" => "book", "folders" => [] } ]
+          }.to_json
+        )
+
+      HealthCheckJob.perform_now(service: "audiobookshelf")
+
+      health = SystemHealth.for_service("audiobookshelf")
+      assert health.degraded?, health.message
+      assert_includes health.message, "ABS did not report a folder."
+    end
+  end
+
   test "marks audiobookshelf as healthy when configured and connected" do
     setup_audiobookshelf_settings
 
@@ -739,6 +963,20 @@ class HealthCheckJobTest < ActiveJob::TestCase
       health = SystemHealth.for_service("audiobookshelf")
       assert health.healthy?
       assert_includes health.message, "successful"
+    end
+  end
+
+  test "records an audiobookshelf unauthorized failure" do
+    setup_audiobookshelf_settings
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries").to_return(status: 403)
+
+      HealthCheckJob.perform_now(service: "audiobookshelf")
+
+      health = SystemHealth.for_service("audiobookshelf")
+      assert health.down?
+      assert_includes health.message, "Unauthorized"
     end
   end
 

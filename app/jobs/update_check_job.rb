@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-# Periodically checks for available updates from GitHub
 class UpdateCheckJob < ApplicationJob
   queue_as :default
 

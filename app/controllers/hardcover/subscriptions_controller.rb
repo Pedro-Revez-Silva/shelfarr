@@ -74,8 +74,7 @@ module Hardcover
       @available_book_types = RequestOptionPolicy.book_types_for(ContentKinds::BOOK)
     end
 
-    # Confirms a draft (baseline + optional automatic sync) or changes the
-    # settings of a followed subscription.
+    # Confirms a draft (baseline + optional automatic sync) or changes the settings of a followed subscription.
     def update
       book_types = permitted_book_types
       if book_types.empty?
@@ -94,7 +93,6 @@ module Hardcover
       end
     end
 
-    # Queues the selected books with the chosen formats.
     def request_items
       book_types = permitted_book_types
       items = selected_items
@@ -301,8 +299,7 @@ module Hardcover
       redirect_to hardcover_subscription_path(@subscription), notice: message
     end
 
-    # Released books are queued now; selected upcoming books are marked so
-    # they are requested once they come out.
+    # Released books are queued now; selected upcoming books are marked so they are requested once they come out.
     def queue_items(items, book_types)
       queued = 0
       items.each do |item|

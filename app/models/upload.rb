@@ -14,7 +14,6 @@ class Upload < ApplicationRecord
 
   enum :book_type, { audiobook: 0, ebook: 1, comicbook: 2 }
 
-  # Supported file extensions
   AUDIOBOOK_EXTENSIONS = %w[m4a m4b mp3 zip rar].freeze
   EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   COMICBOOK_EXTENSIONS = %w[cbz cbr].freeze

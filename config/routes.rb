@@ -1,5 +1,4 @@
 Rails.application.routes.draw do
-  # Authentication
   resource :session do
     get :verify_otp, on: :member
     post :submit_otp, on: :member
@@ -11,10 +10,8 @@ Rails.application.routes.draw do
   get "auth/oidc/callback", to: "auth/omniauth_callbacks#oidc"
   get "auth/failure", to: "auth/omniauth_callbacks#failure"
 
-  # Main application
   root "dashboard#index"
 
-  # Search
   get "search", to: "search#index"
   get "search/details", to: "search#details"
   get "search/modal/close", to: "search#close_modal", as: :search_modal_close
@@ -22,14 +19,12 @@ Rails.application.routes.draw do
   get "search/results/stream", to: "search#stream_results"
   get "search/results/snapshot", to: "search#snapshot_results"
 
-  # Hardcover discovery
   get "discover", to: "discover#index", as: :discover
   get "discover/lists", to: "discover#lists", as: :discover_lists
   get "discover/lists/:id", to: "discover#list", as: :discover_list
   get "discover/authors", to: "discover#authors", as: :discover_authors
   get "discover/authors/:id", to: "discover#author", as: :discover_author
 
-  # Hardcover account connection, followed lists, shelves, and authors
   namespace :hardcover do
     resource :connection, only: [ :create, :destroy ] do
       post :authorize
@@ -49,7 +44,6 @@ Rails.application.routes.draw do
     end
   end
 
-  # Library
   resources :library, only: [ :index, :show, :destroy ] do
     member do
       get :download
@@ -57,7 +51,6 @@ Rails.application.routes.draw do
     end
   end
 
-  # Profile
   resource :profile, only: [ :show, :edit, :update ] do
     get :password, on: :member
     patch :update_password, on: :member
@@ -65,14 +58,12 @@ Rails.application.routes.draw do
     delete :unlink_oidc, on: :member
     post :api_tokens, to: "profiles#create_api_token"
     delete "api_tokens/:id", to: "profiles#revoke_api_token", as: :api_token
-    # Two-factor authentication
     get :two_factor, on: :member
     post :enable_two_factor, on: :member
     delete :disable_two_factor, on: :member
     post :regenerate_backup_codes, on: :member
   end
 
-  # Notifications
   resources :notifications, only: [ :index ] do
     member do
       post :mark_read
@@ -83,7 +74,6 @@ Rails.application.routes.draw do
     end
   end
 
-  # Requests
   resources :requests, only: [ :index, :show, :new, :create, :destroy ] do
     member do
       get :download
@@ -93,10 +83,8 @@ Rails.application.routes.draw do
     end
   end
 
-  # User Uploads
   resources :uploads, only: [ :index, :new, :create, :show ]
 
-  # API
   namespace :api, defaults: { format: :json } do
     namespace :v1 do
       get "search", to: "search#index"
@@ -112,12 +100,10 @@ Rails.application.routes.draw do
     end
   end
 
-  # Messaging integrations
   namespace :integrations, defaults: { format: :json } do
     post "telegram/webhook", to: "telegram_webhooks#create"
   end
 
-  # Admin namespace
   namespace :admin do
     root "dashboard#index"
     post "check_updates", to: "dashboard#check_updates"
@@ -128,6 +114,10 @@ Rails.application.routes.draw do
         post :retry
         post :match_and_retry
       end
+    end
+    resource :setup_wizard, only: [ :show, :update ], controller: "setup_wizard" do
+      post :skip
+      post :restart
     end
     resources :download_clients do
       member do
@@ -199,6 +189,5 @@ Rails.application.routes.draw do
     end
   end
 
-  # Health check for Docker/monitoring
   get "up" => "rails/health#show", as: :rails_health_check
 end

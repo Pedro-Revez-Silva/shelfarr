@@ -133,7 +133,6 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     File.chmod(0o700, uploads)
     File.chmod(0o700, locks)
 
-    # Create nested structure that owned-media uses
     database_fingerprint = Digest::SHA256.hexdigest(
       ActiveRecord::Base.connection_db_config.database.to_s
     ).first(12)
@@ -141,7 +140,6 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     FileUtils.mkdir_p(upload_staging)
     File.chmod(0o700, upload_staging)
 
-    # Should not warn when only uploads/ and locks/ are present
     assert_nil DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
   end
 
@@ -171,7 +169,6 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     FileUtils.mkdir_p(uploads)
     File.chmod(0o700, legacy)
 
-    # Should not warn when only uploads/ is present (locks/ is optional)
     assert_nil DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
   end
 
@@ -183,7 +180,6 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     FileUtils.mkdir_p(direct_downloads)
     File.chmod(0o700, legacy)
 
-    # Should warn when there are entries other than uploads/locks
     diagnostic = DirectDownloadFileService.legacy_staging_diagnostic(root: @output_root)
     assert_match(/contains retained entries/, diagnostic)
   end
