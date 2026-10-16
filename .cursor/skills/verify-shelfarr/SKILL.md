@@ -14,10 +14,16 @@ Ruby 3.3.6, Bundler, libvips, and Chrome must already be installed. Chrome is `g
 Pick a commit and a clone that is not already the worktree you are about to create. `REPO` is that clone. The worktree gets its own `storage/` directory. Never point `PORT` at an app you did not start in this run.
 
 ```bash
-RUN_ID="shelfarr-verify-$$"
-EVIDENCE="/tmp/shelfarr-verify/${RUN_ID}"
-WT="/tmp/shelfarr-worktrees/${RUN_ID}"
-mkdir -p "$EVIDENCE" /tmp/shelfarr-worktrees
+set -euo pipefail
+RUN_ID="shelfarr-verify-$(date +%Y%m%d-%H%M%S)-$$"
+SCRATCH_ROOT="${TMPDIR:-$HOME/.cache/agent-tmp}"
+case "$SCRATCH_ROOT" in
+  /tmp|/tmp/*|/dev/shm|/dev/shm/*) SCRATCH_ROOT="$HOME/.cache/agent-tmp" ;;
+esac
+SCRATCH="$SCRATCH_ROOT/shelfarr-verify/${RUN_ID}"
+EVIDENCE="$HOME/.cache/agent-reports/shelfarr-verify/${RUN_ID}"
+WT="$SCRATCH/worktree"
+mkdir -p "$EVIDENCE" "$SCRATCH"
 git -C "$REPO" fetch origin "$HEAD_BRANCH"
 git -C "$REPO" worktree add --detach "$WT" "$HEAD_SHA"
 test ! -e "$WT/storage/development.sqlite3"
@@ -26,23 +32,23 @@ bundle install
 bin/rails db:prepare > "$EVIDENCE/db-prepare.log"
 bin/rails runner 'abort "seeded admin missing" unless User.exists?(username: "admin") && User.find_by!(username: "admin").admin?'
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-tail -f /dev/null | PORT="$PORT" bin/dev > "$EVIDENCE/dev.log" 2>&1 &
-echo $! > "$EVIDENCE/foreman.pid"
+PORT="$PORT" ruby .cursor/skills/verify-shelfarr/serve.rb "$EVIDENCE/foreman.pid" > "$EVIDENCE/dev.log" 2>&1 &
+echo $! > "$EVIDENCE/server.pgid"
 disown || true
 ```
 
-`bin/dev` execs Foreman, so `$!` stays the Foreman PID. Keep that pipe open. `tailwindcss --watch` exits as soon as its stdin closes, and Foreman then stops Puma. Closing stdin with `< /dev/null` does that. `tail -f /dev/null` is the writer that keeps the watch alive.
+`serve.rb` creates a separate process group, starts `bin/dev`, records its Foreman PID, and keeps an input pipe open until Foreman exits. `tailwindcss --watch` exits when stdin closes, so do not replace this with `< /dev/null`. The supervisor PID in `server.pgid` is the group leader; the Foreman PID is its child. Keep the scratch and Chrome profile on disk, and keep evidence outside the disposable worktree.
 
 `bin/rails db:prepare` creates the development databases and loads `db/seeds.rb` when the primary database is new. The seed creates username `admin` with password `Password1234`. That first user is an admin.
 
 Ready means all three checks pass. Give the boot 180 seconds.
 
 ```bash
-PID="$(cat "$EVIDENCE/foreman.pid")"
 ready=0
 for _ in $(seq 1 90); do
+  PID="$(cat "$EVIDENCE/foreman.pid" 2>/dev/null || true)"
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/up" || true)"
-  if kill -0 "$PID" && grep -q "Listening on" "$EVIDENCE/dev.log" && [ "$code" = "200" ] && [ -s "$WT/app/assets/builds/tailwind.css" ]; then
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && grep -q "Listening on" "$EVIDENCE/dev.log" && [ "$code" = "200" ] && [ -s "$WT/app/assets/builds/tailwind.css" ]; then
     ready=1
     break
   fi
@@ -50,7 +56,7 @@ for _ in $(seq 1 90); do
 done
 test "$ready" = 1
 BASE="http://127.0.0.1:${PORT}"
-STATE="$EVIDENCE/drive-state.json"
+STATE="$SCRATCH/drive-state.json"
 ```
 
 `grep` looks for the Puma line `Listening on`. `GET /up` must return 200. `app/assets/builds/tailwind.css` must be a non-empty file produced by `bin/rails tailwindcss:watch` in `Procfile.dev`.
@@ -123,23 +129,28 @@ A screenshot of a page reached by writing a signed `session_id` cookie is not pr
 
 ## Cleanup
 
-Stop the Chrome process recorded in the state file, then stop the foreman PID this launch started. Kill that process group. Do not use `pkill`, `killall`, or a match on `puma` or `rails`.
+Stop the Chrome process recorded in the state file, then stop only the separate server process group this launch started. Validate group ownership before signaling it. Do not use `pkill`, `killall`, or a match on `puma` or `rails`.
 
 ```bash
 ruby "$WT/.cursor/skills/verify-shelfarr/drive.rb" stop --state "$STATE"
 PID="$(cat "$EVIDENCE/foreman.pid")"
-PGID="$(ps -o pgid= -p "$PID" | tr -d ' ')"
-kill -TERM -"$PGID"
+PGID="$(cat "$EVIDENCE/server.pgid")"
+if [ "$PGID" -le 1 ] || [ "$(ps -o pgid= -p "$PID" | tr -d ' ')" != "$PGID" ] || [ "$(ps -o pgid= -p "$$" | tr -d ' ')" = "$PGID" ]; then
+  echo "Refusing to signal an unverified server process group" >&2
+  exit 1
+fi
+kill -TERM -- -"$PGID"
 for _ in $(seq 1 20); do
   kill -0 "$PID" 2>/dev/null || break
   sleep 0.5
 done
-kill -KILL -"$PGID" 2>/dev/null || true
+kill -KILL -- -"$PGID" 2>/dev/null || true
 test -s "$EVIDENCE/admin.png"
 test -s "$EVIDENCE/admin-session.txt"
 cd /
 git -C "$REPO" worktree remove --force "$WT"
 test ! -d "$WT"
+rm -rf -- "$SCRATCH"
 test -s "$EVIDENCE/admin.png"
 ```
 
@@ -154,7 +165,7 @@ Removing the worktree deletes that worktree's `storage/`. The screenshot and the
 - `fill --state PATH --placeholder TEXT --text VALUE` clicks the input with that placeholder, types `VALUE`, and exits non-zero unless the field value equals `VALUE`.
 - `click --state PATH --role link|submit --name TEXT` clicks the visible link or submit control with that exact label.
 - `wait --state PATH --text TEXT --timeout SECONDS` exits 0 when `innerText` contains `TEXT`. The default timeout is 20 seconds.
-- `shot --state PATH --path FILE` writes a PNG. Parent directories are created. This command never deletes an existing proof file.
+- `shot --state PATH --path FILE` writes a PNG. Parent directories are created. An existing proof file is preserved; choose a new path for another capture.
 - `location --state PATH` prints `location.href`.
 - `stop --state PATH` sends `TERM` to the Chrome process group from `start`. A missing or already exited PID still exits 0.
 

@@ -185,7 +185,9 @@ module ShelfarrDrive
       page.call("Page.enable")
       png = page.call("Page.captureScreenshot", format: "png")
       FileUtils.mkdir_p(File.dirname(path))
-      File.binwrite(path, Base64.decode64(png.fetch("data")))
+      File.open(path, File::WRONLY | File::CREAT | File::EXCL) do |file|
+        file.write(Base64.decode64(png.fetch("data")))
+      end
     end
     puts path
     0
@@ -498,4 +500,4 @@ module ShelfarrDrive
   end
 end
 
-exit ShelfarrDrive.main(ARGV)
+exit ShelfarrDrive.main(ARGV) if $PROGRAM_NAME == __FILE__
