@@ -286,7 +286,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
           .to_return(
             status: 200,
             headers: { "Content-Type" => "application/json" },
-            body: { "save_path" => "/mnt/media/Torrents" }.to_json
+            body: { "save_path" => download_dir }.to_json
           )
         stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
           .to_return(
@@ -332,9 +332,8 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
-  test "marks download_paths as degraded when category folder is missing for qbittorrent" do
+  test "does not degrade download_paths when the qBittorrent category folder is missing" do
     Dir.mktmpdir do |download_dir|
-      # Don't create the category subfolder
       setup_download_paths(download_dir)
       client = create_download_client(name: "Cat Missing Client")
       client.update!(category: "shelfarr")
@@ -358,8 +357,36 @@ class HealthCheckJobTest < ActiveJob::TestCase
         HealthCheckJob.perform_now(service: "download_paths")
 
         health = SystemHealth.for_service("download_paths")
-        assert health.degraded?
-        assert_includes health.message, "category folder"
+        assert health.healthy?, health.message
+        refute_includes health.message, "category folder"
+      end
+    end
+  end
+
+  test "degrades download_paths when the qBittorrent save path is outside the download directory" do
+    Dir.mktmpdir do |download_dir|
+      setup_download_paths(download_dir)
+      create_download_client(name: "Outside Save Path")
+
+      VCR.turned_off do
+        stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/torrents/complete" }.to_json
+          )
+        stub_request(:get, "http://localhost:8080/api/v2/torrents/categories")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+        HealthCheckJob.perform_now(service: "download_paths")
+
+        health = SystemHealth.for_service("download_paths")
+        assert health.degraded?, health.message
+        assert_includes health.message,
+          "qBittorrent save path /mnt/torrents/complete maps to /mnt/torrents/complete. " \
+            "That path is not inside /downloads or does not exist."
+        refute health.down?
       end
     end
   end
@@ -397,6 +424,12 @@ class HealthCheckJobTest < ActiveJob::TestCase
 
         VCR.turned_off do
           stub_qbittorrent_auth_success
+          stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+            .to_return(
+              status: 200,
+              headers: { "Content-Type" => "application/json" },
+              body: { "save_path" => local_path }.to_json
+            )
 
           HealthCheckJob.perform_now(service: "download_paths")
 
@@ -459,6 +492,12 @@ class HealthCheckJobTest < ActiveJob::TestCase
 
       VCR.turned_off do
         stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => local_path }.to_json
+          )
         HealthCheckJob.perform_now(service: "download_paths")
         assert SystemHealth.for_service("download_paths").healthy?
       end
@@ -473,6 +512,12 @@ class HealthCheckJobTest < ActiveJob::TestCase
 
       VCR.turned_off do
         stub_qbittorrent_auth_success
+        stub_request(:get, "http://localhost:8080/api/v2/app/preferences")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { "save_path" => "/mnt/torrents/complete" }.to_json
+          )
 
         HealthCheckJob.perform_now(service: "download_paths")
 
@@ -766,6 +811,58 @@ class HealthCheckJobTest < ActiveJob::TestCase
     health = SystemHealth.for_service("audiobookshelf")
     assert health.not_configured?
     assert_includes health.message, "Not configured"
+  end
+
+  test "degrades audiobookshelf when a library folder is not the import path" do
+    setup_audiobookshelf_settings
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
+    SettingsService.set(:audiobook_output_path, "/shelfarr/audiobooks")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [
+              { "id" => "lib-audio", "name" => "Audiobooks", "mediaType" => "book",
+                "folders" => [ { "fullPath" => "/abs/audiobooks" } ] }
+            ]
+          }.to_json
+        )
+
+      HealthCheckJob.perform_now(service: "audiobookshelf")
+
+      health = SystemHealth.for_service("audiobookshelf")
+      assert health.degraded?, health.message
+      assert_includes health.message,
+        "ABS folder is /abs/audiobooks; Shelfarr imports to /shelfarr/audiobooks. " \
+          "Mount the same directory at the same path in both containers, or change the output path."
+      refute health.down?
+    end
+  end
+
+  test "degrades audiobookshelf when the selected library has no folder" do
+    setup_audiobookshelf_settings
+    SettingsService.set(:audiobookshelf_ebook_library_id, "lib-ebooks")
+    SettingsService.set(:ebook_output_path, "/shelfarr/ebooks")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [ { "id" => "lib-ebooks", "name" => "Ebooks", "mediaType" => "book", "folders" => [] } ]
+          }.to_json
+        )
+
+      HealthCheckJob.perform_now(service: "audiobookshelf")
+
+      health = SystemHealth.for_service("audiobookshelf")
+      assert health.degraded?, health.message
+      assert_includes health.message, "ABS did not report a folder."
+    end
   end
 
   test "marks audiobookshelf as healthy when configured and connected" do

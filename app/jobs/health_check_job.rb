@@ -163,36 +163,9 @@ class HealthCheckJob < ApplicationJob
         when :missing
           issues << "#{client.name}: configured download path '#{client.download_path}' does not exist"
         end
-      elsif client.qbittorrent_compatible? && client.category.present?
-        # No client-specific download_path set, try the default pattern that qbittorrent will set
-        if local_visibility[:status] == :ok
-          category_path = File.join(local_visibility[:path] || local_path, client.category)
-          category_visibility = inspect_download_directory(category_path)
-          case category_visibility[:status]
-          when :error
-            issues << "#{client.name}: category folder '#{category_path}' " \
-                      "could not be checked: #{category_visibility[:error].message}"
-          when :missing
-            issues << "#{client.name}: category folder '#{category_path}' not found — " \
-                      "ensure your Docker mount includes the '#{client.category}' subfolder"
-          end
-        end
       end
 
-      # Query qBittorrent-compatible clients for save path info (diagnostics only)
-      if client.qbittorrent_compatible?
-        begin
-          diagnostics = client.adapter.connection_diagnostics
-          if diagnostics
-            save_path = diagnostics[:save_path]
-            cat_path = diagnostics[:category_save_path]
-            Rails.logger.info "[HealthCheckJob] #{client.name}: qBit save_path=#{save_path}, " \
-                              "category_save_path=#{cat_path.presence || '(default)'}"
-          end
-        rescue => e
-          Rails.logger.warn "[HealthCheckJob] Path diagnostics for #{client.name} failed: #{e.message}"
-        end
-      end
+      issues.concat(qbittorrent_save_path_issues(client, local_path))
     end
 
     if issues.empty?
@@ -215,6 +188,44 @@ class HealthCheckJob < ApplicationJob
       reason = result[:reason]
       reason.present? ? "#{result[:client].name} (#{reason})" : result[:client].name
     end.join(", ")
+  end
+
+  def qbittorrent_save_path_issues(client, local_path)
+    return [] unless client.qbittorrent_compatible?
+
+    diagnostics = client.adapter.connection_diagnostics
+    return [] if diagnostics.blank?
+
+    save_path = diagnostics[:save_path]
+    category_save_path = diagnostics[:category_save_path]
+    Rails.logger.info "[HealthCheckJob] #{client.name}: qBit save_path=#{save_path}, " \
+                      "category_save_path=#{category_save_path.presence || '(default)'}"
+    warning = LibraryPathCheck.qbittorrent_message(
+      save_path: save_path,
+      category_save_path: category_save_path,
+      category: client.category,
+      local_path: local_path,
+      remote_path: SettingsService.get(:download_remote_path)
+    )
+    warning.present? ? [ "#{client.name}: #{warning}" ] : []
+  rescue StandardError => e
+    Rails.logger.warn "[HealthCheckJob] Path diagnostics for #{client.name} failed: #{e.message}"
+    []
+  end
+
+  def audiobookshelf_path_messages
+    return [] unless LibraryPlatformClient.active_platform == "audiobookshelf"
+
+    LibraryPathCheck.audiobookshelf_messages(
+      libraries: LibraryPlatformClient.libraries,
+      audiobook_library_id: SettingsService.get(:audiobookshelf_audiobook_library_id),
+      ebook_library_id: SettingsService.get(:audiobookshelf_ebook_library_id),
+      audiobook_output_path: SettingsService.get(:audiobook_output_path),
+      ebook_output_path: SettingsService.get(:ebook_output_path)
+    )
+  rescue LibraryPlatformClient::Error => e
+    Rails.logger.warn "[HealthCheckJob] Audiobookshelf path check failed: #{e.message}"
+    []
   end
 
   def hard_download_path_failure?(issue)
@@ -321,7 +332,12 @@ class HealthCheckJob < ApplicationJob
     end
 
     if LibraryPlatformClient.test_connection
-      health.check_succeeded!(message: "Connection successful")
+      messages = audiobookshelf_path_messages
+      if messages.any?
+        health.check_failed!(message: messages.join("; ").truncate(500), degraded: true)
+      else
+        health.check_succeeded!(message: "Connection successful")
+      end
     else
       health.check_failed!(message: "Failed to connect to #{LibraryPlatformClient.display_name}")
     end
