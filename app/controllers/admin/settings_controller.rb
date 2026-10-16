@@ -107,22 +107,22 @@ module Admin
     end
 
     def test_indexer
-      health = SystemHealth.for_service("indexer")
       provider = probe_indexer_provider
       name = indexer_probe_name(provider)
       url, api_key = indexer_probe_credentials(provider)
+      health = probe_health("indexer", saved: saved_indexer_probe?(provider, url, api_key))
 
       unless url.present? && api_key.present?
-        health.mark_not_configured!
+        health&.mark_not_configured!
         respond_with_flash(alert: "#{name} is not configured. Select a provider and enter connection details first.")
         return
       end
 
       if ConnectionProbe.indexer(provider: provider, url: url, api_key: api_key)
-        health.check_succeeded!(message: "Connection successful")
+        health&.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "#{name} connection successful!")
       else
-        health.check_failed!(message: "Failed to connect to #{name}")
+        health&.check_failed!(message: "Failed to connect to #{name}")
         respond_with_flash(alert: "#{name} connection failed.")
       end
     rescue IndexerClients::Base::Error => e
@@ -135,13 +135,13 @@ module Admin
     end
 
     def test_audiobookshelf
-      health = SystemHealth.for_service("audiobookshelf")
       platform = probe_library_platform
       name = LibraryPlatformClient.display_name(platform)
       url, api_key = library_probe_credentials(platform)
+      health = probe_health("audiobookshelf", saved: saved_library_probe?(platform, url, api_key))
 
       unless library_probe_configured?(platform, url, api_key)
-        health.mark_not_configured!
+        health&.mark_not_configured!
         respond_with_flash(alert: "#{name} is not configured. Enter connection details first.")
         return
       end
@@ -153,10 +153,10 @@ module Admin
       end
 
       if connected
-        health.check_succeeded!(message: "Connection successful")
+        health&.check_succeeded!(message: "Connection successful")
         respond_with_flash(notice: "#{name} connection successful!")
       else
-        health.check_failed!(message: "Failed to connect to #{name}")
+        health&.check_failed!(message: "Failed to connect to #{name}")
         respond_with_flash(alert: "#{name} connection failed.")
       end
     rescue LibraryPlatformClient::Error, AudiobookshelfClient::Error => e
@@ -724,6 +724,28 @@ module Admin
       return url.present? && api_key.present? if platform == "audiobookshelf"
 
       LibraryPlatformClient.configured?(platform: platform)
+    end
+
+    # Unsaved form values must not overwrite the dashboard's record of the saved connection.
+    def probe_health(service, saved:)
+      SystemHealth.for_service(service) if saved
+    end
+
+    def saved_indexer_probe?(provider, url, api_key)
+      url_key, secret_key = INDEXER_PROBE_KEYS[provider]
+      return provider == SettingsService.active_indexer_provider if url_key.nil?
+
+      provider == SettingsService.active_indexer_provider &&
+        url == SettingsService.get(url_key).to_s.strip &&
+        api_key == SettingsService.get(secret_key).to_s
+    end
+
+    def saved_library_probe?(platform, url, api_key)
+      return false unless platform == LibraryPlatformClient.active_platform
+      return true unless platform == "audiobookshelf"
+
+      url == SettingsService.get(:audiobookshelf_url).to_s.strip &&
+        api_key == SettingsService.get(:audiobookshelf_api_key).to_s
     end
 
     def settings_param_posted?(key)
