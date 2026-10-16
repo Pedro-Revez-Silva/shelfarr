@@ -29,9 +29,14 @@ class ConnectionProbe
         priority: 0,
         enabled: false
       )
+      client.validate
+      if (url_error = client.errors[:url].first)
+        raise DownloadClients::Base::ConnectionError, "qBittorrent URL #{url_error}"
+      end
+
       client.test_connection
     rescue DownloadClients::Base::Error => e
-      raise e.class, ConnectionErrorClassifier.with_localhost_hint(e.message, url)
+      raise e.class, ConnectionErrorClassifier.with_localhost_hint(e.message, client&.url || url)
     end
   end
 end
