@@ -7,7 +7,6 @@ class AddLoginSecurityToUsers < ActiveRecord::Migration[8.1]
     add_column :users, :last_failed_login_at, :datetime
     add_column :users, :last_failed_login_ip, :string
 
-    # For 2FA support
     add_column :users, :otp_secret, :string
     add_column :users, :otp_required, :boolean, default: false, null: false
   end

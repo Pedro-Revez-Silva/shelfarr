@@ -29,7 +29,6 @@ module Shelfarr
       Time.find_zone!(tz_value) if tz_value != "UTC"
       config.time_zone = tz_value
     rescue ArgumentError
-      # Invalid timezone identifier, fall back to UTC
       warn "Warning: Invalid TZ environment variable '#{tz_value}'. Falling back to UTC."
       config.time_zone = "UTC"
     end

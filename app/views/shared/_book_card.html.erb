@@ -13,7 +13,6 @@
   cover_url = book.respond_to?(:cover_url) ? book.cover_url : nil
   year = book.respond_to?(:year) ? book.year : (book.respond_to?(:first_publish_year) ? book.first_publish_year : nil)
 
-  # Book type determination
   is_audiobook = book.respond_to?(:audiobook?) ? book.audiobook? : false
   is_comicbook = book.respond_to?(:comicbook?) ? book.comicbook? : false
   book_type_label = if is_audiobook
@@ -31,15 +30,13 @@
     "bg-blue-500/90"
   end
 
-  # Size-based classes
   size_classes = case size
   when :small
     { card: "w-36", text: "text-xs", title: "text-xs", padding: "p-2", icon: "w-10 h-10" }
-  else # :medium
+  else
     { card: "", text: "text-sm", title: "text-sm", padding: "p-3", icon: "w-12 h-12" }
   end
 
-  # Status colors mapping
   status_colors = {
     'pending' => 'bg-yellow-500/90',
     'searching' => 'bg-blue-500/90',

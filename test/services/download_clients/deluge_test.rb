@@ -22,7 +22,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
 
   test "add_torrent adds magnet and returns id" do
     VCR.turned_off do
-      # Login (auth.login)
       stub_request(:post, "http://localhost:8112/json")
         .with(body: /"auth.login"/)
         .to_return(
@@ -31,7 +30,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           body: { result: true, error: nil, id: 1 }.to_json
         )
 
-      # session state before add
       stub_request(:post, "http://localhost:8112/json")
         .with(body: /"core.get_session_state"/)
         .to_return(
@@ -40,7 +38,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           body: { result: [ "known_torrent_id" ], error: nil, id: 1 }.to_json
         )
 
-      # add_torrent_magnet returns id directly
       stub_request(:post, "http://localhost:8112/json")
         .with(body: /"core.add_torrent_magnet"/)
         .to_return(
@@ -421,7 +418,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
 
   test "list_torrents returns array of TorrentInfo" do
     VCR.turned_off do
-      # Login (auth.login)
       stub_request(:post, "http://localhost:8112/json")
         .with(body: /"auth.login"/)
         .to_return(
@@ -430,7 +426,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           body: { result: true, error: nil, id: 1 }.to_json
         )
 
-      # session state for test_connection + status call
       stub_request(:post, "http://localhost:8112/json")
         .with(body: /"core.get_torrents_status"/)
         .to_return(
@@ -451,7 +446,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           }.to_json
         )
 
-      # test_connection calls get_session_state indirectly
       stub_request(:post, "http://localhost:8112/json")
         .with(body: /"core.get_session_state"/)
         .to_return(
@@ -475,7 +469,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
 
   test "test_connection returns true on success" do
     VCR.turned_off do
-      # Login (auth.login)
       stub_request(:post, "http://localhost:8112/json")
         .with(body: /"auth.login"/)
         .to_return(

@@ -185,7 +185,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     post session_path, params: { username: @user.username, password: FIXTURE_PASSWORD }
     assert_redirected_to verify_otp_session_path
 
-    # Submit valid OTP
     totp = ROTP::TOTP.new(@user.otp_secret)
     post submit_otp_session_path, params: { otp_code: totp.now }
 
@@ -204,7 +203,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_nil cookies[:session_id]
   end
 
-  # Auth disabled tests
   test "auth disabled: login page shows username-only form" do
     SettingsService.set(:auth_disabled, true)
 

@@ -592,7 +592,6 @@ class DownloadJob < ApplicationJob
   def infer_extension(url, search_result)
     normalized_url = url.to_s.downcase
 
-    # Check URL for extension hints
     return "epub" if normalized_url.include?("epub")
     return "pdf" if normalized_url.include?("pdf")
     if normalized_url.include?("mobi") || normalized_url.include?("kf8") || normalized_url.match?(/\.kindle(\.|[?#]|\z)/)
@@ -600,14 +599,12 @@ class DownloadJob < ApplicationJob
     end
     return "azw3" if normalized_url.include?("azw3")
 
-    # Check search result title
     title = search_result.title.to_s.downcase
     return "epub" if title.include?("epub")
     return "pdf" if title.include?("pdf")
     return "mobi" if title.include?("mobi")
     return "azw3" if title.include?("azw3")
 
-    # Default to epub
     "epub"
   end
 

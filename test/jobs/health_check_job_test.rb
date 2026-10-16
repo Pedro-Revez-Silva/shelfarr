@@ -82,7 +82,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
     assert HealthCheckJob.new.send(:scheduled_health_check_due?)
   end
 
-  # Single service check
   test "checks only the specified service when service param is given" do
     Setting.where(key: %w[prowlarr_url prowlarr_api_key]).destroy_all
 
@@ -94,7 +93,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
     assert health.not_configured?
   end
 
-  # Prowlarr tests
   test "marks prowlarr as not_configured when not configured" do
     Setting.where(key: %w[prowlarr_url prowlarr_api_key]).destroy_all
 
@@ -216,7 +214,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
-  # Download client tests
   test "marks download_client as not_configured when no clients configured" do
     DownloadClient.destroy_all
 
@@ -277,9 +274,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
     client2 = create_download_client(name: "Failing Client", url: "http://localhost:9090")
 
     VCR.turned_off do
-      # First client succeeds
       stub_qbittorrent_connection("http://localhost:8080", session_id: "test")
-      # Second client fails
       stub_request(:post, "http://localhost:9090/api/v2/auth/login")
         .to_return(status: 401, body: "Fails.")
 
@@ -884,7 +879,6 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
-  # Audiobookshelf tests
   test "marks audiobookshelf as not_configured when not configured" do
     Setting.where(key: %w[audiobookshelf_url audiobookshelf_api_key]).destroy_all
 

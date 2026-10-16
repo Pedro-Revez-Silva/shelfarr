@@ -725,7 +725,6 @@ class UploadProcessingJob < ApplicationJob
     return 100 if str1 == str2
     return 0 if str1.blank? || str2.blank?
 
-    # Simple trigram similarity
     trigrams1 = to_trigrams(str1)
     trigrams2 = to_trigrams(str2)
     return 0 if trigrams1.empty? || trigrams2.empty?

@@ -27,7 +27,6 @@ class MetadataExtractorService
     "\xA9wrt".b => :narrator
   }.freeze
 
-  # Result of metadata extraction
   Result = Data.define(:title, :author, :year, :description, :narrator, :success) do
     def self.empty
       new(title: nil, author: nil, year: nil, description: nil, narrator: nil, success: false)
@@ -178,7 +177,6 @@ class MetadataExtractorService
         return Result.empty unless opf_path
         return Result.empty if opf_path.bytesize > MAX_EPUB_METADATA_PATH_BYTES
 
-        # Read the OPF file
         opf_entry = zip.find_entry(opf_path)
         return Result.empty unless opf_entry
 
@@ -290,7 +288,7 @@ class MetadataExtractorService
     def parse_mp4_meta_atom(file, atom, metadata, budget)
       return if atom[:payload_size] < 4
 
-      file.seek(4, IO::SEEK_CUR) # version and flags
+      file.seek(4, IO::SEEK_CUR)
       parse_mp4_atom_range(file, atom[:end], metadata, budget, context: :meta)
     end
 

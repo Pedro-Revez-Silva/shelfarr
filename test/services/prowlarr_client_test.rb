@@ -550,7 +550,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
           ].to_json
         )
 
-      # Stub search endpoint - verify it includes indexerIds
       search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with(query: hash_including("indexerIds" => "2"))
         .to_return(
@@ -589,7 +588,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
           ].to_json
         )
 
-      # Stub search endpoint - verify it includes indexerIds
       search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with(query: hash_including("indexerIds" => "2"))
         .to_return(
@@ -742,7 +740,6 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
-  # SSL error handling tests
   test "test_connection does not retry TLS failures" do
     VCR.turned_off do
       request = stub_request(:get, "http://localhost:9696/api/v1/indexer")

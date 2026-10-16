@@ -42,7 +42,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_not_includes retry_due, requests(:pending_request)
   end
 
-  # === schedule_retry! ===
 
   test "schedule_retry! sets not_found status with exponential backoff" do
     request = Request.create!(
@@ -67,14 +66,12 @@ class RequestRetryTest < ActiveSupport::TestCase
   test "schedule_retry! doubles delay with each retry" do
     base_delay_hours = SettingsService.get(:retry_base_delay_hours)
 
-    # First retry: base_delay
     request1 = Request.create!(book: books(:ebook_pending), user: users(:one), status: :searching, retry_count: 0)
     freeze_time do
       request1.schedule_retry!
       assert_in_delta Time.current + base_delay_hours.hours, request1.next_retry_at, 1.second
     end
 
-    # Second retry: base_delay * 2
     request2 = Request.create!(book: books(:audiobook_acquired), user: users(:one), status: :searching, retry_count: 1)
     freeze_time do
       request2.schedule_retry!
@@ -121,7 +118,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_includes request.issue_description, "Maximum retry attempts"
   end
 
-  # === requeue! ===
 
   test "requeue! moves not_found back to pending" do
     request = requests(:not_found_retry_due)
@@ -135,7 +131,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_equal previous_generation + 1, request.search_generation
   end
 
-  # === retry_now! ===
 
   test "retry_now! resets request for immediate processing when no selected result" do
     request = @max_retries_exceeded
@@ -365,7 +360,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert request.pending?, "Should restart search when no failed download exists"
   end
 
-  # === cancel! ===
 
   test "cancel! marks request as failed" do
     request = @pending
@@ -377,7 +371,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_nil request.issue_description
   end
 
-  # === complete! ===
 
   test "complete! clears attention_needed and issue_description" do
     request = Request.create!(
@@ -396,7 +389,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert request.completed_at.present?
   end
 
-  # === select_result! ===
 
   test "select_result! clears attention_needed and issue_description" do
     book = Book.create!(title: "Select Test Book", book_type: :ebook, open_library_work_id: "OL_SELECT_TEST")
@@ -428,7 +420,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert download.queued?
   end
 
-  # === can_retry? ===
 
   test "can_retry? returns true for pending, not_found, and failed" do
     assert @pending.can_retry?
@@ -453,7 +444,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     )
     assert_not downloading.can_retry?
 
-    # But with attention_needed it can be retried
     downloading.update!(attention_needed: true)
     assert downloading.can_retry?
   end
@@ -468,7 +458,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_not completed.can_retry?
   end
 
-  # === needs_manual_selection? ===
 
   test "needs_manual_selection? returns true when searching with pending results" do
     book = Book.create!(title: "Manual Select Book", book_type: :ebook, open_library_work_id: "OL_MANUAL_SEL")
@@ -478,7 +467,6 @@ class RequestRetryTest < ActiveSupport::TestCase
       status: :searching
     )
 
-    # No results yet
     assert_not request.needs_manual_selection?
 
     request.search_results.create!(
@@ -527,12 +515,11 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_not request.needs_manual_selection?
   end
 
-  # === retry_due? ===
 
   test "retry_due? returns true when next_retry_at is past" do
     assert requests(:not_found_retry_due).retry_due?
     assert_not @not_found_waiting.retry_due?
-    assert_not @pending.retry_due? # No next_retry_at
+    assert_not @pending.retry_due?
   end
 
   test "next_retry_in_words returns human-readable time" do
@@ -560,7 +547,6 @@ class RequestRetryTest < ActiveSupport::TestCase
     assert_nil requests(:not_found_retry_due).next_retry_in_words
   end
 
-  # === can_be_cancelled? ===
 
   test "can_be_cancelled? returns true for pending requests" do
     assert @pending.can_be_cancelled?

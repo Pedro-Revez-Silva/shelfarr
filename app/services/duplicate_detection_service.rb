@@ -24,7 +24,6 @@ class DuplicateDetectionService
       book_type = book_type.to_s
       work_ids = [ work_id, *Array(source_work_ids) ].compact_blank.uniq
 
-      # Check 1: Same edition already acquired (most specific)
       if edition_id.present?
         existing = Book.find_by(open_library_edition_id: edition_id, book_type: book_type)
         if existing&.acquired?
@@ -37,7 +36,6 @@ class DuplicateDetectionService
         end
       end
 
-      # Check 2: Same work + type already acquired
       existing_book = find_existing_book(work_ids, book_type: book_type, existing_books_lookup: existing_books_lookup)
       if existing_book&.acquired?
         return Result.new(
@@ -48,7 +46,6 @@ class DuplicateDetectionService
         )
       end
 
-      # Check 3: Same work + type has pending/active request
       if existing_book
         active_request = existing_book.requests.open.first
         if active_request
@@ -89,7 +86,6 @@ class DuplicateDetectionService
         end
       end
 
-      # No duplicates found
       Result.new(
         status: ALLOW,
         message: nil,

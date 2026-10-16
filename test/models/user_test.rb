@@ -27,16 +27,13 @@ class UserTest < ActiveSupport::TestCase
   end
 
   test "validates password complexity" do
-    # Missing uppercase
     user = User.new(name: "Test", username: "testuser", password: "password12345")
     assert_not user.valid?
     assert user.errors[:password].any?
 
-    # Missing lowercase
     user = User.new(name: "Test", username: "testuser", password: "PASSWORD12345")
     assert_not user.valid?
 
-    # Missing number
     user = User.new(name: "Test", username: "testuser", password: "PasswordOnly!")
     assert_not user.valid?
   end

@@ -113,7 +113,6 @@ class BookMatcherService
         return title_score
       end
 
-      # Weight: 60% title, 40% author
       (title_score * 0.6 + author_score * 0.4).round
     end
 
@@ -196,7 +195,7 @@ class BookMatcherService
           number = normalize_sequence_number(Regexp.last_match(2))
           "#{marker} #{number}"
         end
-        .gsub(/\s+/, " ")         # Collapse whitespace
+        .gsub(/\s+/, " ")
         .strip
     end
 

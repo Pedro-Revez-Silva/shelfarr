@@ -805,7 +805,6 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       DownloadMonitorJob.perform_now
       @download.reload
 
-      # Status should remain unchanged
       assert @download.downloading?
       assert_equal 50, @download.progress
     end
@@ -844,7 +843,6 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       DownloadMonitorJob.perform_now
       @download.reload
 
-      # Status should remain unchanged
       assert @download.downloading?
       assert_equal 50, @download.progress
     end

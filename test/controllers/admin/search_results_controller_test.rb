@@ -143,7 +143,6 @@ module Admin
     test "select marks other results as rejected" do
       post select_admin_request_search_result_path(@request_record, @pending_result)
 
-      # Reload all results
       @selected_result.reload
       @no_link_result.reload
 
@@ -157,7 +156,7 @@ module Admin
       assert_match /cannot be downloaded/, flash[:alert]
 
       @no_link_result.reload
-      assert @no_link_result.pending? # Status unchanged
+      assert @no_link_result.pending?
     end
 
     test "select enqueues download job" do

@@ -344,7 +344,7 @@ class ZipArchivePreflightService
     end
 
     def validate_external_attributes!(filesystem, attributes)
-      return unless filesystem == 3 # Unix
+      return unless filesystem == 3
 
       file_type = (attributes >> 16) & 0xf000
       return if file_type.in?([ 0, 0x4000, 0x8000 ])

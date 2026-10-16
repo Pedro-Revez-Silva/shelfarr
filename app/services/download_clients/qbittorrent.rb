@@ -7,14 +7,10 @@ require "socket"
 require "stringio"
 
 module DownloadClients
-  # qBittorrent WebUI API client
-  # https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0)
   class Qbittorrent < Base
     DEFAULT_TORRENT_VERIFICATION_MAX_ATTEMPTS = 10
     DEFAULT_TORRENT_VERIFICATION_WAIT_TIME = 2
 
-    # Add a torrent by URL or magnet link
-    # Returns the torrent hash on success, nil on failure
     def add_torrent(url, options = {})
       ensure_authenticated!
 
@@ -77,7 +73,6 @@ module DownloadClients
       raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
     end
 
-    # Get info for a specific torrent by hash
     def torrent_info(hash)
       ensure_authenticated!
 
@@ -90,7 +85,6 @@ module DownloadClients
       end
     end
 
-    # List all torrents
     def list_torrents(filter = {})
       ensure_authenticated!
 
@@ -129,8 +123,6 @@ module DownloadClients
       )
     end
 
-    # Remove a torrent by hash
-    # delete_files: if true, also delete downloaded files from disk
     def remove_torrent(hash, delete_files: false)
       ensure_authenticated!
 
@@ -253,11 +245,9 @@ module DownloadClients
       MagnetLink.info_hash(url)
     end
 
-    # Check if URL points to a .torrent file
     def torrent_file_url?(url)
       return false if url.blank?
 
-      # Check file extension
       return true if url.match?(/\.torrent(\?|$)/i)
 
       # Many private trackers use URLs like /download.php?id=123 that return torrent files
@@ -265,8 +255,6 @@ module DownloadClients
       true
     end
 
-    # Resolve redirects and fetch torrent content when available.
-    # Returns { url: String, torrent_data: String? }.
     def resolve_torrent_source(raw_url)
       normalized_url = normalized_torrent_url(raw_url)
       return nil unless normalized_url
@@ -315,7 +303,6 @@ module DownloadClients
     def extract_hash_from_torrent_data(torrent_data)
       return nil if torrent_data.blank?
 
-      # Parse the torrent file (bencoded format)
       parsed = BEncode.load(torrent_data.dup)
       return nil unless parsed.is_a?(Hash) && parsed["info"].is_a?(Hash)
 
@@ -412,7 +399,6 @@ module DownloadClients
       nil
     end
 
-    # Fetch torrent hashes as a Set, optionally filtered by category
     def fetch_torrent_hashes(category: nil)
       params = category.present? ? { category: category } : {}
       response = connection.get("api/v2/torrents/info", params)

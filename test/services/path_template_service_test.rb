@@ -370,7 +370,6 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_not PathTemplateService.flat_output?(@book)
   end
 
-  # Security / Validation tests
 
   test "removes path traversal from template" do
     result = PathTemplateService.build_path(@book, "../../{author}/{title}")
@@ -504,7 +503,6 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_match(/Invalid template expressions/, error)
   end
 
-  # Filename template tests
 
   test "build_filename with default template" do
     result = PathTemplateService.build_filename(@book, ".epub")
@@ -524,21 +522,18 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
   test "build_filename handles missing year gracefully" do
     @book.update!(year: nil)
     result = PathTemplateService.build_filename(@book, ".epub", template: "{author} - {title} - {year}")
-    # Empty year should be cleaned up, not leave trailing separator
     assert_equal "Stephen King - The Shining.epub", result
   end
 
   test "build_filename handles missing year in parentheses" do
     @book.update!(year: nil)
     result = PathTemplateService.build_filename(@book, ".epub", template: "{author} - {title} ({year})")
-    # Empty parentheses should be removed
     assert_equal "Stephen King - The Shining.epub", result
   end
 
   test "build_filename handles missing year in middle of template" do
     @book.update!(year: nil)
     result = PathTemplateService.build_filename(@book, ".epub", template: "{author} ({year}) - {title}")
-    # Empty parentheses should be removed
     assert_equal "Stephen King - The Shining.epub", result
   end
 

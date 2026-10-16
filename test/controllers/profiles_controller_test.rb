@@ -284,7 +284,6 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:auth_disabled, false)
   end
 
-  # Two-factor authentication tests
   test "two_factor page displays setup when not enabled" do
     get two_factor_profile_path
     assert_response :success

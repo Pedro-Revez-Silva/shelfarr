@@ -24,7 +24,6 @@ class UpdateCheckerService
       end
     end
 
-    # Get cached result without making API call
     def cached_result
       Rails.cache.read(cache_key_for(current_version))
     end

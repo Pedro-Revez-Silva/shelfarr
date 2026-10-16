@@ -12,14 +12,12 @@ class FilenameParserService
       title_group: 2,
       name: :author_dash_title
     },
-    # "Book Title (Author Name)"
     {
       regex: /\A(.+?)\s*\(([^)]+)\)\z/,
       author_group: 2,
       title_group: 1,
       name: :title_paren_author
     },
-    # "Book Title [Author Name]"
     {
       regex: /\A(.+?)\s*\[([^\]]+)\]\z/,
       author_group: 2,
@@ -40,7 +38,6 @@ class FilenameParserService
     def parse(filename)
       basename = File.basename(filename, File.extname(filename))
 
-      # Clean up common artifacts
       basename = clean_filename(basename)
 
       PATTERNS.each do |pattern|
@@ -92,17 +89,17 @@ class FilenameParserService
         .gsub(/\s*\[\d{4}\]\s*/, " ")
         .gsub(/\s*-\s*(?:Unabridged|Abridged)\s*/i, " ")
         .gsub(/\s*(?:MP3|M4B|EPUB|PDF|MOBI)\s*/i, " ")
-        .gsub(/\s+/, " ")                                  # Collapse whitespace
+        .gsub(/\s+/, " ")
         .strip
     end
 
     def normalize_text(text)
       text
         .strip
-        .gsub(/\s+/, " ")      # Collapse whitespace
-        .gsub(/[_]+/, " ")     # Underscores to spaces
+        .gsub(/\s+/, " ")
+        .gsub(/[_]+/, " ")
         .split(" ")
-        .map(&:capitalize)     # Title case
+        .map(&:capitalize)
         .join(" ")
     end
 

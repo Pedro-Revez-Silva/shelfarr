@@ -29,7 +29,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
       progress: 100
     )
 
-    # Setup Audiobookshelf settings
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
     SettingsService.set(:audiobookshelf_api_key, "test-api-key")
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-123")
@@ -331,11 +330,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
       stub_audiobookshelf_library(@temp_dest_base)
       stub_audiobookshelf_scan
 
-      # Capture status changes during job execution
       PostProcessingJob.perform_now(@download.id)
       @request.reload
 
-      # After job completes, status should be completed (went through processing first)
       assert @request.completed?
     end
   end
@@ -567,7 +564,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
       assert File.exist?(original_file), "Source file should still exist after processing (copy, not move)"
 
-      # Destination file should also exist
       expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
       destination_file = File.join(expected_dest, "audiobook.mp3")
       assert File.exist?(destination_file), "Destination file should exist"
@@ -2495,7 +2491,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
 
     PostProcessingJob.perform_now(@download.id)
 
-    # File should be copied to destination
     expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
     assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "File should be copied using client-specific path"
   end
@@ -2751,7 +2746,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
       category: "shelfarr"
     )
 
-    # Host path: /mnt/media/Torrents/shelfarr/Test Audiobook
     @download.update!(
       download_client: client,
       download_path: "/mnt/media/Torrents/shelfarr/Test Audiobook"
@@ -3160,7 +3154,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
       client_type: :qbittorrent,
       url: "http://localhost:8080",
       category: "shelfarr",
-      download_path: @temp_source  # Local path for this client's files
+      download_path: @temp_source
     )
 
     @download.update!(

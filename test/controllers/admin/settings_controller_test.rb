@@ -2144,7 +2144,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  # Turbo Stream response tests
   test "bulk_update returns turbo stream when requested" do
     patch bulk_update_admin_settings_url,
       params: { settings: { max_retries: "25" } },
@@ -2274,7 +2273,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  # SSL error handling tests
   test "test_prowlarr handles SSL errors" do
     SettingsService.set(:prowlarr_url, "https://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "test-api-key")
@@ -2337,7 +2335,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_match /unexpected/, flash[:alert]
   end
 
-  # Connection cache reset tests
   test "bulk_update uses new audiobookshelf url after settings change" do
     SettingsService.set(:audiobookshelf_url, "http://old.example.com")
     SettingsService.set(:audiobookshelf_api_key, "test-key")
@@ -2362,7 +2359,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "old-key")
 
-    # Prime the connection with old credentials
     ProwlarrClient.send(:connection)
     old_connection = ProwlarrClient.instance_variable_get(:@connection)
     assert_not_nil old_connection
@@ -2721,7 +2717,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   test "bulk_update resets flaresolverr connection when url changes" do
     SettingsService.set(:flaresolverr_url, "http://old.example.com:8191")
 
-    # Prime the connection with old url
     FlaresolverrClient.send(:connection)
     old_connection = FlaresolverrClient.instance_variable_get(:@connection)
     assert_not_nil old_connection
@@ -2769,8 +2764,6 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
         assert_select "option[value='lib-unavailable-scan'][selected]", text: "lib-unavailable-scan (Unavailable)"
       end
 
-      # Now simulate the autosave/bulk_update submission of the form.
-      # If we submit the values rendered in the select fields, they should be correctly saved back.
       patch bulk_update_admin_settings_url, params: {
         settings: {
           audiobookshelf_audiobook_library_id: "lib-unavailable-delivery",

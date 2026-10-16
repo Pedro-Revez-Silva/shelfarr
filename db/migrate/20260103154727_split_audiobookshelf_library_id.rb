@@ -22,7 +22,6 @@ class SplitAudiobookshelfLibraryId < ActiveRecord::Migration[8.1]
     audiobook_setting = execute("SELECT value FROM settings WHERE key = 'audiobookshelf_audiobook_library_id'").first
     old_value = audiobook_setting&.fetch("value", "") || ""
 
-    # Recreate old setting
     execute <<-SQL
       INSERT INTO settings (key, value, value_type, category, description, created_at, updated_at)
       VALUES ('audiobookshelf_library_id', '#{old_value}', 'string', 'audiobookshelf', 'Target library ID for imported content', datetime('now'), datetime('now'))

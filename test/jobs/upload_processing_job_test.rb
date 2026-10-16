@@ -20,7 +20,6 @@ class UploadProcessingJobTest < ActiveJob::TestCase
       value_type: "string",
       category: "paths"
     )
-    # Disable Audiobookshelf
     Setting.where(key: "audiobookshelf_url").destroy_all
 
     @test_file = File.join(@temp_source, "Brandon Sanderson - Mistborn.m4b")
