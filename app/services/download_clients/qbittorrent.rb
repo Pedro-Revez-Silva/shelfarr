@@ -3,6 +3,7 @@
 require "bencode"
 require "digest/sha1"
 require "faraday/multipart"
+require "socket"
 require "stringio"
 
 module DownloadClients
@@ -389,16 +390,7 @@ module DownloadClients
 
     # Upload a .torrent file directly to qBittorrent via multipart form upload.
     def upload_torrent_file(torrent_data, options = {})
-      upload_conn = Faraday.new(url: base_url) do |f|
-        f.request :multipart
-        f.request :url_encoded
-        f.adapter Faraday.default_adapter
-        apply_authentication_headers(f.headers)
-        f.headers["Referer"] = base_url
-        f.headers["Origin"] = base_url
-        f.options.timeout = 30
-        f.options.open_timeout = 10
-      end
+      upload_conn = api_connection(timeout: 30, open_timeout: 10, multipart: true, authenticate: true)
 
       payload = {
         torrents: Faraday::Multipart::FilePart.new(
@@ -492,13 +484,10 @@ module DownloadClients
       login_url = "#{base_url}/api/v2/auth/login"
       Rails.logger.info "[Qbittorrent] Authenticating to #{config.name} at #{login_url} (username: #{username})"
 
-      auth_response = Faraday.post(
+      auth_response = login_connection.post(
         login_url,
         { username: username, password: password }
-      ) do |req|
-        req.headers["Referer"] = base_url
-        req.headers["Origin"] = base_url
-      end
+      )
 
       if (auth_response.status == 200 && auth_response.body == "Ok.") ||
          (auth_response.status == 204 && auth_response.headers["set-cookie"].present?)
@@ -557,17 +546,116 @@ module DownloadClients
       end
     end
 
+    def login_connection
+      api_connection(timeout: 15, open_timeout: 5)
+    end
+
     def connection
-      Faraday.new(url: base_url) do |f|
-        f.request :url_encoded
-        f.response :json, parser_options: { symbolize_names: false }
-        f.adapter Faraday.default_adapter
-        apply_authentication_headers(f.headers)
-        f.headers["Referer"] = base_url
-        f.headers["Origin"] = base_url
-        f.options.timeout = 15
-        f.options.open_timeout = 5
+      api_connection(timeout: 15, open_timeout: 5, json: true, authenticate: true)
+    end
+
+    def api_connection(timeout:, open_timeout:, json: false, multipart: false, authenticate: false)
+      Faraday.new(url: base_url) do |builder|
+        builder.request :multipart if multipart
+        builder.request :url_encoded
+        builder.response :json, parser_options: { symbolize_names: false } if json
+        install_reachable_address_adapter(builder, open_timeout)
+        apply_authentication_headers(builder.headers) if authenticate
+        builder.headers["Referer"] = base_url
+        builder.headers["Origin"] = base_url
+        builder.options.timeout = timeout
+        builder.options.open_timeout = open_timeout
       end
+    end
+
+    # Net::HTTP uses one open timeout for every getaddrinfo result. A blackholed
+    # first address — IPv6 localhost in Docker — expires before IPv4 is tried.
+    def install_reachable_address_adapter(builder, open_timeout)
+      # A proxy resolves the target itself. Pinning here also replaces the
+      # HTTPS CONNECT hostname, which can break proxy DNS and host allowlists.
+      ipaddr = reachable_ipaddr(open_timeout) unless builder.proxy
+      builder.adapter :net_http do |http|
+        http.ipaddr = ipaddr if ipaddr
+      end
+    end
+
+    def reachable_ipaddr(open_timeout)
+      uri = URI(base_url)
+      return if uri.host.blank?
+
+      addresses = Addrinfo.getaddrinfo(uri.host, uri.port, nil, :STREAM)
+      return if addresses.size < 2
+
+      select_reachable_ipaddr(addresses, open_timeout)
+    rescue SocketError, SystemCallError
+      nil
+    end
+
+    def select_reachable_ipaddr(addresses, open_timeout)
+      pending = begin_address_probes(addresses)
+      return if pending.empty?
+
+      winner = nil
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + open_timeout
+      begin
+        until pending.empty? || winner
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          break if remaining <= 0
+
+          _readable, writable, erroneous = IO.select(nil, pending.map(&:first), pending.map(&:first), remaining)
+          ready = Array(writable) | Array(erroneous)
+          break if ready.empty?
+
+          ready.each do |sock|
+            winner = take_connected_ipaddr(pending, sock)
+            break if winner
+          end
+        end
+        winner
+      ensure
+        pending.each { |socket, _addr| close_probe_socket(socket) }
+      end
+    end
+
+    def begin_address_probes(addresses)
+      addresses.filter_map do |addr|
+        socket = Socket.new(addr.afamily, Socket::SOCK_STREAM, 0)
+        socket.connect_nonblock(addr, exception: false)
+        [ socket, addr ]
+      rescue SystemCallError
+        close_probe_socket(socket)
+        nil
+      end
+    end
+
+    def take_connected_ipaddr(pending, sock)
+      pair = pending.find { |candidate, _addr| candidate == sock }
+      return unless pair
+
+      socket, addr = pair
+      result = socket.connect_nonblock(addr, exception: false)
+      error = socket.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).int
+      return addr.ip_address if result != :wait_writable && error.zero?
+
+      return if result == :wait_writable && error.zero?
+
+      close_probe_socket(socket)
+      pending.delete(pair)
+      nil
+    rescue Errno::EISCONN
+      addr.ip_address
+    rescue IO::WaitWritable, Errno::EINPROGRESS, Errno::EALREADY
+      nil
+    rescue SystemCallError
+      close_probe_socket(socket)
+      pending.delete(pair)
+      nil
+    end
+
+    def close_probe_socket(socket)
+      socket&.close
+    rescue IOError, SystemCallError
+      nil
     end
 
     def handle_response(response)
