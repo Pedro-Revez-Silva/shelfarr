@@ -560,48 +560,56 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     SettingsService.set(:library_platform, "bookorbit")
     sign_in_as(@admin)
     visit admin_settings_path
-    click_button "Queue & System"
-
-    page.execute_script <<~JAVASCRIPT
-      const originalFetch = window.fetch.bind(window)
-      let explicitFailed = false
-      window.fetch = (input, options) => {
-        const url = typeof input === "string" ? input : input.url
-        if (!url.includes("/admin/settings/bulk_update")) return originalFetch(input, options)
-
-        const body = options && options.body
-        const autosave = body instanceof FormData
-          ? body.get("autosave") === "true"
-          : typeof body === "string" && body.includes("autosave=true")
-        // A debounced field save can race the explicit Save All. Reject that
-        // autosave too, or the failed explicit save is no longer the first request.
-        if (autosave || !explicitFailed) {
-          if (!autosave) {
-            explicitFailed = true
-            document.documentElement.dataset.explicitSaveFailed = "true"
-          }
-          return Promise.reject(new TypeError("simulated network failure"))
-        }
-        return originalFetch(input, options)
-      }
-    JAVASCRIPT
-
-    fill_in "Max Retries", with: "28"
     click_button "Integrations"
+    fail_first_explicit_settings_save
+
     fill_in "BookOrbit Username", with: "retry-user"
     fill_in "BookOrbit Password", with: "retry-password"
-    click_button "Save All"
+    # Change a debounced preference and press Save All in the same event turn,
+    # so the explicit save always starts before the 800ms autosave can fire.
+    page.execute_script <<~JAVASCRIPT
+      const field = document.querySelector("#settings_max_retries")
+      field.value = "28"
+      field.dispatchEvent(new Event("change", { bubbles: true }))
+      document.querySelector("input[name='commit'][form='settings-configuration']").click()
+    JAVASCRIPT
 
-    assert_selector "html[data-explicit-save-failed='true']"
-    assert_selector "form[data-settings-form-target='form']:not([inert])[aria-busy='false']", visible: :all
-    assert_equal 10, SettingsService.get(:max_retries)
-    assert_equal "", SettingsService.get(:bookorbit_username)
-    assert_field "BookOrbit Username", with: "retry-user"
-    assert_field "BookOrbit Password", with: "retry-password"
+    assert_failed_explicit_save_kept_drafts(requests: "explicit")
 
     click_button "Save All"
 
     assert_text "Settings updated successfully."
+    assert_equal %w[explicit explicit], page.evaluate_script("window.bulkUpdateRequests")
+    assert_equal 28, SettingsService.get(:max_retries)
+    assert_equal "retry-user", SettingsService.get(:bookorbit_username)
+    assert_equal "retry-password", SettingsService.get(:bookorbit_password)
+  end
+
+  test "Save All during a failing autosave keeps drafts and retries the full form" do
+    SettingsService.set(:library_platform, "bookorbit")
+    sign_in_as(@admin)
+    visit admin_settings_path
+    click_button "Integrations"
+    fail_first_explicit_settings_save(hold_autosave: true)
+
+    fill_in "BookOrbit Username", with: "retry-user"
+    fill_in "BookOrbit Password", with: "retry-password"
+    click_button "Queue & System"
+    fill_in "Max Retries", with: "28"
+    click_button "Integrations"
+
+    assert_selector "html[data-bulk-update-requests='autosave']"
+    assert_selector "form[data-settings-form-target='form'][inert][aria-busy='true']", visible: :all
+    click_button "Save All"
+    assert_equal %w[autosave], page.evaluate_script("window.bulkUpdateRequests")
+    page.execute_script("window.failHeldAutosave()")
+
+    assert_failed_explicit_save_kept_drafts(requests: "autosave,explicit")
+
+    click_button "Save All"
+
+    assert_text "Settings updated successfully."
+    assert_equal %w[autosave explicit explicit], page.evaluate_script("window.bulkUpdateRequests")
     assert_equal 28, SettingsService.get(:max_retries)
     assert_equal "retry-user", SettingsService.get(:bookorbit_username)
     assert_equal "retry-password", SettingsService.get(:bookorbit_password)
@@ -684,8 +692,6 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     sign_in_as(@admin)
 
     visit admin_settings_path
-    click_button "Queue & System"
-    fill_in "Max Retries", with: "31"
     click_button "Integrations"
 
     page.execute_script <<~JAVASCRIPT
@@ -703,7 +709,14 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
 
     assert_text "Telegram Group Authorization"
     fill_in "telegram_group_code", with: code
-    click_button "Authorize Group"
+    # The in-flight autosave makes every settings form inert, so authorize in
+    # the same event turn as the preference change, before its debounce fires.
+    page.execute_script <<~JAVASCRIPT
+      const field = document.querySelector("#settings_max_retries")
+      field.value = "31"
+      field.dispatchEvent(new Event("change", { bubbles: true }))
+      document.querySelector("#telegram_group_code").form.querySelector("input[type='submit']").click()
+    JAVASCRIPT
 
     assert_selector "html[data-telegram-autosave-started='true']"
     assert_not TelegramChatAuthorization.find_by!(chat_id: "-100999").approved?
@@ -771,5 +784,46 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     assert_text "API token revoked."
     assert_text "revoked"
     assert token.reload.revoked?
+  end
+
+  private
+
+  def fail_first_explicit_settings_save(hold_autosave: false)
+    page.execute_script <<~JAVASCRIPT
+      const originalFetch = window.fetch.bind(window)
+      const holdAutosave = #{hold_autosave}
+      let explicitFailed = false
+      window.bulkUpdateRequests = []
+      window.fetch = (input, options) => {
+        const url = typeof input === "string" ? input : input.url
+        if (!url.includes("/admin/settings/bulk_update")) return originalFetch(input, options)
+
+        // Turbo sends URLSearchParams for this URL-encoded form, not FormData.
+        const autosave = new URLSearchParams(options.body).get("autosave") === "true"
+        window.bulkUpdateRequests.push(autosave ? "autosave" : "explicit")
+        document.documentElement.dataset.bulkUpdateRequests = window.bulkUpdateRequests.join(",")
+        const failure = new TypeError("simulated network failure")
+        if (autosave && holdAutosave) {
+          return new Promise((_resolve, reject) => {
+            window.failHeldAutosave = () => reject(failure)
+          })
+        }
+        if (autosave) return Promise.reject(failure)
+        if (explicitFailed) return originalFetch(input, options)
+
+        explicitFailed = true
+        return Promise.reject(failure)
+      }
+    JAVASCRIPT
+  end
+
+  def assert_failed_explicit_save_kept_drafts(requests:)
+    assert_selector "html[data-bulk-update-requests='#{requests}']"
+    assert_text "Save failed. Review the errors and try again."
+    assert_selector "form[data-settings-form-target='form']:not([inert])[aria-busy='false']", visible: :all
+    assert_equal 10, SettingsService.get(:max_retries)
+    assert_equal "", SettingsService.get(:bookorbit_username)
+    assert_field "BookOrbit Username", with: "retry-user"
+    assert_field "BookOrbit Password", with: "retry-password"
   end
 end
