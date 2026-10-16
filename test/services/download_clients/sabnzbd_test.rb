@@ -366,6 +366,26 @@ class DownloadClients::SabnzbdTest < ActiveSupport::TestCase
     end
   end
 
+  test "torrent_info treats history post-processing with a storage path as not completed" do
+    VCR.turned_off do
+      %w[Queued QuickCheck Verifying Repairing Fetching Extracting Moving Running Checking].each do |status|
+        stub_sabnzbd_history_item(
+          nzo_id: "SABnzbd_nzo_pp_path",
+          status: status,
+          storage: "/downloads/complete/Book/Book.m4b"
+        )
+
+        info = @client.torrent_info("SABnzbd_nzo_pp_path")
+
+        assert_not_nil info, "#{status} should remain visible in history"
+        assert_not info.completed?, "#{status} history with a path must not be completed"
+        assert_not info.failed?, "#{status} history with a path must not be failed"
+        assert_equal :downloading, info.state
+        assert_equal "/downloads/complete/Book/Book.m4b", info.download_path
+      end
+    end
+  end
+
   test "torrent_info treats mid-post-processing history as not completed" do
     VCR.turned_off do
       %w[Queued QuickCheck Verifying Repairing Fetching Extracting Moving Running Checking].each do |status|

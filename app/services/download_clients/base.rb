@@ -339,5 +339,91 @@ module DownloadClients
 
       raise Error, "Torrent source metadata is malformed" unless depth.zero?
     end
+
+    private
+
+    def download_state(unit:, progress:, state:, path: nil)
+      if state.key?(:deluge)
+        deluge_download_state(state[:deluge], progress_percent(unit, progress))
+      elsif state.key?(:transmission)
+        transmission_download_state(state[:transmission], state[:error])
+      elsif state.key?(:sabnzbd_queue)
+        sabnzbd_queue_download_state(state[:sabnzbd_queue])
+      elsif state.key?(:sabnzbd_history)
+        sabnzbd_history_download_state(state[:sabnzbd_history], path)
+      else
+        :queued
+      end
+    end
+
+    def progress_percent(unit, progress)
+      value = progress.to_f
+      unit == :fraction ? value * 100 : value
+    end
+
+    def deluge_download_state(state, percent)
+      case state.to_s
+      when "Downloading", "Checking", "CheckingResumeData", "Queued", "Moving", "Allocating", "Creating"
+        :downloading
+      when "Seeding"
+        :completed
+      when "Error", "ErrorPause"
+        :failed
+      when "Paused", "PausedDownload", "PausedUpload", "Stopped"
+        percent >= 100 ? :completed : :paused
+      else
+        :queued
+      end
+    end
+
+    def transmission_download_state(status, error)
+      return :failed if error.to_i == 3
+
+      case status.to_i
+      when 0
+        :paused
+      when 1, 2
+        :queued
+      when 3
+        :queued
+      when 4
+        :downloading
+      when 5
+        :queued
+      when 6
+        :completed
+      else
+        :downloading
+      end
+    end
+
+    # SABnzbd moves a job into history as soon as the download finishes, then
+    # continues repair/unpack/move there. Those statuses (Queued, QuickCheck,
+    # Verifying, Repairing, Fetching, Extracting, Moving, Running, Checking)
+    # must not be treated as import-ready. Completed with a blank storage path
+    # is the same race: the file is not visible yet.
+    def sabnzbd_history_download_state(status, path)
+      case status&.downcase
+      when "completed"
+        path.present? ? :completed : :downloading
+      when "failed"
+        :failed
+      else
+        :downloading
+      end
+    end
+
+    def sabnzbd_queue_download_state(status)
+      case status&.downcase
+      when "downloading"
+        :downloading
+      when "paused"
+        :paused
+      when "queued", "grabbing"
+        :queued
+      else
+        :queued
+      end
+    end
   end
 end

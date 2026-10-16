@@ -190,14 +190,19 @@ module DownloadClients
     end
 
     def parse_torrent(id, data)
-      progress = normalize_progress(data["progress"])
+      path = torrent_download_path(data)
       Base::TorrentInfo.new(
         hash: id,
         name: data["name"],
-        progress: progress,
-        state: normalize_state(data["state"].to_s, progress: data["progress"].to_f),
+        progress: normalize_progress(data["progress"]),
+        state: download_state(
+          unit: :percent,
+          progress: data["progress"],
+          state: { deluge: data["state"] },
+          path: path
+        ),
         size_bytes: data["total_size"].to_f,
-        download_path: torrent_download_path(data)
+        download_path: path
       )
     end
 
@@ -214,21 +219,6 @@ module DownloadClients
 
       # Deluge reports percentages from 0 to 100, including values below 1%.
       progress.to_f.round
-    end
-
-    def normalize_state(state, progress: 0)
-      case state
-      when "Downloading", "Checking", "CheckingResumeData", "Queued", "Moving", "Allocating", "Creating"
-        :downloading
-      when "Seeding"
-        :completed
-      when "Error", "ErrorPause"
-        :failed
-      when "Paused", "PausedDownload", "PausedUpload", "Stopped"
-        progress >= 100 ? :completed : :paused
-      else
-        :queued
-      end
     end
 
     def build_add_params(options)

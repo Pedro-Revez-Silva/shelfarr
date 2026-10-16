@@ -194,13 +194,19 @@ module DownloadClients
     end
 
     def parse_queue_item(data)
+      path = data["storage"].presence || ""
       Base::TorrentInfo.new(
         hash: data["nzo_id"],
         name: data["filename"],
         progress: data["percentage"].to_i,
-        state: normalize_queue_state(data["status"]),
+        state: download_state(
+          unit: :percent,
+          progress: data["percentage"],
+          state: { sabnzbd_queue: data["status"] },
+          path: path
+        ),
         size_bytes: (data["mb"].to_f * 1024 * 1024).to_i,
-        download_path: data["storage"].presence || ""
+        download_path: path
       )
     end
 
@@ -210,39 +216,15 @@ module DownloadClients
         hash: data["nzo_id"],
         name: data["name"],
         progress: 100,
-        state: normalize_history_state(data["status"], download_path: download_path),
+        state: download_state(
+          unit: :percent,
+          progress: 100,
+          state: { sabnzbd_history: data["status"] },
+          path: download_path
+        ),
         size_bytes: data["bytes"].to_i,
         download_path: download_path
       )
-    end
-
-    def normalize_queue_state(status)
-      case status&.downcase
-      when "downloading"
-        :downloading
-      when "paused"
-        :paused
-      when "queued", "grabbing"
-        :queued
-      else
-        :queued
-      end
-    end
-
-    # SABnzbd moves a job into history as soon as the download finishes, then
-    # continues repair/unpack/move there. Those statuses (Queued, QuickCheck,
-    # Verifying, Repairing, Fetching, Extracting, Moving, Running, Checking)
-    # must not be treated as import-ready. Completed with a blank storage path
-    # is the same race: the file is not visible yet.
-    def normalize_history_state(status, download_path: "")
-      case status&.downcase
-      when "completed"
-        download_path.present? ? :completed : :downloading
-      when "failed"
-        :failed
-      else
-        :downloading
-      end
     end
   end
 end
