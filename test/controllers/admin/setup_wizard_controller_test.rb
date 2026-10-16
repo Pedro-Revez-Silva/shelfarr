@@ -185,6 +185,18 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
         }
 
         assert_equal "", SettingsService.get(:download_remote_path)
+
+        patch admin_setup_wizard_url(step: "folders"), params: {
+          wizard: {
+            audiobook_output_path: "#{local_path}/audiobooks",
+            ebook_output_path: "#{local_path}/ebooks",
+            download_local_path: "#{local_path}/",
+            download_remote_path: "/mnt/torrents"
+          }
+        }
+
+        assert_equal "", SettingsService.get(:download_remote_path)
+        assert_equal local_path, SettingsService.get(:download_local_path)
       end
     end
   end

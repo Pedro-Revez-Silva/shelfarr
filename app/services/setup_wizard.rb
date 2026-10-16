@@ -125,13 +125,13 @@ class SetupWizard
     end
 
     def save_folders(params)
-      local = params[:download_local_path].to_s.strip
-      remote = params[:download_remote_path].to_s.strip
+      local = normalize_path(params[:download_local_path]).to_s
+      remote = normalize_path(params[:download_remote_path]).to_s
       # qBittorrent is already writing inside this container, so a host-path map would be wrong.
       remote = "" if container_save_path?(local)
 
-      SettingsService.set(:audiobook_output_path, params[:audiobook_output_path].to_s.strip)
-      SettingsService.set(:ebook_output_path, params[:ebook_output_path].to_s.strip)
+      SettingsService.set(:audiobook_output_path, normalize_path(params[:audiobook_output_path]).to_s)
+      SettingsService.set(:ebook_output_path, normalize_path(params[:ebook_output_path]).to_s)
       SettingsService.set(:download_local_path, local)
       SettingsService.set(:download_remote_path, remote)
       success(notice: "Folders saved.", alert: path_warnings.presence&.join(" "))
@@ -252,8 +252,10 @@ class SetupWizard
     def normalize_path(path)
       value = path.to_s.strip.tr("\\", "/")
       return if value.blank?
+      return value if value == "/"
 
-      value == "/" ? value : value.sub(%r{/+\z}, "")
+      value = value.delete_suffix("/") while value.end_with?("/") && value.length > 1
+      value
     end
 
     def success(notice: nil, alert: nil, stay: false)
