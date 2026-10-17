@@ -1980,6 +1980,8 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title MP3 64kbps"))
     assert_equal "wma", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title WMA"))
     assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("AA Milne - Winnie the Pooh [MP3]"))
+    assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("[AA Milne] - Winnie the Pooh [MP3]"))
+    assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("(AA Milne) - Winnie the Pooh [MP3]"))
     assert_nil job.send(:infer_audiobook_extension, "https://files.test/download", result.new("AA Milne - Winnie the Pooh"))
     assert_equal "aa", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title [AA]"))
   end

@@ -40,7 +40,7 @@ class DownloadJob < ApplicationJob
   DIRECT_AUDIOBOOK_EXTENSIONS = (DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS + DIRECT_AUDIOBOOK_FILE_EXTENSIONS).freeze
   # Extensions that are also ordinary words ("Live at the Opus") and need
   # format-style context (".opus", "[opus]", "(opus)") in a title to count.
-  AMBIGUOUS_AUDIOBOOK_EXTENSIONS = %w[aa opus].freeze
+  AMBIGUOUS_AUDIOBOOK_EXTENSIONS = %w[opus].freeze
 
   def perform(download_id)
     download = Download.find_by(id: download_id)
@@ -619,6 +619,7 @@ class DownloadJob < ApplicationJob
 
   def title_format_hint?(title, extension)
     escaped = Regexp.escape(extension)
+    return title.match?(/(?:\[#{escaped}\]|\(#{escaped}\)|\.#{escaped}\b)/) if extension == "aa"
     return title.match?(/[\[\(.]#{escaped}[\]\)]?(\b|\z)/) if AMBIGUOUS_AUDIOBOOK_EXTENSIONS.include?(extension)
 
     title.match?(/\b#{escaped}\b/)
