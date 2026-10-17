@@ -16,6 +16,14 @@ module ChromeStaleNodeRetry
 end
 
 class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
+  # Capybara asks the kernel for an ephemeral port, closes that socket, then
+  # Puma binds it later. Two workers can be given the same port. The one that
+  # binds keeps it for the whole run, and the other caches the port, so every
+  # later example raises EADDRINUSE. These ports sit below the ephemeral range.
+  parallelize_setup do |worker|
+    Capybara.server_port = 4000 + worker
+  end
+
   driven_by :selenium, using: :headless_chrome, screen_size: [ 1400, 1400 ],
     options: { native_displayed: true } do |options|
     options.add_argument("--no-sandbox") if Process.uid.zero?
