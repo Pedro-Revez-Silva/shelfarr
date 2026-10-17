@@ -249,6 +249,7 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
   self.use_transactional_tests = false
 
   setup do
+    @sync_queue = "library-sync-overlap-#{SecureRandom.hex(8)}"
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
     SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
@@ -277,6 +278,7 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
     gate = Mutex.new
     inside = 0
     max_inside = 0
+    unrelated_job = nil
 
     VCR.turned_off do
       stub_request(:get, %r{/api/libraries/lib-audio/items}).to_return do
@@ -298,16 +300,21 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
       end
 
       with_claimed_syncs(release) do |process|
-        AudiobookshelfLibrarySyncJob.perform_later
+        AudiobookshelfLibrarySyncJob.set(queue: @sync_queue).perform_later
         start_ready_syncs(process)
         wait_for("the first sync to enter the library request") { !entered.empty? }
 
-        AudiobookshelfLibrarySyncJob.perform_later
+        AudiobookshelfLibrarySyncJob.set(queue: @sync_queue).perform_later
         wait_for("the second sync to block on the lease") { blocked_sync? }
 
         leap = [ AudiobookshelfLibrarySyncJob.concurrency_duration + 5.seconds, 10.minutes + 5.seconds ].max
         assert_operator leap, :>, 10.minutes
         travel leap do
+          # Other tests can leave real queue work behind during serial coverage.
+          # Claiming that work must not look like a released second sync.
+          unrelated_job = SolidQueue::Job.enqueue(
+            Turbo::Streams::BroadcastStreamJob.new("library-sync-overlap", content: "")
+          )
           key = AudiobookshelfLibrarySyncJob.new.concurrency_key
           assert SolidQueue::Semaphore.where(key: key).where(expires_at: ...Time.current).exists?
           maintenance = SolidQueue::Dispatcher::ConcurrencyMaintenance.new(5.minutes, 500)
@@ -318,6 +325,7 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
           end
           assert_equal 1, gate.synchronize { max_inside }
           assert blocked_sync?
+          assert SolidQueue::ReadyExecution.exists?(job_id: unrelated_job.id)
         end
       end
     end
@@ -330,6 +338,7 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
     release_syncs(release, 2) if defined?(release) && release
     join_sync_threads
     restore_test_adapter!
+    unrelated_job&.destroy!
     LibraryItem.where(audiobookshelf_id: "ab-keep").delete_all
   end
 
@@ -395,7 +404,7 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
   def start_ready_syncs(process)
     return false unless process
 
-    claimed = SolidQueue::ReadyExecution.claim("*", 5, process.id)
+    claimed = SolidQueue::ReadyExecution.claim(@sync_queue, 5, process.id)
     return false if claimed.empty?
 
     claimed.each do |execution|

@@ -30,7 +30,6 @@ export default class extends Controller {
     this.explicitSubmitInFlight = false;
     this.manualChangesPending = false;
     this.manualSettingKeys = new Set();
-    this.explicitSavedManualKeys = new Set();
     this.secretDrafts = new Map();
     this.deferredAction = null;
     this.historyIndex = window.history.state?.turbo?.restorationIndex;
@@ -168,11 +167,10 @@ export default class extends Controller {
     // indexer URL is mid-edit or on a hidden tab (where the browser bubble is
     // easy to miss). The form uses novalidate; type="url" remains a soft hint.
     this.inFlightSettingKeys = new Set(this.pendingSettingKeys);
-    this.autosaveKeysTarget.value = [...this.inFlightSettingKeys].join(",");
     this.pendingSettingKeys.clear();
     this.saveTimeout = null;
     this.autosaveInFlight = true;
-    this.syncManualSettingManifest();
+    this.buildPayload(this.autosaveSubmitTarget);
     this.formTarget.requestSubmit(this.autosaveSubmitTarget);
     this.setFormBusy(true);
   }
@@ -200,10 +198,9 @@ export default class extends Controller {
 
     this.clearSaveTimeout();
     if (saveAll) {
-      this.restoreSecretDrafts();
+      const { submittedKeys } = this.buildPayload(event.submitter);
       if (this.hasManualKeysTarget) {
-        this.explicitSubmittedSettingKeys = this.syncManualSettingManifest();
-        this.explicitSavedManualKeys = new Set(this.manualKeysTarget.value.split(",").filter(Boolean));
+        this.explicitSubmittedSettingKeys = submittedKeys;
       }
     }
     this.explicitInFlightSettingKeys = saveAll ? new Set(this.pendingSettingKeys) : new Set();
@@ -259,8 +256,7 @@ export default class extends Controller {
       }
       if (submitter?.name === "commit") {
         this.discardManualChanges(this.explicitSubmittedSettingKeys);
-        this.clearSecretFields(this.explicitSubmittedSettingKeys, this.explicitSavedManualKeys);
-        this.explicitSavedManualKeys = new Set();
+        this.clearSecretFields(this.explicitSubmittedSettingKeys);
       }
       this.explicitSubmittedSettingKeys.clear();
       if (this.pendingSettingKeys.size > 0) {
@@ -348,10 +344,6 @@ export default class extends Controller {
     const field = event.target;
     if (!(field instanceof HTMLElement) || !field.matches("[data-settings-form-manual-save]")) return;
     if (field !== document.activeElement) return;
-    // Password managers and spellcheck use insertReplacementText. Chrome autofill
-    // and programmatic fills dispatch input/change with no inputType. Both must
-    // stay out of manual_keys. Real edits (typing, paste, drop, IME, deletion)
-    // carry some other inputType on beforeinput and input.
     if ((event.type === "input" || event.type === "beforeinput") && !this.directUserInput(event.inputType)) return;
     // A paste event fires before the browser inserts text, and also fires when
     // the clipboard does not change the value. Wait until after insertion and
@@ -366,7 +358,19 @@ export default class extends Controller {
   }
 
   directUserInput(inputType) {
-    return Boolean(inputType) && inputType !== "insertReplacementText";
+    return Boolean(inputType);
+  }
+
+  buildPayload(submitter) {
+    if (submitter?.name === "commit") this.restoreSecretDrafts();
+    if (submitter === this.autosaveSubmitTarget && this.hasAutosaveKeysTarget) {
+      this.autosaveKeysTarget.value = [...this.inFlightSettingKeys].join(",");
+    }
+    const submittedKeys = this.syncManualSettingManifest();
+    return {
+      submittedKeys,
+      body: new FormData(this.formTarget, submitter)
+    };
   }
 
   capturePaste(field) {
@@ -450,16 +454,15 @@ export default class extends Controller {
     }
 
     this.inFlightSettingKeys = new Set(this.pendingSettingKeys);
-    this.autosaveKeysTarget.value = [...this.inFlightSettingKeys].join(",");
     this.pendingSettingKeys.clear();
     this.autosaveInFlight = true;
     this.setFormBusy(true);
-    this.syncManualSettingManifest();
+    const { body: formBody } = this.buildPayload(this.autosaveSubmitTarget);
 
     try {
       const response = await window.fetch(this.formTarget.action, {
         method: this.formTarget.method,
-        body: new FormData(this.formTarget, this.autosaveSubmitTarget),
+        body: formBody,
         credentials: "same-origin",
         headers: { Accept: "text/vnd.turbo-stream.html" }
       });
@@ -606,14 +609,14 @@ export default class extends Controller {
     }
   }
 
-  clearSecretFields(submittedKeys, savedKeys = submittedKeys) {
+  clearSecretFields(submittedKeys) {
     if (!submittedKeys || !this.hasFormTarget) return;
 
     this.formTarget.querySelectorAll('input[type="password"]').forEach((field) => {
       const key = this.settingKey(field.name);
       if (!submittedKeys.has(key)) return;
 
-      if (savedKeys.has(key) && field.value.trim() !== "") field.placeholder = "********";
+      if (field.value.trim() !== "") field.placeholder = "********";
       field.value = "";
       this.secretDrafts.delete(key);
     });
