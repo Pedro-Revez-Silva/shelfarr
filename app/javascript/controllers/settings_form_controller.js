@@ -30,7 +30,6 @@ export default class extends Controller {
     this.explicitSubmitInFlight = false;
     this.manualChangesPending = false;
     this.manualSettingKeys = new Set();
-    this.explicitSavedManualKeys = new Set();
     this.secretDrafts = new Map();
     this.deferredAction = null;
     this.historyIndex = window.history.state?.turbo?.restorationIndex;
@@ -202,7 +201,6 @@ export default class extends Controller {
       const { submittedKeys } = this.buildPayload(event.submitter);
       if (this.hasManualKeysTarget) {
         this.explicitSubmittedSettingKeys = submittedKeys;
-        this.explicitSavedManualKeys = new Set(this.manualKeysTarget.value.split(",").filter(Boolean));
       }
     }
     this.explicitInFlightSettingKeys = saveAll ? new Set(this.pendingSettingKeys) : new Set();
@@ -258,8 +256,7 @@ export default class extends Controller {
       }
       if (submitter?.name === "commit") {
         this.discardManualChanges(this.explicitSubmittedSettingKeys);
-        this.clearSecretFields(this.explicitSubmittedSettingKeys, this.explicitSavedManualKeys);
-        this.explicitSavedManualKeys = new Set();
+        this.clearSecretFields(this.explicitSubmittedSettingKeys);
       }
       this.explicitSubmittedSettingKeys.clear();
       if (this.pendingSettingKeys.size > 0) {
@@ -612,14 +609,14 @@ export default class extends Controller {
     }
   }
 
-  clearSecretFields(submittedKeys, savedKeys = submittedKeys) {
+  clearSecretFields(submittedKeys) {
     if (!submittedKeys || !this.hasFormTarget) return;
 
     this.formTarget.querySelectorAll('input[type="password"]').forEach((field) => {
       const key = this.settingKey(field.name);
       if (!submittedKeys.has(key)) return;
 
-      if (savedKeys.has(key) && field.value.trim() !== "") field.placeholder = "********";
+      if (field.value.trim() !== "") field.placeholder = "********";
       field.value = "";
       this.secretDrafts.delete(key);
     });

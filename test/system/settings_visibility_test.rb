@@ -234,6 +234,48 @@ class SettingsVisibilityTest < ApplicationSystemTestCase
     assert_no_match "posted-jackett-key", page.html
   end
 
+  test "a first autofilled api key without an input type is stored and masked on save all" do
+    SettingsService.set(:indexer_provider, "prowlarr")
+    SettingsService.set(:prowlarr_url, "http://prowlarr-save.example.test")
+    SettingsService.set(:prowlarr_api_key, "")
+    open_settings
+    assert_field "Prowlarr Api Key", with: "", placeholder: ""
+    save_all
+    assert_field "Prowlarr Api Key", with: "", placeholder: ""
+
+    page.execute_script(<<~JAVASCRIPT, find_field("Prowlarr Api Key"))
+      const field = arguments[0]
+      field.focus()
+      field.value = "first-autofilled-key"
+      field.dispatchEvent(new Event("input", { bubbles: true }))
+      field.dispatchEvent(new Event("change", { bubbles: true }))
+    JAVASCRIPT
+    save_all
+
+    submission = page.evaluate_script("window.settingsVisibilitySubmissions.at(-1)")
+    assert_not_includes submission.fetch("manualKeys"), "prowlarr_api_key"
+    assert_equal "first-autofilled-key", SettingsService.get(:prowlarr_api_key)
+    assert_field "Prowlarr Api Key", with: "", placeholder: "********"
+    assert_no_match "first-autofilled-key", page.html
+  end
+
+  test "a first prefilled api key followed by an unchanged paste is stored and masked on save all" do
+    SettingsService.set(:indexer_provider, "jackett")
+    SettingsService.set(:jackett_url, "http://jackett-save.example.test")
+    SettingsService.set(:jackett_api_key, "")
+    open_settings
+    assert_field "Jackett Api Key", with: "", placeholder: ""
+
+    paste_without_changing "Jackett Api Key", "first-prefilled-key"
+    save_all
+
+    submission = page.evaluate_script("window.settingsVisibilitySubmissions.at(-1)")
+    assert_not_includes submission.fetch("manualKeys"), "jackett_api_key"
+    assert_equal "first-prefilled-key", SettingsService.get(:jackett_api_key)
+    assert_field "Jackett Api Key", with: "", placeholder: "********"
+    assert_no_match "first-prefilled-key", page.html
+  end
+
   test "clearing a pasted api key before save keeps the stored secret" do
     SettingsService.set(:indexer_provider, "prowlarr")
     SettingsService.set(:prowlarr_url, "http://prowlarr-save.example.test")
