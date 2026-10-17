@@ -43,13 +43,16 @@ module Admin
       entries = []
       params[:settings]&.each do |key, value|
         next if SettingsService.env_managed?(key)
-        next if autosave? && !autosave_setting_keys.include?(key.to_s)
+        # A named list is the fields this autosave may write. An empty list is not a manifest.
+        next if autosave? && autosave_key_list.any? && !autosave_key_list.include?(key.to_s)
         next if autosave? && SettingsService.manual_save_setting_key?(key)
         next if manual_setting_manifest? && SettingsService.manual_save_setting_key?(key) && !manual_setting_keys.include?(key.to_s)
         next if preserve_blank_secret?(key, value)
 
         value = normalize_setting_value(key, value)
         error = validate_setting_value(key, value)
+        next if error.nil? && !stored_setting_changed?(key, value)
+
         errors << "#{SettingsService.label_for(key)}: #{error}" if error
         entries << {
           key: key,
@@ -447,8 +450,8 @@ module Admin
       params[:autosave] == "true"
     end
 
-    def autosave_setting_keys
-      @autosave_setting_keys ||= params[:autosave_keys].to_s.split(",")
+    def autosave_key_list
+      @autosave_key_list ||= params[:autosave_keys].to_s.split(",").reject(&:blank?)
     end
 
     def manual_setting_manifest?
@@ -472,12 +475,11 @@ module Admin
 
     def validate_autosave_setting_keys!
       return unless autosave?
+      return if autosave_key_list.empty?
 
       settings = params[:settings]
-      invalid = settings.nil? || autosave_setting_keys.empty? || autosave_setting_keys.any? do |key|
-        !SettingsService::DEFINITIONS.key?(key.to_sym) ||
-          SettingsService.manual_save_setting_key?(key) ||
-          !settings.key?(key)
+      invalid = settings.nil? || autosave_key_list.any? do |key|
+        !SettingsService::DEFINITIONS.key?(key.to_sym) || !settings.key?(key)
       end
       raise ArgumentError, "Invalid autosave setting manifest" if invalid
     end
@@ -767,8 +769,26 @@ module Admin
 
     def setting_value_for_validation(key)
       settings = params[:settings]
-      submitted = settings&.key?(key.to_s) && (!autosave? || autosave_setting_keys.include?(key.to_s))
+      listed = autosave_key_list.empty? || autosave_key_list.include?(key.to_s)
+      submitted = settings&.key?(key.to_s) && (!autosave? || listed)
       submitted ? settings[key.to_s] : SettingsService.get(key)
+    end
+
+    def stored_setting_changed?(key, normalized_value)
+      definition = SettingsService::DEFINITIONS[key.to_sym]
+      return true unless definition
+
+      posted = Setting.new(value_type: definition[:type])
+      posted.typed_value = normalized_value
+      stored = Setting.find_by(key: key.to_s)
+      if stored
+        # "1" and "true" are one boolean row, so a matching typed value is not a write.
+        posted.value != stored.value && posted.typed_value != stored.typed_value
+      else
+        default_setting = Setting.new(value_type: definition[:type])
+        default_setting.typed_value = definition[:default]
+        posted.value != default_setting.value && posted.typed_value != default_setting.typed_value
+      end
     end
 
     def indexer_url_validation_message(error)

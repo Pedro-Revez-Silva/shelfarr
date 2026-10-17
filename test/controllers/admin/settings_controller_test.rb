@@ -655,10 +655,13 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_no_match "https://discord.com/api/webhooks/existing", response.body
   end
 
-  test "autosave rejects manual settings in its dirty manifest" do
+  test "autosave does not write manual settings posted beside a dirty value" do
     SettingsService.set(:library_platform, "audiobookshelf")
     SettingsService.set(:bookorbit_username, "existing-user")
     SettingsService.set(:bookorbit_password, "existing-password")
+    platform_stamp = setting_row_stamp("library_platform")
+    username_stamp = setting_row_stamp("bookorbit_username")
+    password_stamp = setting_row_stamp("bookorbit_password")
 
     patch bulk_update_admin_settings_url,
       params: {
@@ -673,14 +676,15 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
-    assert_response :unprocessable_entity
-    assert_match "Invalid autosave setting manifest", response.body
-    assert_equal 10, SettingsService.get(:max_retries)
+    assert_response :no_content
+    assert_empty response.body
+    assert_equal 23, SettingsService.get(:max_retries)
     assert_equal "audiobookshelf", SettingsService.get(:library_platform)
     assert_equal "existing-user", SettingsService.get(:bookorbit_username)
     assert_equal "existing-password", SettingsService.get(:bookorbit_password)
-    assert_select "turbo-stream[target='flash']", count: 1
-    assert_select "turbo-stream[target='settings-form']", count: 0
+    assert_equal platform_stamp, Setting.find_by!(key: "library_platform").updated_at
+    assert_equal username_stamp, Setting.find_by!(key: "bookorbit_username").updated_at
+    assert_equal password_stamp, Setting.find_by!(key: "bookorbit_password").updated_at
   end
 
   test "manual manifest excludes untouched password manager values from explicit save" do
@@ -751,14 +755,173 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 10, SettingsService.get(:max_retries)
   end
 
-  test "autosave requires a valid nonempty dirty manifest" do
+  test "autosave with an empty key list writes the dirty value and leaves an unchanged field" do
+    SettingsService.set(:download_check_interval, 60)
+    interval_stamp = setting_row_stamp("download_check_interval")
+
     patch bulk_update_admin_settings_url,
-      params: { autosave: "true", autosave_keys: "", settings: { max_retries: "24" } },
+      params: {
+        autosave: "true",
+        autosave_keys: "",
+        settings: { max_retries: "24", download_check_interval: "60" }
+      },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
-    assert_response :unprocessable_entity
-    assert_match "Invalid autosave setting manifest", response.body
-    assert_equal 10, SettingsService.get(:max_retries)
+    assert_response :no_content
+    assert_equal 24, SettingsService.get(:max_retries)
+    assert_equal 60, SettingsService.get(:download_check_interval)
+    assert_equal interval_stamp, Setting.find_by!(key: "download_check_interval").updated_at
+  end
+
+  test "issues 87 and 91 autosave below download settings keeps the edit and does not revert other keys" do
+    SettingsService.set(:audiobook_preferred_formats, [ "m4b" ])
+    SettingsService.set(:ebook_preferred_formats, [ "epub" ])
+    SettingsService.set(:audiobook_prefer_single_file, true)
+    SettingsService.set(:preferred_download_types, %w[usenet direct torrent])
+    SettingsService.set(:audiobookshelf_library_sync_interval, 7200)
+    SettingsService.set(:rate_limit_delay, 9)
+    unchanged_keys = %w[
+      ebook_preferred_formats
+      audiobook_prefer_single_file
+      preferred_download_types
+      audiobookshelf_library_sync_interval
+      rate_limit_delay
+    ]
+    stamps = unchanged_keys.to_h { |key| [ key, setting_row_stamp(key) ] }
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "",
+        settings: {
+          audiobook_preferred_formats: "m4b, mp3",
+          ebook_preferred_formats: "epub",
+          audiobook_prefer_single_file: "true",
+          preferred_download_types: %w[usenet direct torrent],
+          audiobookshelf_library_sync_interval: "7200"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :no_content
+    assert_equal %w[m4b mp3], SettingsService.get(:audiobook_preferred_formats)
+    assert_equal %w[epub], SettingsService.get(:ebook_preferred_formats)
+    assert_equal true, SettingsService.get(:audiobook_prefer_single_file)
+    assert_equal %w[usenet direct torrent], SettingsService.preferred_download_types
+    assert_equal 7200, SettingsService.get(:audiobookshelf_library_sync_interval)
+    assert_equal 9, SettingsService.get(:rate_limit_delay)
+    unchanged_keys.each do |key|
+      assert_equal stamps[key], Setting.find_by!(key: key).updated_at, "#{key} was written"
+    end
+  end
+
+  test "issue 385 does not write a posted field the user did not change" do
+    SettingsService.set(:download_check_interval, 90)
+    SettingsService.set(:bookorbit_username, "reader@example.com")
+    SettingsService.set(:bookorbit_password, "stored-password")
+    interval_stamp = setting_row_stamp("download_check_interval")
+    username_stamp = setting_row_stamp("bookorbit_username")
+    password_stamp = setting_row_stamp("bookorbit_password")
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "download_check_interval",
+        settings: {
+          download_check_interval: "90",
+          bookorbit_username: "reader@example.com"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :no_content
+    assert_equal 90, SettingsService.get(:download_check_interval)
+    assert_equal "reader@example.com", SettingsService.get(:bookorbit_username)
+    assert_equal interval_stamp, Setting.find_by!(key: "download_check_interval").updated_at
+    assert_equal username_stamp, Setting.find_by!(key: "bookorbit_username").updated_at
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        bookorbit_username: "reader@example.com",
+        bookorbit_password: "stored-password"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "reader@example.com", SettingsService.get(:bookorbit_username)
+    assert_equal "stored-password", SettingsService.get(:bookorbit_password)
+    assert_equal username_stamp, Setting.find_by!(key: "bookorbit_username").updated_at
+    assert_equal password_stamp, Setting.find_by!(key: "bookorbit_password").updated_at
+  end
+
+  test "issue 588 blank prowlarr api key on autosave does not wipe the stored key" do
+    SettingsService.set(:prowlarr_api_key, "stored-prowlarr-key")
+    stamp = setting_row_stamp("prowlarr_api_key")
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "",
+        settings: { prowlarr_api_key: "" }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :no_content
+    assert_equal "stored-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_equal stamp, Setting.find_by!(key: "prowlarr_api_key").updated_at
+  end
+
+  test "missing manifest autosave writes only max retries and leaves the manual key and blank secret" do
+    SettingsService.set(:max_retries, 10)
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, false)
+    SettingsService.set(:prowlarr_api_key, "stored-prowlarr-key")
+    SettingsService.set(:download_check_interval, 60)
+    manual_stamp = setting_row_stamp("allow_nonatomic_nfs_directory_publication")
+    secret_stamp = setting_row_stamp("prowlarr_api_key")
+    interval_stamp = setting_row_stamp("download_check_interval")
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "",
+        settings: {
+          max_retries: "24",
+          allow_nonatomic_nfs_directory_publication: "true",
+          prowlarr_api_key: "",
+          download_check_interval: "60"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :no_content
+    assert_equal 24, SettingsService.get(:max_retries)
+    assert_equal false, SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+    assert_equal "stored-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_equal 60, SettingsService.get(:download_check_interval)
+    assert_equal manual_stamp, Setting.find_by!(key: "allow_nonatomic_nfs_directory_publication").updated_at
+    assert_equal secret_stamp, Setting.find_by!(key: "prowlarr_api_key").updated_at
+    assert_equal interval_stamp, Setting.find_by!(key: "download_check_interval").updated_at
+  end
+
+  test "explicit save writes the dirty retry count and the manual key" do
+    SettingsService.set(:max_retries, 10)
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, false)
+    SettingsService.set(:prowlarr_api_key, "stored-prowlarr-key")
+    secret_stamp = setting_row_stamp("prowlarr_api_key")
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        max_retries: "24",
+        allow_nonatomic_nfs_directory_publication: "true",
+        prowlarr_api_key: ""
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal 24, SettingsService.get(:max_retries)
+    assert_equal true, SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+    assert_equal "stored-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_equal secret_stamp, Setting.find_by!(key: "prowlarr_api_key").updated_at
   end
 
   test "index renders env managed settings as read-only and masks secret values" do
@@ -2158,12 +2321,14 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
   test "successful autosave does not replace the settings form" do
     SettingsService.set(:rate_limit_delay, 5)
+    SettingsService.set(:download_check_interval, 60)
+    interval_stamp = setting_row_stamp("download_check_interval")
 
     patch bulk_update_admin_settings_url,
       params: {
         autosave: "true",
-        autosave_keys: "max_retries",
-        settings: { max_retries: "24", rate_limit_delay: "2" }
+        autosave_keys: "max_retries,download_check_interval",
+        settings: { max_retries: "24", rate_limit_delay: "2", download_check_interval: "60" }
       },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
@@ -2172,6 +2337,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_empty response.body
     assert_equal 24, SettingsService.get(:max_retries)
     assert_equal 5, SettingsService.get(:rate_limit_delay)
+    assert_equal 60, SettingsService.get(:download_check_interval)
+    assert_equal interval_stamp, Setting.find_by!(key: "download_check_interval").updated_at
   end
 
   test "side effect failure reports a warning without retrying persisted settings" do
@@ -2775,5 +2942,11 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       assert_equal "lib-unavailable-delivery", SettingsService.get(:audiobookshelf_audiobook_library_id)
       assert_equal "lib-audio,lib-unavailable-scan", SettingsService.get(:audiobookshelf_audiobook_scan_library_ids)
     end
+  end
+
+  def setting_row_stamp(key)
+    row = Setting.find_by!(key: key.to_s)
+    row.update_columns(updated_at: Time.zone.parse("2020-01-01 00:00:00"))
+    row.reload.updated_at
   end
 end
