@@ -520,6 +520,50 @@ class OwnedMediaBackupJobTest < ActiveJob::TestCase
     end
   end
 
+  test "audio extensions include the planner list and prefer m4b over m4a" do
+    planner = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
+    extensions = OwnedMediaBackupJob::AUDIO_EXTENSIONS
+
+    assert_includes planner, "m4b"
+    assert_equal planner.map { |extension| ".#{extension}" }.sort, extensions.sort
+    assert_operator extensions.index(".m4b"), :<, extensions.index(".m4a")
+    assert_operator extensions.index(".m4a"), :<, extensions.index(".mp3")
+  end
+
+  test "prefers a single m4b when an m4a is also present" do
+    Dir.mktmpdir("libation-import") do |root|
+      book_dir = File.join(root, "Book")
+      FileUtils.mkdir_p(book_dir)
+      m4b = File.join(book_dir, "A Title.m4b")
+      m4a = File.join(book_dir, "A Title.m4a")
+      File.binwrite(m4b, "primary")
+      File.binwrite(m4a, "alternate")
+
+      job = OwnedMediaBackupJob.new
+      with_env("SHELFARR_LIBATION_IMPORT_ROOT" => root) do
+        assert_equal Pathname(m4b), job.send(:select_audio_artifact, [ "/data/Book" ])
+      end
+    end
+  end
+
+  test "prefers playable legacy output over retained Audible originals" do
+    %w[m4a mp3].each do |extension|
+      Dir.mktmpdir("libation-import") do |root|
+        book_dir = File.join(root, "Book")
+        FileUtils.mkdir_p(book_dir)
+        primary = File.join(book_dir, "A Title.#{extension}")
+        File.binwrite(primary, "primary output")
+        %w[aa aax aaxc].each do |original|
+          File.binwrite(File.join(book_dir, "A Title.#{original}"), "retained original")
+        end
+
+        with_env("SHELFARR_LIBATION_IMPORT_ROOT" => root) do
+          assert_equal Pathname(primary), OwnedMediaBackupJob.new.send(:select_audio_artifact, [ "/data/Book" ])
+        end
+      end
+    end
+  end
+
   test "rejects ambiguous multipart audio and requires companion one-file output" do
     Dir.mktmpdir("libation-import") do |root|
       book_dir = File.join(root, "Book")

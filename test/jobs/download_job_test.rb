@@ -1461,6 +1461,29 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "custom provider direct WAV download reaches publication" do
+    skip "ffprobe not available" unless system("ffprobe", "-version", out: File::NULL, err: File::NULL)
+
+    AudiobookProbeService.reset_probe!
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_audiobook_download(output_path: dir)
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: "https://files.test/book.wav" }.to_json)
+        stub_request(:get, "https://files.test/book.wav")
+          .to_return(status: 200, body: valid_wav_audio, headers: { "Content-Type" => "audio/wav" })
+
+        DownloadJob.perform_now(@custom_provider_audiobook_download.id)
+      end
+
+      assert @custom_provider_audiobook_download.reload.completed?
+      assert @custom_provider_audiobook_request.reload.completed?
+      assert_equal valid_wav_audio, File.binread(@custom_provider_audiobook_download.download_path)
+    end
+  end
+
   test "Anna's Archive audiobook archive downloads into audiobook output path" do
     Dir.mktmpdir do |dir|
       audio_data = valid_mp3_audio
@@ -1955,6 +1978,57 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal "opus", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title [OPUS]"))
     assert_equal "opus", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title .opus"))
     assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title MP3 64kbps"))
+    assert_equal "wma", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title WMA"))
+    assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("AA Milne - Winnie the Pooh [MP3]"))
+    assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("[AA Milne] - Winnie the Pooh [MP3]"))
+    assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("(AA Milne) - Winnie the Pooh [MP3]"))
+    assert_nil job.send(:infer_audiobook_extension, "https://files.test/download", result.new("AA Milne - Winnie the Pooh"))
+    assert_equal "aa", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title [AA]"))
+  end
+
+  test "direct audiobook file extensions are the planner audio extensions" do
+    planner = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
+
+    assert_includes planner, "m4b"
+    assert_equal planner, DownloadJob::DIRECT_AUDIOBOOK_FILE_EXTENSIONS
+    assert_includes DownloadJob::DIRECT_AUDIOBOOK_FILE_EXTENSIONS, "m4b"
+  end
+
+  test "new audio formats still require a successful audio probe" do
+    Tempfile.create([ "audio-probe", ".wav" ]) do |file|
+      file.binmode
+      file.write(valid_wav_audio)
+      file.flush
+
+      [ false, RemoteResult::Failed.new(RuntimeError.new("probe failed")) ].each do |result|
+        AudiobookProbeService.probe = ->(_path) { result }
+        assert_not DownloadJob.new.send(:valid_audiobook_signature?, file.path)
+      end
+    end
+  end
+
+  test "new audio formats reject playlists that refer to another audio file" do
+    skip "ffprobe not available" unless system("ffprobe", "-version", out: File::NULL, err: File::NULL)
+
+    AudiobookProbeService.reset_probe!
+    Dir.mktmpdir do |directory|
+      audio = File.join(directory, "book.wav")
+      playlist = File.join(directory, "playlist.wav")
+      File.binwrite(audio, valid_wav_audio)
+      File.write(playlist, "ffconcat version 1.0\nfile book.wav\nduration 0.256\n" + ("# padding\n" * 256))
+
+      assert DownloadJob.new.send(:valid_audiobook_signature?, audio)
+      assert_not DownloadJob.new.send(:valid_audiobook_signature?, playlist)
+    end
+  end
+
+  test "a mixed archive can contain MP3 and newly supported WAV audio" do
+    Dir.mktmpdir do |directory|
+      File.binwrite(File.join(directory, "chapter.mp3"), valid_mp3_audio)
+      File.binwrite(File.join(directory, "chapter.wav"), valid_wav_audio)
+
+      assert_nothing_raised { DownloadJob.new.send(:verify_extracted_audiobook!, directory) }
+    end
   end
 
   test "rejects shallow ADIF AAC signatures as audiobook content" do
@@ -2817,6 +2891,13 @@ class DownloadJobTest < ActiveJob::TestCase
     mpeg_frame_header = "\xFF\xFB\x90\x64".b
     frames = 3.times.map { mpeg_frame_header + SecureRandom.random_bytes(413) }.join
     id3_header + frames
+  end
+
+  def valid_wav_audio
+    samples = "\0".b * 4_096
+    "RIFF".b + [ 36 + samples.bytesize ].pack("V") + "WAVEfmt " +
+      [ 16, 1, 1, 8_000, 16_000, 2, 16 ].pack("VvvVVvv") +
+      "data" + [ samples.bytesize ].pack("V") + samples
   end
 
   def valid_png_image

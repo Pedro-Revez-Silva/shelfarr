@@ -16,7 +16,11 @@ class OwnedMediaBackupJob < ApplicationJob
   JOB_CONCURRENCY_LEASE = 30.minutes
   COMPANION_DATA_ROOT = Pathname("/data").freeze
   DEFAULT_IMPORT_ROOT = "/imports/libation"
-  AUDIO_EXTENSIONS = %w[.m4b .m4a .mp3].freeze
+  PREFERRED_AUDIO_EXTENSIONS = %w[m4b m4a mp3].freeze
+  AUDIO_EXTENSIONS = (
+    (PREFERRED_AUDIO_EXTENSIONS & AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS) +
+    (AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS - PREFERRED_AUDIO_EXTENSIONS)
+  ).map { |extension| ".#{extension}" }.freeze
   LIBATION_COLLISION_SUFFIX = / \(([1-9][0-9]{0,8})\)\z/
   MAX_DIRECTORY_ENTRIES = 10_000
 

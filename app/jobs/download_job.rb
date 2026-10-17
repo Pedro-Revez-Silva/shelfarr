@@ -30,7 +30,8 @@ class DownloadJob < ApplicationJob
   DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL = 30.seconds
   DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
-  DIRECT_AUDIOBOOK_FILE_EXTENSIONS = %w[m4b mp3 m4a aac flac ogg opus].freeze
+  DIRECT_AUDIOBOOK_FILE_EXTENSIONS = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
+  DIRECT_AUDIOBOOK_PROBE_FORMATS = %w[aa aiff asf caf mov wav].freeze
   DIRECT_AUDIOBOOK_IMAGE_EXTENSIONS = %w[jpg jpeg png webp].freeze
   DIRECT_AUDIOBOOK_TEXT_EXTENSIONS = %w[txt].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_FILE_EXTENSIONS = (
@@ -618,6 +619,7 @@ class DownloadJob < ApplicationJob
 
   def title_format_hint?(title, extension)
     escaped = Regexp.escape(extension)
+    return title.match?(/(?:\[#{escaped}\]|\(#{escaped}\)|\.#{escaped}\b)/) if extension == "aa"
     return title.match?(/[\[\(.]#{escaped}[\]\)]?(\b|\z)/) if AMBIGUOUS_AUDIOBOOK_EXTENSIONS.include?(extension)
 
     title.match?(/\b#{escaped}\b/)
@@ -1128,9 +1130,13 @@ class DownloadJob < ApplicationJob
     when "ogg", "opus"
       valid_ogg_stream?(file, file_size)
     else
-      false
+      return false unless DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(extension.to_s.downcase)
+
+      # Probe other planner formats as audio containers, never as playlists
+      # that only refer to audio stored somewhere else.
+      return AudiobookProbeService.valid?(file, format_whitelist: DIRECT_AUDIOBOOK_PROBE_FORMATS) == true
     end
-    structurally_valid && AudiobookProbeService.valid?(file.path) == true
+    structurally_valid && AudiobookProbeService.valid?(file) == true
   end
 
   def valid_mp3_stream?(file, head, file_size)

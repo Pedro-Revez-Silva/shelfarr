@@ -121,7 +121,12 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "h1", "Upload Book"
     assert_select "form[action='#{uploads_path}']"
-    assert_select "input[type='file'][name='files[]'][multiple][accept='.m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3']"
+    assert_select "input[type='file'][name='files[]'][multiple]" do |inputs|
+      accepted_types = inputs.first["accept"].split(",")
+      Upload::SUPPORTED_EXTENSIONS.each do |extension|
+        assert_includes accepted_types, ".#{extension}"
+      end
+    end
   end
 
   test "new shows own request upload context when uploads are enabled" do

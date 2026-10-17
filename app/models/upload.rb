@@ -14,7 +14,10 @@ class Upload < ApplicationRecord
 
   enum :book_type, { audiobook: 0, ebook: 1, comicbook: 2 }
 
-  AUDIOBOOK_EXTENSIONS = %w[m4a m4b mp3 zip rar].freeze
+  AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip rar].freeze
+  AUDIOBOOK_EXTENSIONS = (
+    AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS + AUDIOBOOK_ARCHIVE_EXTENSIONS
+  ).freeze
   EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   COMICBOOK_EXTENSIONS = %w[cbz cbr].freeze
   SUPPORTED_EXTENSIONS = (AUDIOBOOK_EXTENSIONS + EBOOK_EXTENSIONS + COMICBOOK_EXTENSIONS).freeze
@@ -63,7 +66,7 @@ class Upload < ApplicationRecord
   end
 
   def archive_file?
-    %w[zip rar].include?(file_extension)
+    AUDIOBOOK_ARCHIVE_EXTENSIONS.include?(file_extension)
   end
 
   def infer_book_type

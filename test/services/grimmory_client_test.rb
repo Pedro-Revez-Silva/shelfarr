@@ -22,6 +22,19 @@ class GrimmoryClientTest < ActiveSupport::TestCase
     assert_equal "Grimmory", LibraryPlatformClient.display_name
   end
 
+  test "audiobook formats keep planner extensions and the audiobook token" do
+    planner = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
+    formats = GrimmoryClient::AUDIOBOOK_FORMATS
+
+    assert_includes planner, "m4b"
+    assert_includes formats, "m4b"
+    assert_equal planner, formats - %w[audiobook]
+    assert_equal "audiobook", formats.last
+    assert_equal "audiobook", GrimmoryClient.send(:infer_media_type, [ "AUDIOBOOK" ])
+    assert_equal "audiobook", GrimmoryClient.send(:infer_media_type, [ ".m4b" ])
+    assert_equal "grimmory", GrimmoryClient.send(:infer_media_type, [ "AUDIOBOOK", "EPUB" ])
+  end
+
   test "libraries logs in and returns Grimmory libraries" do
     VCR.turned_off do
       stub_login

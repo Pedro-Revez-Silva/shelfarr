@@ -3,6 +3,17 @@
 require "test_helper"
 
 class UploadTest < ActiveSupport::TestCase
+  test "audiobook extensions are the planner list plus zip and rar" do
+    planner = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
+
+    assert_includes planner, "m4b"
+    assert_equal planner + %w[zip rar], Upload::AUDIOBOOK_EXTENSIONS
+    assert_includes Upload::AUDIOBOOK_EXTENSIONS, "m4b"
+    assert Upload.new(original_filename: "book.flac").audiobook_file?
+    assert Upload.new(original_filename: "book.zip").archive_file?
+    assert_not Upload.new(original_filename: "book.epub").audiobook_file?
+  end
+
   test "manual matching creates the inferred format with only corrected metadata" do
     %w[m4b epub cbz].zip(%w[audiobook ebook comicbook]).each do |extension, book_type|
       upload = Upload.create!(user: users(:two), original_filename: "unrecognized.#{extension}", status: :failed)
