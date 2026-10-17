@@ -31,10 +31,10 @@ module Rubocop
           private
 
           def investigate_operator_assignment(node)
-            lhs, rhs = *node
+            lhs = node.children.first
             return unless lhs&.ivasgn_type?
 
-            investigate(node, rhs)
+            investigate(node, node.children.last)
           end
 
           def investigate(assignment, value)

@@ -72,6 +72,24 @@ class UnkeyedFaradayMemoCopTest < ActiveSupport::TestCase
     assert_empty offenses(report)
   end
 
+  test "ordinary class instance variable arithmetic does not crash the cop" do
+    report, status = lint(<<~SOURCE)
+      class LintMemoClient
+        @request_count = 0
+
+        class << self
+          def count_request
+            @request_count += 1
+            @request_count -= 1
+          end
+        end
+      end
+    SOURCE
+
+    assert status.success?, report.inspect
+    assert_empty offenses(report)
+  end
+
   private
 
   def lint(source)
