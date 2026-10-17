@@ -36,9 +36,10 @@ module Shelfarr
       def stop!
         return false unless @owner_pid == Process.pid
 
-        # Puma's cluster shutdown hook can run inside a signal trap, where
-        # Ruby forbids Mutex#synchronize. Do cleanup on an ordinary thread.
-        Thread.new { stop_supervisor }.value
+        # Puma runs after_stopped inside the SIGTERM trap. Mutex and
+        # Thread#join there either raise or fail to schedule the joined
+        # thread, so the master never leaves the trap.
+        trap_context? ? stop_from_trap : stop_supervisor
       end
 
       def running?
@@ -113,26 +114,88 @@ module Shelfarr
 
       def monitor_supervisor
         loop do
-          finished = @mutex.synchronize do
+          exited_pid = nil
+          stop_puma = false
+          @mutex.synchronize do
             begin
               exited = Process.waitpid(@pid, Process::WNOHANG)
             rescue Errno::ECHILD
               exited = @pid
             end
             if exited
-              remove_pidfile(exited)
+              exited_pid = exited
               @pid = nil
-              unless @stopping
-                log("Solid Queue supervisor exited; stopping Puma")
-                Process.kill(:INT, @owner_pid)
-              end
-              true
+              stop_puma = !@stopping
             end
           end
-          break if finished
+          if exited_pid
+            # Logging and signaling Puma while holding the mutex deadlocks
+            # shutdown: stop! needs that mutex to escalate to KILL, and the
+            # logger can block.
+            remove_pidfile(exited_pid)
+            if stop_puma
+              log("Solid Queue supervisor exited; stopping Puma")
+              Process.kill(:INT, @owner_pid)
+            end
+            break
+          end
 
           sleep 0.1
         end
+      rescue Errno::ESRCH
+        nil
+      end
+
+      def stop_from_trap
+        @stopping = true
+        pid = wait_for_supervisor_pid
+        return true unless pid
+
+        signal_pid(pid, :INT)
+        return true if wait_pid(pid, SHUTDOWN_TIMEOUT)
+
+        signal_pid(-pid, :KILL)
+        wait_pid(pid, 1)
+        true
+      end
+
+      def wait_for_supervisor_pid
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+        loop do
+          pid = @pid
+          return pid if pid
+
+          @stopping = true
+          return nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+          sleep 0.01
+        end
+      end
+
+      def wait_pid(pid, timeout)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+        loop do
+          begin
+            return true if Process.waitpid(pid, Process::WNOHANG)
+          rescue Errno::ECHILD
+            return true
+          end
+          return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+          sleep 0.05
+        end
+      end
+
+      def signal_pid(pid, signal)
+        Process.kill(signal, pid)
+      rescue Errno::ESRCH, Errno::EPERM
+        nil
+      end
+
+      def trap_context?
+        Mutex.new.synchronize { false }
+      rescue ThreadError
+        true
       end
 
       def signal_supervisor(signal)

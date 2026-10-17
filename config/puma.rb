@@ -5,6 +5,12 @@ port ENV.fetch("PORT", 3000)
 
 plugin :tmp_restart
 
+# Default is to wait forever for in-flight requests. A thread that never
+# returns then pins hot restart and SIGTERM, so the master stays alive after
+# the queue supervisor has been told to exit. Bound the drain; Puma still
+# gives threads a short grace period before killing them.
+force_shutdown_after 30
+
 # Start Solid Queue once in the Puma master, after worker forks.
 # Do not use `plugin :solid_queue` here: that plugin forks after Puma's thread
 # pool is already running, which can leave solid_queue_processes empty and

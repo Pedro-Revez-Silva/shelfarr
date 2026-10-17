@@ -14,6 +14,7 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     source = Rails.root.join("config/puma.rb").read
 
     assert_includes source, "Shelfarr::SolidQueueInPuma"
+    assert_includes source, "force_shutdown_after 30"
     refute_match(/^\s*plugin\s+:solid_queue\b/, source)
   end
 
