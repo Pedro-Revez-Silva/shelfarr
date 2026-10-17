@@ -117,7 +117,6 @@ class User < ApplicationRecord
 
   def generate_backup_codes!
     codes = BACKUP_CODE_COUNT.times.map { SecureRandom.hex(4).upcase }
-    # Store hashed codes
     hashed_codes = codes.map { |code| Digest::SHA256.hexdigest(code) }
     update!(backup_codes: hashed_codes.join(","))
     codes
@@ -169,7 +168,6 @@ class User < ApplicationRecord
     deleted_at.present?
   end
 
-  # OIDC/SSO methods
   def oidc_user?
     oidc_uid.present? && oidc_provider.present?
   end
@@ -204,7 +202,6 @@ class User < ApplicationRecord
       return user if user
     end
 
-    # Auto-create user if enabled
     return nil unless SettingsService.get(:oidc_auto_create_users, default: false)
 
     email = info["email"].to_s.strip.downcase
@@ -221,7 +218,6 @@ class User < ApplicationRecord
       counter += 1
     end
 
-    # Get name from OIDC claims
     name = info["name"].presence || info["preferred_username"].presence || username
 
     default_role = SettingsService.get(:oidc_default_role, default: "user")

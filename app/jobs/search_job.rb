@@ -384,7 +384,6 @@ class SearchJob < ApplicationJob
       )
     end
 
-    # Tag results with source
     results.map do |r|
       { result: r, source: SearchResult::SOURCE_ANNA_ARCHIVE }
     end
@@ -596,7 +595,6 @@ class SearchJob < ApplicationJob
   end
 
   def save_anna_archive_result(request, result)
-    # Convert file size string to bytes for sorting
     size_bytes = parse_size_to_bytes(result.file_size)
 
     # Use find_or_create_by to handle duplicate MD5s in Anna's Archive results

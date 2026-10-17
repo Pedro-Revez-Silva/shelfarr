@@ -60,7 +60,7 @@ class OpenLibraryClientTest < ActiveSupport::TestCase
 
   test "work returns WorkDetails" do
     with_cassette("open_library/work_details") do
-      work = OpenLibraryClient.work("OL45804W") # Harry Potter and the Philosopher's Stone
+      work = OpenLibraryClient.work("OL45804W")
 
       assert_kind_of OpenLibraryClient::WorkDetails, work
       assert_equal "OL45804W", work.work_id
@@ -78,7 +78,7 @@ class OpenLibraryClientTest < ActiveSupport::TestCase
 
   test "edition returns EditionDetails" do
     with_cassette("open_library/edition_details") do
-      edition = OpenLibraryClient.edition("OL22856696M") # A Harry Potter edition
+      edition = OpenLibraryClient.edition("OL22856696M")
 
       assert_kind_of OpenLibraryClient::EditionDetails, edition
       assert edition.title.present?

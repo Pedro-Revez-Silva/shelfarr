@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 module DownloadClients
-  # SABnzbd API client for usenet downloads https://sabnzbd.org/wiki/advanced/api
   class Sabnzbd < Base
     SAFE_NZO_ID = /\A[A-Za-z0-9][A-Za-z0-9._:-]{0,254}\z/
 
@@ -48,7 +47,6 @@ module DownloadClients
     end
 
     def torrent_info(nzo_id)
-      # Check queue first, then history
       queue_item = find_in_queue(nzo_id)
       return queue_item if queue_item
 

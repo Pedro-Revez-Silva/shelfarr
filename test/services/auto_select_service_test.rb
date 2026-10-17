@@ -43,7 +43,6 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
   end
 
   test "skips when no downloadable results" do
-    # Result without download link or magnet
     create_search_result(seeders: 10)
 
     selection = AutoSelectService.call(@request)
@@ -79,7 +78,6 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
       category: "auto_select"
     )
 
-    # Usenet result has no seeders but download_url with nzb
     result = create_search_result(
       seeders: nil,
       download_url: "http://example.com/download.nzb"
@@ -177,7 +175,6 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     selection = AutoSelectService.call(@request)
 
     assert selection.success?
-    # best_first scope orders by preferred type then seeders desc
     assert_equal high_seeder, selection.search_result
   end
 

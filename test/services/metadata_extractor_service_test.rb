@@ -125,7 +125,6 @@ class MetadataExtractorServiceTest < ActiveSupport::TestCase
 
     result = MetadataExtractorService.extract(epub_path)
 
-    # Should return empty result without crashing
     assert_not result.success
   ensure
     File.delete(epub_path) if epub_path && File.exist?(epub_path)

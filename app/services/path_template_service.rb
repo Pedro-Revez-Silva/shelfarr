@@ -167,8 +167,8 @@ class PathTemplateService
         .gsub(/[<>:"\/\\|?*]/, "")
         .gsub(/[\x00-\x1f]/, "")
         .strip
-        .gsub(/\s+/, " ")           # Collapse whitespace
-        .truncate(100, omission: "") # Limit length
+        .gsub(/\s+/, " ")
+        .truncate(100, omission: "")
     end
 
     def sanitize_filename_template(template)
@@ -450,10 +450,10 @@ class PathTemplateService
       result
         .gsub(/\s*\(\s*\)\s*/, " ")
         .gsub(/\s*\[\s*\]\s*/, " ")
-        .gsub(/\s*-\s*-\s*/, " - ")     # Collapse double dashes
+        .gsub(/\s*-\s*-\s*/, " - ")
         .gsub(/\s*-\s*$/, "")
         .gsub(/^\s*-\s*/, "")
-        .gsub(/\s+/, " ")               # Collapse whitespace
+        .gsub(/\s+/, " ")
         .strip
     end
 

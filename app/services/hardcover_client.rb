@@ -5,7 +5,6 @@ require "securerandom"
 require "time"
 require "timeout"
 
-# Client for interacting with the Hardcover GraphQL API https://hardcover.app/account/api
 class HardcoverClient
   BASE_URL = "https://api.hardcover.app/v1/graphql"
   RATE_LIMIT_CACHE_VERSION = 1

@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 module DownloadClients
-  # NZBGet JSON-RPC API client for usenet downloads https://nzbget.net/api
   class Nzbget < Base
     # Add an NZB by URL (method named add_torrent for interface compatibility with Base)
     def add_torrent(url, options = {})
@@ -11,17 +10,17 @@ module DownloadClients
       # DupeKey, DupeScore, DupeMode, AutoCategory, PPParameters.
       # Content may be either an NZB payload or a URL for NZBGet to fetch.
       result = rpc_call("append", [
-        nzb_filename(options[:nzbname]),  # Filename
+        nzb_filename(options[:nzbname]),
         url,
-        config.category.presence || "",   # Category
-        0,                                # Priority
-        false,                            # AddToTop
-        false,                            # AddPaused
-        "",                               # DupeKey
-        0,                                # DupeScore
-        "SCORE",                          # DupeMode
-        false,                            # AutoCategory
-        []                                # PPParameters
+        config.category.presence || "",
+        0,
+        false,
+        false,
+        "",
+        0,
+        "SCORE",
+        false,
+        []
       ], sensitive_url: options[:sensitive_url])
 
       if result.is_a?(Integer) && result.positive?
@@ -46,7 +45,6 @@ module DownloadClients
     end
 
     def torrent_info(nzbget_id)
-      # Check queue first, then history
       queue_item = find_in_queue(nzbget_id)
       return queue_item if queue_item
 

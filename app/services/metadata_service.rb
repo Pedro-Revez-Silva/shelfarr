@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-# Unified service for fetching book metadata from configured sources
-# Orchestrates Hardcover, Google Books, and OpenLibrary based on settings
 class MetadataService
   class Error < StandardError; end
 

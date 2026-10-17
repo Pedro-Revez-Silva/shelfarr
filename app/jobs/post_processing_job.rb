@@ -770,7 +770,6 @@ class PostProcessingJob < ApplicationJob
         }
       end
     else
-      # Import single file with renamed filename based on template
       ensure_real_import_directory!(destination)
       import_renamed_file(source, destination, book, language: language)
       source_snapshot = @import_source_file_snapshot
@@ -1596,7 +1595,6 @@ class PostProcessingJob < ApplicationJob
       end
     end
 
-    # 4. Client download_path + basename
     if client_download_path.present?
       candidates << {
         strategy: "client_download_path",
@@ -1706,8 +1704,8 @@ class PostProcessingJob < ApplicationJob
       .gsub(/[<>:"\/\\|?*]/, "")
       .gsub(/[\x00-\x1f]/, "")
       .strip
-      .gsub(/\s+/, " ")           # Collapse whitespace
-      .truncate(100, omission: "") # Limit length
+      .gsub(/\s+/, " ")
+      .truncate(100, omission: "")
   end
 
   def trigger_library_scan(book)

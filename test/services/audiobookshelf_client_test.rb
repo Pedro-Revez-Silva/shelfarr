@@ -469,7 +469,6 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
-  # SSL error handling tests
   test "test_connection reports an SSL error" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries")

@@ -95,7 +95,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       open_library_work_id: "OL_ATTENTION_FILTER_TEST"
     )
 
-    # Create an active request without attention needed
     active_request = Request.create!(
       book: active_book,
       user: @user,
@@ -1827,7 +1826,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
-  # Retry tests
   test "retry requires admin" do
     post retry_request_path(@failed_request)
 
@@ -1903,7 +1901,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  # Download tests
   test "download requires authentication" do
     sign_out
     book = books(:audiobook_acquired)
@@ -2889,7 +2886,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_out
     sign_in_as(@admin)
 
-    # 1. Test auto-discovery (all settings blank)
     SettingsService.set(:audiobookshelf_audiobook_library_id, "")
     SettingsService.set(:audiobookshelf_ebook_library_id, "")
     SettingsService.set(:audiobookshelf_comicbook_library_id, "")
@@ -2916,7 +2912,6 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, matches[book.id].size
     assert_equal "Discovery Book", matches[book.id].first.item.title
 
-    # 2. Test comic fallback to ebook library when no comic library configured
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
     SettingsService.set(:audiobookshelf_ebook_library_id, "lib-ebook")
     SettingsService.set(:audiobookshelf_comicbook_library_id, "")

@@ -24,7 +24,6 @@ module ShelfarrEncryptionKeys
     Rails.root.join("storage", ".encryption_keys")
   end
 
-  # The keys in a file written by docker-entrypoint or by this initializer.
   def read(path)
     return {} unless File.exist?(path)
 

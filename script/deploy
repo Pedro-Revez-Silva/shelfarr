@@ -1,6 +1,4 @@
 #!/bin/bash
-# Deploy script for Shelfarr
-# Usage: ./script/deploy
 
 set -e
 
@@ -8,7 +6,6 @@ VERSION=$(cat VERSION 2>/dev/null || echo "unknown")
 
 echo "Deploying Shelfarr (v${VERSION})"
 
-# Build and restart
 docker-compose up -d --build
 
 echo "Deployment complete!"

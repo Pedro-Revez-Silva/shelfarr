@@ -93,7 +93,7 @@ class RequestsController < ApplicationController
       delivery_ids = settings[:audiobookshelf_comicbook_library_id].presence ||
                      settings[:audiobookshelf_ebook_library_id]
       delivery_ids + settings[:audiobookshelf_comicbook_scan_library_ids]
-    else # ebook
+    else
       settings[:audiobookshelf_ebook_library_id] + settings[:audiobookshelf_ebook_scan_library_ids]
     end
 

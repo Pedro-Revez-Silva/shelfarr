@@ -11,7 +11,7 @@ select:-webkit-autofill,
 select:-webkit-autofill:hover,
 select:-webkit-autofill:focus,
 select:-webkit-autofill:active {
-  -webkit-box-shadow: 0 0 0 1000px #1f2937 inset !important; /* bg-gray-800 */
+  -webkit-box-shadow: 0 0 0 1000px #1f2937 inset !important;
   -webkit-text-fill-color: #ffffff !important;
   caret-color: #ffffff !important;
   transition: background-color 5000s ease-in-out 0s;

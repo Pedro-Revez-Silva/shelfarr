@@ -135,10 +135,8 @@
       qbittorrentFields.classList.toggle('hidden', type !== 'qbittorrent');
     }
 
-    // Run on load to set initial state
     toggleFields();
 
-    // Listen for changes
     clientTypeSelect.addEventListener('change', toggleFields);
   }
 

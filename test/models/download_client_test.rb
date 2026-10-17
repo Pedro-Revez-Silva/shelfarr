@@ -198,7 +198,6 @@ class DownloadClientTest < ActiveSupport::TestCase
     )
     client.reload
     assert_equal "secret123", client.password
-    # The raw value in the database should be encrypted
     assert_not_equal "secret123", client.password_before_type_cast
   end
 

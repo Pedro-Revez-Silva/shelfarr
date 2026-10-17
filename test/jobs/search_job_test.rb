@@ -799,7 +799,6 @@ class SearchJobTest < ActiveJob::TestCase
     SearchJob.perform_now(@request.id)
     @request.reload
 
-    # Status should not change
     assert @request.searching?
   end
 
@@ -944,7 +943,6 @@ class SearchJobTest < ActiveJob::TestCase
     SettingsService.set(:indexer_search_scope, "strict")
 
     VCR.turned_off do
-      # Structured book search with scene code
       stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           query = req.uri.query_values["query"]
@@ -1001,7 +999,6 @@ class SearchJobTest < ActiveJob::TestCase
           body: [].to_json
         )
 
-      # All attempts with "DE" return empty
       with_hint_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           req.uri.query_values["type"] == "search" &&
@@ -1013,7 +1010,6 @@ class SearchJobTest < ActiveJob::TestCase
           body: [].to_json
         )
 
-      # Hint-free attempt finds the result
       hint_free_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
         .with do |req|
           req.uri.query_values["type"] == "search" &&

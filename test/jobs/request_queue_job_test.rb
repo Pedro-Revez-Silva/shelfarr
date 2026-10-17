@@ -58,7 +58,6 @@ class RequestQueueJobTest < ActiveJob::TestCase
     processable = Request.processable.limit(batch_size)
     assert_equal batch_size, processable.count
 
-    # Verify the job runs without error
     assert_nothing_raised { RequestQueueJob.perform_now }
   end
 

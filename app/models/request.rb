@@ -297,7 +297,6 @@ class Request < ApplicationRecord
     attempt_next_candidate!(failure_reason: reason)
   end
 
-  # Cancel/fail request permanently. Also cancels any active downloads and removes them from download clients
   def cancel!(allow_direct_recovery: false)
     cancelled_download_ids = with_acquisition_transition_lock do
       raise CancellationBlockedError, upload_cancellation_blocked_message if upload_cancellation_blocked?
@@ -397,7 +396,6 @@ class Request < ApplicationRecord
     end
   end
 
-  # Cancel a specific download and remove from download client
   def cancel_download(download)
     return unless download.queued? || download.downloading? || download.paused?
 

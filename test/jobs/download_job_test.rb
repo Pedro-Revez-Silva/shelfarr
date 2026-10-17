@@ -67,7 +67,6 @@ class DownloadJobTest < ActiveJob::TestCase
 
       assert @download.downloading?
       assert_equal @client.id.to_s, @download.download_client_id
-      # Hash is computed from the test torrent file
       assert @download.external_id.present?, "external_id should be set"
       assert_match(/^[a-f0-9]{40}$/, @download.external_id, "external_id should be a SHA1 hash")
     end
@@ -488,7 +487,6 @@ class DownloadJobTest < ActiveJob::TestCase
     DownloadJob.perform_now(@download.id)
     @download.reload
 
-    # Status should not change
     assert @download.downloading?
   end
 

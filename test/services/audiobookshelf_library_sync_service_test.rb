@@ -566,11 +566,9 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
     )
 
     VCR.turned_off do
-      # lib-audio fails (non-200)
       stub_request(:get, %r{localhost:13378/api/libraries/lib-audio/items})
         .to_return(status: 500)
 
-      # lib-ebook succeeds
       stub_request(:get, %r{localhost:13378/api/libraries/lib-ebook/items})
         .with(query: hash_including("limit" => "500", "page" => "0"))
         .to_return(
@@ -589,7 +587,6 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       # The existing item in lib-audio should NOT be pruned because the sync failed!
       assert LibraryItem.exists?(audiobookshelf_id: "ab-existing")
 
-      # The item in lib-ebook should be successfully synced
       assert LibraryItem.exists?(audiobookshelf_id: "ab-2")
     end
   end
@@ -603,7 +600,6 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       author: "Author",
       synced_at: 1.day.ago
     )
-    # Also create one for a configured library to ensure it's not deleted if it's synced
     LibraryItem.create!(
       library_platform: "audiobookshelf",
       library_id: "lib-audio",
@@ -638,10 +634,8 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
       result = AudiobookshelfLibrarySyncService.new.sync!
       assert result.success?
 
-      # ab-old should be pruned since lib-old is no longer configured
       assert_not LibraryItem.exists?(audiobookshelf_id: "ab-old")
 
-      # ab-existing should be kept
       assert LibraryItem.exists?(audiobookshelf_id: "ab-existing")
     end
   end

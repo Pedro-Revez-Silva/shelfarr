@@ -94,7 +94,6 @@ if [ "$(id -u)" = "0" ]; then
   fi
 fi
 
-# Ensure storage directory is usable by the rails user
 ensure_storage_path_permissions "/rails/storage"
 
 # =============================================================================
@@ -111,7 +110,6 @@ if [ -z "$RAILS_MASTER_KEY" ] && [ -z "$SECRET_KEY_BASE" ]; then
     export SECRET_KEY_BASE=$(cat "$SECRET_FILE")
     echo "Using existing auto-generated secret key"
   else
-    # Generate new key and persist it
     export SECRET_KEY_BASE=$(openssl rand -hex 64)
     echo "$SECRET_KEY_BASE" > "$SECRET_FILE"
     chmod 600 "$SECRET_FILE"
@@ -129,11 +127,9 @@ ENCRYPTION_FILE="/rails/storage/.encryption_keys"
 
 if [ -z "$ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY" ]; then
   if [ -f "$ENCRYPTION_FILE" ]; then
-    # Reuse existing encryption keys
     source "$ENCRYPTION_FILE"
     echo "Using existing auto-generated encryption keys"
   else
-    # Generate new encryption keys and persist them
     export ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$(openssl rand -base64 32)
     export ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$(openssl rand -base64 32)
     export ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$(openssl rand -base64 32)
@@ -154,7 +150,6 @@ fi
 # If running the rails server then create or migrate existing database
 
 if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
-  # Run database setup as rails user if we're root
   if [ "$(id -u)" = "0" ]; then
     gosu rails ./bin/rails db:prepare
     gosu rails ./bin/rails runner 'SettingsService.seed_defaults!'
