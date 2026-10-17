@@ -854,10 +854,85 @@ class ProwlarrClientTest < ActiveSupport::TestCase
 
       corrected = stub_request(:get, %r{\Ahttp://prowlarr\.example:9696/api/v1/search})
         .with(headers: { "X-Api-Key" => "new-key" })
+        .to_raise(Faraday::ConnectionFailed.new("connection reset by peer"))
+        .then
         .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
 
       assert_empty ProwlarrClient.search("atomic habits")
-      assert_requested corrected, times: 1
+      assert_requested corrected, times: 2
+    end
+  end
+
+  test "#504 failed idempotent Prowlarr GET retries with the key stored at the retry" do
+    SettingsService.set(:prowlarr_url, "http://prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "baked-key")
+    ProwlarrClient.reset_connection!
+    baked = ProwlarrClient.send(:connection)
+    assert_equal "baked-key", baked.headers["X-Api-Key"]
+
+    VCR.turned_off do
+      stub_request(:get, %r{\Ahttp://prowlarr\.example:9696/api/v1/search})
+        .with(headers: { "X-Api-Key" => "baked-key" })
+        .to_raise(Faraday::ConnectionFailed.new("connection reset by peer"))
+      retry_request = stub_request(:get, %r{\Ahttp://prowlarr\.example:9696/api/v1/search})
+        .with(headers: { "X-Api-Key" => "retry-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      with_second_prowlarr_connection_key("retry-key") do
+        assert_empty ProwlarrClient.search("issue 504")
+      end
+
+      assert_not_same baked, ProwlarrClient.instance_variable_get(:@connection)
+      assert_equal "retry-key", ProwlarrClient.instance_variable_get(:@connection).headers["X-Api-Key"]
+      assert_requested :get, %r{api/v1/search}, headers: { "X-Api-Key" => "baked-key" }, times: 1
+      assert_requested retry_request, times: 1
+    end
+  end
+
+  test "#504 failed idempotent Prowlarr GET does not reuse the client that failed" do
+    SettingsService.set(:prowlarr_url, "http://prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "stored-key")
+    ProwlarrClient.reset_connection!
+    baked = ProwlarrClient.send(:connection)
+
+    VCR.turned_off do
+      stub_request(:get, %r{\Ahttp://prowlarr\.example:9696/api/v1/search})
+        .with(headers: { "X-Api-Key" => "stored-key" })
+        .to_raise(Faraday::TimeoutError.new("execution expired"))
+        .then
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert_empty ProwlarrClient.search("issue 504")
+      assert_not_same baked, ProwlarrClient.instance_variable_get(:@connection)
+      assert_equal "stored-key", ProwlarrClient.instance_variable_get(:@connection).headers["X-Api-Key"]
+      assert_requested :get, %r{api/v1/search}, headers: { "X-Api-Key" => "stored-key" }, times: 2
+    end
+  end
+
+  test "#358 search uses the saved Prowlarr URL without reset_all_connections!" do
+    SettingsService.set(:prowlarr_url, "http://old-prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "same-key")
+    ProwlarrClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://old-prowlarr.example:9696/api/v1/indexer")
+        .with(headers: { "X-Api-Key" => "same-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert ProwlarrClient.test_connection
+      memo = ProwlarrClient.instance_variable_get(:@connection)
+      assert_not_nil memo
+
+      SettingsService.set(:prowlarr_url, "http://new-prowlarr.example:9696")
+      assert_same memo, ProwlarrClient.instance_variable_get(:@connection)
+
+      search = stub_request(:get, %r{\Ahttp://new-prowlarr\.example:9696/api/v1/search})
+        .with(headers: { "X-Api-Key" => "same-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert_empty ProwlarrClient.search("atomic habits")
+      assert_requested search, times: 1
+      assert_not_requested :get, %r{old-prowlarr\.example:9696/api/v1/search}
     end
   end
 
@@ -919,6 +994,21 @@ class ProwlarrClientTest < ActiveSupport::TestCase
   end
 
   private
+
+  def with_second_prowlarr_connection_key(key)
+    singleton = ProwlarrClient.singleton_class
+    original = singleton.instance_method(:connection)
+    calls = 0
+    singleton.define_method(:connection) do
+      calls += 1
+      SettingsService.set(:prowlarr_api_key, key) if calls > 1
+      original.bind_call(self)
+    end
+    yield
+  ensure
+    singleton.define_method(:connection, original)
+    singleton.send(:private, :connection)
+  end
 
   def stub_indexers(*indexers)
     stub_request(:get, %r{localhost:9696/api/v1/indexer})

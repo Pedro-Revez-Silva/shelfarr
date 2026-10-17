@@ -105,7 +105,6 @@ class SetupWizard
       SettingsService.set(:indexer_provider, "prowlarr")
       SettingsService.set(:prowlarr_url, url)
       SettingsService.set(:prowlarr_api_key, api_key)
-      IndexerClient.reset_all_connections!
       success(notice: "Prowlarr connected.")
     rescue IndexerClients::Base::AuthenticationError
       failure("Prowlarr rejected the API key. Copy it from Prowlarr under Settings > General.")

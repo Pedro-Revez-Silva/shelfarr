@@ -89,12 +89,15 @@ class TelegramPollingJobTest < ActiveJob::TestCase
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
 
     begin
-      assert_enqueued_with(job: TelegramPollingJob) do
-        TelegramPollingJob.ensure_running!
-      end
+      # Both calls must remain inside the one-second scheduling reservation.
+      freeze_time do
+        assert_enqueued_with(job: TelegramPollingJob) do
+          TelegramPollingJob.ensure_running!
+        end
 
-      assert_no_enqueued_jobs(only: TelegramPollingJob) do
-        TelegramPollingJob.ensure_running!
+        assert_no_enqueued_jobs(only: TelegramPollingJob) do
+          TelegramPollingJob.ensure_running!
+        end
       end
     ensure
       Rails.cache = original_cache
