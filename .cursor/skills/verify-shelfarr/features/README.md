@@ -45,3 +45,4 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior. 
 - [Search](./search.md) covers the empty search page.
 - [Requests](./requests.md) covers the empty requests list.
 - [Library](./library.md) covers the empty library.
+- [Settings](./settings.md) covers changing one field and the stored row.

@@ -43,13 +43,15 @@ module Admin
       entries = []
       params[:settings]&.each do |key, value|
         next if SettingsService.env_managed?(key)
-        next if autosave? && !autosave_setting_keys.include?(key.to_s)
+        next if autosave? && autosave_manifest? && !autosave_setting_keys.include?(key.to_s)
         next if autosave? && SettingsService.manual_save_setting_key?(key)
         next if manual_setting_manifest? && SettingsService.manual_save_setting_key?(key) && !manual_setting_keys.include?(key.to_s)
         next if preserve_blank_secret?(key, value)
 
         value = normalize_setting_value(key, value)
         error = validate_setting_value(key, value)
+        next if error.nil? && !stored_setting_changed?(key, value)
+
         errors << "#{SettingsService.label_for(key)}: #{error}" if error
         entries << {
           key: key,
@@ -447,6 +449,10 @@ module Admin
       params[:autosave] == "true"
     end
 
+    def autosave_manifest?
+      params.key?(:autosave_keys)
+    end
+
     def autosave_setting_keys
       @autosave_setting_keys ||= params[:autosave_keys].to_s.split(",")
     end
@@ -472,6 +478,8 @@ module Admin
 
     def validate_autosave_setting_keys!
       return unless autosave?
+      # An omitted list means beforeinput never recorded one. The stored row is the check.
+      return unless autosave_manifest?
 
       settings = params[:settings]
       invalid = settings.nil? || autosave_setting_keys.empty? || autosave_setting_keys.any? do |key|
@@ -767,8 +775,24 @@ module Admin
 
     def setting_value_for_validation(key)
       settings = params[:settings]
-      submitted = settings&.key?(key.to_s) && (!autosave? || autosave_setting_keys.include?(key.to_s))
+      submitted = settings&.key?(key.to_s) && (!autosave? || !autosave_manifest? || autosave_setting_keys.include?(key.to_s))
       submitted ? settings[key.to_s] : SettingsService.get(key)
+    end
+
+    def stored_setting_changed?(key, normalized_value)
+      definition = SettingsService::DEFINITIONS[key.to_sym]
+      return true unless definition
+
+      posted = Setting.new(value_type: definition[:type])
+      posted.typed_value = normalized_value
+      stored = Setting.find_by(key: key.to_s)
+      if stored
+        posted.value != stored.value && posted.typed_value != stored.typed_value
+      else
+        default_setting = Setting.new(value_type: definition[:type])
+        default_setting.typed_value = definition[:default]
+        posted.value != default_setting.value && posted.typed_value != default_setting.typed_value
+      end
     end
 
     def indexer_url_validation_message(error)
