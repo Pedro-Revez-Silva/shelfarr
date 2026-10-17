@@ -1,6 +1,38 @@
 # frozen_string_literal: true
 
 class AudiobookshelfLibrarySyncJob < ApplicationJob
+  module ConcurrencyLease
+    KEYS = %w[
+      AudiobookshelfLibrarySyncJob/audiobookshelf-library-sync
+      HardcoverSyncSchedulerJob/hardcover-sync-scheduler
+    ].freeze
+
+    module ExcludeClaimed
+      def expired
+        relation = super
+        keys = AudiobookshelfLibrarySyncJob::ConcurrencyLease.claimed_keys
+        keys.empty? ? relation : relation.where.not(key: keys)
+      end
+    end
+
+    class << self
+      def install!
+        return if @installed
+
+        SolidQueue::Semaphore.singleton_class.prepend(ExcludeClaimed)
+        @installed = true
+      end
+
+      def claimed_keys
+        SolidQueue::ClaimedExecution.joins(:job)
+          .where(solid_queue_jobs: { concurrency_key: KEYS })
+          .distinct
+          .pluck("solid_queue_jobs.concurrency_key")
+      end
+    end
+  end
+  ConcurrencyLease.install!
+
   queue_as :default
   limits_concurrency to: 1,
     key: "audiobookshelf-library-sync",
