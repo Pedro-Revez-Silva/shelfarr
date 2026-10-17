@@ -173,6 +173,47 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     end
   end
 
+  test "a claimed scheduler lease survives concurrency maintenance past 10 minutes" do
+    SolidQueue::Record.establish_connection(:queue)
+    key = HardcoverSyncSchedulerJob.new.concurrency_key
+    assert_includes AudiobookshelfLibrarySyncJob::ConcurrencyLease::KEYS, key
+    assert_includes AudiobookshelfLibrarySyncJob::ConcurrencyLease::KEYS, AudiobookshelfLibrarySyncJob.new.concurrency_key
+
+    process = SolidQueue::Process.register(
+      kind: "Worker",
+      name: "scheduler-lease-#{SecureRandom.hex(4)}",
+      pid: Process.pid,
+      hostname: "test",
+      metadata: {}
+    )
+    active_job = HardcoverSyncSchedulerJob.new
+    job = SolidQueue::Job.create!(
+      active_job_id: active_job.job_id,
+      class_name: "HardcoverSyncSchedulerJob",
+      queue_name: "default",
+      arguments: active_job.serialize,
+      concurrency_key: key,
+      scheduled_at: Time.current
+    )
+    SolidQueue::ClaimedExecution.create!(job: job, process: process)
+    SolidQueue::Semaphore.where(key: key).delete_all
+    SolidQueue::Semaphore.create!(key: key, value: 0, expires_at: Time.current)
+
+    leap = [ HardcoverSyncSchedulerJob.concurrency_duration + 5.seconds, 10.minutes + 5.seconds ].max
+    assert_operator leap, :>, 10.minutes
+    travel leap do
+      SolidQueue::Dispatcher::ConcurrencyMaintenance.new(5.minutes, 500).send(:expire_semaphores)
+      assert SolidQueue::Semaphore.exists?(key: key)
+    end
+  ensure
+    if defined?(job) && job
+      SolidQueue::ClaimedExecution.where(job_id: job.id).delete_all
+      job.delete
+    end
+    process&.destroy
+    SolidQueue::Semaphore.where(key: key).delete_all if defined?(key) && key
+  end
+
   test "post-scan refresh is a no-op when no platform is configured" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobookshelf_api_key, "")
@@ -201,5 +242,156 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
   def with_post_scan_refresh_cache
     Rails.cache.clear
     yield
+  end
+end
+
+class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
+  self.use_transactional_tests = false
+
+  setup do
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    SettingsService.set(:audiobookshelf_url, "http://localhost:13378")
+    SettingsService.set(:audiobookshelf_api_key, "test-api-key")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    SettingsService.set(:audiobookshelf_library_sync_interval, 3600)
+  end
+
+  teardown do
+    Rails.cache = @original_cache
+  end
+
+  test "a second sync does not enter the library request after the concurrency lease" do
+    LibraryItem.where(audiobookshelf_id: "ab-keep").delete_all
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-keep",
+      title: "Kept Title",
+      missing: false
+    )
+    entered = Queue.new
+    release = Queue.new
+    gate = Mutex.new
+    inside = 0
+    max_inside = 0
+
+    VCR.turned_off do
+      stub_request(:get, %r{/api/libraries/lib-audio/items}).to_return do
+        gate.synchronize do
+          inside += 1
+          max_inside = inside if inside > max_inside
+        end
+        entered << true
+        release.pop
+        gate.synchronize { inside -= 1 }
+        {
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "results" => [ { "id" => "ab-keep", "title" => "Kept Title", "author" => "Keeper" } ],
+            "total" => 1
+          }.to_json
+        }
+      end
+
+      with_sync_worker(release) do
+        AudiobookshelfLibrarySyncJob.perform_later
+        wait_for("the first sync to enter the library request") { !entered.empty? }
+
+        AudiobookshelfLibrarySyncJob.perform_later
+        wait_for("the second sync to block on the lease") { blocked_sync? }
+
+        leap = [ AudiobookshelfLibrarySyncJob.concurrency_duration + 5.seconds, 10.minutes + 5.seconds ].max
+        assert_operator leap, :>, 10.minutes
+        travel leap do
+          key = AudiobookshelfLibrarySyncJob.new.concurrency_key
+          assert SolidQueue::Semaphore.where(key: key).where(expires_at: ...Time.current).exists?
+          maintenance = SolidQueue::Dispatcher::ConcurrencyMaintenance.new(5.minutes, 500)
+          maintenance.send(:expire_semaphores)
+          maintenance.send(:unblock_blocked_executions)
+          sleep 0.6
+          assert_equal 1, gate.synchronize { max_inside }
+          assert blocked_sync?
+        end
+
+        2.times { release << true }
+        wait_for("both syncs to finish") { unfinished_syncs? }
+      end
+    end
+
+    assert_equal 1, gate.synchronize { max_inside }
+    assert_equal "Kept Title", LibraryItem.find_by(audiobookshelf_id: "ab-keep")&.title
+  ensure
+    2.times { release << true } if defined?(release) && release
+    LibraryItem.where(audiobookshelf_id: "ab-keep").delete_all
+  end
+
+  private
+
+  def with_sync_worker(release)
+    original_adapter = ActiveJob::Base.queue_adapter
+    original_job_adapter = AudiobookshelfLibrarySyncJob.queue_adapter
+    original_config = SolidQueue::Record.connection_db_config
+    SolidQueue::Record.establish_connection(:queue)
+    ActiveJob::Base.queue_adapter = :solid_queue
+    AudiobookshelfLibrarySyncJob.disable_test_adapter
+    AudiobookshelfLibrarySyncJob.queue_adapter = :solid_queue
+    clear_sync_queue!
+    worker = SolidQueue::Worker.new(queues: "*", threads: 2, polling_interval: 0.05)
+    worker.start
+    yield
+  ensure
+    2.times { release << true }
+    worker&.stop
+    clear_sync_queue!
+    AudiobookshelfLibrarySyncJob.queue_adapter = original_job_adapter if original_job_adapter
+    AudiobookshelfLibrarySyncJob.disable_test_adapter
+    ActiveJob::Base.queue_adapter = original_adapter if original_adapter
+    SolidQueue::Record.establish_connection(original_config) if original_config
+  end
+
+  def clear_sync_queue!
+    SolidQueue::Job.uncached do
+      jobs = SolidQueue::Job.where(class_name: "AudiobookshelfLibrarySyncJob")
+      ids = jobs.ids
+      if ids.any?
+        SolidQueue::BlockedExecution.where(job_id: ids).delete_all
+        SolidQueue::ClaimedExecution.where(job_id: ids).delete_all
+        SolidQueue::ReadyExecution.where(job_id: ids).delete_all
+        SolidQueue::FailedExecution.where(job_id: ids).delete_all
+        SolidQueue::ScheduledExecution.where(job_id: ids).delete_all
+        jobs.delete_all
+      end
+      SolidQueue::Semaphore.where(key: AudiobookshelfLibrarySyncJob.new.concurrency_key).delete_all
+    end
+  end
+
+  def blocked_sync?
+    SolidQueue::BlockedExecution.uncached do
+      SolidQueue::BlockedExecution.joins(:job)
+        .where(solid_queue_jobs: { class_name: "AudiobookshelfLibrarySyncJob" })
+        .exists?
+    end
+  end
+
+  def unfinished_syncs?
+    SolidQueue::Job.uncached do
+      SolidQueue::Job.where(class_name: "AudiobookshelfLibrarySyncJob", finished_at: nil).none?
+    end
+  end
+
+  def wait_for(description)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+    until yield
+      detail = SolidQueue::FailedExecution.joins(:job)
+        .where(solid_queue_jobs: { class_name: "AudiobookshelfLibrarySyncJob" })
+        .pluck(:error)
+        .join("\n")
+      raise "timed out waiting for #{description}\n#{detail}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.02
+    end
   end
 end

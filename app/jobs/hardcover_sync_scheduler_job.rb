@@ -5,6 +5,7 @@
 # whose backoff elapsed, and removes abandoned previews.
 class HardcoverSyncSchedulerJob < ApplicationJob
   queue_as :default
+  AudiobookshelfLibrarySyncJob::ConcurrencyLease.install!
   limits_concurrency to: 1, key: "hardcover-sync-scheduler", duration: 10.minutes, on_conflict: :discard
 
   MAX_SUBSCRIPTIONS_PER_RUN = 50
