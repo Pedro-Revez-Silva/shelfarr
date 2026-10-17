@@ -2571,7 +2571,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "bulk_update resets prowlarr connection when api key changes" do
+  test "bulk_update keeps the Prowlarr memo and the next request uses the saved api key" do
     SettingsService.set(:prowlarr_url, "http://localhost:9696")
     SettingsService.set(:prowlarr_api_key, "old-key")
 
@@ -2583,8 +2583,18 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       settings: { prowlarr_api_key: "new-key" }
     }
 
-    new_connection = ProwlarrClient.instance_variable_get(:@connection)
-    assert_nil new_connection, "Connection should be reset after prowlarr settings change"
+    assert_same old_connection, ProwlarrClient.instance_variable_get(:@connection)
+    assert_equal "new-key", SettingsService.get(:prowlarr_api_key)
+
+    VCR.turned_off do
+      corrected = stub_request(:get, %r{\Ahttp://localhost:9696/api/v1/search})
+        .with(headers: { "X-Api-Key" => "new-key" })
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert_empty ProwlarrClient.search("atomic habits")
+      assert_requested corrected, times: 1
+      assert_not_requested :get, %r{\Ahttp://localhost:9696/api/v1/search}, headers: { "X-Api-Key" => "old-key" }
+    end
   end
 
   test "test_flaresolverr fails when not configured" do

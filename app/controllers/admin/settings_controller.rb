@@ -534,7 +534,6 @@ module Admin
         run_service_health_check("audiobookshelf")
       end
       if changed_keys.any? { |k| indexer_setting_key?(k) }
-        IndexerClient.reset_all_connections!
         run_service_health_check("indexer")
       end
       if changed_keys.any? { |k| k == "flaresolverr_url" }

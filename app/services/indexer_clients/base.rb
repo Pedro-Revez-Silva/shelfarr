@@ -81,6 +81,8 @@ module IndexerClients
           end
 
           retried = true
+          # The failed client still holds its socket and the settings it was built with.
+          @connection = nil
           retry
         end
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
