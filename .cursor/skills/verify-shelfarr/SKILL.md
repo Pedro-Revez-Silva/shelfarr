@@ -116,6 +116,10 @@ puts [row.id, row.user.username, row.user.role, row.ip_address, row.user_agent].
 
 Other pages are in the feature map. Stay inside this same browser session. Do not open a second sign-in.
 
+For uploads, follow [Uploads](features/uploads.md). Verify the formats shown by
+the running form, including folder filtering, rather than keeping a separate
+extension list in the verification instructions.
+
 ## Evidence
 
 Save proof under `$EVIDENCE`, which sits outside the worktree.
