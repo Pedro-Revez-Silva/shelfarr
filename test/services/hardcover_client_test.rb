@@ -578,7 +578,7 @@ class HardcoverClientTest < ActiveSupport::TestCase
       stub_request(:post, HardcoverClient::BASE_URL)
         .to_return(status: 401, body: '{"error": "Unauthorized"}')
 
-      assert_not HardcoverClient.test_connection
+      assert RemoteResult.failed?(HardcoverClient.test_connection)
     end
   end
 

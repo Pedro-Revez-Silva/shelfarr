@@ -29,7 +29,8 @@ class ConnectionErrorClassifier
     def with_localhost_hint(message, url)
       text = message.to_s
       return text if text.include?(LOCALHOST_HINT)
-      return text unless loopback_url?(url)
+      loopback = loopback_url?(url)
+      return text if RemoteResult.failed?(loopback) || !loopback
       return text unless CONNECTION_FAILURE_MESSAGES.any? { |known| text.include?(known) }
 
       text = "#{text}." unless text.end_with?(".")
@@ -52,8 +53,8 @@ class ConnectionErrorClassifier
     def loopback_url?(url)
       host = URI.parse(url.to_s).host.to_s.downcase.delete_prefix("[").delete_suffix("]")
       LOOPBACK_HOSTS.include?(host)
-    rescue URI::InvalidURIError
-      false
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
     end
 
     def reason_for_status(status)

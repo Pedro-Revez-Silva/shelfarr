@@ -55,10 +55,10 @@ class ZLibraryClient
     end
 
     def test_connection
-      test_connection!
+      RemoteResult::Ok.new(test_connection!)
     rescue Error => e
       Rails.logger.error "[ZLibraryClient] Connection test failed: #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def test_connection!
@@ -360,8 +360,8 @@ class ZLibraryClient
 
       target.fragment = nil
       target.to_s
-    rescue URI::InvalidURIError, URI::InvalidComponentError
-      nil
+    rescue URI::InvalidURIError, URI::InvalidComponentError => error
+      RemoteResult::Failed.new(error)
     end
 
     def allowed_login_redirect_host?(host)
@@ -386,7 +386,7 @@ class ZLibraryClient
     end
 
     def safe_login_hostname?(host)
-      return true if ip_address_host?(host)
+      return true if ip_address_host?(host) == true
 
       host.match?(/\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\z/)
     end
@@ -420,7 +420,7 @@ class ZLibraryClient
 
     def registrable_domain(host)
       normalized = normalized_host(host)
-      return if normalized.blank? || ip_address_host?(normalized)
+      return if normalized.blank? || ip_address_host?(normalized) == true
 
       PublicSuffix.domain(normalized, default_rule: nil)
     end
@@ -428,8 +428,8 @@ class ZLibraryClient
     def ip_address_host?(host)
       IPAddr.new(host)
       true
-    rescue IPAddr::InvalidAddressError, IPAddr::AddressFamilyError, ArgumentError
-      false
+    rescue IPAddr::InvalidAddressError, IPAddr::AddressFamilyError, ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
 
     def store_login_cookies!(cookies, response, request_url)
@@ -535,8 +535,8 @@ class ZLibraryClient
         "#{cookie[:name]}=#{cookie[:value]}"
       end
       pairs.join("; ").presence
-    rescue URI::InvalidURIError
-      nil
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
     end
 
     def login_cookie_matches?(cookie, uri)
@@ -615,8 +615,8 @@ class ZLibraryClient
       return false if body.lstrip.start_with?("<")
 
       parse_json_body(response).is_a?(Hash)
-    rescue JSON::ParserError
-      false
+    rescue JSON::ParserError => error
+      RemoteResult::Failed.new(error)
     end
 
     def bot_wall_response?(response)
@@ -982,8 +982,8 @@ class ZLibraryClient
 
       data = parse_json_body(response)
       data["success"] == 0 && data["error"].to_s.match?(/Some errors? occurr?ed/i)
-    rescue JSON::ParserError
-      false
+    rescue JSON::ParserError => error
+      RemoteResult::Failed.new(error)
     end
 
     def eapi_html_response?(response)

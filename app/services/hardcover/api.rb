@@ -382,14 +382,14 @@ module Hardcover
 
       def parse_date(value)
         Date.iso8601(value.to_s.first(10)) if value.present?
-      rescue ArgumentError
-        nil
+      rescue ArgumentError => error
+        RemoteResult::Failed.new(error)
       end
 
       def parse_time(value)
         Time.zone.parse(value.to_s) if value.present?
-      rescue ArgumentError
-        nil
+      rescue ArgumentError => error
+        RemoteResult::Failed.new(error)
       end
     end
   end

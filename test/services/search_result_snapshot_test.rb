@@ -319,9 +319,9 @@ class SearchResultSnapshotTest < ActiveSupport::TestCase
     end.new
     Rails.cache = failing_cache
 
-    assert_nil SearchResultSnapshot.create(user: @user, query: "dune", content_kind: nil, provider_count: 1)
-    assert_nil SearchResultSnapshot.fetch(user: @user, id: "a" * 32, query: "dune", content_kind: nil)
-    assert_not SearchResultSnapshot.write(
+    assert RemoteResult.failed?(SearchResultSnapshot.create(user: @user, query: "dune", content_kind: nil, provider_count: 1))
+    assert RemoteResult.failed?(SearchResultSnapshot.fetch(user: @user, id: "a" * 32, query: "dune", content_kind: nil))
+    assert RemoteResult.failed?(SearchResultSnapshot.write(
       user: @user,
       id: "a" * 32,
       query: "dune",
@@ -330,7 +330,7 @@ class SearchResultSnapshotTest < ActiveSupport::TestCase
       complete: true,
       failed_providers: [],
       provider_count: 1
-    )
+    ))
   end
 
   test "mutations use one persistent flock and release it after failure" do
@@ -360,7 +360,7 @@ class SearchResultSnapshotTest < ActiveSupport::TestCase
           def read(*) = nil
           def write(*) = raise(IOError, "cache unavailable")
         end.new
-        assert_nil SearchResultSnapshot.create(user: @user, query: "failed", content_kind: "book", provider_count: 1)
+        assert RemoteResult.failed?(SearchResultSnapshot.create(user: @user, query: "failed", content_kind: "book", provider_count: 1))
       ensure
         Rails.cache = working_cache
       end

@@ -243,7 +243,8 @@ class FileCopyService
             )
             IO.for_fd(existing).close
             raise Errno::EEXIST, destination_path.to_s
-          rescue Errno::ENOENT
+          rescue Errno::ENOENT => error
+            RemoteResult::Failed.new(error)
             # Destination name is free.
           rescue Errno::ELOOP
             raise Errno::EEXIST, destination_path.to_s
@@ -304,8 +305,8 @@ class FileCopyService
         with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
           matches = begin
             native_readlinkat(parent.fileno, basename) == target
-          rescue Errno::EINVAL
-            false
+          rescue Errno::EINVAL => error
+            RemoteResult::Failed.new(error)
           end
           validate_current_directory_identity!(parent_path, parent)
           result = matches
@@ -392,8 +393,8 @@ class FileCopyService
         source_snapshot: source_snapshot,
         require_durable: true
       )
-      raise Errno::ESTALE, "destination changed after no-clobber move" unless destination_snapshot
-      unless remove_source_file(source_snapshot, destination_snapshot: destination_snapshot)
+      raise Errno::ESTALE, "destination changed after no-clobber move" unless RemoteResult.succeeded?(destination_snapshot)
+      unless RemoteResult.succeeded?(remove_source_file(source_snapshot, destination_snapshot: destination_snapshot))
         raise Errno::ESTALE, "source changed after no-clobber move"
       end
 
@@ -442,11 +443,11 @@ class FileCopyService
                 destination_parent.fileno,
                 basename
               )
-            rescue Errno::EINVAL
-              false
+            rescue Errno::EINVAL => error
+              RemoteResult::Failed.new(error)
             end
 
-            unless published
+            unless published == true
               unless allow_nonatomic
                 raise AtomicPublicationUnsupportedError,
                   "The destination filesystem cannot atomically publish library directories. " \
@@ -687,10 +688,10 @@ class FileCopyService
           lock_flags |= File::LOCK_NB if nonblock
           acquired = begin
             lock.flock(lock_flags)
-          rescue Errno::EWOULDBLOCK
+          rescue Errno::EWOULDBLOCK => error
             raise unless nonblock
 
-            false
+            RemoteResult::Failed.new(error)
           end
           return false if nonblock && !acquired
           raise UnsafePathError, "private lock could not be acquired" unless acquired
@@ -859,8 +860,8 @@ class FileCopyService
         sync_io(parent)
       end
       removed
-    rescue Errno::ENOENT
-      false
+    rescue Errno::ENOENT => error
+      RemoteResult::Failed.new(error)
     end
 
     # Remove a regular file only after atomically moving it to a unique name
@@ -900,7 +901,7 @@ class FileCopyService
           parent.fileno,
           quarantine
         )
-        unless renamed
+        unless renamed == true
           raise AtomicPublicationUnsupportedError,
             "The cache filesystem cannot atomically quarantine invalid files"
         end
@@ -916,7 +917,7 @@ class FileCopyService
             parent.fileno,
             basename
           )
-          unless restored
+          unless restored == true
             raise UnsafePathError, "a changed cache file was retained for manual review"
           end
 
@@ -928,8 +929,8 @@ class FileCopyService
         sync_io(parent)
         true
       end
-    rescue Errno::ENOENT
-      false
+    rescue Errno::ENOENT => error
+      RemoteResult::Failed.new(error)
     end
 
     # Safely materialize a regular staging file at a caller-validated relative
@@ -1077,8 +1078,8 @@ class FileCopyService
       end
 
       remove_source_tree(snapshot, allow_nonatomic: allow_nonatomic)
-    rescue Errno::ENOENT, Errno::ESTALE, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::ESTALE, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     # DrvFS can change inode identities during rename, so the generic
@@ -1098,7 +1099,7 @@ class FileCopyService
       end
 
       with_pinned_directory(parent_path, root: root, create: false, mode: 0o700) do |parent|
-        return :not_drvfs unless drvfs_mount?(parent)
+        return :not_drvfs unless drvfs_mount?(parent) == true
 
         parent_stat = parent.stat
         if expected_parent_identity && file_identity(parent_stat) != expected_parent_identity
@@ -1123,8 +1124,8 @@ class FileCopyService
           current_root = lambda do
             validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
             drvfs_private_staging_child_manifest(parent, child_name) == root_manifest
-          rescue SystemCallError, IOError, UnsafePathError
-            false
+          rescue SystemCallError, IOError, UnsafePathError => error
+            RemoteResult::Failed.new(error)
           end
 
           return :retained unless current_root.call
@@ -1174,8 +1175,8 @@ class FileCopyService
         result = same_io_content?(source, destination_path, root: root)
       end
       result
-    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     # Compare regular-file identities through pinned source and destination
@@ -1201,8 +1202,8 @@ class FileCopyService
         end
       end
       result
-    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     # Check retry eligibility without chmodding a path that may be a hardlink
@@ -1229,8 +1230,8 @@ class FileCopyService
         validate_current_directory_identity!(parent_path, parent)
       end
       result
-    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     def same_io_content?(source, destination_path, root: nil)
@@ -1246,8 +1247,8 @@ class FileCopyService
           return result
         end
       end
-    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     ensure
       source.seek(original_position) if original_position
     end
@@ -1436,14 +1437,14 @@ class FileCopyService
           )
           result = quarantined_result unless quarantined_result == :missing
         end
-        if result == :missing && destination_validator && !destination_validator.call
+        if result == :missing && destination_validator && !RemoteResult.succeeded?(destination_validator.call)
           result = :mismatch
         end
         sync_io(parent)
         result.in?([ :removed, :missing ])
       end
-    rescue Errno::ENOENT, Errno::ESTALE
-      false
+    rescue Errno::ENOENT, Errno::ESTALE => error
+      RemoteResult::Failed.new(error)
     end
 
     def source_file_quarantined?(source_snapshot)
@@ -1452,8 +1453,8 @@ class FileCopyService
 
         quarantined_source_snapshot_present?(parent, source_snapshot)
       end
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR, Errno::ESTALE, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR, Errno::ESTALE, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     # Atomically quarantine the current directory entry, verify that it is the
@@ -1543,8 +1544,8 @@ class FileCopyService
         sync_io(parent)
         true
       end
-    rescue Errno::ENOENT
-      false
+    rescue Errno::ENOENT => error
+      RemoteResult::Failed.new(error)
     end
 
     def secure_library_file!(path, root: nil, require_durable: false)
@@ -1571,7 +1572,7 @@ class FileCopyService
         end
         validate_current_directory_identity!(parent_path, parent)
         parent_durable = sync_io(parent)
-        if require_durable && !(file_durable && parent_durable)
+        if require_durable && !(file_durable == true && parent_durable == true)
           raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
         end
       end
@@ -1628,7 +1629,7 @@ class FileCopyService
               retry_safe_mode = destination_mode.in?(HARDLINK_FALLBACK_FILE_MODES) ||
                 (destination_mode.in?(LIBRARY_FILE_MODES) &&
                   synthetic_library_file_mode?(parent, destination_mode))
-              next unless retry_safe_mode
+              next unless retry_safe_mode == true
             end
 
             source.rewind
@@ -1657,12 +1658,12 @@ class FileCopyService
           next unless manifest
 
           with_pinned_regular_child(parent, basename) do |current|
-            manifest = settled_file_manifest(current, manifest, unstable_timestamps ? content_digest : nil)
+            manifest = settled_file_manifest(current, manifest, unstable_timestamps == true ? content_digest : nil)
             raise Errno::ESTALE, "library file changed after content validation" unless manifest
           end
           validate_current_directory_identity!(parent_path, parent)
           parent_durable = sync_io(parent)
-          if require_durable && !(file_durable && parent_durable)
+          if require_durable && !(file_durable == true && parent_durable == true)
             raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
           end
 
@@ -1679,12 +1680,12 @@ class FileCopyService
         end
       end
       result
-    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR
-      nil
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR => error
+      RemoteResult::Failed.new(error)
     rescue UnsafePathError => error
       raise if error.is_a?(UnsafeFilePermissionsError)
 
-      nil
+      RemoteResult::Failed.new(error)
     end
 
     def file_snapshot_current?(snapshot, require_durable: false)
@@ -1710,12 +1711,12 @@ class FileCopyService
           return false unless settled_file_manifest(current, manifest, snapshot.content_digest)
         end
         parent_durable = sync_io(parent)
-        return false if require_durable && !(durable && parent_durable)
+        return false if require_durable && !(durable == true && parent_durable == true)
 
         true
       end
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR, Errno::ESTALE, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR, Errno::ESTALE, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     def serialize_file_snapshot(snapshot)
@@ -1790,7 +1791,7 @@ class FileCopyService
               DISCARD_PATTERN.match?(entry) || OWNER_PROBE_PATTERN.match?(entry)
             next false unless COPY_QUARANTINE_PATTERN.match?(entry)
 
-            !empty_copy_quarantine?(parent, entry)
+            !RemoteResult.succeeded?(empty_copy_quarantine?(parent, entry))
           end
           if retained
             Rails.logger.warn(
@@ -1955,8 +1956,8 @@ class FileCopyService
         end
       end
       synthetic
-    rescue UnsafePathError, SystemCallError
-      false
+    rescue UnsafePathError, SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
 
     def verify_directory_writable!(directory, path:, root:)
@@ -2202,7 +2203,7 @@ class FileCopyService
 
       cleanup_interrupted_copies(File.dirname(destination), root: root)
       with_pinned_destination_parent(destination, root: root) do |parent, basename, parent_path|
-        if drvfs_mount?(parent)
+        if drvfs_mount?(parent) == true
           journal_root = Pathname(root.presence || parent_path).expand_path
           journal_destination = Pathname(destination).expand_path.relative_path_from(journal_root).to_s
           with_pinned_directory(
@@ -2285,7 +2286,7 @@ class FileCopyService
                 root: root
               )
               published_file_durable = flush_and_sync(temporary)
-              if require_durable && !published_file_durable
+              if require_durable && published_file_durable != true
                 raise DurabilityUnsupportedError, "destination file fsync is unsupported"
               end
               if source_digest
@@ -2326,7 +2327,7 @@ class FileCopyService
               end
               validate_current_directory_identity!(parent_path, parent)
               parent_durable = sync_io(parent)
-              if require_durable && !(published_file_durable && parent_durable)
+              if require_durable && !(published_file_durable == true && parent_durable == true)
                 raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
               end
             end
@@ -2441,7 +2442,7 @@ class FileCopyService
               file_durable = sync_io(temporary)
             end
             private_parent_durable = sync_io(parent)
-            if require_durable && !(file_durable && private_parent_durable)
+            if require_durable && !(file_durable == true && private_parent_durable == true)
               raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
             end
 
@@ -2488,7 +2489,7 @@ class FileCopyService
             )
             validate_current_directory_identity!(parent_path, parent)
             parent_durable = sync_io(parent)
-            if require_durable && !(file_durable && parent_durable)
+            if require_durable && !(file_durable == true && parent_durable == true)
               raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
             end
           end
@@ -2651,8 +2652,8 @@ class FileCopyService
           parent.fileno,
           destination_basename
         )
-      rescue Errno::EINVAL
-        false
+      rescue Errno::EINVAL => error
+        RemoteResult::Failed.new(error)
       end
       return :rename if published
       unless allow_link_fallback
@@ -2739,7 +2740,7 @@ class FileCopyService
             root: root
           )
           file_durable = flush_and_sync(destination)
-          if require_durable && !file_durable
+          if require_durable && file_durable != true
             raise DurabilityUnsupportedError, "destination file fsync is unsupported"
           end
           unless io_matches_identity?(destination, source_size, source_digest, heartbeat: heartbeat)
@@ -2756,14 +2757,14 @@ class FileCopyService
             source_size,
             source_digest,
             published_mode
-          )
+          ) == true
             raise Errno::ESTALE, "direct-copy destination could not be verified"
           end
         end
         source_validator&.call
         destination_parent_validator.call
         parent_durable = sync_io(parent)
-        if require_durable && !parent_durable
+        if require_durable && parent_durable != true
           raise DurabilityUnsupportedError, "destination filesystem fsync is unsupported"
         end
         persist_drvfs_copy_lock!(
@@ -2850,8 +2851,8 @@ class FileCopyService
         matches = compare_io(source, destination)
       end
       matches
-    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     ensure
       source.seek(source_position) if source_position
     end
@@ -2897,7 +2898,7 @@ class FileCopyService
           rescue Errno::EINVAL
             :retained
           end
-        elsif pinned_child_missing?(parent, probe_basename)
+        elsif pinned_child_missing?(parent, probe_basename) == true
           :missing
         else
           :retained
@@ -2929,7 +2930,7 @@ class FileCopyService
         when :compatibility_prepared
           # The process exited before recording the final inode. Never remove
           # an occupied path that cannot be proven to belong to this attempt.
-          if pinned_child_missing?(parent, destination_basename)
+          if pinned_child_missing?(parent, destination_basename) == true
             remove_pinned_child_if_identity(
               parent,
               temporary_basename,
@@ -2957,17 +2958,17 @@ class FileCopyService
             destination_status
           end
         when :pending, :legacy
-          pinned_child_missing?(parent, temporary_basename) ? :missing : :retained
+          pinned_child_missing?(parent, temporary_basename) == true ? :missing : :retained
         else
-          pinned_child_missing?(parent, temporary_basename) ? :missing : :retained
+          pinned_child_missing?(parent, temporary_basename) == true ? :missing : :retained
         end
         return unless cleanup_result.in?([ :removed, :missing ])
 
         remove_pinned_child_if_identity(parent, lock_basename, lock_identity)
         sync_io(parent)
       end
-    rescue Errno::ENOENT, Errno::EACCES, Errno::EWOULDBLOCK, IOError
-      nil
+    rescue Errno::ENOENT, Errno::EACCES, Errno::EWOULDBLOCK, IOError => error
+      RemoteResult::Failed.new(error)
     end
 
     def cleanup_interrupted_owner_probes(parent, expected_owner_uid)
@@ -2976,8 +2977,8 @@ class FileCopyService
 
         cleanup_interrupted_owner_probe(parent, entry, expected_owner_uid: expected_owner_uid)
       end
-    rescue Errno::ENOENT, Errno::EACCES, IOError
-      nil
+    rescue Errno::ENOENT, Errno::EACCES, IOError => error
+      RemoteResult::Failed.new(error)
     end
 
     def cleanup_interrupted_owner_probe(parent, basename, expected_owner_uid: nil)
@@ -2999,8 +3000,8 @@ class FileCopyService
         identity,
         expected_owner_uid: expected_owner_uid
       )
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, IOError, UnsafePathError
-      nil
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, IOError, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     def cleanup_interrupted_quarantine(parent, basename, expected_identity)
@@ -3040,8 +3041,8 @@ class FileCopyService
       ensure
         quarantine.close unless quarantine.closed?
       end
-    rescue Errno::ENOENT, Errno::ELOOP, UnsafePathError
-      nil
+    rescue Errno::ENOENT, Errno::ELOOP, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     def secure_copy_lock?(lock, parent)
@@ -3102,8 +3103,8 @@ class FileCopyService
 
         acquired = begin
           journal.flock(File::LOCK_EX | File::LOCK_NB)
-        rescue Errno::EWOULDBLOCK
-          false
+        rescue Errno::EWOULDBLOCK => error
+          RemoteResult::Failed.new(error)
         end
         # Direct-download publications provide a heartbeat that both renews
         # their durable lease and aborts when ownership is lost. Keep those
@@ -3121,8 +3122,8 @@ class FileCopyService
           sleep(DRVFS_COPY_LOCK_RETRY_INTERVAL)
           acquired = begin
             journal.flock(File::LOCK_EX | File::LOCK_NB)
-          rescue Errno::EWOULDBLOCK
-            false
+          rescue Errno::EWOULDBLOCK => error
+            RemoteResult::Failed.new(error)
           end
         end
         unless private_entry_owned_by_process?(journal.stat, parent)
@@ -3254,8 +3255,8 @@ class FileCopyService
       false
     rescue Errno::ENOENT
       true
-    rescue Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR
-      false
+    rescue Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR => error
+      RemoteResult::Failed.new(error)
     end
 
     def compare_io(left, right, digest: nil, heartbeat: nil)
@@ -3343,6 +3344,8 @@ class FileCopyService
 
     def canonical_reference_roots(paths)
       Array(paths).filter_map do |path|
+        next if RemoteResult.failed?(path)
+
         expanded = Pathname(path).expand_path
         canonical = expanded.realpath
         next if canonical.root? || !canonical.lstat.directory?
@@ -3356,9 +3359,9 @@ class FileCopyService
             inode: stat.ino
           ).freeze
         end
-      rescue ArgumentError, SystemCallError
-        nil
-      end.uniq(&:path)
+      rescue ArgumentError, SystemCallError => error
+        RemoteResult::Failed.new(error)
+      end.reject { |root| RemoteResult.failed?(root) }.uniq(&:path)
     end
 
     def path_beneath_root?(path, root)
@@ -4098,15 +4101,15 @@ class FileCopyService
 
         mount.fetch(4).in?([ "cifs", "smb3" ])
       end
-    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
-      false
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
 
     def empty_copy_quarantine?(parent, entry)
       quarantine = open_pinned_directory_child(parent, entry)
       pinned_directory_children(quarantine).empty?
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR, Errno::ELOOP, UnsafePathError
-      false
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR, Errno::ELOOP, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     ensure
       quarantine&.close unless quarantine&.closed?
     end
@@ -4138,8 +4141,8 @@ class FileCopyService
         mount = filesystem_mount_for(entry, mounts, mount_parents)
         mount && drvfs_mount_record?(mount)
       end
-    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
-      false
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
 
     def filesystem_mounts
@@ -4170,8 +4173,8 @@ class FileCopyService
         fdinfo_mount_id = begin
           fdinfo_content = File.binread("/proc/self/fdinfo/#{entry.fileno}")
           fdinfo_content[/^mnt_id:\s*(\d+)$/, 1]&.then { |id| Integer(id, exception: false) }
-        rescue IOError, SystemCallError
-          nil
+        rescue IOError, SystemCallError => error
+          RemoteResult::Failed.new(error)
         end
         [ Pathname(descriptor_path).expand_path.to_s.b, entry.stat, fdinfo_mount_id ]
       else
@@ -4363,8 +4366,8 @@ class FileCopyService
             begin
               native_mkdirat(current.fileno, part, mode)
               created = true
-            rescue Errno::EEXIST
-              nil
+            rescue Errno::EEXIST => error
+              RemoteResult::Failed.new(error)
             end
             child = open_pinned_directory_child(current, part)
             sync_io(current)
@@ -4475,7 +4478,8 @@ class FileCopyService
       quarantine_kind: :copy,
       expected_owner_uid: nil
     )
-      return :retained if drvfs_mount?(parent)
+      mount = drvfs_mount?(parent)
+      return :retained if RemoteResult.failed?(mount) || mount
       return :mismatch unless expected_identity
 
       begin
@@ -4620,7 +4624,7 @@ class FileCopyService
             basename,
             quarantine,
             file_identity(quarantine.stat)
-          ) rescue nil
+          ) rescue RemoteResult::Failed.new($!)
           quarantine.close unless quarantine.closed?
           raise
         end
@@ -4634,7 +4638,7 @@ class FileCopyService
         parent.fileno,
         basename
       )
-      return if restored
+      return if restored == true
 
       raise UnsafePathError, "mismatched cleanup entry was retained in quarantine"
     rescue Errno::EEXIST
@@ -4648,8 +4652,8 @@ class FileCopyService
         restore_quarantined_child!(quarantine, parent, basename)
         sync_io(parent)
       end
-    rescue Errno::ENOENT
-      nil
+    rescue Errno::ENOENT => error
+      RemoteResult::Failed.new(error)
     end
 
     def remove_quarantined_source_snapshot(parent, original_basename, snapshot, before_remove: nil)
@@ -4740,8 +4744,8 @@ class FileCopyService
         ensure
           quarantine.close unless quarantine.closed?
         end
-      rescue Errno::ENOENT, Errno::ELOOP, UnsafePathError
-        false
+      rescue Errno::ENOENT, Errno::ELOOP, UnsafePathError => error
+        RemoteResult::Failed.new(error)
       end
     end
 
@@ -4752,8 +4756,8 @@ class FileCopyService
       native_unlinkat(parent.fileno, basename, AT_REMOVEDIR)
       sync_io(parent)
       true
-    rescue Errno::ENOENT, UnsafePathError
-      false
+    rescue Errno::ENOENT, UnsafePathError => error
+      RemoteResult::Failed.new(error)
     end
 
     def native_openat(directory_fd, basename, flags, mode)
@@ -4807,8 +4811,8 @@ class FileCopyService
       destination_basename
     )
       native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
-    rescue Errno::EINVAL
-      false
+    rescue Errno::EINVAL => error
+      RemoteResult::Failed.new(error)
     end
 
     # Atomic no-replace rename with the same operator-authorized NFS fallback
@@ -4829,10 +4833,10 @@ class FileCopyService
           parent.fileno,
           destination_basename
         )
-      rescue Errno::EINVAL
-        false
+      rescue Errno::EINVAL => error
+        RemoteResult::Failed.new(error)
       end
-      return true if renamed
+      return true if renamed == true
       return false unless allow_nonatomic
 
       if log_fallback
@@ -4865,15 +4869,15 @@ class FileCopyService
       io.flush
       io.fsync
       true
-    rescue Errno::EINVAL, Errno::EOPNOTSUPP
-      false
+    rescue Errno::EINVAL, Errno::EOPNOTSUPP => error
+      RemoteResult::Failed.new(error)
     end
 
     def sync_io(io)
       io.fsync
       true
-    rescue Errno::EINVAL, Errno::EOPNOTSUPP
-      false
+    rescue Errno::EINVAL, Errno::EOPNOTSUPP => error
+      RemoteResult::Failed.new(error)
     end
 
     def same_stat_identity?(left, right)
@@ -4896,7 +4900,7 @@ class FileCopyService
         FileUtils.rm_f(src)
       end
     rescue => e
-      if source_move_verified?(src, dest)
+      if source_move_verified?(src, dest) == true
         Rails.logger.warn "[FileCopyService] Source removal failed after successful copy (non-fatal): #{e.message}"
       else
         raise
@@ -4912,8 +4916,8 @@ class FileCopyService
       else
         File.file?(dest_path) && File.size(dest_path) == File.size(src)
       end
-    rescue Errno::ENOENT, Errno::EACCES
-      false
+    rescue Errno::ENOENT, Errno::EACCES => error
+      RemoteResult::Failed.new(error)
     end
 
     def resolved_destination_path(src, dest)

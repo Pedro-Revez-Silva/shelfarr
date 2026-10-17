@@ -105,7 +105,7 @@ class FlaresolverrClient
       success
     rescue Error, Faraday::Error, JSON::ParserError, URI::Error => e
       Rails.logger.error "[FlaresolverrClient] Test connection error: #{e.class} - #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def reset_connection!

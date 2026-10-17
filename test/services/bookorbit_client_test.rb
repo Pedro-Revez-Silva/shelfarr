@@ -586,16 +586,20 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "library_items returns empty array on page 0 404 or 410 response" do
+  test "library_items returns a failure on page 0 404 or 410 response" do
     VCR.turned_off do
       stub_login
       stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
         .to_return(status: 404)
-      assert_equal [], BookOrbitClient.library_items("42")
+      missing = BookOrbitClient.library_items("42")
+      assert_instance_of RemoteResult::Failed, missing
+      assert_match(/404/, missing.error.message)
 
       stub_request(:post, "http://localhost:3000/api/v1/libraries/42/books")
         .to_return(status: 410)
-      assert_equal [], BookOrbitClient.library_items("42")
+      gone = BookOrbitClient.library_items("42")
+      assert_instance_of RemoteResult::Failed, gone
+      assert_match(/410/, gone.error.message)
     end
   end
 

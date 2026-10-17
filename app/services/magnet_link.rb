@@ -17,8 +17,8 @@ class MagnetLink
     return hash.downcase if hash.match?(/\A[a-fA-F0-9]{40}\z/)
 
     base32_to_hex(hash)
-  rescue ArgumentError
-    nil
+  rescue ArgumentError => error
+    RemoteResult::Failed.new(error)
   end
 
   def self.base32_to_hex(value)

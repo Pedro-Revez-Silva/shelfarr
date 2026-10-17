@@ -1150,16 +1150,16 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     [ File.join(@tmp_dir, "other.txt"), "../source.txt" ].each do |target|
       File.unlink(destination)
       File.symlink(target, destination)
-      assert_not FileCopyService.reference_target_matches?(
+      assert_not RemoteResult.succeeded?(FileCopyService.reference_target_matches?(
         @src_file, destination, root: @dest_dir, source_snapshot: @source_snapshot
-      )
+      ))
     end
 
     File.unlink(destination)
     File.binwrite(destination, "not a symlink")
-    assert_not FileCopyService.reference_target_matches?(
+    assert_not RemoteResult.succeeded?(FileCopyService.reference_target_matches?(
       @src_file, destination, root: @dest_dir, source_snapshot: @source_snapshot
-    )
+    ))
     assert_raises(ArgumentError) do
       FileCopyService.reference_target_matches?(@src_file, destination, root: @dest_dir)
     end
@@ -3389,12 +3389,12 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     FileUtils.mkdir_p(directory)
 
     [ missing, symlink, directory ].each do |destination|
-      assert_not FileCopyService.same_file_identity?(
+      assert_not RemoteResult.succeeded?(FileCopyService.same_file_identity?(
         @src_file,
         destination,
         root: @dest_dir,
         source_root: nil
-      )
+      ))
     end
   end
 
@@ -3458,9 +3458,9 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     File.symlink(destination, symlink)
 
     assert FileCopyService.secure_library_file_mode?(destination, root: @dest_dir)
-    assert_not FileCopyService.secure_library_file_mode?(symlink, root: @dest_dir)
+    assert_not RemoteResult.succeeded?(FileCopyService.secure_library_file_mode?(symlink, root: @dest_dir))
     File.chmod(0o644, destination)
-    assert_not FileCopyService.secure_library_file_mode?(destination, root: @dest_dir)
+    assert_not RemoteResult.succeeded?(FileCopyService.secure_library_file_mode?(destination, root: @dest_dir))
   end
 
   test "secure_library_file_mode rejects a broad collision when a mode probe remains private" do
@@ -3977,7 +3977,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     snapshot = FileCopyService.snapshot_source_file(source)
     File.rename(parent, displaced)
 
-    assert_not FileCopyService.remove_source_file(snapshot)
+    assert_not RemoteResult.succeeded?(FileCopyService.remove_source_file(snapshot))
     assert_equal "source bytes", File.binread(File.join(displaced, "book.epub"))
   end
 
@@ -4073,7 +4073,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     File.stub(:binread, ->(*) { raise Errno::ENOENT }) do
       assert FileCopyService.send(:hardlink_identity_unreliable?, @dest_dir)
-      assert_not FileCopyService.send(:unstable_file_timestamps?, @dest_dir)
+      assert_not_equal true, FileCopyService.send(:unstable_file_timestamps?, @dest_dir)
     end
   end
 

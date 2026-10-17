@@ -80,7 +80,7 @@ class OutboundUrlGuard
       return true if host.to_s.casecmp("localhost").zero?
 
       address = ip_literal(host)
-      return false if address.nil?
+      return false if RemoteResult.failed?(address) || address.nil?
 
       PRIVATE_RANGES.any? { |range| range.include?(address) } ||
         ALWAYS_BLOCKED_RANGES.any? { |range| range.include?(address) }
@@ -92,9 +92,12 @@ class OutboundUrlGuard
       return [ IPAddr.new("127.0.0.1") ] if host.to_s.casecmp("localhost").zero?
 
       literal = ip_literal(host)
-      return [ literal ] if literal
+      return [ literal ] if RemoteResult.succeeded?(literal)
 
-      addresses = (resolver || DEFAULT_RESOLVER).call(host).filter_map { |value| ip_literal(value) }
+      addresses = (resolver || DEFAULT_RESOLVER).call(host).filter_map do |value|
+        parsed = ip_literal(value)
+        parsed unless RemoteResult.failed?(parsed)
+      end
       raise BlockedUrlError, "Could not resolve #{host}" if addresses.empty?
 
       addresses
@@ -108,8 +111,8 @@ class OutboundUrlGuard
       return address.native if address.ipv6? && (address.ipv4_mapped? || address.ipv4_compat?)
 
       address
-    rescue IPAddr::InvalidAddressError, IPAddr::AddressFamilyError
-      nil
+    rescue IPAddr::InvalidAddressError, IPAddr::AddressFamilyError => error
+      RemoteResult::Failed.new(error)
     end
   end
 end

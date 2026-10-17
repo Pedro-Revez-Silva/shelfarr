@@ -71,7 +71,7 @@ module DownloadClients
       end
     rescue Base::Error, Faraday::Error => e
       Rails.logger.error "[Nzbget] Connection test failed: #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def remove_torrent(nzbget_id, delete_files: false)

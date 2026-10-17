@@ -1350,14 +1350,14 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
-  test "connection_diagnostics returns nil on failure" do
+  test "connection_diagnostics returns Failed when login fails" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")
         .to_return(status: 401, body: "Fails.")
 
       result = @client.connection_diagnostics
 
-      assert_nil result
+      assert RemoteResult.failed?(result)
     end
   end
 

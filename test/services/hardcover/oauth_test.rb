@@ -280,6 +280,6 @@ class Hardcover::OauthTest < ActiveSupport::TestCase
   test "revocation failures do not raise" do
     stub_request(:post, "https://api.hardcover.app/oauth2/revoke").to_timeout
 
-    assert_not Hardcover::Oauth.revoke("hc_rt_x")
+    assert RemoteResult.failed?(Hardcover::Oauth.revoke("hc_rt_x"))
   end
 end

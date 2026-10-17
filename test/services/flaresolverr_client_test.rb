@@ -86,7 +86,7 @@ class FlaresolverrClientTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8191/v1")
         .to_raise(Faraday::ConnectionFailed.new("Connection refused"))
 
-      assert_not FlaresolverrClient.test_connection
+      assert RemoteResult.failed?(FlaresolverrClient.test_connection)
     end
   end
 

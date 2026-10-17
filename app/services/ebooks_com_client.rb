@@ -59,8 +59,8 @@ class EbooksComClient
     def valid_country_code?(value)
       code = value.to_s.strip.upcase
       code.match?(/\A[A-Z]{2}\z/) && TZInfo::Country.all_codes.include?(code)
-    rescue TZInfo::InvalidCountryCode
-      false
+    rescue TZInfo::InvalidCountryCode => error
+      RemoteResult::Failed.new(error)
     end
 
     def search(title:, author: nil, isbn: nil, language: nil, limit: nil)
@@ -70,7 +70,7 @@ class EbooksComClient
       return [] if query_title.blank? && isbn.blank?
 
       market = country_code
-      raise NotConfiguredError, "eBooks.com buyer country is invalid" unless valid_country_code?(market)
+      raise NotConfiguredError, "eBooks.com buyer country is invalid" unless valid_country_code?(market) == true
 
       parsed_results = []
       normalized_isbn = valid_isbn(isbn)
@@ -110,7 +110,7 @@ class EbooksComClient
     def test_connection
       ensure_configured!
       market = country_code
-      raise NotConfiguredError, "eBooks.com buyer country is invalid" unless valid_country_code?(market)
+      raise NotConfiguredError, "eBooks.com buyer country is invalid" unless valid_country_code?(market) == true
 
       fetch_uncached_results(
         "/v2/#{market}/book/search",
@@ -120,7 +120,7 @@ class EbooksComClient
       true
     rescue Error => e
       Rails.logger.error "[EbooksComClient] Connection test failed (#{e.class})"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def buyer_country_code
@@ -307,7 +307,8 @@ class EbooksComClient
     def retry_after_seconds(value)
       raw_value = value.to_s.byteslice(0, 128).to_s.strip
       seconds = Integer(raw_value, exception: false)
-      seconds ||= retry_after_http_date(raw_value)
+      http_seconds = retry_after_http_date(raw_value)
+      seconds ||= http_seconds unless RemoteResult.failed?(http_seconds)
       seconds ||= DEFAULT_RATE_LIMIT_COOLDOWN
       seconds.clamp(MIN_RATE_LIMIT_COOLDOWN, MAX_RATE_LIMIT_COOLDOWN)
     end
@@ -316,16 +317,19 @@ class EbooksComClient
       return if value.blank?
 
       (Time.httpdate(value) - Time.current).ceil
-    rescue ArgumentError
-      nil
+    rescue ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
 
     def parse_results(books, market:)
       books.filter_map do |book|
-        parse_result(book, market: market)
-      rescue ArgumentError, NoMethodError, TypeError => e
-        Rails.logger.warn "[EbooksComClient] Ignoring malformed book result (#{e.class})"
-        nil
+        result = begin
+          parse_result(book, market: market)
+        rescue ArgumentError, NoMethodError, TypeError => e
+          Rails.logger.warn "[EbooksComClient] Ignoring malformed book result (#{e.class})"
+          RemoteResult::Failed.new(e)
+        end
+        result unless RemoteResult.failed?(result)
       end
     end
 
@@ -340,14 +344,15 @@ class EbooksComClient
       formats = available_formats(book["formats"])
       storefront_url = safe_store_url(book["storefrontUrl"])
       return if id.blank? || title.blank? || formats.empty? || storefront_url.blank?
-      return unless store_path_matches?(storefront_url, market, [ "book", id ])
+      return unless store_path_matches?(storefront_url, market, [ "book", id ]) == true
 
       price = book["price"].is_a?(Hash) ? book["price"] : {}
       return unless price_market_matches?(price, market)
       quoted_at = quote_time(book["_quotedAt"])
-      return unless quoted_at
+      return if RemoteResult.failed?(quoted_at) || !quoted_at
 
       price_amount = decimal_value(price["value"])
+      price_amount = nil if RemoteResult.failed?(price_amount)
       price_currency = currency_code(price["currency"])
       unless price_amount && price_currency
         price_amount = nil
@@ -499,8 +504,8 @@ class EbooksComClient
       return unless decimal.finite? && decimal >= 0 && decimal <= 99_999_999
 
       decimal
-    rescue ArgumentError, TypeError
-      nil
+    rescue ArgumentError, TypeError => error
+      RemoteResult::Failed.new(error)
     end
 
     def safe_store_url(value)
@@ -509,7 +514,7 @@ class EbooksComClient
 
     def checkout_store_url(value, market, id)
       url = safe_store_url(value)
-      url if store_path_matches?(url, market, [ "cart", "add", id ])
+      url if store_path_matches?(url, market, [ "cart", "add", id ]) == true
     end
 
     def safe_cover_url(value)
@@ -522,8 +527,8 @@ class EbooksComClient
       locale = segments.shift
       match = locale&.match(/\A[a-z]{2}-([a-z]{2})\z/i)
       match && match[1].upcase == market && segments.first(expected_segments.size) == expected_segments
-    rescue URI::InvalidURIError
-      false
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
     end
 
     def safe_https_url(value, allowed_hosts:)
@@ -537,8 +542,8 @@ class EbooksComClient
       return unless uri.port == 443
 
       uri.to_s
-    rescue URI::InvalidURIError
-      nil
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
     end
 
     def compact_book_payload(book, quoted_at:)
@@ -610,8 +615,8 @@ class EbooksComClient
 
       time = value.to_time.in_time_zone
       time if time.between?(CACHE_TTL.ago, 5.minutes.from_now)
-    rescue ArgumentError, RangeError
-      nil
+    rescue ArgumentError, RangeError => error
+      RemoteResult::Failed.new(error)
     end
 
     def valid_isbn_checksum?(value)

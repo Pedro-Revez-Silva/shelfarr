@@ -46,7 +46,7 @@ module Admin
     end
 
     def test
-      if @provider.test_connection
+      if RemoteResult.succeeded?(@provider.test_connection)
         redirect_to admin_acquisition_providers_path, notice: "Connection to '#{@provider.name}' successful."
       else
         redirect_to admin_acquisition_providers_path, alert: "Connection to '#{@provider.name}' failed."

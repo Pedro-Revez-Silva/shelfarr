@@ -80,7 +80,7 @@ class LibraryDownloadArchiveService
         validate_snapshot!(source_root, canonical_root)
         cache_path = cache_path_for(source_root)
 
-        unless cache_file_valid?(cache_path, source_root: source_root)
+        unless cache_file_valid?(cache_path, source_root: source_root) == true
           repair_invalid_cache!(cache_path)
           build_and_publish!(source_root, canonical_root, cache_path)
         end
@@ -361,7 +361,7 @@ class LibraryDownloadArchiveService
       mode: 0o600
     )
   rescue Errno::EEXIST
-    unless cache_file_valid?(cache_path, source_root: source_root)
+    unless cache_file_valid?(cache_path, source_root: source_root) == true
       raise UnsafePathError, "archive cache path is not a trusted ZIP"
     end
   end
@@ -374,13 +374,13 @@ class LibraryDownloadArchiveService
       cache_path,
       root: CACHE_DIRECTORY.to_s
     )
-    raise SourceChangedError, "archive cache changed before repair" unless removed
-  rescue Errno::ENOENT
-    nil
+    raise SourceChangedError, "archive cache changed before repair" unless removed == true
+  rescue Errno::ENOENT => error
+    RemoteResult::Failed.new(error)
   end
 
   def validated_cache_path(cache_path, source_root:)
-    unless cache_file_valid?(cache_path, source_root: source_root)
+    unless cache_file_valid?(cache_path, source_root: source_root) == true
       raise UnsafePathError, "archive cache is not a trusted ZIP"
     end
 
@@ -416,8 +416,8 @@ class LibraryDownloadArchiveService
 
       zip_matches_snapshot?(file, source_root)
     end
-  rescue Errno::ENOENT, Zip::Error, EncodingError, ArgumentError, EOFError, IOError
-    false
+  rescue Errno::ENOENT, Zip::Error, EncodingError, ArgumentError, EOFError, IOError => error
+    RemoteResult::Failed.new(error)
   end
 
   def zip_matches_snapshot?(file, source_root)

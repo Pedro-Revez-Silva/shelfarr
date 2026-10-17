@@ -67,8 +67,8 @@ class AudiobookImageProbeService
 
         probe_and_replace(file, path, expected_format, [ max_duration, MAX_DURATION ].min)
       end
-    rescue SystemCallError, ArgumentError
-      false
+    rescue SystemCallError, ArgumentError => error
+      RemoteResult::Failed.new(error)
     end
 
     private
@@ -126,8 +126,8 @@ class AudiobookImageProbeService
           true
         end
       end
-    rescue JSON::ParserError, TypeError
-      false
+    rescue JSON::ParserError, TypeError => error
+      RemoteResult::Failed.new(error)
     end
 
     def valid_metadata?(metadata, expected_format)
@@ -141,8 +141,8 @@ class AudiobookImageProbeService
         width.between?(1, MAX_DIMENSION) &&
         height.between?(1, MAX_DIMENSION) &&
         width * height <= MAX_PIXELS
-    rescue KeyError, ArgumentError, TypeError
-      false
+    rescue KeyError, ArgumentError, TypeError => error
+      RemoteResult::Failed.new(error)
     end
 
     def descriptor_path(file_descriptor)
@@ -154,21 +154,21 @@ class AudiobookImageProbeService
 
     def wait_for_probe(pid, max_duration)
       Timeout.timeout(max_duration) { Process.wait2(pid).last }
-    rescue Timeout::Error
+    rescue Timeout::Error => error
       terminate_probe(pid)
-      nil
+      RemoteResult::Failed.new(error)
     end
 
     def terminate_probe(pid)
       Process.kill("TERM", -pid)
       Timeout.timeout(1.second) { Process.wait(pid) }
-    rescue Errno::ESRCH, Errno::ECHILD
-      nil
+    rescue Errno::ESRCH, Errno::ECHILD => error
+      RemoteResult::Failed.new(error)
     rescue Timeout::Error
       Process.kill("KILL", -pid)
       Process.wait(pid)
-    rescue Errno::ESRCH, Errno::ECHILD
-      nil
+    rescue Errno::ESRCH, Errno::ECHILD => error
+      RemoteResult::Failed.new(error)
     end
   end
 end

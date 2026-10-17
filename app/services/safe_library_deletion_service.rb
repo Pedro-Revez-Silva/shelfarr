@@ -79,8 +79,8 @@ class SafeLibraryDeletionService
     ].compact_blank.flat_map do |root|
       canonical = Pathname(root).expand_path.realpath.to_s
       [ [ root, canonical ], [ canonical, canonical ] ]
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
-      []
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP => error
+      RemoteResult::Failed.new(error)
     end
   end
 
@@ -96,8 +96,8 @@ class SafeLibraryDeletionService
       display_paths = canonical_paths.filter_map do |path|
         relative = path.relative_path_from(canonical_root)
         configured_root.join(relative)
-      rescue ArgumentError
-        nil
+      rescue ArgumentError => error
+        RemoteResult::Failed.new(error)
       end
       next unless @path.in?(canonical_paths + display_paths) || @path.to_s == upload.file_path.to_s
 
@@ -120,8 +120,8 @@ class SafeLibraryDeletionService
       next if root.blank?
 
       [ [ root, Pathname(root).expand_path.realpath.to_s ] ]
-    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
-      nil
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP => error
+      RemoteResult::Failed.new(error)
     end
       .flatten(1)
   end
@@ -140,8 +140,8 @@ class SafeLibraryDeletionService
       candidate.basename.to_s == OwnedMediaImportFileService::STAGING_DIRECTORY
     end
     staging&.parent&.to_s
-  rescue ArgumentError
-    nil
+  rescue ArgumentError => error
+    RemoteResult::Failed.new(error)
   end
 
   def with_pinned_absolute_directory(path)
@@ -214,7 +214,7 @@ class SafeLibraryDeletionService
     entry.close
 
     quarantine = quarantine_basename(stat)
-    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, quarantine)
+    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, quarantine) == true
       raise Error, "This filesystem cannot atomically quarantine a library deletion"
     end
     sync_directory(parent)
@@ -240,7 +240,7 @@ class SafeLibraryDeletionService
     end
 
     quarantine = "#{quarantine_prefix}ref-#{SecureRandom.hex(8)}"
-    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, quarantine)
+    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, quarantine) == true
       raise Error, "This filesystem cannot atomically quarantine a library deletion"
     end
     sync_directory(parent)
@@ -327,13 +327,13 @@ class SafeLibraryDeletionService
   end
 
   def restore_quarantined_entry(parent, quarantine, original)
-    return unless native_rename_noreplace(parent.fileno, quarantine, parent.fileno, original)
+    return unless native_rename_noreplace(parent.fileno, quarantine, parent.fileno, original) == true
 
     sync_directory(parent)
-  rescue SystemCallError
+  rescue SystemCallError => error
     # Retaining the quarantine is safer than replacing a concurrently restored
     # original path. A later retry can reconcile its encoded inode identity.
-    nil
+    RemoteResult::Failed.new(error)
   end
 
   def verify_quarantined_identity!(parent, basename, expected_identity)
@@ -377,8 +377,8 @@ class SafeLibraryDeletionService
 
   def sync_directory(directory)
     directory.fsync
-  rescue Errno::EINVAL, Errno::EOPNOTSUPP, Errno::ENOTSUP
-    nil
+  rescue Errno::EINVAL, Errno::EOPNOTSUPP, Errno::ENOTSUP => error
+    RemoteResult::Failed.new(error)
   end
 
   def file_identity(stat)
@@ -405,7 +405,7 @@ class SafeLibraryDeletionService
 
   def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
     FilesystemSyscalls.rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)
-  rescue Errno::EINVAL
-    false
+  rescue Errno::EINVAL => error
+    RemoteResult::Failed.new(error)
   end
 end

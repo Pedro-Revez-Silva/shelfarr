@@ -273,7 +273,7 @@ class OwnedLibraryBacklogBackup
     Rails.logger.error(
       "[AudibleBackup] Could not immediately dispatch the confirmed backlog: #{error.class}"
     )
-    nil
+    RemoteResult::Failed.new(error)
   end
 
   def enqueue_backup(media_import, poll_token)
@@ -282,7 +282,7 @@ class OwnedLibraryBacklogBackup
     Rails.logger.error(
       "[AudibleBackup] Could not enqueue backlog import ##{media_import.id}: #{error.class}"
     )
-    nil
+    RemoteResult::Failed.new(error)
   end
 
   def enqueue_succeeded?(job)

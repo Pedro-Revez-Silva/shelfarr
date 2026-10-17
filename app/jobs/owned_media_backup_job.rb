@@ -640,7 +640,7 @@ class OwnedMediaBackupJob < ApplicationJob
       "[OwnedMediaBackupJob] Upload processing enqueue for upload ##{upload.id} " \
         "failed with #{error.class}; the durable backup poll will retry"
     )
-    false
+    RemoteResult::Failed.new(error)
   end
 
   def backup_expired?(media_import)

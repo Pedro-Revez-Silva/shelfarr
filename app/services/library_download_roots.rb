@@ -13,7 +13,7 @@ class LibraryDownloadRoots
     return if !book.acquired? || book.reference_target_roots_recorded?
 
     references = legacy_reference_leaves
-    return if references.empty?
+    return if RemoteResult.failed?(references) || references.empty?
 
     # Capture once and retain those identities. Re-querying after a directory
     # disappears can silently freeze a partial authorization set on the Book.
@@ -42,9 +42,9 @@ class LibraryDownloadRoots
     else
       canonicalize_roots(allowed_output_paths + allowed_download_paths).filter_map do |path|
         FileCopyService.snapshot_reference_root(path)
-      rescue FileCopyService::UnsafePathError
-        nil
-      end
+      rescue FileCopyService::UnsafePathError => error
+        RemoteResult::Failed.new(error)
+      end.reject { |root| RemoteResult.failed?(root) }
     end
   end
 
@@ -82,12 +82,12 @@ class LibraryDownloadRoots
       end
     end
     references
-  rescue Errno::ENOENT
+  rescue Errno::ENOENT => error
     # A manually removed copied file needs no reference provenance. When
     # client-backed history exists, keep it until its contents can be inspected.
     raise unless client_download_paths.empty?
 
-    []
+    RemoteResult::Failed.new(error)
   end
 
   def contained?(path, root)
@@ -122,9 +122,9 @@ class LibraryDownloadRoots
         device: root.device,
         inode: root.inode
       ).freeze
-    rescue SystemCallError, ArgumentError
-      nil
-    end
+    rescue SystemCallError, ArgumentError => error
+      RemoteResult::Failed.new(error)
+    end.reject { |root| RemoteResult.failed?(root) }
   end
 
   def client_download_paths
@@ -136,13 +136,15 @@ class LibraryDownloadRoots
 
   def canonicalize_roots(paths)
     paths.filter_map do |configured_root|
+      next if RemoteResult.failed?(configured_root)
+
       candidate = Pathname(configured_root).expand_path.realpath
       next if candidate.root?
       next unless candidate.lstat.directory?
 
       candidate
-    rescue SystemCallError, ArgumentError
-      nil
-    end.uniq
+    rescue SystemCallError, ArgumentError => error
+      RemoteResult::Failed.new(error)
+    end.reject { |root| RemoteResult.failed?(root) }.uniq
   end
 end

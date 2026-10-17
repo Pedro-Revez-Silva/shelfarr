@@ -3,6 +3,7 @@ inherit_gem: { rubocop-rails-omakase: rubocop.yml }
 require:
   - ./lib/rubocop/cop/shelfarr/skipped_test.rb
   - ./lib/rubocop/cop/shelfarr/root_relative_path.rb
+  - ./lib/rubocop/cop/shelfarr/rescue_to_empty.rb
 
 Shelfarr/SkippedTest:
   Enabled: true
@@ -17,6 +18,13 @@ Shelfarr/RootRelativePath:
     - "app/views/**/*.erb"
     - "app/javascript/**/*.js"
     - "app/controllers/**/*.rb"
+
+Shelfarr/RescueToEmpty:
+  Enabled: true
+  Severity: warning
+  Include:
+    - "app/services/**/*.rb"
+    - "app/jobs/**/*.rb"
 
 AllCops:
   inherit_mode:

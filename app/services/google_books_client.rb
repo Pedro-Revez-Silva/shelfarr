@@ -88,7 +88,7 @@ class GoogleBooksClient
       true
     rescue Error => e
       Rails.logger.error "[GoogleBooksClient] Connection test failed: #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     def reset_connection!

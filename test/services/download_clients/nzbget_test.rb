@@ -366,7 +366,7 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
         .with(basic_auth: [ "nzbget", "tegbzn6789" ])
         .to_return(status: 401)
 
-      assert_not @client.test_connection
+      assert RemoteResult.failed?(@client.test_connection)
     end
   end
 
@@ -376,7 +376,7 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
         .with(basic_auth: [ "nzbget", "tegbzn6789" ])
         .to_timeout
 
-      assert_not @client.test_connection
+      assert RemoteResult.failed?(@client.test_connection)
     end
   end
 

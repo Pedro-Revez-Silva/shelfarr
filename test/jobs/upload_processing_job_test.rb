@@ -1513,13 +1513,16 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     assert_equal 90, @upload.match_confidence
   end
 
-  test "fetch_metadata returns nil for blank title and service errors" do
+  test "fetch_metadata returns nil for a blank title and Failed when search errors" do
     job = UploadProcessingJob.new
 
     assert_nil job.send(:fetch_metadata, "", "Author")
 
-    MetadataService.stub(:search, ->(*) { raise MetadataService::Error, "offline" }) do
-      assert_nil job.send(:fetch_metadata, "Title", "Author")
+    error = MetadataService::Error.new("offline")
+    MetadataService.stub(:search, ->(*) { raise error }) do
+      result = job.send(:fetch_metadata, "Title", "Author")
+      assert_instance_of RemoteResult::Failed, result
+      assert_equal error, result.error
     end
   end
 

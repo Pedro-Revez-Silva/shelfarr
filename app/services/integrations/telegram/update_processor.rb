@@ -15,7 +15,7 @@ module Integrations
 
       def call
         update = record_update
-        return nil unless update
+        return nil unless RemoteResult.succeeded?(update)
 
         unless RateLimiter.allowed?(update.telegram_user_id)
           return CommandHandler::Response.new(
@@ -42,8 +42,8 @@ module Integrations
           chat_id: chat_id,
           command: command_text
         )
-      rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
-        nil
+      rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid => error
+        RemoteResult::Failed.new(error)
       end
 
       def message

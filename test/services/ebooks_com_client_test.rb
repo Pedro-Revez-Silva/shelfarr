@@ -338,7 +338,7 @@ class EbooksComClientTest < ActiveSupport::TestCase
     logger.define_singleton_method(:error) { |message| messages << message }
 
     Rails.stub(:logger, logger) do
-      assert_not EbooksComClient.test_connection
+      assert RemoteResult.failed?(EbooksComClient.test_connection)
     end
 
     assert messages.any?
@@ -510,14 +510,14 @@ class EbooksComClientTest < ActiveSupport::TestCase
       .with(query: hash_including("title" => "The Moonstone", "drmFree" => "true"))
       .to_raise(Faraday::ConnectionFailed.new("offline"))
 
-    assert_not EbooksComClient.test_connection
+    assert RemoteResult.failed?(EbooksComClient.test_connection)
   end
 
   test "test_connection does not report a missing catalog endpoint as healthy" do
     stub_request(:get, %r{\Ahttps://api\.ebooks\.com/v2/PT/book/search})
       .to_return(status: 404, headers: { "Content-Type" => "application/json" }, body: "{}")
 
-    assert_not EbooksComClient.test_connection
+    assert RemoteResult.failed?(EbooksComClient.test_connection)
   end
 
   private

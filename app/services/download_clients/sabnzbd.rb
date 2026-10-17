@@ -65,8 +65,8 @@ module DownloadClients
       # also needs for queue and history monitoring.
       response = connection.get("api", { mode: "get_cats", apikey: api_key, output: "json" })
       response.status == 200 && response.body.is_a?(Hash) && response.body["categories"].is_a?(Array)
-    rescue Base::Error, Faraday::Error
-      false
+    rescue Base::Error, Faraday::Error => error
+      RemoteResult::Failed.new(error)
     end
 
     def remove_torrent(nzo_id, delete_files: false)

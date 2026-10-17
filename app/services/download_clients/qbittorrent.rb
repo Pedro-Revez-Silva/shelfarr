@@ -166,7 +166,7 @@ module DownloadClients
       }
     rescue => e
       Rails.logger.warn "[Qbittorrent] Failed to fetch diagnostics: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     private
@@ -213,7 +213,7 @@ module DownloadClients
       else
         resolve_torrent_source(url)
       end
-      if source.blank?
+      if RemoteResult.failed?(source) || source.blank?
         raise Base::Error, "Could not safely fetch torrent source" if validate_source_url
 
         return { url: url }
@@ -232,7 +232,7 @@ module DownloadClients
       end
 
       hash = extract_hash_from_torrent_data(torrent_data)
-      if hash.present?
+      if RemoteResult.succeeded?(hash)
         { url: resolved_url, hash: hash, torrent_data: torrent_data }
       else
         raise Base::Error, "Torrent source did not return a valid torrent file" if validate_source_url
@@ -257,7 +257,7 @@ module DownloadClients
 
     def resolve_torrent_source(raw_url)
       normalized_url = normalized_torrent_url(raw_url)
-      return nil unless normalized_url
+      return nil if RemoteResult.failed?(normalized_url) || normalized_url.blank?
 
       current_url = normalized_url
       max_redirects = 10
@@ -271,7 +271,7 @@ module DownloadClients
         location = response.headers["location"]
         if response.status.between?(300, 399) && location.present?
           redirected_url = absolutize_redirect_url(current_url, location)
-          return { url: current_url } if redirected_url.blank?
+          return { url: current_url } if RemoteResult.failed?(redirected_url) || redirected_url.blank?
           return { url: redirected_url } if redirected_url.start_with?("magnet:")
 
           current_url = redirected_url
@@ -290,13 +290,13 @@ module DownloadClients
       { url: current_url }
     rescue URI::InvalidURIError => e
       Rails.logger.warn "[Qbittorrent] Invalid torrent URL for hash extraction: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     rescue Faraday::Error => e
       Rails.logger.warn "[Qbittorrent] Failed to download torrent file: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     rescue => e
       Rails.logger.warn "[Qbittorrent] Unexpected error extracting hash: #{e.class} - #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     # Extract the torrent info hash from bencoded torrent content.
@@ -311,7 +311,7 @@ module DownloadClients
       Digest::SHA1.hexdigest(info_bencoded).downcase
     rescue BEncode::DecodeError => e
       Rails.logger.warn "[Qbittorrent] Failed to parse torrent file (not valid bencode): #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def normalized_torrent_url(raw_url)
@@ -323,7 +323,7 @@ module DownloadClients
       uri.to_s
     rescue URI::InvalidURIError => e
       Rails.logger.warn "[Qbittorrent] Invalid torrent URL for hash extraction: #{e.message}"
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     # Separate connection for downloading torrent files (different from qBittorrent API)
@@ -347,8 +347,8 @@ module DownloadClients
       return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
 
       resolved
-    rescue URI::InvalidURIError
-      nil
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
     end
 
     def extract_magnet_from_body(body)
@@ -395,8 +395,8 @@ module DownloadClients
       return nil unless body.is_a?(String)
 
       JSON.parse(body)
-    rescue JSON::ParserError
-      nil
+    rescue JSON::ParserError => error
+      RemoteResult::Failed.new(error)
     end
 
     def fetch_torrent_hashes(category: nil)
@@ -557,8 +557,8 @@ module DownloadClients
       return if addresses.size < 2
 
       select_reachable_ipaddr(addresses, open_timeout)
-    rescue SocketError, SystemCallError
-      nil
+    rescue SocketError, SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
 
     def select_reachable_ipaddr(addresses, open_timeout)
@@ -592,9 +592,9 @@ module DownloadClients
         socket = Socket.new(addr.afamily, Socket::SOCK_STREAM, 0)
         socket.connect_nonblock(addr, exception: false)
         [ socket, addr ]
-      rescue SystemCallError
+      rescue SystemCallError => error
         close_probe_socket(socket)
-        nil
+        RemoteResult::Failed.new(error)
       end
     end
 
@@ -614,18 +614,18 @@ module DownloadClients
       nil
     rescue Errno::EISCONN
       addr.ip_address
-    rescue IO::WaitWritable, Errno::EINPROGRESS, Errno::EALREADY
-      nil
-    rescue SystemCallError
+    rescue IO::WaitWritable, Errno::EINPROGRESS, Errno::EALREADY => error
+      RemoteResult::Failed.new(error)
+    rescue SystemCallError => error
       close_probe_socket(socket)
       pending.delete(pair)
-      nil
+      RemoteResult::Failed.new(error)
     end
 
     def close_probe_socket(socket)
       socket&.close
-    rescue IOError, SystemCallError
-      nil
+    rescue IOError, SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
 
     def handle_response(response)

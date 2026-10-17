@@ -39,7 +39,9 @@ class ZLibraryClientTest < ActiveSupport::TestCase
   test "test_connection returns true when login succeeds" do
     VCR.turned_off do
       stub_zlibrary_login_success
-      assert ZLibraryClient.test_connection
+      result = ZLibraryClient.test_connection
+      assert_instance_of RemoteResult::Ok, result
+      assert_equal true, result.value
     end
   end
 
@@ -953,20 +955,43 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     assert_not ZLibraryClient.configured?
   end
 
-  test "test_connection returns false for invalid url" do
+  test "test_connection returns the url error for an invalid url" do
     SettingsService.set(:zlibrary_url, "not-a-url")
-    assert_not ZLibraryClient.test_connection
+    result = ZLibraryClient.test_connection
+    assert_instance_of RemoteResult::Failed, result
+    assert_match(/http or https/, result.error.message)
   end
 
-  test "test_connection returns false when url includes a path" do
+  test "test_connection returns the url error when url includes a path" do
     SettingsService.set(:zlibrary_url, "https://z-library.sk/login")
-    assert_not ZLibraryClient.test_connection
+    result = ZLibraryClient.test_connection
+    assert_instance_of RemoteResult::Failed, result
+    assert_match(/path/, result.error.message)
   end
 
-  test "test_connection returns false when any configured url is invalid" do
+  test "test_connection returns the url error when any configured url is invalid" do
     SettingsService.set(:zlibrary_url, "https://z-library.sk\nnot-a-url")
 
-    assert_not ZLibraryClient.test_connection
+    result = ZLibraryClient.test_connection
+    assert_instance_of RemoteResult::Failed, result
+    assert_kind_of ZLibraryClient::Error, result.error
+    assert result.error.message.present?
+  end
+
+  test "test_connection returns the upstream login error" do
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/user/login")
+        .with(body: "email=reader%40example.com&password=secret")
+        .to_return(
+          status: 200,
+          body: { success: 0, error: "Invalid credentials" }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        )
+
+      result = ZLibraryClient.test_connection
+      assert_instance_of RemoteResult::Failed, result
+      assert_match(/Invalid credentials/, result.error.message)
+    end
   end
 
   test "test_connection! raises the specific error returned by Z-Library" do

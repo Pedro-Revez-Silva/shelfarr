@@ -21,7 +21,7 @@ class AudiobookProbeServiceTest < ActiveSupport::TestCase
 
   test "fails closed when ffprobe is unavailable" do
     with_path(Dir.mktmpdir) do
-      assert_not AudiobookProbeService.valid?("/tmp/book.mp3")
+      assert RemoteResult.failed?(AudiobookProbeService.valid?("/tmp/book.mp3"))
     end
   end
 

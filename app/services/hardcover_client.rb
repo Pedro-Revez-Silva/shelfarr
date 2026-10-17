@@ -250,7 +250,7 @@ class HardcoverClient
       raise
     rescue Error => e
       Rails.logger.error "[HardcoverClient] Connection test failed: #{e.message}"
-      false
+      RemoteResult::Failed.new(e)
     end
 
     # Runs a query with an explicit credential. Used by per-user connections
@@ -282,8 +282,8 @@ class HardcoverClient
     def remember_instance_account!(hardcover_user_id)
       token_digest = Digest::SHA256.hexdigest(normalize_token(api_token))
       safe_cache_write(instance_account_cache_key(token_digest), Integer(hardcover_user_id), expires_in: ACCOUNT_CACHE_TTL)
-    rescue ArgumentError, TypeError
-      false
+    rescue ArgumentError, TypeError => error
+      RemoteResult::Failed.new(error)
     end
 
     def reset_connection!
@@ -819,8 +819,8 @@ class HardcoverClient
 
       key = request_lock_cache_key(credential_digest)
       Rails.cache.delete(key) if Rails.cache.read(key) == token
-    rescue StandardError
-      false
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def cache_operational?(credential_digest)
@@ -900,26 +900,26 @@ class HardcoverClient
     def safe_cache_read(key)
       value = Float(Rails.cache.read(key), exception: false)
       value if value&.finite?
-    rescue StandardError
-      nil
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def safe_cache_read_raw(key)
       Rails.cache.read(key)
-    rescue StandardError
-      nil
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def safe_cache_write(key, value, expires_in:)
       Rails.cache.write(key, value, expires_in: expires_in)
-    rescue StandardError
-      false
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def safe_cache_delete(key)
       Rails.cache.delete(key)
-    rescue StandardError
-      false
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def monotonic_time

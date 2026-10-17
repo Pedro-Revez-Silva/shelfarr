@@ -79,7 +79,7 @@ class BookMetadataLookupService
       raise if raise_lookup_errors
 
       Rails.logger.warn("[BookMetadataLookupService] Metadata lookup failed for #{work_id}: #{e.message}")
-      nil
+      RemoteResult::Failed.new(e)
     end
 
     def merge_details!(metadata, details, work_id)

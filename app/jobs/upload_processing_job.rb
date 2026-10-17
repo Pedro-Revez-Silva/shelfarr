@@ -94,6 +94,7 @@ class UploadProcessingJob < ApplicationJob
       upload.update!(book_type: book_type)
 
       metadata = target_request || upload.manual_match? ? nil : fetch_metadata(title, author)
+      metadata = nil if RemoteResult.failed?(metadata)
 
       if metadata
         Rails.logger.info "[UploadProcessingJob] Matched external metadata for upload ##{upload.id}"
@@ -333,7 +334,7 @@ class UploadProcessingJob < ApplicationJob
     else
       UploadImportFileService.restore_and_clear!(upload)
     end
-    return true if restored || upload.destination_path.blank?
+    return true if restored == true || upload.destination_path.blank?
 
     Rails.logger.error(
       "[UploadProcessingJob] Reserved destination for upload #{upload.id} requires manual reconciliation"
@@ -537,7 +538,7 @@ class UploadProcessingJob < ApplicationJob
     Rails.logger.error(
       "[UploadProcessingJob] Could not release Book reservation for upload ##{upload.id}: #{error.class}"
     )
-    false
+    RemoteResult::Failed.new(error)
   end
 
   def preassociate_owned_media_book(
@@ -699,7 +700,7 @@ class UploadProcessingJob < ApplicationJob
     score >= 30 ? best_match : nil
   rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, MetadataService::Error => e
     Rails.logger.warn "[UploadProcessingJob] Metadata search failed (#{e.class})"
-    nil
+    RemoteResult::Failed.new(e)
   end
 
   def score_result(result, query_title, query_author)

@@ -126,7 +126,7 @@ class GutenbergClientTest < ActiveSupport::TestCase
       ))
       .to_raise(Faraday::ConnectionFailed.new("offline"))
 
-    assert_not GutenbergClient.test_connection
+    assert RemoteResult.failed?(GutenbergClient.test_connection)
   end
 
   test "configured URL must be an origin" do

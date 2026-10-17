@@ -480,8 +480,8 @@ class LibationCompanionClient
   def private_address?(value)
     address = IPAddr.new(value)
     OutboundUrlGuard::PRIVATE_RANGES.any? { |range| range.include?(address) }
-  rescue IPAddr::InvalidAddressError
-    false
+  rescue IPAddr::InvalidAddressError => error
+    RemoteResult::Failed.new(error)
   end
 
   def bearer_token

@@ -14,15 +14,20 @@ module IndexerClients
         cats = categories || categories_for_type(book_type)
 
         if search_type_for(title: title, author: author) == "search"
-          items = execute_search(query, type: "search", categories: cats, limit: limit, indexer_ids: filtered_indexer_ids)
+          indexer_ids = filtered_indexer_ids
+          raise indexer_ids.error if RemoteResult.failed?(indexer_ids)
+
+          items = execute_search(query, type: "search", categories: cats, limit: limit, indexer_ids: indexer_ids)
           return items.map { |item| parse_result(item) }
         end
 
         # Resolve the configured tag scope once and carry it through. Reading it
         # a second time while planning lets a transient /api/v1/tag failure read
         # as "no tags configured" and widen the search past the user's scope.
-        tags = indexer_filter_tags
+        tags = tag_scope_ids(indexer_filter_tags)
         scoped = scoped_indexers(tags: tags)
+        raise scoped.error if RemoteResult.failed?(scoped)
+
         plans = book_search_plans(query, title: title, author: author, tags: tags, indexers: scoped)
         items = execute_book_search_plans(plans, categories: cats, limit: limit)
 
@@ -59,21 +64,29 @@ module IndexerClients
       # or only the tagged subset when prowlarr_tags is set. Returns nil when
       # Prowlarr's indexer list cannot be read.
       def scoped_indexers(tags: indexer_filter_tags)
+        tags = tag_scope_ids(tags)
         normalized_tags = tags.map(&:to_s).map(&:downcase)
         all = indexers
         return all if normalized_tags.empty?
 
         all.select { |indexer| (normalized_indexer_tags(indexer["tags"]) & normalized_tags).any? }
       rescue IndexerClients::Base::Error => e
+        raise e if tags.is_a?(RemoteResult::Failed)
+
         Rails.logger.warn "[IndexerClients::Prowlarr] Failed to fetch indexers: #{e.message}"
-        nil
+        RemoteResult::Failed.new(e)
       end
 
       def filtered_indexer_ids
         tags = indexer_filter_tags
+        return nil if tags.is_a?(RemoteResult::Empty)
+        tags = tag_scope_ids(tags)
         return nil if tags.empty?
 
-        scoped_indexers(tags: tags)&.map { |indexer| indexer["id"] }
+        indexers = scoped_indexers(tags: tags)
+        return indexers if RemoteResult.failed?(indexers)
+
+        indexers&.map { |indexer| indexer["id"] }
       end
 
       def configured_tags
@@ -93,7 +106,18 @@ module IndexerClients
       end
 
       def indexer_filter_tags
-        configured_tags.concat(configured_tag_ids_for_names(configured_tag_names)).uniq
+        numeric = configured_tags
+        resolved = configured_tag_ids_for_names(configured_tag_names)
+        case resolved
+        when RemoteResult::Failed
+          resolved
+        when RemoteResult::Ok
+          numeric.concat(resolved.value).uniq
+        when RemoteResult::Empty
+          numeric.empty? ? resolved : numeric
+        else
+          numeric.concat(resolved).uniq
+        end
       end
 
       def configured?
@@ -136,11 +160,23 @@ module IndexerClients
             tag_lookup[label.to_s.strip.downcase] = tag_id.to_i
           end
 
-          tag_names.filter_map { |name| tag_lookup[name.to_s.downcase] }
+          ids = tag_names.filter_map { |name| tag_lookup[name.to_s.downcase] }
+          ids.empty? ? RemoteResult::Empty.new : RemoteResult::Ok.new(ids)
         end
       rescue IndexerClients::Base::Error => e
         Rails.logger.warn "[IndexerClients::Prowlarr] Failed to resolve tag names for filtering: #{e.message}"
-        []
+        RemoteResult::Failed.new(e)
+      end
+
+      def tag_scope_ids(tags)
+        case tags
+        when RemoteResult::Failed
+          raise tags.error
+        when RemoteResult::Empty
+          []
+        else
+          tags
+        end
       end
 
       def normalized_indexer_tags(tags)
@@ -228,7 +264,7 @@ module IndexerClients
           download_url: extract_download_url(item),
           magnet_url: extract_magnet_url(item),
           info_url: item["infoUrl"],
-          published_at: parse_date(item["publishDate"]),
+          published_at: published_at_for(item["publishDate"]),
           category_ids: extract_category_ids(item)
         )
       end
@@ -281,12 +317,19 @@ module IndexerClients
         url if url.present? && url.start_with?("magnet:")
       end
 
+      def published_at_for(date_string)
+        parsed = parse_date(date_string)
+        return if RemoteResult.failed?(parsed)
+
+        parsed
+      end
+
       def parse_date(date_string)
         return nil if date_string.blank?
 
         Time.parse(date_string)
-      rescue ArgumentError
-        nil
+      rescue ArgumentError => error
+        RemoteResult::Failed.new(error)
       end
 
       def execute_search(query, type:, categories:, limit:, indexer_ids:)
@@ -376,6 +419,8 @@ module IndexerClients
         # Indexer list unavailable, or nothing matched the configured tags: keep
         # letting Prowlarr pick the indexers, with the query shape none of them
         # can reject.
+        raise indexers.error if RemoteResult.failed?(indexers)
+
         return [ search_plan(free_text_query, nil) ] if indexers.blank?
 
         available = indexers.select { |indexer| searchable?(indexer) }

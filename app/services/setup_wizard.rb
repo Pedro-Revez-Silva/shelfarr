@@ -67,7 +67,9 @@ class SetupWizard
     # Overrides let a step check the values on its form before they are saved.
     def path_warnings(overrides = {})
       paths = saved_paths.merge(overrides.compact)
-      [ qbittorrent_warning(paths), *audiobookshelf_warnings(paths) ].compact
+      shelf_warnings = audiobookshelf_warnings(paths)
+      shelf_warnings = [] if RemoteResult.failed?(shelf_warnings)
+      [ qbittorrent_warning(paths), *shelf_warnings ].compact.reject { |warning| RemoteResult.failed?(warning) }
     end
 
     def library_choices
@@ -98,7 +100,7 @@ class SetupWizard
       url = params[:url].to_s.strip
       api_key = params[:api_key].to_s.strip.presence || SettingsService.get(:prowlarr_api_key).to_s
       return failure("Enter the Prowlarr URL and API key.") if url.blank? || api_key.blank?
-      return failure("Prowlarr connection failed.") unless ConnectionProbe.indexer(provider: "prowlarr", url: url, api_key: api_key)
+      return failure("Prowlarr connection failed.") unless RemoteResult.succeeded?(ConnectionProbe.indexer(provider: "prowlarr", url: url, api_key: api_key))
 
       SettingsService.set(:indexer_provider, "prowlarr")
       SettingsService.set(:prowlarr_url, url)
@@ -131,7 +133,7 @@ class SetupWizard
       probe_key = api_key.presence || (existing&.api_key unless password_login)
       probe_password = password.presence || existing&.password
       probe_username = username.presence || existing&.username
-      unless ConnectionProbe.qbittorrent(url: url, username: probe_username, password: probe_password, api_key: probe_key, category: category)
+      unless RemoteResult.succeeded?(ConnectionProbe.qbittorrent(url: url, username: probe_username, password: probe_password, api_key: probe_key, category: category))
         return failure("qBittorrent connection failed.")
       end
 
@@ -172,7 +174,7 @@ class SetupWizard
       url = params[:url].to_s.strip
       api_key = params[:api_key].to_s.strip.presence || SettingsService.get(:audiobookshelf_api_key).to_s
       return failure("Enter the Audiobookshelf URL and API token.") if url.blank? || api_key.blank?
-      unless ConnectionProbe.audiobookshelf(url: url, api_key: api_key)
+      unless RemoteResult.succeeded?(ConnectionProbe.audiobookshelf(url: url, api_key: api_key))
         return failure("Audiobookshelf has no libraries yet. Create one in Audiobookshelf, then try again, or skip this step.")
       end
 
@@ -283,7 +285,7 @@ class SetupWizard
       return if client.nil? || client.download_path.present?
 
       diagnostics = diagnostics_for(client)
-      return if diagnostics.nil?
+      return if RemoteResult.failed?(diagnostics) || diagnostics.nil?
 
       LibraryPathCheck.qbittorrent_message(
         save_path: diagnostics[:save_path],
@@ -292,8 +294,8 @@ class SetupWizard
         local_path: paths[:download_local_path],
         remote_path: paths[:download_remote_path]
       )
-    rescue StandardError
-      nil
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def audiobookshelf_warnings(paths)
@@ -308,16 +310,16 @@ class SetupWizard
         audiobook_output_path: paths[:audiobook_output_path],
         ebook_output_path: paths[:ebook_output_path]
       )
-    rescue StandardError
-      []
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def diagnostics_for(client = qbittorrent_client)
       return unless client&.qbittorrent_compatible?
 
       client.adapter.connection_diagnostics
-    rescue StandardError
-      nil
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def normalize_path(path)

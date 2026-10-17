@@ -209,22 +209,17 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
-  test "search falls back to a free-text book query when indexer capabilities are unavailable" do
+  test "search does not widen to every indexer when the indexer list is unavailable" do
     VCR.turned_off do
       stub_request(:get, %r{localhost:9696/api/v1/indexer}).to_return(status: 500, body: "")
 
       search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
-        .with do |req|
-          query = req.uri.query_values
 
-          query["type"] == "book" &&
-            query["query"] == "Inferno Dan Brown" &&
-            query["indexerIds"].nil?
-        end
-        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
-
-      assert_equal [], ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
-      assert_requested search_stub
+      error = assert_raises(IndexerClients::Base::Error) do
+        ProwlarrClient.search("", book_type: :ebook, title: "Inferno", author: "Dan Brown")
+      end
+      assert_match(/500/, error.message)
+      assert_not_requested search_stub
     end
   end
 
@@ -598,6 +593,34 @@ class ProwlarrClientTest < ActiveSupport::TestCase
 
       ProwlarrClient.search("test query")
       assert_requested search_stub
+    end
+  end
+
+  test "a tag endpoint 500 does not clear the tag scope" do
+    SettingsService.set(:prowlarr_tags, "books")
+    ProwlarrClient.instance_variable_set(:@connection, nil)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/tag})
+        .to_return(
+          status: 500,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "boom" }.to_json
+        )
+      stub_indexers(
+        { "id" => 1, "name" => "Untagged", "tags" => [ 7 ],
+          "capabilities" => { "bookSearchParams" => [ "q" ] } },
+        { "id" => 2, "name" => "Tagged", "tags" => [ 42 ],
+          "capabilities" => { "bookSearchParams" => [ "q" ] } }
+      )
+      search_stub = stub_request(:get, %r{localhost:9696/api/v1/search})
+
+      error = assert_raises(IndexerClients::Base::Error) do
+        ProwlarrClient.search("", title: "Frankenstein", author: "Mary Shelley")
+      end
+
+      assert_match(/500/, error.message)
+      assert_not_requested search_stub
     end
   end
 

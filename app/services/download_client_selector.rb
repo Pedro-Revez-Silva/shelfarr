@@ -47,7 +47,7 @@ class DownloadClientSelector
     end
 
     ordered_clients.each do |client|
-      return client if self.class.reachable?(client)
+      return client if self.class.reachable?(client) == true
     end
 
     # If no client passed connection test, raise error
@@ -59,7 +59,7 @@ class DownloadClientSelector
     client.test_connection
   rescue StandardError => e
     Rails.logger.warn "[DownloadClientSelector] #{client.name} connection failed: #{ConnectionErrorClassifier.describe(e)}"
-    false
+    RemoteResult::Failed.new(e)
   end
 
   private
