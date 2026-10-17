@@ -2425,8 +2425,10 @@ class FileCopyService
               temporary_identity = source_identity
             # Include EINVAL: some network filesystems (notably CIFS) report
             # "hardlink unsupported" that way instead of EXDEV/EOPNOTSUPP.
-            rescue Errno::EXDEV, Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP,
-                Errno::ENOSYS, Errno::EMLINK, Errno::EINVAL, Fiddle::DLError, NotImplementedError => error
+            rescue SystemCallError, Fiddle::DLError, NotImplementedError => error
+              decision = error.is_a?(SystemCallError) ? PublicationDecision.call(error) : :hardlink_unsupported
+              raise unless decision == :hardlink_unsupported
+
               raise HardlinkUnsupportedError,
                 "The source and destination filesystems cannot create the requested hardlink",
                 cause: error
@@ -2572,8 +2574,10 @@ class FileCopyService
         end
       end
       lock_path_identity
-    rescue Errno::EXDEV, Errno::EPERM, Errno::EOPNOTSUPP, Errno::ENOTSUP, Errno::ENOSYS, Errno::EMLINK,
-        Errno::EINVAL, Fiddle::DLError, NotImplementedError => error
+    rescue SystemCallError, Fiddle::DLError, NotImplementedError => error
+      decision = error.is_a?(SystemCallError) ? PublicationDecision.call(error) : :hardlink_unsupported
+      raise unless decision == :hardlink_unsupported
+
       raise HardlinkUnsupportedError,
         "The destination filesystem cannot verify hardlink identity",
         cause: error
