@@ -64,7 +64,12 @@ module Rubocop
               @runtime_checksum ||= begin
                 files = Dir.glob(rails_root.join("{app,config,lib,test}/**/*.rb")).sort
                 files << rails_root.join("Gemfile.lock").to_s
-                Digest::SHA256.hexdigest(files.map { |file| "#{file}\0#{Digest::SHA256.file(file).hexdigest}" }.join("\0"))
+                entries = files.filter_map do |file|
+                  "#{file}\0#{Digest::SHA256.file(file).hexdigest}"
+                rescue Errno::ENOENT
+                  nil
+                end
+                Digest::SHA256.hexdigest(entries.join("\0"))
               end
             end
           end

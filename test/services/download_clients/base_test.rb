@@ -76,4 +76,43 @@ class DownloadClients::BaseTest < ActiveSupport::TestCase
   ensure
     OutboundUrlGuard.resolver = previous_resolver
   end
+
+  test "download_state keeps a paused percent below 100 from counting as complete" do
+    assert_equal :paused, mapped_state(unit: :percent, progress: 99.5, state: { deluge: "Paused" })
+    assert_equal :paused, mapped_state(unit: :percent, progress: 1.0, state: { deluge: "Paused" })
+    assert_equal :completed, mapped_state(unit: :percent, progress: 100, state: { deluge: "Paused" })
+    assert_equal :completed, mapped_state(unit: :percent, progress: 100, state: { deluge: "Seeding" })
+  end
+
+  test "download_state does not treat a fraction as a percent" do
+    assert_equal :paused, mapped_state(unit: :fraction, progress: 0.995, state: { deluge: "Paused" })
+    assert_equal :completed, mapped_state(unit: :fraction, progress: 1, state: { deluge: "Paused" })
+    assert_equal :paused, mapped_state(unit: :fraction, progress: 0.995, state: { transmission: 0, error: 0 })
+    assert_equal :completed, mapped_state(unit: :fraction, progress: 1, state: { transmission: 6, error: 0 })
+  end
+
+  test "download_state keeps sabnzbd history post-processing incomplete when a path is present" do
+    path = "/downloads/complete/Book/Book.m4b"
+    %w[Queued QuickCheck Verifying Repairing Fetching Extracting Moving Running Checking].each do |status|
+      assert_equal :downloading, mapped_state(unit: :percent, progress: 100, state: { sabnzbd_history: status }, path: path), status
+    end
+
+    assert_equal :downloading, mapped_state(unit: :percent, progress: 100, state: { sabnzbd_history: "Completed" }, path: "")
+    assert_equal :completed, mapped_state(unit: :percent, progress: 100, state: { sabnzbd_history: "Completed" }, path: path)
+    assert_equal :failed, mapped_state(unit: :percent, progress: 100, state: { sabnzbd_history: "Failed" }, path: path)
+  end
+
+  test "deluge transmission and sabnzbd do not assign completed" do
+    root = Rails.root.join("app/services/download_clients")
+    %w[deluge.rb transmission.rb sabnzbd.rb].each do |name|
+      source = File.read(root.join(name))
+      assert_not_includes source, ":completed", "#{name} passes raw fields to download_state"
+    end
+  end
+
+  private
+
+  def mapped_state(unit:, progress:, state:, path: "/downloads/book")
+    @client.send(:download_state, unit: unit, progress: progress, state: state, path: path)
+  end
 end

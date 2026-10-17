@@ -446,11 +446,17 @@ module DownloadClients
       # import the entire download root instead of just this torrent.
       content_path = name.present? && download_dir.present? ? File.join(download_dir, name) : download_dir
 
+      raw_progress = transmission_value(data, "percent_done", "percentDone")
       Base::TorrentInfo.new(
         hash: transmission_value(data, "hash_string", "hashString"),
         name: name,
-        progress: normalize_progress(transmission_value(data, "percent_done", "percentDone")),
-        state: normalize_state(data["status"], error: data["error"]),
+        progress: normalize_progress(raw_progress),
+        state: download_state(
+          unit: :fraction,
+          progress: raw_progress,
+          state: { transmission: data["status"], error: data["error"] },
+          path: content_path
+        ),
         size_bytes: transmission_value(data, "total_size", "totalSize"),
         download_path: content_path
       )
@@ -470,27 +476,6 @@ module DownloadClients
     def normalize_progress(progress)
       return 0 if progress.blank?
       (progress.to_f * 100).round
-    end
-
-    def normalize_state(status, error: nil)
-      return :failed if error.to_i == 3
-
-      case status.to_i
-      when 0
-        :paused
-      when 1, 2
-        :queued
-      when 3
-        :queued
-      when 4
-        :downloading
-      when 5
-        :queued
-      when 6
-        :completed
-      else
-        :downloading
-      end
     end
 
     def connection

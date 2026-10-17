@@ -916,13 +916,14 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     assert_nil @client.send(:absolutize_redirect_url, "http://example.com/base", "ftp://example.com/file")
     assert RemoteResult.failed?(@client.send(:absolutize_redirect_url, "http://example.com/base", "http://[bad"))
 
-    assert_equal :paused, @client.send(:normalize_state, 0)
-    assert_equal :queued, @client.send(:normalize_state, 1)
-    assert_equal :queued, @client.send(:normalize_state, 3)
-    assert_equal :queued, @client.send(:normalize_state, 5)
-    assert_equal :completed, @client.send(:normalize_state, 6)
-    assert_equal :downloading, @client.send(:normalize_state, 99)
-    assert_equal :failed, @client.send(:normalize_state, 4, error: 3)
+    assert_equal :paused, transmission_state(0)
+    assert_equal :queued, transmission_state(1)
+    assert_equal :queued, transmission_state(3)
+    assert_equal :queued, transmission_state(5)
+    assert_equal :completed, transmission_state(6, progress: 1.0)
+    assert_equal :downloading, transmission_state(99)
+    assert_equal :failed, transmission_state(4, error: 3)
+    assert_equal :paused, transmission_state(0, progress: 0.995)
 
     @client_record.update!(url: "http://localhost:9091/transmission/rpc/")
     assert_equal "http://localhost:9091/transmission/rpc", @client_record.adapter.send(:rpc_url)
@@ -970,6 +971,16 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
   end
 
   private
+
+  def transmission_state(status, progress: 0, error: nil)
+    @client.send(
+      :download_state,
+      unit: :fraction,
+      progress: progress,
+      state: { transmission: status, error: error },
+      path: "/downloads/book"
+    )
+  end
 
   def stub_session_handshake(url)
     stub_request(:post, url)
