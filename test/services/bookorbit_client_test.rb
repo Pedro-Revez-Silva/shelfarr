@@ -752,6 +752,116 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "#358 libraries use the saved BookOrbit URL without reset_all_connections!" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "old-token" }.to_json
+        )
+      old_libraries = stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer old-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 1, name: "Old Library", folders: [] } ].to_json
+        )
+
+      assert_equal "Old Library", BookOrbitClient.libraries.first.name
+      memo = BookOrbitClient.instance_variable_get(:@connection)
+      assert_not_nil memo
+
+      SettingsService.set(:bookorbit_url, "http://localhost:4000")
+      assert_same memo, BookOrbitClient.instance_variable_get(:@connection)
+
+      new_libraries = stub_request(:get, "http://localhost:4000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer port-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 2, name: "Moved Library", folders: [] } ].to_json
+        )
+      stub_request(:post, "http://localhost:4000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "port-token" }.to_json
+        )
+
+      assert_equal "Moved Library", BookOrbitClient.libraries.first.name
+      assert_requested old_libraries, times: 1
+      assert_requested new_libraries, times: 1
+      assert_not_requested :get, "http://localhost:4000/api/v1/libraries",
+        headers: { "Authorization" => "Bearer old-token" }
+    end
+  end
+
+  test "#390 does not send the previous BookOrbit access token after the URL or password changes" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:3000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "old-token" }.to_json
+        )
+      stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer old-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 1, name: "Old Library", folders: [] } ].to_json
+        )
+
+      assert_equal "Old Library", BookOrbitClient.libraries.first.name
+
+      SettingsService.set(:bookorbit_url, "http://localhost:4000")
+      stub_request(:post, "http://localhost:4000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "url-token" }.to_json
+        )
+      url_libraries = stub_request(:get, "http://localhost:4000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer url-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 2, name: "Moved Library", folders: [] } ].to_json
+        )
+
+      assert_equal "Moved Library", BookOrbitClient.libraries.first.name
+      assert_not_requested :get, "http://localhost:4000/api/v1/libraries",
+        headers: { "Authorization" => "Bearer old-token" }
+
+      SettingsService.set(:bookorbit_password, "rotated")
+      stub_request(:post, "http://localhost:4000/api/v1/auth/login")
+        .with(body: { username: "admin", password: "rotated" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "rotated-token" }.to_json
+        )
+      rotated_libraries = stub_request(:get, "http://localhost:4000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer rotated-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { id: 3, name: "Rotated Library", folders: [] } ].to_json
+        )
+
+      assert_equal "Rotated Library", BookOrbitClient.libraries.first.name
+      assert_requested url_libraries, times: 1
+      assert_requested rotated_libraries, times: 1
+      assert_not_requested :get, "http://localhost:4000/api/v1/libraries",
+        headers: { "Authorization" => "Bearer old-token" }
+    end
+  end
+
   private
 
   def stub_login

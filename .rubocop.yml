@@ -5,6 +5,7 @@ require:
   - ./lib/rubocop/cop/shelfarr/root_relative_path.rb
   - ./lib/rubocop/cop/shelfarr/short_concurrency_lease.rb
   - ./lib/rubocop/cop/shelfarr/rescue_to_empty.rb
+  - ./lib/rubocop/cop/shelfarr/unkeyed_faraday_memo.rb
 
 Shelfarr/SkippedTest:
   Enabled: true
@@ -30,6 +31,12 @@ Shelfarr/RescueToEmpty:
   Include:
     - "app/services/**/*.rb"
     - "app/jobs/**/*.rb"
+
+Shelfarr/UnkeyedFaradayMemo:
+  Enabled: true
+  Severity: warning
+  Include:
+    - "app/services/indexer_clients/**/*.rb"
 
 AllCops:
   inherit_mode:
