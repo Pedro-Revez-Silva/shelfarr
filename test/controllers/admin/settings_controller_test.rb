@@ -683,7 +683,8 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "turbo-stream[target='settings-form']", count: 0
   end
 
-  test "manual manifest excludes untouched password manager values from explicit save" do
+  test "manual manifest still gates non-secret fields while a different secret is stored" do
+    SettingsService.set(:bookorbit_url, "https://old.example")
     SettingsService.set(:bookorbit_username, "existing-user")
     SettingsService.set(:bookorbit_password, "existing-password")
 
@@ -691,6 +692,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       manual_keys: "bookorbit_username",
       settings: {
         max_retries: "23",
+        bookorbit_url: "https://new.example",
         bookorbit_username: "deliberate-user",
         bookorbit_password: "autofilled-password"
       }
@@ -698,8 +700,55 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal 23, SettingsService.get(:max_retries)
+    assert_equal "https://old.example", SettingsService.get(:bookorbit_url)
     assert_equal "deliberate-user", SettingsService.get(:bookorbit_username)
-    assert_equal "existing-password", SettingsService.get(:bookorbit_password)
+    assert_equal "autofilled-password", SettingsService.get(:bookorbit_password)
+  end
+
+  test "bulk_update keeps a blank prowlarr api key and stores a different one" do
+    SettingsService.set(:prowlarr_api_key, "stored-prowlarr-key")
+    SettingsService.set(:grimmory_password, "stored-password")
+
+    patch bulk_update_admin_settings_url, params: {
+      manual_keys: "",
+      settings: {
+        prowlarr_api_key: "",
+        grimmory_password: ""
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "stored-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_equal "stored-password", SettingsService.get(:grimmory_password)
+
+    patch bulk_update_admin_settings_url, params: {
+      manual_keys: "",
+      settings: { prowlarr_api_key: "posted-prowlarr-key" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "posted-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_equal "stored-password", SettingsService.get(:grimmory_password)
+
+    reset_called = false
+    IndexerClient.stub(:reset_all_connections!, -> { reset_called = true }) do
+      patch bulk_update_admin_settings_url, params: {
+        manual_keys: "",
+        settings: { prowlarr_api_key: "posted-prowlarr-key" }
+      }
+    end
+
+    assert_redirected_to admin_settings_path
+    assert_equal "posted-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_not reset_called
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { prowlarr_api_key: "   ", grimmory_password: "" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "posted-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_equal "stored-password", SettingsService.get(:grimmory_password)
   end
 
   test "explicit save persists manual-save credentials" do
