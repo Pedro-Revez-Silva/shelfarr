@@ -37,11 +37,14 @@ module Admin
       errors = []
       changed_keys = []
       validate_submitted_setting_keys!
+      validate_autosave_setting_keys!
       validate_manual_setting_keys!
 
       entries = []
       params[:settings]&.each do |key, value|
         next if SettingsService.env_managed?(key)
+        # A named list is the fields this autosave may write. An empty list is not a manifest.
+        next if autosave? && autosave_key_list.any? && !autosave_key_list.include?(key.to_s)
         next if autosave? && SettingsService.manual_save_setting_key?(key)
         next if manual_setting_manifest? && SettingsService.manual_save_setting_key?(key) && !manual_setting_keys.include?(key.to_s)
         next if preserve_blank_secret?(key, value)
@@ -447,6 +450,10 @@ module Admin
       params[:autosave] == "true"
     end
 
+    def autosave_key_list
+      @autosave_key_list ||= params[:autosave_keys].to_s.split(",").reject(&:blank?)
+    end
+
     def manual_setting_manifest?
       params.key?(:manual_keys)
     end
@@ -464,6 +471,17 @@ module Admin
         !SettingsService::DEFINITIONS.key?(key.to_sym)
       end
       raise ArgumentError, "Unknown setting: #{unknown_key}" if unknown_key
+    end
+
+    def validate_autosave_setting_keys!
+      return unless autosave?
+      return if autosave_key_list.empty?
+
+      settings = params[:settings]
+      invalid = settings.nil? || autosave_key_list.any? do |key|
+        !SettingsService::DEFINITIONS.key?(key.to_sym) || !settings.key?(key)
+      end
+      raise ArgumentError, "Invalid autosave setting manifest" if invalid
     end
 
     def validate_manual_setting_keys!
@@ -751,7 +769,9 @@ module Admin
 
     def setting_value_for_validation(key)
       settings = params[:settings]
-      settings&.key?(key.to_s) ? settings[key.to_s] : SettingsService.get(key)
+      listed = autosave_key_list.empty? || autosave_key_list.include?(key.to_s)
+      submitted = settings&.key?(key.to_s) && (!autosave? || listed)
+      submitted ? settings[key.to_s] : SettingsService.get(key)
     end
 
     def stored_setting_changed?(key, normalized_value)

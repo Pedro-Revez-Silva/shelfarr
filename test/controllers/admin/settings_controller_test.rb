@@ -145,23 +145,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_not SettingsService.get(:ebooks_com_enabled)
   end
 
-  test "autosave validates posted values that the key list omitted" do
-    patch bulk_update_admin_settings_url,
-      params: {
-        autosave: "true",
-        autosave_keys: "ebooks_com_enabled",
-        settings: {
-          ebooks_com_enabled: "true",
-          ebooks_com_country_code: "Portugal"
-        }
-      },
-      headers: { "Accept" => "text/vnd.turbo-stream.html" }
-
-    assert_response :unprocessable_entity
-    assert_match "ISO 3166-1", response.body
-    assert_not SettingsService.get(:ebooks_com_enabled)
-    assert_equal "", SettingsService.get(:ebooks_com_country_code)
-
+  test "autosave validates only values authorized by its dirty keys" do
     patch bulk_update_admin_settings_url,
       params: {
         autosave: "true",
@@ -173,7 +157,23 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
-    assert_response :no_content
+    assert_response :unprocessable_entity
+    assert_match "requires a valid ISO 3166-1 Buyer Country Code", response.body
+    assert_not SettingsService.get(:ebooks_com_enabled)
+    assert_equal "", SettingsService.get(:ebooks_com_country_code)
+
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "ebooks_com_enabled,ebooks_com_country_code",
+        settings: {
+          ebooks_com_enabled: "true",
+          ebooks_com_country_code: "US"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
     assert SettingsService.get(:ebooks_com_enabled)
     assert_equal "US", SettingsService.get(:ebooks_com_country_code)
   end
@@ -2327,7 +2327,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     patch bulk_update_admin_settings_url,
       params: {
         autosave: "true",
-        autosave_keys: "max_retries",
+        autosave_keys: "max_retries,download_check_interval",
         settings: { max_retries: "24", rate_limit_delay: "2", download_check_interval: "60" }
       },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
@@ -2336,7 +2336,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :no_content
     assert_empty response.body
     assert_equal 24, SettingsService.get(:max_retries)
-    assert_equal 2, SettingsService.get(:rate_limit_delay)
+    assert_equal 5, SettingsService.get(:rate_limit_delay)
     assert_equal 60, SettingsService.get(:download_check_interval)
     assert_equal interval_stamp, Setting.find_by!(key: "download_check_interval").updated_at
   end
