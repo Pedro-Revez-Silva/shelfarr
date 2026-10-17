@@ -259,6 +259,7 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
   end
 
   teardown do
+    restore_test_adapter!
     Rails.cache = @original_cache
   end
 
@@ -296,8 +297,9 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
         }
       end
 
-      with_sync_worker(release) do
+      with_claimed_syncs(release) do |process|
         AudiobookshelfLibrarySyncJob.perform_later
+        start_ready_syncs(process)
         wait_for("the first sync to enter the library request") { !entered.empty? }
 
         AudiobookshelfLibrarySyncJob.perform_later
@@ -311,45 +313,111 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
           maintenance = SolidQueue::Dispatcher::ConcurrencyMaintenance.new(5.minutes, 500)
           maintenance.send(:expire_semaphores)
           maintenance.send(:unblock_blocked_executions)
-          sleep 0.6
+          if start_ready_syncs(process)
+            wait_for("a released sync to enter the library request") { entered.size > 1 }
+          end
           assert_equal 1, gate.synchronize { max_inside }
           assert blocked_sync?
         end
-
-        2.times { release << true }
-        wait_for("both syncs to finish") { unfinished_syncs? }
       end
     end
 
     assert_equal 1, gate.synchronize { max_inside }
     assert_equal "Kept Title", LibraryItem.find_by(audiobookshelf_id: "ab-keep")&.title
+    assert_instance_of ActiveJob::QueueAdapters::TestAdapter, ActiveJob::Base.queue_adapter
+    assert_no_enqueued_jobs
   ensure
-    2.times { release << true } if defined?(release) && release
+    release_syncs(release, 2) if defined?(release) && release
+    join_sync_threads
+    restore_test_adapter!
     LibraryItem.where(audiobookshelf_id: "ab-keep").delete_all
   end
 
   private
 
-  def with_sync_worker(release)
-    original_adapter = ActiveJob::Base.queue_adapter
-    original_job_adapter = AudiobookshelfLibrarySyncJob.queue_adapter
+  def with_claimed_syncs(release)
+    process = nil
     original_config = SolidQueue::Record.connection_db_config
     SolidQueue::Record.establish_connection(:queue)
-    ActiveJob::Base.queue_adapter = :solid_queue
-    AudiobookshelfLibrarySyncJob.disable_test_adapter
-    AudiobookshelfLibrarySyncJob.queue_adapter = :solid_queue
+    switch_to_solid_queue!
     clear_sync_queue!
-    worker = SolidQueue::Worker.new(queues: "*", threads: 2, polling_interval: 0.05)
-    worker.start
-    yield
+    @sync_threads = []
+    @sync_thread_error = nil
+    process = SolidQueue::Process.register(
+      kind: "Worker",
+      name: "library-sync-#{SecureRandom.hex(4)}",
+      pid: Process.pid,
+      hostname: "test",
+      metadata: {}
+    )
+    yield process
   ensure
-    2.times { release << true }
-    worker&.stop
-    clear_sync_queue!
-    AudiobookshelfLibrarySyncJob.queue_adapter = original_job_adapter if original_job_adapter
-    AudiobookshelfLibrarySyncJob.disable_test_adapter
-    ActiveJob::Base.queue_adapter = original_adapter if original_adapter
-    SolidQueue::Record.establish_connection(original_config) if original_config
+    begin
+      release_syncs(release, 2)
+      join_sync_threads
+      start_ready_syncs(process) if process
+      join_sync_threads
+      clear_sync_queue! if process
+      process&.deregister
+    ensure
+      SolidQueue::Record.establish_connection(original_config) if original_config
+      restore_test_adapter!
+    end
+    raise @sync_thread_error if @sync_thread_error && !$!
+  end
+
+  def switch_to_solid_queue!
+    return if @switched_adapter
+
+    @original_queue_adapter = ActiveJob::Base._queue_adapter
+    @original_test_adapter = ActiveJob::Base._test_adapter
+    @switched_adapter = true
+    ActiveJob::Base.disable_test_adapter
+    ActiveJob::Base.queue_adapter = :solid_queue
+  end
+
+  def restore_test_adapter!
+    return unless @switched_adapter
+
+    if @original_queue_adapter
+      ActiveJob::Base.queue_adapter = @original_queue_adapter
+    else
+      ActiveJob::Base.queue_adapter = :test
+    end
+    if @original_test_adapter
+      ActiveJob::Base.enable_test_adapter(@original_test_adapter)
+    else
+      ActiveJob::Base.disable_test_adapter
+    end
+    @switched_adapter = false
+  end
+
+  def start_ready_syncs(process)
+    return false unless process
+
+    claimed = SolidQueue::ReadyExecution.claim("*", 5, process.id)
+    return false if claimed.empty?
+
+    claimed.each do |execution|
+      @sync_threads << Thread.new(execution) do |claimed_execution|
+        Thread.current.report_on_exception = false
+        Thread.current.abort_on_exception = false
+        claimed_execution.perform
+      rescue Exception => error
+        @sync_thread_error = error
+      end
+    end
+    true
+  end
+
+  def join_sync_threads
+    @sync_threads&.each(&:join)
+  end
+
+  def release_syncs(release, count)
+    return unless release
+
+    count.times { release << true }
   end
 
   def clear_sync_queue!
@@ -373,12 +441,6 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
       SolidQueue::BlockedExecution.joins(:job)
         .where(solid_queue_jobs: { class_name: "AudiobookshelfLibrarySyncJob" })
         .exists?
-    end
-  end
-
-  def unfinished_syncs?
-    SolidQueue::Job.uncached do
-      SolidQueue::Job.where(class_name: "AudiobookshelfLibrarySyncJob", finished_at: nil).none?
     end
   end
 
