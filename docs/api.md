@@ -94,7 +94,7 @@ Returns the request payload plus `selected_result`. Clears a previous blocklist 
 
 `POST /api/v1/requests/:id/blocklist_and_next`
 
-Requires `requests:admin`. Blocklists the currently selected release and auto-selects the next downloadable candidate. Passing `search_result_id` is still accepted as a compatibility alias for grab, but new clients should use `POST .../grab` instead (and can use `requests:write`).
+Requires `requests:admin`. Blocklists the currently selected release. When auto-select is enabled, Shelfarr then selects the next eligible candidate. When auto-select is disabled, the request is left for manual review and no other release is grabbed. Passing `search_result_id` is still accepted as a compatibility alias for grab, but new clients should use `POST .../grab` instead (and can use `requests:write`).
 
 ## Users
 
