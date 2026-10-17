@@ -1999,6 +1999,21 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "new audio formats reject playlists that refer to another audio file" do
+    skip "ffprobe not available" unless system("ffprobe", "-version", out: File::NULL, err: File::NULL)
+
+    AudiobookProbeService.reset_probe!
+    Dir.mktmpdir do |directory|
+      audio = File.join(directory, "book.wav")
+      playlist = File.join(directory, "playlist.wav")
+      File.binwrite(audio, valid_wav_audio)
+      File.write(playlist, "ffconcat version 1.0\nfile book.wav\nduration 0.256\n" + ("# padding\n" * 256))
+
+      assert DownloadJob.new.send(:valid_audiobook_signature?, audio)
+      assert_not DownloadJob.new.send(:valid_audiobook_signature?, playlist)
+    end
+  end
+
   test "a mixed archive can contain MP3 and newly supported WAV audio" do
     Dir.mktmpdir do |directory|
       File.binwrite(File.join(directory, "chapter.mp3"), valid_mp3_audio)

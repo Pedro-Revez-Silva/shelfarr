@@ -31,6 +31,7 @@ class DownloadJob < ApplicationJob
   DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
   DIRECT_AUDIOBOOK_FILE_EXTENSIONS = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
+  DIRECT_AUDIOBOOK_PROBE_FORMATS = %w[aa aiff asf caf mov wav].freeze
   DIRECT_AUDIOBOOK_IMAGE_EXTENSIONS = %w[jpg jpeg png webp].freeze
   DIRECT_AUDIOBOOK_TEXT_EXTENSIONS = %w[txt].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_FILE_EXTENSIONS = (
@@ -1128,9 +1129,11 @@ class DownloadJob < ApplicationJob
     when "ogg", "opus"
       valid_ogg_stream?(file, file_size)
     else
-      # Other planner formats use the bounded audio probe below. Keep the
-      # existing structural checks for formats with dedicated validators.
-      DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(extension.to_s.downcase)
+      return false unless DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(extension.to_s.downcase)
+
+      # Probe other planner formats as audio containers, never as playlists
+      # that only refer to audio stored somewhere else.
+      return AudiobookProbeService.valid?(file.path, format_whitelist: DIRECT_AUDIOBOOK_PROBE_FORMATS) == true
     end
     structurally_valid && AudiobookProbeService.valid?(file.path) == true
   end

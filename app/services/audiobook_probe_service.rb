@@ -22,10 +22,10 @@ class AudiobookProbeService
   class << self
     attr_writer :probe
 
-    def valid?(path)
+    def valid?(path, format_whitelist: nil)
       return @probe.call(path) if @probe
 
-      probe_file(path)
+      probe_file(path, format_whitelist: format_whitelist)
     end
 
     def reset_probe!
@@ -34,7 +34,8 @@ class AudiobookProbeService
 
     private
 
-    def probe_file(path)
+    def probe_file(path, format_whitelist:)
+      format_options = format_whitelist ? [ "-format_whitelist", format_whitelist.join(",") ] : []
       Tempfile.create([ "shelfarr-ffprobe-", ".json" ]) do |output|
         pid = Process.spawn(
           "ffprobe",
@@ -45,6 +46,7 @@ class AudiobookProbeService
           "-select_streams", "a:0",
           "-show_entries", "stream=codec_type,duration:format=duration",
           "-of", "json",
+          *format_options,
           "-i", path.to_s,
           in: File::NULL,
           out: output.path,
