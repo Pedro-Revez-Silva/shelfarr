@@ -1462,6 +1462,9 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   test "custom provider direct WAV download reaches publication" do
+    skip "ffprobe not available" unless system("ffprobe", "-version", out: File::NULL, err: File::NULL)
+
+    AudiobookProbeService.reset_probe!
     Dir.mktmpdir do |dir|
       setup_custom_provider_audiobook_download(output_path: dir)
 
@@ -1976,6 +1979,9 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal "opus", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title .opus"))
     assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title MP3 64kbps"))
     assert_equal "wma", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title WMA"))
+    assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("AA Milne - Winnie the Pooh [MP3]"))
+    assert_nil job.send(:infer_audiobook_extension, "https://files.test/download", result.new("AA Milne - Winnie the Pooh"))
+    assert_equal "aa", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title [AA]"))
   end
 
   test "direct audiobook file extensions are the planner audio extensions" do

@@ -40,7 +40,7 @@ class DownloadJob < ApplicationJob
   DIRECT_AUDIOBOOK_EXTENSIONS = (DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS + DIRECT_AUDIOBOOK_FILE_EXTENSIONS).freeze
   # Extensions that are also ordinary words ("Live at the Opus") and need
   # format-style context (".opus", "[opus]", "(opus)") in a title to count.
-  AMBIGUOUS_AUDIOBOOK_EXTENSIONS = %w[opus].freeze
+  AMBIGUOUS_AUDIOBOOK_EXTENSIONS = %w[aa opus].freeze
 
   def perform(download_id)
     download = Download.find_by(id: download_id)
@@ -1133,9 +1133,9 @@ class DownloadJob < ApplicationJob
 
       # Probe other planner formats as audio containers, never as playlists
       # that only refer to audio stored somewhere else.
-      return AudiobookProbeService.valid?(file.path, format_whitelist: DIRECT_AUDIOBOOK_PROBE_FORMATS) == true
+      return AudiobookProbeService.valid?(file, format_whitelist: DIRECT_AUDIOBOOK_PROBE_FORMATS) == true
     end
-    structurally_valid && AudiobookProbeService.valid?(file.path) == true
+    structurally_valid && AudiobookProbeService.valid?(file) == true
   end
 
   def valid_mp3_stream?(file, head, file_size)

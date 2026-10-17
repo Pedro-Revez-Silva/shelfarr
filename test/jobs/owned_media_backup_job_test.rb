@@ -546,6 +546,24 @@ class OwnedMediaBackupJobTest < ActiveJob::TestCase
     end
   end
 
+  test "prefers playable legacy output over retained Audible originals" do
+    %w[m4a mp3].each do |extension|
+      Dir.mktmpdir("libation-import") do |root|
+        book_dir = File.join(root, "Book")
+        FileUtils.mkdir_p(book_dir)
+        primary = File.join(book_dir, "A Title.#{extension}")
+        File.binwrite(primary, "primary output")
+        %w[aa aax aaxc].each do |original|
+          File.binwrite(File.join(book_dir, "A Title.#{original}"), "retained original")
+        end
+
+        with_env("SHELFARR_LIBATION_IMPORT_ROOT" => root) do
+          assert_equal Pathname(primary), OwnedMediaBackupJob.new.send(:select_audio_artifact, [ "/data/Book" ])
+        end
+      end
+    end
+  end
+
   test "rejects ambiguous multipart audio and requires companion one-file output" do
     Dir.mktmpdir("libation-import") do |root|
       book_dir = File.join(root, "Book")
