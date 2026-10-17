@@ -167,8 +167,8 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     assert_idle_attention_clears_downloading(request)
   end
 
-  test "blocklist_and_select_next cancels active downloads and runs selection even when auto-select is disabled" do
-    SettingsService.set(:auto_select_enabled, false)
+  test "blocklist_and_select_next cancels active downloads and selects the next candidate when auto-select is enabled" do
+    SettingsService.set(:auto_select_enabled, true)
     request = build_request
     selected = create_result(request, guid: "failed", status: :selected, seeders: 100)
     fallback = create_result(request, guid: "fallback", status: :rejected, seeders: 20)
@@ -185,6 +185,30 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     assert active_download.reload.failed?
     assert selected.reload.blocklisted?
     assert fallback.reload.selected?
+    assert request.reload.downloading?
+    assert_not request.attention_needed?
+  end
+
+  test "blocklist_and_select_next blocklists and flags manual review when auto-select is disabled" do
+    SettingsService.set(:auto_select_enabled, false)
+    request = build_request
+    selected = create_result(request, guid: "failed", status: :selected, seeders: 100)
+    fallback = create_result(request, guid: "fallback", status: :rejected, seeders: 20)
+    active_download = request.downloads.create!(name: selected.title, search_result: selected, status: :queued)
+
+    outcome = nil
+    assert_no_difference -> { request.downloads.count } do
+      assert_no_enqueued_jobs only: DownloadJob do
+        outcome = request.blocklist_and_select_next!(reason: "Blocklisted manually")
+      end
+    end
+
+    assert_equal :manual_review, outcome
+    assert active_download.reload.failed?
+    assert selected.reload.blocklisted?
+    assert fallback.reload.rejected?
+    assert_includes request.reload.issue_description, "Select another release manually"
+    assert_idle_attention_clears_downloading(request)
   end
 
   test "blocklist_and_select_next returns no_selected_result without a selection" do

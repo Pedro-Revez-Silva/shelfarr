@@ -274,16 +274,7 @@ class Request < ApplicationRecord
     download.update!(status: :failed) unless download.failed?
 
     blocklisted = blocklist_result!(download.search_result, reason: reason, download: download)
-
-    unless auto_select_enabled?
-      manual_message = if blocklisted
-        "Download failed: #{reason}. The failed release was blocklisted. Select another release manually."
-      else
-        "Download failed: #{reason}. Select another release manually."
-      end
-      mark_for_attention_after_idle_failure!(manual_message)
-      return :manual_review
-    end
+    return manual_review_after_release_failure!(reason, blocklisted:) unless auto_select_enabled?
 
     attempt_next_candidate!(failure_reason: reason)
   end
@@ -292,13 +283,16 @@ class Request < ApplicationRecord
     target = search_result || search_results.selected.first
     return :no_selected_result unless target
 
+    blocklisted = false
     ActiveRecord::Base.transaction do
       downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
         cancel_download(download)
       end
 
-      blocklist_result!(target, reason: reason)
+      blocklisted = blocklist_result!(target, reason: reason)
     end
+
+    return manual_review_after_release_failure!(reason, blocklisted:) unless auto_select_enabled?
 
     attempt_next_candidate!(failure_reason: reason)
   end
@@ -740,6 +734,16 @@ class Request < ApplicationRecord
 
   def broadcast_show_refresh_later_if_needed
     broadcast_show_refresh_later if (previous_changes.keys & SHOW_PAGE_BROADCAST_ATTRIBUTES).any?
+  end
+
+  def manual_review_after_release_failure!(reason, blocklisted:)
+    manual_message = if blocklisted
+      "Download failed: #{reason}. The failed release was blocklisted. Select another release manually."
+    else
+      "Download failed: #{reason}. Select another release manually."
+    end
+    mark_for_attention_after_idle_failure!(manual_message)
+    :manual_review
   end
 
   def attempt_next_candidate!(failure_reason:, mark_exhausted: true)

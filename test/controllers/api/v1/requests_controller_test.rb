@@ -545,6 +545,39 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
     assert fallback.reload.selected?
   end
 
+  test "blocklist_and_next blocklists the selected release without grabbing another when auto-select is disabled" do
+    SettingsService.set(:auto_select_enabled, false)
+    SettingsService.set(:auto_select_confidence_threshold, 50)
+    SettingsService.set(:auto_select_min_seeders, 1)
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    _token, raw = APIToken.issue!(
+      name: "Admin",
+      user: users(:two),
+      scopes: %w[requests:admin]
+    )
+    request = requests(:pending_request)
+    selected = search_results(:selected_result)
+    fallback = search_results(:pending_result)
+    fallback.update!(confidence_score: 95, detected_language: "en")
+
+    assert_no_enqueued_jobs only: DownloadJob do
+      post blocklist_and_next_api_v1_request_path(request),
+        headers: { "Authorization" => "Bearer #{raw}" }
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_nil body["selected_result"]
+    assert_equal "not_found", body["status"]
+    assert_equal true, body["attention_needed"]
+    assert_includes body["issue_description"], "Select another release manually"
+    assert selected.reload.blocklisted?
+    assert_not fallback.reload.selected?
+    assert_equal 0, request.downloads.count
+  end
+
   test "blocklist_and_next returns exhausted request payload" do
     SettingsService.set(:auto_select_enabled, true)
     SettingsService.set(:auto_select_confidence_threshold, 50)
