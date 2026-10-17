@@ -1955,6 +1955,15 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal "opus", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title [OPUS]"))
     assert_equal "opus", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title .opus"))
     assert_equal "mp3", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title MP3 64kbps"))
+    assert_equal "wma", job.send(:infer_audiobook_extension, "https://files.test/download", result.new("Book Title WMA"))
+  end
+
+  test "direct audiobook file extensions are the planner audio extensions" do
+    planner = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
+
+    assert_includes planner, "m4b"
+    assert_equal planner, DownloadJob::DIRECT_AUDIOBOOK_FILE_EXTENSIONS
+    assert_includes DownloadJob::DIRECT_AUDIOBOOK_FILE_EXTENSIONS, "m4b"
   end
 
   test "rejects shallow ADIF AAC signatures as audiobook content" do

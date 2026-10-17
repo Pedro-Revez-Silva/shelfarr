@@ -30,7 +30,7 @@ class DownloadJob < ApplicationJob
   DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL = 30.seconds
   DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
-  DIRECT_AUDIOBOOK_FILE_EXTENSIONS = %w[m4b mp3 m4a aac flac ogg opus].freeze
+  DIRECT_AUDIOBOOK_FILE_EXTENSIONS = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
   DIRECT_AUDIOBOOK_IMAGE_EXTENSIONS = %w[jpg jpeg png webp].freeze
   DIRECT_AUDIOBOOK_TEXT_EXTENSIONS = %w[txt].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_FILE_EXTENSIONS = (
