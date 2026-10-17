@@ -45,8 +45,8 @@ module Admin
         next if SettingsService.env_managed?(key)
         next if autosave? && !autosave_setting_keys.include?(key.to_s)
         next if autosave? && SettingsService.manual_save_setting_key?(key)
-        next if manual_setting_manifest? && SettingsService.manual_save_setting_key?(key) && !manual_setting_keys.include?(key.to_s)
-        next if preserve_blank_secret?(key, value)
+        next if unchanged_secret?(key, value)
+        next if skip_unlisted_manual_setting?(key)
 
         value = normalize_setting_value(key, value)
         error = validate_setting_value(key, value)
@@ -843,6 +843,20 @@ module Admin
 
     def preserve_blank_secret?(key, value)
       secret_setting_key?(key) && value.blank? && SettingsService.get(key).present?
+    end
+
+    def unchanged_secret?(key, value)
+      return false unless secret_setting_key?(key)
+
+      value.blank? || value.to_s == SettingsService.get(key).to_s
+    end
+
+    def skip_unlisted_manual_setting?(key)
+      return false unless manual_setting_manifest?
+      return false unless SettingsService.manual_save_setting_key?(key)
+      return false if secret_setting_key?(key)
+
+      !manual_setting_keys.include?(key.to_s)
     end
 
     def secret_setting_key?(key)

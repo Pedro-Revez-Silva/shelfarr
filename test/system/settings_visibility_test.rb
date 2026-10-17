@@ -194,42 +194,44 @@ class SettingsVisibilityTest < ApplicationSystemTestCase
     assert_equal "saved-zlibrary-password", SettingsService.get(:zlibrary_password)
   end
 
-  test "password manager replacement text does not overwrite stored api keys" do
+  test "insertReplacementText on an api key is stored and a later blank save keeps it" do
     SettingsService.set(:indexer_provider, "prowlarr")
     SettingsService.set(:prowlarr_url, "http://prowlarr-save.example.test")
     SettingsService.set(:prowlarr_api_key, "stored-prowlarr-key")
     open_settings
     assert_field "Prowlarr Api Key", with: "", placeholder: "********"
 
-    # Firefox autofill fires beforeinput and input with insertReplacementText.
-    # That is not a typed or pasted edit, so Save All must ignore it.
-    replace_secret_like_password_manager "Prowlarr Api Key", "autofilled-password"
+    replace_secret_like_password_manager "Prowlarr Api Key", "posted-prowlarr-key"
     save_all
 
     submission = page.evaluate_script("window.settingsVisibilitySubmissions.at(-1)")
-    assert_not_includes submission.fetch("manualKeys"), "prowlarr_api_key"
-    assert_equal "stored-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_equal "posted-prowlarr-key", submission.dig("values", "settings[prowlarr_api_key]")
+    assert_equal "posted-prowlarr-key", SettingsService.get(:prowlarr_api_key)
     assert_field "Prowlarr Api Key", with: "", placeholder: "********"
-    assert_no_match "autofilled-password", page.html
+    assert_no_match "posted-prowlarr-key", page.html
+
+    save_all
+
+    assert_equal "", page.evaluate_script("window.settingsVisibilitySubmissions.at(-1).values['settings[prowlarr_api_key]']")
+    assert_equal "posted-prowlarr-key", SettingsService.get(:prowlarr_api_key)
+    assert_field "Prowlarr Api Key", with: "", placeholder: "********"
   end
 
-  test "a paste that does not change the field does not save an autofilled api key" do
+  test "a posted api key already sitting in the field is stored on save all" do
     SettingsService.set(:indexer_provider, "jackett")
     SettingsService.set(:jackett_url, "http://jackett-save.example.test")
     SettingsService.set(:jackett_api_key, "stored-jackett-key")
     open_settings
     assert_field "Jackett Api Key", with: "", placeholder: "********"
 
-    paste_without_changing "Jackett Api Key", "autofilled-jackett-password"
+    paste_without_changing "Jackett Api Key", "posted-jackett-key"
     save_all
 
     submission = page.evaluate_script("window.settingsVisibilitySubmissions.at(-1)")
-    assert_not_includes submission.fetch("manualKeys"), "jackett_api_key"
-    # The prefilled value stays in the field, so the body still contains it.
-    # It is not a manual edit, and the server must leave the stored key alone.
-    assert_equal "stored-jackett-key", SettingsService.get(:jackett_api_key)
+    assert_equal "posted-jackett-key", submission.dig("values", "settings[jackett_api_key]")
+    assert_equal "posted-jackett-key", SettingsService.get(:jackett_api_key)
     assert_field "Jackett Api Key", with: "", placeholder: "********"
-    assert_no_match "autofilled-jackett-password", page.html
+    assert_no_match "posted-jackett-key", page.html
   end
 
   test "clearing a pasted api key before save keeps the stored secret" do
