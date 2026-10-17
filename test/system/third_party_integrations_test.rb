@@ -308,7 +308,7 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     assert_equal "commit", submission.fetch("submitter")
     assert_not_includes submission.fetch("fields"), "autosave"
     assert_equal "", SettingsService.get(:bookorbit_username)
-    assert_equal "", SettingsService.get(:bookorbit_password)
+    assert_equal "autofilled-password", SettingsService.get(:bookorbit_password)
     assert_field "BookOrbit Password", with: ""
     assert_equal 2, page.evaluate_script("window.settingsBulkUpdateCount")
     assert_selector "#settings-form[data-autofill-test-node='original']"
