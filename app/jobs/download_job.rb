@@ -1128,7 +1128,9 @@ class DownloadJob < ApplicationJob
     when "ogg", "opus"
       valid_ogg_stream?(file, file_size)
     else
-      false
+      # Other planner formats use the bounded audio probe below. Keep the
+      # existing structural checks for formats with dedicated validators.
+      DIRECT_AUDIOBOOK_FILE_EXTENSIONS.include?(extension.to_s.downcase)
     end
     structurally_valid && AudiobookProbeService.valid?(file.path) == true
   end

@@ -4,7 +4,8 @@
 <%= form_with url: submit_path, method: :post,
     multipart: true,
     class: "space-y-6",
-    data: { controller: "upload-form", upload_form_bulk_value: bulk_upload } do |f| %>
+    data: { controller: "upload-form", upload_form_bulk_value: bulk_upload,
+      upload_form_supported_extensions_value: Upload::SUPPORTED_EXTENSIONS } do |f| %>
   <%= hidden_field_tag :upload_mode, "files", data: { upload_form_target: "mode" } if bulk_upload %>
 
   <% if request_context %>
@@ -41,7 +42,7 @@
                  <%= "multiple" if bulk_upload %>
                  data-upload-form-target="input"
                  data-action="change->upload-form#fileSelected"
-                 accept=".m4a,.m4b,audio/mp4,.mp3,audio/mpeg,.zip,.rar,.epub,.pdf,.mobi,.azw3">
+                 accept="<%= (Upload::SUPPORTED_EXTENSIONS.map { |extension| ".#{extension}" } + %w[audio/mp4 audio/mpeg]).join(',') %>">
         </label>
         <% if bulk_upload %>
           <label class="inline-flex cursor-pointer rounded px-1 focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500">
@@ -60,7 +61,9 @@
       </div>
 
       <p class="text-sm text-gray-500">
-        Audiobooks: m4a, m4b, mp3, zip, rar | Ebooks: epub, pdf, mobi, azw3
+        Audiobooks: <%= Upload::AUDIOBOOK_EXTENSIONS.join(', ') %> |
+        Ebooks: <%= Upload::EBOOK_EXTENSIONS.join(', ') %> |
+        Comics: <%= Upload::COMICBOOK_EXTENSIONS.join(', ') %>
       </p>
       <% if bulk_upload %>
         <p class="text-sm text-gray-500">

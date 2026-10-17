@@ -2,9 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
   static targets = ["dropzone", "input", "folderInput", "filename", "mode", "submit"]
-  static values = { bulk: Boolean }
-
-  supportedExtensions = ["m4a", "m4b", "mp3", "zip", "rar", "epub", "pdf", "mobi", "azw3"]
+  static values = { bulk: Boolean, supportedExtensions: Array }
 
   dragover(event) {
     event.preventDefault()
@@ -116,7 +114,7 @@ export default class extends Controller {
 
   supportedFile(file) {
     const extension = file.name.split(".").pop()?.toLowerCase()
-    return this.supportedExtensions.includes(extension)
+    return this.supportedExtensionsValue.includes(extension)
   }
 
   keepSupportedFolderFiles(files) {
