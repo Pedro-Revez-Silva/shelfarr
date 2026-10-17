@@ -145,7 +145,23 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_not SettingsService.get(:ebooks_com_enabled)
   end
 
-  test "autosave validates only values authorized by its dirty keys" do
+  test "autosave validates posted values that the key list omitted" do
+    patch bulk_update_admin_settings_url,
+      params: {
+        autosave: "true",
+        autosave_keys: "ebooks_com_enabled",
+        settings: {
+          ebooks_com_enabled: "true",
+          ebooks_com_country_code: "Portugal"
+        }
+      },
+      headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :unprocessable_entity
+    assert_match "ISO 3166-1", response.body
+    assert_not SettingsService.get(:ebooks_com_enabled)
+    assert_equal "", SettingsService.get(:ebooks_com_country_code)
+
     patch bulk_update_admin_settings_url,
       params: {
         autosave: "true",
@@ -157,23 +173,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
-    assert_response :unprocessable_entity
-    assert_match "requires a valid ISO 3166-1 Buyer Country Code", response.body
-    assert_not SettingsService.get(:ebooks_com_enabled)
-    assert_equal "", SettingsService.get(:ebooks_com_country_code)
-
-    patch bulk_update_admin_settings_url,
-      params: {
-        autosave: "true",
-        autosave_keys: "ebooks_com_enabled,ebooks_com_country_code",
-        settings: {
-          ebooks_com_enabled: "true",
-          ebooks_com_country_code: "US"
-        }
-      },
-      headers: { "Accept" => "text/vnd.turbo-stream.html" }
-
-    assert_response :success
+    assert_response :no_content
     assert SettingsService.get(:ebooks_com_enabled)
     assert_equal "US", SettingsService.get(:ebooks_com_country_code)
   end
@@ -655,10 +655,13 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_no_match "https://discord.com/api/webhooks/existing", response.body
   end
 
-  test "autosave rejects manual settings in its dirty manifest" do
+  test "autosave does not write manual settings posted beside a dirty value" do
     SettingsService.set(:library_platform, "audiobookshelf")
     SettingsService.set(:bookorbit_username, "existing-user")
     SettingsService.set(:bookorbit_password, "existing-password")
+    platform_stamp = setting_row_stamp("library_platform")
+    username_stamp = setting_row_stamp("bookorbit_username")
+    password_stamp = setting_row_stamp("bookorbit_password")
 
     patch bulk_update_admin_settings_url,
       params: {
@@ -673,14 +676,15 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
       },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
-    assert_response :unprocessable_entity
-    assert_match "Invalid autosave setting manifest", response.body
-    assert_equal 10, SettingsService.get(:max_retries)
+    assert_response :no_content
+    assert_empty response.body
+    assert_equal 23, SettingsService.get(:max_retries)
     assert_equal "audiobookshelf", SettingsService.get(:library_platform)
     assert_equal "existing-user", SettingsService.get(:bookorbit_username)
     assert_equal "existing-password", SettingsService.get(:bookorbit_password)
-    assert_select "turbo-stream[target='flash']", count: 1
-    assert_select "turbo-stream[target='settings-form']", count: 0
+    assert_equal platform_stamp, Setting.find_by!(key: "library_platform").updated_at
+    assert_equal username_stamp, Setting.find_by!(key: "bookorbit_username").updated_at
+    assert_equal password_stamp, Setting.find_by!(key: "bookorbit_password").updated_at
   end
 
   test "manual manifest excludes untouched password manager values from explicit save" do
@@ -751,14 +755,22 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 10, SettingsService.get(:max_retries)
   end
 
-  test "autosave requires a valid nonempty dirty manifest" do
+  test "autosave with an empty key list writes the dirty value and leaves an unchanged field" do
+    SettingsService.set(:download_check_interval, 60)
+    interval_stamp = setting_row_stamp("download_check_interval")
+
     patch bulk_update_admin_settings_url,
-      params: { autosave: "true", autosave_keys: "", settings: { max_retries: "24" } },
+      params: {
+        autosave: "true",
+        autosave_keys: "",
+        settings: { max_retries: "24", download_check_interval: "60" }
+      },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
-    assert_response :unprocessable_entity
-    assert_match "Invalid autosave setting manifest", response.body
-    assert_equal 10, SettingsService.get(:max_retries)
+    assert_response :no_content
+    assert_equal 24, SettingsService.get(:max_retries)
+    assert_equal 60, SettingsService.get(:download_check_interval)
+    assert_equal interval_stamp, Setting.find_by!(key: "download_check_interval").updated_at
   end
 
   test "issues 87 and 91 autosave below download settings keeps the edit and does not revert other keys" do
@@ -780,6 +792,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     patch bulk_update_admin_settings_url,
       params: {
         autosave: "true",
+        autosave_keys: "",
         settings: {
           audiobook_preferred_formats: "m4b, mp3",
           ebook_preferred_formats: "epub",
@@ -848,6 +861,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     patch bulk_update_admin_settings_url,
       params: {
         autosave: "true",
+        autosave_keys: "",
         settings: { prowlarr_api_key: "" }
       },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
@@ -869,6 +883,7 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     patch bulk_update_admin_settings_url,
       params: {
         autosave: "true",
+        autosave_keys: "",
         settings: {
           max_retries: "24",
           allow_nonatomic_nfs_directory_publication: "true",
@@ -2306,12 +2321,14 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
   test "successful autosave does not replace the settings form" do
     SettingsService.set(:rate_limit_delay, 5)
+    SettingsService.set(:download_check_interval, 60)
+    interval_stamp = setting_row_stamp("download_check_interval")
 
     patch bulk_update_admin_settings_url,
       params: {
         autosave: "true",
         autosave_keys: "max_retries",
-        settings: { max_retries: "24", rate_limit_delay: "2" }
+        settings: { max_retries: "24", rate_limit_delay: "2", download_check_interval: "60" }
       },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
@@ -2319,7 +2336,9 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :no_content
     assert_empty response.body
     assert_equal 24, SettingsService.get(:max_retries)
-    assert_equal 5, SettingsService.get(:rate_limit_delay)
+    assert_equal 2, SettingsService.get(:rate_limit_delay)
+    assert_equal 60, SettingsService.get(:download_check_interval)
+    assert_equal interval_stamp, Setting.find_by!(key: "download_check_interval").updated_at
   end
 
   test "side effect failure reports a warning without retrying persisted settings" do

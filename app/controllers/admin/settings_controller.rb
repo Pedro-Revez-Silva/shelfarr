@@ -37,13 +37,11 @@ module Admin
       errors = []
       changed_keys = []
       validate_submitted_setting_keys!
-      validate_autosave_setting_keys!
       validate_manual_setting_keys!
 
       entries = []
       params[:settings]&.each do |key, value|
         next if SettingsService.env_managed?(key)
-        next if autosave? && autosave_manifest? && !autosave_setting_keys.include?(key.to_s)
         next if autosave? && SettingsService.manual_save_setting_key?(key)
         next if manual_setting_manifest? && SettingsService.manual_save_setting_key?(key) && !manual_setting_keys.include?(key.to_s)
         next if preserve_blank_secret?(key, value)
@@ -449,14 +447,6 @@ module Admin
       params[:autosave] == "true"
     end
 
-    def autosave_manifest?
-      params.key?(:autosave_keys)
-    end
-
-    def autosave_setting_keys
-      @autosave_setting_keys ||= params[:autosave_keys].to_s.split(",")
-    end
-
     def manual_setting_manifest?
       params.key?(:manual_keys)
     end
@@ -474,20 +464,6 @@ module Admin
         !SettingsService::DEFINITIONS.key?(key.to_sym)
       end
       raise ArgumentError, "Unknown setting: #{unknown_key}" if unknown_key
-    end
-
-    def validate_autosave_setting_keys!
-      return unless autosave?
-      # An omitted list means beforeinput never recorded one. The stored row is the check.
-      return unless autosave_manifest?
-
-      settings = params[:settings]
-      invalid = settings.nil? || autosave_setting_keys.empty? || autosave_setting_keys.any? do |key|
-        !SettingsService::DEFINITIONS.key?(key.to_sym) ||
-          SettingsService.manual_save_setting_key?(key) ||
-          !settings.key?(key)
-      end
-      raise ArgumentError, "Invalid autosave setting manifest" if invalid
     end
 
     def validate_manual_setting_keys!
@@ -775,8 +751,7 @@ module Admin
 
     def setting_value_for_validation(key)
       settings = params[:settings]
-      submitted = settings&.key?(key.to_s) && (!autosave? || !autosave_manifest? || autosave_setting_keys.include?(key.to_s))
-      submitted ? settings[key.to_s] : SettingsService.get(key)
+      settings&.key?(key.to_s) ? settings[key.to_s] : SettingsService.get(key)
     end
 
     def stored_setting_changed?(key, normalized_value)
@@ -787,6 +762,7 @@ module Admin
       posted.typed_value = normalized_value
       stored = Setting.find_by(key: key.to_s)
       if stored
+        # "1" and "true" are one boolean row, so a matching typed value is not a write.
         posted.value != stored.value && posted.typed_value != stored.typed_value
       else
         default_setting = Setting.new(value_type: definition[:type])
