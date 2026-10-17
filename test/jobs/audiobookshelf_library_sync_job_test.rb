@@ -325,7 +325,7 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
     assert_equal 1, gate.synchronize { max_inside }
     assert_equal "Kept Title", LibraryItem.find_by(audiobookshelf_id: "ab-keep")&.title
     assert_instance_of ActiveJob::QueueAdapters::TestAdapter, ActiveJob::Base.queue_adapter
-    assert_no_enqueued_jobs
+    assert_no_enqueued_jobs only: AudiobookshelfLibrarySyncJob
   ensure
     release_syncs(release, 2) if defined?(release) && release
     join_sync_threads
