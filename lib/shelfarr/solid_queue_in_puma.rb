@@ -36,10 +36,10 @@ module Shelfarr
       def stop!
         return false unless @owner_pid == Process.pid
 
-        # Puma runs after_stopped inside the SIGTERM trap. Mutex and
-        # Thread#join there either raise or fail to schedule the joined
-        # thread, so the master never leaves the trap.
-        trap_context? ? stop_from_trap : stop_supervisor
+        # Puma can run shutdown hooks inside a signal trap, where Ruby forbids
+        # Mutex#synchronize. Keep signaling on an ordinary thread so it stays
+        # serialized with the sole reaper, including during interrupted startup.
+        Thread.new { stop_supervisor }.value
       end
 
       def running?
@@ -129,9 +129,8 @@ module Shelfarr
             end
           end
           if exited_pid
-            # Logging and signaling Puma while holding the mutex deadlocks
-            # shutdown: stop! needs that mutex to escalate to KILL, and the
-            # logger can block.
+            # Keep logging and signaling Puma outside the mutex: shutdown
+            # needs that mutex to escalate to KILL, and the logger can block.
             remove_pidfile(exited_pid)
             if stop_puma
               log("Solid Queue supervisor exited; stopping Puma")
@@ -144,58 +143,6 @@ module Shelfarr
         end
       rescue Errno::ESRCH
         nil
-      end
-
-      def stop_from_trap
-        @stopping = true
-        pid = wait_for_supervisor_pid
-        return true unless pid
-
-        signal_pid(pid, :INT)
-        return true if wait_pid(pid, SHUTDOWN_TIMEOUT)
-
-        signal_pid(-pid, :KILL)
-        wait_pid(pid, 1)
-        true
-      end
-
-      def wait_for_supervisor_pid
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
-        loop do
-          pid = @pid
-          return pid if pid
-
-          @stopping = true
-          return nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-
-          sleep 0.01
-        end
-      end
-
-      def wait_pid(pid, timeout)
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
-        loop do
-          begin
-            return true if Process.waitpid(pid, Process::WNOHANG)
-          rescue Errno::ECHILD
-            return true
-          end
-          return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-
-          sleep 0.05
-        end
-      end
-
-      def signal_pid(pid, signal)
-        Process.kill(signal, pid)
-      rescue Errno::ESRCH, Errno::EPERM
-        nil
-      end
-
-      def trap_context?
-        Mutex.new.synchronize { false }
-      rescue ThreadError
-        true
       end
 
       def signal_supervisor(signal)
