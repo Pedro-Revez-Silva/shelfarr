@@ -56,6 +56,7 @@ server = TCPServer.new("127.0.0.1", 0)
 port = server.addr[1]
 server.close
 puma_pid = nil
+puma_waiter = nil
 watchdog = Thread.new do
   sleep 240
   warn "Puma lifecycle probe exceeded 240 seconds (mode=#{mode})"

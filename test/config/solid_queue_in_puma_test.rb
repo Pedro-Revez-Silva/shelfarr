@@ -58,6 +58,48 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     end
   end
 
+  test "probe watchdog terminates startup before a Puma waiter exists" do
+    Dir.mktmpdir("sqip-watchdog") do |directory|
+      script = <<~'RUBY'
+        require "fileutils"
+        require "pathname"
+        module ActiveJob
+          class Base
+            def self.queue_adapter=(_adapter); end
+          end
+        end
+        module Rails
+          def self.root = Pathname.new(Dir.pwd)
+        end
+        module FastProbeWatchdog
+          def sleep(seconds = nil)
+            if seconds == 240
+              $probe_watchdog = Thread.current
+              seconds = 0.01
+            end
+            super(seconds)
+          end
+        end
+        Kernel.prepend(FastProbeWatchdog)
+        class << Process
+          def spawn(*)
+            sleep 0.001 until $probe_watchdog
+            $probe_watchdog.join
+            raise "watchdog returned without terminating the blocked probe"
+          end
+        end
+        load Rails.root.join("test/support/solid_queue_in_puma_probe.rb")
+      RUBY
+      output, error, status, timed_out = capture_signal_trap_probe(
+        { "SOLID_QUEUE_IN_PUMA_LOG" => File.join(directory, "jobs.log"),
+          "SOLID_QUEUE_IN_PUMA_PIDFILE" => File.join(directory, "supervisor.pid") }, script
+      )
+
+      refute timed_out, "watchdog failed to terminate the blocked probe"
+      assert status.signaled? && status.termsig == Signal.list.fetch("KILL"), [ output, error ].join("\n")
+    end
+  end
+
   test "helper starts a fresh bin/jobs process instead of forking the supervisor" do
     source = Rails.root.join("lib/shelfarr/solid_queue_in_puma.rb").read
 
@@ -228,6 +270,22 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     end
   ensure
     reap_process(sleeper)
+  end
+
+  test "cleanup does not signal a child that was already reaped" do
+    child = spawn_ruby("exit")
+    Process.waitpid(child)
+    reaped_pid = child
+    child = nil
+    signals = []
+
+    Process.stub(:kill, ->(*arguments) { signals << arguments }) do
+      reap_process(reaped_pid, group: true)
+    end
+
+    assert_empty signals
+  ensure
+    reap_process(child)
   end
 
   test "reaper stops puma when the supervisor exits on its own" do
@@ -450,10 +508,11 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
 
   def reap_process(pid, group: false)
     return unless pid
+    return if Process.waitpid(pid, Process::WNOHANG)
 
     signal = group ? -pid : pid
     Process.kill(:KILL, signal)
-  rescue Errno::ESRCH, Errno::EPERM
+  rescue Errno::ECHILD, Errno::ESRCH, Errno::EPERM
     nil
   ensure
     begin
