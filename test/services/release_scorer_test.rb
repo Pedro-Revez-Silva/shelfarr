@@ -445,12 +445,30 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_not score.high_confidence?
   end
 
+  test "does not treat R.U.R. as a short title" do
+    key = TitleKey.new("R.U.R.")
+
+    assert_equal "r u r", key.canonical
+    assert_includes key.forms, "rur"
+    assert_not key.short?
+    assert TitleKey.new("RUR").short?
+
+    @book.update!(title: "R.U.R.", author: "Karel Capek")
+    [
+      "RUR Karel Capek",
+      "Collected RUR Karel Capek",
+      "Collected R.U.R. Karel Capek"
+    ].each do |release_title|
+      score = ReleaseScorer.score(@request.search_results.new(title: release_title), @request)
+
+      assert_equal 100, score.breakdown[:title], release_title
+    end
+  end
+
   test "punctuationless title matching preserves phrase and short alias boundaries" do
     [
       [ "Catch-22", "Catch220 Joseph Heller" ],
       [ "Catch-22", "Scatch22 Joseph Heller" ],
-      [ "R.U.R.", "Collected RUR Karel Capek" ],
-      [ "R.U.R.", "Collected R.U.R. Karel Capek" ],
       [ "RUR", "Collected R.U.R. Karel Capek" ]
     ].each do |title, release_title|
       @book.update!(title: title)

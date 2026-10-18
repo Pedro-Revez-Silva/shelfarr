@@ -5,30 +5,6 @@ class ReleaseScorer
   COMIC_ISSUE_UNKNOWN_MAX_SCORE = 49
   COMIC_ISSUE_VALUE_PATTERN = '\d+(?:\.\d+)?(?:[a-z]|-[a-z])?'
 
-  ROMAN_NUMBER_TOKENS = {
-    "II" => "2",
-    "III" => "3",
-    "IV" => "4",
-    "V" => "5",
-    "VI" => "6",
-    "VII" => "7",
-    "VIII" => "8",
-    "IX" => "9",
-    "X" => "10",
-    "XI" => "11",
-    "XII" => "12",
-    "XIII" => "13",
-    "XIV" => "14",
-    "XV" => "15"
-  }.freeze
-
-  # Quotes are removed before transliteration, which would otherwise turn
-  # curly apostrophes into "?". Apostrophes specifically can also be a word
-  # break; that form is kept only for title scoring.
-  MATCHING_QUOTE_CHARACTERS = "'\"`´’‘"
-  APOSTROPHE_PATTERN = /['`´’‘]/
-  private_constant :MATCHING_QUOTE_CHARACTERS, :APOSTROPHE_PATTERN
-
   WEIGHTS = {
     title: 40,      # How well does the release title match the book title?
     author: 20,     # Is the author name present in the release title?
@@ -116,13 +92,13 @@ class ReleaseScorer
   def calculate_title_score
     return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
 
-    release_title = normalize_for_matching(@search_result.title)
+    release_key = TitleKey.new(@search_result.title)
     title_variants = SearchTitleVariantService.call(@book.title)
     book_titles = title_variants
-      .map { |title| normalize_for_matching(title) }
+      .map { |title| TitleKey.new(title).canonical }
       .reject(&:blank?)
 
-    return 0 if release_title.blank? || book_titles.empty?
+    return 0 if release_key.canonical.blank? || book_titles.empty?
 
     # Localized/original title aliases are equivalent only as complete phrases.
     # Very short inferred titles are too collision-prone unless they lead the
@@ -130,7 +106,7 @@ class ReleaseScorer
     if title_variants.any? { |title| exact_normalized_title_match?(title) }
       100
     else
-      book_titles.map { |title| trigram_similarity(release_title, title) }.max
+      book_titles.map { |title| trigram_similarity(release_key.canonical, title) }.max
     end
   end
 
@@ -143,11 +119,11 @@ class ReleaseScorer
   end
 
   def exact_normalized_title_match?(book_title)
-    title_variants = title_matching_text_variants(book_title)
-    short_title = title_variants.any? { |title| title.length < 4 }
-    title_matching_text_variants(@search_result.title).any? do |release_title|
-      title_variants.any? do |title|
-        exact_title_phrase_match?(release_title, title, short_title: short_title)
+    book_key = TitleKey.new(book_title)
+    release_key = TitleKey.new(@search_result.title)
+    book_key.forms.any? do |title|
+      release_key.forms.any? do |release_title|
+        exact_title_phrase_match?(release_title, title, short_title: book_key.short?)
       end
     end
   end
@@ -163,13 +139,15 @@ class ReleaseScorer
     return 50 if @comic_issue_match&.fetch(:status, nil) == :exact
     return 50 if @book.author.blank?  # Neutral if no author to match
 
-    release_title = normalize_for_matching(@search_result.title)
-    author = normalize_for_matching(@book.author)
+    release_key = TitleKey.new(@search_result.title)
+    author_key = TitleKey.new(@book.author)
+    release_title = release_key.canonical
+    author = author_key.canonical
 
     return 0 if release_title.blank? || author.blank?
 
-    return 100 if matching_text_variants(@search_result.title).any? do |title|
-      matching_text_variants(@book.author).any? { |name| title.include?(name) }
+    return 100 if release_key.substring_forms.any? do |title|
+      author_key.substring_forms.any? { |name| title.include?(name) }
     end
 
     author_parts = author.split
@@ -404,48 +382,6 @@ class ReleaseScorer
 
   def numeric_issue_number?(value)
     value.to_s.match?(/\A\d+\z/)
-  end
-
-  # Normalize text for matching. Transliterate letters (ü -> u, ß -> ss)
-  # and treat punctuation as word boundaries so scene-style dotted names
-  # stay tokenized. Apostrophes are removed so contractions stay one token.
-  def normalize_for_matching(text)
-    return "" if text.blank?
-
-    # Remove quotes first: transliteration replaces curly apostrophes with "?".
-    normalized = ActiveSupport::Inflector.transliterate(text.to_s.delete(MATCHING_QUOTE_CHARACTERS))
-      .downcase
-      .gsub(/[^a-z0-9]+/, " ")
-      .strip
-
-    normalize_number_tokens(normalized)
-  end
-
-  # Keep the previous punctuation-omitted representation for names such as
-  # Catch-22, R.U.R. and J.R.R. while retaining real whitespace boundaries.
-  def matching_text_variants(text)
-    punctuationless = ActiveSupport::Inflector.transliterate(text.to_s.delete(MATCHING_QUOTE_CHARACTERS))
-      .downcase.gsub(/[^a-z0-9\s]/, "").squish
-
-    [ normalize_for_matching(text), normalize_number_tokens(punctuationless) ].compact_blank.uniq
-  end
-
-  # Title scoring compares both apostrophe forms. Deleting the mark keeps
-  # English contractions as one token ("Ender's" -> "enders"). Treating it as
-  # a word break keeps elisions ("C'est" -> "c est") aligned with scene names
-  # that replace the apostrophe with a dot.
-  def title_matching_text_variants(text)
-    variants = matching_text_variants(text)
-    source = text.to_s
-    return variants unless source.match?(APOSTROPHE_PATTERN)
-
-    boundary = normalize_for_matching(source.gsub(APOSTROPHE_PATTERN, " "))
-    (variants + [ boundary ]).compact_blank.uniq
-  end
-
-  def normalize_number_tokens(text)
-    tokens = text.split
-    tokens.map { |token| ROMAN_NUMBER_TOKENS.fetch(token.upcase, token) }.join(" ")
   end
 
   def trigram_similarity(str1, str2)

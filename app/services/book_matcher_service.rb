@@ -186,10 +186,7 @@ class BookMatcherService
     def normalize(text)
       return "" if text.blank?
 
-      text
-        .downcase
-        .gsub("&", " and ")
-        .gsub(/[^a-z0-9\s]/, "")
+      TitleKey.new(text.to_s.gsub("&", " and ")).collapsed
         .gsub(SEQUENCE_MARKER_PATTERN) do
           marker = normalize_sequence_marker(Regexp.last_match(1))
           number = normalize_sequence_number(Regexp.last_match(2))

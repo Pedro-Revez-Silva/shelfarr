@@ -1136,12 +1136,10 @@ class SearchJob < ApplicationJob
   end
 
   def normalized_search_title(title)
-    title.to_s
+    prepared = title.to_s
       .gsub(/\([^)]*\)|\[[^\]]*\]/, " ")
       .gsub(/\b(?:volume|vol\.?|book|part)\s+(\d+)\b/i, "\\1")
-      .gsub(/['’]/, "")
-      .gsub(/[[:punct:]]+/, " ")
-      .squish
+    TitleKey.new(prepared).spaced
   end
 
   def numeric_title_variants(title)
