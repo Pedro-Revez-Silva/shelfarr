@@ -89,13 +89,25 @@ class TelegramPollingJobTest < ActiveJob::TestCase
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
 
     begin
-      # Both calls must remain inside the one-second scheduling reservation.
-      freeze_time do
+      # The reservation is one poll interval. Crossing a unix-second boundary
+      # during that interval must not open a second chain.
+      # travel_to drops usec unless asked; the reservation is sub-second.
+      start = Time.zone.local(2026, 10, 17, 12, 0, 0) + 0.99
+
+      travel_to(start, with_usec: true) do
         assert_enqueued_with(job: TelegramPollingJob) do
           TelegramPollingJob.ensure_running!
         end
+      end
 
+      travel_to(start + 0.5, with_usec: true) do
         assert_no_enqueued_jobs(only: TelegramPollingJob) do
+          TelegramPollingJob.ensure_running!
+        end
+      end
+
+      travel_to(start + TelegramPollingJob::POLL_INTERVAL_SECONDS + 0.01, with_usec: true) do
+        assert_enqueued_with(job: TelegramPollingJob) do
           TelegramPollingJob.ensure_running!
         end
       end

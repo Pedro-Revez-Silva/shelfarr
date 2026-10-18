@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "active_support/testing/constant_stubbing"
 require "fileutils"
 require "json"
 require "open3"
@@ -10,10 +11,13 @@ require "timeout"
 require "tmpdir"
 
 class SolidQueueInPumaTest < ActiveSupport::TestCase
+  include ActiveSupport::Testing::ConstantStubbing
+
   test "puma.rb starts the in-puma helper instead of the forking plugin" do
     source = Rails.root.join("config/puma.rb").read
 
     assert_includes source, "Shelfarr::SolidQueueInPuma"
+    assert_includes source, "force_shutdown_after 30"
     refute_match(/^\s*plugin\s+:solid_queue\b/, source)
   end
 
@@ -54,6 +58,48 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
 
       assert env.key?("COVERAGE")
       assert_nil env["COVERAGE"]
+    end
+  end
+
+  test "probe watchdog terminates startup before a Puma waiter exists" do
+    Dir.mktmpdir("sqip-watchdog") do |directory|
+      script = <<~'RUBY'
+        require "fileutils"
+        require "pathname"
+        module ActiveJob
+          class Base
+            def self.queue_adapter=(_adapter); end
+          end
+        end
+        module Rails
+          def self.root = Pathname.new(Dir.pwd)
+        end
+        module FastProbeWatchdog
+          def sleep(seconds = nil)
+            if seconds == 240
+              $probe_watchdog = Thread.current
+              seconds = 0.01
+            end
+            super(seconds)
+          end
+        end
+        Kernel.prepend(FastProbeWatchdog)
+        class << Process
+          def spawn(*)
+            sleep 0.001 until $probe_watchdog
+            $probe_watchdog.join
+            raise "watchdog returned without terminating the blocked probe"
+          end
+        end
+        load Rails.root.join("test/support/solid_queue_in_puma_probe.rb")
+      RUBY
+      output, error, status, timed_out = capture_signal_trap_probe(
+        { "SOLID_QUEUE_IN_PUMA_LOG" => File.join(directory, "jobs.log"),
+          "SOLID_QUEUE_IN_PUMA_PIDFILE" => File.join(directory, "supervisor.pid") }, script
+      )
+
+      refute timed_out, "watchdog failed to terminate the blocked probe"
+      assert status.signaled? && status.termsig == Signal.list.fetch("KILL"), [ output, error ].join("\n")
     end
   end
 
@@ -147,6 +193,221 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
     end
   end
 
+  test "stop ignores a supervisor owned by another process" do
+    with_queue_runtime do |helper|
+      helper.instance_variable_set(:@owner_pid, Process.pid + 1)
+
+      assert_equal false, helper.stop!
+    end
+  end
+
+  test "trap shutdown never signals a supervisor after the monitor has reaped it" do
+    Dir.mktmpdir("sqip-reaped-trap") do |directory|
+      script = <<~'RUBY'
+        require "json"
+        require "pathname"
+        require "shelfarr/solid_queue_in_puma"
+
+        trap(:INT, "IGNORE")
+        helper = Shelfarr::SolidQueueInPuma
+        child = Process.spawn(Gem.ruby, "-e", "exit")
+        pidfile = Pathname.new(ENV.fetch("SOLID_QUEUE_IN_PUMA_PIDFILE"))
+        pidfile.write("#{child}\n")
+        helper.instance_variable_set(:@owner_pid, Process.pid)
+        helper.instance_variable_set(:@pid, child)
+        helper.instance_variable_set(:@pidfile, pidfile)
+        helper.instance_variable_set(:@mutex, Mutex.new)
+        helper.instance_variable_set(:@stopping, false)
+
+        stale_signals = []
+        reaped = false
+        hooks = Module.new do
+          define_method(:waitpid) do |*args|
+            result = super(*args)
+            if result == child
+              reaped = true
+              Process.kill(:USR1, Process.pid)
+              # Widen the legal interval between waitpid and @pid = nil.
+              sleep 0.05
+            end
+            result
+          end
+          define_method(:kill) do |signal, pid|
+            if reaped && pid.abs == child
+              # Record the unsafe attempt without signaling a recycled PID.
+              stale_signals << [signal, pid]
+              next 1
+            end
+            super(signal, pid)
+          end
+        end
+        Process.singleton_class.prepend(hooks)
+        stopped = false
+        trap(:USR1) { stopped = helper.stop! }
+        gate = Queue.new
+        reaper = Thread.new { gate.pop; helper.send(:monitor_supervisor) }
+        helper.instance_variable_set(:@reaper, reaper)
+        gate << true
+        reaper.join
+        puts JSON.generate(stopped: stopped, stale_signals: stale_signals, pid: helper.current_pid)
+      RUBY
+      output, error, status, timed_out = capture_signal_trap_probe(
+        { "SOLID_QUEUE_IN_PUMA_PIDFILE" => File.join(directory, "supervisor.pid") }, script
+      )
+
+      refute timed_out, "shutdown deadlocked while the monitor was reaping"
+      assert status.success?, [ output, error ].join("\n")
+      result = JSON.parse(output.lines.last)
+      assert result.fetch("stopped")
+      assert_empty result.fetch("stale_signals")
+      assert_nil result.fetch("pid")
+    end
+  end
+
+  test "stop outside a trap returns false when no supervisor exists" do
+    with_queue_runtime do |helper|
+      helper.instance_variable_set(:@owner_pid, Process.pid)
+      helper.instance_variable_set(:@mutex, Mutex.new)
+      helper.instance_variable_set(:@pid, nil)
+      helper.instance_variable_set(:@reaper, nil)
+
+      assert_equal false, helper.stop!
+      assert helper.instance_variable_get(:@stopping)
+    end
+  end
+
+  test "stop inside a trap interrupts and reaps the supervisor" do
+    child = spawn_ruby("trap(:INT) { exit }; sleep 30", pgroup: true)
+    Dir.mktmpdir("sqip-trap-stop") do |directory|
+      with_queue_runtime do |helper|
+        assign_reaper_state(helper, pid: child, owner: Process.pid, pidfile: write_pidfile(directory, child), stopping: false)
+        helper.instance_variable_set(:@reaper, Thread.new { helper.send(:monitor_supervisor) })
+
+        result = nil
+        error = nil
+        previous = trap(:USR1) do
+          result = helper.stop!
+        rescue StandardError => caught
+          error = caught
+        end
+        Process.kill(:USR1, Process.pid)
+
+        assert_nil error
+        assert_equal true, result
+        assert_nil helper.current_pid
+      ensure
+        trap(:USR1, previous || "DEFAULT")
+      end
+    end
+  ensure
+    reap_process(child, group: true)
+  end
+
+  test "trap stop kills a supervisor that ignores INT" do
+    reader, writer = IO.pipe
+    child = Process.spawn(Gem.ruby, "-e", "trap(:INT, 'IGNORE'); ready = IO.for_fd(3); ready.puts('ready'); ready.close; sleep 30",
+      3 => writer, pgroup: true, out: File::NULL, err: File::NULL)
+    writer.close
+    assert IO.select([ reader ], nil, nil, 2), "child did not install its signal handler"
+    assert_equal "ready\n", reader.gets
+    Dir.mktmpdir("sqip-trap-kill") do |directory|
+      with_queue_runtime do |helper|
+        assign_reaper_state(helper, pid: child, owner: Process.pid, pidfile: write_pidfile(directory, child), stopping: false)
+        helper.instance_variable_set(:@reaper, Thread.new { helper.send(:monitor_supervisor) })
+        result = nil
+        previous = trap(:USR1) { result = helper.stop! }
+
+        stub_const(helper, :SHUTDOWN_TIMEOUT, 0.02) { Process.kill(:USR1, Process.pid) }
+
+        assert_equal true, result
+        assert_nil helper.current_pid
+      ensure
+        trap(:USR1, previous || "DEFAULT")
+      end
+    end
+  ensure
+    reader&.close
+    writer&.close unless writer&.closed?
+    reap_process(child, group: true)
+  end
+
+  test "cleanup does not signal a child that was already reaped" do
+    child = spawn_ruby("exit")
+    Process.waitpid(child)
+    reaped_pid = child
+    child = nil
+    signals = []
+
+    Process.stub(:kill, ->(*arguments) { signals << arguments }) do
+      reap_process(reaped_pid, group: true)
+    end
+
+    assert_empty signals
+  ensure
+    reap_process(child)
+  end
+
+  test "reaper stops puma when the supervisor exits on its own" do
+    child = spawn_ruby("exit")
+    owner = spawn_ruby("trap(:INT) { exit }; sleep 30")
+    with_queue_runtime do |helper|
+      Dir.mktmpdir("sqip-reaper") do |directory|
+        pidfile = write_pidfile(directory, child)
+        assign_reaper_state(helper, pid: child, owner: owner, pidfile: pidfile, stopping: false)
+
+        helper.send(:monitor_supervisor)
+
+        assert_nil helper.instance_variable_get(:@pid)
+        refute_path_exists pidfile
+      end
+    end
+    assert_process_exited(owner)
+  ensure
+    reap_process(child)
+    reap_process(owner)
+  end
+
+  test "reaper does not signal puma for an exit it already requested" do
+    child = spawn_ruby("exit")
+    with_queue_runtime do |helper|
+      Dir.mktmpdir("sqip-reaper-stopping") do |directory|
+        assign_reaper_state(helper, pid: child, owner: Process.pid, pidfile: write_pidfile(directory, child), stopping: true)
+
+        helper.send(:monitor_supervisor)
+
+        assert Process.kill(0, Process.pid)
+      end
+    end
+  ensure
+    reap_process(child)
+  end
+
+  test "reaper treats a vanished supervisor as already gone" do
+    missing = unused_pid
+    with_queue_runtime do |helper|
+      Dir.mktmpdir("sqip-reaper-missing") do |directory|
+        assign_reaper_state(helper, pid: missing, owner: missing, pidfile: write_pidfile(directory, missing), stopping: false)
+
+        assert_nil helper.send(:monitor_supervisor)
+      end
+    end
+  end
+
+  test "reaper waits while the supervisor is still running" do
+    child = spawn_ruby("sleep 0.3")
+    with_queue_runtime do |helper|
+      Dir.mktmpdir("sqip-reaper-wait") do |directory|
+        assign_reaper_state(helper, pid: child, owner: Process.pid, pidfile: write_pidfile(directory, child), stopping: true)
+
+        helper.send(:monitor_supervisor)
+
+        assert_nil helper.instance_variable_get(:@pid)
+      end
+    end
+  ensure
+    reap_process(child)
+  end
+
   private
 
   def run_puma_probe(mode)
@@ -229,6 +490,81 @@ class SolidQueueInPumaTest < ActiveSupport::TestCase
       storage/#{prefix}_cable.sqlite3-wal
       storage/#{prefix}_cable.sqlite3-shm
     ].map { |relative| Rails.root.join(relative) }
+  end
+
+  def with_queue_runtime
+    helper = Shelfarr::SolidQueueInPuma
+    saved = helper.instance_variables.to_h { |name| [ name, helper.instance_variable_get(name) ] }
+    yield helper
+  ensure
+    helper.instance_variables.each do |name|
+      helper.remove_instance_variable(name)
+    end
+    saved&.each do |name, value|
+      helper.instance_variable_set(name, value)
+    end
+  end
+
+  def assign_reaper_state(helper, pid:, owner:, pidfile:, stopping:)
+    helper.instance_variable_set(:@mutex, Mutex.new)
+    helper.instance_variable_set(:@pid, pid)
+    helper.instance_variable_set(:@owner_pid, owner)
+    helper.instance_variable_set(:@pidfile, pidfile)
+    helper.instance_variable_set(:@stopping, stopping)
+  end
+
+  def write_pidfile(directory, pid)
+    path = File.join(directory, "supervisor.pid")
+    File.write(path, "#{pid}\n")
+    Pathname.new(path)
+  end
+
+  def spawn_ruby(script, pgroup: false)
+    Process.spawn(RbConfig.ruby, "-e", script, pgroup: pgroup, out: File::NULL, err: File::NULL)
+  end
+
+  def unused_pid
+    candidate = 1 << 22
+    candidate += 1 while process_alive?(candidate)
+    candidate
+  end
+
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def assert_process_exited(pid)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+    loop do
+      reaped = Process.waitpid(pid, Process::WNOHANG)
+      return if reaped
+      raise "pid #{pid} stayed alive" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
+      sleep 0.01
+    end
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def reap_process(pid, group: false)
+    return unless pid
+    return if Process.waitpid(pid, Process::WNOHANG)
+
+    signal = group ? -pid : pid
+    Process.kill(:KILL, signal)
+  rescue Errno::ECHILD, Errno::ESRCH, Errno::EPERM
+    nil
+  ensure
+    begin
+      Process.waitpid(pid) if pid
+    rescue Errno::ECHILD
+      nil
+    end
   end
 
   def capture_signal_trap_probe(env, script)

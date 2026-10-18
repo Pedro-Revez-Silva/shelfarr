@@ -56,14 +56,21 @@ server = TCPServer.new("127.0.0.1", 0)
 port = server.addr[1]
 server.close
 puma_pid = nil
+puma_waiter = nil
 watchdog = Thread.new do
   sleep 240
   warn "Puma lifecycle probe exceeded 240 seconds (mode=#{mode})"
   warn File.read(puma_log) if File.exist?(puma_log)
   warn jobs_log_output
-  Process.kill(:TERM, -puma_pid) rescue nil
-  sleep 20
-  Process.kill(:KILL, -puma_pid) rescue nil
+  # Only signal while the original process is still unreaped. After it
+  # exits the pid can be recycled by another probe.
+  if puma_waiter&.alive?
+    Process.kill(:TERM, -puma_pid) rescue nil
+    sleep 20
+  end
+  if puma_waiter&.alive?
+    Process.kill(:KILL, -puma_pid) rescue nil
+  end
   Process.kill(:KILL, Process.pid)
 end
 begin
@@ -174,9 +181,11 @@ begin
   result[:lifecycle_verified] = true
   puts JSON.generate(result)
 ensure
-  if puma_pid
+  if puma_pid && puma_waiter&.alive?
     Process.kill(:TERM, -puma_pid) rescue nil
-    puma_waiter&.join(20)
+    puma_waiter.join(20)
+  end
+  if puma_pid && puma_waiter&.alive?
     Process.kill(:KILL, -puma_pid) rescue nil
   end
   # Print the server log on failure before the outer test removes probe files.

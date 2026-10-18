@@ -1,4 +1,5 @@
 require "test_helper"
+require_relative "support/capybara_server_port_retry"
 
 module ChromeStaleNodeRetry
   def synchronize(...)
