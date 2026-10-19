@@ -1020,7 +1020,7 @@ class UploadImportFileService
       temporary_basename,
       destination_parent.fileno,
       destination_basename
-    )
+    ) == true
     source_consumed = published_by_rename
     destination_published = published_by_rename
     unless published_by_rename

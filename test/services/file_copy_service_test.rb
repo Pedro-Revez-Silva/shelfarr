@@ -1297,6 +1297,34 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@dest_dir)
   end
 
+  test "cp_noreplace publishes a missing file when renameat2 returns EINVAL" do
+    destination_dir = File.join(@dest_dir, "Author", "Title")
+    destination = File.join(destination_dir, "Author - Title.epub")
+    FileCopyService.ensure_directory(destination_dir, root: @dest_dir)
+    assert_not File.exist?(destination)
+
+    FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal 0o640, File.stat(destination).mode & 0o777
+  end
+
+  test "cp_noreplace leaves an occupied file untouched when renameat2 returns EINVAL" do
+    destination = File.join(@dest_dir, "occupied.epub")
+    File.binwrite(destination, "existing library bytes")
+
+    FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+      assert_raises(Errno::EEXIST) do
+        FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      end
+    end
+
+    assert_equal "existing library bytes", File.binread(destination)
+    assert_equal "test content", File.binread(@src_file)
+  end
+
   test "cp_noreplace fails closed when an unreliable filesystem cannot rename" do
     destination = File.join(@dest_dir, "cifs-false-success.txt")
 

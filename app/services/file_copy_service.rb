@@ -2659,7 +2659,7 @@ class FileCopyService
       rescue Errno::EINVAL => error
         RemoteResult::Failed.new(error)
       end
-      return :rename if published
+      return :rename if published == true
       unless allow_link_fallback
         raise AtomicPublicationUnsupportedError,
           "The destination filesystem cannot atomically publish library files"

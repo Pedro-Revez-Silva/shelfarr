@@ -132,6 +132,26 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
     assert File.exist?(@source), "the source remains until database completion"
   end
 
+  test "publishes a new epub when the destination file does not exist and renameat2 returns EINVAL" do
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    destination = Pathname(@upload.reload.destination_path)
+    assert_not destination.exist?
+    assert_not destination.parent.exist?
+
+    # NFSv4 rejects RENAME_NOREPLACE with EINVAL. The absent final name is
+    # still free, so publication must fall back to linkat instead of opening
+    # that missing file as a fatal ENOENT.
+    FilesystemSyscalls.stub(:rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+      assert_equal service.book_library_path, service.publish!
+    end
+
+    assert_equal "original ebook bytes", File.binread(destination)
+    assert_equal 0o640, File.stat(destination).mode & 0o777
+    assert destination.parent.directory?
+    assert File.exist?(@source)
+  end
+
   test "a second active upload receives a distinct library reservation" do
     first = UploadImportFileService.new(upload: @upload, book: @book)
     first.reserve!
