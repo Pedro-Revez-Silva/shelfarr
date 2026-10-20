@@ -993,7 +993,133 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  # curl to 127.0.0.1 succeeds in this layout. Net::HTTP spends the whole open
+  # timeout on blackholed ::1 and never tries IPv4, so the saved key still
+  # looks like a connection failure.
+  test "test_connection reaches an IPv4 Prowlarr when IPv6 localhost is blackholed" do
+    server = Ipv4OnlyProwlarr.start
+    addresses = Addrinfo.getaddrinfo("localhost", server.port, nil, :STREAM).map(&:ip_address)
+    assert_includes addresses, "::1"
+    assert_includes addresses, "127.0.0.1"
+
+    SettingsService.set(:prowlarr_url, "http://localhost:#{server.port}")
+    SettingsService.set(:prowlarr_api_key, "blackhole-key")
+    ProwlarrClient.reset_connection!
+    WebMock.allow_net_connect!
+
+    with_env("http_proxy" => nil, "HTTP_PROXY" => nil, "https_proxy" => nil, "HTTPS_PROXY" => nil,
+      "all_proxy" => nil, "ALL_PROXY" => nil, "no_proxy" => nil, "NO_PROXY" => nil) do
+      with_blackholed_ipv6_localhost(server.port) do
+        assert ProwlarrClient.test_connection
+        assert ProwlarrClient.test_connection(url: "http://localhost:#{server.port}", api_key: "blackhole-key")
+      end
+    end
+
+    assert_equal [ "blackhole-key", "blackhole-key" ], server.api_keys
+  ensure
+    WebMock.disable_net_connect!
+    server&.stop
+    ProwlarrClient.reset_connection!
+  end
+
+  test "proxied Prowlarr connections do not pin a direct address" do
+    SettingsService.set(:prowlarr_url, "https://prowlarr.example.test")
+    SettingsService.set(:prowlarr_api_key, "proxy-key")
+    ProwlarrClient.reset_connection!
+    connections = []
+    probes = []
+    new_http = Net::HTTP.method(:new)
+
+    with_env("https_proxy" => "http://127.0.0.1:8888", "HTTPS_PROXY" => nil,
+      "http_proxy" => nil, "HTTP_PROXY" => nil, "no_proxy" => nil, "NO_PROXY" => nil) do
+      VCR.turned_off do
+        stub_request(:get, "https://prowlarr.example.test/api/v1/indexer")
+          .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+        Net::HTTP.stub(:new, ->(*args) { new_http.call(*args).tap { |http| connections << http } }) do
+          IndexerClients::ReachableNetHttp.stub(:reachable_ipaddr, ->(*) { probes << true; "203.0.113.10" }) do
+            assert ProwlarrClient.test_connection
+          end
+        end
+      end
+    end
+
+    assert_not_empty connections
+    connections.each do |http|
+      assert http.proxy?
+      assert_nil http.ipaddr
+      assert_equal "prowlarr.example.test", http.address
+    end
+    assert_empty probes
+  end
+
   private
+
+  def with_blackholed_ipv6_localhost(port)
+    rule = [ "-p", "tcp", "-d", "::1", "--dport", port.to_s, "-j", "DROP" ]
+    installed = system("sudo", "-n", "ip6tables", "-I", "INPUT", *rule, out: File::NULL, err: File::NULL)
+    raise "ip6tables could not blackhole ::1:#{port}" unless installed
+
+    yield
+  ensure
+    system("sudo", "-n", "ip6tables", "-D", "INPUT", *rule, out: File::NULL, err: File::NULL) if installed
+  end
+
+  # Prowlarr bound to IPv4 loopback only. curl reaches it when ::1 is
+  # blackholed; Net::HTTP's single open timeout does not.
+  class Ipv4OnlyProwlarr
+    attr_reader :port, :api_keys
+
+    def self.start
+      server = new
+      server.start
+      server
+    end
+
+    def initialize
+      @tcp = TCPServer.new("127.0.0.1", 0)
+      @port = @tcp.addr[1]
+      @api_keys = []
+      @mutex = Mutex.new
+    end
+
+    def start
+      @thread = Thread.new do
+        loop do
+          client = @tcp.accept
+          serve(client)
+        rescue IOError, Errno::EBADF
+          break
+        rescue StandardError
+          client&.close
+        end
+      end
+    end
+
+    def stop
+      @tcp.close
+      @thread&.join(1)
+    end
+
+    private
+
+    def serve(client)
+      head = +""
+      while (line = client.gets)
+        head << line
+        break if line == "\r\n"
+      end
+      return if head.empty?
+
+      key = head[/^X-Api-Key:\s*(\S+)/i, 1]
+      @mutex.synchronize { @api_keys << key }
+      body = "[]"
+      status = key == "blackhole-key" ? "200 OK" : "401 Unauthorized"
+      client.write "HTTP/1.1 #{status}\r\nContent-Type: application/json\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}"
+    ensure
+      client&.close
+    end
+  end
 
   def with_second_prowlarr_connection_key(key)
     singleton = ProwlarrClient.singleton_class
