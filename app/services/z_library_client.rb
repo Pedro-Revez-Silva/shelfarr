@@ -35,6 +35,8 @@ class ZLibraryClient
   LOGIN_METHOD_PRESERVING_STATUSES = [ 307, 308 ].freeze
   COOKIE_NAME_PATTERN = "[!#$%&'*+\\-.0-9A-Z^_`a-z|~]+"
   DOMAIN_HEALTH_TTL_SECONDS = 5.minutes
+  # DiamWall answers some VPN and datacenter addresses with 517, not a 3xx.
+  BOT_WALL_HTTP_STATUS = 517
   # Mirrors that are not in the preferred default list, but are still Z-Library
   # hosts a login redirect may land on.
   ADDITIONAL_KNOWN_ZLIBRARY_HOSTS = %w[
@@ -288,7 +290,7 @@ class ZLibraryClient
       auth
     end
 
-    def follow_exchange(url, method:, body: nil, accept: nil, after_attempt: nil)
+    def follow_exchange(url, method:, body: nil, accept: nil, after_attempt: nil, seed_cookies: nil)
       cookies = {}
       visited = {}
       redirects_followed = 0
@@ -298,8 +300,19 @@ class ZLibraryClient
         return { error: "redirect loop" } if visited[normalized]
 
         visited[normalized] = true
+        if bot_wall_url?(url)
+          return { bot_wall: true, error: "bot wall", url: url }
+        end
+
         response = observe_search_attempt(after_attempt) do
-          send_login_request(method, url, body: body, cookies: cookies, accept: accept)
+          send_login_request(
+            method,
+            url,
+            body: body,
+            cookies: cookies,
+            accept: accept,
+            seed_cookies: seed_cookies
+          )
         end
 
         if bot_wall_response?(response)
@@ -328,13 +341,44 @@ class ZLibraryClient
       end
     end
 
-    def send_login_request(method, url, body:, cookies:, accept: nil)
-      cookie_header = login_cookie_header(cookies, url)
+    def send_login_request(method, url, body:, cookies:, accept: nil, seed_cookies: nil)
+      header = combined_cookie_header(cookies, url, seed_cookies)
       connection.public_send(method, url) do |req|
         req.headers["Accept"] = accept if accept.present?
-        req.headers["Cookie"] = cookie_header if cookie_header.present?
+        req.headers["Cookie"] = header if header.present?
         req.body = body if body.present? && method != :get
       end
+    end
+
+    def combined_cookie_header(cookies, url, seed_cookies)
+      parts = []
+      jar = login_cookie_header(cookies, url)
+      parts << jar if jar.is_a?(String) && jar.present?
+      seeded = seed_cookie_header(url, seed_cookies)
+      parts << seeded if seeded.present?
+      parts.join("; ").presence
+    end
+
+    # Remix cookies stay off DiamWall and off any host that is not a Z-Library mirror.
+    def seed_cookie_header(url, seed_cookies)
+      return if seed_cookies.blank?
+      return if bot_wall_url?(url)
+
+      allowed = saved_session_cookie_target?(url)
+      return unless allowed == true
+
+      seed_cookies
+    end
+
+    def saved_session_cookie_target?(url)
+      uri = URI.parse(url)
+      ALLOWED_DOWNLOAD_SCHEMES.include?(uri.scheme) && allowed_login_redirect_host?(uri.host)
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def bot_wall_url?(url)
+      url.to_s.match?(/diamwall/i)
     end
 
     def login_redirect?(response)
@@ -594,8 +638,25 @@ class ZLibraryClient
     end
 
     def probe_domain(uri, after_attempt: nil)
+      probed = probe_domains_endpoint(uri, after_attempt: after_attempt)
+      return probed if probed.is_a?(URI::HTTP)
+
+      # /eapi/info/domains is anonymous, so a VPN address can bot-wall it while the saved session still works.
+      saved = saved_remix_auth
+      return probed unless saved && confirm_saved_session_probe?(probed)
+
+      probe_saved_session_domain(uri, saved, after_attempt: after_attempt)
+    end
+
+    def probe_domains_endpoint(uri, after_attempt:)
       url = "#{uri.to_s.delete_suffix("/")}/eapi/info/domains"
       exchange = follow_exchange(url, method: :get, accept: "application/json", after_attempt: after_attempt)
+      interpret_domains_probe(exchange, uri)
+    rescue Faraday::Error, JSON::ParserError => e
+      e.class.name.split("::").last
+    end
+
+    def interpret_domains_probe(exchange, uri)
       return :bot_wall if exchange[:bot_wall]
 
       response = exchange[:response]
@@ -604,8 +665,53 @@ class ZLibraryClient
       return :bot_wall if bot_wall_response?(response)
 
       response.status == 200 ? "invalid response" : "HTTP #{response.status}"
+    end
+
+    def confirm_saved_session_probe?(probed)
+      probed == :bot_wall || probed == "HTTP #{BOT_WALL_HTTP_STATUS}"
+    end
+
+    def probe_saved_session_domain(uri, auth, after_attempt:)
+      url = "#{uri.to_s.delete_suffix("/")}/eapi/user/profile"
+      exchange = follow_exchange(
+        url,
+        method: :get,
+        accept: "application/json",
+        after_attempt: after_attempt,
+        seed_cookies: cookie_header(auth)
+      )
+      interpret_saved_session_probe(exchange, uri, auth)
     rescue Faraday::Error, JSON::ParserError => e
       e.class.name.split("::").last
+    end
+
+    def interpret_saved_session_probe(exchange, uri, auth)
+      return :bot_wall if exchange[:bot_wall]
+
+      response = exchange[:response]
+      return exchange[:error] || "unhealthy" if response.nil?
+      return :bot_wall if saved_session_probe_walled?(response)
+
+      # Parse failures return RemoteResult::Failed, which is truthy, so only an exact true is a healthy profile.
+      if saved_session_profile?(response, auth) == true
+        return normalized_uri(login_base_url(URI.parse(exchange[:url]), uri))
+      end
+
+      response.status == 200 ? "invalid session" : "HTTP #{response.status}"
+    end
+
+    def saved_session_probe_walled?(response)
+      response.status == BOT_WALL_HTTP_STATUS || bot_wall_response?(response)
+    end
+
+    def saved_session_profile?(response, auth)
+      return false unless response.status == 200
+
+      data = parse_json_body(response)
+      data.is_a?(Hash) && data["success"] == 1 &&
+        data["user"].is_a?(Hash) && data.dig("user", "id").to_s == auth[:remix_userid]
+    rescue JSON::ParserError => error
+      RemoteResult::Failed.new(error)
     end
 
     def domains_json_body?(response)

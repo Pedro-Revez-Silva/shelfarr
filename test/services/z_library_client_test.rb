@@ -469,6 +469,7 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       assert_match(/another domain/i, error.message)
       assert_not_requested(:post, "https://z-library.sk/eapi/user/login")
       assert_not_requested(:post, "https://1lib.sk/eapi/user/login")
+      assert_not_requested(:get, %r{/eapi/user/profile\z})
     end
   end
 
@@ -523,6 +524,163 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       assert_equal "saved-key", auth[:remix_userkey]
       assert_equal "z-library.sk", auth[:domain]
       assert_not_requested login_post
+    end
+  end
+
+  test "saved session uses an authenticated profile when the domain probe is bot-walled" do
+    SettingsService.set(:zlibrary_url, "https://z-lib.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-lib.sk/eapi/info/domains")
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      profile = stub_request(:get, "https://z-lib.sk/eapi/user/profile")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 200,
+          body: { success: 1, user: { id: 12345 } }.to_json,
+          headers: json_headers
+        )
+      search = stub_request(:post, "https://z-lib.sk/eapi/book/search")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(status: 200, body: { success: 1, books: [] }.to_json, headers: json_headers)
+      login_post = stub_request(:post, "https://z-lib.sk/eapi/user/login")
+      wall = stub_request(:any, %r{/diamwall/})
+
+      assert_empty ZLibraryClient.search("Test Book")
+      assert ZLibraryClient.test_connection!
+      ZLibraryClient.instance_variable_set(:@auth_cache, nil)
+      assert_empty ZLibraryClient.search("Another Book")
+
+      assert_requested(:get, "https://z-lib.sk/eapi/info/domains", times: 1) do |request|
+        request.headers["Cookie"].nil?
+      end
+      assert_requested profile, times: 2
+      assert_requested search, times: 2
+      assert_not_requested login_post
+      assert_not_requested wall
+    end
+  end
+
+  test "saved session still reports a bot wall when the authenticated profile is walled" do
+    SettingsService.set(:zlibrary_url, "https://z-lib.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-lib.sk/eapi/info/domains")
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      profile = stub_request(:get, "https://z-lib.sk/eapi/user/profile")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 307,
+          body: access_denied_html,
+          headers: {
+            "Content-Type" => "text/html",
+            "Location" => "https://z-lib.sk/diamwall/challenge"
+          }
+        )
+      challenge = stub_request(:any, "https://z-lib.sk/diamwall/challenge")
+      login_post = stub_request(:post, "https://z-lib.sk/eapi/user/login")
+
+      error = assert_raises(ZLibraryClient::AuthenticationError) { ZLibraryClient.search("Test Book") }
+
+      assert_match(/bot-walled/i, error.message)
+      assert_match(/z-lib\.sk/, error.message)
+      assert_requested profile, times: 1
+      assert_not_requested challenge
+      assert_not_requested login_post
+    end
+  end
+
+  test "saved session tries the next domain when the authenticated profile fails" do
+    SettingsService.set(:zlibrary_url, "https://z-lib.sk\nhttps://z-lib.gd")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      %w[z-lib.sk z-lib.gd].each do |domain|
+        stub_request(:get, "https://#{domain}/eapi/info/domains")
+          .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      end
+      stub_request(:get, "https://z-lib.sk/eapi/user/profile")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(status: 500, body: "unavailable")
+      stub_request(:get, "https://z-lib.gd/eapi/user/profile")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 200,
+          body: { success: 1, user: { id: 12345 } }.to_json,
+          headers: json_headers
+        )
+      walled_search = stub_request(:post, "https://z-lib.sk/eapi/book/search")
+      search = stub_request(:post, "https://z-lib.gd/eapi/book/search")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(status: 200, body: { success: 1, books: [] }.to_json, headers: json_headers)
+
+      assert_empty ZLibraryClient.search("Test Book")
+
+      assert_requested search, times: 1
+      assert_not_requested walled_search
+      assert_not_requested :post, "https://z-lib.sk/eapi/user/login"
+      assert_not_requested :post, "https://z-lib.gd/eapi/user/login"
+    end
+  end
+
+  test "saved session accepts a domain whose unauthenticated probe returns HTTP 517" do
+    SettingsService.set(:zlibrary_url, "https://z-lib.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-lib.sk/eapi/info/domains")
+        .to_return(status: 517, body: "Access Denied", headers: { "Content-Type" => "text/html" })
+      profile = stub_request(:get, "https://z-lib.sk/eapi/user/profile")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 200,
+          body: { success: 1, user: { id: "12345" } }.to_json,
+          headers: json_headers
+        )
+      stub_request(:post, "https://z-lib.sk/eapi/book/search")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(status: 200, body: { success: 1, books: [] }.to_json, headers: json_headers)
+
+      assert_empty ZLibraryClient.search("Test Book")
+
+      assert_requested profile, times: 1
+      assert_not_requested :post, "https://z-lib.sk/eapi/user/login"
+    end
+  end
+
+  test "saved session reports a bot wall when the profile probe returns HTTP 517" do
+    SettingsService.set(:zlibrary_url, "https://z-lib.sk")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-lib.sk/eapi/info/domains")
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      stub_request(:get, "https://z-lib.sk/eapi/user/profile")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(status: 517, body: "Access Denied", headers: { "Content-Type" => "text/html" })
+
+      error = assert_raises(ZLibraryClient::AuthenticationError) { ZLibraryClient.test_connection! }
+
+      assert_match(/bot-walled/i, error.message)
+      assert_no_match(/HTTP 517/, error.message)
+      assert_not_requested :post, "https://z-lib.sk/eapi/user/login"
     end
   end
 
@@ -1088,6 +1246,10 @@ class ZLibraryClientTest < ActiveSupport::TestCase
 
   def diamwall_html
     "<!DOCTYPE html><html><title>DiamWall</title><body>Checking your browser before the challenge</body></html>"
+  end
+
+  def access_denied_html
+    "<html><title>Access Denied</title><body>DiamWall</body></html>"
   end
 
   def zlibrary_login_success_body
