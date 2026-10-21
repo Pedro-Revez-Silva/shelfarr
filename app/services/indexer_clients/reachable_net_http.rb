@@ -25,16 +25,28 @@ module IndexerClients
       deadline = monotonic_deadline(open_timeout)
       ipaddr = reachable_ipaddr(url, deadline)
       raise Net::OpenTimeout, "execution expired" if ipaddr == :timeout
+      if ipaddr.is_a?(RemoteResult::Failed)
+        # Raise from connect. A stubbed Net::HTTP never reaches it, and a real
+        # one must not spend the leftover budget on another lookup or socket.
+        fail_connection(http, ipaddr.error)
+        return
+      end
 
       http.ipaddr = ipaddr if ipaddr.is_a?(String)
       http.open_timeout = remaining_open_timeout(deadline)
     end
 
+    def fail_connection(http, error)
+      http.define_singleton_method(:connect) { raise error }
+    end
+
     def reachable_ipaddr(url, deadline)
       uri = URI(url.to_s)
-      return if uri.host.blank?
+      # URI#host keeps the brackets on an IPv6 literal, which getaddrinfo rejects.
+      host = uri.hostname
+      return if host.blank?
 
-      addresses = resolve_addresses(uri.host, uri.port, deadline)
+      addresses = resolve_addresses(host, uri.port, deadline)
       return :timeout if addresses == :timeout
       return if addresses.empty?
       # Net::HTTP resolves the hostname again. A single result has to be kept,
@@ -61,8 +73,10 @@ module IndexerClients
     end
 
     def select_reachable_ipaddr(addresses, deadline)
-      pending = begin_address_probes(addresses).grep(Array)
-      return if pending.empty?
+      probes = begin_address_probes(addresses)
+      pending = probes.grep(Array)
+      failure = probes.reverse_each.find { |probe| probe.is_a?(RemoteResult::Failed) }
+      return failure if pending.empty?
 
       winner = nil
       timed_out = false
@@ -86,7 +100,8 @@ module IndexerClients
             if candidate.is_a?(String)
               winner = candidate
               break
-            elsif candidate
+            elsif candidate.is_a?(RemoteResult::Failed)
+              failure = candidate
               pending.delete_if { |socket, _addr| socket == sock }
               close_probe_socket(sock)
             end
@@ -94,6 +109,9 @@ module IndexerClients
         end
 
         return :timeout if timed_out && winner.nil?
+        # Every address failed before the deadline. Returning nothing would
+        # let Net::HTTP open another connection.
+        return failure if winner.nil?
 
         winner
       ensure
@@ -125,7 +143,9 @@ module IndexerClients
 
       close_probe_socket(socket)
       pending.delete(pair)
-      nil
+      return if error.zero?
+
+      RemoteResult::Failed.new(SystemCallError.new("connect(2)", error))
     rescue Errno::EISCONN
       addr.ip_address
     rescue IO::WaitWritable, Errno::EINPROGRESS, Errno::EALREADY => error
