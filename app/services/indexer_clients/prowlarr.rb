@@ -199,10 +199,10 @@ module IndexerClients
           f.options.params_encoder = Faraday::FlatParamsEncoder
           f.request :url_encoded
           f.response :json, parser_options: { symbolize_names: false }
-          f.adapter Faraday.default_adapter
           f.headers["X-Api-Key"] = api_key
           f.options.timeout = 30
           f.options.open_timeout = 10
+          ReachableNetHttp.install(f, base_url, open_timeout: f.options.open_timeout)
         end
       end
 
@@ -224,10 +224,10 @@ module IndexerClients
           f.options.params_encoder = Faraday::FlatParamsEncoder
           f.request :url_encoded
           f.response :json, parser_options: { symbolize_names: false }
-          f.adapter Faraday.default_adapter
           f.headers["X-Api-Key"] = key
           f.options.timeout = 30
           f.options.open_timeout = 10
+          ReachableNetHttp.install(f, normalized_url, open_timeout: f.options.open_timeout)
         end
       end
 
