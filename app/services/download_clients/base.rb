@@ -346,7 +346,12 @@ module DownloadClients
       if state.key?(:deluge)
         deluge_download_state(state[:deluge], progress_percent(unit, progress))
       elsif state.key?(:transmission)
-        transmission_download_state(state[:transmission], state[:error])
+        transmission_download_state(
+          state[:transmission],
+          state[:error],
+          progress_percent(unit, progress),
+          state[:left_until_done]
+        )
       elsif state.key?(:sabnzbd_queue)
         sabnzbd_queue_download_state(state[:sabnzbd_queue])
       elsif state.key?(:sabnzbd_history)
@@ -376,12 +381,14 @@ module DownloadClients
       end
     end
 
-    def transmission_download_state(status, error)
+    def transmission_download_state(status, error, percent, left_until_done = nil)
       return :failed if error.to_i == 3
 
       case status.to_i
       when 0
-        :paused
+        # Status 0 is stopped. A seed ratio or idle limit of 0 stops a finished
+        # torrent here, before Transmission reports seeding (status 6).
+        transmission_download_finished?(percent, left_until_done) ? :completed : :paused
       when 1, 2
         :queued
       when 3
@@ -389,12 +396,19 @@ module DownloadClients
       when 4
         :downloading
       when 5
-        :queued
+        # Status 5 is queued to seed, so the download itself is already done.
+        transmission_download_finished?(percent, left_until_done) ? :completed : :queued
       when 6
         :completed
       else
         :downloading
       end
+    end
+
+    def transmission_download_finished?(percent, left_until_done)
+      return false unless percent >= 100
+
+      left_until_done.nil? || left_until_done.to_f.zero?
     end
 
     # SABnzbd moves a job into history as soon as the download finishes, then

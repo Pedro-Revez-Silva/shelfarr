@@ -12,6 +12,7 @@ module DownloadClients
       name
       hash_string
       percent_done
+      left_until_done
       status
       total_size
       download_dir
@@ -24,6 +25,7 @@ module DownloadClients
       name
       hashString
       percentDone
+      leftUntilDone
       status
       totalSize
       downloadDir
@@ -454,7 +456,11 @@ module DownloadClients
         state: download_state(
           unit: :fraction,
           progress: raw_progress,
-          state: { transmission: data["status"], error: data["error"] },
+          state: {
+            transmission: data["status"],
+            error: data["error"],
+            left_until_done: transmission_value(data, "left_until_done", "leftUntilDone")
+          },
           path: content_path
         ),
         size_bytes: transmission_value(data, "total_size", "totalSize"),

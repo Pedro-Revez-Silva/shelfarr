@@ -10,6 +10,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     name
     hash_string
     percent_done
+    left_until_done
     status
     total_size
     download_dir
@@ -22,6 +23,7 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     name
     hashString
     percentDone
+    leftUntilDone
     status
     totalSize
     downloadDir
@@ -917,18 +919,55 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
     assert RemoteResult.failed?(@client.send(:absolutize_redirect_url, "http://example.com/base", "http://[bad"))
 
     assert_equal :paused, transmission_state(0)
+    assert_equal :paused, transmission_state(0, progress: 0.995)
+    assert_equal :completed, transmission_state(0, progress: 1.0)
+    assert_equal :completed, transmission_state(0, progress: 1.0, left_until_done: 0)
+    assert_equal :paused, transmission_state(0, progress: 1.0, left_until_done: 1)
+    assert_equal :paused, transmission_state(0, progress: 0.995, left_until_done: 0)
     assert_equal :queued, transmission_state(1)
     assert_equal :queued, transmission_state(3)
     assert_equal :queued, transmission_state(5)
+    assert_equal :queued, transmission_state(5, progress: 0.995)
+    assert_equal :completed, transmission_state(5, progress: 1.0)
+    assert_equal :completed, transmission_state(5, progress: 1.0, left_until_done: 0)
+    assert_equal :queued, transmission_state(5, progress: 1.0, left_until_done: 1)
     assert_equal :completed, transmission_state(6, progress: 1.0)
     assert_equal :downloading, transmission_state(99)
     assert_equal :failed, transmission_state(4, error: 3)
-    assert_equal :paused, transmission_state(0, progress: 0.995)
+    assert_equal :failed, transmission_state(0, progress: 1.0, error: 3)
+    assert_equal :failed, transmission_state(0, progress: 1.0, error: 3, left_until_done: 0)
+    assert_equal :failed, transmission_state(5, progress: 1.0, error: 3)
+    assert_equal :failed, transmission_state(6, progress: 1.0, error: 3)
 
     @client_record.update!(url: "http://localhost:9091/transmission/rpc/")
     assert_equal "http://localhost:9091/transmission/rpc", @client_record.adapter.send(:rpc_url)
     @client_record.url = "http://[bad"
     assert_equal "http://[bad", @client_record.adapter.send(:rpc_url)
+  end
+
+  test "uses leftUntilDone so a fully reported stopped torrent with bytes left stays paused" do
+    remaining = {
+      "hash_string" => "abc",
+      "name" => "Book",
+      "percent_done" => 1.0,
+      "left_until_done" => 512,
+      "status" => 0,
+      "error" => 0,
+      "total_size" => 1024,
+      "download_dir" => "/downloads"
+    }
+
+    assert_equal :paused, @client.send(:parse_torrent, remaining).state
+    assert_equal :completed, @client.send(:parse_torrent, remaining.merge("left_until_done" => 0, "status" => 5)).state
+    assert_equal :completed, @client.send(:parse_torrent, {
+      "hashString" => "legacy",
+      "name" => "Book",
+      "percentDone" => 1.0,
+      "leftUntilDone" => 0,
+      "status" => 0,
+      "totalSize" => 1024,
+      "downloadDir" => "/downloads"
+    }).state
   end
 
   test "uses basic authentication header when username and password are set" do
@@ -972,12 +1011,12 @@ class DownloadClients::TransmissionTest < ActiveSupport::TestCase
 
   private
 
-  def transmission_state(status, progress: 0, error: nil)
+  def transmission_state(status, progress: 0, error: nil, left_until_done: nil)
     @client.send(
       :download_state,
       unit: :fraction,
       progress: progress,
-      state: { transmission: status, error: error },
+      state: { transmission: status, error: error, left_until_done: left_until_done },
       path: "/downloads/book"
     )
   end
