@@ -89,6 +89,67 @@ class IndexerClients::ReachableNetHttpTest < ActiveSupport::TestCase
     end
   end
 
+  # A single result used to be discarded after the lookup, so Net::HTTP resolved
+  # the name again with only the leftover open timeout.
+  test "a single resolved address connects inside the remaining open timeout" do
+    socket = TCPServer.new("127.0.0.1", 0)
+    port = socket.addr[1]
+    server = StatusServer.new(socket, "200 OK")
+    host = "slow-prowlarr.example"
+    pinned = Addrinfo.tcp("127.0.0.1", port)
+    lookups = 0
+    original_lookup = Addrinfo.method(:getaddrinfo)
+    original_open = TCPSocket.method(:open)
+    open_timeout = 0.3
+    # Net::HTTP resolves through TCPSocket.open, which does not call
+    # Addrinfo.getaddrinfo. Both have to be slow or the second lookup is free.
+    slow_lookup = lambda { |name|
+      next unless name == host
+
+      lookups += 1
+      sleep 0.2
+      true
+    }
+
+    WebMock.allow_net_connect!
+    with_env("http_proxy" => nil, "HTTP_PROXY" => nil, "https_proxy" => nil, "HTTPS_PROXY" => nil,
+      "all_proxy" => nil, "ALL_PROXY" => nil, "no_proxy" => nil, "NO_PROXY" => nil) do
+      VCR.turned_off do
+        Addrinfo.stub(:getaddrinfo, lambda { |*args, **kwargs|
+          if slow_lookup.call(args[0])
+            [ pinned ]
+          elsif kwargs.empty?
+            original_lookup.call(*args)
+          else
+            original_lookup.call(*args, **kwargs)
+          end
+        }) do
+          TCPSocket.stub(:open, lambda { |*args|
+            if slow_lookup.call(args[0])
+              original_open.call(pinned.ip_address, *args.drop(1))
+            else
+              original_open.call(*args)
+            end
+          }) do
+            url = "http://#{host}:#{port}"
+            plain = faraday_connection(url, open_timeout)
+            patched = faraday_connection(url, open_timeout) do |builder|
+              IndexerClients::ReachableNetHttp.install(builder, url, open_timeout: open_timeout)
+            end
+
+            assert_equal 200, plain.get("/").status
+            before_patched = lookups
+            assert_equal 200, patched.get("/").status
+            assert_equal 1, lookups - before_patched
+          end
+        end
+      end
+    end
+  ensure
+    server&.stop
+    WebMock.disable_net_connect!
+  end
+
   test "a later request reaches a new address when the previous one still answers" do
     first_socket = TCPServer.new("127.0.0.1", 0)
     port = first_socket.addr[1]
@@ -135,6 +196,14 @@ class IndexerClients::ReachableNetHttpTest < ActiveSupport::TestCase
       clock[0] += args[3].to_f
       nil
     }) { yield }
+  end
+
+  def faraday_connection(url, open_timeout)
+    Faraday.new(url: url) do |builder|
+      builder.options.open_timeout = open_timeout
+      builder.options.timeout = 2
+      yield builder if block_given?
+    end
   end
 
   def count_tcp_connects

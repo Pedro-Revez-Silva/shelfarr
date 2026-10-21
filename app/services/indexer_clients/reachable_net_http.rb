@@ -36,7 +36,10 @@ module IndexerClients
 
       addresses = resolve_addresses(uri.host, uri.port, deadline)
       return :timeout if addresses == :timeout
-      return if addresses.size < 2
+      return if addresses.empty?
+      # Net::HTTP resolves the hostname again. A single result has to be kept,
+      # or that second lookup spends the time left after this one.
+      return addresses.first.ip_address if addresses.one?
 
       select_reachable_ipaddr(addresses, deadline)
     rescue SocketError, SystemCallError => error
