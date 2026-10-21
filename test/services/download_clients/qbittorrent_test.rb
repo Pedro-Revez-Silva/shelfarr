@@ -1675,6 +1675,54 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     assert_empty probes, "Proxied requests must not open direct probe connections"
   end
 
+  test "reachable address probe skips an address whose socket cannot be created" do
+    ipv6 = Addrinfo.tcp("2001:db8::1", 8080)
+    ipv4 = Addrinfo.tcp("192.0.2.10", 8080)
+    connected = ProbeSocket.new
+
+    result = probe_addresses([ ipv6, ipv4 ], sockets: lambda { |family, *_rest, **_kwargs|
+      raise Errno::EAFNOSUPPORT if family == Socket::AF_INET6
+
+      connected
+    }, ready: [ connected ])
+
+    assert_equal "192.0.2.10", result
+  end
+
+  test "reachable address probe skips an address whose connect is unreachable" do
+    ipv6 = Addrinfo.tcp("2001:db8::1", 8080)
+    ipv4 = Addrinfo.tcp("192.0.2.10", 8080)
+    blocked = ProbeSocket.new(failure: Errno::ENETUNREACH, fail_on_call: 1)
+    connected = ProbeSocket.new
+
+    result = probe_addresses([ ipv6, ipv4 ], sockets: lambda { |family, *_rest, **_kwargs|
+      family == Socket::AF_INET6 ? blocked : connected
+    }, ready: [ connected ])
+
+    assert_equal "192.0.2.10", result
+  end
+
+  test "reachable address probe does not treat an in-progress connect as the connected address" do
+    ipv6 = Addrinfo.tcp("2001:db8::1", 8080)
+    ipv4 = Addrinfo.tcp("192.0.2.10", 8080)
+    cases = [
+      [ "EINPROGRESS", Errno::EINPROGRESS ],
+      [ "EALREADY", Errno::EALREADY ],
+      [ "WaitWritable", wait_writable_error ]
+    ]
+
+    cases.each do |label, error|
+      slow = ProbeSocket.new(failure: error, fail_on_call: 2)
+      connected = ProbeSocket.new
+
+      result = probe_addresses([ ipv6, ipv4 ], sockets: lambda { |family, *_rest, **_kwargs|
+        family == Socket::AF_INET6 ? slow : connected
+      }, ready: [ slow, connected ])
+
+      assert_equal "192.0.2.10", result, label
+    end
+  end
+
   private
 
   def with_blackholed_ipv6_localhost(port)
@@ -1798,5 +1846,47 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
 
   def qbittorrent_response(status:, body:, headers: {})
     Struct.new(:status, :body, :headers).new(status, body, headers)
+  end
+
+  def probe_addresses(addresses, sockets:, ready:)
+    selects = 0
+    Addrinfo.stub(:getaddrinfo, lambda { |*_args, **_kwargs| addresses }) do
+      Socket.stub(:new, sockets) do
+        IO.stub(:select, lambda { |*_args, **_kwargs|
+          selects += 1
+          selects == 1 ? [ nil, ready, [] ] : nil
+        }) do
+          @client.send(:reachable_ipaddr, 1)
+        end
+      end
+    end
+  end
+
+  def wait_writable_error
+    IOError.new("connect would block").tap { |error| error.extend(IO::WaitWritable) }
+  end
+
+  class ProbeSocket
+    Option = Struct.new(:int)
+
+    def initialize(failure: nil, fail_on_call: 1)
+      @failure = failure
+      @fail_on_call = fail_on_call
+      @calls = 0
+    end
+
+    def connect_nonblock(*_args, **_kwargs)
+      @calls += 1
+      raise @failure if @failure && @calls >= @fail_on_call
+
+      @calls == 1 ? :wait_writable : 0
+    end
+
+    def getsockopt(*_args, **_kwargs)
+      Option.new(0)
+    end
+
+    def close
+    end
   end
 end
