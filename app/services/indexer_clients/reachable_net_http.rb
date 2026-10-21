@@ -1,55 +1,82 @@
 # frozen_string_literal: true
 
+require "timeout"
+
 module IndexerClients
   # Net::HTTP uses one open timeout for every getaddrinfo result. A blackholed
   # first address — IPv6 localhost in Docker — expires before IPv4 is tried.
+  # Each connection probes again. Resolution and the probe share that timeout,
+  # and a miss does not open another connection on a fresh budget.
   module ReachableNetHttp
     module_function
 
     def install(connection, url, open_timeout:)
-      ipaddr = pinned_ipaddr(connection, url, open_timeout)
-      if ipaddr
-        connection.adapter :net_http do |http|
-          http.ipaddr = ipaddr
-        end
-      else
+      if connection.proxy
         connection.adapter Faraday.default_adapter
+        return
+      end
+
+      connection.adapter :net_http do |http|
+        assign_reachable_address(http, url, http.open_timeout || open_timeout)
       end
     end
 
-    def pinned_ipaddr(connection, url, open_timeout)
-      return if connection.proxy
+    def assign_reachable_address(http, url, open_timeout)
+      deadline = monotonic_deadline(open_timeout)
+      ipaddr = reachable_ipaddr(url, deadline)
+      raise Net::OpenTimeout, "execution expired" if ipaddr == :timeout
 
-      ipaddr = reachable_ipaddr(url, open_timeout)
-      ipaddr if ipaddr.is_a?(String)
+      http.ipaddr = ipaddr if ipaddr.is_a?(String)
+      http.open_timeout = remaining_open_timeout(deadline)
     end
 
-    def reachable_ipaddr(url, open_timeout)
+    def reachable_ipaddr(url, deadline)
       uri = URI(url.to_s)
       return if uri.host.blank?
 
-      addresses = Addrinfo.getaddrinfo(uri.host, uri.port, nil, :STREAM)
+      addresses = resolve_addresses(uri.host, uri.port, deadline)
+      return :timeout if addresses == :timeout
       return if addresses.size < 2
 
-      select_reachable_ipaddr(addresses, open_timeout)
+      select_reachable_ipaddr(addresses, deadline)
     rescue SocketError, SystemCallError => error
       RemoteResult::Failed.new(error)
     end
 
-    def select_reachable_ipaddr(addresses, open_timeout)
+    def resolve_addresses(host, port, deadline)
+      remaining = remaining_seconds(deadline)
+      return :timeout unless remaining
+
+      addresses = Timeout.timeout(remaining, Net::OpenTimeout) do
+        Addrinfo.getaddrinfo(host, port, nil, :STREAM)
+      end
+      return :timeout unless remaining_seconds(deadline)
+
+      addresses
+    rescue Net::OpenTimeout
+      :timeout
+    end
+
+    def select_reachable_ipaddr(addresses, deadline)
       pending = begin_address_probes(addresses).grep(Array)
       return if pending.empty?
 
       winner = nil
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + open_timeout
+      timed_out = false
       begin
         until pending.empty? || winner
-          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          break if remaining <= 0
+          remaining = remaining_seconds(deadline)
+          if remaining.nil?
+            timed_out = true
+            break
+          end
 
           _readable, writable, erroneous = IO.select(nil, pending.map(&:first), pending.map(&:first), remaining)
           ready = Array(writable) | Array(erroneous)
-          break if ready.empty?
+          if ready.empty?
+            timed_out = true
+            break
+          end
 
           ready.each do |sock|
             candidate = take_connected_ipaddr(pending, sock)
@@ -62,6 +89,9 @@ module IndexerClients
             end
           end
         end
+
+        return :timeout if timed_out && winner.nil?
+
         winner
       ensure
         pending.each { |socket, _addr| close_probe_socket(socket) }
@@ -107,6 +137,26 @@ module IndexerClients
       socket&.close
     rescue IOError, SystemCallError => error
       RemoteResult::Failed.new(error)
+    end
+
+    def remaining_open_timeout(deadline)
+      remaining = remaining_seconds(deadline)
+      raise Net::OpenTimeout, "execution expired" unless remaining
+
+      remaining
+    end
+
+    def remaining_seconds(deadline)
+      remaining = deadline - monotonic_now
+      remaining.positive? ? remaining : nil
+    end
+
+    def monotonic_deadline(open_timeout)
+      monotonic_now + Float(open_timeout)
+    end
+
+    def monotonic_now
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
   end
 end
