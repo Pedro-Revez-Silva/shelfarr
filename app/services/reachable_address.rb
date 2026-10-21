@@ -7,6 +7,25 @@ require "timeout"
 module ReachableAddress
   module_function
 
+  def assign_reachable_address(http, url, open_timeout)
+    deadline = monotonic_deadline(open_timeout)
+    ipaddr = reachable_ipaddr(url, deadline)
+    raise Net::OpenTimeout, "execution expired" if ipaddr == :timeout
+    if ipaddr.is_a?(RemoteResult::Failed)
+      # Raise from connect. A stubbed Net::HTTP never reaches it, and a real
+      # one must not spend the leftover budget on another lookup or socket.
+      fail_connection(http, ipaddr.error)
+      return
+    end
+
+    http.ipaddr = ipaddr if ipaddr.is_a?(String)
+    http.open_timeout = remaining_open_timeout(deadline)
+  end
+
+  def fail_connection(http, error)
+    http.define_singleton_method(:connect) { raise error }
+  end
+
   def reachable_ipaddr(url, deadline)
     uri = URI(url.to_s)
     # URI#host keeps the brackets on an IPv6 literal, which getaddrinfo rejects.

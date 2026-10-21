@@ -1659,7 +1659,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
         stub_qbittorrent_connection(@client_record.url)
 
         Net::HTTP.stub(:new, ->(*args) { new_http.call(*args).tap { |http| connections << http } }) do
-          @client.stub(:reachable_ipaddr, ->(*) { probes << true; "203.0.113.10" }) do
+          ReachableAddress.stub(:reachable_ipaddr, ->(*) { probes << true; "203.0.113.10" }) do
             assert @client.test_connection
           end
         end
@@ -1723,7 +1723,177 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "a failed lookup raises a resolve failure without a second lookup" do
+    host = "missing-qbittorrent.example"
+    client = client_for("http://#{host}:8080")
+    lookups = 0
+    original_lookup = Addrinfo.method(:getaddrinfo)
+    original_open = TCPSocket.method(:open)
+    nxdomain = lambda { |name|
+      next unless name == host
+
+      lookups += 1
+      raise SocketError, "getaddrinfo: Name or service not known"
+    }
+    error = nil
+
+    VCR.turned_off do
+      WebMock.allow_net_connect!
+      Addrinfo.stub(:getaddrinfo, lambda { |*args, **kwargs|
+        nxdomain.call(args[0])
+        kwargs.empty? ? original_lookup.call(*args) : original_lookup.call(*args, **kwargs)
+      }) do
+        TCPSocket.stub(:open, lambda { |*args, **kwargs|
+          nxdomain.call(args[0])
+          kwargs.empty? ? original_open.call(*args) : original_open.call(*args, **kwargs)
+        }) do
+          error = assert_raises(DownloadClients::Base::ConnectionError) do
+            client.test_connection
+          end
+        end
+      end
+    end
+
+    assert_equal "Could not resolve host", error.message
+    assert_equal 1, lookups
+  ensure
+    WebMock.disable_net_connect!
+  end
+
+  test "hostname resolution counts against the qBittorrent connect timeout" do
+    host = "slow-qbittorrent.example"
+    client = client_for("http://#{host}:8080")
+    client.define_singleton_method(:login_connection) do
+      api_connection(timeout: 1, open_timeout: 0.25)
+    end
+    lookups = 0
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    error = nil
+    count_lookup = lambda { |name|
+      next unless name == host
+
+      lookups += 1
+      sleep 0.7
+      true
+    }
+
+    VCR.turned_off do
+      WebMock.allow_net_connect!
+      Addrinfo.stub(:getaddrinfo, lambda { |*args, **_kwargs|
+        count_lookup.call(args[0])
+        []
+      }) do
+        TCPSocket.stub(:open, lambda { |*args, **_kwargs|
+          count_lookup.call(args[0])
+          raise Errno::ETIMEDOUT
+        }) do
+          error = assert_raises(DownloadClients::Base::ConnectionError) do
+            client.test_connection
+          end
+        end
+      end
+    end
+
+    assert_equal 1, lookups
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 0.55
+    assert_equal "Connection timed out", error.message
+  ensure
+    WebMock.disable_net_connect!
+  end
+
+  test "refused addresses raise connection refused without another connect" do
+    port = unused_port
+    client = client_for("http://127.0.0.1:#{port}")
+    opens = 0
+    original_open = TCPSocket.method(:open)
+    addresses = [ Addrinfo.tcp("127.0.0.1", port), Addrinfo.tcp("127.0.0.2", port) ]
+    error = nil
+
+    VCR.turned_off do
+      WebMock.allow_net_connect!
+      Addrinfo.stub(:getaddrinfo, ->(*_args, **_kwargs) { addresses }) do
+        TCPSocket.stub(:open, lambda { |*args, **kwargs|
+          opens += 1
+          kwargs.empty? ? original_open.call(*args) : original_open.call(*args, **kwargs)
+        }) do
+          error = assert_raises(DownloadClients::Base::ConnectionError) do
+            client.test_connection
+          end
+        end
+      end
+    end
+
+    assert_equal "Connection refused", error.message
+    assert_equal 0, opens
+  ensure
+    WebMock.disable_net_connect!
+  end
+
+  test "test_connection times out without a second connect when every address is unreachable" do
+    clock = [ 0.0 ]
+    lookups = 0
+    connects = nil
+    error = nil
+    host = "blackhole-qbittorrent.example"
+    client = client_for("http://#{host}:8080")
+    addresses = [ Addrinfo.tcp("127.0.0.1", 9), Addrinfo.tcp("127.0.0.2", 9) ]
+
+    VCR.turned_off do
+      WebMock.allow_net_connect!
+      Process.stub(:clock_gettime, ->(*) { clock[0] }) do
+        IO.stub(:select, lambda { |*args, **_kwargs|
+          clock[0] += args[3].to_f
+          nil
+        }) do
+          Addrinfo.stub(:getaddrinfo, lambda { |*args, **_kwargs|
+            lookups += 1 if args[0] == host
+            addresses
+          }) do
+            connects = count_stubbed_connects do
+              error = assert_raises(DownloadClients::Base::ConnectionError) do
+                client.test_connection
+              end
+            end
+          end
+        end
+      end
+    end
+
+    assert_equal "Connection timed out", error.message
+    assert_equal 1, lookups
+    assert_equal 0, connects
+  ensure
+    WebMock.disable_net_connect!
+  end
+
   private
+
+  def client_for(url)
+    @client_record.update!(url: url)
+    @client_record.adapter
+  end
+
+  def unused_port
+    server = TCPServer.new("127.0.0.1", 0)
+    server.addr[1]
+  ensure
+    server&.close
+  end
+
+  def count_stubbed_connects
+    connects = 0
+    original = Net::HTTP.method(:new)
+    Net::HTTP.stub(:new, lambda { |*args, **kwargs|
+      http = kwargs.empty? ? original.call(*args) : original.call(*args, **kwargs)
+      http.define_singleton_method(:connect) do
+        connects += 1
+        raise Errno::ETIMEDOUT
+      end
+      http
+    }) { yield }
+
+    connects
+  end
 
   def with_blackholed_ipv6_localhost(port)
     rule = [ "-p", "tcp", "-d", "::1", "--dport", port.to_s, "-j", "DROP" ]
@@ -1856,7 +2026,8 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
           selects += 1
           selects == 1 ? [ nil, ready, [] ] : nil
         }) do
-          @client.send(:reachable_ipaddr, 1)
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+          ReachableAddress.reachable_ipaddr("http://qbittorrent.example:8080", deadline)
         end
       end
     end

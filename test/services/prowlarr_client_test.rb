@@ -1037,7 +1037,7 @@ class ProwlarrClientTest < ActiveSupport::TestCase
           .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
 
         Net::HTTP.stub(:new, ->(*args) { new_http.call(*args).tap { |http| connections << http } }) do
-          IndexerClients::ReachableNetHttp.stub(:reachable_ipaddr, ->(*) { probes << true; "203.0.113.10" }) do
+          ReachableAddress.stub(:reachable_ipaddr, ->(*) { probes << true; "203.0.113.10" }) do
             assert ProwlarrClient.test_connection
           end
         end

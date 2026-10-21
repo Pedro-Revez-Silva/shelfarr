@@ -539,23 +539,17 @@ module DownloadClients
 
     # Net::HTTP uses one open timeout for every getaddrinfo result. A blackholed
     # first address — IPv6 localhost in Docker — expires before IPv4 is tried.
+    # A proxy resolves the target itself. Pinning here also replaces the
+    # HTTPS CONNECT hostname, which can break proxy DNS and host allowlists.
     def install_reachable_address_adapter(builder, open_timeout)
-      # A proxy resolves the target itself. Pinning here also replaces the
-      # HTTPS CONNECT hostname, which can break proxy DNS and host allowlists.
-      ipaddr = reachable_ipaddr(open_timeout) unless builder.proxy
-      builder.adapter :net_http do |http|
-        # Probe failures are truthy. Pinning one would replace the host the
-        # client uses when it reports a connection error.
-        http.ipaddr = ipaddr if ipaddr.is_a?(String)
+      if builder.proxy
+        builder.adapter Faraday.default_adapter
+        return
       end
-    end
 
-    # A failed probe returns no address, so Net::HTTP connects as usual and the
-    # caller still sees the same connection or authentication error.
-    def reachable_ipaddr(open_timeout)
-      deadline = ReachableAddress.monotonic_deadline(open_timeout)
-      address = ReachableAddress.reachable_ipaddr(base_url, deadline)
-      address if address.is_a?(String)
+      builder.adapter :net_http do |http|
+        ReachableAddress.assign_reachable_address(http, base_url, http.open_timeout || open_timeout)
+      end
     end
 
     def handle_response(response)
