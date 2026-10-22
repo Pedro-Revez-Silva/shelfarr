@@ -12,17 +12,9 @@ class DownloadMonitorJob < ApplicationJob
   class << self
     def ensure_running!
       return unless monitoring_required?
-      return if monitor_job_pending?
 
-      interval = poll_interval_seconds
-      unless solid_queue_adapter?
-        next_run_at = Rails.cache.read(SCHEDULE_CACHE_KEY).to_i
-        return if next_run_at > Time.current.to_i
-      end
-
-      reserve_schedule!(interval)
-      Rails.logger.info "[DownloadMonitorJob] Scheduling monitor chain"
-      perform_later
+      # config/recurring.yml is the clock. Enqueueing here starts a second chain.
+      monitor_job_pending?
     end
 
     def monitoring_required?
@@ -75,14 +67,19 @@ class DownloadMonitorJob < ApplicationJob
     end
   end
 
-  def perform
+  def perform(scheduled: false)
     unless self.class.monitoring_required?
       self.class.clear_schedule!
       return
     end
 
+    return if scheduled && !scheduled_monitor_due?
+
     monitor_active_downloads
-    schedule_next_run
+    return unless scheduled
+
+    interval = self.class.send(:poll_interval_seconds)
+    self.class.send(:reserve_schedule!, interval)
   end
 
   private
@@ -265,16 +262,8 @@ class DownloadMonitorJob < ApplicationJob
     RemoteResult::Failed.new(error)
   end
 
-  def schedule_next_run
-    return if self.class.monitor_job_pending?(excluding_active_job_id: job_id)
-
-    interval = self.class.send(:poll_interval_seconds)
-    Rails.cache.write(
-      self.class::SCHEDULE_CACHE_KEY,
-      interval.seconds.from_now.to_i,
-      expires_in: self.class.send(:schedule_ttl, interval)
-    )
-    DownloadMonitorJob.set(wait: interval.seconds).perform_later
+  def scheduled_monitor_due?
+    Rails.cache.read(self.class::SCHEDULE_CACHE_KEY).to_i <= Time.current.to_i
   end
 
   def current_monitored_download?(download)

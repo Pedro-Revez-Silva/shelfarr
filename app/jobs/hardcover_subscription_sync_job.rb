@@ -25,7 +25,9 @@ class HardcoverSubscriptionSyncJob < ApplicationJob
 
     result = Hardcover::SubscriptionSync.call(subscription, mode: mode)
     HardcoverImportJob.perform_later if result.queued.positive?
-    self.class.set(wait: CONTINUE_DELAY).perform_later(subscription.id) if result.continuing
+    if result.continuing
+      SingleChain.enqueue(self.class, subscription.id, wait: CONTINUE_DELAY, scope: subscription.id)
+    end
   rescue Hardcover::SubscriptionSync::Stale => error
     # The account changed while reading; the new state has its own preview.
     RemoteResult::Failed.new(error)

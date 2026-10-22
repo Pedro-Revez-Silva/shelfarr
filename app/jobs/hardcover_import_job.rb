@@ -11,6 +11,8 @@ class HardcoverImportJob < ApplicationJob
 
   def perform
     result = Hardcover::ItemImporter.call
-    self.class.set(wait: CONTINUE_DELAY).perform_later if result.processed.positive? && result.remaining.positive?
+    return unless result.processed.positive? && result.remaining.positive?
+
+    SingleChain.enqueue(self.class, wait: CONTINUE_DELAY)
   end
 end

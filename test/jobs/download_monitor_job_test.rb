@@ -61,14 +61,15 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
-  test "schedules next run after monitoring" do
+  test "does not enqueue another monitor after checking" do
     VCR.turned_off do
       stub_qbittorrent_auth
       stub_qbittorrent_torrent_info(progress: 75, state: "downloading")
 
-      assert_enqueued_with(job: DownloadMonitorJob) do
+      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
         DownloadMonitorJob.perform_now
       end
+      assert_equal 75, @download.reload.progress
     end
   end
 
@@ -125,35 +126,24 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
-  test "recurring watchdog restarts a failed monitor chain without duplicating its replacement" do
+  test "recurring clock checks the download monitor without a command chain" do
     config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
-    watchdog = config.fetch("production").fetch("download_monitor_recovery")
-    assert_equal "every 5 minutes", watchdog.fetch("schedule")
-    task = SolidQueue::RecurringTask.from_configuration("download_monitor_recovery", **watchdog.symbolize_keys)
+    assert_nil config.fetch("production")["download_monitor_recovery"]
+    monitor = config.fetch("production").fetch("download_monitor")
+    assert_equal "DownloadMonitorJob", monitor.fetch("class")
+    assert_equal "every minute", monitor.fetch("schedule")
+    assert_equal [ { "scheduled" => true } ], monitor.fetch("args")
+    assert_nil monitor["command"]
+    task = SolidQueue::RecurringTask.from_configuration("download_monitor", **monitor.symbolize_keys)
     assert task.valid?, task.errors.full_messages.join(", ")
 
-    with_solid_queue_monitor_jobs do |monitor_jobs|
-      # Other tests can leave unrelated jobs in the queue database. Claim the
-      # specific monitor rather than failing whichever job happens to be first.
-      unrelated_job = SolidQueue::RecurringJob.set(priority: -100).perform_later("nil")
-      job = DownloadMonitorJob.perform_later
-      worker = SolidQueue::Process.register(kind: "Worker", name: "monitor-recovery-test", pid: Process.pid)
-      claimed = SolidQueue::ReadyExecution.where(job_id: job.provider_job_id).claim([ "*" ], 1, worker.id).first
-      assert_equal job.job_id, claimed&.job&.active_job_id
-      claimed.failed_with(RuntimeError.new("interrupted polling"))
-      claimed.unblock_next_job
+    SettingsService.set(:download_check_interval, 60)
+    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 30.seconds.from_now.to_i)
 
-      assert_difference -> { monitor_jobs.count }, 1 do
-        SolidQueue::RecurringJob.perform_now(task.command)
-      end
-      assert_no_difference -> { monitor_jobs.count } do
-        SolidQueue::RecurringJob.perform_now(task.command)
-      end
-      assert SolidQueue::ReadyExecution.exists?(job_id: unrelated_job.provider_job_id)
-    ensure
-      SolidQueue::Job.find_by(active_job_id: unrelated_job.job_id)&.destroy! if unrelated_job
-      worker&.destroy!
+    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+      DownloadMonitorJob.perform_now(scheduled: true)
     end
+    assert_equal 50, @download.reload.progress
   end
 
   test "handles completed download and triggers post-processing" do
@@ -757,14 +747,11 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
-  test "ensure_running! only enqueues one monitor job while scheduled" do
+  test "ensure_running! does not enqueue a monitor chain" do
     SettingsService.set(:download_check_interval, 60)
 
-    assert_enqueued_with(job: DownloadMonitorJob) do
+    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
       DownloadMonitorJob.ensure_running!
-    end
-
-    assert_no_enqueued_jobs do
       DownloadMonitorJob.ensure_running!
     end
   end
@@ -779,30 +766,22 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
-  test "solid queue recovers when a cache reservation exists without a pending job" do
+  test "ensure_running! does not enqueue when the clock reservation is in the future" do
     Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 1.hour.from_now.to_i)
 
-    DownloadMonitorJob.stub(:solid_queue_adapter?, true) do
-      DownloadMonitorJob.stub(:monitor_job_pending?, false) do
-        assert_enqueued_with(job: DownloadMonitorJob) do
-          DownloadMonitorJob.ensure_running!
-        end
-      end
+    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+      DownloadMonitorJob.ensure_running!
     end
   end
 
-  test "does not schedule a successor when another protected monitor job is pending" do
-    job = DownloadMonitorJob.new
-    pending_job = lambda do |excluding_active_job_id: nil|
-      assert_equal job.job_id, excluding_active_job_id
-      true
-    end
+  test "a scheduled run before the interval elapses does not monitor or enqueue" do
+    SettingsService.set(:download_check_interval, 60)
+    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 1.minute.from_now.to_i)
 
-    DownloadMonitorJob.stub(:monitor_job_pending?, pending_job) do
-      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
-        job.send(:schedule_next_run)
-      end
+    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+      DownloadMonitorJob.perform_now(scheduled: true)
     end
+    assert_equal 50, @download.reload.progress
   end
 
   test "stale monitor instances claim a completed download only once" do
@@ -838,7 +817,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
-  test "ensure_running! starts a watchdog for a queued direct download without clients" do
+  test "a due scheduled run watches a queued direct download without enqueueing a chain" do
     DownloadClient.destroy_all
     direct_result = search_results(:selected_result)
     direct_result.update!(source: SearchResult::SOURCE_GUTENBERG)
@@ -849,10 +828,13 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       download_type: nil,
       search_result: direct_result
     )
+    DownloadMonitorJob.clear_schedule!
 
-    assert_enqueued_with(job: DownloadMonitorJob) do
-      DownloadMonitorJob.ensure_running!
+    assert DownloadMonitorJob.monitoring_required?
+    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+      DownloadMonitorJob.perform_now(scheduled: true)
     end
+    assert @download.reload.queued?
   end
 
   test "limits monitor execution to one protected job" do
@@ -889,7 +871,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
 
     SettingsService.set(:download_enqueue_timeout_minutes, 5)
 
-    assert_enqueued_with(job: DownloadMonitorJob) do
+    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
       DownloadMonitorJob.perform_now
     end
 
