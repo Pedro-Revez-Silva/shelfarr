@@ -407,7 +407,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
             body["method"] == "torrent_get" &&
             body["params"] == {
               "ids" => [ "transmission-hash" ],
-              "fields" => %w[id name hash_string percent_done status total_size download_dir error error_string]
+              "fields" => DownloadClients::Transmission::JSONRPC_TORRENT_FIELDS
             } &&
             body["id"] == 1
         end
@@ -442,6 +442,72 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       assert @request.attention_needed?
       assert_includes @request.issue_description, "failed in client"
     end
+  end
+
+  test "completes a stopped Transmission torrent at 100 percent and enqueues post-processing" do
+    transmission = DownloadClient.create!(
+      name: "Stopped Transmission",
+      client_type: "transmission",
+      url: "http://localhost:9091",
+      username: "admin",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    @download.update!(
+      external_id: "transmission-hash",
+      download_client: transmission
+    )
+
+    # 0 is stopped after a seed or idle limit of 0. 5 is queued to seed.
+    [ 0, 5 ].each do |status|
+      @download.update!(status: :downloading, progress: 50, download_path: nil)
+      Thread.current[:transmission_sessions] = {}
+      Thread.current[:transmission_protocols] = {}
+
+      VCR.turned_off do
+        stub_transmission_monitor_torrent(percent_done: 1.0, status: status, left_until_done: 0)
+
+        assert_enqueued_with(job: PostProcessingJob, args: [ @download.id ]) do
+          DownloadMonitorJob.perform_now
+        end
+      end
+
+      @download.reload
+      assert @download.completed?, "Transmission status #{status} at percentDone 1.0 should complete the download"
+      assert_equal 100, @download.progress
+      assert_equal "/downloads/complete/Test Audiobook", @download.download_path
+    end
+  end
+
+  test "does not complete a stopped Transmission torrent that is still short of 100 percent" do
+    transmission = DownloadClient.create!(
+      name: "Incomplete Transmission",
+      client_type: "transmission",
+      url: "http://localhost:9091",
+      username: "admin",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    @download.update!(
+      external_id: "transmission-hash",
+      download_client: transmission,
+      progress: 50
+    )
+
+    VCR.turned_off do
+      stub_transmission_monitor_torrent(percent_done: 0.995, status: 0, left_until_done: 1024)
+
+      assert_no_enqueued_jobs(only: PostProcessingJob) do
+        DownloadMonitorJob.perform_now
+      end
+    end
+
+    @download.reload
+    assert @download.downloading?
+    # 0.995 rounds to a displayed 100 and must still stay in progress.
+    assert_equal 100, @download.progress
   end
 
   test "uses SABnzbd for usenet downloads" do
@@ -1026,6 +1092,63 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     monitor_jobs&.destroy_all
     ActiveJob::Base.queue_adapter = original_adapter
     SolidQueue::Record.establish_connection(original_config)
+  end
+
+  def stub_transmission_monitor_torrent(percent_done:, status:, left_until_done: 0, error: 0)
+    stub_request(:post, "http://localhost:9091/transmission/rpc")
+      .with do |request|
+        body = JSON.parse(request.body)
+        body["jsonrpc"] == "2.0" &&
+          body["method"] == "session_get" &&
+          body["params"] == {} &&
+          body["id"] == 1
+      end
+      .to_return(
+        {
+          status: 409,
+          headers: { "x-transmission-session-id" => "session-id" },
+          body: { "result" => "session", "arguments" => {} }.to_json
+        },
+        {
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "version" => "4.1.1" }, "id" => 1 }.to_json
+        }
+      )
+    stub_request(:post, "http://localhost:9091/transmission/rpc")
+      .with do |request|
+        body = JSON.parse(request.body)
+        body["jsonrpc"] == "2.0" &&
+          body["method"] == "torrent_get" &&
+          body["params"] == {
+            "ids" => [ "transmission-hash" ],
+            "fields" => DownloadClients::Transmission::JSONRPC_TORRENT_FIELDS
+          } &&
+          body["id"] == 1
+      end
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: {
+          "jsonrpc" => "2.0",
+          "result" => {
+            "torrents" => [
+              {
+                "hash_string" => "transmission-hash",
+                "name" => "Test Audiobook",
+                "percent_done" => percent_done,
+                "left_until_done" => left_until_done,
+                "status" => status,
+                "error" => error,
+                "error_string" => "",
+                "total_size" => 1_073_741_824,
+                "download_dir" => "/downloads/complete"
+              }
+            ]
+          },
+          "id" => 1
+        }.to_json
+      )
   end
 
   def stub_qbittorrent_auth
