@@ -236,9 +236,9 @@ Grimmory support uses Grimmory's `/api/v1` endpoints for library listing, invent
 ## Development
 
 ```bash
-# Install Ruby 3.3.6 via rbenv and the image validation dependency
+# Install Ruby 3.3.12 via rbenv and the image validation dependency
 brew install rbenv ruby-build vips
-rbenv install 3.3.6
+rbenv install 3.3.12
 
 # Clone and setup
 git clone https://github.com/Pedro-Revez-Silva/shelfarr.git
