@@ -46,11 +46,11 @@ class IndexerClients::ReachableNetHttpTest < ActiveSupport::TestCase
     open_timeout = 0.3
     resolved = false
     probes = 0
-    original_probe = IndexerClients::ReachableNetHttp.method(:begin_address_probes)
+    original_probe = ReachableAddress.method(:begin_address_probes)
     addresses = [ Addrinfo.tcp("192.0.2.1", 9), Addrinfo.tcp("198.51.100.1", 9) ]
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-    IndexerClients::ReachableNetHttp.stub(:begin_address_probes, lambda { |*args|
+    ReachableAddress.stub(:begin_address_probes, lambda { |*args|
       probes += 1
       original_probe.call(*args)
     }) do

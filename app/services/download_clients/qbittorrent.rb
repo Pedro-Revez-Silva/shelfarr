@@ -3,7 +3,6 @@
 require "bencode"
 require "digest/sha1"
 require "faraday/multipart"
-require "socket"
 require "stringio"
 
 module DownloadClients
@@ -540,92 +539,17 @@ module DownloadClients
 
     # Net::HTTP uses one open timeout for every getaddrinfo result. A blackholed
     # first address — IPv6 localhost in Docker — expires before IPv4 is tried.
+    # A proxy resolves the target itself. Pinning here also replaces the
+    # HTTPS CONNECT hostname, which can break proxy DNS and host allowlists.
     def install_reachable_address_adapter(builder, open_timeout)
-      # A proxy resolves the target itself. Pinning here also replaces the
-      # HTTPS CONNECT hostname, which can break proxy DNS and host allowlists.
-      ipaddr = reachable_ipaddr(open_timeout) unless builder.proxy
+      if builder.proxy
+        builder.adapter Faraday.default_adapter
+        return
+      end
+
       builder.adapter :net_http do |http|
-        http.ipaddr = ipaddr if ipaddr
+        ReachableAddress.assign_reachable_address(http, base_url, http.open_timeout || open_timeout)
       end
-    end
-
-    def reachable_ipaddr(open_timeout)
-      uri = URI(base_url)
-      return if uri.host.blank?
-
-      addresses = Addrinfo.getaddrinfo(uri.host, uri.port, nil, :STREAM)
-      return if addresses.size < 2
-
-      select_reachable_ipaddr(addresses, open_timeout)
-    rescue SocketError, SystemCallError => error
-      RemoteResult::Failed.new(error)
-    end
-
-    def select_reachable_ipaddr(addresses, open_timeout)
-      pending = begin_address_probes(addresses)
-      return if pending.empty?
-
-      winner = nil
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + open_timeout
-      begin
-        until pending.empty? || winner
-          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          break if remaining <= 0
-
-          _readable, writable, erroneous = IO.select(nil, pending.map(&:first), pending.map(&:first), remaining)
-          ready = Array(writable) | Array(erroneous)
-          break if ready.empty?
-
-          ready.each do |sock|
-            winner = take_connected_ipaddr(pending, sock)
-            break if winner
-          end
-        end
-        winner
-      ensure
-        pending.each { |socket, _addr| close_probe_socket(socket) }
-      end
-    end
-
-    def begin_address_probes(addresses)
-      addresses.filter_map do |addr|
-        socket = Socket.new(addr.afamily, Socket::SOCK_STREAM, 0)
-        socket.connect_nonblock(addr, exception: false)
-        [ socket, addr ]
-      rescue SystemCallError => error
-        close_probe_socket(socket)
-        RemoteResult::Failed.new(error)
-      end
-    end
-
-    def take_connected_ipaddr(pending, sock)
-      pair = pending.find { |candidate, _addr| candidate == sock }
-      return unless pair
-
-      socket, addr = pair
-      result = socket.connect_nonblock(addr, exception: false)
-      error = socket.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).int
-      return addr.ip_address if result != :wait_writable && error.zero?
-
-      return if result == :wait_writable && error.zero?
-
-      close_probe_socket(socket)
-      pending.delete(pair)
-      nil
-    rescue Errno::EISCONN
-      addr.ip_address
-    rescue IO::WaitWritable, Errno::EINPROGRESS, Errno::EALREADY => error
-      RemoteResult::Failed.new(error)
-    rescue SystemCallError => error
-      close_probe_socket(socket)
-      pending.delete(pair)
-      RemoteResult::Failed.new(error)
-    end
-
-    def close_probe_socket(socket)
-      socket&.close
-    rescue IOError, SystemCallError => error
-      RemoteResult::Failed.new(error)
     end
 
     def handle_response(response)
