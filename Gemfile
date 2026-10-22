@@ -31,6 +31,7 @@ gem "faraday"
 gem "faraday-multipart"
 # Public and private suffix boundaries for credential-bearing redirects
 gem "public_suffix", "~> 7.0"
+gem "resolv", "~> 0.3.2"
 gem "oj"
 gem "rubyzip", ">= 3.4.0", require: "zip"
 gem "bencode"

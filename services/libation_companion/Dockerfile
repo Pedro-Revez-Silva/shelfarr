@@ -2,7 +2,7 @@
 
 # Pin the exact multi-architecture SDK manifest. A Shelfarr release must not
 # silently acquire a different compiler or runtime pack on a later rebuild.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.302-noble@sha256:ed034a8bf0b24ded0cbbac07e17825d8e9ebfe21e308191d0f7421eaf5ad4664 AS companion-build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.402-noble@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2 AS companion-build
 ARG TARGETARCH
 ARG APP_VERSION=0.0.0
 
@@ -35,12 +35,12 @@ RUN case "${TARGETARCH}" in \
 # Ship a machine-readable snapshot of the exact unmodified Libation source
 # beside its object code. This does not rely on the upstream tag remaining
 # available after Shelfarr has distributed the companion image.
-RUN git init --quiet /tmp/libation-source \
+RUN git init --quiet /var/cache/libation-source \
     && install -d /source-artifacts \
-    && git -C /tmp/libation-source remote add origin https://github.com/rmcrackan/Libation.git \
-    && git -C /tmp/libation-source fetch --quiet --depth 1 origin 087c1076850d63f2ad172417535f3f0b025e722a \
-    && test "$(git -C /tmp/libation-source rev-parse FETCH_HEAD)" = "087c1076850d63f2ad172417535f3f0b025e722a" \
-    && git -C /tmp/libation-source archive \
+    && git -C /var/cache/libation-source remote add origin https://github.com/rmcrackan/Libation.git \
+    && git -C /var/cache/libation-source fetch --quiet --depth 1 origin 087c1076850d63f2ad172417535f3f0b025e722a \
+    && test "$(git -C /var/cache/libation-source rev-parse FETCH_HEAD)" = "087c1076850d63f2ad172417535f3f0b025e722a" \
+    && git -C /var/cache/libation-source archive \
       --format=tar.gz \
       --prefix=Libation-14.2.0/ \
       --output=/source-artifacts/Libation-14.2.0-source.tar.gz \
@@ -50,10 +50,26 @@ RUN git init --quiet /tmp/libation-source \
       /source-artifacts/Libation-14.2.0-source.tar.gz \
       | sha256sum --check --strict
 
+# Compile the exact shipped source with the serviced runtime; preserve the
+# source archive and upstream application behavior.
+RUN mkdir /libation-source && \
+    tar -xzf /source-artifacts/Libation-14.2.0-source.tar.gz --strip-components=1 -C /libation-source && \
+    case "${TARGETARCH}" in amd64) dotnet_arch=x64 ;; arm64) dotnet_arch=arm64 ;; *) exit 64 ;; esac && \
+    dotnet publish /libation-source/Source/LibationCli/LibationCli.csproj \
+      --configuration Release --runtime "linux-${dotnet_arch}" --self-contained true \
+      -p:RuntimeFrameworkVersion=10.0.13 --output /libation-out
+
 # Keep this exact tag and manifest digest in sync with THIRD_PARTY_NOTICES.md.
 FROM rmcrackan/libation:14.2.0@sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db
 
 USER root
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+# Service the upstream image's global runtime as well as the self-contained apps.
+COPY --from=companion-build /usr/share/dotnet/shared/ /usr/share/dotnet/shared/
+COPY --from=companion-build /usr/share/dotnet/host/ /usr/share/dotnet/host/
+COPY --from=companion-build /usr/share/dotnet/dotnet /usr/share/dotnet/dotnet
+RUN rm -rf /usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.11 /usr/share/dotnet/shared/Microsoft.AspNetCore.App/10.0.11 /usr/share/dotnet/host/fxr/10.0.11
+COPY --from=companion-build /libation-out/ /libation/
 RUN test -x /libation/LibationCli \
     && command -v script >/dev/null \
     && command -v setpriv >/dev/null \
