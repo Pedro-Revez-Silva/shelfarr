@@ -760,7 +760,7 @@ class SearchJobTest < ActiveJob::TestCase
     assert_empty @request.downloads
   end
 
-  test "does not auto-select short dotted titles inside collection releases" do
+  test "auto-selects a dotted acronym inside a collection when the canonical title is not short" do
     SettingsService.set(:auto_select_enabled, true)
     SettingsService.set(:auto_select_confidence_threshold, 90)
     SettingsService.set(:anna_archive_enabled, false)
@@ -773,12 +773,14 @@ class SearchJobTest < ActiveJob::TestCase
       .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [ payload ].to_json)
 
     VCR.turned_off do
-      assert_no_enqueued_jobs(only: DownloadJob) { SearchJob.perform_now(@request.id) }
+      assert_enqueued_with(job: DownloadJob) { SearchJob.perform_now(@request.id) }
     end
 
-    assert_operator @request.search_results.sole.score_breakdown["title"], :<, 100
-    assert @request.reload.attention_needed?
-    assert_empty @request.downloads
+    result = @request.search_results.sole
+    assert_equal 100, result.score_breakdown["title"]
+    assert_not TitleKey.new("R.U.R.").short?
+    assert @request.reload.downloading?
+    assert_equal result, @request.downloads.sole.search_result
   end
 
   test "sends attention notification when no search sources configured" do
