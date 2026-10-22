@@ -76,6 +76,25 @@ class RecurringConfigTest < ActiveSupport::TestCase
     assert_equal "every minute", sync_job["schedule"]
   end
 
+  test "schedules the download monitor class and has no command entry" do
+    config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
+
+    default_jobs = config.fetch("default")
+    assert_nil default_jobs["download_monitor_recovery"]
+    monitor = default_jobs.fetch("download_monitor")
+
+    assert_equal "DownloadMonitorJob", monitor["class"]
+    assert_equal "default", monitor["queue"]
+    assert_equal [ { "scheduled" => true } ], monitor["args"]
+    assert_equal "every minute", monitor["schedule"]
+    assert_nil monitor["command"]
+
+    production = config.fetch("production")
+    assert_nil production["download_monitor_recovery"]
+    assert_equal "DownloadMonitorJob", production.fetch("download_monitor").fetch("class")
+    assert_nil production.fetch("download_monitor")["command"]
+  end
+
   test "checks Hardcover subscriptions every fifteen minutes" do
     config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
 

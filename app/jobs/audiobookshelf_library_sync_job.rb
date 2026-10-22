@@ -108,7 +108,12 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
     )
     return unless claimed
 
-    set(wait: POST_SCAN_REFRESH_WAIT).perform_later(post_scan: true)
+    SingleChain.enqueue(
+      self,
+      wait: POST_SCAN_REFRESH_WAIT,
+      scope: { post_scan: true },
+      post_scan: true
+    )
   end
 
   private

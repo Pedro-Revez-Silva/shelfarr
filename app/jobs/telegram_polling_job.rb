@@ -19,7 +19,7 @@ class TelegramPollingJob < ApplicationJob
 
       reserve_schedule!
       Rails.logger.info "[TelegramPollingJob] Scheduling polling chain"
-      perform_later
+      SingleChain.enqueue(self)
     end
 
     def clear_schedule!
@@ -106,6 +106,6 @@ class TelegramPollingJob < ApplicationJob
     return if self.class.polling_job_pending?(excluding_active_job_id: job_id)
 
     self.class.send(:reserve_schedule!)
-    TelegramPollingJob.set(wait: POLL_INTERVAL_SECONDS.seconds).perform_later
+    SingleChain.enqueue(self.class, wait: POLL_INTERVAL_SECONDS.seconds)
   end
 end
