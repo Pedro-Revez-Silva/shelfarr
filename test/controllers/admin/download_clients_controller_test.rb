@@ -274,7 +274,7 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     VCR.turned_off do
       stub_qbittorrent_connection("http://localhost:8081")
 
-      assert_enqueued_with(job: DownloadMonitorJob) do
+      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
         post admin_download_clients_url, params: {
           download_client: {
             name: "Slow qBittorrent",
@@ -303,7 +303,7 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     VCR.turned_off do
       stub_qbittorrent_connection(client.url)
 
-      assert_enqueued_with(job: DownloadMonitorJob) do
+      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
         patch admin_download_client_url(client), params: {
           download_client: {
             torrent_verification_max_attempts: "15",
@@ -318,14 +318,14 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "update starts monitor when enabling a previously disabled client" do
+  test "update enabling a client leaves the monitor to the recurring clock" do
     client = create_download_client
     client.update!(enabled: false)
 
     VCR.turned_off do
       stub_qbittorrent_connection(client.url)
 
-      assert_enqueued_with(job: DownloadMonitorJob) do
+      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
         patch admin_download_client_url(client), params: {
           download_client: {
             enabled: "1"

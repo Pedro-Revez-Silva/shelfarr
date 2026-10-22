@@ -348,16 +348,18 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "qbittorrent continue starts the download monitor" do
+  test "qbittorrent continue leaves the download monitor to the recurring clock" do
     VCR.turned_off do
       stub_qbittorrent_connection("http://qbittorrent:8080")
 
-      assert_enqueued_with(job: DownloadMonitorJob) do
+      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
         patch admin_setup_wizard_url(step: "qbittorrent"), params: {
           wizard: { url: "http://qbittorrent:8080", username: "admin", password: "secret", category: "" }
         }
       end
     end
+
+    assert_redirected_to admin_setup_wizard_path(step: "folders")
   end
 
   test "a qbittorrent rerun keeps the client download path and a new password replaces an api key" do
