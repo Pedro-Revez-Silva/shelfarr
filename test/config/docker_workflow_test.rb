@@ -139,7 +139,7 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert commands.any? { |command| command.include?("dotnet restore") && command.include?("--locked-mode") }
     assert commands.any? { |command| command.include?("dotnet format") && command.include?("--verify-no-changes") }
     assert commands.any? { |command| command.include?("dotnet test") && command.include?("--no-restore") }
-    assert_equal "10.0.302", setup_step.dig("with", "dotnet-version")
+    assert_equal "10.0.402", setup_step.dig("with", "dotnet-version")
   end
 
   test "pull request CI keeps companion and container validation without publishing" do
@@ -178,13 +178,13 @@ class DockerWorkflowTest < ActiveSupport::TestCase
       "# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e"
     )
     assert_includes dockerfile,
-      "mcr.microsoft.com/dotnet/sdk:10.0.302-noble@sha256:ed034a8bf0b24ded0cbbac07e17825d8e9ebfe21e308191d0f7421eaf5ad4664"
+      "mcr.microsoft.com/dotnet/sdk:10.0.402-noble@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2"
     assert_includes dockerfile,
       "rmcrackan/libation:14.2.0@sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db"
     assert_includes dockerfile, "087c1076850d63f2ad172417535f3f0b025e722a"
     assert_includes dockerfile, "Libation-14.2.0-source.tar.gz"
     assert_includes dockerfile, "662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6"
-    assert_equal "10.0.302", sdk.dig("sdk", "version")
+    assert_equal "10.0.402", sdk.dig("sdk", "version")
     assert_equal "disable", sdk.dig("sdk", "rollForward")
     assert_equal Rails.root.join("LICENSE").binread, packaged_license
 
