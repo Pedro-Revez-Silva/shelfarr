@@ -13,7 +13,7 @@ Shelfarr source tag `vX.Y.Z`). A copy of its license is installed at
 
 ## Libation
 
-The Shelfarr Libation Companion is built on the unmodified Libation container
+The Shelfarr Libation Companion is built on the pinned Libation container with its CLI rebuilt from the exact upstream source using the serviced .NET 10.0.13 runtime
 and invokes Libation through its command-line interface. Shelfarr and its
 companion are independent projects and are not affiliated with Audible or
 Amazon.
@@ -31,7 +31,7 @@ Amazon.
 
 Libation is Copyright (C) its authors and contributors. The Shelfarr project
 does not claim authorship of Libation. The companion adds an authenticated,
-local-network control API around an unmodified, pinned Libation CLI. Issues
+local-network control API around a pinned Libation CLI built from unmodified source. Issues
 specific to this bridge should be reported to Shelfarr rather than to Libation's
 maintainers.
 

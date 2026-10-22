@@ -2,12 +2,13 @@
 # check=error=true
 
 # Make sure RUBY_VERSION matches the Ruby version in .ruby-version
-ARG RUBY_VERSION=3.3.6
+ARG RUBY_VERSION=3.3.12
 FROM docker.io/library/ruby:$RUBY_VERSION-slim AS base
 
 WORKDIR /rails
 
 RUN apt-get update -qq && \
+    apt-get upgrade -y -qq && \
     apt-get install --no-install-recommends -y curl ffmpeg libjemalloc2 libvips sqlite3 gosu && \
     ln -s /usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archives
@@ -18,6 +19,15 @@ ENV RAILS_ENV="production" \
     BUNDLE_PATH="/usr/local/bundle" \
     BUNDLE_WITHOUT="development" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so"
+
+FROM golang:1.27.3 AS thruster-build
+WORKDIR /source
+RUN git init . && git remote add origin https://github.com/basecamp/thruster.git && \
+    git fetch --depth 1 origin 97dd28dc956e79830ff82c3e435c7d2d56977720 && git checkout --detach FETCH_HEAD && \
+    go get golang.org/x/net@v0.60.0 github.com/klauspost/compress@v1.18.7 && \
+    go test ./...
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/thrust ./cmd/thrust
 
 FROM base AS build
 
@@ -54,6 +64,11 @@ RUN groupadd --system --gid 1000 rails && \
 
 COPY --chown=rails:rails --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 COPY --chown=rails:rails --from=build /rails /rails
+
+# Preserve the gem launcher while replacing its bundled native executable.
+COPY --from=thruster-build /out/thrust /usr/local/bin/thrust-backport
+RUN bundle exec ruby -rfileutils -e 'spec = Gem::Specification.find_by_name("thruster"); platform = [:cpu, :os].map { |key| Gem::Platform.local.send(key) }.join("-"); FileUtils.install("/usr/local/bin/thrust-backport", File.join(spec.full_gem_path, "exe", platform, "thrust"), mode: 0755)' && \
+    rm /usr/local/bin/thrust-backport
 
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 

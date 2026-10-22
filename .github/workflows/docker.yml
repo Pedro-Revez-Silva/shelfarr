@@ -117,7 +117,7 @@ jobs:
       - name: Set up .NET for companion tests
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.302
+          dotnet-version: 10.0.402
 
       - name: Restore locked companion dependencies
         working-directory: services/libation_companion
