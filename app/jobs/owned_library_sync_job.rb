@@ -495,11 +495,14 @@ class OwnedLibrarySyncJob < ApplicationJob
   end
 
   def schedule_poll(connection, attempt)
-    scheduled_job = self.class.set(wait: POLL_INTERVAL).perform_later(
+    scheduled_job = SingleChain.enqueue(
+      self.class,
       connection.id,
       attempt.request_token,
       attempt.job_id,
-      attempt.poll_token
+      attempt.poll_token,
+      wait: POLL_INTERVAL,
+      scope: connection.id
     )
     if scheduled_job.respond_to?(:successfully_enqueued?) && scheduled_job.successfully_enqueued?
       persist_scheduled_delivery(connection, attempt, scheduled_job)

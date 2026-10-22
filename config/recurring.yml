@@ -10,10 +10,12 @@
 #     schedule: at 5am every day
 
 default: &default
-  download_monitor_recovery:
-    command: "DownloadMonitorJob.ensure_running!"
+  download_monitor:
+    class: DownloadMonitorJob
     queue: default
-    schedule: every 5 minutes
+    args:
+      - scheduled: true
+    schedule: every minute
   request_queue:
     class: RequestQueueJob
     queue: default
