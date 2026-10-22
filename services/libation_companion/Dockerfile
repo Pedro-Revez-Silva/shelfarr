@@ -64,6 +64,11 @@ FROM rmcrackan/libation:14.2.0@sha256:c0ab061d317621057e914c51506d57238d5b6afb15
 
 USER root
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+# Service the upstream image's global runtime as well as the self-contained apps.
+COPY --from=companion-build /usr/share/dotnet/shared/ /usr/share/dotnet/shared/
+COPY --from=companion-build /usr/share/dotnet/host/ /usr/share/dotnet/host/
+COPY --from=companion-build /usr/share/dotnet/dotnet /usr/share/dotnet/dotnet
+RUN rm -rf /usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.11 /usr/share/dotnet/shared/Microsoft.AspNetCore.App/10.0.11 /usr/share/dotnet/host/fxr/10.0.11
 COPY --from=companion-build /libation-out/ /libation/
 RUN test -x /libation/LibationCli \
     && command -v script >/dev/null \
