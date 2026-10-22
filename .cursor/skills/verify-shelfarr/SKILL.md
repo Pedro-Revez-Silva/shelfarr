@@ -7,7 +7,7 @@ description: Drive the Shelfarr web UI from an isolated worktree, sign in throug
 
 Drive the Shelfarr web UI the way a person does. Launch a fresh worktree, sign in by typing into the form, and save proof. Read [features/README.md](features/README.md) before leaving the sign-in path.
 
-Ruby 3.3.6, Bundler, libvips, and Chrome must already be installed. Chrome is `google-chrome` on `PATH`, or set `CHROME_BIN` to the binary. The helper uses the Ruby standard library only.
+Ruby 3.3.12, Bundler, libvips, and Chrome must already be installed. Chrome is `google-chrome` on `PATH`, or set `CHROME_BIN` to the binary. The helper uses the Ruby standard library only.
 
 ## Launch
 
