@@ -3,6 +3,10 @@
 require "digest"
 
 class OwnedMediaImport < ApplicationRecord
+  %i[staged_device staged_inode].each do |name|
+    attribute name, Shelfarr::FilesystemIdentityType.new
+  end
+
   STATUSES = %w[pending queued starting downloading processing completed failed cancelled].freeze
   ACTIVE_STATUSES = %w[queued starting downloading processing].freeze
   TERMINAL_STATUSES = %w[completed failed cancelled].freeze
