@@ -20,6 +20,10 @@
   </a>
 </p>
 
+<p align="center">
+  <a href="https://app.railyard.run/deploy?repo=https://github.com/Pedro-Revez-Silva/shelfarr"><img src="https://app.railyard.run/deploy/badge" alt="Deploy to Railyard"></a>
+</p>
+
 ---
 
 Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelfarr searches your indexers and direct sources, downloads the best release and delivers it to Audiobookshelf — the same request-and-automate workflow the video stack gets from Jellyseerr + Sonarr/Radarr.
