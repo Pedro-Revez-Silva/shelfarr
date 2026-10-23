@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_12_090000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_23_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -136,14 +136,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_090000) do
     t.text "direct_content_manifest"
     t.string "direct_destination_path"
     t.string "direct_output_root"
-    t.integer "direct_output_root_device"
-    t.integer "direct_output_root_inode"
+    t.string "direct_output_root_device"
+    t.string "direct_output_root_inode"
     t.string "direct_publication_kind"
     t.string "direct_reservation_token"
-    t.integer "direct_staging_device"
-    t.integer "direct_staging_inode"
-    t.integer "direct_staging_parent_device"
-    t.integer "direct_staging_parent_inode"
+    t.string "direct_staging_device"
+    t.string "direct_staging_inode"
+    t.string "direct_staging_parent_device"
+    t.string "direct_staging_parent_inode"
     t.string "direct_staging_path"
     t.string "download_client_id"
     t.string "download_path"
@@ -416,8 +416,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_12_090000) do
     t.integer "request_id"
     t.bigint "requested_by_id"
     t.boolean "separate_edition", default: false, null: false
-    t.integer "staged_device"
-    t.integer "staged_inode"
+    t.string "staged_device"
+    t.string "staged_inode"
     t.datetime "started_at"
     t.string "status", default: "queued", null: false
     t.datetime "updated_at", null: false

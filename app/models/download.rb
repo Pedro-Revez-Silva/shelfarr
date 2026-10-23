@@ -1,4 +1,15 @@
 class Download < ApplicationRecord
+  %i[
+    direct_output_root_device
+    direct_output_root_inode
+    direct_staging_device
+    direct_staging_inode
+    direct_staging_parent_device
+    direct_staging_parent_inode
+  ].each do |name|
+    attribute name, Shelfarr::FilesystemIdentityType.new
+  end
+
   belongs_to :request
   belongs_to :download_client, optional: true
   belongs_to :search_result, optional: true
