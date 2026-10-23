@@ -21,7 +21,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y iptables libvips
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
+        uses: ruby/setup-ruby@26e5b7d197ebf60545ee9667bcbace0be11ccaec # v1.334.0
         with:
           bundler-cache: true
 
@@ -91,7 +91,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y cifs-utils libvips
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
+        uses: ruby/setup-ruby@26e5b7d197ebf60545ee9667bcbace0be11ccaec # v1.334.0
         with:
           bundler-cache: true
 
@@ -132,7 +132,7 @@ jobs:
         uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
+        uses: ruby/setup-ruby@26e5b7d197ebf60545ee9667bcbace0be11ccaec # v1.334.0
         with:
           bundler-cache: true
 
