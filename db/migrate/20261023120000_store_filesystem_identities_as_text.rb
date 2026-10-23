@@ -21,8 +21,8 @@ class StoreFilesystemIdentitiesAsText < ActiveRecord::Migration[8.1]
   end
 
   def down
-    change_identity_columns(:downloads, DOWNLOAD_COLUMNS, :integer)
-    change_identity_columns(:owned_media_imports, IMPORT_COLUMNS, :integer)
+    # Identities >= 2^63 lose precision when SQLite rebuilds these columns as integers.
+    raise ActiveRecord::IrreversibleMigration
   end
 
   private

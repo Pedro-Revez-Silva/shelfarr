@@ -166,6 +166,29 @@ class UnsignedFilesystemIdentityTest < ActiveSupport::TestCase
     end
   end
 
+  test "rollback of filesystem identities above 2^63 is refused without coercing them" do
+    assert_operator MERGERFS_DEVICE, :>, 2**63
+    assert_operator MERGERFS_INODE, :>, 2**63
+
+    with_scratch_identity_database do |connection|
+      create_legacy_identity_tables(connection)
+      connection.execute("INSERT INTO downloads DEFAULT VALUES")
+      connection.execute("INSERT INTO owned_media_imports DEFAULT VALUES")
+
+      migration = filesystem_identity_migration(connection)
+      migration.up
+      store_unsigned_identity_text(connection, device: MERGERFS_DEVICE, inode: MERGERFS_INODE)
+      before = identity_column_snapshot(connection)
+      assert_unsigned_identity_text(before, device: MERGERFS_DEVICE, inode: MERGERFS_INODE)
+
+      assert_raises(ActiveRecord::IrreversibleMigration) do
+        migration.down
+      end
+
+      assert_equal before, identity_column_snapshot(connection)
+    end
+  end
+
   private
 
   def with_unsigned_stat(device:, inode:)
@@ -193,18 +216,7 @@ class UnsignedFilesystemIdentityTest < ActiveSupport::TestCase
     connection = LegacyIdentityRecord.connection
     assert_not_equal Download.connection.pool.db_config.database, connection.pool.db_config.database
 
-    connection.create_table :downloads, force: true do |table|
-      table.integer :direct_output_root_device
-      table.integer :direct_output_root_inode
-      table.integer :direct_staging_device
-      table.integer :direct_staging_inode
-      table.integer :direct_staging_parent_device
-      table.integer :direct_staging_parent_inode
-    end
-    connection.create_table :owned_media_imports, force: true do |table|
-      table.integer :staged_device
-      table.integer :staged_inode
-    end
+    create_legacy_identity_tables(connection)
     connection.execute(<<~SQL)
       INSERT INTO downloads (
         direct_output_root_device,
@@ -229,9 +241,7 @@ class UnsignedFilesystemIdentityTest < ActiveSupport::TestCase
     SQL
     connection.execute("INSERT INTO owned_media_imports DEFAULT VALUES")
 
-    migration = StoreFilesystemIdentitiesAsText.new
-    migration.verbose = false
-    migration.instance_variable_set(:@connection, connection)
+    migration = filesystem_identity_migration(connection)
     migration.up
 
     download = connection.select_one(<<~SQL)
@@ -284,31 +294,6 @@ class UnsignedFilesystemIdentityTest < ActiveSupport::TestCase
     assert_equal "text", imported.fetch("device_type")
     assert_equal "text", imported.fetch("inode_type")
 
-    migration.down
-    reverted = connection.select_one(<<~SQL)
-      SELECT
-        direct_output_root_device,
-        typeof(direct_output_root_device) AS device_type,
-        direct_output_root_inode,
-        typeof(direct_output_root_inode) AS inode_type
-      FROM downloads
-      WHERE direct_output_root_inode IS NOT NULL
-    SQL
-    reverted_import = connection.select_one(<<~SQL)
-      SELECT staged_device, typeof(staged_device) AS device_type,
-             staged_inode, typeof(staged_inode) AS inode_type
-      FROM owned_media_imports
-      WHERE staged_inode IS NOT NULL
-    SQL
-    assert_equal device, Integer(reverted.fetch("direct_output_root_device").to_s, 10)
-    assert_equal inode, Integer(reverted.fetch("direct_output_root_inode").to_s, 10)
-    assert_equal "integer", reverted.fetch("device_type")
-    assert_equal "integer", reverted.fetch("inode_type")
-    assert_equal device, Integer(reverted_import.fetch("staged_device").to_s, 10)
-    assert_equal inode, Integer(reverted_import.fetch("staged_inode").to_s, 10)
-    assert_equal "integer", reverted_import.fetch("device_type")
-    assert_equal "integer", reverted_import.fetch("inode_type")
-
     {
       device: download.fetch("direct_output_root_device"),
       inode: download.fetch("direct_output_root_inode"),
@@ -333,6 +318,93 @@ class UnsignedFilesystemIdentityTest < ActiveSupport::TestCase
     name = LegacyIdentityRecord.connection_specification_name
     pool.disconnect!
     ActiveRecord::Base.connection_handler.remove_connection_pool(name)
+  end
+
+  def with_scratch_identity_database
+    directory = Dir.mktmpdir("filesystem-identity-rollback")
+    database = File.join(directory, "scratch.sqlite3")
+    LegacyIdentityRecord.establish_connection(adapter: "sqlite3", database: database)
+    connection = LegacyIdentityRecord.connection
+    assert_not_equal Download.connection.pool.db_config.database, connection.pool.db_config.database
+
+    yield connection
+  ensure
+    release_legacy_identity_connection
+    FileUtils.rm_rf(directory) if directory
+  end
+
+  def create_legacy_identity_tables(connection)
+    connection.create_table :downloads, force: true do |table|
+      StoreFilesystemIdentitiesAsText::DOWNLOAD_COLUMNS.each do |column|
+        table.integer column
+      end
+    end
+    connection.create_table :owned_media_imports, force: true do |table|
+      StoreFilesystemIdentitiesAsText::IMPORT_COLUMNS.each do |column|
+        table.integer column
+      end
+    end
+  end
+
+  def filesystem_identity_migration(connection)
+    migration = StoreFilesystemIdentitiesAsText.new
+    migration.verbose = false
+    migration.instance_variable_set(:@connection, connection)
+    migration
+  end
+
+  def identity_columns_by_table
+    {
+      "downloads" => StoreFilesystemIdentitiesAsText::DOWNLOAD_COLUMNS,
+      "owned_media_imports" => StoreFilesystemIdentitiesAsText::IMPORT_COLUMNS
+    }
+  end
+
+  def store_unsigned_identity_text(connection, device:, inode:)
+    identity_columns_by_table.each do |table, columns|
+      assignments = columns.map do |column|
+        value = column.to_s.end_with?("_inode") ? inode : device
+        "#{connection.quote_column_name(column)} = #{connection.quote(value.to_s)}"
+      end
+      connection.execute(<<~SQL.squish)
+        UPDATE #{connection.quote_table_name(table)}
+        SET #{assignments.join(", ")}
+      SQL
+    end
+  end
+
+  def identity_column_snapshot(connection)
+    identity_columns_by_table.to_h do |table, columns|
+      selections = columns.flat_map do |column|
+        quoted = connection.quote_column_name(column)
+        [ quoted, "typeof(#{quoted}) AS #{connection.quote_column_name("#{column}_type")}" ]
+      end
+      rows = connection.select_all(<<~SQL.squish).to_a
+        SELECT #{selections.join(", ")}
+        FROM #{connection.quote_table_name(table)}
+        ORDER BY rowid
+      SQL
+      [ table, rows ]
+    end
+  end
+
+  def assert_unsigned_identity_text(snapshot, device:, inode:)
+    type = Shelfarr::FilesystemIdentityType.new
+
+    assert_equal [ "downloads", "owned_media_imports" ], snapshot.keys
+    snapshot.each_value do |rows|
+      assert_equal 1, rows.size
+      rows.each do |row|
+        row.each_key do |column|
+          next if column.end_with?("_type")
+
+          expected = column.end_with?("_inode") ? inode.to_s : device.to_s
+          assert_equal expected, row.fetch(column)
+          assert_equal "text", row.fetch("#{column}_type")
+          assert_equal Integer(expected, 10), type.deserialize(row.fetch(column))
+        end
+      end
+    end
   end
 
   def write_identity_text(record, attributes)
