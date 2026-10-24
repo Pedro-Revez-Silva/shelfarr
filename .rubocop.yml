@@ -6,6 +6,7 @@ require:
   - ./lib/rubocop/cop/shelfarr/short_concurrency_lease.rb
   - ./lib/rubocop/cop/shelfarr/rescue_to_empty.rb
   - ./lib/rubocop/cop/shelfarr/unkeyed_faraday_memo.rb
+  - ./lib/rubocop/cop/shelfarr/self_enqueue.rb
 
 Shelfarr/SkippedTest:
   Enabled: true
@@ -37,6 +38,13 @@ Shelfarr/UnkeyedFaradayMemo:
   Severity: warning
   Include:
     - "app/services/indexer_clients/**/*.rb"
+
+Shelfarr/SelfEnqueue:
+  Enabled: true
+  Severity: warning
+  Include:
+    - "app/**/*.rb"
+    - "lib/**/*.rb"
 
 AllCops:
   inherit_mode:
