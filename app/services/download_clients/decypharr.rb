@@ -16,5 +16,15 @@ module DownloadClients
     def api_key
       nil
     end
+
+    # Decypharr's add endpoint drops tags and omits them from torrent info,
+    # even when it advertises a WebAPI version that would support them.
+    def dispatch_tags_supported?
+      false
+    end
+
+    def unsupported_dispatch_tags_message
+      "Decypharr ignores torrent tags, so an unhashed torrent cannot be identified before it is added"
+    end
   end
 end

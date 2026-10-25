@@ -147,4 +147,44 @@ class DownloadClients::DecypharrTest < ActiveSupport::TestCase
       assert_equal "qBittorrent API error: 503", error.message
     end
   end
+
+  test "refuses to add an unhashed torrent before submission" do
+    torrent_url = "http://indexer.example/download/1"
+    foreign_hash = "f" * 40
+    add_request = nil
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8282/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "sid=test_session_id; path=/" },
+          body: "Ok."
+        )
+      stub_request(:get, "http://localhost:8282/api/v2/app/webapiVersion")
+        .to_return(status: 200, body: "2.11.0")
+      stub_request(:get, torrent_url).to_return(status: 403, body: "no")
+      add_request = stub_request(:post, "http://localhost:8282/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+      stub_request(:get, %r{localhost:8282/api/v2/torrents/info})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => foreign_hash, "name" => "Foreign" } ].to_json
+        )
+
+      result = nil
+      error = nil
+      begin
+        result = @client.stub(:sleep, nil) { @client.add_torrent(torrent_url) }
+      rescue DownloadClients::Base::Error => caught
+        error = caught
+      end
+
+      assert error, "expected a configuration error before adding, got #{result.inspect}"
+      assert_match(/Decypharr/, error.message)
+      assert_match(/tag/i, error.message)
+      assert_not_requested add_request
+      refute_equal foreign_hash, result
+    end
+  end
 end
