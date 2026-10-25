@@ -31,6 +31,9 @@ module ActiveSupport
       stub_request(:get, "#{url}/api/v2/app/version")
         .to_return(status: 200, body: "v4.6.0")
 
+      stub_request(:get, "#{url}/api/v2/app/webapiVersion")
+        .to_return(status: 200, body: "2.8.3")
+
       stub_request(:post, "#{url}/api/v2/torrents/createCategory")
         .to_return(status: 409)
 

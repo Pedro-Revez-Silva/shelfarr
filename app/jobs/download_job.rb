@@ -107,6 +107,13 @@ class DownloadJob < ApplicationJob
         download.update!(status: :failed)
         download.request.mark_for_attention_after_idle_failure!("Failed to connect to download client: #{e.message}")
       end
+    rescue DownloadClients::Base::ConfigurationError => e
+      with_current_dispatch(download) do
+        Rails.logger.error "[DownloadJob] Download client configuration error: #{e.message}"
+        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        download.update!(status: :failed)
+        download.request.mark_for_attention_after_idle_failure!(e.message)
+      end
     rescue DownloadClients::Base::Error => e
       with_current_dispatch(download) do
         Rails.logger.error "[DownloadJob] Download client error for download ##{download.id}: #{e.message}"
@@ -1495,7 +1502,11 @@ class DownloadJob < ApplicationJob
       finalized = download.request.with_lock do
         next false unless current_standard_dispatch?(download, search_result)
 
-        existing = check_for_duplicate_external_id(external_id, download.id)
+        existing = check_for_duplicate_external_id(
+          external_id,
+          download.id,
+          download_client_id: client_record.id
+        )
         if existing
           reject_duplicate_external_id!(download, client_record, external_id, existing, download_type:)
           next false
@@ -1522,7 +1533,11 @@ class DownloadJob < ApplicationJob
     rescue ActiveRecord::RecordNotFound
       finalized = false
     ensure
-      unless finalized || other_download_with_external_id(external_id, download.id)
+      unless finalized || other_download_with_external_id(
+        external_id,
+        download.id,
+        download_client_id: client_record.id
+      )
         remove_stale_client_dispatch(client, client_record, external_id, download.id)
       end
     end
@@ -1607,8 +1622,12 @@ class DownloadJob < ApplicationJob
     Rails.logger.error "[DownloadJob] Failed to enqueue stale dispatch cleanup for download ##{download_id}: #{e.class}"
   end
 
-  def check_for_duplicate_external_id(external_id, current_download_id)
-    existing = other_download_with_external_id(external_id, current_download_id)
+  def check_for_duplicate_external_id(external_id, current_download_id, download_client_id:)
+    existing = other_download_with_external_id(
+      external_id,
+      current_download_id,
+      download_client_id: download_client_id
+    )
     return if existing.blank?
 
     Rails.logger.error "[DownloadJob] DUPLICATE EXTERNAL_ID DETECTED! " \
@@ -1617,13 +1636,33 @@ class DownloadJob < ApplicationJob
     existing
   end
 
-  def other_download_with_external_id(external_id, current_download_id)
-    return if external_id.blank?
+  # Client handles such as NZBGet ids are only unique on that client.
+  # A finished import releases its id so a rebuilt client can reuse it.
+  # Completed downloads still own the id while import or recovery is unfinished.
+  def other_download_with_external_id(external_id, current_download_id, download_client_id:)
+    return if external_id.blank? || download_client_id.blank?
 
-    Download.where(external_id: external_id)
+    Download.where(external_id: external_id.to_s, download_client_id: download_client_id)
             .where.not(id: current_download_id)
             .where.not(status: :failed)
-            .first
+            .includes(:request)
+            .order(:id)
+            .detect { |download| live_external_id_owner?(download) }
+  end
+
+  def live_external_id_owner?(download)
+    return true unless download.completed?
+
+    request = download.request
+    return true unless request&.completed?
+    return true if download.post_processing_cleanup_state.present?
+    return true if direct_recovery_pending?(download)
+
+    false
+  end
+
+  def direct_recovery_pending?(download)
+    Request::DIRECT_RECOVERY_COLUMNS.any? { |column| !download.public_send(column).nil? }
   end
 
   def reject_duplicate_external_id!(download, client_record, external_id, existing, download_type:)

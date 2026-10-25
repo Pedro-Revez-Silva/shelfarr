@@ -23,6 +23,7 @@ module DownloadClients
     class ConnectionError < Error; end
     class AuthenticationError < Error; end
     class NotConfiguredError < Error; end
+    class ConfigurationError < Error; end
 
     TorrentInfo = Data.define(:hash, :name, :progress, :state, :size_bytes, :download_path) do
       def completed?

@@ -2505,6 +2505,8 @@ class DownloadJobTest < ActiveJob::TestCase
         .to_return(status: 403, body: "Indexer grab limit reached")
       add_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/deleteTags")
+        .to_return(status: 200, body: "")
       stub_request(:get, %r{http://localhost:8080/api/v2/torrents/info})
         .to_return do |request|
           tag = Rack::Utils.parse_query(request.uri.query.to_s)["tag"]
@@ -2600,17 +2602,279 @@ class DownloadJobTest < ActiveJob::TestCase
     existing = @request.downloads.create!(
       name: "Existing",
       status: :downloading,
-      external_id: "same-hash"
+      external_id: "same-hash",
+      download_client: @client
     )
 
     found = nil
     assert_nothing_raised do
-      found = DownloadJob.new.send(:check_for_duplicate_external_id, existing.external_id, @download.id)
+      found = DownloadJob.new.send(
+        :check_for_duplicate_external_id,
+        existing.external_id,
+        @download.id,
+        download_client_id: @client.id
+      )
     end
     assert_equal existing, found
 
     existing.update!(status: :failed)
-    assert_nil DownloadJob.new.send(:check_for_duplicate_external_id, existing.external_id, @download.id)
+    assert_nil DownloadJob.new.send(
+      :check_for_duplicate_external_id,
+      existing.external_id,
+      @download.id,
+      download_client_id: @client.id
+    )
+  end
+
+  test "saves an external id already used by another download client" do
+    client_a = create_nzbget_client!(name: "NZBGet A", url: "http://nzbget-a.example:6789", priority: 0)
+    client_b = create_nzbget_client!(name: "NZBGet B", url: "http://nzbget-b.example:6789", priority: 1)
+    select_newznab_release!
+    DownloadRoutingRule.create!(
+      provider: "newznab",
+      indexer_name: "NZBHydra Books",
+      download_type: "usenet",
+      download_client: client_b
+    )
+    owner = create_external_id_owner!(
+      client_a,
+      external_id: "1",
+      download_status: :downloading,
+      request_status: :downloading
+    )
+    removed = []
+
+    VCR.turned_off do
+      stub_nzbget_status_only!(client_a.url)
+      stub_nzbget_dispatch!(client_b.url, nzb_id: 1, removed: removed)
+      DownloadJob.perform_now(@download.id)
+    end
+
+    @download.reload
+    assert_equal "downloading", @download.status
+    assert_equal "1", @download.external_id
+    assert_equal client_b.id.to_s, @download.download_client_id
+    assert_not @selected_result.reload.blocklisted?
+    assert_empty removed
+    assert_equal "downloading", owner.reload.status
+    assert_equal "1", owner.external_id
+    assert_equal client_a.id.to_s, owner.download_client_id
+  end
+
+  test "removes a replaced dispatch when another download client owns the external id" do
+    client_a = create_nzbget_client!(name: "NZBGet A", url: "http://nzbget-a.example:6789", priority: 1)
+    client_b = create_nzbget_client!(name: "NZBGet B", url: "http://nzbget-b.example:6789", priority: 0)
+    select_newznab_release!
+    owner = create_external_id_owner!(
+      client_a,
+      external_id: "1",
+      download_status: :downloading,
+      request_status: :downloading
+    )
+    removed = []
+
+    VCR.turned_off do
+      stub_nzbget_status_only!(client_a.url)
+      stub_nzbget_dispatch!(client_b.url, nzb_id: 1, removed: removed) do
+        @download.update!(status: :failed)
+      end
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal [ [ "GroupDelete", 0, "", [ 1 ] ] ], removed
+    assert_equal "failed", @download.reload.status
+    assert_nil @download.external_id
+    assert_equal "downloading", owner.reload.status
+    assert_equal "1", owner.external_id
+  end
+
+  test "reuses an external id after the owning acquisition is finished" do
+    client = create_nzbget_client!(name: "NZBGet", url: "http://nzbget.example:6789", priority: 0)
+    select_newznab_release!
+    owner = create_external_id_owner!(
+      client,
+      external_id: "1",
+      download_status: :completed,
+      request_status: :completed,
+      post_processing_job_id: "legacy-owner"
+    )
+    removed = []
+
+    VCR.turned_off do
+      stub_nzbget_dispatch!(client.url, nzb_id: 1, removed: removed)
+      DownloadJob.perform_now(@download.id)
+    end
+
+    @download.reload
+    assert_equal "downloading", @download.status
+    assert_equal "1", @download.external_id
+    assert_equal client.id.to_s, @download.download_client_id
+    assert_not @selected_result.reload.blocklisted?
+    assert_empty removed
+    assert_equal "completed", owner.reload.status
+    assert_equal "1", owner.external_id
+  end
+
+  test "removes a replaced dispatch when only a finished acquisition owns the external id" do
+    client = create_nzbget_client!(name: "NZBGet", url: "http://nzbget.example:6789", priority: 0)
+    select_newznab_release!
+    owner = create_external_id_owner!(
+      client,
+      external_id: "1",
+      download_status: :completed,
+      request_status: :completed,
+      post_processing_job_id: "legacy-owner"
+    )
+    removed = []
+
+    VCR.turned_off do
+      stub_nzbget_dispatch!(client.url, nzb_id: 1, removed: removed) do
+        @download.update!(status: :failed)
+      end
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal [ [ "GroupDelete", 0, "", [ 1 ] ] ], removed
+    assert_equal "failed", @download.reload.status
+    assert_nil @download.external_id
+    assert_equal "completed", owner.reload.status
+    assert_equal "1", owner.external_id
+  end
+
+  test "rejects an external id while the owning download's import is still pending" do
+    client = create_nzbget_client!(name: "NZBGet", url: "http://nzbget.example:6789", priority: 0)
+    select_newznab_release!
+    owner = create_external_id_owner!(
+      client,
+      external_id: "1",
+      download_status: :completed,
+      request_status: :downloading
+    )
+    removed = []
+
+    VCR.turned_off do
+      stub_nzbget_dispatch!(client.url, nzb_id: 1, removed: removed)
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal "failed", @download.reload.status
+    assert_nil @download.external_id
+    assert @selected_result.reload.blocklisted?
+    assert_empty removed
+    assert_equal "completed", owner.reload.status
+    assert_equal "1", owner.external_id
+  end
+
+  test "rejects an external id while post-processing cleanup is still pending" do
+    client = create_nzbget_client!(name: "NZBGet", url: "http://nzbget.example:6789", priority: 0)
+    select_newznab_release!
+    owner = create_external_id_owner!(
+      client,
+      external_id: "1",
+      download_status: :completed,
+      request_status: :completed,
+      post_processing_cleanup_state: '{"version":1}'
+    )
+    removed = []
+
+    VCR.turned_off do
+      stub_nzbget_dispatch!(client.url, nzb_id: 1, removed: removed)
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal "failed", @download.reload.status
+    assert_nil @download.external_id
+    assert @selected_result.reload.blocklisted?
+    assert_empty removed
+    assert_equal "1", owner.reload.external_id
+  end
+
+  test "rejects an external id while direct download recovery is still pending" do
+    client = create_nzbget_client!(name: "NZBGet", url: "http://nzbget.example:6789", priority: 0)
+    select_newznab_release!
+    owner = create_external_id_owner!(
+      client,
+      external_id: "1",
+      download_status: :completed,
+      request_status: :completed,
+      direct_staging_path: "/ebooks/.shelfarr-staging/direct-downloads/recovery/download"
+    )
+    removed = []
+
+    VCR.turned_off do
+      stub_nzbget_dispatch!(client.url, nzb_id: 1, removed: removed)
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal "failed", @download.reload.status
+    assert_nil @download.external_id
+    assert @selected_result.reload.blocklisted?
+    assert_empty removed
+    assert_equal "1", owner.reload.external_id
+  end
+
+  test "does not blocklist a release when Decypharr cannot identify an unhashed torrent" do
+    @client.destroy!
+    DownloadClient.create!(
+      name: "Decypharr",
+      client_type: "decypharr",
+      url: "http://localhost:8282",
+      username: "admin",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    torrent_url = "http://indexer.example/download/9"
+    foreign_hash = "a" * 40
+    @selected_result.update!(
+      download_url: torrent_url,
+      magnet_url: nil,
+      source: SearchResult::SOURCE_PROWLARR,
+      seeders: 2,
+      status: :selected
+    )
+    add_request = nil
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8282/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "sid=test_session_id; path=/" },
+          body: "Ok."
+        )
+      stub_request(:get, "http://localhost:8282/api/v2/app/version")
+        .to_return(status: 200, body: "v1.0.0")
+      stub_request(:get, "http://localhost:8282/api/v2/app/webapiVersion")
+        .to_return(status: 200, body: "2.11.0")
+      stub_request(:get, torrent_url).to_return(status: 403, body: "no")
+      add_request = stub_request(:post, "http://localhost:8282/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+      stub_request(:get, %r{http://localhost:8282/api/v2/torrents/info})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            {
+              "hash" => foreign_hash,
+              "name" => "Foreign",
+              "progress" => 0,
+              "state" => "downloading",
+              "size" => 10
+            }
+          ].to_json
+        )
+
+      without_qbittorrent_sleep { DownloadJob.perform_now(@download.id) }
+
+      assert_not_requested add_request
+    end
+
+    @download.reload
+    assert_equal "failed", @download.status
+    assert_nil @download.external_id
+    assert_not_equal foreign_hash, @download.external_id
+    assert_not @selected_result.reload.blocklisted?
+    assert_match(/tag/i, @request.reload.issue_description.to_s)
   end
 
   test "sends attention notification when no search result selected" do
@@ -2799,6 +3063,84 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   private
+
+  def create_nzbget_client!(name:, url:, priority:)
+    DownloadClient.create!(
+      name: name,
+      client_type: "nzbget",
+      url: url,
+      username: "nzbget",
+      password: "tegbzn6789",
+      priority: priority,
+      enabled: true
+    )
+  end
+
+  def select_newznab_release!
+    @selected_result.update!(
+      indexer: "NZBHydra Books",
+      source: SearchResult::SOURCE_NEWZNAB,
+      download_url: "http://nzbhydra.example/getnzb/api/123",
+      magnet_url: nil,
+      seeders: nil,
+      status: :selected
+    )
+    @download.update!(search_result: @selected_result)
+  end
+
+  def create_external_id_owner!(client, external_id:, download_status:, request_status:, **download_attributes)
+    owner_request = Request.create!(
+      book: books(:audiobook_acquired),
+      user: users(:one),
+      status: request_status
+    )
+    owner_request.downloads.create!(
+      {
+        name: "Owned download",
+        status: download_status,
+        download_type: "usenet",
+        external_id: external_id,
+        download_client: client
+      }.merge(download_attributes)
+    )
+  end
+
+  def stub_nzbget_status_only!(url)
+    stub_nzbget_rpc(url) do |payload|
+      method = payload["method"]
+      raise "Unexpected NZBGet method #{method} for #{url}" unless method == "status"
+
+      { "DownloadRate" => 0 }
+    end
+  end
+
+  def stub_nzbget_dispatch!(url, nzb_id:, removed: nil)
+    stub_nzbget_rpc(url) do |payload|
+      case payload["method"]
+      when "status"
+        { "DownloadRate" => 0 }
+      when "append"
+        yield if block_given?
+        nzb_id
+      when "editqueue"
+        removed << payload["params"] if removed
+        true
+      else
+        raise "Unexpected NZBGet method #{payload["method"]} for #{url}"
+      end
+    end
+  end
+
+  def stub_nzbget_rpc(url)
+    stub_request(:post, "#{url}/jsonrpc").to_return do |request|
+      result = yield(JSON.parse(request.body))
+      {
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "result" => result }.to_json
+      }
+    end
+  end
 
   def assert_idle_attention_clears_downloading
     @request.reload
