@@ -2486,16 +2486,131 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
-  test "check_for_duplicate_external_id logs duplicates without raising" do
+  test "polling fallback does not bind a download to a torrent it did not add" do
+    foreign_hash = "ab" * 20
+    torrent_url = "http://prowlarr.example:9696/1/download?id=117"
+    @client.update!(category: "shelfarr")
+    @selected_result.update!(
+      download_url: torrent_url,
+      magnet_url: nil,
+      source: SearchResult::SOURCE_PROWLARR
+    )
+    unfiltered_calls = 0
+    delete_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/delete")
+      .to_return(status: 200, body: "")
+
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://localhost:8080")
+      stub_request(:get, torrent_url)
+        .to_return(status: 403, body: "Indexer grab limit reached")
+      add_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+      stub_request(:get, %r{http://localhost:8080/api/v2/torrents/info})
+        .to_return do |request|
+          tag = Rack::Utils.parse_query(request.uri.query.to_s)["tag"]
+          payload = if tag.present?
+            [ { "hash" => foreign_hash, "tags" => "" } ]
+          else
+            unfiltered_calls += 1
+            unfiltered_calls == 1 ? [] : [ { "hash" => foreign_hash, "tags" => "" } ]
+          end
+
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: payload.to_json
+          }
+        end
+
+      without_qbittorrent_sleep { DownloadJob.perform_now(@download.id) }
+
+      assert_nil @download.reload.external_id
+      assert @download.failed?
+      assert_requested add_request
+      assert_not_requested delete_request
+    end
+  end
+
+  test "does not save an external_id that already belongs to another download" do
+    info_dict = {
+      "name" => "Owned Audiobook.m4b",
+      "piece length" => 16_384,
+      "pieces" => "o" * 20,
+      "length" => 1000
+    }
+    owned_hash = Digest::SHA1.hexdigest(info_dict.bencode).downcase
+    torrent_url = "http://indexer.example/other.torrent"
+    owner_request = Request.create!(book: books(:audiobook_acquired), user: users(:one), status: :downloading)
+    owner_result = owner_request.search_results.create!(
+      guid: "owned-release",
+      title: "Owned Audiobook",
+      indexer: "PrivateTracker",
+      download_url: "http://indexer.example/owned.torrent",
+      status: :selected
+    )
+    owner_download = owner_request.downloads.create!(
+      name: "Owned Audiobook",
+      search_result: owner_result,
+      status: :downloading,
+      download_type: "torrent",
+      external_id: owned_hash,
+      download_client: @client
+    )
+    @selected_result.update!(download_url: torrent_url, magnet_url: nil, source: SearchResult::SOURCE_PROWLARR)
+    delete_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/delete")
+      .to_return(status: 200, body: "")
+
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://localhost:8080")
+      stub_request(:get, torrent_url)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/x-bittorrent" },
+          body: { "info" => info_dict }.bencode
+        )
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+      stub_request(:get, "http://localhost:8080/api/v2/torrents/info?hashes=#{owned_hash}")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            {
+              "hash" => owned_hash,
+              "name" => "Owned Audiobook.m4b",
+              "progress" => 0,
+              "state" => "downloading",
+              "size" => 1000,
+              "content_path" => "/downloads/Owned Audiobook.m4b"
+            }
+          ].to_json
+        )
+
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert_equal [ owner_download.id ], Download.where(external_id: owned_hash).order(:id).pluck(:id)
+    assert @download.reload.failed?
+    assert_nil @download.external_id
+    assert owner_download.reload.downloading?
+    assert_not_requested delete_request
+  end
+
+  test "check_for_duplicate_external_id reports the conflicting download without raising" do
     existing = @request.downloads.create!(
       name: "Existing",
       status: :downloading,
       external_id: "same-hash"
     )
 
+    found = nil
     assert_nothing_raised do
-      DownloadJob.new.send(:check_for_duplicate_external_id, existing.external_id, @download.id)
+      found = DownloadJob.new.send(:check_for_duplicate_external_id, existing.external_id, @download.id)
     end
+    assert_equal existing, found
+
+    existing.update!(status: :failed)
+    assert_nil DownloadJob.new.send(:check_for_duplicate_external_id, existing.external_id, @download.id)
   end
 
   test "sends attention notification when no search result selected" do
@@ -3047,6 +3162,27 @@ class DownloadJobTest < ActiveJob::TestCase
     yield
   ensure
     OutboundUrlGuard.resolver = previous
+  end
+
+  module QbittorrentSleepGuard
+    def sleep(seconds)
+      return if Thread.current[:qbittorrent_sleep_disabled]
+
+      super
+    end
+  end
+  private_constant :QbittorrentSleepGuard
+
+  def without_qbittorrent_sleep
+    unless DownloadClients::Qbittorrent.ancestors.include?(QbittorrentSleepGuard)
+      DownloadClients::Qbittorrent.prepend(QbittorrentSleepGuard)
+    end
+
+    previous = Thread.current[:qbittorrent_sleep_disabled]
+    Thread.current[:qbittorrent_sleep_disabled] = true
+    yield
+  ensure
+    Thread.current[:qbittorrent_sleep_disabled] = previous
   end
 
   def build_test_logger

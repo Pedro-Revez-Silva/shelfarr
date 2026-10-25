@@ -9,6 +9,8 @@ module DownloadClients
   class Qbittorrent < Base
     DEFAULT_TORRENT_VERIFICATION_MAX_ATTEMPTS = 10
     DEFAULT_TORRENT_VERIFICATION_WAIT_TIME = 2
+    HASH_DETECTION_ATTEMPTS = 30
+    HASH_DETECTION_INTERVAL = 1
 
     def add_torrent(url, options = {})
       ensure_authenticated!
@@ -18,15 +20,14 @@ module DownloadClients
       precomputed_hash = prepared[:hash]
       torrent_data = prepared[:torrent_data]
 
-      # Only capture existing hashes if we couldn't pre-compute the hash
-      # This is the fallback for edge cases where hash extraction fails
       category = config.category.presence
-      existing_hashes = precomputed_hash.present? ? nil : fetch_torrent_hashes(category: category)
+      # The info hash is unknown, so this tag is the only proof the torrent came from this add.
+      dispatch_tag = new_dispatch_tag if precomputed_hash.blank?
 
       response = if torrent_data.present?
         upload_torrent_file(torrent_data, options)
       else
-        params = build_add_torrent_params(urls: submit_url, options: options)
+        params = build_add_torrent_params(urls: submit_url, options: options, tag: dispatch_tag)
         connection.post("api/v2/torrents/add", params)
       end
 
@@ -51,10 +52,8 @@ module DownloadClients
           end
         end
 
-        # Fallback: detect the newly added torrent by comparing hashes
-        # This path is only taken if hash extraction failed
-        Rails.logger.warn "[Qbittorrent] Falling back to polling for hash detection (race condition possible)"
-        find_newly_added_torrent_hash(existing_hashes, category: category)
+        Rails.logger.warn "[Qbittorrent] Falling back to tagged hash detection for #{dispatch_tag}"
+        find_torrent_hash_by_dispatch_tag(dispatch_tag, category: category)
       when 409
         handle_add_conflict(precomputed_hash)
       when 401, 403
@@ -398,35 +397,52 @@ module DownloadClients
       RemoteResult::Failed.new(error)
     end
 
-    def fetch_torrent_hashes(category: nil)
-      params = category.present? ? { category: category } : {}
-      response = connection.get("api/v2/torrents/info", params)
-      return Set.new unless response.status == 200
-
-      Set.new(Array(response.body).map { |t| t["hash"] })
+    def new_dispatch_tag
+      "shelfarr-#{SecureRandom.hex(8)}"
     end
 
-    # Poll for a newly added torrent by comparing against existing hashes
-    # This is more reliable than querying "most recent" which can race with other downloads
-    # Filters by category to reduce false positives from torrents added by other programs
-    def find_newly_added_torrent_hash(existing_hashes, category: nil)
-      max_wait_seconds = 30
+    def fetch_torrents(tag: nil, category: nil)
+      params = {}
+      params[:category] = category if category.present?
+      params[:tag] = tag if tag.present?
+      response = connection.get("api/v2/torrents/info", params)
+      return [] unless response.status == 200
 
-      max_wait_seconds.times do |attempt|
-        sleep 1
+      Array(response.body).select { |torrent| torrent.is_a?(Hash) }
+    end
 
-        current_hashes = fetch_torrent_hashes(category: category)
-        new_hashes = current_hashes - existing_hashes
+    def find_torrent_hash_by_dispatch_tag(tag, category:)
+      return nil if tag.blank?
 
-        if new_hashes.any?
-          hash = new_hashes.first
-          Rails.logger.info "[Qbittorrent] Detected new torrent hash after #{attempt + 1}s: #{hash}"
+      HASH_DETECTION_ATTEMPTS.times do |attempt|
+        hash = hash_for_dispatch_tag(tag, category: category)
+        if hash.present?
+          Rails.logger.info "[Qbittorrent] Detected tagged torrent hash after #{attempt}s: #{hash}"
           return hash
         end
+
+        sleep HASH_DETECTION_INTERVAL
       end
 
-      Rails.logger.warn "[Qbittorrent] No new torrent detected after #{max_wait_seconds} seconds"
+      Rails.logger.warn "[Qbittorrent] No torrent tagged #{tag} detected after #{HASH_DETECTION_ATTEMPTS} seconds"
       nil
+    end
+
+    def hash_for_dispatch_tag(tag, category:)
+      fetch_torrents(tag: tag, category: category).each do |torrent|
+        next unless torrent_has_dispatch_tag?(torrent, tag)
+
+        hash = torrent["hash"].to_s.presence
+        return hash if hash
+      end
+      nil
+    end
+
+    def torrent_has_dispatch_tag?(torrent, tag)
+      raw_tags = torrent["tags"]
+      return false unless raw_tags.is_a?(String)
+
+      raw_tags.split(",").map(&:strip).include?(tag)
     end
 
     def handle_add_conflict(precomputed_hash)
@@ -604,7 +620,7 @@ module DownloadClients
       end
     end
 
-    def build_add_torrent_params(urls: nil, options: {})
+    def build_add_torrent_params(urls: nil, options: {}, tag: nil)
       params = {}
       params[:urls] = urls if urls.present?
       params[:category] = config.category if config.category.present?
@@ -612,6 +628,7 @@ module DownloadClients
       params[:paused] = options[:paused] ? "true" : "false" if options.key?(:paused)
       apply_seed_limits!(params, options)
       params.merge!(adapter_specific_add_torrent_params)
+      params[:tags] = tag if tag.present?
       params
     end
 

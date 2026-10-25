@@ -338,11 +338,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
           }.to_json
         )
 
-      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
-        .to_return(
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "async123" } ].to_json }
-        )
+      stub_tagged_hash_poll("async123")
 
       result = @client.add_torrent("http://example.com/file.torrent")
 
@@ -365,16 +361,63 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
 
-      # Stub torrent info - first call returns empty (before adding),
-      # subsequent calls return the new torrent (after adding)
-      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
-        .to_return(
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "def456abc789" } ].to_json }
-        )
+      stub_tagged_hash_poll("def456abc789")
 
       result = @client.add_torrent("http://example.com/file.torrent")
       assert_equal "def456abc789", result
+    end
+  end
+
+  test "add_torrent polling fallback returns the torrent carrying this add's tag" do
+    foreign_hash = "a" * 40
+    tagged_hash = "b" * 40
+    torrent_url = "http://prowlarr.example:9696/1/download?id=115"
+    @client_record.update!(category: "shelfarr")
+    captured = {}
+    unfiltered_calls = 0
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=test_session_id; path=/" },
+          body: "Ok."
+        )
+
+      stub_request(:get, torrent_url)
+        .to_return(status: 403, body: "Indexer grab limit reached")
+
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .with { |request|
+          body = request.body
+          parsed = body.is_a?(Hash) ? body : URI.decode_www_form(body.to_s).to_h
+          captured.replace(parsed.transform_keys(&:to_s))
+          true
+        }
+        .to_return(status: 200, body: "Ok.")
+
+      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+        .to_return do |request|
+          tag = Rack::Utils.parse_query(request.uri.query.to_s)["tag"]
+          payload = if tag.present?
+            [ { "hash" => tagged_hash, "tags" => tag } ]
+          else
+            unfiltered_calls += 1
+            unfiltered_calls == 1 ? [] : [ { "hash" => foreign_hash, "tags" => "" } ]
+          end
+
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: payload.to_json
+          }
+        end
+
+      result = @client.stub(:sleep, nil) { @client.add_torrent(torrent_url) }
+
+      assert_equal tagged_hash, result, "polling fallback returned #{result.inspect} instead of the tagged torrent"
+      assert_match(/\Ashelfarr-[0-9a-f]{16}\z/, captured["tags"])
+      assert_equal "shelfarr", captured["category"]
     end
   end
 
@@ -390,11 +433,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       # Since relative URL cannot be used for hash pre-computation, it should fall back to polling
       # First call: get existing hashes (empty)
       # Second call: after adding, find new hash
-      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
-        .to_return(
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "relative123" } ].to_json }
-        )
+      stub_tagged_hash_poll("relative123")
 
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
@@ -835,11 +874,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       # Since torrent download failed, it should capture existing hashes first
       # First call: get existing hashes (empty)
       # Second call: after adding, find new hash
-      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
-        .to_return(
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "fallback123" } ].to_json }
-        )
+      stub_tagged_hash_poll("fallback123")
 
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
@@ -866,11 +901,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
           body: "<html>Login required</html>"
         )
 
-      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
-        .to_return(
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "polled456" } ].to_json }
-        )
+      stub_tagged_hash_poll("polled456")
 
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
@@ -899,11 +930,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
           body: torrent_data
         )
 
-      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
-        .to_return(
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json },
-          { status: 200, headers: { "Content-Type" => "application/json" }, body: [ { "hash" => "noinfo789" } ].to_json }
-        )
+      stub_tagged_hash_poll("noinfo789")
 
       stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
         .to_return(status: 200, body: "Ok.")
@@ -1974,6 +2001,24 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       reason = status == 200 ? "OK" : "Not Found"
       extra = headers.map { |key, value| "#{key}: #{value}\r\n" }.join
       "HTTP/1.1 #{status} #{reason}\r\nContent-Length: #{body.bytesize}\r\n#{extra}Connection: close\r\n\r\n#{body}"
+    end
+  end
+
+  def stub_tagged_hash_poll(hash)
+    payloads = [ [], [ { "hash" => hash } ] ]
+    index = 0
+
+    stub_request(:get, %r{localhost:8080/api/v2/torrents/info}).to_return do |request|
+      payload = payloads[[ index, payloads.length - 1 ].min]
+      index += 1
+      tag = Rack::Utils.parse_query(request.uri.query.to_s)["tag"].to_s
+      body = payload.map { |torrent| tag.empty? ? torrent : torrent.merge("tags" => tag) }
+
+      {
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: body.to_json
+      }
     end
   end
 
