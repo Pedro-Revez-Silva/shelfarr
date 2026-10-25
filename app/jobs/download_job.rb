@@ -1465,7 +1465,12 @@ class DownloadJob < ApplicationJob
       finalized = download.request.with_lock do
         next false unless current_standard_dispatch?(download, search_result)
 
-        check_for_duplicate_external_id(external_id, download.id)
+        existing = check_for_duplicate_external_id(external_id, download.id)
+        if existing
+          reject_duplicate_external_id!(download, client_record, external_id, existing, download_type:)
+          next false
+        end
+
         download.update!(
           download_client: client_record,
           external_id: external_id,
@@ -1487,7 +1492,9 @@ class DownloadJob < ApplicationJob
     rescue ActiveRecord::RecordNotFound
       finalized = false
     ensure
-      remove_stale_client_dispatch(client, client_record, external_id, download.id) unless finalized
+      unless finalized || other_download_with_external_id(external_id, download.id)
+        remove_stale_client_dispatch(client, client_record, external_id, download.id)
+      end
     end
 
     Rails.logger.info "[DownloadJob] Successfully added #{download_type} for download ##{download.id}, external_id: #{external_id}" if finalized
@@ -1571,19 +1578,40 @@ class DownloadJob < ApplicationJob
   end
 
   def check_for_duplicate_external_id(external_id, current_download_id)
+    existing = other_download_with_external_id(external_id, current_download_id)
+    return if existing.blank?
+
+    Rails.logger.error "[DownloadJob] DUPLICATE EXTERNAL_ID DETECTED! " \
+                       "Download ##{current_download_id} was not assigned external_id #{external_id} " \
+                       "because Download ##{existing.id} (request ##{existing.request_id}) already has it."
+    existing
+  end
+
+  def other_download_with_external_id(external_id, current_download_id)
     return if external_id.blank?
 
-    existing = Download.where(external_id: external_id)
-                       .where.not(id: current_download_id)
-                       .where.not(status: :failed)
-                       .first
+    Download.where(external_id: external_id)
+            .where.not(id: current_download_id)
+            .where.not(status: :failed)
+            .first
+  end
 
-    if existing
-      Rails.logger.error "[DownloadJob] DUPLICATE EXTERNAL_ID DETECTED! " \
-                         "Download ##{current_download_id} is being assigned external_id #{external_id}, " \
-                         "but Download ##{existing.id} (request ##{existing.request_id}) already has this ID. " \
-                         "This indicates a potential race condition that should be investigated."
-    end
+  def reject_duplicate_external_id!(download, client_record, external_id, existing, download_type:)
+    track_request_event(
+      download.request,
+      "dispatch_failed",
+      download: download,
+      message: "External ID already belongs to another download",
+      level: :error,
+      details: {
+        client_name: client_record.name,
+        download_type: download_type,
+        external_id: external_id,
+        existing_download_id: existing.id
+      }
+    )
+    download.update!(status: :failed)
+    download.request.handle_download_failure!(download, reason: "External ID already belongs to another download")
   end
 
   def build_usenet_job_name(search_result)
