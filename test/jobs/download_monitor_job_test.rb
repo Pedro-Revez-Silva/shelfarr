@@ -832,9 +832,40 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     assert_equal first_info.download_path, @download.download_path
   end
 
+  test "legacy argument-less monitors cannot bypass the interval gate" do
+    scans = 0
+    original = DownloadMonitorJob.instance_method(:monitor_active_downloads)
+    DownloadMonitorJob.define_method(:monitor_active_downloads) { scans += 1 }
+    DownloadMonitorJob.send(:private, :monitor_active_downloads)
+    worker = nil
+
+    with_solid_queue_monitor_jobs do
+      legacy = DownloadMonitorJob.perform_later
+      Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 30.seconds.from_now.to_i)
+      DownloadMonitorJob.ensure_running!
+      worker = SolidQueue::Process.register(
+        kind: "Worker",
+        name: "legacy-monitor-#{SecureRandom.hex(4)}",
+        pid: Process.pid,
+        hostname: "test",
+        metadata: {}
+      )
+      SolidQueue::ReadyExecution.where(job_id: legacy.provider_job_id).claim([ "*" ], 1, worker.id).each(&:perform)
+      DownloadMonitorJob.perform_now(scheduled: true)
+    end
+
+    assert_equal 0, scans
+  ensure
+    worker&.destroy!
+    if original
+      DownloadMonitorJob.define_method(:monitor_active_downloads, original)
+      DownloadMonitorJob.send(:private, :monitor_active_downloads)
+    end
+  end
+
   test "ensure_running! does not duplicate a persisted solid queue monitor" do
     with_solid_queue_monitor_jobs do |monitor_jobs|
-      DownloadMonitorJob.set(wait: 1.minute).perform_later
+      DownloadMonitorJob.set(wait: 1.minute).perform_later(scheduled: true)
       Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 1.minute.ago.to_i)
 
       assert_equal 1, monitor_jobs.count
@@ -1289,5 +1320,212 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
           }
         }.to_json
       )
+  end
+end
+
+class DownloadMonitorReadyLeaseTest < ActiveJob::TestCase
+  self.use_transactional_tests = false
+
+  setup do
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    DownloadMonitorJob.clear_schedule!
+    SettingsService.set(:download_check_interval, 60)
+    @queue = "download-monitor-ready-#{SecureRandom.hex(4)}"
+    @client = DownloadClient.create!(
+      name: "Ready lease qBittorrent",
+      client_type: "qbittorrent",
+      url: "http://localhost:8080",
+      username: "admin",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+  end
+
+  teardown do
+    DownloadMonitorJob.clear_schedule!
+    Rails.cache = @original_cache
+    @client&.destroy
+  end
+
+  test "an expired ready monitor does not overlap a later tick while workers drain" do
+    start = Time.zone.parse("2026-08-26 12:00:00")
+    entered = Queue.new
+    release = Queue.new
+    gate = Mutex.new
+    state = { inside: 0, max_inside: 0 }
+    processes = []
+    install_overlap_probe!(gate, entered, release, state)
+
+    with_solid_queue_monitors do
+      begin
+        processes = register_workers(3)
+        travel_to start do
+          DownloadMonitorJob.set(queue: @queue).perform_later(scheduled: true)
+          assert_equal 1, ready_monitor_count
+          assert SolidQueue::Semaphore.exists?(key: DownloadMonitorJob.new.concurrency_key)
+        end
+
+        leap = DownloadMonitorJob.concurrency_duration + 1.minute
+        assert_operator leap, :>, 30.minutes
+        travel_to start + leap do
+          SolidQueue::Dispatcher::ConcurrencyMaintenance.new(5.minutes, 500).send(:expire_semaphores)
+          assert_equal 1, ready_monitor_count
+          DownloadMonitorJob.set(queue: @queue).perform_later(scheduled: true)
+          claim_and_perform(processes.first, 1)
+          wait_for("the waiting monitor to start") { entered.size >= 1 }
+        end
+
+        travel_to start + leap + 1.minute do
+          processes.each { |process| claim_and_perform(process, 1) }
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 3
+          until gate.synchronize { state[:max_inside] } > 1 || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+            sleep 0.02
+          end
+          assert_equal 1, gate.synchronize { state[:max_inside] }
+        end
+      ensure
+        3.times { release << true }
+        join_worker_threads
+      end
+    end
+  ensure
+    3.times { release << true } if defined?(release) && release
+    join_worker_threads
+    restore_scan_probe!
+    processes&.each { |process| process.deregister rescue nil }
+    raise @worker_error if @worker_error && !$!
+  end
+
+  private
+
+  def install_overlap_probe!(gate, entered, release, state)
+    @original_monitor = DownloadMonitorJob.instance_method(:monitor_active_downloads)
+    DownloadMonitorJob.define_method(:monitor_active_downloads) do
+      gate.synchronize do
+        state[:inside] += 1
+        state[:max_inside] = state[:inside] if state[:inside] > state[:max_inside]
+      end
+      entered << true
+      release.pop
+      gate.synchronize { state[:inside] -= 1 }
+    end
+    DownloadMonitorJob.send(:private, :monitor_active_downloads)
+  end
+
+  def restore_scan_probe!
+    return unless @original_monitor
+
+    DownloadMonitorJob.define_method(:monitor_active_downloads, @original_monitor)
+    DownloadMonitorJob.send(:private, :monitor_active_downloads)
+    @original_monitor = nil
+  end
+
+  def with_solid_queue_monitors
+    original_config = SolidQueue::Record.connection_db_config
+    SolidQueue::Record.establish_connection(:queue)
+    switch_to_solid_queue!
+    clear_monitor_queue!
+    @worker_threads = []
+    @worker_error = nil
+    yield
+  ensure
+    begin
+      join_worker_threads
+      clear_monitor_queue!
+    ensure
+      SolidQueue::Record.establish_connection(original_config) if original_config
+      restore_test_adapter!
+    end
+  end
+
+  def register_workers(count)
+    count.times.map do |index|
+      SolidQueue::Process.register(
+        kind: "Worker",
+        name: "monitor-ready-#{index}-#{SecureRandom.hex(4)}",
+        pid: Process.pid,
+        hostname: "test",
+        metadata: {}
+      )
+    end
+  end
+
+  def claim_and_perform(process, limit)
+    claimed = SolidQueue::ReadyExecution.claim(@queue, limit, process.id)
+    claimed.each do |execution|
+      @worker_threads << Thread.new(execution) do |claimed_execution|
+        Thread.current.report_on_exception = false
+        Thread.current.abort_on_exception = false
+        claimed_execution.perform
+      rescue Exception => error
+        @worker_error = error
+      end
+    end
+    claimed
+  end
+
+  def ready_monitor_count
+    SolidQueue::ReadyExecution.joins(:job).where(
+      queue_name: @queue,
+      solid_queue_jobs: { class_name: "DownloadMonitorJob" }
+    ).count
+  end
+
+  def join_worker_threads
+    @worker_threads&.each { |thread| thread.join(5) }
+  end
+
+  def clear_monitor_queue!
+    SolidQueue::Job.uncached do
+      jobs = SolidQueue::Job.where(class_name: "DownloadMonitorJob")
+      ids = jobs.ids
+      if ids.any?
+        SolidQueue::BlockedExecution.where(job_id: ids).delete_all
+        SolidQueue::ClaimedExecution.where(job_id: ids).delete_all
+        SolidQueue::ReadyExecution.where(job_id: ids).delete_all
+        SolidQueue::FailedExecution.where(job_id: ids).delete_all
+        SolidQueue::ScheduledExecution.where(job_id: ids).delete_all
+        SolidQueue::RecurringExecution.where(job_id: ids).delete_all
+        jobs.delete_all
+      end
+      SolidQueue::Semaphore.where(key: DownloadMonitorJob.new.concurrency_key).delete_all
+    end
+  end
+
+  def switch_to_solid_queue!
+    return if @switched_adapter
+
+    @original_queue_adapter = ActiveJob::Base._queue_adapter
+    @original_test_adapter = ActiveJob::Base._test_adapter
+    @switched_adapter = true
+    ActiveJob::Base.disable_test_adapter
+    ActiveJob::Base.queue_adapter = :solid_queue
+  end
+
+  def restore_test_adapter!
+    return unless @switched_adapter
+
+    if @original_queue_adapter
+      ActiveJob::Base.queue_adapter = @original_queue_adapter
+    else
+      ActiveJob::Base.queue_adapter = :test
+    end
+    if @original_test_adapter
+      ActiveJob::Base.enable_test_adapter(@original_test_adapter)
+    else
+      ActiveJob::Base.disable_test_adapter
+    end
+    @switched_adapter = false
+  end
+
+  def wait_for(description)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+    until yield
+      raise "timed out waiting for #{description} #{@worker_error}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.02
+    end
   end
 end

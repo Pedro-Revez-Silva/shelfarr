@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
 Rails.application.config.after_initialize do
+  # Workers are not Rails::Server. Drop argument-less successors before they
+  # can be claimed and skip the interval gate.
+  discarded = DownloadMonitorJob.discard_legacy_pending_monitors!
+  if discarded.is_a?(Integer) && discarded.positive?
+    Rails.logger.info "[Shelfarr] Cleaned up #{discarded} legacy DownloadMonitorJob(s)"
+  end
+
   if defined?(Rails::Server)
     if DownloadMonitorJob.monitoring_required?
       Rails.logger.info "[Shelfarr] Starting DownloadMonitorJob chain"
