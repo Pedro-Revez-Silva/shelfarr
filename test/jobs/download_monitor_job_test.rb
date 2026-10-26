@@ -138,7 +138,7 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     assert task.valid?, task.errors.full_messages.join(", ")
 
     SettingsService.set(:download_check_interval, 60)
-    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 30.seconds.from_now.to_i)
+    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, Time.current)
 
     assert_no_enqueued_jobs(only: DownloadMonitorJob) do
       DownloadMonitorJob.perform_now(scheduled: true)
@@ -774,9 +774,36 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "consecutive minute ticks still monitor when a scan runs past its start" do
+    SettingsService.set(:download_check_interval, 60)
+    DownloadMonitorJob.clear_schedule!
+    scanned_at = []
+    start = Time.zone.parse("2026-08-26 12:00:00")
+    job = DownloadMonitorJob.new
+
+    job.stub(:monitor_active_downloads, -> {
+      scanned_at << Time.current
+      travel 3.seconds
+    }) do
+      travel_to start do
+        job.perform(scheduled: true)
+      end
+    end
+
+    assert_equal [ start ], scanned_at
+
+    travel_to start + 1.minute do
+      job.stub(:monitor_active_downloads, -> { scanned_at << Time.current }) do
+        job.perform(scheduled: true)
+      end
+    end
+
+    assert_equal start + 1.minute, scanned_at.last
+  end
+
   test "a scheduled run before the interval elapses does not monitor or enqueue" do
     SettingsService.set(:download_check_interval, 60)
-    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 1.minute.from_now.to_i)
+    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, Time.current)
 
     assert_no_enqueued_jobs(only: DownloadMonitorJob) do
       DownloadMonitorJob.perform_now(scheduled: true)
@@ -842,6 +869,46 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     assert_equal 1, DownloadMonitorJob.concurrency_limit
     assert_equal 30.minutes, DownloadMonitorJob.concurrency_duration
     assert_equal :block, DownloadMonitorJob.concurrency_on_conflict
+  end
+
+  test "a claimed monitor lease survives concurrency maintenance past 30 minutes" do
+    SolidQueue::Record.establish_connection(:queue)
+    key = DownloadMonitorJob.new.concurrency_key
+    assert_includes AudiobookshelfLibrarySyncJob::ConcurrencyLease::KEYS, key
+
+    process = SolidQueue::Process.register(
+      kind: "Worker",
+      name: "monitor-lease-#{SecureRandom.hex(4)}",
+      pid: Process.pid,
+      hostname: "test",
+      metadata: {}
+    )
+    active_job = DownloadMonitorJob.new
+    job = SolidQueue::Job.create!(
+      active_job_id: active_job.job_id,
+      class_name: "DownloadMonitorJob",
+      queue_name: "default",
+      arguments: active_job.serialize,
+      concurrency_key: key,
+      scheduled_at: Time.current
+    )
+    SolidQueue::ClaimedExecution.create!(job: job, process: process)
+    SolidQueue::Semaphore.where(key: key).delete_all
+    SolidQueue::Semaphore.create!(key: key, value: 0, expires_at: Time.current)
+
+    leap = [ DownloadMonitorJob.concurrency_duration + 5.seconds, 10.minutes + 5.seconds ].max
+    assert_operator leap, :>, 30.minutes
+    travel leap do
+      SolidQueue::Dispatcher::ConcurrencyMaintenance.new(5.minutes, 500).send(:expire_semaphores)
+      assert SolidQueue::Semaphore.exists?(key: key)
+    end
+  ensure
+    if defined?(job) && job
+      SolidQueue::ClaimedExecution.where(job_id: job.id).delete_all
+      job.delete
+    end
+    process&.destroy
+    SolidQueue::Semaphore.where(key: key).delete_all if defined?(key) && key
   end
 
   test "skips downloads without external_id" do
