@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_23_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_26_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -131,6 +131,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_120000) do
   end
 
   create_table "downloads", force: :cascade do |t|
+    t.boolean "configuration_failure", default: false, null: false
     t.datetime "created_at", null: false
     t.string "direct_book_path"
     t.text "direct_content_manifest"
@@ -149,6 +150,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_120000) do
     t.string "download_path"
     t.string "download_type"
     t.string "external_id"
+    t.datetime "external_id_released_at"
     t.string "name"
     t.integer "not_found_count", default: 0, null: false
     t.text "post_processing_cleanup_state"

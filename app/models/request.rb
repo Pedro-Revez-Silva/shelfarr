@@ -122,6 +122,10 @@ class Request < ApplicationRecord
       attention_needed: false,
       issue_description: nil
     )
+    # A finished import no longer needs the client id, including a leftover
+    # post-processing owner from older successful jobs. Cleanup and direct
+    # recovery still hold it until they finish.
+    release_completed_external_ids!(release_import_owner: true)
     ActivityTracker.track("request.completed", trackable: self, user: user)
   end
 
@@ -205,7 +209,7 @@ class Request < ApplicationRecord
     failed_download = selected_result && downloads.where(status: :failed, search_result: selected_result).order(created_at: :desc, id: :desc).first
 
     if selected_result && failed_download
-      if configuration_failure?(failed_download)
+      if failed_download.configuration_failure?
         select_result!(selected_result)
         return
       end
@@ -321,6 +325,9 @@ class Request < ApplicationRecord
       active_downloads = downloads.where(status: [ :queued, :downloading, :paused ])
       download_ids = active_downloads.pluck(:id)
       active_downloads.update_all(status: Download.statuses[:failed], updated_at: Time.current)
+      # Cancellation does not import an unclaimed completed download. Release
+      # its client id before the request can be grabbed again.
+      release_completed_external_ids!(release_import_owner: false)
 
       update!(
         status: :failed,
@@ -393,6 +400,7 @@ class Request < ApplicationRecord
         status: Download.statuses[:failed],
         updated_at: now
       )
+      release_completed_external_ids!(release_import_owner: false)
       update!(
         status: :failed,
         attention_needed: false,
@@ -627,14 +635,6 @@ class Request < ApplicationRecord
 
   private
 
-  def configuration_failure?(download)
-    details = download.request_events
-      .where(event_type: "dispatch_failed")
-      .order(created_at: :desc, id: :desc)
-      .pick(:details)
-    details.is_a?(Hash) && details["configuration_error"] == true
-  end
-
   def queue_fresh_search_under_lock!(**attributes)
     update!(
       {
@@ -684,7 +684,28 @@ class Request < ApplicationRecord
     raise ActiveRecord::RecordNotFound, "Request is no longer available" unless locked == 1
   end
 
+  # Unclaimed completed downloads stop owning their client id. Cleanup state,
+  # direct recovery, and an in-progress import claim keep it.
+  def release_completed_external_ids!(release_import_owner:)
+    scope = downloads.completed.where(external_id_released_at: nil)
+    scope = scope.where(post_processing_cleanup_state: [ nil, "" ])
+    DIRECT_RECOVERY_COLUMNS.each do |column|
+      scope = scope.where(column => nil)
+    end
+    scope = scope.where(post_processing_job_id: [ nil, "" ]) unless release_import_owner
+    scope.update_all(external_id_released_at: Time.current, updated_at: Time.current)
+  end
+
   def select_result_under_lock!(search_result)
+    # Same lock import claims use, so replacement cannot retire an id that
+    # post-processing has just claimed.
+    with_acquisition_transition_lock do
+      release_completed_external_ids!(release_import_owner: false)
+      select_result_after_releasing_external_ids!(search_result)
+    end
+  end
+
+  def select_result_after_releasing_external_ids!(search_result)
     downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
       cancel_download(download)
     end
