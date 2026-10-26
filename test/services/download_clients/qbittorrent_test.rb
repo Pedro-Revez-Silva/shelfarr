@@ -3,6 +3,8 @@
 require "test_helper"
 
 class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   QBITTORRENT_API_KEY = "qbt_aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
   setup do
@@ -529,6 +531,7 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       assert_match(/\Ashelfarr-[0-9a-f]{16}\z/, sent_tag)
       assert_equal sent_tag, deleted_tags
       assert_requested delete_request, times: 1
+      assert_no_enqueued_jobs only: QbittorrentDispatchTagCleanupJob
     end
   end
 
@@ -603,6 +606,49 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
       assert_match(/\Ashelfarr-[0-9a-f]{16}\z/, sent_tag)
       assert_equal sent_tag, deleted_tags
       assert_requested delete_request, times: 1
+    end
+  end
+
+  test "reconciles a dispatch tag recreated after an abandoned async url fetch" do
+    torrent_url = "http://indexer.example/download/slow-fetch"
+    foreign_hash = "8" * 40
+    sent_tag = nil
+
+    VCR.turned_off do
+      stub_qbit_login!
+      stub_webapi_version!("2.8.3")
+      stub_request(:get, torrent_url).to_return(status: 403, body: "no")
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .with { |request|
+          sent_tag = add_torrent_params(request)["tags"]
+          true
+        }
+        .to_return(status: 200, body: "Ok.")
+      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "hash" => foreign_hash, "name" => "Foreign" } ].to_json
+        )
+      delete_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/deleteTags")
+        .to_return(status: 200, body: "")
+
+      result = @client.stub(:sleep, nil) { @client.add_torrent(torrent_url) }
+
+      assert_nil result
+      assert_match(/\Ashelfarr-[0-9a-f]{16}\z/, sent_tag)
+      assert_enqueued_jobs QbittorrentDispatchTagCleanupJob::CLEANUP_DELAYS.size,
+        only: QbittorrentDispatchTagCleanupJob
+      assert_enqueued_with(
+        job: QbittorrentDispatchTagCleanupJob,
+        args: [ @client_record.id, sent_tag ]
+      )
+
+      # Polling already deleted the tag. A slow fetch then recreates it, so
+      # reconciliation has to delete that same tag again.
+      QbittorrentDispatchTagCleanupJob.perform_now(@client_record.id, sent_tag)
+
+      assert_requested delete_request, times: 2
     end
   end
 

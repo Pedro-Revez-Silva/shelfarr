@@ -110,7 +110,14 @@ class DownloadJob < ApplicationJob
     rescue DownloadClients::Base::ConfigurationError => e
       with_current_dispatch(download) do
         Rails.logger.error "[DownloadJob] Download client configuration error: #{e.message}"
-        track_request_event(download.request, "dispatch_failed", download: download, message: e.message, level: :error)
+        track_request_event(
+          download.request,
+          "dispatch_failed",
+          download: download,
+          message: e.message,
+          level: :error,
+          details: { configuration_error: true }
+        )
         download.update!(status: :failed)
         download.request.mark_for_attention_after_idle_failure!(e.message)
       end
@@ -1497,6 +1504,7 @@ class DownloadJob < ApplicationJob
 
   def finalize_standard_dispatch!(download, search_result, client, client_record, external_id, download_type:)
     finalized = false
+    duplicate_rejected = false
 
     begin
       finalized = download.request.with_lock do
@@ -1508,6 +1516,9 @@ class DownloadJob < ApplicationJob
           download_client_id: client_record.id
         )
         if existing
+          # Import can release this owner before ensure runs. Deleting the id
+          # then would remove the original torrent and its library data.
+          duplicate_rejected = true
           reject_duplicate_external_id!(download, client_record, external_id, existing, download_type:)
           next false
         end
@@ -1533,7 +1544,7 @@ class DownloadJob < ApplicationJob
     rescue ActiveRecord::RecordNotFound
       finalized = false
     ensure
-      unless finalized || other_download_with_external_id(
+      unless finalized || duplicate_rejected || other_download_with_external_id(
         external_id,
         download.id,
         download_client_id: client_record.id
@@ -1639,6 +1650,7 @@ class DownloadJob < ApplicationJob
   # Client handles such as NZBGet ids are only unique on that client.
   # A finished import releases its id so a rebuilt client can reuse it.
   # Completed downloads still own the id while import or recovery is unfinished.
+  # A cancelled request is not imported, so it releases the id unless a claim remains.
   def other_download_with_external_id(external_id, current_download_id, download_client_id:)
     return if external_id.blank? || download_client_id.blank?
 
@@ -1653,12 +1665,14 @@ class DownloadJob < ApplicationJob
   def live_external_id_owner?(download)
     return true unless download.completed?
 
-    request = download.request
-    return true unless request&.completed?
     return true if download.post_processing_cleanup_state.present?
     return true if direct_recovery_pending?(download)
 
-    false
+    request = download.request
+    return false if request.nil? || request.completed?
+    return false if request.failed? && download.post_processing_job_id.blank?
+
+    true
   end
 
   def direct_recovery_pending?(download)

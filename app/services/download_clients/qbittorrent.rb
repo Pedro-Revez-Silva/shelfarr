@@ -13,6 +13,7 @@ module DownloadClients
     HASH_DETECTION_INTERVAL = 1
     # Tags on torrents/add arrived in WebAPI 2.6.2. Older clients ignore the field.
     DISPATCH_TAG_MIN_WEBAPI = Gem::Version.new("2.6.2")
+    DISPATCH_TAG_PATTERN = /\Ashelfarr-[0-9a-f]{16}\z/
     WEBAPI_VERSION_PATTERN = /\A\d+(?:\.\d+){0,3}\z/
 
     def add_torrent(url, options = {})
@@ -27,6 +28,7 @@ module DownloadClients
       # The info hash is unknown, so this tag is the only proof the torrent came from this add.
       # Check tag support before the remote add; a client that drops tags cannot be correlated safely.
       dispatch_tag = nil
+      abandon_dispatch_tag = false
       if precomputed_hash.blank?
         ensure_dispatch_tags_supported!
         dispatch_tag = new_dispatch_tag
@@ -62,7 +64,10 @@ module DownloadClients
           end
 
           Rails.logger.warn "[Qbittorrent] Falling back to tagged hash detection for #{dispatch_tag}"
-          find_torrent_hash_by_dispatch_tag(dispatch_tag, category: category)
+          hash = find_torrent_hash_by_dispatch_tag(dispatch_tag, category: category)
+          # A slow URL fetch can recreate this tag after the immediate delete.
+          abandon_dispatch_tag = hash.blank?
+          hash
         when 409
           handle_add_conflict(precomputed_hash)
         when 401, 403
@@ -78,6 +83,7 @@ module DownloadClients
         end
       ensure
         delete_dispatch_tag(dispatch_tag)
+        schedule_abandoned_dispatch_tag_cleanup(dispatch_tag) if abandon_dispatch_tag
       end
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
@@ -131,6 +137,12 @@ module DownloadClients
         connection_error: Base::ConnectionError,
         authentication_error: Base::AuthenticationError
       )
+    end
+
+    def remove_dispatch_tag(tag)
+      return unless tag.is_a?(String) && tag.match?(DISPATCH_TAG_PATTERN)
+
+      delete_dispatch_tag(tag)
     end
 
     def remove_torrent(hash, delete_files: false)
@@ -413,10 +425,19 @@ module DownloadClients
       "shelfarr-#{SecureRandom.hex(8)}"
     end
 
+    def schedule_abandoned_dispatch_tag_cleanup(tag)
+      return if tag.blank? || config.id.nil?
+
+      QbittorrentDispatchTagCleanupJob.schedule(config.id, tag)
+    rescue StandardError => error
+      Rails.logger.warn "[Qbittorrent] Failed to schedule dispatch tag cleanup: #{error.class}"
+    end
+
     # qBittorrent keeps tags in a global registry after the torrent is removed.
     def delete_dispatch_tag(tag)
       return if tag.blank?
 
+      ensure_authenticated!
       response = connection.post("api/v2/torrents/deleteTags", { tags: tag })
       return if response.status == 200
 

@@ -194,16 +194,22 @@ class Request < ApplicationRecord
 
   # Retry now - reset for immediate processing.
   # If a selected release already failed, keep it blocklisted and try the next
-  # eligible candidate before falling back to a fresh search.
+  # eligible candidate before falling back to a fresh search. A configuration
+  # failure is retried on that same release instead.
   def retry_now!
     if post_processing_recovery_pending?
       return retry_post_processing_now!
     end
 
     selected_result = search_results.selected.first
-    failed_download = selected_result && downloads.where(status: :failed, search_result: selected_result).order(created_at: :desc).first
+    failed_download = selected_result && downloads.where(status: :failed, search_result: selected_result).order(created_at: :desc, id: :desc).first
 
     if selected_result && failed_download
+      if configuration_failure?(failed_download)
+        select_result!(selected_result)
+        return
+      end
+
       reason = "Failed download (manual retry)"
       blocklist_result!(selected_result, reason: reason, download: failed_download)
 
@@ -620,6 +626,14 @@ class Request < ApplicationRecord
   end
 
   private
+
+  def configuration_failure?(download)
+    details = download.request_events
+      .where(event_type: "dispatch_failed")
+      .order(created_at: :desc, id: :desc)
+      .pick(:details)
+    details.is_a?(Hash) && details["configuration_error"] == true
+  end
 
   def queue_fresh_search_under_lock!(**attributes)
     update!(
