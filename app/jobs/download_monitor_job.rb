@@ -12,10 +12,32 @@ class DownloadMonitorJob < ApplicationJob
 
   class << self
     def ensure_running!
+      discard_legacy_pending_monitors!
+
       return unless monitoring_required?
 
       # config/recurring.yml is the clock. Enqueueing here starts a second chain.
       monitor_job_pending?
+    end
+
+    # Argument-less successors persisted before the recurring clock survive a
+    # deploy and run with scheduled: false, which skips the interval gate.
+    def discard_legacy_pending_monitors!
+      return 0 unless solid_queue_adapter?
+
+      discarded = 0
+      legacy_pending_monitors.find_each do |job|
+        next unless legacy_monitor_arguments?(job.arguments)
+        next unless job.status.in?([ :ready, :scheduled ])
+
+        job.discard
+        discarded += 1
+      rescue SolidQueue::Execution::UndiscardableError, ActiveRecord::RecordNotFound
+        next
+      end
+      discarded
+    rescue ActiveRecord::ActiveRecordError, NameError => error
+      RemoteResult::Failed.new(error)
     end
 
     def monitoring_required?
@@ -58,6 +80,25 @@ class DownloadMonitorJob < ApplicationJob
     def solid_queue_adapter?
       ActiveJob::Base.queue_adapter.class.name == "ActiveJob::QueueAdapters::SolidQueueAdapter"
     end
+
+    def legacy_pending_monitors
+      SolidQueue::Job
+        .where(class_name: name, finished_at: nil)
+        .where.missing(:recurring_execution, :claimed_execution, :failed_execution)
+    end
+
+    def legacy_monitor_arguments?(payload)
+      return false unless payload.is_a?(Hash)
+
+      arguments = Array(payload["arguments"])
+      arguments.none? { |argument| scheduled_argument?(argument) }
+    end
+
+    def scheduled_argument?(argument)
+      return false unless argument.is_a?(Hash)
+
+      argument["scheduled"] == true || argument[:scheduled] == true
+    end
   end
 
   def perform(scheduled: false)
@@ -66,9 +107,10 @@ class DownloadMonitorJob < ApplicationJob
       return
     end
 
-    return if scheduled && !scheduled_monitor_due?
+    gated = scheduled || legacy_queue_delivery?
+    return if gated && !scheduled_monitor_due?
 
-    record_scheduled_attempt! if scheduled
+    record_scheduled_attempt! if gated
     monitor_active_downloads
   end
 
@@ -252,9 +294,16 @@ class DownloadMonitorJob < ApplicationJob
     RemoteResult::Failed.new(error)
   end
 
+  def legacy_queue_delivery?
+    return false if provider_job_id.blank?
+
+    arguments.none? { |argument| self.class.send(:scheduled_argument?, argument) }
+  end
+
   def scheduled_monitor_due?
     interval = self.class.send(:poll_interval_seconds)
     last_attempt = Rails.cache.read(self.class::SCHEDULE_CACHE_KEY)
+    return last_attempt.to_i <= Time.current.to_i if last_attempt.is_a?(Numeric)
     return true unless last_attempt.respond_to?(:beginning_of_minute)
 
     interval = [ interval, 60 ].max

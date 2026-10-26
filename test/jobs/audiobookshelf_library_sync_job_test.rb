@@ -214,6 +214,33 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     SolidQueue::Semaphore.where(key: key).delete_all if defined?(key) && key
   end
 
+  test "an overdue post-scan refresh keeps its place when another import finishes" do
+    SettingsService.set(:audiobookshelf_library_sync_interval, 0)
+    start = Time.zone.parse("2026-08-26 12:00:00")
+    original = nil
+
+    with_solid_queue_library_sync do
+      travel_to start do
+        AudiobookshelfLibrarySyncJob.schedule_post_scan_refresh!
+        original = unfinished_library_syncs.sole
+      end
+
+      assert_equal(
+        (start + AudiobookshelfLibrarySyncJob::POST_SCAN_REFRESH_WAIT).to_i,
+        original.scheduled_at.to_i
+      )
+
+      travel_to start + 100.seconds do
+        Rails.cache.delete(AudiobookshelfLibrarySyncJob::POST_SCAN_REFRESH_CACHE_KEY)
+        AudiobookshelfLibrarySyncJob.schedule_post_scan_refresh!
+      end
+
+      kept = unfinished_library_syncs.to_a
+      assert_equal [ original.id ], kept.map(&:id)
+      assert_equal original.scheduled_at.to_i, kept.sole.scheduled_at.to_i
+    end
+  end
+
   test "post-scan refresh is a no-op when no platform is configured" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobookshelf_api_key, "")
@@ -242,6 +269,40 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
   def with_post_scan_refresh_cache
     Rails.cache.clear
     yield
+  end
+
+  def with_solid_queue_library_sync
+    original_adapter = ActiveJob::Base.queue_adapter
+    original_config = SolidQueue::Record.connection_db_config
+    SolidQueue::Record.establish_connection(:queue)
+    ActiveJob::Base.queue_adapter = :solid_queue
+    clear_library_sync_jobs!
+    yield
+  ensure
+    clear_library_sync_jobs! if defined?(original_config) && original_config
+    ActiveJob::Base.queue_adapter = original_adapter if defined?(original_adapter)
+    SolidQueue::Record.establish_connection(original_config) if defined?(original_config) && original_config
+  end
+
+  def unfinished_library_syncs
+    SolidQueue::Job.where(class_name: "AudiobookshelfLibrarySyncJob", finished_at: nil)
+  end
+
+  def clear_library_sync_jobs!
+    ids = SolidQueue::Job.where(class_name: "AudiobookshelfLibrarySyncJob").pluck(:id)
+    return if ids.empty?
+
+    [
+      SolidQueue::ReadyExecution,
+      SolidQueue::ScheduledExecution,
+      SolidQueue::ClaimedExecution,
+      SolidQueue::FailedExecution,
+      SolidQueue::RecurringExecution,
+      SolidQueue::BlockedExecution
+    ].each do |execution|
+      execution.where(job_id: ids).delete_all
+    end
+    SolidQueue::Job.where(id: ids).delete_all
   end
 end
 
