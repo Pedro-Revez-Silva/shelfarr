@@ -28,10 +28,14 @@ module DownloadClients
       # The info hash is unknown, so this tag is the only proof the torrent came from this add.
       # Check tag support before the remote add; a client that drops tags cannot be correlated safely.
       dispatch_tag = nil
-      abandon_dispatch_tag = false
+      # Mark reconciliation before the add. A later poll error must still schedule
+      # cleanup, because qBittorrent can recreate the tag when a URL fetch finishes.
+      needs_tag_reconciliation = false
+      tag_delete_attempted = false
       if precomputed_hash.blank?
         ensure_dispatch_tags_supported!
         dispatch_tag = new_dispatch_tag
+        needs_tag_reconciliation = true
       end
 
       begin
@@ -47,7 +51,13 @@ module DownloadClients
           success_response = parse_add_torrent_success_response(response.body)
           return nil unless success_response
 
-          return success_response[:torrent_id] if success_response[:torrent_id].present?
+          if success_response[:torrent_id].present?
+            if dispatch_tag
+              tag_delete_attempted = true
+              needs_tag_reconciliation = !dispatch_tag_deleted?(dispatch_tag)
+            end
+            return success_response[:torrent_id]
+          end
 
           # Return pre-computed hash if available (eliminates race condition)
           if precomputed_hash.present?
@@ -65,8 +75,10 @@ module DownloadClients
 
           Rails.logger.warn "[Qbittorrent] Falling back to tagged hash detection for #{dispatch_tag}"
           hash = find_torrent_hash_by_dispatch_tag(dispatch_tag, category: category)
-          # A slow URL fetch can recreate this tag after the immediate delete.
-          abandon_dispatch_tag = hash.blank?
+          if hash.present?
+            tag_delete_attempted = true
+            needs_tag_reconciliation = !dispatch_tag_deleted?(dispatch_tag)
+          end
           hash
         when 409
           handle_add_conflict(precomputed_hash)
@@ -82,8 +94,10 @@ module DownloadClients
           nil
         end
       ensure
-        delete_dispatch_tag(dispatch_tag)
-        schedule_abandoned_dispatch_tag_cleanup(dispatch_tag) if abandon_dispatch_tag
+        if needs_tag_reconciliation && dispatch_tag
+          delete_dispatch_tag(dispatch_tag) unless tag_delete_attempted
+          schedule_abandoned_dispatch_tag_cleanup(dispatch_tag)
+        end
       end
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to qBittorrent: #{e.message}"
@@ -434,16 +448,23 @@ module DownloadClients
     end
 
     # qBittorrent keeps tags in a global registry after the torrent is removed.
+    # A non-success means the tag may still exist, so the caller can schedule another delete.
     def delete_dispatch_tag(tag)
-      return if tag.blank?
+      return true if tag.blank?
 
       ensure_authenticated!
       response = connection.post("api/v2/torrents/deleteTags", { tags: tag })
-      return if response.status == 200
+      return true if response.status == 200
 
       Rails.logger.warn "[Qbittorrent] Failed to delete dispatch tag #{tag}: HTTP #{response.status}"
+      false
     rescue StandardError => error
       Rails.logger.warn "[Qbittorrent] Failed to delete dispatch tag #{tag}: #{error.class} - #{error.message}"
+      RemoteResult::Failed.new(error)
+    end
+
+    def dispatch_tag_deleted?(tag)
+      RemoteResult.succeeded?(delete_dispatch_tag(tag))
     end
 
     def ensure_dispatch_tags_supported!

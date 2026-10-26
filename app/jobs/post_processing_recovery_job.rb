@@ -99,10 +99,7 @@ class PostProcessingRecoveryJob < ApplicationJob
       end
     end
 
-    Download.where(
-      id: download.id,
-      post_processing_cleanup_state: cleanup_state
-    ).update_all(post_processing_cleanup_state: nil, updated_at: Time.current)
+    Download.clear_post_processing_cleanup!(download.id, cleanup_state)
   rescue StandardError => error
     Rails.logger.error(
       "[PostProcessingRecoveryJob] Source cleanup recovery failed for download ##{download.id}: #{error.class}"

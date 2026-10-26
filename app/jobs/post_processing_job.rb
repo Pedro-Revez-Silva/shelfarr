@@ -1364,10 +1364,7 @@ class PostProcessingJob < ApplicationJob
   end
 
   def clear_source_cleanup_state(download, cleanup_state)
-    Download.where(
-      id: download.id,
-      post_processing_cleanup_state: cleanup_state
-    ).update_all(post_processing_cleanup_state: nil, updated_at: Time.current)
+    Download.clear_post_processing_cleanup!(download.id, cleanup_state)
   end
 
   def source_manifest_children(directory)

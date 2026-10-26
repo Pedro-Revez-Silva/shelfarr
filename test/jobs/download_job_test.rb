@@ -3385,15 +3385,34 @@ class DownloadJobTest < ActiveJob::TestCase
       user: users(:one),
       status: request_status
     )
-    owner_request.downloads.create!(
-      {
-        name: "Owned download",
-        status: download_status,
-        download_type: "usenet",
-        external_id: external_id,
-        download_client: client
-      }.merge(download_attributes)
-    )
+    attributes = {
+      name: "Owned download",
+      status: download_status,
+      download_type: "usenet",
+      external_id: external_id,
+      download_client: client
+    }.merge(download_attributes)
+    # cancel! and complete! persist this release. Fixtures for those outcomes
+    # set it here so ownership is not inferred from the request status.
+    if released_external_id_owner?(download_status, request_status, attributes)
+      attributes[:external_id_released_at] = Time.current
+    end
+    owner_request.downloads.create!(attributes)
+  end
+
+  def released_external_id_owner?(download_status, request_status, attributes)
+    return false unless download_status.to_sym == :completed
+    return false if attributes[:post_processing_cleanup_state].present?
+    return false if Request::DIRECT_RECOVERY_COLUMNS.any? { |column| !attributes[column.to_sym].nil? }
+
+    case request_status.to_sym
+    when :completed
+      true
+    when :failed
+      attributes[:post_processing_job_id].blank?
+    else
+      false
+    end
   end
 
   def stub_nzbget_status_only!(url)
