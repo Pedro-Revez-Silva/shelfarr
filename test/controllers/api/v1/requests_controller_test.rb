@@ -805,4 +805,171 @@ class API::V1::RequestsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :forbidden
   end
+
+  test "grab after cancelling a finished import reuses that request's transmission torrent" do
+    SettingsService.set(:auto_select_enabled, false)
+    DownloadClient.update_all(enabled: false)
+    hash = "ab" * 20
+    book = Book.create!(
+      title: "Cancelled Transmission Retry",
+      book_type: :ebook,
+      open_library_work_id: "OL_CANCEL_RETRY_TORRENT"
+    )
+    request = Request.create!(book: book, user: @user, status: :downloading)
+    result = request.search_results.create!(
+      guid: "cancel-retry-same-release",
+      title: "Retry Release",
+      indexer: "TestIndexer",
+      magnet_url: "magnet:?xt=urn:btih:#{hash}",
+      size_bytes: 1_000,
+      seeders: 4,
+      status: :selected
+    )
+    client = DownloadClient.create!(
+      name: "Retry Transmission",
+      client_type: "transmission",
+      url: "http://localhost:9091/transmission/rpc",
+      username: "admin",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    download = request.downloads.create!(
+      name: result.title,
+      search_result: result,
+      status: :downloading,
+      download_type: "torrent",
+      external_id: hash,
+      download_client: client,
+      progress: 50
+    )
+    Thread.current[:transmission_sessions] = {}
+    Thread.current[:transmission_protocols] = {}
+    removed = []
+    _token, raw = APIToken.issue!(name: "Writer", user: @user, scopes: %w[requests:write])
+
+    VCR.turned_off do
+      stub_cancelled_retry_transmission!(hash, removed: removed)
+
+      assert_enqueued_with(job: PostProcessingJob, args: [ download.id ]) do
+        DownloadMonitorJob.perform_now
+      end
+
+      assert download.reload.completed?
+      assert request.reload.downloading?
+
+      request.cancel!
+      PostProcessingJob.perform_now(download.id)
+
+      assert request.reload.failed?
+      assert download.reload.completed?
+      assert_equal hash, download.external_id
+      assert_nil download.post_processing_job_id
+
+      assert_enqueued_with(job: DownloadJob) do
+        post grab_api_v1_request_path(request),
+          headers: { "Authorization" => "Bearer #{raw}" },
+          params: { search_result_id: result.id }
+      end
+    end
+
+    assert_response :success
+    request.reload
+    retried = request.downloads.order(:id).last
+    assert request.downloading?
+    assert_not_equal download.id, retried.id
+    assert retried.queued?
+    assert_equal hash, download.reload.external_id
+    # The completed row kept its hash, and grabbing put this same request back
+    # into downloading. That must not make the old row own the torrent again.
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      hash,
+      retried.id,
+      download_client_id: client.id
+    )
+
+    VCR.turned_off do
+      DownloadJob.perform_now(retried.id)
+    end
+
+    retried.reload
+    assert retried.downloading?
+    assert_equal hash, retried.external_id
+    assert_equal client.id.to_s, retried.download_client_id
+    assert_not result.reload.blocklisted?
+    assert result.selected?
+    assert request.reload.downloading?
+    assert_not request.attention_needed?
+    assert_equal hash, download.reload.external_id
+    assert download.completed?
+    assert_empty removed
+  end
+
+  private
+
+  def stub_cancelled_retry_transmission!(hash, removed:)
+    session_ready = false
+    stub_request(:post, "http://localhost:9091/transmission/rpc").to_return do |request|
+      body = JSON.parse(request.body)
+      method = body["method"]
+      if method == "session_get" && !session_ready
+        session_ready = true
+        {
+          status: 409,
+          headers: { "x-transmission-session-id" => "session-id" },
+          body: { "result" => "session", "arguments" => {} }.to_json
+        }
+      elsif method == "session_get"
+        {
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => { "version" => "4.1.1" }, "id" => 1 }.to_json
+        }
+      elsif method == "torrent_get"
+        {
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "result" => {
+              "torrents" => [
+                {
+                  "hash_string" => hash,
+                  "name" => "Retry Release",
+                  "percent_done" => 1.0,
+                  "left_until_done" => 0,
+                  "status" => 0,
+                  "error" => 0,
+                  "error_string" => "",
+                  "total_size" => 1_000,
+                  "download_dir" => "/downloads/complete"
+                }
+              ]
+            },
+            "id" => 1
+          }.to_json
+        }
+      elsif method == "torrent_add"
+        {
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "jsonrpc" => "2.0",
+            "result" => { "torrent_duplicate" => { "hash_string" => hash } },
+            "id" => 1
+          }.to_json
+        }
+      elsif method == "torrent_remove"
+        removed << body["params"]
+        {
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "jsonrpc" => "2.0", "result" => {}, "id" => 1 }.to_json
+        }
+      else
+        raise "Unexpected Transmission method #{method}"
+      end
+    end
+  end
 end

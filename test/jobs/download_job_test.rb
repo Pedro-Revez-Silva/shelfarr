@@ -2867,6 +2867,44 @@ class DownloadJobTest < ActiveJob::TestCase
     assert owner.completed?
   end
 
+  test "retires an unclaimed completed download when the same request replaces it" do
+    @request.update!(status: :downloading)
+    @download.update!(
+      status: :completed,
+      download_type: "torrent",
+      external_id: "old-hash",
+      download_client: @client
+    )
+    claimed = @request.downloads.create!(
+      name: "Import still claimed",
+      status: :completed,
+      download_type: "torrent",
+      external_id: "claimed-hash",
+      download_client: @client,
+      post_processing_job_id: "import-owner"
+    )
+
+    replacement = nil
+    assert_enqueued_with(job: DownloadJob) do
+      replacement = @request.select_result!(@selected_result)
+    end
+
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      "old-hash",
+      replacement.id,
+      download_client_id: @client.id
+    ), "replacing a download should release an unclaimed completed client id"
+    assert_equal "old-hash", @download.reload.external_id
+    assert_equal claimed, DownloadJob.new.send(
+      :other_download_with_external_id,
+      "claimed-hash",
+      replacement.id,
+      download_client_id: @client.id
+    )
+    assert_equal "claimed-hash", claimed.reload.external_id
+  end
+
   test "reuses an external id from a completed download on a cancelled request" do
     client = create_nzbget_client!(name: "NZBGet", url: "http://nzbget.example:6789", priority: 0)
     select_newznab_release!
@@ -3075,6 +3113,45 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_equal @selected_result.id, retried.search_result_id
     assert @request.reload.downloading?
     assert_not @request.attention_needed?
+  end
+
+  test "retry does not blocklist a release after configuration diagnostics expire" do
+    torrent_url = "http://indexer.example/download/old-webapi-expired"
+    @selected_result.update!(
+      download_url: torrent_url,
+      magnet_url: nil,
+      source: SearchResult::SOURCE_PROWLARR,
+      seeders: 2,
+      status: :selected
+    )
+
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://localhost:8080")
+      stub_request(:get, "http://localhost:8080/api/v2/app/webapiVersion")
+        .to_return(status: 200, body: "2.6.1")
+      stub_request(:get, torrent_url).to_return(status: 403, body: "no")
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .to_return(status: 200, body: "Ok.")
+
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @download.configuration_failure?
+    RequestEvent.where(download_id: @download.id).update_all(created_at: 91.days.ago, updated_at: 91.days.ago)
+    CleanupTempFilesJob.perform_now
+    assert_empty @download.request_events.reload
+
+    assert_enqueued_with(job: DownloadJob) do
+      @request.retry_now!
+    end
+
+    assert_not @selected_result.reload.blocklisted?
+    assert @selected_result.selected?
+    retried = @request.downloads.order(:id).last
+    assert_not_equal @download.id, retried.id
+    assert retried.queued?
+    assert_equal @selected_result.id, retried.search_result_id
   end
 
   test "sends attention notification when no search result selected" do
