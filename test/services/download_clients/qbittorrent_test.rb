@@ -685,6 +685,80 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "schedules dispatch tag cleanup when the hash poll fails" do
+    torrent_url = "http://indexer.example/download/poll-failed"
+    sent_tag = nil
+
+    VCR.turned_off do
+      stub_qbit_login!
+      stub_webapi_version!("2.8.3")
+      stub_request(:get, torrent_url).to_return(status: 403, body: "no")
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .with { |request|
+          sent_tag = add_torrent_params(request)["tags"]
+          true
+        }
+        .to_return(status: 200, body: "Ok.")
+      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+        .to_raise(Faraday::ConnectionFailed.new("connection reset"))
+      delete_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/deleteTags")
+        .to_return(status: 200, body: "")
+
+      error = assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.stub(:sleep, nil) { @client.add_torrent(torrent_url) }
+      end
+
+      assert_match(/connection reset/, error.message)
+      assert_match(/\Ashelfarr-[0-9a-f]{16}\z/, sent_tag)
+      assert_requested delete_request, times: 1
+      assert_enqueued_jobs QbittorrentDispatchTagCleanupJob::CLEANUP_DELAYS.size,
+        only: QbittorrentDispatchTagCleanupJob
+      assert_enqueued_with(
+        job: QbittorrentDispatchTagCleanupJob,
+        args: [ @client_record.id, sent_tag ]
+      )
+    end
+  end
+
+  test "retries dispatch tag deletion when correlation succeeds but deleteTags fails" do
+    torrent_url = "http://indexer.example/download/delete-tag-rejected"
+    tagged_hash = "f" * 40
+    sent_tag = nil
+
+    VCR.turned_off do
+      stub_qbit_login!
+      stub_webapi_version!("2.8.3")
+      stub_request(:get, torrent_url).to_return(status: 403, body: "no")
+      stub_request(:post, "http://localhost:8080/api/v2/torrents/add")
+        .with { |request|
+          sent_tag = add_torrent_params(request)["tags"]
+          true
+        }
+        .to_return(status: 200, body: "Ok.")
+      stub_request(:get, %r{localhost:8080/api/v2/torrents/info})
+        .to_return do |request|
+          tag = Rack::Utils.parse_query(request.uri.query.to_s)["tag"].to_s
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [ { "hash" => tagged_hash, "tags" => tag } ].to_json
+          }
+        end
+      delete_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/deleteTags")
+        .to_return(status: 500, body: "unavailable")
+
+      result = @client.stub(:sleep, nil) { @client.add_torrent(torrent_url) }
+
+      assert_equal tagged_hash, result
+      assert_match(/\Ashelfarr-[0-9a-f]{16}\z/, sent_tag)
+      assert_requested delete_request, times: 1
+      assert_enqueued_with(
+        job: QbittorrentDispatchTagCleanupJob,
+        args: [ @client_record.id, sent_tag ]
+      )
+    end
+  end
+
   test "returns the correlated hash when dispatch tag deletion fails" do
     torrent_url = "http://indexer.example/download/delete-fails"
     tagged_hash = "c" * 40
