@@ -7,6 +7,7 @@ class DownloadMonitorJob < ApplicationJob
   DIRECT_DOWNLOAD_STALE_TIMEOUT = 30.minutes
 
   queue_as :default
+  AudiobookshelfLibrarySyncJob::ConcurrencyLease.install!
   limits_concurrency key: CONCURRENCY_KEY, duration: 30.minutes
 
   class << self
@@ -46,14 +47,6 @@ class DownloadMonitorJob < ApplicationJob
 
     private
 
-    def reserve_schedule!(interval)
-      Rails.cache.write(
-        SCHEDULE_CACHE_KEY,
-        interval.seconds.from_now.to_i,
-        expires_in: schedule_ttl(interval)
-      )
-    end
-
     def poll_interval_seconds
       SettingsService.get(:download_check_interval, default: 60).to_i.clamp(1, 86_400)
     end
@@ -75,11 +68,8 @@ class DownloadMonitorJob < ApplicationJob
 
     return if scheduled && !scheduled_monitor_due?
 
+    record_scheduled_attempt! if scheduled
     monitor_active_downloads
-    return unless scheduled
-
-    interval = self.class.send(:poll_interval_seconds)
-    self.class.send(:reserve_schedule!, interval)
   end
 
   private
@@ -263,7 +253,23 @@ class DownloadMonitorJob < ApplicationJob
   end
 
   def scheduled_monitor_due?
-    Rails.cache.read(self.class::SCHEDULE_CACHE_KEY).to_i <= Time.current.to_i
+    interval = self.class.send(:poll_interval_seconds)
+    last_attempt = Rails.cache.read(self.class::SCHEDULE_CACHE_KEY)
+    return true unless last_attempt.respond_to?(:beginning_of_minute)
+
+    interval = [ interval, 60 ].max
+    interval_minutes = (interval / 1.minute.to_f).ceil
+
+    last_attempt.beginning_of_minute <= interval_minutes.minutes.ago.beginning_of_minute
+  end
+
+  def record_scheduled_attempt!
+    interval = self.class.send(:poll_interval_seconds)
+    Rails.cache.write(
+      self.class::SCHEDULE_CACHE_KEY,
+      Time.current,
+      expires_in: self.class.send(:schedule_ttl, interval)
+    )
   end
 
   def current_monitored_download?(download)

@@ -5,6 +5,7 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
     KEYS = %w[
       AudiobookshelfLibrarySyncJob/audiobookshelf-library-sync
       HardcoverSyncSchedulerJob/hardcover-sync-scheduler
+      DownloadMonitorJob/download_monitor
     ].freeze
 
     module ExcludeClaimed
