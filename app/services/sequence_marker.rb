@@ -48,7 +48,8 @@ class SequenceMarker
   # Digits may be glued ("Vol2", "T2", "T.2", "T02"). A full word needs a
   # separator before a roman numeral or spelled number, so "Buchi" and "parti"
   # are not volumes. T.II / T II still count. An apostrophe belongs to the
-  # word, so a marker cannot start inside "Don't".
+  # word, so a marker cannot start inside "Don't". A single letter that
+  # continues as "C. G." is an initial, not a roman numeral.
   MARKER_TEMPLATE = <<~'PATTERN'
     (?<![A-Za-z]['`´’‘])
     \b
@@ -61,6 +62,7 @@ class SequenceMarker
     )
     (%{number})
     \b
+    (?!(?<=\b[ivxlcdm])\.\s*[a-z]\.)
   PATTERN
   FULL_PATTERN = Regexp.new(
     format(MARKER_TEMPLATE, words: WORD_ALTERNATION, number: ANY_NUMBER),
@@ -74,12 +76,18 @@ class SequenceMarker
 
   # "#" and hyphens sit between a marker and its number ("Vol. #2", "Part-2",
   # "T.II"). Fold those marks into spaces before the number is read so a later
-  # punctuation pass cannot delete the separator.
+  # punctuation pass cannot delete the separator. Parentheses and brackets wrap
+  # a year, so they are not separators.
   SEPARATOR_PATTERN = Regexp.new(
-    "\\b(#{WORD_ALTERNATION}|t)(?:\\s*[^\\s[:alnum:]]+\\s*)+(?=\\d|(?:#{ROMAN_NUMBER})\\b|(?:#{NUMBER_WORD})\\b)",
+    "\\b(#{WORD_ALTERNATION}|t)(?:\\s*[#.\\-]+\\s*)+(?=\\d|(?:#{ROMAN_NUMBER})\\b|(?:#{NUMBER_WORD})\\b)",
     Regexp::IGNORECASE
   ).freeze
   private_constant :SEPARATOR_PATTERN
+
+  # TitleKey deletes these before tokenizing, so "Shakespeare's" and
+  # "Shakespeares" are the same span.
+  TITLE_QUOTE_CHARACTERS = /['"`´’‘]/
+  private_constant :TITLE_QUOTE_CHARACTERS
 
   class << self
     def separate_marker_punctuation(text)
@@ -139,20 +147,41 @@ class SequenceMarker
     private
 
     def phrase_spans(text, phrase)
-      pattern = phrase_pattern(phrase)
-      return [] if pattern.nil?
+      wanted = TitleKey.new(phrase.to_s).canonical.split
+      return [] if wanted.empty?
 
       spans = []
-      text.to_s.scan(pattern) { spans << (Regexp.last_match.begin(0)...Regexp.last_match.end(0)) }
+      normalized_source_tokens(text.to_s).each_cons(wanted.length) do |window|
+        next unless window.map(&:first) == wanted
+
+        spans << (window.first[1]...window.last[2])
+      end
       spans
     end
 
-    def phrase_pattern(phrase)
-      tokens = TitleKey.new(phrase.to_s).canonical.split
-      return nil if tokens.empty?
+    # Source offsets survive quote folding so the span still covers "Shakespeare's".
+    def normalized_source_tokens(text)
+      folded = +""
+      offsets = []
+      text.each_char.with_index do |char, index|
+        next if char.match?(TITLE_QUOTE_CHARACTERS)
 
-      body = tokens.map { |token| "\\b#{Regexp.escape(token)}\\b" }.join('\W*')
-      Regexp.new(body, Regexp::IGNORECASE)
+        ActiveSupport::Inflector.transliterate(char).downcase.each_char do |out|
+          folded << out
+          offsets << index
+        end
+      end
+
+      tokens = []
+      folded.scan(/[a-z0-9]+/) do
+        match = Regexp.last_match
+        tokens << [
+          TitleKey.new(match[0]).canonical,
+          offsets[match.begin(0)],
+          offsets[match.end(0) - 1] + 1
+        ]
+      end
+      tokens
     end
 
     def spans_overlap?(left, right)
