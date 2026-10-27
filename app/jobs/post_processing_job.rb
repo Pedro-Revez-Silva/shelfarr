@@ -775,11 +775,20 @@ class PostProcessingJob < ApplicationJob
       imported_source_files = @imported_source_files.dup.freeze
       destination_snapshots = @verified_library_snapshots.values.flatten.freeze
       if move_completed_downloads?
+        # complete! treats a nil cleanup state as released, so the pending
+        # deletion has to be stored before that runs.
+        cleanup_state = JSON.generate(
+          "source_root" => FileCopyService.serialize_source_root(source_root),
+          "imported_source_files" => imported_source_files.to_a,
+          "destinations" => destination_snapshots.map { |snapshot|
+            FileCopyService.serialize_file_snapshot(snapshot)
+          }
+        )
         source_cleanup = {
           operation: lambda do
             remove_import_source_tree(source_root, imported_source_files, destination_snapshots)
           end,
-          state: nil,
+          state: cleanup_state,
           source_snapshot: nil
         }
       elsif require_durable
@@ -1327,6 +1336,19 @@ class PostProcessingJob < ApplicationJob
     )
     Rails.logger.warn "[PostProcessingJob] Source file changed; it was retained" unless removed == true
     removed
+  end
+
+  def self.remove_persisted_directory_source(payload)
+    source_root = FileCopyService.deserialize_source_root(payload.fetch("source_root"))
+    destination_snapshots = payload.fetch("destinations").map { |snapshot|
+      FileCopyService.deserialize_file_snapshot(snapshot)
+    }
+    new(0).send(
+      :remove_import_source_tree,
+      source_root,
+      payload.fetch("imported_source_files"),
+      destination_snapshots
+    )
   end
 
   def remove_import_source_tree(source_root, imported_source_files, destination_snapshots)
