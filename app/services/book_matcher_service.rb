@@ -22,12 +22,6 @@ class BookMatcherService
   # Example: "Harry Potter und die Kammer des Schreckens" vs "Harry Potter und der Gefangene von Askaban"
   # should not match despite sharing author and series metadata
   MIN_TITLE_SIMILARITY = FUZZY_THRESHOLD
-  SEQUENCE_MARKER_PATTERN = /\b(book|part|vol|volume)\s*(\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)\b/
-  SEQUENCE_NUMBER_WORDS = {
-    "one" => 1, "two" => 2, "three" => 3, "four" => 4, "five" => 5,
-    "six" => 6, "seven" => 7, "eight" => 8, "nine" => 9, "ten" => 10
-  }.freeze
-  ROMAN_DIGIT_VALUES = { "i" => 1, "v" => 5, "x" => 10, "l" => 50, "c" => 100, "d" => 500, "m" => 1_000 }.freeze
   TITLE_ALIAS_METADATA_WORDS = %w[
     a an anniversary audiobook biography book deluxe edition ebook illustrated
     memoir novel novella part revised special the unabridged updated vol volume
@@ -91,7 +85,7 @@ class BookMatcherService
       normalized_query_title = normalize(query_title)
       normalized_book_title = normalize(book_title)
       title_score = string_similarity(normalized_query_title, normalized_book_title)
-      return 0 if conflicting_sequence_markers?(normalized_query_title, normalized_book_title)
+      return 0 if SequenceMarkers.conflict?(normalized_query_title, normalized_book_title)
 
       # If no author in query, weight title more heavily
       if query_author.blank?
@@ -156,44 +150,12 @@ class BookMatcherService
       suffix.split.all? { |word| word.in?(TITLE_ALIAS_METADATA_WORDS) }
     end
 
-    def conflicting_sequence_markers?(left, right)
-      left_markers = left.scan(SEQUENCE_MARKER_PATTERN).to_h
-      right_markers = right.scan(SEQUENCE_MARKER_PATTERN).to_h
-
-      (left_markers.keys & right_markers.keys).any? do |marker|
-        left_markers.fetch(marker) != right_markers.fetch(marker)
-      end
-    end
-
-    def normalize_sequence_marker(marker)
-      marker.in?(%w[vol volume]) ? "volume" : marker
-    end
-
-    def normalize_sequence_number(value)
-      return value.to_i.to_s if value.match?(/\A\d+\z/)
-      return SEQUENCE_NUMBER_WORDS.fetch(value).to_s if SEQUENCE_NUMBER_WORDS.key?(value)
-
-      total = 0
-      previous = 0
-      value.reverse.each_char do |character|
-        current = ROMAN_DIGIT_VALUES.fetch(character)
-        total += current < previous ? -current : current
-        previous = [ previous, current ].max
-      end
-      total.to_s
-    end
-
     def normalize(text)
       return "" if text.blank?
 
-      TitleKey.new(text.to_s.gsub("&", " and ")).collapsed
-        .gsub(SEQUENCE_MARKER_PATTERN) do
-          marker = normalize_sequence_marker(Regexp.last_match(1))
-          number = normalize_sequence_number(Regexp.last_match(2))
-          "#{marker} #{number}"
-        end
-        .gsub(/\s+/, " ")
-        .strip
+      # Markers are folded before punctuation so "Vol. I" and "T.2" keep their numbers.
+      prepared = SequenceMarkers.normalize(text.to_s.gsub("&", " and "))
+      TitleKey.new(prepared).collapsed
     end
 
     def string_similarity(str1, str2)

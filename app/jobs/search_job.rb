@@ -1136,9 +1136,7 @@ class SearchJob < ApplicationJob
   end
 
   def normalized_search_title(title)
-    prepared = title.to_s
-      .gsub(/\([^)]*\)|\[[^\]]*\]/, " ")
-      .gsub(/\b(?:volume|vol\.?|book|part)\s+(\d+)\b/i, "\\1")
+    prepared = SequenceMarkers.strip(title.to_s.gsub(/\([^)]*\)|\[[^\]]*\]/, " "))
     TitleKey.new(prepared).spaced
   end
 

@@ -1877,6 +1877,20 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "Mistborn", job.send(:short_search_title, "Mistborn: The Final Empire")
   end
 
+  test "normalized search title strips translated volume markers" do
+    job = SearchJob.new
+    expected = job.send(:normalized_search_title, "The Stormlight Archive Part 2")
+
+    assert_equal "the stormlight archive 2", expected
+    %w[Tome Partie Livre Band Teil Buch Tomo Parte Libro Livro Volumen Deel Boek].each do |marker|
+      assert_equal expected, job.send(:normalized_search_title, "The Stormlight Archive #{marker} 2"), marker
+    end
+    assert_equal expected, job.send(:normalized_search_title, "The Stormlight Archive T.2")
+    assert_equal expected, job.send(:normalized_search_title, "The Stormlight Archive T02")
+    assert_equal "band of brothers", job.send(:normalized_search_title, "Band of Brothers")
+    assert_equal "la parte mas importante", job.send(:normalized_search_title, "La parte mas importante")
+  end
+
   test "keeps low-confidence broad results instead of returning an empty search" do
     book = Book.create!(
       title: "Signal Path",

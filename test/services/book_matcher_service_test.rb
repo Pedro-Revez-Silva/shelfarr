@@ -353,4 +353,66 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert result.exact?
     assert_equal existing_book, result.book
   end
+
+  test "matches a translated volume marker as the same book" do
+    existing_book = Book.create!(
+      title: "The Stormlight Archive Part 2",
+      author: "Brandon Sanderson",
+      book_type: :ebook
+    )
+
+    result = BookMatcherService.match(
+      title: "The Stormlight Archive Tome 2",
+      author: "Brandon Sanderson",
+      book_type: :ebook
+    )
+
+    assert result.exact?, "#{result.match_type} #{result.score}"
+    assert_equal existing_book, result.book
+  end
+
+  test "does not match split volumes that differ by part number" do
+    Book.create!(
+      title: "Kessel Run Tome 3 Partie 1",
+      author: "Ada Example",
+      book_type: :ebook
+    )
+
+    result = BookMatcherService.match(
+      title: "Kessel Run Tome 3 Partie 2",
+      author: "Ada Example",
+      book_type: :ebook
+    )
+
+    assert result.no_match?, "#{result.match_type} #{result.score}"
+  end
+
+  test "does not treat ordinary words as volume markers" do
+    brothers = Book.create!(
+      title: "Band of Brothers",
+      author: "Stephen E. Ambrose",
+      book_type: :ebook
+    )
+    prose = Book.create!(
+      title: "La parte mas importante",
+      author: "Ana Lopez",
+      book_type: :ebook
+    )
+
+    brothers_match = BookMatcherService.match(
+      title: "Band of Brothers",
+      author: "Stephen E. Ambrose",
+      book_type: :ebook
+    )
+    prose_match = BookMatcherService.match(
+      title: "La parte mas importante",
+      author: "Ana Lopez",
+      book_type: :ebook
+    )
+
+    assert brothers_match.exact?
+    assert_equal brothers, brothers_match.book
+    assert prose_match.exact?
+    assert_equal prose, prose_match.book
+  end
 end

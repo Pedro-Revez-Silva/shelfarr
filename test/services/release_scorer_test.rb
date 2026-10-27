@@ -275,6 +275,31 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal 100, result.breakdown[:title]
   end
 
+  test "scores a translated volume marker as an exact title match" do
+    @book.update!(title: "The Stormlight Archive Part 2", author: "Brandon Sanderson")
+    exact = ReleaseScorer.score(
+      SearchResult.new(title: "The Stormlight Archive Part 2 - Brandon Sanderson", seeders: 50),
+      @request
+    )
+    translated = ReleaseScorer.score(
+      SearchResult.new(title: "The Stormlight Archive Tome 2 - Brandon Sanderson", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, exact.breakdown[:title]
+    assert_equal 100, translated.breakdown[:title]
+  end
+
+  test "rejects a split volume whose part number differs" do
+    @book.update!(title: "Kessel Run Tome 3 Partie 1", author: "Ada Example")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "Kessel Run Tome 3 Partie 2 - Ada Example", seeders: 50),
+      @request
+    )
+
+    assert_equal 0, score.breakdown[:title]
+  end
+
   test "scores dotted scene-style release titles the same as spaced exact matches" do
     SettingsService.set(:ebook_approved_formats, [])
     SettingsService.set(:ebook_rejected_formats, [])

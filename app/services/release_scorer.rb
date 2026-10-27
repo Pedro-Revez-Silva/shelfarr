@@ -91,11 +91,12 @@ class ReleaseScorer
 
   def calculate_title_score
     return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
+    return 0 if SequenceMarkers.conflict?(@book.title, @search_result.title)
 
-    release_key = TitleKey.new(@search_result.title)
+    release_key = normalized_title_key(@search_result.title)
     title_variants = SearchTitleVariantService.call(@book.title)
     book_titles = title_variants
-      .map { |title| TitleKey.new(title).canonical }
+      .map { |title| normalized_title_key(title).canonical }
       .reject(&:blank?)
 
     return 0 if release_key.canonical.blank? || book_titles.empty?
@@ -119,13 +120,17 @@ class ReleaseScorer
   end
 
   def exact_normalized_title_match?(book_title)
-    book_key = TitleKey.new(book_title)
-    release_key = TitleKey.new(@search_result.title)
+    book_key = normalized_title_key(book_title)
+    release_key = normalized_title_key(@search_result.title)
     book_key.forms.any? do |title|
       release_key.forms.any? do |release_title|
         exact_title_phrase_match?(release_title, title, short_title: book_key.short?)
       end
     end
+  end
+
+  def normalized_title_key(title)
+    TitleKey.new(SequenceMarkers.normalize(title))
   end
 
   def ambiguous_title_alias_match?
