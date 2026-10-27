@@ -45,9 +45,12 @@ class SequenceMarker
   private_constant :WORD_ALTERNATION, :ROMAN_NUMBER, :NUMBER_WORD, :NUMERIC_NUMBER, :ANY_NUMBER,
     :ROMAN_VALUES, :ROMAN_GLYPHS
 
-  # Digits may be glued ("Vol2", "T2"). Roman numerals and number words need a
-  # separator, so "parti" and "tim" are not volumes. T.II / T II still count.
+  # Digits may be glued ("Vol2", "T2", "T.2", "T02"). A full word needs a
+  # separator before a roman numeral or spelled number, so "Buchi" and "parti"
+  # are not volumes. T.II / T II still count. An apostrophe belongs to the
+  # word, so a marker cannot start inside "Don't".
   MARKER_TEMPLATE = <<~'PATTERN'
+    (?<![A-Za-z]['`´’‘])
     \b
     (?:
       (?:%{words})(?:[\s.\-]*(?=\d)|(?:\s+|\s*[.\-]\s*))
@@ -69,40 +72,94 @@ class SequenceMarker
   ).freeze
   private_constant :MARKER_TEMPLATE, :FULL_PATTERN, :NUMERIC_PATTERN
 
+  # "#" and hyphens sit between a marker and its number ("Vol. #2", "Part-2",
+  # "T.II"). Fold those marks into spaces before the number is read so a later
+  # punctuation pass cannot delete the separator.
+  SEPARATOR_PATTERN = Regexp.new(
+    "\\b(#{WORD_ALTERNATION}|t)(?:\\s*[^\\s[:alnum:]]+\\s*)+(?=\\d|(?:#{ROMAN_NUMBER})\\b|(?:#{NUMBER_WORD})\\b)",
+    Regexp::IGNORECASE
+  ).freeze
+  private_constant :SEPARATOR_PATTERN
+
   class << self
+    def separate_marker_punctuation(text)
+      text.to_s.gsub(SEPARATOR_PATTERN, "\\1 ")
+    end
+
+    # Author initials are not a volume ("Book C. G. Jung"). A credit that also
+    # appears inside the title is left there.
+    def without_author_credit(title, author:, protected_title: nil)
+      source = title.to_s
+      author_spans = phrase_spans(source, author)
+      return source if author_spans.empty?
+
+      protected_spans = phrase_spans(source, protected_title)
+      masked = source.dup
+      author_spans.reverse_each do |span|
+        next if protected_spans.any? { |protected_span| spans_overlap?(span, protected_span) }
+
+        masked[span] = " "
+      end
+      masked
+    end
+
     def neutralize(text)
-      rewrite(text, FULL_PATTERN) { |number| "#{NEUTRAL_MARKER} #{number}" }
+      rewrite(separate_marker_punctuation(text))
+    end
+
+    # Marker words are replaced on text whose punctuation was already folded.
+    def rewrite(text)
+      apply(text, FULL_PATTERN) { |number| "#{NEUTRAL_MARKER} #{number}" }
     end
 
     # Drops the marker word and keeps the number, for indexer queries.
     # Number words stay put ("Book One") so a title is not reduced to "1".
     def strip(text)
-      rewrite(text, NUMERIC_PATTERN) { |number| number }
+      apply(separate_marker_punctuation(text), NUMERIC_PATTERN) { |number| number }
     end
 
     def numbers(text)
       found = []
-      text.to_s.scan(FULL_PATTERN) { found << normalize_number(Regexp.last_match(1)) }
+      separate_marker_punctuation(text.to_s).scan(FULL_PATTERN) { found << normalize_number(Regexp.last_match(1)) }
       found
     end
 
-    # One number on each side: marker words are interchangeable.
-    # Two or more on both: every number has to match, so "Tome 3 Partie 1"
-    # stays distinct from "Tome 3 Partie 2". A lone "Book 2" can still meet
-    # "Book 2 Part 1"; that extra part is not a second number on both sides.
+    # The first number is the volume even when the other side also has a part.
+    # Later numbers count only where both sides have them, so "Book 2" can
+    # still meet "Book 2 Part 1".
     def conflict?(left, right)
       left_numbers = numbers(left)
       right_numbers = numbers(right)
       return false if left_numbers.empty? || right_numbers.empty?
-      return left_numbers != right_numbers if left_numbers.size > 1 && right_numbers.size > 1
-      return false unless left_numbers.size == 1 && right_numbers.size == 1
 
-      left_numbers != right_numbers
+      shared = [ left_numbers.size, right_numbers.size ].min
+      shared.times.any? { |index| left_numbers[index] != right_numbers[index] }
     end
 
     private
 
-    def rewrite(text, pattern)
+    def phrase_spans(text, phrase)
+      pattern = phrase_pattern(phrase)
+      return [] if pattern.nil?
+
+      spans = []
+      text.to_s.scan(pattern) { spans << (Regexp.last_match.begin(0)...Regexp.last_match.end(0)) }
+      spans
+    end
+
+    def phrase_pattern(phrase)
+      tokens = TitleKey.new(phrase.to_s).canonical.split
+      return nil if tokens.empty?
+
+      body = tokens.map { |token| "\\b#{Regexp.escape(token)}\\b" }.join('\W*')
+      Regexp.new(body, Regexp::IGNORECASE)
+    end
+
+    def spans_overlap?(left, right)
+      left.begin < right.end && right.begin < left.end
+    end
+
+    def apply(text, pattern)
       text.to_s.gsub(pattern) { yield normalize_number(Regexp.last_match(1)) }
     end
 

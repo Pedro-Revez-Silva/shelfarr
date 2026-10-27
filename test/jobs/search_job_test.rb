@@ -3104,6 +3104,18 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "band of brothers", job.send(:normalized_search_title, "Band of Brothers")
     assert_equal "la parte oscura del libro", job.send(:normalized_search_title, "La parte oscura del libro")
     assert_equal "the book thief", job.send(:normalized_search_title, "The Book Thief")
+    assert_equal "dont i know you", job.send(:normalized_search_title, "Don't I Know You?")
+    assert_equal "buchi neri", job.send(:normalized_search_title, "Buchi neri")
+  end
+
+  test "normalized search title folds punctuation before reading volume markers" do
+    job = SearchJob.new
+
+    assert_equal job.send(:normalized_search_title, "Bleach Volume 2"), job.send(:normalized_search_title, "Bleach Vol. #2")
+    assert_equal job.send(:normalized_search_title, "Dune Part 2"), job.send(:normalized_search_title, "Dune Part-2")
+    assert_equal job.send(:normalized_search_title, "Series Volume 2"), job.send(:normalized_search_title, "Series T2")
+    assert_equal job.send(:normalized_search_title, "Series Volume 2"), job.send(:normalized_search_title, "Series T.2")
+    assert_equal job.send(:normalized_search_title, "Series Volume 2"), job.send(:normalized_search_title, "Series T02")
   end
 
   private
