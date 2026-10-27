@@ -23,6 +23,8 @@ gem "solid_cable"
 gem "bootsnap", require: false
 
 gem "kamal", require: false
+# Kamal's SSH client. 7.3.7 and older leave a later ProxyJump hop unescaped.
+gem "net-ssh", "~> 7.3", ">= 7.3.8", require: false
 
 # Add HTTP asset caching/compression and X-Sendfile acceleration to Puma [https://github.com/basecamp/thruster/]
 gem "thruster", require: false
