@@ -92,14 +92,13 @@ class ReleaseScorer
   def calculate_title_score
     return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
 
-    release_title = @search_result.title.to_s
     title_variants = SearchTitleVariantService.call(@book.title)
     # Every marker is rewritten to "volume N", so trigrams cannot tell
     # volume 2 from volume 3. A mismatched number is a different book.
-    comparable = title_variants.reject { |title| SequenceMarker.conflict?(title, release_title) }
+    comparable = title_variants.reject { |title| SequenceMarker.conflict?(title, prepared_release_title) }
     return 0 if comparable.empty?
 
-    release_key = TitleKey.new(SequenceMarker.neutralize(release_title))
+    release_key = release_title_key
     book_titles = comparable
       .map { |title| TitleKey.new(SequenceMarker.neutralize(title)).canonical }
       .reject(&:blank?)
@@ -125,15 +124,29 @@ class ReleaseScorer
   end
 
   def exact_normalized_title_match?(book_title)
-    return false if SequenceMarker.conflict?(book_title, @search_result.title)
+    return false if SequenceMarker.conflict?(book_title, prepared_release_title)
 
     book_key = TitleKey.new(SequenceMarker.neutralize(book_title))
-    release_key = TitleKey.new(SequenceMarker.neutralize(@search_result.title))
+    release_key = release_title_key
     book_key.forms.any? do |title|
       release_key.forms.any? do |release_title|
         exact_title_phrase_match?(release_title, title, short_title: book_key.short?)
       end
     end
+  end
+
+  # The author credit is not part of the title, so initials cannot finish a
+  # marker ("The Red Book C. G. Jung").
+  def prepared_release_title
+    @prepared_release_title ||= SequenceMarker.without_author_credit(
+      @search_result.title.to_s,
+      author: @book.author,
+      protected_title: @book.title
+    )
+  end
+
+  def release_title_key
+    @release_title_key ||= TitleKey.new(SequenceMarker.neutralize(prepared_release_title))
   end
 
   def ambiguous_title_alias_match?

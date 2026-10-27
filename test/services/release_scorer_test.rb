@@ -1168,6 +1168,66 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal 0, score.breakdown[:title]
   end
 
+  test "does not score author initials as a volume marker" do
+    book = Book.create!(title: "The Red Book", author: "C. G. Jung", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "The Red Book C. G. Jung English EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title]
+  end
+
+  test "still scores a real volume when the release also names the author" do
+    book = Book.create!(title: "The Red Book Volume 2", author: "C. G. Jung", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    matching = ReleaseScorer.score(
+      SearchResult.new(title: "The Red Book Volume 2 C. G. Jung English EPUB", seeders: 50),
+      request
+    )
+    conflicting = ReleaseScorer.score(
+      SearchResult.new(title: "The Red Book Volume 3 C. G. Jung English EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, matching.breakdown[:title]
+    assert_equal 0, conflicting.breakdown[:title]
+  end
+
+  test "scores a contraction the same as the title without inventing a volume" do
+    book = Book.create!(title: "Don't I Know You?", author: "Ada Lovelace", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "Dont I Know You Ada Lovelace EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title]
+  end
+
+  test "scores a hyphenated part release as the spaced part" do
+    book = Book.create!(title: "Dune Part 2", author: "Frank Herbert", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "Dune Part-2 - Frank Herbert EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title]
+  end
+
+  test "scores a hashed volume marker as the spelled volume" do
+    book = Book.create!(title: "Bleach Volume 2", author: "Tite Kubo", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "Bleach Vol. #2 Tite Kubo EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title]
+  end
+
   test "does not treat an unnumbered marker word as a volume while scoring" do
     brothers = Book.create!(title: "Band of Brothers", author: "Stephen E. Ambrose", book_type: :ebook)
     parte = Book.create!(title: "La parte oscura del libro", author: "Mariana Enriquez", book_type: :ebook)

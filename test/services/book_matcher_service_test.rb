@@ -435,6 +435,81 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert_nil result.book
   end
 
+  test "does not match a different volume when the upload also names a part" do
+    existing_book = Book.create!(
+      title: "The Stormlight Archive Book 2",
+      author: "Brandon Sanderson",
+      book_type: :ebook
+    )
+
+    conflict = BookMatcherService.match(
+      title: "The Stormlight Archive Book 3 Part 1",
+      author: "Brandon Sanderson",
+      book_type: :ebook
+    )
+    same_volume = BookMatcherService.match(
+      title: "The Stormlight Archive Book 2 Part 1",
+      author: "Brandon Sanderson",
+      book_type: :ebook
+    )
+
+    assert conflict.no_match?, "got #{conflict.match_type} with score #{conflict.score}"
+    assert_nil conflict.book
+    assert_equal existing_book, same_volume.book
+    assert_not same_volume.no_match?
+  end
+
+  test "matches a hashed volume marker to the spelled volume" do
+    existing_book = Book.create!(
+      title: "Bleach Volume 2",
+      author: "Tite Kubo",
+      book_type: :ebook
+    )
+
+    result = BookMatcherService.match(
+      title: "Bleach Vol. #2",
+      author: "Tite Kubo",
+      book_type: :ebook
+    )
+
+    assert result.exact?, "got #{result.match_type} with score #{result.score}"
+    assert_equal existing_book, result.book
+  end
+
+  test "does not read a marker prefix inside an ordinary word" do
+    existing_book = Book.create!(
+      title: "Buchi neri",
+      author: "Carlo Rovelli",
+      book_type: :ebook
+    )
+
+    result = BookMatcherService.match(
+      title: "Buchi neri",
+      author: "Carlo Rovelli",
+      book_type: :ebook
+    )
+
+    assert result.exact?, "got #{result.match_type} with score #{result.score}"
+    assert_equal existing_book, result.book
+  end
+
+  test "matches a hyphenated part marker to the spaced part" do
+    existing_book = Book.create!(
+      title: "Dune Part 2",
+      author: "Frank Herbert",
+      book_type: :ebook
+    )
+
+    result = BookMatcherService.match(
+      title: "Dune Part-2",
+      author: "Frank Herbert",
+      book_type: :ebook
+    )
+
+    assert result.exact?, "got #{result.match_type} with score #{result.score}"
+    assert_equal existing_book, result.book
+  end
+
   test "does not match pocket splits that share a tome and differ by part" do
     Book.create!(
       title: "Chronicles of the Northern Sea Tome 3 Partie 1",
