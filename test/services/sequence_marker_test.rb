@@ -56,6 +56,50 @@ class SequenceMarkerTest < ActiveSupport::TestCase
     assert_equal [ "2" ], SequenceMarker.numbers("Dune Part-2")
   end
 
+  test "does not let an initials run complete a roman marker" do
+    [
+      "The Red Book C. G. Jung English EPUB",
+      "The Red Book C.G. Jung English EPUB"
+    ].each do |release|
+      assert_empty SequenceMarker.numbers(release), release
+      assert_not_includes SequenceMarker.neutralize(release), "100", release
+    end
+
+    assert_equal [ "100" ], SequenceMarker.numbers("Book C")
+    assert_equal [ "2" ], SequenceMarker.numbers("Part 2. C. S. Lewis")
+    assert_equal [ "4" ], SequenceMarker.numbers("Book IV. C. S. Lewis")
+  end
+
+  test "does not read a parenthesized publication year as a volume number" do
+    [
+      "Rudyard Kipling - The Jungle Book (1894) English EPUB",
+      "The Jungle Book [1894]",
+      "The Jungle Book ( 1894 )"
+    ].each do |release|
+      assert_empty SequenceMarker.numbers(release), release
+      assert_equal release, SequenceMarker.neutralize(release), release
+    end
+  end
+
+  test "keeps a possessive author inside the protected title" do
+    protected_title = "William Shakespeare's Hamlet"
+    author = "William Shakespeare"
+    [
+      "William Shakespeare's Hamlet - William Shakespeare English EPUB",
+      "William Shakespeare’s Hamlet - William Shakespeare English EPUB",
+      "William Shakespeares Hamlet - William Shakespeare English EPUB"
+    ].each do |release|
+      source = SequenceMarker.without_author_credit(
+        release,
+        author: author,
+        protected_title: protected_title
+      )
+
+      assert_match(/\AWilliam Shakespeare['’]?s Hamlet\b/, source, release)
+      assert_not_includes source, "Shakespeare English", release
+    end
+  end
+
   test "does not let author initials complete a marker in a release name" do
     release = "The Red Book C. G. Jung English EPUB"
     source = SequenceMarker.without_author_credit(

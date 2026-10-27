@@ -1168,6 +1168,61 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal 0, score.breakdown[:title]
   end
 
+  test "scores abbreviated author initials above the auto-select threshold" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(title: "The Red Book", author: "Carl Gustav Jung", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "The Red Book C. G. Jung English EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+    assert score.high_confidence?, score.total.to_s
+  end
+
+  test "scores a parenthesized publication year above the auto-select threshold" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(title: "The Jungle Book", author: "Rudyard Kipling", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "Rudyard Kipling - The Jungle Book (1894) English EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+    assert score.high_confidence?, score.total.to_s
+  end
+
+  test "scores a possessive author title above the auto-select threshold" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(
+      title: "William Shakespeare's Hamlet",
+      author: "William Shakespeare",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(
+        title: "William Shakespeare's Hamlet - William Shakespeare English EPUB",
+        seeders: 50
+      ),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+    assert score.high_confidence?, score.total.to_s
+  end
+
   test "does not score author initials as a volume marker" do
     book = Book.create!(title: "The Red Book", author: "C. G. Jung", book_type: :ebook)
     request = Request.create!(book: book, user: @user, status: :pending, language: "en")
