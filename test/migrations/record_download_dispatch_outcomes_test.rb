@@ -17,11 +17,16 @@ class RecordDownloadDispatchOutcomesTest < ActiveSupport::TestCase
     @connection.create_table(:downloads) do |table|
       table.integer :request_id
       table.integer :status, null: false, default: 0
+      table.integer :search_result_id
       table.string :post_processing_cleanup_state
       table.string :post_processing_job_id
       RecordDownloadDispatchOutcomes::DIRECT_RECOVERY_COLUMNS.each do |column|
         table.string column
       end
+    end
+    @connection.create_table(:search_results) do |table|
+      table.integer :request_id
+      table.integer :status, null: false, default: 0
     end
     @connection.create_table(:request_events) do |table|
       table.integer :download_id
@@ -203,6 +208,123 @@ class RecordDownloadDispatchOutcomesTest < ActiveSupport::TestCase
     end
   end
 
+  test "releases an unclaimed completed download superseded by a completed selected replacement" do
+    rows = {}
+
+    processing = insert_request("processing")
+    rows["superseded"] = insert_download(
+      request_id: processing,
+      search_result_id: insert_search_result(processing, "rejected")
+    )
+    rows["selected_replacement"] = insert_download(
+      request_id: processing,
+      job_id: "import-owner",
+      search_result_id: insert_search_result(processing, "selected")
+    )
+
+    blank = insert_request("processing")
+    rows["superseded_blank_cleanup"] = insert_download(
+      request_id: blank,
+      cleanup: "",
+      search_result_id: insert_search_result(blank, "rejected")
+    )
+    rows["blank_cleanup_replacement"] = insert_download(
+      request_id: blank,
+      search_result_id: insert_search_result(blank, "selected")
+    )
+
+    claimed_import = insert_request("processing")
+    rows["import_owner"] = insert_download(
+      request_id: claimed_import,
+      job_id: "import-owner",
+      search_result_id: insert_search_result(claimed_import, "rejected")
+    )
+    rows["import_owner_replacement"] = insert_download(
+      request_id: claimed_import,
+      job_id: "replacement-owner",
+      search_result_id: insert_search_result(claimed_import, "selected")
+    )
+
+    cleaning = insert_request("downloading")
+    rows["cleanup_owner"] = insert_download(
+      request_id: cleaning,
+      cleanup: '{"version":1}',
+      search_result_id: insert_search_result(cleaning, "rejected")
+    )
+    rows["cleanup_replacement"] = insert_download(
+      request_id: cleaning,
+      job_id: "import-owner",
+      search_result_id: insert_search_result(cleaning, "selected")
+    )
+
+    recovering = insert_request("downloading")
+    rows["direct_owner"] = insert_download(
+      request_id: recovering,
+      direct: { "direct_staging_path" => "/ebooks/.shelfarr-staging/direct-downloads/recovery/download" },
+      search_result_id: insert_search_result(recovering, "rejected")
+    )
+    rows["direct_replacement"] = insert_download(
+      request_id: recovering,
+      job_id: "import-owner",
+      search_result_id: insert_search_result(recovering, "selected")
+    )
+
+    still_selected = insert_request("downloading")
+    rows["selected_owner"] = insert_download(
+      request_id: still_selected,
+      search_result_id: insert_search_result(still_selected, "selected")
+    )
+    rows["later_unselected_completed"] = insert_download(
+      request_id: still_selected,
+      search_result_id: insert_search_result(still_selected, "rejected")
+    )
+
+    legacy = insert_request("processing")
+    rows["legacy_without_result"] = insert_download(request_id: legacy)
+    rows["legacy_replacement"] = insert_download(
+      request_id: legacy,
+      job_id: "import-owner",
+      search_result_id: insert_search_result(legacy, "selected")
+    )
+
+    other = insert_request("processing")
+    rows["other_request_owner"] = insert_download(
+      request_id: other,
+      search_result_id: insert_search_result(other, "rejected")
+    )
+    unrelated = insert_request("processing")
+    rows["unrelated_completed"] = insert_download(
+      request_id: unrelated,
+      job_id: "import-owner",
+      search_result_id: insert_search_result(unrelated, "selected")
+    )
+
+    run_migration
+
+    %w[superseded superseded_blank_cleanup].each do |label|
+      assert_not_nil release_timestamp(rows.fetch(label)), "#{label} should release its client id"
+    end
+
+    %w[
+      selected_replacement
+      blank_cleanup_replacement
+      import_owner
+      import_owner_replacement
+      cleanup_owner
+      cleanup_replacement
+      direct_owner
+      direct_replacement
+      selected_owner
+      later_unselected_completed
+      legacy_without_result
+      legacy_replacement
+      other_request_owner
+      unrelated_completed
+    ].each do |label|
+      assert_nil release_timestamp(rows.fetch(label)), "#{label} should keep its client id"
+    end
+  end
+
   private
 
   def insert_request(status)
@@ -212,10 +334,19 @@ class RecordDownloadDispatchOutcomesTest < ActiveSupport::TestCase
     @connection.select_value("SELECT MAX(id) FROM requests").to_i
   end
 
-  def insert_download(request_id:, download_status: "completed", cleanup: nil, job_id: nil, direct: {})
+  def insert_search_result(request_id, status)
+    @connection.execute(<<~SQL.squish)
+      INSERT INTO search_results (request_id, status)
+      VALUES (#{Integer(request_id)}, #{Integer(SearchResult.statuses.fetch(status))})
+    SQL
+    @connection.select_value("SELECT MAX(id) FROM search_results").to_i
+  end
+
+  def insert_download(request_id:, download_status: "completed", cleanup: nil, job_id: nil, direct: {}, search_result_id: nil)
     columns = {
       "request_id" => request_id,
       "status" => Download.statuses.fetch(download_status),
+      "search_result_id" => search_result_id,
       "post_processing_cleanup_state" => cleanup,
       "post_processing_job_id" => job_id
     }

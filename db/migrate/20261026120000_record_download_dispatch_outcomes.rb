@@ -8,6 +8,7 @@ class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
   REQUEST_DOWNLOADING = 3
   REQUEST_PROCESSING = 4
   REQUEST_COMPLETED = 5
+  SEARCH_RESULT_SELECTED = 1
   SUPERSEDING_ACQUISITION_STATUSES = [
     DOWNLOAD_QUEUED,
     DOWNLOAD_DOWNLOADING,
@@ -48,7 +49,9 @@ class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
 
   # Import recovers a completed download only while its request is still
   # downloading or processing and no later acquisition has replaced it.
-  # Cleanup, direct recovery, and an in-progress import keep the client id.
+  # A later completed download for the selected result also replaces an
+  # unclaimed row whose own result is no longer selected. Cleanup, direct
+  # recovery, and an in-progress import keep the client id.
   def release_retired_external_ids
     direct_absent = DIRECT_RECOVERY_COLUMNS.map { |column| "downloads.#{column} IS NULL" }.join(" AND ")
     import_unclaimed = "(downloads.post_processing_job_id IS NULL OR downloads.post_processing_job_id = '')"
@@ -57,7 +60,22 @@ class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
         SELECT 1 FROM downloads AS newer_downloads
         WHERE newer_downloads.request_id = downloads.request_id
           AND newer_downloads.id > downloads.id
-          AND newer_downloads.status IN (#{SUPERSEDING_ACQUISITION_STATUSES.join(", ")})
+          AND (
+            newer_downloads.status IN (#{SUPERSEDING_ACQUISITION_STATUSES.join(", ")})
+            OR (
+              newer_downloads.status = #{DOWNLOAD_COMPLETED}
+              AND EXISTS (
+                SELECT 1 FROM search_results
+                WHERE search_results.id = newer_downloads.search_result_id
+                  AND search_results.status = #{SEARCH_RESULT_SELECTED}
+              )
+              AND EXISTS (
+                SELECT 1 FROM search_results AS replaced_results
+                WHERE replaced_results.id = downloads.search_result_id
+                  AND replaced_results.status != #{SEARCH_RESULT_SELECTED}
+              )
+            )
+          )
       )
     SQL
     execute <<~SQL.squish
