@@ -1081,4 +1081,114 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     refute result.medium_confidence?
     assert result.low_confidence?
   end
+
+  test "scores a cross-language volume marker as an exact title match" do
+    score_for = lambda do |title, release_title|
+      book = Book.create!(title: title, author: "Andrzej Sapkowski", book_type: :ebook)
+      request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+      ReleaseScorer.score(SearchResult.new(title: release_title, seeders: 50), request)
+    end
+    baseline = score_for.call(
+      "The Witcher Part 2",
+      "The Witcher Part 2 - Andrzej Sapkowski EPUB"
+    )
+
+    assert_equal 100, baseline.breakdown[:title]
+    [
+      "The Witcher Tome 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Partie 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Livre 2 - Andrzej Sapkowski EPUB",
+      "The Witcher T2 - Andrzej Sapkowski EPUB",
+      "The Witcher T.2 - Andrzej Sapkowski EPUB",
+      "The Witcher T02 - Andrzej Sapkowski EPUB",
+      "The Witcher Band 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Teil 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Buch 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Tomo 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Parte 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Libro 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Livro 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Volumen 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Deel 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Boek 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Tome II - Andrzej Sapkowski EPUB",
+      "The Witcher Part. 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Volume 2 - Andrzej Sapkowski EPUB",
+      "The Witcher Book 2 - Andrzej Sapkowski EPUB"
+    ].each do |release_title|
+      score = score_for.call("The Witcher Part 2", release_title)
+
+      assert_equal baseline.breakdown[:title], score.breakdown[:title], release_title
+      assert_equal baseline.total, score.total, release_title
+    end
+  end
+
+  test "scores agreeing split-volume numbers as an exact title match" do
+    book = Book.create!(
+      title: "Chronicles of the Northern Sea Tome 3 Partie 1",
+      author: "Ada Lovelace",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "Chronicles of the Northern Sea Book 3 Part 1 - Ada Lovelace EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title]
+  end
+
+  test "does not score a different volume number as the same title" do
+    book = Book.create!(
+      title: "Chronicles of the Northern Sea Book 2",
+      author: "Ada Lovelace",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "Chronicles of the Northern Sea Tome 3 - Ada Lovelace EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 0, score.breakdown[:title]
+  end
+
+  test "does not score pocket splits that differ by part as the same title" do
+    book = Book.create!(
+      title: "Chronicles of the Northern Sea Tome 3 Partie 1",
+      author: "Ada Lovelace",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "Chronicles of the Northern Sea Tome 3 Partie 2 - Ada Lovelace EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 0, score.breakdown[:title]
+  end
+
+  test "does not treat an unnumbered marker word as a volume while scoring" do
+    brothers = Book.create!(title: "Band of Brothers", author: "Stephen E. Ambrose", book_type: :ebook)
+    parte = Book.create!(title: "La parte oscura del libro", author: "Mariana Enriquez", book_type: :ebook)
+    brothers_request = Request.create!(book: brothers, user: @user, status: :pending, language: "en")
+    parte_request = Request.create!(book: parte, user: @user, status: :pending, language: "es")
+
+    assert_equal 100, ReleaseScorer.score(
+      SearchResult.new(title: "Band of Brothers - Stephen E. Ambrose EPUB", seeders: 50),
+      brothers_request
+    ).breakdown[:title]
+    assert_operator ReleaseScorer.score(
+      SearchResult.new(title: "Tome 2 - Stephen E. Ambrose EPUB", seeders: 50),
+      brothers_request
+    ).breakdown[:title], :<, 100
+    assert_equal 100, ReleaseScorer.score(
+      SearchResult.new(title: "La parte oscura del libro - Mariana Enriquez EPUB", seeders: 50),
+      parte_request
+    ).breakdown[:title]
+    assert_operator ReleaseScorer.score(
+      SearchResult.new(title: "Libro 2 - Mariana Enriquez EPUB", seeders: 50),
+      parte_request
+    ).breakdown[:title], :<, 100
+  end
 end
