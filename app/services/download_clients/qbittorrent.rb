@@ -452,8 +452,14 @@ module DownloadClients
     def delete_dispatch_tag(tag)
       return true if tag.blank?
 
-      ensure_authenticated!
-      response = connection.post("api/v2/torrents/deleteTags", { tags: tag })
+      response = post_delete_dispatch_tag(tag)
+      # A cached SID can outlive qBittorrent's session. One rejected call is not
+      # proof the tag is gone, so drop that cookie and try a fresh login once.
+      if rejected_session?(response) && api_key.blank?
+        clear_session!
+        response = post_delete_dispatch_tag(tag)
+        clear_session! if rejected_session?(response)
+      end
       return true if response.status == 200
 
       Rails.logger.warn "[Qbittorrent] Failed to delete dispatch tag #{tag}: HTTP #{response.status}"
@@ -461,6 +467,15 @@ module DownloadClients
     rescue StandardError => error
       Rails.logger.warn "[Qbittorrent] Failed to delete dispatch tag #{tag}: #{error.class} - #{error.message}"
       RemoteResult::Failed.new(error)
+    end
+
+    def post_delete_dispatch_tag(tag)
+      ensure_authenticated!
+      connection.post("api/v2/torrents/deleteTags", { tags: tag })
+    end
+
+    def rejected_session?(response)
+      response.status == 401 || response.status == 403
     end
 
     def dispatch_tag_deleted?(tag)
