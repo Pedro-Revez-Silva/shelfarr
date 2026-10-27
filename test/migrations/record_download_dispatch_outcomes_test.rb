@@ -120,6 +120,89 @@ class RecordDownloadDispatchOutcomesTest < ActiveSupport::TestCase
     end
   end
 
+  test "releases an unclaimed completed download superseded by a queued replacement" do
+    rows = {}
+
+    downloading = insert_request("downloading")
+    rows["superseded"] = insert_download(request_id: downloading)
+    rows["superseded_blank_import_owner"] = insert_download(request_id: downloading, job_id: "")
+    rows["superseded_blank_cleanup"] = insert_download(request_id: downloading, cleanup: "")
+    rows["queued_replacement"] = insert_download(request_id: downloading, download_status: "queued")
+
+    claimed_by_download = insert_request("downloading")
+    rows["superseded_by_downloading"] = insert_download(request_id: claimed_by_download)
+    rows["downloading_replacement"] = insert_download(request_id: claimed_by_download, download_status: "downloading")
+
+    paused = insert_request("downloading")
+    rows["superseded_by_paused"] = insert_download(request_id: paused)
+    rows["paused_replacement"] = insert_download(request_id: paused, download_status: "paused")
+
+    processing = insert_request("processing")
+    rows["processing_superseded"] = insert_download(request_id: processing)
+    rows["processing_queued_replacement"] = insert_download(request_id: processing, download_status: "queued")
+
+    importing = insert_request("downloading")
+    rows["import_owner"] = insert_download(request_id: importing, job_id: "import-owner")
+    rows["import_owner_replacement"] = insert_download(request_id: importing, download_status: "queued")
+
+    cleaning = insert_request("downloading")
+    rows["cleanup_owner"] = insert_download(request_id: cleaning, cleanup: '{"version":1}')
+    rows["cleanup_replacement"] = insert_download(request_id: cleaning, download_status: "queued")
+
+    recovering = insert_request("downloading")
+    rows["direct_owner"] = insert_download(
+      request_id: recovering,
+      direct: { "direct_staging_path" => "/ebooks/.shelfarr-staging/direct-downloads/recovery/download" }
+    )
+    rows["direct_replacement"] = insert_download(request_id: recovering, download_status: "queued")
+
+    failed_sibling = insert_request("downloading")
+    rows["failed_sibling_owner"] = insert_download(request_id: failed_sibling)
+    rows["failed_sibling"] = insert_download(request_id: failed_sibling, download_status: "failed")
+
+    other_request = insert_request("downloading")
+    rows["other_request_owner"] = insert_download(request_id: other_request)
+    rows["other_request_queued"] = insert_download(request_id: insert_request("downloading"), download_status: "queued")
+
+    older_queued = insert_request("downloading")
+    rows["older_queued"] = insert_download(request_id: older_queued, download_status: "queued")
+    rows["newer_completed"] = insert_download(request_id: older_queued)
+
+    run_migration
+
+    %w[
+      superseded
+      superseded_blank_import_owner
+      superseded_blank_cleanup
+      superseded_by_downloading
+      superseded_by_paused
+      processing_superseded
+    ].each do |label|
+      assert_not_nil release_timestamp(rows.fetch(label)), "#{label} should release its client id"
+    end
+
+    %w[
+      queued_replacement
+      downloading_replacement
+      paused_replacement
+      processing_queued_replacement
+      import_owner
+      import_owner_replacement
+      cleanup_owner
+      cleanup_replacement
+      direct_owner
+      direct_replacement
+      failed_sibling_owner
+      failed_sibling
+      other_request_owner
+      other_request_queued
+      older_queued
+      newer_completed
+    ].each do |label|
+      assert_nil release_timestamp(rows.fetch(label)), "#{label} should keep its client id"
+    end
+  end
+
   private
 
   def insert_request(status)

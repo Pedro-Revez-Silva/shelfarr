@@ -1,10 +1,18 @@
 # frozen_string_literal: true
 
 class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
+  DOWNLOAD_QUEUED = 0
+  DOWNLOAD_DOWNLOADING = 1
+  DOWNLOAD_PAUSED = 2
   DOWNLOAD_COMPLETED = 3
   REQUEST_DOWNLOADING = 3
   REQUEST_PROCESSING = 4
   REQUEST_COMPLETED = 5
+  SUPERSEDING_ACQUISITION_STATUSES = [
+    DOWNLOAD_QUEUED,
+    DOWNLOAD_DOWNLOADING,
+    DOWNLOAD_PAUSED
+  ].freeze
 
   DIRECT_RECOVERY_COLUMNS = %w[
     direct_reservation_token
@@ -38,11 +46,20 @@ class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
 
   private
 
-  # Recovery imports a completed download only while its request is still
-  # downloading or processing. A later not_found (or any other non-acquiring
-  # state) must not keep an unclaimed client id reserved.
+  # Import recovers a completed download only while its request is still
+  # downloading or processing and no later acquisition has replaced it.
+  # Cleanup, direct recovery, and an in-progress import keep the client id.
   def release_retired_external_ids
     direct_absent = DIRECT_RECOVERY_COLUMNS.map { |column| "downloads.#{column} IS NULL" }.join(" AND ")
+    import_unclaimed = "(downloads.post_processing_job_id IS NULL OR downloads.post_processing_job_id = '')"
+    superseded_by_later_acquisition = <<~SQL.squish
+      EXISTS (
+        SELECT 1 FROM downloads AS newer_downloads
+        WHERE newer_downloads.request_id = downloads.request_id
+          AND newer_downloads.id > downloads.id
+          AND newer_downloads.status IN (#{SUPERSEDING_ACQUISITION_STATUSES.join(", ")})
+      )
+    SQL
     execute <<~SQL.squish
       UPDATE downloads
       SET external_id_released_at = CURRENT_TIMESTAMP
@@ -60,9 +77,13 @@ class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
                 requests.status = #{REQUEST_COMPLETED}
                 OR (
                   requests.status NOT IN (#{REQUEST_DOWNLOADING}, #{REQUEST_PROCESSING})
-                  AND (downloads.post_processing_job_id IS NULL OR downloads.post_processing_job_id = '')
+                  AND #{import_unclaimed}
                 )
               )
+          )
+          OR (
+            #{import_unclaimed}
+            AND #{superseded_by_later_acquisition}
           )
         )
     SQL
