@@ -3065,6 +3065,47 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "normalized search title treats cross-language volume markers like english ones" do
+    job = SearchJob.new
+    expected = job.send(:normalized_search_title, "The Witcher Book 2")
+
+    assert_equal "the witcher 2", expected
+    [
+      "The Witcher Tome 2",
+      "The Witcher Partie 2",
+      "The Witcher Livre 2",
+      "The Witcher T2",
+      "The Witcher T.2",
+      "The Witcher T02",
+      "The Witcher Band 2",
+      "The Witcher Teil 2",
+      "The Witcher Buch 2",
+      "The Witcher Tomo 2",
+      "The Witcher Parte 2",
+      "The Witcher Libro 2",
+      "The Witcher Livro 2",
+      "The Witcher Volumen 2",
+      "The Witcher Deel 2",
+      "The Witcher Boek 2",
+      "The Witcher Tome II",
+      "The Witcher Part. 2",
+      "The Witcher Volume 2"
+    ].each do |title|
+      assert_equal expected, job.send(:normalized_search_title, title), title
+    end
+    assert_equal "3 1", job.send(:normalized_search_title, "Tome 3 Partie 1")
+    assert_equal job.send(:normalized_search_title, "Book 3 Part 1"), job.send(:normalized_search_title, "Tome 3 Partie 1")
+    assert_equal "3 2", job.send(:normalized_search_title, "Tome 3 Partie 2")
+  end
+
+  test "normalized search title leaves ordinary words that are not volume markers" do
+    job = SearchJob.new
+
+    assert_equal "band of brothers", job.send(:normalized_search_title, "Band of Brothers")
+    assert_equal "la parte oscura del libro", job.send(:normalized_search_title, "La parte oscura del libro")
+    assert_equal "the book thief", job.send(:normalized_search_title, "The Book Thief")
+  end
+
   private
 
   def tagged_indexer_result(guid:, title:)
