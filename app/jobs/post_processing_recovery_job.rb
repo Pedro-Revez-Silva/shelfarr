@@ -79,6 +79,11 @@ class PostProcessingRecoveryJob < ApplicationJob
   def recover_source_cleanup(download)
     cleanup_state = download.post_processing_cleanup_state
     payload = JSON.parse(cleanup_state)
+    if payload["source_root"]
+      recover_directory_source_cleanup(download, payload, cleanup_state)
+      return
+    end
+
     source_snapshot = FileCopyService.deserialize_file_snapshot(payload.fetch("source"))
     destination_snapshot = FileCopyService.deserialize_file_snapshot(payload.fetch("destination"))
     removed = FileCopyService.remove_source_file(
@@ -105,6 +110,18 @@ class PostProcessingRecoveryJob < ApplicationJob
       "[PostProcessingRecoveryJob] Source cleanup recovery failed for download ##{download.id}: #{error.class}"
     )
     Download.where(id: download.id).update_all(updated_at: Time.current)
+  end
+
+  # Recovery has to finish the stored tree deletion before the client id is released.
+  def recover_directory_source_cleanup(download, payload, cleanup_state)
+    removed = PostProcessingJob.remove_persisted_directory_source(payload)
+    unless removed == true || removed == false
+      Download.where(id: download.id, post_processing_cleanup_state: cleanup_state)
+        .update_all(updated_at: Time.current)
+      return
+    end
+
+    Download.clear_post_processing_cleanup!(download.id, cleanup_state)
   end
 
   def recover(download)

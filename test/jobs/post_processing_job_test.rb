@@ -1254,6 +1254,107 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(@temp_source), "Source download folder should be removed after successful import"
   end
 
+  test "directory move keeps torrent ownership until the pending source deletion finishes" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    nested = File.join(@temp_source, "Disc One")
+    FileUtils.mkdir_p(nested)
+    File.write(File.join(nested, "chapter.mp3"), "chapter audio")
+    client = DownloadClient.create!(
+      name: "Directory move ownership",
+      client_type: "transmission",
+      url: "http://localhost:9091",
+      username: "transmission",
+      password: "transmission"
+    )
+    external_id = "ab" * 20
+    @download.update!(
+      download_client: client,
+      download_type: "torrent",
+      external_id: external_id
+    )
+    job = PostProcessingJob.new(@download.id)
+    observed = {}
+    original_removal = job.method(:remove_import_source)
+
+    job.stub(:remove_import_source, lambda { |source_cleanup|
+      download = @download.reload
+      observed[:released_at] = download.external_id_released_at
+      observed[:cleanup_state] = download.post_processing_cleanup_state
+      observed[:owner_id] = DownloadJob.new.send(
+        :other_download_with_external_id,
+        external_id,
+        0,
+        download_client_id: client.id
+      )&.id
+      original_removal.call(source_cleanup)
+    }) do
+      job.perform_now
+    end
+
+    assert_nil observed[:released_at], "pending directory deletion should keep the client id"
+    assert observed[:cleanup_state].present?, "pending directory deletion should be a live claim"
+    assert_equal @download.id, observed[:owner_id]
+    assert_not File.exist?(@temp_source)
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+  end
+
+  test "directory move recovery finishes pending source deletion before releasing ownership" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    nested = File.join(@temp_source, "Disc One")
+    FileUtils.mkdir_p(nested)
+    File.write(File.join(nested, "chapter.mp3"), "chapter audio")
+    client = DownloadClient.create!(
+      name: "Directory move recovery",
+      client_type: "transmission",
+      url: "http://localhost:9091",
+      username: "transmission",
+      password: "transmission"
+    )
+    external_id = "cd" * 20
+    @download.update!(
+      download_client: client,
+      download_type: "torrent",
+      external_id: external_id
+    )
+    job = PostProcessingJob.new(@download.id)
+
+    job.stub(:remove_import_source, ->(*) { raise Interrupt, "simulated post-commit interruption" }) do
+      assert_raises(Interrupt) { job.perform_now }
+    end
+
+    assert @request.reload.completed?
+    assert File.exist?(@temp_source)
+    assert @download.reload.post_processing_cleanup_state.present?
+    assert_nil @download.external_id_released_at
+    assert_equal @download.id, DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )&.id
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert_not File.exist?(@temp_source)
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+  end
+
   test "move import removes the source on NFS EINVAL when non-atomic publication is enabled" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "move")

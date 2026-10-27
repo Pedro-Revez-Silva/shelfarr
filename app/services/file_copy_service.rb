@@ -1769,6 +1769,99 @@ class FileCopyService
       ).freeze
     end
 
+    # Directory cleanup has to round-trip the whole tree. Recovery compares
+    # this token to a fresh snapshot before it deletes anything.
+    def serialize_source_root(source_root)
+      {
+        "path" => source_root.path.to_s,
+        "parent_path" => source_root.parent_path.to_s,
+        "canonical_parent_path" => source_root.canonical_parent_path.to_s,
+        "device" => source_root.device,
+        "inode" => source_root.inode,
+        "parent_device" => source_root.parent_device,
+        "parent_inode" => source_root.parent_inode,
+        "entries" => source_root.entries.map { |relative, manifest|
+          serialize_source_tree_entry(relative, manifest)
+        }
+      }
+    end
+
+    def deserialize_source_root(attributes)
+      entries = {}
+      Array(attributes.fetch("entries")).each do |entry|
+        entries[entry.fetch("relative")] = deserialize_source_tree_entry(entry)
+      end
+      SourceRoot.new(
+        path: Pathname(attributes.fetch("path")).expand_path,
+        parent_path: Pathname(attributes.fetch("parent_path")).expand_path,
+        canonical_parent_path: Pathname(attributes.fetch("canonical_parent_path")).expand_path,
+        device: Integer(attributes.fetch("device")),
+        inode: Integer(attributes.fetch("inode")),
+        parent_device: Integer(attributes.fetch("parent_device")),
+        parent_inode: Integer(attributes.fetch("parent_inode")),
+        entries: entries.freeze
+      ).freeze
+    end
+
+    def serialize_source_tree_entry(relative, manifest)
+      type = manifest.fetch(2)
+      unless type == :file || type == :directory
+        raise ArgumentError, "unsupported source tree entry"
+      end
+
+      entry = {
+        "relative" => relative.to_s,
+        "device" => manifest.fetch(0),
+        "inode" => manifest.fetch(1),
+        "type" => type.to_s,
+        "size" => manifest.fetch(3),
+        "mtime_numerator" => manifest.fetch(4).numerator,
+        "mtime_denominator" => manifest.fetch(4).denominator,
+        "ctime_numerator" => manifest.fetch(5).numerator,
+        "ctime_denominator" => manifest.fetch(5).denominator
+      }
+      if type == :file
+        entry["mode"] = manifest.fetch(6)
+        entry["content_digest"] = manifest.fetch(7)
+      end
+      entry
+    end
+
+    def deserialize_source_tree_entry(entry)
+      type = case entry.fetch("type")
+      when "file"
+        :file
+      when "directory"
+        :directory
+      else
+        raise ArgumentError, "unsupported source tree entry"
+      end
+      manifest = [
+        Integer(entry.fetch("device")),
+        Integer(entry.fetch("inode")),
+        type,
+        Integer(entry.fetch("size")),
+        Rational(
+          Integer(entry.fetch("mtime_numerator")),
+          Integer(entry.fetch("mtime_denominator"))
+        ),
+        Rational(
+          Integer(entry.fetch("ctime_numerator")),
+          Integer(entry.fetch("ctime_denominator"))
+        )
+      ]
+      if type == :file
+        digest = entry.fetch("content_digest")
+        unless digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/)
+          raise ArgumentError, "invalid source tree content digest"
+        end
+
+        manifest << Integer(entry.fetch("mode"))
+        manifest << digest.dup.freeze
+      end
+      manifest.freeze
+    end
+
     def content_digest_attribute(value)
       return nil if value.nil?
       raise ArgumentError, "invalid file snapshot content digest" unless value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/)
