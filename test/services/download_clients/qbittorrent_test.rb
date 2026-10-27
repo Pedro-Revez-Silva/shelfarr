@@ -788,6 +788,59 @@ class DownloadClients::QbittorrentTest < ActiveSupport::TestCase
     end
   end
 
+  test "reauthenticates once when an expired session rejects dispatch tag deletion" do
+    tag = "shelfarr-abcdef0123456789"
+    Thread.current[:qbittorrent_sessions][@client_record.id] = {
+      cookie_name: "SID",
+      cookie_value: "expired"
+    }
+    cookies = []
+
+    VCR.turned_off do
+      login = stub_request(:post, "http://localhost:8080/api/v2/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Set-Cookie" => "SID=fresh; path=/" },
+          body: "Ok."
+        )
+      delete_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/deleteTags")
+        .with(body: hash_including("tags" => tag))
+        .to_return do |request|
+          cookies << request.headers["Cookie"]
+          {
+            status: cookies.size == 1 ? 403 : 200,
+            body: cookies.size == 1 ? "Forbidden" : ""
+          }
+        end
+
+      assert_equal true, @client.remove_dispatch_tag(tag)
+
+      assert_requested login, times: 1
+      assert_requested delete_request, times: 2
+      assert_equal [ "SID=expired", "SID=fresh" ], cookies
+      assert_equal "fresh", Thread.current[:qbittorrent_sessions][@client_record.id][:cookie_value]
+    end
+  end
+
+  test "does not replace a rejected bearer token by logging in for dispatch tag deletion" do
+    tag = "shelfarr-abcdef0123456789"
+    @client_record.update!(api_key: QBITTORRENT_API_KEY)
+
+    VCR.turned_off do
+      delete_request = stub_request(:post, "http://localhost:8080/api/v2/torrents/deleteTags")
+        .with { |request|
+          request.headers["Authorization"] == "Bearer #{QBITTORRENT_API_KEY}" &&
+            request.headers["Cookie"].nil?
+        }
+        .to_return(status: 403, body: "Forbidden")
+
+      assert_equal false, @client.remove_dispatch_tag(tag)
+
+      assert_requested delete_request, times: 1
+      assert_not_requested :post, "http://localhost:8080/api/v2/auth/login"
+    end
+  end
+
   test "add_torrent skips hash pre-computation for relative torrent URLs and falls back to polling" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8080/api/v2/auth/login")

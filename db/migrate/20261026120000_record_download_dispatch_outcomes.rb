@@ -2,8 +2,9 @@
 
 class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
   DOWNLOAD_COMPLETED = 3
+  REQUEST_DOWNLOADING = 3
+  REQUEST_PROCESSING = 4
   REQUEST_COMPLETED = 5
-  REQUEST_FAILED = 6
 
   DIRECT_RECOVERY_COLUMNS = %w[
     direct_reservation_token
@@ -37,6 +38,9 @@ class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
 
   private
 
+  # Recovery imports a completed download only while its request is still
+  # downloading or processing. A later not_found (or any other non-acquiring
+  # state) must not keep an unclaimed client id reserved.
   def release_retired_external_ids
     direct_absent = DIRECT_RECOVERY_COLUMNS.map { |column| "downloads.#{column} IS NULL" }.join(" AND ")
     execute <<~SQL.squish
@@ -55,7 +59,7 @@ class RecordDownloadDispatchOutcomes < ActiveRecord::Migration[8.1]
               AND (
                 requests.status = #{REQUEST_COMPLETED}
                 OR (
-                  requests.status = #{REQUEST_FAILED}
+                  requests.status NOT IN (#{REQUEST_DOWNLOADING}, #{REQUEST_PROCESSING})
                   AND (downloads.post_processing_job_id IS NULL OR downloads.post_processing_job_id = '')
                 )
               )
