@@ -86,6 +86,39 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_equal "PK\x03\x04complete DrvFS ebook", File.binread(@destination)
   end
 
+  test "completed direct file cleanup removes private staging when atomic quarantine renames are unsupported" do
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, false)
+    staging = publish_direct_ebook!("PK\x03\x04complete ebook")
+    staged_file = Dir.children(staging).find { |name| File.file?(File.join(staging, name)) }
+
+    assert staged_file
+    assert_not_equal 0, File.size(File.join(staging, staged_file))
+
+    removed = with_rejected_private_staging_quarantine_renames do
+      @service.cleanup_after_run!
+    end
+
+    assert_not File.exist?(staging),
+      "private staging directory was left behind after a successful direct import"
+    assert removed
+    assert_nil @download.reload.direct_staging_path
+    assert_equal "PK\x03\x04complete ebook", File.binread(@destination)
+  end
+
+  test "completed direct file cleanup removes private staging when filesystem identities are unreliable" do
+    staging = publish_direct_ebook!("PK\x03\x04unreliable identity ebook")
+
+    removed = FileCopyService.stub(:hardlink_identity_unreliable?, true) do
+      @service.cleanup_after_run!
+    end
+
+    assert_not File.exist?(staging),
+      "private staging directory was left behind after a successful direct import"
+    assert removed
+    assert_nil @download.reload.direct_staging_path
+    assert_equal "PK\x03\x04unreliable identity ebook", File.binread(@destination)
+  end
+
   test "new staging bypasses an unrepairable broad legacy namespace" do
     legacy = File.join(@output_root, DirectDownloadFileService::LEGACY_STAGING_DIRECTORY)
     legacy_marker = File.join(legacy, "retained-legacy-entry")
@@ -851,6 +884,37 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
       book_path: directory_destination,
       kind: :directory
     )
+  end
+
+  def publish_direct_ebook!(contents)
+    staging = @service.create_staging!
+    staged = FileCopyService.create_private_file(
+      staging,
+      root: @output_root,
+      prefix: "ebook-",
+      suffix: ".epub"
+    )
+    begin
+      staged.io.write(contents)
+      staged.io.flush
+      staged.io.fsync
+      assert @service.publish_file_and_finalize!(staged.io)
+    ensure
+      staged.io.close unless staged.io.closed?
+    end
+    assert File.directory?(staging)
+    staging
+  end
+
+  def with_rejected_private_staging_quarantine_renames
+    real_rename = FileCopyService.method(:native_rename_noreplace)
+    FileCopyService.stub(:native_rename_noreplace, lambda { |source_fd, source_name, destination_fd, destination_name|
+      if destination_name.to_s.start_with?(".shelfarr-remove")
+        raise Errno::EINVAL, "renameat2"
+      end
+
+      real_rename.call(source_fd, source_name, destination_fd, destination_name)
+    }) { yield }
   end
 
   def with_forced_drvfs_mount(root)

@@ -3139,6 +3139,107 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(expected_dest, "audiobook.mp3")), "File should be copied using client-specific path"
   end
 
+  test "move import removes imported ebook bytes when the download folder also contains files that are not imported" do
+    source_ebook, source_extra = prepare_ebook_download_with_unimported_repair_file
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.epub"))
+    assert_not File.exist?(source_ebook),
+      "imported ebook was copied and left in the download folder"
+    assert File.exist?(source_extra),
+      "a file Shelfarr did not import should remain in the download folder"
+  end
+
+  test "removes a completed usenet download after moving an ebook folder that also contains unimported files" do
+    source_ebook, source_extra = prepare_ebook_download_with_unimported_repair_file
+    client = DownloadClient.create!(
+      name: "SABnzbd Move Extra",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_moveextra")
+
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including(
+          "mode" => "queue",
+          "name" => "delete",
+          "value" => "SABnzbd_nzo_moveextra"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => false, "nzo_ids" => [] }.to_json
+        )
+      history = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including(
+          "mode" => "history",
+          "name" => "delete",
+          "value" => "SABnzbd_nzo_moveextra",
+          "del_files" => "1"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "status" => true }.to_json
+        )
+
+      PostProcessingJob.perform_now(@download.id)
+
+      assert_requested history
+    end
+
+    assert @request.reload.completed?
+    assert_not File.exist?(source_ebook)
+    assert File.exist?(source_extra)
+  end
+
+  test "NFS move retains the source and does not remove the completed usenet item" do
+    client = DownloadClient.create!(
+      name: "SABnzbd NFS Retain",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_nfsretain")
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, false)
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+
+    VCR.turned_off do
+      queue = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete"))
+      history = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "history", "name" => "delete"))
+
+      with_nfs_rejecting_source_quarantine_renames do
+        PostProcessingJob.perform_now(@download.id)
+      end
+
+      assert_not_requested queue
+      assert_not_requested history
+    end
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?
+    assert File.exist?(File.join(expected_dest, "audiobook.mp3"))
+    assert File.exist?(File.join(@temp_source, "audiobook.mp3"))
+  ensure
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, false)
+  end
+
   test "removes usenet download from client after successful import" do
     client = DownloadClient.create!(
       name: "SABnzbd Test",
@@ -4582,6 +4683,18 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @download.reload.post_processing_cleanup_state.present?
     assert_nil @download.external_id_released_at
     client
+  end
+
+  def prepare_ebook_download_with_unimported_repair_file
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    source_ebook = File.join(@temp_source, "Valid Book.epub")
+    source_extra = File.join(@temp_source, "release.par2")
+    write_valid_ebook_file(source_ebook)
+    File.binwrite(source_extra, "PAR2\nrepair data")
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    [ source_ebook, source_extra ]
   end
 
   def without_atomic_file_publication(&operation)
