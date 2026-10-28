@@ -3118,6 +3118,15 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal job.send(:normalized_search_title, "Series Volume 2"), job.send(:normalized_search_title, "Series T02")
   end
 
+  test "normalized search title does not read author initials as a volume" do
+    job = SearchJob.new
+
+    assert_equal "t c boyle stories", job.send(:normalized_search_title, "T. C. Boyle Stories")
+    assert_equal "series 2", job.send(:normalized_search_title, "Series T2")
+    assert_equal "series 2", job.send(:normalized_search_title, "Series T.2")
+    assert_equal "series 2", job.send(:normalized_search_title, "Series T02")
+  end
+
   private
 
   def tagged_indexer_result(guid:, title:)
