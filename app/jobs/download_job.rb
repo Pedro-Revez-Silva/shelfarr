@@ -28,7 +28,6 @@ class DownloadJob < ApplicationJob
   MAX_AUDIOBOOK_COMPANION_PROBE_DURATION = 1.minute
   MIN_AUDIOBOOK_FILE_BYTES = 1.kilobyte
   DIRECT_DOWNLOAD_HEARTBEAT_INTERVAL = 30.seconds
-  DIRECT_EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
   DIRECT_AUDIOBOOK_ARCHIVE_EXTENSIONS = %w[zip].freeze
   DIRECT_AUDIOBOOK_FILE_EXTENSIONS = AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS
   DIRECT_AUDIOBOOK_PROBE_FORMATS = %w[aa aiff asf caf mov wav].freeze
@@ -443,7 +442,7 @@ class DownloadJob < ApplicationJob
       request: download.request,
       search_result: search_result
     )
-    filename = infer_audiobook_filename_from_url(download_url, search_result, extension)
+    filename = direct_library_filename(book, extension, request: download.request, search_result: search_result)
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook file to: #{destination_path}"
@@ -514,7 +513,8 @@ class DownloadJob < ApplicationJob
       search_result: search_result
     )
 
-    filename = infer_filename_from_url(download_url, search_result)
+    extension = infer_extension(download_url, search_result)
+    filename = direct_library_filename(book, extension, request: download.request, search_result: search_result)
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading directly to: #{destination_path}"
@@ -533,19 +533,18 @@ class DownloadJob < ApplicationJob
     )
     working_dir = file_service.create_staging!
 
-    expected_extension = infer_extension(download_url, search_result)
     staged = FileCopyService.create_private_file(
       working_dir,
       root: base_path,
       prefix: "ebook-",
-      suffix: ".#{expected_extension}"
+      suffix: ".#{extension}"
     )
     begin
       staged_file = staged.io
       staged_file.binmode
       download_file_via_http(search_result, download_url, staged_file, download: download)
       verify_anna_archive_digest!(staged_file, expected_md5) if expected_md5
-      verify_downloaded_ebook!(staged_file, expected_extension: expected_extension)
+      verify_downloaded_ebook!(staged_file, expected_extension: extension)
 
       refresh_direct_download_heartbeat!(download)
       finalized = file_service.publish_file_and_finalize!(staged_file)
@@ -570,24 +569,15 @@ class DownloadJob < ApplicationJob
     end
   end
 
-  def infer_filename_from_url(url, search_result)
-    uri = URI.parse(url)
-    filename_from_url = File.basename(uri.path)
-
-    # URL-decode the filename (converts %20 to space, %3A to colon, etc.)
-    filename_from_url = URI.decode_www_form_component(filename_from_url) if filename_from_url.present?
-
-    # If URL has a valid filename, use it after normalizing source-specific suffixes.
-    inferred_extension = infer_extension(url, search_result)
-    normalized_filename = normalize_url_filename(filename_from_url, inferred_extension)
-    return normalized_filename if normalized_filename.present?
-
-    # Fall back to constructing from search result
-    book = search_result.request.book
-    title = book.title.presence || "Unknown"
-    author = book.author.presence || "Unknown"
-
-    sanitize_filename("#{author} - #{title}.#{inferred_extension}")
+  # Source URLs rarely include series or series number. Publish with the
+  # same filename template post-processing uses for client downloads.
+  def direct_library_filename(book, extension, request:, search_result:)
+    PathTemplateService.build_filename(
+      book,
+      extension,
+      request: request,
+      search_result: search_result
+    )
   end
 
   def infer_extension(url, search_result)
@@ -625,17 +615,6 @@ class DownloadJob < ApplicationJob
     title.match?(/\b#{escaped}\b/)
   end
 
-  def infer_audiobook_filename_from_url(url, search_result, extension)
-    filename_from_url = filename_from_url(url)
-    return sanitize_filename(filename_from_url) if filename_from_url.present? &&
-      File.extname(filename_from_url).delete(".").downcase == extension
-
-    book = search_result.request.book
-    title = book.title.presence || "Unknown"
-    author = book.author.presence || "Unknown"
-    sanitize_filename("#{author} - #{title}.#{extension}")
-  end
-
   def direct_audiobook_archive_destination(book, base_path, request: nil, search_result: nil)
     destination = PathTemplateService.build_destination(
       book,
@@ -669,43 +648,6 @@ class DownloadJob < ApplicationJob
     File.extname(URI.parse(url.to_s).path).casecmp?(".torrent")
   rescue URI::InvalidURIError => error
     RemoteResult::Failed.new(error)
-  end
-
-  def filename_from_url(url)
-    uri = URI.parse(normalize_direct_download_url(url))
-    filename = File.basename(uri.path)
-    URI.decode_www_form_component(filename) if filename.present?
-  rescue URI::InvalidURIError => error
-    RemoteResult::Failed.new(error)
-  end
-
-  def normalize_url_filename(filename, inferred_extension)
-    return nil if filename.blank?
-
-    current_extension = File.extname(filename).delete(".").downcase
-    return sanitize_filename(filename) if DIRECT_EBOOK_EXTENSIONS.include?(current_extension)
-    return nil unless filename.include?(".") && DIRECT_EBOOK_EXTENSIONS.include?(inferred_extension)
-    return nil unless url_filename_extension_hint?(filename, inferred_extension)
-
-    base = File.basename(filename, ".*")
-    base = base.sub(/\.epub3\z/i, "") if inferred_extension == "epub"
-    base = base.sub(/\.kf8\z/i, "") if inferred_extension == "mobi"
-    base = base.sub(/\.kindle\z/i, "") if inferred_extension == "mobi"
-    base = base.sub(/\.#{Regexp.escape(inferred_extension)}\z/i, "")
-    return nil if base.blank?
-
-    sanitize_filename("#{base}.#{inferred_extension}")
-  end
-
-  def url_filename_extension_hint?(filename, inferred_extension)
-    normalized = filename.to_s.downcase
-    extension = Regexp.escape(inferred_extension)
-
-    return true if normalized.match?(/\.#{extension}(\.|\z)/)
-    return true if inferred_extension == "epub" && normalized.match?(/\.epub3(\.|\z)/)
-    return true if inferred_extension == "mobi" && normalized.match?(/\.(kf8|kindle)(\.|\z)/)
-
-    false
   end
 
   def sanitize_filename(name)

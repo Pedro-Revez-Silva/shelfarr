@@ -1107,19 +1107,6 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
-  test "sanitize_filename decodes URL-encoded characters" do
-    job = DownloadJob.new
-    url = "https://example.com/download/Moonshot%20%3A%20inside%20Pfizer%27s%20book.epub"
-
-    filename = job.send(:infer_filename_from_url, url, @selected_result)
-
-    assert_includes filename, "Moonshot"
-    assert_not_includes filename, "%20"
-    assert_not_includes filename, "%3A"
-    assert_not_includes filename, "%27"
-    assert filename.end_with?(".epub")
-  end
-
   test "sanitize_filename preserves extension when truncating long filenames" do
     job = DownloadJob.new
 
@@ -1149,35 +1136,6 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not_includes result, "\""
     assert_not_includes result, "?"
     assert result.end_with?(".epub")
-  end
-
-  test "infer_filename_from_url falls back to book metadata when URL has no extension" do
-    job = DownloadJob.new
-    url = "https://example.com/download/some-file-without-extension"
-
-    filename = job.send(:infer_filename_from_url, url, @selected_result)
-
-    book = @selected_result.request.book
-    assert_includes filename, book.author
-    assert_includes filename, book.title
-    assert filename.end_with?(".epub") || filename.end_with?(".pdf") || filename.end_with?(".mobi")
-  end
-
-  test "infer_filename_from_url normalizes Gutenberg pseudo extensions" do
-    job = DownloadJob.new
-
-    assert_equal "1342.epub", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/1342.epub3.images?download=1", @selected_result)
-    assert_equal "2.mobi", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/2.kf8.images", @selected_result)
-    assert_equal "3.mobi", job.send(:infer_filename_from_url, "https://www.gutenberg.org/ebooks/3.kindle.noimages", @selected_result)
-  end
-
-  test "infer_filename_from_url ignores unsupported URL extensions without ebook hints" do
-    job = DownloadJob.new
-    filename = job.send(:infer_filename_from_url, "https://example.com/download/release.v1", @selected_result)
-
-    assert_not_equal "release.epub", filename
-    assert_includes filename, @selected_result.request.book.author
-    assert_includes filename, @selected_result.request.book.title
   end
 
   test "z-library download completes via direct http download" do
@@ -1215,7 +1173,7 @@ class DownloadJobTest < ActiveJob::TestCase
       assert_equal "direct", @gutenberg_download.download_type
       assert @gutenberg_request.completed?
       assert File.exist?(@gutenberg_download.download_path)
-      assert_equal "1342.epub", File.basename(@gutenberg_download.download_path)
+      assert_equal "Austen, Jane - Pride and Prejudice.epub", File.basename(@gutenberg_download.download_path)
       assert_equal File.dirname(@gutenberg_download.download_path), @gutenberg_request.book.file_path
       assert_equal 0o640, File.stat(@gutenberg_download.download_path).mode & 0o777
     end
@@ -1465,7 +1423,7 @@ class DownloadJobTest < ActiveJob::TestCase
       assert_equal "direct", @custom_provider_download.download_type
       assert @custom_provider_request.completed?
       assert File.exist?(@custom_provider_download.download_path)
-      assert_equal "custom-book.epub", File.basename(@custom_provider_download.download_path)
+      assert_equal "Provider Author - Custom Provider Book.epub", File.basename(@custom_provider_download.download_path)
     end
   end
 
@@ -1497,7 +1455,7 @@ class DownloadJobTest < ActiveJob::TestCase
       assert_equal "direct", @custom_provider_audiobook_download.download_type
       assert @custom_provider_audiobook_request.completed?
       assert File.exist?(@custom_provider_audiobook_download.download_path)
-      assert_equal "custom-audiobook.m4b", File.basename(@custom_provider_audiobook_download.download_path)
+      assert_equal "Provider Narrator - Custom Provider Audiobook.m4b", File.basename(@custom_provider_audiobook_download.download_path)
       assert_equal File.dirname(@custom_provider_audiobook_download.download_path), @custom_provider_audiobook_request.book.file_path
     end
   end
@@ -2843,10 +2801,10 @@ class DownloadJobTest < ActiveJob::TestCase
   end
 
   def gutenberg_destination_path(output_path)
-    File.join(
-      PathTemplateService.build_destination(@gutenberg_request.book, base_path: output_path),
-      "1342.epub"
-    )
+    book = @gutenberg_request.book
+    directory = PathTemplateService.build_destination(book, base_path: output_path, request: @gutenberg_request)
+    filename = PathTemplateService.build_filename(book, ".epub", request: @gutenberg_request)
+    File.join(directory, filename)
   end
 
   def setup_custom_provider_download(output_path:)
