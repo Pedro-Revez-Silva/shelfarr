@@ -132,7 +132,8 @@ module OutboundNotifications
             id: request.book_id,
             title: request.book.title,
             author: request.book.author,
-            book_type: request.book.book_type
+            book_type: request.book.book_type,
+            cover_url: request.book.cover_url
           },
           user: {
             id: request.user_id,
