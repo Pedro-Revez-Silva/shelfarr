@@ -212,7 +212,8 @@ class DirectDownloadFileService
       root:,
       expected_identity:,
       expected_parent_identity:,
-      download_id: nil
+      download_id: nil,
+      require_drvfs: true
     )
       expected_parent = staging_parent_path(root: root)
       return :retained unless Pathname(parent).expand_path == expected_parent
@@ -225,7 +226,8 @@ class DirectDownloadFileService
         child_name,
         root: Pathname(root).expand_path.to_s,
         expected_identity: expected_identity,
-        expected_parent_identity: expected_parent_identity
+        expected_parent_identity: expected_parent_identity,
+        require_drvfs: require_drvfs
       )
     end
 
@@ -370,7 +372,8 @@ class DirectDownloadFileService
         root: download.direct_output_root,
         expected_identity: expected_identity,
         expected_parent_identity: expected_parent_identity,
-        download_id: download.id
+        download_id: download.id,
+        require_drvfs: false
       )
       return true if cleanup.in?([ :removed, :missing ])
       return false if cleanup == :retained

@@ -1085,72 +1085,86 @@ class FileCopyService
 
     # DrvFS can change inode identities during rename, so the generic
     # quarantine-based remover must continue to reject it. Direct-download v2
-    # staging instead uses an application-authenticated private namespace and
-    # can remove a fully preflighted tree without renaming it. Callers must
-    # validate that parent_path and child_name name that exact namespace.
+    # staging is an application-authenticated private namespace and can be
+    # removed without RENAME_NOREPLACE. Callers must validate that parent_path
+    # and child_name name that exact namespace. Pass require_drvfs: false only
+    # for that namespace; other filesystems can reject the rename flag too.
     def remove_owned_private_tree_on_drvfs(
       parent_path,
       child_name,
       root:,
       expected_identity:,
-      expected_parent_identity:
+      expected_parent_identity:,
+      require_drvfs: true
     )
       if child_name.include?(File::SEPARATOR) || child_name.in?([ ".", ".." ])
-        raise UnsafePathError, "private directory child name is unsafe"
+        return :retained
       end
 
-      with_pinned_directory(parent_path, root: root, create: false, mode: 0o700) do |parent|
-        return :not_drvfs unless drvfs_mount?(parent) == true
+      on_drvfs = false
+      # :fallback lets the caller quarantine-delete. DrvFS must not take that path.
+      refusal = lambda { on_drvfs ? :retained : :fallback }
 
-        parent_stat = parent.stat
-        if expected_parent_identity && file_identity(parent_stat) != expected_parent_identity
-          return :retained
-        end
-        unless drvfs_private_staging_directory?(parent_stat, parent, root: true)
-          return :retained
-        end
+      begin
+        with_pinned_directory(parent_path, root: root, create: false, mode: 0o700) do |parent|
+          mount = drvfs_mount?(parent)
+          return :retained if RemoteResult.failed?(mount)
 
-        child = begin
-          open_pinned_directory_child(parent, child_name)
-        rescue Errno::ENOENT
-          return :missing
-        end
-        begin
-          child_stat = child.stat
-          child_identity = file_identity(child_stat)
-          return :retained if expected_identity && child_identity != expected_identity
-          return :retained unless drvfs_private_staging_directory?(child_stat, parent, root: true)
-
-          root_manifest = drvfs_private_staging_manifest(child_stat, parent)
-          current_root = lambda do
-            validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
-            drvfs_private_staging_child_manifest(parent, child_name) == root_manifest
-          rescue SystemCallError, IOError, UnsafePathError => error
-            RemoteResult::Failed.new(error)
+          on_drvfs = mount == true
+          if require_drvfs
+            return :not_drvfs unless on_drvfs
           end
 
-          return :retained unless current_root.call
+          parent_stat = parent.stat
+          if expected_parent_identity && file_identity(parent_stat) != expected_parent_identity
+            return refusal.call
+          end
+          unless drvfs_private_staging_directory?(parent_stat, parent, root: true)
+            return refusal.call
+          end
 
-          manifest = snapshot_pinned_drvfs_private_tree(child)
-          return :retained unless current_root.call
+          child = begin
+            open_pinned_directory_child(parent, child_name)
+          rescue Errno::ENOENT
+            return :missing
+          end
+          begin
+            child_stat = child.stat
+            child_identity = file_identity(child_stat)
+            return refusal.call if expected_identity && child_identity != expected_identity
+            return refusal.call unless drvfs_private_staging_directory?(child_stat, parent, root: true)
 
-          remove_pinned_drvfs_private_tree_contents!(
-            child,
-            manifest,
-            before_remove: current_root
-          )
-          return :retained unless current_root.call
+            root_manifest = drvfs_private_staging_manifest(child_stat, parent)
+            current_root = lambda do
+              validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
+              drvfs_private_staging_child_manifest(parent, child_name) == root_manifest
+            rescue SystemCallError, IOError, UnsafePathError => error
+              RemoteResult::Failed.new(error)
+            end
 
-          native_unlinkat(parent.fileno, child_name, AT_REMOVEDIR)
-          sync_io(parent)
-          validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
-          :removed
-        ensure
-          child.close unless child.closed?
+            return refusal.call unless current_root.call
+
+            manifest = snapshot_pinned_drvfs_private_tree(child)
+            return refusal.call unless current_root.call
+
+            remove_pinned_drvfs_private_tree_contents!(
+              child,
+              manifest,
+              before_remove: current_root
+            )
+            return refusal.call unless current_root.call
+
+            native_unlinkat(parent.fileno, child_name, AT_REMOVEDIR)
+            sync_io(parent)
+            validate_current_directory_identity!(Pathname(parent_path).expand_path, parent)
+            :removed
+          ensure
+            child.close unless child.closed?
+          end
         end
+      rescue SystemCallError, IOError, UnsafePathError
+        refusal.call
       end
-    rescue SystemCallError, IOError, UnsafePathError
-      :retained
     end
 
     # Compare regular files through pinned descriptors. This is used by retry

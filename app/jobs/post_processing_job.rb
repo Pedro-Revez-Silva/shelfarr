@@ -778,6 +778,9 @@ class PostProcessingJob < ApplicationJob
       source_root = @import_source_root
       imported_source_files = @imported_source_files.dup.freeze
       destination_snapshots = @verified_library_snapshots.values.flatten.freeze
+      destination_snapshots_by_source = @verified_library_snapshots.each_with_object({}) do |(path, snapshots), indexed|
+        indexed[path] = snapshots.dup.freeze
+      end.freeze
       if move_completed_downloads?
         # complete! treats a nil cleanup state as released, so the pending
         # deletion has to be stored before that runs.
@@ -790,7 +793,12 @@ class PostProcessingJob < ApplicationJob
         )
         source_cleanup = {
           operation: lambda do
-            remove_import_source_tree(source_root, imported_source_files, destination_snapshots)
+            remove_import_source_tree(
+              source_root,
+              imported_source_files,
+              destination_snapshots,
+              destination_snapshots_by_source
+            )
           end,
           state: cleanup_state,
           source_snapshot: nil
@@ -1364,17 +1372,23 @@ class PostProcessingJob < ApplicationJob
     FileCopyService.owned_source_tree_quarantined?(source_root)
   end
 
-  def remove_import_source_tree(source_root, imported_source_files, destination_snapshots)
+  def remove_import_source_tree(
+    source_root,
+    imported_source_files,
+    destination_snapshots,
+    destination_snapshots_by_source = nil
+  )
     expected_files = source_root.entries.filter_map do |relative, manifest|
       relative if manifest[2] == :file
     end.sort
-    unless imported_source_files.to_a.sort == expected_files
-      return retain_directory_source(
-        source_root,
-        "Source directory contains files that were not imported; it was retained"
+    imported_files = imported_source_files.to_a.sort
+    unless (imported_files - expected_files).empty?
+      Rails.logger.warn(
+        "[PostProcessingJob] Imported files are absent from the source snapshot; the source directory was retained"
       )
     end
 
+    unimported_files = expected_files - imported_files
     unless destination_snapshots_current?(destination_snapshots)
       return retain_directory_source(
         source_root,
@@ -1382,14 +1396,43 @@ class PostProcessingJob < ApplicationJob
       )
     end
 
-    removed = FileCopyService.remove_source_tree(
-      source_root,
-      allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
-    )
-    return retain_directory_source(source_root, "Source directory was retained") if removed == false
+    if unimported_files.empty?
+      removed = FileCopyService.remove_source_tree(
+        source_root,
+        allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+      )
+      return retain_directory_source(source_root, "Source directory was retained") if removed == false
 
-    Rails.logger.warn "[PostProcessingJob] Source directory was retained" unless removed == true
-    removed
+      Rails.logger.warn "[PostProcessingJob] Source directory was retained" unless removed == true
+      return removed
+    end
+
+    # Ebook and comic imports skip files they will not publish. Move still has
+    # to drop the bytes that were published; the skipped files stay here.
+    return false if imported_files.empty?
+
+    Rails.logger.warn(
+      "[PostProcessingJob] Source directory contains files that were not imported; removing only the imported files"
+    )
+    imported_files.all? do |relative|
+      remove_imported_source_file(source_root, relative, destination_snapshots_by_source)
+    end
+  end
+
+  def remove_imported_source_file(source_root, relative, destination_snapshots_by_source)
+    return false if destination_snapshots_by_source.nil?
+
+    source_path = source_root.path.join(relative).expand_path
+    snapshots = destination_snapshots_by_source[source_path.to_s]
+    return false unless snapshots&.one?
+
+    file_snapshot = FileCopyService.snapshot_source_file(source_path.to_s, source_root: source_root)
+    removed = FileCopyService.remove_source_file(
+      file_snapshot,
+      destination_snapshot: snapshots.first
+    )
+    Rails.logger.warn "[PostProcessingJob] Imported source file changed; it was retained" unless removed == true
+    removed == true
   end
 
   def retain_directory_source(source_root, message)
