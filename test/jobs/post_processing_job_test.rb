@@ -1355,6 +1355,67 @@ class PostProcessingJobTest < ActiveJob::TestCase
     )
   end
 
+  test "directory move recovery resumes cleanup interrupted after quarantine" do
+    external_id = "ef" * 20
+    client = interrupt_directory_move_before_source_deletion(external_id: external_id)
+    source_stat = File.stat(@temp_source)
+    quarantine = File.join(
+      @temp_download_base,
+      ".shelfarr-remove-#{source_stat.dev.to_s(16)}-#{source_stat.ino.to_s(16)}"
+    )
+    File.rename(@temp_source, quarantine)
+    File.unlink(File.join(quarantine, "Disc One", "chapter.mp3"))
+    assert @request.post_processing_recovery_pending?
+    assert @book.post_processing_recovery_pending?
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert_not File.exist?(@temp_source)
+    assert_not File.exist?(quarantine)
+    assert_empty Dir.glob(File.join(@temp_download_base, ".shelfarr-remove-*"))
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_not @request.reload.post_processing_recovery_pending?
+    assert_not @book.reload.post_processing_recovery_pending?
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+    assert_nothing_raised { @request.destroy! }
+    assert_nothing_raised { @book.destroy! }
+  end
+
+  test "directory move recovery releases the cleanup claim when deletion finished first" do
+    external_id = "91" * 20
+    client = interrupt_directory_move_before_source_deletion(external_id: external_id)
+    FileUtils.rm_rf(@temp_source)
+    assert @request.post_processing_recovery_pending?
+    assert @book.post_processing_recovery_pending?
+    assert_equal @download.id, DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )&.id
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_not @request.reload.post_processing_recovery_pending?
+    assert_not @book.reload.post_processing_recovery_pending?
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+    assert_nothing_raised { @request.destroy! }
+    assert_nothing_raised { @book.destroy! }
+  end
+
   test "move import removes the source on NFS EINVAL when non-atomic publication is enabled" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "move")
@@ -4033,6 +4094,36 @@ class PostProcessingJobTest < ActiveJob::TestCase
   end
 
   private
+
+  def interrupt_directory_move_before_source_deletion(external_id:)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    nested = File.join(@temp_source, "Disc One")
+    FileUtils.mkdir_p(nested)
+    File.write(File.join(nested, "chapter.mp3"), "chapter audio")
+    client = DownloadClient.create!(
+      name: "Directory move interruption #{external_id}",
+      client_type: "transmission",
+      url: "http://localhost:9091",
+      username: "transmission",
+      password: "transmission"
+    )
+    @download.update!(
+      download_client: client,
+      download_type: "torrent",
+      external_id: external_id
+    )
+    job = PostProcessingJob.new(@download.id)
+    job.stub(:remove_import_source, ->(*) { raise Interrupt, "simulated post-commit interruption" }) do
+      assert_raises(Interrupt) { job.perform_now }
+    end
+
+    assert @request.reload.completed?
+    assert File.exist?(@temp_source)
+    assert @download.reload.post_processing_cleanup_state.present?
+    assert_nil @download.external_id_released_at
+    client
+  end
 
   def without_atomic_file_publication(&operation)
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
