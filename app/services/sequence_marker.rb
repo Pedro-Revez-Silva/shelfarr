@@ -49,7 +49,8 @@ class SequenceMarker
   # separator before a roman numeral or spelled number, so "Buchi" and "parti"
   # are not volumes. T.II / T II still count. An apostrophe belongs to the
   # word, so a marker cannot start inside "Don't". A single letter that
-  # continues as "C. G." is an initial, not a roman numeral.
+  # continues as another initial ("C. G." / "C G") is not a roman numeral.
+  # "T. C. Boyle" is an author initial, not tome 100.
   MARKER_TEMPLATE = <<~'PATTERN'
     (?<![A-Za-z]['`´’‘])
     \b
@@ -58,11 +59,11 @@ class SequenceMarker
       |
       t[\s.\-]*(?=\d)
       |
-      t(?:\s+|\s*[.\-]\s*)(?=[ivxlcdm])
+      t(?:\s+|\s*[.\-]\s*)(?=[ivxlcdm])(?![ivxlcdm][\s.\-_]+[a-z])
     )
     (%{number})
     \b
-    (?!(?<=\b[ivxlcdm])\.\s*[a-z]\.)
+    (?!(?<=\b[ivxlcdm])(?:\.\s*|\s+)[a-z](?:\.|\s))
   PATTERN
   FULL_PATTERN = Regexp.new(
     format(MARKER_TEMPLATE, words: WORD_ALTERNATION, number: ANY_NUMBER),
@@ -77,7 +78,8 @@ class SequenceMarker
   # "#" and hyphens sit between a marker and its number ("Vol. #2", "Part-2",
   # "T.II"). Fold those marks into spaces before the number is read so a later
   # punctuation pass cannot delete the separator. Parentheses and brackets wrap
-  # a year, so they are not separators.
+  # a year, so they are not separators. Underscores are TitleKey word breaks,
+  # not letters, so they are folded before that pattern runs.
   SEPARATOR_PATTERN = Regexp.new(
     "\\b(#{WORD_ALTERNATION}|t)(?:\\s*[#.\\-]+\\s*)+(?=\\d|(?:#{ROMAN_NUMBER})\\b|(?:#{NUMBER_WORD})\\b)",
     Regexp::IGNORECASE
@@ -91,23 +93,23 @@ class SequenceMarker
 
   class << self
     def separate_marker_punctuation(text)
-      text.to_s.gsub(SEPARATOR_PATTERN, "\\1 ")
+      text.to_s.tr("_", " ").gsub(SEPARATOR_PATTERN, "\\1 ")
     end
 
-    # Author initials are not a volume ("Book C. G. Jung"). A credit that also
-    # appears inside the title is left there.
+    # Author initials are not a volume ("Book C. G. Jung", "Book C Jung").
+    # A credit that also appears inside the title is left there.
     def without_author_credit(title, author:, protected_title: nil)
       source = title.to_s
-      author_spans = phrase_spans(source, author)
+      protected_spans = phrase_spans(source, protected_title)
+      author_spans = merge_spans(
+        (phrase_spans(source, author) + initial_credit_spans(source, author)).reject { |span|
+          protected_spans.any? { |protected_span| spans_overlap?(span, protected_span) }
+        }
+      )
       return source if author_spans.empty?
 
-      protected_spans = phrase_spans(source, protected_title)
       masked = source.dup
-      author_spans.reverse_each do |span|
-        next if protected_spans.any? { |protected_span| spans_overlap?(span, protected_span) }
-
-        masked[span] = " "
-      end
+      author_spans.reverse_each { |span| masked[span] = " " }
       masked
     end
 
@@ -128,7 +130,7 @@ class SequenceMarker
 
     def numbers(text)
       found = []
-      separate_marker_punctuation(text.to_s).scan(FULL_PATTERN) { found << normalize_number(Regexp.last_match(1)) }
+      marker_text(separate_marker_punctuation(text.to_s)).scan(FULL_PATTERN) { found << normalize_number(Regexp.last_match(1)) }
       found
     end
 
@@ -146,17 +148,62 @@ class SequenceMarker
 
     private
 
+    # Exact phrases keep an apostrophe as its own token ("Shakespeare.s"), so a
+    # dotted release still protects the title's author.
     def phrase_spans(text, phrase)
-      wanted = TitleKey.new(phrase.to_s).canonical.split
-      return [] if wanted.empty?
+      phrases = TitleKey.new(phrase.to_s).forms.map(&:split).reject(&:empty?)
+      return [] if phrases.empty?
+
+      tokens = normalized_source_tokens(text.to_s)
+      spans = phrases.flat_map do |wanted|
+        tokens.each_cons(wanted.length).filter_map do |window|
+          next unless window.map(&:first) == wanted
+
+          window.first[1]...window.last[2]
+        end
+      end
+      spans.uniq
+    end
+
+    # "C G Jung" and "C. Jung" credit Carl Gustav Jung. Mask them before a
+    # neighboring letter is read as a roman volume.
+    def initial_credit_spans(text, author)
+      parts = author.to_s.scan(/[[:alpha:]]+/)
+      return [] if parts.size < 2
+
+      surname = Regexp.escape(parts.last)
+      initials = parts[0...-1].map { |part| Regexp.escape(part[0]) }
+      patterns = [ full_initials_pattern(initials, surname) ]
+      patterns << first_initial_pattern(initials.first, surname) if initials.size > 1
 
       spans = []
-      normalized_source_tokens(text.to_s).each_cons(wanted.length) do |window|
-        next unless window.map(&:first) == wanted
-
-        spans << (window.first[1]...window.last[2])
+      patterns.each do |pattern|
+        text.to_enum(:scan, pattern).each do
+          match = Regexp.last_match
+          span = char_offset(text, match.begin(0))...char_offset(text, match.end(0))
+          spans << span unless spans.any? { |existing| spans_overlap?(existing, span) }
+        end
       end
       spans
+    end
+
+    def full_initials_pattern(initials, surname)
+      body = initials.map { |letter| "#{letter}\\.?" }.join("\\s*")
+      /(?<![[:alnum:]])#{body}\s*#{surname}(?![[:alnum:]])/i
+    end
+
+    def first_initial_pattern(letter, surname)
+      /(?<![[:alnum:]])#{letter}(?:[._]+\s*|\s+)#{surname}(?![[:alnum:]])/i
+    end
+
+    def merge_spans(spans)
+      spans.sort_by(&:begin).each_with_object([]) do |span, merged|
+        if merged.last && spans_overlap?(merged.last, span)
+          merged[-1] = merged.last.begin...[ merged.last.end, span.end ].max
+        else
+          merged << span
+        end
+      end
     end
 
     # Source offsets survive quote folding so the span still covers "Shakespeare's".
@@ -189,7 +236,33 @@ class SequenceMarker
     end
 
     def apply(text, pattern)
-      text.to_s.gsub(pattern) { yield normalize_number(Regexp.last_match(1)) }
+      source = text.to_s
+      scan = marker_text(source)
+      replacements = []
+      scan.scan(pattern) do
+        match = Regexp.last_match
+        replacements << [
+          char_offset(scan, match.begin(0)),
+          char_offset(scan, match.end(0)),
+          normalize_number(match[1])
+        ]
+      end
+
+      result = source.dup
+      replacements.reverse_each do |start_char, end_char, number|
+        result[start_char...end_char] = yield(number)
+      end
+      result
+    end
+
+    # Same word breaks TitleKey uses for an exact phrase. The returned string
+    # stays aligned with the source so only the marker span is rewritten.
+    def marker_text(text)
+      TitleKey.normalize_marker_boundaries(text.to_s)
+    end
+
+    def char_offset(text, byte_index)
+      text.byteslice(0, byte_index).length
     end
 
     def normalize_number(value)

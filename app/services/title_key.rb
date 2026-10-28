@@ -57,6 +57,17 @@ class TitleKey
     canonical.length < 4
   end
 
+  # Exact phrases split on every non-letter, including underscores. Marker
+  # parsing keeps the preserved characters so "Don't" stays one word and a
+  # wrapped year is not read as a volume.
+  def self.normalize_boundaries(text, preserve: "")
+    text.to_s.gsub(/[^A-Za-z0-9]/) { |char| preserve.include?(char) ? char : " " }
+  end
+
+  def self.normalize_marker_boundaries(text)
+    normalize_boundaries(text, preserve: "#{QUOTE_CHARACTERS}()[]")
+  end
+
   private
 
   def apostrophe_forms
@@ -70,10 +81,9 @@ class TitleKey
   end
 
   def tokenize(text)
-    ActiveSupport::Inflector.transliterate(text)
-      .downcase
-      .gsub(/[^a-z0-9]+/, " ")
-      .strip
+    self.class.normalize_boundaries(
+      ActiveSupport::Inflector.transliterate(text).downcase
+    ).squish
   end
 
   def punctuationless(text)
