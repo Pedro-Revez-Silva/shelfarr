@@ -1221,6 +1221,47 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "direct ebook download fills filename template series variables" do
+    Dir.mktmpdir do |dir|
+      setup_gutenberg_download(output_path: dir)
+      book = @gutenberg_request.book
+      book.update!(
+        title: "The Final Empire",
+        author: "Brandon Sanderson",
+        series: "Mistborn",
+        series_position: "1",
+        year: 2006
+      )
+      SettingsService.set(:ebook_path_template, "{author}/{series/}{seriesNum:00 - }{title} ({year})")
+      SettingsService.set(:ebook_filename_template, "{author} - {series - }{seriesNum:00 - }{title}")
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: "PK\x03\x04" + ("x" * 1024),
+            headers: { "Content-Type" => "application/epub+zip" }
+          )
+
+        DownloadJob.perform_now(@gutenberg_download.id)
+      end
+
+      @gutenberg_download.reload
+      @gutenberg_request.reload
+      book.reload
+      folder = File.join(dir, "Brandon Sanderson", "Mistborn", "01 - The Final Empire (2006)")
+      filename = "Brandon Sanderson - Mistborn - 01 - The Final Empire.epub"
+      published = File.join(folder, filename)
+
+      assert @gutenberg_download.completed?, @gutenberg_request.issue_description
+      assert_equal folder, book.file_path
+      assert_equal published, @gutenberg_download.download_path
+      assert_equal filename, File.basename(@gutenberg_download.download_path)
+      assert File.exist?(published)
+    end
+  end
+
   test "direct download preserves an existing destination with different bytes" do
     Dir.mktmpdir do |dir|
       setup_gutenberg_download(output_path: dir)
