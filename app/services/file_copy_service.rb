@@ -45,6 +45,7 @@ class FileCopyService
   COPY_QUARANTINE_PATTERN = /\A\.shelfarr-copy-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
   DISCARD_PATTERN = /\A\.shelfarr-discard-([0-9a-f]+)-([0-9a-f]+)-[0-9a-f]{32}\.tmp\z/
   SOURCE_QUARANTINE_PATTERN = /\A\.shelfarr-source-quarantine-([0-9a-f]+)-([0-9a-f]+)-([0-9a-f]{32})\z/
+  SOURCE_TREE_CHILD_QUARANTINE_PATTERN = /\A\.shelfarr-remove-child-[0-9a-f]{32}\z/
   COPY_QUARANTINE_ENTRY = "entry"
   COPY_QUARANTINE_STALE_AGE = 24 * 60 * 60
   TIMESTAMP_SETTLE_ATTEMPTS = 3
@@ -1463,6 +1464,12 @@ class FileCopyService
     # is never recursively deleted. Some NFS servers reject RENAME_NOREPLACE
     # with EINVAL; operators may explicitly allow the weaker check-then-rename
     # compatibility path used by directory publication.
+    #
+    # The quarantine basename is derived from the snapshotted device and inode,
+    # so a killed worker can find it without a second database write. Partial
+    # progress inside that directory is resumed. A missing source with no
+    # owned quarantine left is already removed. A directory that only reused
+    # the inode is left untouched.
     def remove_source_tree(
       source_root,
       allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
@@ -1470,7 +1477,6 @@ class FileCopyService
       expanded = source_root.path
       parent_path = source_root.parent_path
       canonical_parent = source_root.canonical_parent_path
-      quarantine_basename = ".shelfarr-remove-#{SecureRandom.hex(16)}"
 
       with_pinned_absolute_directory(canonical_parent) do |parent|
         return false if hardlink_identity_unreliable?(parent)
@@ -1479,70 +1485,48 @@ class FileCopyService
           raise Errno::ESTALE, "source parent identity changed during cleanup"
         end
         validate_current_directory_identity!(parent_path, parent)
-        renamed = rename_entry_noreplace(
-          parent,
-          expanded.basename.to_s,
-          quarantine_basename,
-          allow_nonatomic: allow_nonatomic,
-          directory: true,
-          log_fallback: true
-        )
-        unless renamed
-          unless allow_nonatomic
-            Rails.logger.warn(
-              "[FileCopyService] Atomic source quarantine is unsupported; the source was retained"
-            )
-          end
-          return false
-        end
 
-        quarantined_identity = pinned_child_identity(parent, quarantine_basename, directory: true)
+        source_basename = expanded.basename.to_s
         expected_identity = [ source_root.device, source_root.inode ]
-        unless quarantined_identity == expected_identity
-          restore_quarantined_replacement(
+        source_identity = begin
+          pinned_child_identity(parent, source_basename, directory: true)
+        rescue Errno::ENOENT
+          :missing
+        end
+        if source_identity == expected_identity
+          quarantine_and_remove_source_tree!(
             parent,
-            quarantine_basename,
-            expanded.basename.to_s,
+            source_basename,
+            source_root,
             allow_nonatomic: allow_nonatomic
           )
-          return false
-        end
-
-        with_pinned_relative_directory(
-          parent,
-          Pathname(quarantine_basename),
-          create: false
-        ) do |quarantine|
-          unless snapshot_pinned_regular_tree(quarantine) == source_root.entries
-            restore_quarantined_replacement(
+        else
+          quarantine_basename = owned_source_tree_quarantine(parent, expected_identity)
+          if quarantine_basename
+            removed = delete_quarantined_source_tree!(
               parent,
               quarantine_basename,
-              expanded.basename.to_s,
+              source_basename,
+              source_root,
+              allow_nonatomic: allow_nonatomic,
+              resume: true
+            )
+            if removed == :not_owned
+              source_identity == :missing
+            else
+              removed
+            end
+          elsif source_identity == :missing
+            true
+          else
+            quarantine_and_remove_source_tree!(
+              parent,
+              source_basename,
+              source_root,
               allow_nonatomic: allow_nonatomic
             )
-            return false
           end
-
-          remove_pinned_tree_contents!(
-            quarantine,
-            source_root.entries,
-            allow_nonatomic: allow_nonatomic
-          )
         end
-
-        validate_current_directory_identity!(parent_path, parent)
-        unless pinned_child_identity(parent, quarantine_basename, directory: true) == expected_identity
-          restore_quarantined_replacement(
-            parent,
-            quarantine_basename,
-            expanded.basename.to_s,
-            allow_nonatomic: allow_nonatomic
-          )
-          return false
-        end
-        native_unlinkat(parent.fileno, quarantine_basename, AT_REMOVEDIR)
-        sync_io(parent)
-        true
       end
     rescue Errno::ENOENT => error
       RemoteResult::Failed.new(error)
@@ -4018,30 +4002,40 @@ class FileCopyService
       manifest
     end
 
-    def remove_pinned_tree_contents!(directory, expected_entries, prefix = nil, allow_nonatomic: false)
-      children = pinned_directory_children(directory)
-      expected_children = expected_entries.keys.filter_map do |relative|
-        path = Pathname(relative)
-        next unless path.dirname == (prefix || Pathname("."))
+    def remove_pinned_tree_contents!(directory, expected_entries, prefix = nil, allow_nonatomic: false, resume: false)
+      steps = if resume
+        # Missing names and child-quarantine renames are leftover progress from
+        # a killed cleanup. Any other entry is a different tree.
+        classified = classify_source_tree_resume(directory, expected_entries, prefix)
+        unless classified
+          raise Errno::ESTALE, "quarantined source tree changed during cleanup"
+        end
 
-        path.basename.to_s
-      end.sort
-      unless children == expected_children
-        raise Errno::ESTALE, "quarantined source tree changed during cleanup"
+        classified
+      else
+        children = pinned_directory_children(directory)
+        expected_children = source_tree_child_names(expected_entries, prefix)
+        unless children == expected_children
+          raise Errno::ESTALE, "quarantined source tree changed during cleanup"
+        end
+
+        children.map { |entry| [ entry, nil ] }
       end
 
-      children.each do |entry|
+      steps.each do |entry, existing_quarantine|
         relative = prefix ? prefix.join(entry) : Pathname(entry)
         expected = expected_entries.fetch(relative.to_s)
-        quarantine = ".shelfarr-remove-child-#{SecureRandom.hex(16)}"
-        renamed = rename_entry_noreplace(
-          directory,
-          entry,
-          quarantine,
-          allow_nonatomic: allow_nonatomic,
-          directory: expected[2] == :directory
-        )
-        raise Errno::ESTALE, "source child changed during cleanup" unless renamed
+        quarantine = existing_quarantine || ".shelfarr-remove-child-#{SecureRandom.hex(16)}"
+        unless existing_quarantine
+          renamed = rename_entry_noreplace(
+            directory,
+            entry,
+            quarantine,
+            allow_nonatomic: allow_nonatomic,
+            directory: expected[2] == :directory
+          )
+          raise Errno::ESTALE, "source child changed during cleanup" unless renamed
+        end
 
         descriptor = native_openat(
           directory.fileno,
@@ -4066,7 +4060,8 @@ class FileCopyService
               child,
               expected_entries,
               relative,
-              allow_nonatomic: allow_nonatomic
+              allow_nonatomic: allow_nonatomic,
+              resume: resume
             )
             unless pinned_child_identity(directory, quarantine, directory: true) == expected.first(2)
               restore_quarantined_replacement(
@@ -4115,6 +4110,263 @@ class FileCopyService
           child.close unless child.closed?
         end
       end
+    end
+
+    def quarantine_and_remove_source_tree!(parent, source_basename, source_root, allow_nonatomic:)
+      quarantine_basename = source_tree_quarantine_basename(source_root.device, source_root.inode)
+      renamed = rename_entry_noreplace(
+        parent,
+        source_basename,
+        quarantine_basename,
+        allow_nonatomic: allow_nonatomic,
+        directory: true,
+        log_fallback: true
+      )
+      unless renamed
+        unless allow_nonatomic
+          Rails.logger.warn(
+            "[FileCopyService] Atomic source quarantine is unsupported; the source was retained"
+          )
+        end
+        return false
+      end
+
+      delete_quarantined_source_tree!(
+        parent,
+        quarantine_basename,
+        source_basename,
+        source_root,
+        allow_nonatomic: allow_nonatomic,
+        resume: false
+      )
+    end
+
+    def delete_quarantined_source_tree!(
+      parent,
+      quarantine_basename,
+      source_basename,
+      source_root,
+      allow_nonatomic:,
+      resume:
+    )
+      expected_identity = [ source_root.device, source_root.inode ]
+      quarantined_identity = pinned_child_identity(parent, quarantine_basename, directory: true)
+      unless quarantined_identity == expected_identity
+        if resume
+          raise Errno::ESTALE, "quarantined source tree changed during cleanup"
+        end
+
+        restore_quarantined_replacement(
+          parent,
+          quarantine_basename,
+          source_basename,
+          allow_nonatomic: allow_nonatomic
+        )
+        return false
+      end
+
+      with_pinned_relative_directory(
+        parent,
+        Pathname(quarantine_basename),
+        create: false
+      ) do |quarantine|
+        snapshot_matches = snapshot_pinned_regular_tree(quarantine) == source_root.entries
+        unless snapshot_matches || (resume && quarantined_tree_resume_safe?(quarantine, source_root.entries))
+          if resume && !source_tree_shares_snapshot_identity?(quarantine, source_root.entries)
+            return :not_owned
+          end
+
+          restore_quarantined_replacement(
+            parent,
+            quarantine_basename,
+            source_basename,
+            allow_nonatomic: allow_nonatomic
+          )
+          return false
+        end
+
+        remove_pinned_tree_contents!(
+          quarantine,
+          source_root.entries,
+          allow_nonatomic: allow_nonatomic,
+          resume: resume && !snapshot_matches
+        )
+      end
+
+      validate_current_directory_identity!(source_root.parent_path, parent)
+      unless pinned_child_identity(parent, quarantine_basename, directory: true) == expected_identity
+        restore_quarantined_replacement(
+          parent,
+          quarantine_basename,
+          source_basename,
+          allow_nonatomic: allow_nonatomic
+        )
+        return false
+      end
+      native_unlinkat(parent.fileno, quarantine_basename, AT_REMOVEDIR)
+      sync_io(parent)
+      true
+    end
+
+    def source_tree_quarantine_basename(device, inode)
+      ".shelfarr-remove-#{device.to_s(16)}-#{inode.to_s(16)}"
+    end
+
+    def owned_source_tree_quarantine(parent, expected_identity)
+      basename = source_tree_quarantine_basename(expected_identity[0], expected_identity[1])
+      identity = begin
+        pinned_child_identity(parent, basename, directory: true)
+      rescue Errno::ENOENT, Errno::ELOOP, UnsafePathError
+        :missing
+      end
+      return basename if identity == expected_identity
+
+      nil
+    end
+
+    # Inodes can be reused after a directory is fully removed. A quarantine is
+    # still ours only when a remaining entry has both its snapshotted name (or
+    # an in-progress child quarantine) and that entry's inode.
+    def source_tree_shares_snapshot_identity?(directory, expected_entries, prefix = nil)
+      expected_children = source_tree_child_names(expected_entries, prefix)
+      pinned_directory_children(directory).any? do |name|
+        snapshot_entry_still_present?(directory, name, expected_children, expected_entries, prefix)
+      end
+    end
+
+    def snapshot_entry_still_present?(directory, name, expected_children, expected_entries, prefix)
+      quarantine_name = SOURCE_TREE_CHILD_QUARANTINE_PATTERN.match?(name)
+      return false unless expected_children.include?(name) || quarantine_name
+
+      descriptor = native_openat(
+        directory.fileno,
+        name,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+        0
+      )
+      child = IO.new(descriptor, "rb", autoclose: true)
+      begin
+        identity = file_identity(child.stat)
+        candidates = if quarantine_name
+          expected_children
+        else
+          [ name ]
+        end
+        candidates.any? do |child_name|
+          expected = expected_entries.fetch(source_tree_relative(prefix, child_name).to_s)
+          expected.first(2) == identity
+        end
+      ensure
+        child.close unless child.closed?
+      end
+    end
+
+    def quarantined_tree_resume_safe?(directory, expected_entries, prefix = nil)
+      steps = classify_source_tree_resume(directory, expected_entries, prefix)
+      return false unless steps
+
+      steps.all? do |expected_name, current_name|
+        source_tree_resume_entry_matches?(
+          directory,
+          current_name || expected_name,
+          expected_entries,
+          prefix,
+          expected_name
+        )
+      end
+    end
+
+    def classify_source_tree_resume(directory, expected_entries, prefix = nil)
+      children = pinned_directory_children(directory)
+      expected_children = source_tree_child_names(expected_entries, prefix)
+      quarantined_names, plain_names = children.partition do |name|
+        SOURCE_TREE_CHILD_QUARANTINE_PATTERN.match?(name)
+      end
+      return nil if (plain_names - expected_children).any?
+
+      used = {}
+      claimed = []
+      quarantined_names.each do |quarantine_name|
+        identity, type = pinned_child_type_and_identity(directory, quarantine_name)
+        match = expected_children.find do |name|
+          next if plain_names.include?(name) || used[name]
+
+          expected = expected_entries.fetch(source_tree_relative(prefix, name).to_s)
+          type && expected.first(2) == identity && expected[2] == type
+        end
+        return nil unless match
+
+        used[match] = true
+        claimed << [ match, quarantine_name ]
+      end
+
+      present = expected_children.filter_map do |name|
+        [ name, nil ] if plain_names.include?(name)
+      end
+      present + claimed
+    end
+
+    def source_tree_resume_entry_matches?(directory, current_name, expected_entries, prefix, expected_name)
+      relative = source_tree_relative(prefix, expected_name)
+      expected = expected_entries.fetch(relative.to_s)
+      descriptor = native_openat(
+        directory.fileno,
+        current_name,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+        0
+      )
+      child = IO.new(descriptor, "rb", autoclose: true)
+      begin
+        stat = child.stat
+        if expected[2] == :directory
+          return false unless stat.directory? && file_identity(stat) == expected.first(2)
+
+          quarantined_tree_resume_safe?(child, expected_entries, relative)
+        else
+          current = file_manifest_entry(stat)
+          return false unless stat.file? && current.first(5) == expected.first(5)
+
+          digest = file_manifest_digest(expected)
+          digest.nil? || pinned_content_matches?(child, digest, expected.fetch(3))
+        end
+      ensure
+        child.close unless child.closed?
+      end
+    end
+
+    def pinned_child_type_and_identity(parent, basename)
+      descriptor = native_openat(
+        parent.fileno,
+        basename,
+        File::RDONLY | File::NOFOLLOW | File::NONBLOCK,
+        0
+      )
+      child = IO.new(descriptor, "rb", autoclose: true)
+      begin
+        stat = child.stat
+        type = if stat.directory?
+          :directory
+        elsif stat.file?
+          :file
+        end
+        [ file_identity(stat), type ]
+      ensure
+        child.close unless child.closed?
+      end
+    end
+
+    def source_tree_child_names(expected_entries, prefix)
+      base = prefix || Pathname(".")
+      expected_entries.keys.filter_map do |relative|
+        path = Pathname(relative)
+        next unless path.dirname == base
+
+        path.basename.to_s
+      end.sort
+    end
+
+    def source_tree_relative(prefix, name)
+      prefix ? prefix.join(name) : Pathname(name)
     end
 
     def pinned_directory_children(directory, max_entries: nil)

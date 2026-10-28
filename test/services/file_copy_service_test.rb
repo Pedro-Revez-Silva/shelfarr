@@ -4573,16 +4573,16 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     FileUtils.mkdir_p(source_root_path)
     File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
     snapshot = FileCopyService.snapshot_source_root(source_root_path)
-    hex = "a" * 32
-    quarantine_path = File.join(@tmp_dir, ".shelfarr-remove-#{hex}")
+    quarantine_path = File.join(
+      @tmp_dir,
+      ".shelfarr-remove-#{snapshot.device.to_s(16)}-#{snapshot.inode.to_s(16)}"
+    )
     FileUtils.mkdir_p(quarantine_path)
     File.binwrite(File.join(quarantine_path, "other.mp3"), "other")
 
-    SecureRandom.stub(:hex, hex) do
-      FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
-        FileCopyService.stub(:native_renameat, ->(*) { flunk "plain rename must not replace a present quarantine name" }) do
-          assert_not FileCopyService.remove_source_tree(snapshot, allow_nonatomic: true)
-        end
+    FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+      FileCopyService.stub(:native_renameat, ->(*) { flunk "plain rename must not replace a present quarantine name" }) do
+        assert_not FileCopyService.remove_source_tree(snapshot, allow_nonatomic: true)
       end
     end
 
@@ -4668,6 +4668,63 @@ class FileCopyServiceTest < ActiveSupport::TestCase
 
     assert_equal "replacement", File.binread(File.join(source_root_path, "replacement.mp3"))
     assert File.directory?(displaced)
+  end
+
+  test "remove_source_tree resumes deletion interrupted after quarantine" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(File.join(source_root_path, "Disc One"))
+    File.binwrite(File.join(source_root_path, "audiobook.mp3"), "audio")
+    File.binwrite(File.join(source_root_path, "Disc One", "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    quarantine_path = source_tree_quarantine_path(snapshot)
+    File.rename(source_root_path, quarantine_path)
+    File.unlink(File.join(quarantine_path, "Disc One", "chapter.mp3"))
+    child_quarantine = ".shelfarr-remove-child-#{SecureRandom.hex(16)}"
+    File.rename(
+      File.join(quarantine_path, "audiobook.mp3"),
+      File.join(quarantine_path, child_quarantine)
+    )
+
+    assert_equal true, FileCopyService.remove_source_tree(snapshot)
+    assert_not File.exist?(source_root_path)
+    assert_not File.exist?(quarantine_path)
+    assert_empty Dir.glob(File.join(@tmp_dir, ".shelfarr-remove-*"))
+  end
+
+  test "remove_source_tree completes when the source and owned quarantine are already gone" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    FileUtils.rm_rf(source_root_path)
+    occupied = source_tree_quarantine_path(snapshot)
+    FileUtils.mkdir_p(occupied)
+    File.binwrite(File.join(occupied, "keep.mp3"), "keep")
+    unrelated = File.join(@tmp_dir, ".shelfarr-remove-#{SecureRandom.hex(16)}")
+    FileUtils.mkdir_p(unrelated)
+    File.binwrite(File.join(unrelated, "other.mp3"), "other")
+
+    assert_equal true, FileCopyService.remove_source_tree(snapshot)
+    assert_equal true, FileCopyService.remove_source_tree(snapshot)
+    assert_not File.exist?(source_root_path)
+    assert_equal "keep", File.binread(File.join(occupied, "keep.mp3"))
+    assert_equal "other", File.binread(File.join(unrelated, "other.mp3"))
+  end
+
+  test "remove_source_tree restores a quarantined directory that gained an unexpected file" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    quarantine_path = source_tree_quarantine_path(snapshot)
+    File.rename(source_root_path, quarantine_path)
+    foreign_name = ".shelfarr-remove-child-#{SecureRandom.hex(16)}"
+    File.binwrite(File.join(quarantine_path, foreign_name), "foreign")
+
+    assert_equal false, FileCopyService.remove_source_tree(snapshot)
+    assert_equal "chapter", File.binread(File.join(source_root_path, "chapter.mp3"))
+    assert_equal "foreign", File.binread(File.join(source_root_path, foreign_name))
+    assert_not File.exist?(quarantine_path)
   end
 
   test "create_private_directory creates a pinned owner-only child" do
@@ -5282,6 +5339,13 @@ class FileCopyServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  def source_tree_quarantine_path(snapshot)
+    File.join(
+      snapshot.path.dirname.to_s,
+      ".shelfarr-remove-#{snapshot.device.to_s(16)}-#{snapshot.inode.to_s(16)}"
+    )
+  end
 
   def write_copy_lock(token, temporary_stat)
     lock = File.join(@dest_dir, ".shelfarr-copy-#{token}.lock")
