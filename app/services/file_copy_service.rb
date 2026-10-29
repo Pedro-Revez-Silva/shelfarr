@@ -1588,12 +1588,44 @@ class FileCopyService
       RemoteResult::Failed.new(error)
     end
 
+    # ENOENT is a deleted parent only when the snapshotted filesystem is mounted.
+    # A restart can leave the mountpoint behind on a different device.
     def source_parent_missing?(source_root)
-      with_pinned_absolute_directory(source_root.canonical_parent_path) do |_parent|
-        false
-      end
+      path = source_root.canonical_parent_path
+      visible_device = deepest_existing_directory_device(path)
+      return false unless visible_device == source_root.parent_device
+
+      with_pinned_absolute_directory(path) { false }
     rescue Errno::ENOENT
       true
+    end
+
+    def deepest_existing_directory_device(path)
+      path = Pathname(path).expand_path
+      device = nil
+      with_pinned_absolute_directory(File::SEPARATOR) do |root|
+        device = root.stat.dev
+        current = root
+        opened = []
+        begin
+          path.each_filename do |part|
+            next if part == File::SEPARATOR || part == "."
+            raise UnsafePathError, "parent traversal is not allowed" if part == ".."
+
+            child = begin
+              open_pinned_directory_child(current, part)
+            rescue Errno::ENOENT
+              break
+            end
+            opened << child
+            current = child
+            device = child.stat.dev
+          end
+        ensure
+          opened.reverse_each { |handle| handle.close unless handle.closed? }
+        end
+      end
+      device
     end
 
     def secure_library_file!(path, root: nil, require_durable: false)
@@ -4239,6 +4271,18 @@ class FileCopyService
           if resume && !source_tree_shares_snapshot_identity?(quarantine, source_root.entries)
             return :not_owned
           end
+
+          # The inode still proves this tree is ours. Publish child names
+          # before the root, or a content mismatch leaves them hidden.
+          restored_children = restore_quarantined_child_names!(
+            parent,
+            quarantine_basename,
+            source_root.entries,
+            allow_nonatomic: allow_nonatomic
+          )
+          # Leave the root quarantined when a child name cannot be put back.
+          # A truthy failure would look like a completed delete to other callers.
+          return false unless restored_children == true
 
           restore_quarantined_replacement(
             parent,

@@ -77,7 +77,17 @@ class PostProcessingRecoveryJob < ApplicationJob
   end
 
   def recover_source_cleanup(download)
-    cleanup_state = download.post_processing_cleanup_state
+    # The initial job holds this lock across source deletion.
+    PostProcessingJob.with_post_processing_lock(download.id) do
+      current = Download.find_by(id: download.id)
+      cleanup_state = current&.post_processing_cleanup_state
+      next if cleanup_state.blank?
+
+      recover_locked_source_cleanup(current, cleanup_state)
+    end
+  end
+
+  def recover_locked_source_cleanup(download, cleanup_state)
     payload = JSON.parse(cleanup_state)
     if payload["source_root"]
       recover_directory_source_cleanup(download, payload, cleanup_state)
@@ -147,8 +157,10 @@ class PostProcessingRecoveryJob < ApplicationJob
   def directory_quarantine_unresolved?(payload)
     pending = PostProcessingJob.directory_source_quarantine_pending?(payload)
     return false if pending == false
-    # The snapshotted parent is gone, so it cannot still hide the quarantine.
-    return false if RemoteResult.failed?(pending) && pending.error.is_a?(Errno::ENOENT)
+    # ENOENT only means the quarantine is gone when that filesystem is mounted.
+    return false if RemoteResult.failed?(pending) &&
+      pending.error.is_a?(Errno::ENOENT) &&
+      source_parent_confirmed_absent?(payload)
 
     true
   end

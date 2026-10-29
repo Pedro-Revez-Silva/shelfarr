@@ -181,7 +181,7 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def with_post_processing_lock(download_id, &operation)
+  def self.with_post_processing_lock(download_id, &operation)
     tmp_root = Rails.root.join("tmp")
     lock_root = tmp_root.join("post-processing-locks")
     FileCopyService.ensure_directory(lock_root.to_s, root: tmp_root.to_s, mode: 0o700)
@@ -189,6 +189,10 @@ class PostProcessingJob < ApplicationJob
     lock_slot = download_id % POST_PROCESSING_LOCK_SLOTS
     lock_path = lock_root.join("#{lock_slot}.lock")
     FileCopyService.with_private_lock(lock_path.to_s, root: lock_root.to_s, &operation)
+  end
+
+  def with_post_processing_lock(download_id, &operation)
+    self.class.with_post_processing_lock(download_id, &operation)
   end
 
   def claim_request_for_post_processing(download, request, expected_owner_job_id)
@@ -1318,6 +1322,9 @@ class PostProcessingJob < ApplicationJob
     removed = source_cleanup.fetch(:operation).call
     return :complete if removed == true
     return :retry if removed == :retry
+    # A failed directory delete is still in progress. Clearing the claim would
+    # abandon a quarantine another worker may be deleting.
+    return :retry if source_cleanup.fetch(:source_snapshot).nil? && RemoteResult.failed?(removed)
 
     source_snapshot = source_cleanup.fetch(:source_snapshot)
     if source_snapshot && RemoteResult.succeeded?(FileCopyService.source_file_quarantined?(source_snapshot))
