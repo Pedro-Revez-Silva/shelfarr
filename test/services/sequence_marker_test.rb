@@ -118,4 +118,44 @@ class SequenceMarkerTest < ActiveSupport::TestCase
       )
     )
   end
+
+  test "protects a title author when only the volume marker language differs" do
+    source = SequenceMarker.without_author_credit(
+      "The Collected Works of C. G. Jung Band 1 - C. G. Jung English EPUB",
+      author: "C. G. Jung",
+      protected_title: "The Collected Works of C. G. Jung Volume 1"
+    )
+
+    assert_includes source, "C. G. Jung Band 1"
+    assert_not_includes source, "Jung English"
+  end
+
+  test "keeps curly apostrophe marker spans on character offsets" do
+    title = "L\u2019Attaque des Titans Volume 2"
+
+    assert_equal "L\u2019Attaque des Titans volume 2", SequenceMarker.neutralize(title)
+    assert_equal "L\u2019Attaque des Titans 2", SequenceMarker.strip(title)
+  end
+
+  test "masks an abbreviated author after a multibyte character" do
+    source = SequenceMarker.without_author_credit(
+      "L\u2019\u00C9tranger C. Jung English EPUB",
+      author: "C. G. Jung",
+      protected_title: "L\u2019\u00C9tranger"
+    )
+
+    assert_includes source, "L\u2019\u00C9tranger"
+    assert_not_includes source, "Jung"
+  end
+
+  test "keeps an abbreviated roman volume before a part label or release word" do
+    release = "Les Miserables T. V Partie 1 - Victor Hugo French EPUB"
+
+    assert_equal [ "5", "1" ], SequenceMarker.numbers(release)
+    assert_not SequenceMarker.conflict?("Les Mis\u00E9rables Tome 5 Partie 1", release)
+    assert_equal [ "5" ], SequenceMarker.numbers("Les Miserables T. V French EPUB")
+    assert_equal [ "1", "1" ], SequenceMarker.numbers("Les Miserables T. I Partie 1")
+    assert_empty SequenceMarker.numbers("T. C. Boyle Stories")
+    assert_empty SequenceMarker.numbers("T C Boyle Stories")
+  end
 end

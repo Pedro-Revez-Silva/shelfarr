@@ -1367,4 +1367,68 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       assert score.high_confidence?, "#{release_title} #{score.total}"
     end
   end
+
+  test "scores the author inside the title when only the volume marker differs" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(
+      title: "The Collected Works of C. G. Jung Volume 1",
+      author: "C. G. Jung",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(
+        title: "The Collected Works of C. G. Jung Band 1 - C. G. Jung English EPUB",
+        seeders: 50
+      ),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+  end
+
+  test "scores a curly apostrophe volume against a straight apostrophe release" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(
+      title: "L\u2019Attaque des Titans Volume 2",
+      author: "Hajime Isayama",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "L'Attaque des Titans Volume 2 - Hajime Isayama EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+  end
+
+  test "scores an abbreviated roman volume before a part label above the auto-select threshold" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(
+      title: "Les Mis\u00E9rables Tome 5 Partie 1",
+      author: "Victor Hugo",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "fr")
+    score = ReleaseScorer.score(
+      SearchResult.new(
+        title: "Les Miserables T. V Partie 1 - Victor Hugo French EPUB",
+        seeders: 50
+      ),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert score.breakdown[:auto_select_allowed], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+    assert score.high_confidence?, score.total.to_s
+  end
 end

@@ -3127,6 +3127,49 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "series 2", job.send(:normalized_search_title, "Series T02")
   end
 
+  test "keeps the original words beside a stripped single-letter roman for jackett" do
+    SettingsService.set(:indexer_provider, "jackett")
+    SettingsService.set(:jackett_url, "http://localhost:9117")
+    SettingsService.set(:jackett_api_key, "jackett-key")
+    SettingsService.set(:indexer_search_scope, "strict")
+    book = Book.create!(
+      title: "The Book I Wish You Had Read (and Your Children Will Be Glad That You Did)",
+      author: "Example Author",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+    queries = SearchJob.new.send(:generic_indexer_attempts, request).map(&:query)
+    release_title = "The Book I Wish You Had Read Example Author EPUB"
+
+    assert_includes queries, "the book i wish you had read"
+    assert_includes queries, "the 1 wish you had read"
+
+    empty_body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+        <channel></channel>
+      </rss>
+    XML
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .to_return(status: 200, body: empty_body, headers: { "Content-Type" => "application/xml" })
+      words_stub = stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with { |req| req.uri.query_values["q"] == "the book i wish you had read" }
+        .to_return(
+          status: 200,
+          body: jackett_result_xml(title: release_title, guid: "book-i-wish"),
+          headers: { "Content-Type" => "application/xml" }
+        )
+
+      SearchJob.perform_now(request.id)
+      request.reload
+
+      assert_requested words_stub
+      assert_includes request.search_results.pluck(:title), release_title
+    end
+  end
+
   private
 
   def tagged_indexer_result(guid:, title:)

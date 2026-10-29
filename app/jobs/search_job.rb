@@ -1010,7 +1010,9 @@ class SearchJob < ApplicationJob
       end
 
       attempts << build_search_attempt(:author_title, [ book.author, preferred_title, language_hint ])
-      attempts << build_search_attempt(:normalized_title, [ normalized_search_title(preferred_title), language_hint ])
+      normalized_search_queries(preferred_title).each do |normalized|
+        attempts << build_search_attempt(:normalized_title, [ normalized, language_hint ])
+      end
 
       numeric_title_variants(preferred_title).each do |title_variant|
         attempts << build_search_attempt(:number_variant, [ title_variant, language_hint ])
@@ -1136,8 +1138,16 @@ class SearchJob < ApplicationJob
   end
 
   def normalized_search_title(title)
+    normalized_search_queries(title).last.to_s
+  end
+
+  # Punctuation-normalized words stay searchable when stripping a marker would
+  # also delete an ordinary word ("Book I Wish" -> "1 Wish").
+  def normalized_search_queries(title)
     prepared = title.to_s.gsub(/\([^)]*\)|\[[^\]]*\]/, " ")
-    TitleKey.new(SequenceMarker.strip(prepared)).spaced
+    stripped = TitleKey.new(SequenceMarker.strip(prepared)).spaced
+    words = TitleKey.new(prepared).spaced
+    [ words, stripped ].compact_blank.uniq.presence || [ "" ]
   end
 
   def numeric_title_variants(title)

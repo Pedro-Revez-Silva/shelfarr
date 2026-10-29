@@ -42,15 +42,28 @@ class SequenceMarker
   NUMBER_WORD = NUMBER_WORDS.keys.join("|").freeze
   NUMERIC_NUMBER = "0*\\d+|#{ROMAN_NUMBER}"
   ANY_NUMBER = "#{NUMERIC_NUMBER}|#{NUMBER_WORD}"
+  # Words that follow "T V" in a release name, not an author credit.
+  FOLLOWER_WORDS = (
+    MARKER_WORDS + %w[
+      english dutch german french spanish italian portuguese russian japanese
+      korean chinese polish swedish danish norwegian finnish turkish arabic
+      hebrew hindi thai vietnamese czech hungarian romanian bulgarian
+      ukrainian greek epub pdf mobi azw azw3 ebook audiobook m4b mp3 flac
+      cbr cbz retail multi
+    ]
+  ).uniq.freeze
+  FOLLOWER_ALTERNATION = FOLLOWER_WORDS.sort_by { |word| -word.length }.join("|").freeze
+  GLUED_VOLUME_PATTERN = /\A(?:#{WORD_ALTERNATION}|t)(0*\d+)\z/
   private_constant :WORD_ALTERNATION, :ROMAN_NUMBER, :NUMBER_WORD, :NUMERIC_NUMBER, :ANY_NUMBER,
-    :ROMAN_VALUES, :ROMAN_GLYPHS
+    :ROMAN_VALUES, :ROMAN_GLYPHS, :FOLLOWER_WORDS, :FOLLOWER_ALTERNATION, :GLUED_VOLUME_PATTERN
 
   # Digits may be glued ("Vol2", "T2", "T.2", "T02"). A full word needs a
   # separator before a roman numeral or spelled number, so "Buchi" and "parti"
   # are not volumes. T.II / T II still count. An apostrophe belongs to the
   # word, so a marker cannot start inside "Don't". A single letter that
   # continues as another initial ("C. G." / "C G") is not a roman numeral.
-  # "T. C. Boyle" is an author initial, not tome 100.
+  # "T. C. Boyle" is an author initial, not tome 100. A part label or release
+  # word after "T V" is still a volume.
   MARKER_TEMPLATE = <<~'PATTERN'
     (?<![A-Za-z]['`´’‘])
     \b
@@ -59,18 +72,18 @@ class SequenceMarker
       |
       t[\s.\-]*(?=\d)
       |
-      t(?:\s+|\s*[.\-]\s*)(?=[ivxlcdm])(?![ivxlcdm][\s.\-_]+[a-z])
+      t(?:\s+|\s*[.\-]\s*)(?=[ivxlcdm])(?![ivxlcdm][\s.\-_]+(?!(?:%{followers})\b)[a-z])
     )
     (%{number})
     \b
     (?!(?<=\b[ivxlcdm])(?:\.\s*|\s+)[a-z](?:\.|\s))
   PATTERN
   FULL_PATTERN = Regexp.new(
-    format(MARKER_TEMPLATE, words: WORD_ALTERNATION, number: ANY_NUMBER),
+    format(MARKER_TEMPLATE, words: WORD_ALTERNATION, number: ANY_NUMBER, followers: FOLLOWER_ALTERNATION),
     Regexp::IGNORECASE | Regexp::EXTENDED
   ).freeze
   NUMERIC_PATTERN = Regexp.new(
-    format(MARKER_TEMPLATE, words: WORD_ALTERNATION, number: NUMERIC_NUMBER),
+    format(MARKER_TEMPLATE, words: WORD_ALTERNATION, number: NUMERIC_NUMBER, followers: FOLLOWER_ALTERNATION),
     Regexp::IGNORECASE | Regexp::EXTENDED
   ).freeze
   private_constant :MARKER_TEMPLATE, :FULL_PATTERN, :NUMERIC_PATTERN
@@ -148,13 +161,14 @@ class SequenceMarker
 
     private
 
-    # Exact phrases keep an apostrophe as its own token ("Shakespeare.s"), so a
-    # dotted release still protects the title's author.
+    # Exact phrases keep an apostrophe as its own token ("Shakespeare.s").
+    # Marker words are compared after sequence normalization ("Band" / "Volume")
+    # and the span stays on the source text.
     def phrase_spans(text, phrase)
-      phrases = TitleKey.new(phrase.to_s).forms.map(&:split).reject(&:empty?)
+      phrases = sequence_phrase_forms(phrase)
       return [] if phrases.empty?
 
-      tokens = normalized_source_tokens(text.to_s)
+      tokens = sequence_normalized_source_tokens(text.to_s)
       spans = phrases.flat_map do |wanted|
         tokens.each_cons(wanted.length).filter_map do |window|
           next unless window.map(&:first) == wanted
@@ -163,6 +177,96 @@ class SequenceMarker
         end
       end
       spans.uniq
+    end
+
+    def sequence_phrase_forms(phrase)
+      TitleKey.new(phrase.to_s).forms.filter_map do |form|
+        normalize_marker_tokens(form.split).presence
+      end
+    end
+
+    def sequence_normalized_source_tokens(text)
+      normalize_marker_tokens(normalized_source_tokens(text))
+    end
+
+    def normalize_marker_tokens(tokens)
+      result = []
+      index = 0
+      while index < tokens.length
+        raw = token_raw(tokens[index])
+        nxt = tokens[index + 1]
+        following = token_raw(tokens[index + 2]) if tokens[index + 2]
+        if nxt && volume_token_pair?(raw, token_raw(nxt), following)
+          result << token_with_text("volume", tokens[index])
+          result << token_with_text(normalize_number(token_raw(nxt)), nxt)
+          index += 2
+        elsif (number = glued_volume_number(raw))
+          result << token_with_text("volume", tokens[index])
+          result << token_with_text(number, tokens[index])
+          index += 1
+        else
+          result << token_with_text(token_compare(tokens[index]), tokens[index])
+          index += 1
+        end
+      end
+      result
+    end
+
+    def volume_token_pair?(word, number, following)
+      return false unless volume_number_token?(number)
+
+      if word == "t"
+        return false unless roman_or_digit?(number)
+        return false if single_roman_letter?(number) && author_initial_follower?(following)
+      else
+        return false unless MARKER_WORDS.include?(word)
+        return false if single_roman_letter?(number) && another_initial?(following)
+      end
+
+      true
+    end
+
+    def author_initial_follower?(following)
+      another_initial?(following) || author_credit_word?(following)
+    end
+
+    def another_initial?(following)
+      following.to_s.match?(/\A[a-z]\z/)
+    end
+
+    def author_credit_word?(following)
+      return false if following.blank? || !following.match?(/\A[a-z]/)
+
+      !FOLLOWER_WORDS.include?(following)
+    end
+
+    def volume_number_token?(token)
+      roman_or_digit?(token) || NUMBER_WORDS.key?(token)
+    end
+
+    def roman_or_digit?(token)
+      token.match?(/\A\d+\z/) || ROMAN_VALUES.key?(token)
+    end
+
+    def single_roman_letter?(token)
+      token.length == 1 && ROMAN_VALUES.key?(token)
+    end
+
+    def glued_volume_number(token)
+      match = token.match(GLUED_VOLUME_PATTERN)
+      normalize_number(match[1]) if match
+    end
+
+    def token_raw(token)
+      token.is_a?(Array) ? token[3] : token
+    end
+
+    def token_compare(token)
+      token.is_a?(Array) ? token[0] : token
+    end
+
+    def token_with_text(text, token)
+      token.is_a?(Array) ? [ text, token[1], token[2] ] : text
     end
 
     # "C G Jung" and "C. Jung" credit Carl Gustav Jung. Mask them before a
@@ -180,7 +284,7 @@ class SequenceMarker
       patterns.each do |pattern|
         text.to_enum(:scan, pattern).each do
           match = Regexp.last_match
-          span = char_offset(text, match.begin(0))...char_offset(text, match.end(0))
+          span = match.begin(0)...match.end(0)
           spans << span unless spans.any? { |existing| spans_overlap?(existing, span) }
         end
       end
@@ -225,7 +329,8 @@ class SequenceMarker
         tokens << [
           TitleKey.new(match[0]).canonical,
           offsets[match.begin(0)],
-          offsets[match.end(0) - 1] + 1
+          offsets[match.end(0) - 1] + 1,
+          match[0]
         ]
       end
       tokens
@@ -241,11 +346,7 @@ class SequenceMarker
       replacements = []
       scan.scan(pattern) do
         match = Regexp.last_match
-        replacements << [
-          char_offset(scan, match.begin(0)),
-          char_offset(scan, match.end(0)),
-          normalize_number(match[1])
-        ]
+        replacements << [ match.begin(0), match.end(0), normalize_number(match[1]) ]
       end
 
       result = source.dup
@@ -259,10 +360,6 @@ class SequenceMarker
     # stays aligned with the source so only the marker span is rewritten.
     def marker_text(text)
       TitleKey.normalize_marker_boundaries(text.to_s)
-    end
-
-    def char_offset(text, byte_index)
-      text.byteslice(0, byte_index).length
     end
 
     def normalize_number(value)
