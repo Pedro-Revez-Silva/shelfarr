@@ -1522,6 +1522,30 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_raises(ActiveRecord::RecordNotDestroyed) { @book.reload.destroy! }
   end
 
+  test "directory move recovery releases the cleanup claim when the source parent is already gone" do
+    external_id = "d4" * 20
+    client = interrupt_directory_move_before_source_deletion(external_id: external_id)
+    library_file = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    File.binwrite(library_file, "tagged by the operator")
+    FileUtils.rm_rf(@temp_download_base)
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert_equal "tagged by the operator", File.binread(library_file)
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_not @request.reload.post_processing_recovery_pending?
+    assert_not @book.reload.post_processing_recovery_pending?
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+    assert_nothing_raised { @request.destroy! }
+    assert_nothing_raised { @book.destroy! }
+  end
+
   test "move import removes the source on NFS EINVAL when non-atomic publication is enabled" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "move")

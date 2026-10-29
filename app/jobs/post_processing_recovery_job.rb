@@ -134,7 +134,12 @@ class PostProcessingRecoveryJob < ApplicationJob
   end
 
   def directory_quarantine_unresolved?(payload)
-    PostProcessingJob.directory_source_quarantine_pending?(payload) != false
+    pending = PostProcessingJob.directory_source_quarantine_pending?(payload)
+    return false if pending == false
+    # The snapshotted parent is gone, so it cannot still hide the quarantine.
+    return false if RemoteResult.failed?(pending) && pending.error.is_a?(Errno::ENOENT)
+
+    true
   end
 
   def recover(download)
