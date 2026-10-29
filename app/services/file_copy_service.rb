@@ -1531,7 +1531,8 @@ class FileCopyService
     end
 
     # Put an owned quarantine back when deletion is no longer allowed.
-    # An entry already at the original path is left in place.
+    # Inode-matched child quarantine names are restored before the root is
+    # published. An entry already at the original path is left in place.
     def restore_owned_source_tree(source_root, allow_nonatomic:)
       with_pinned_absolute_directory(source_root.canonical_parent_path) do |parent|
         unless file_identity(parent.stat) == [ source_root.parent_device, source_root.parent_inode ]
@@ -1547,6 +1548,14 @@ class FileCopyService
         unless source_tree_directory_identity(parent, source_basename) == :missing
           return RemoteResult::Failed.new(Errno::EEXIST.new("source path is occupied"))
         end
+
+        restored_children = restore_quarantined_child_names!(
+          parent,
+          quarantine_basename,
+          source_root.entries,
+          allow_nonatomic: allow_nonatomic
+        )
+        return restored_children unless restored_children == true
 
         restored = rename_entry_noreplace(
           parent,
@@ -1577,6 +1586,14 @@ class FileCopyService
       end
     rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR, Errno::ESTALE, UnsafePathError => error
       RemoteResult::Failed.new(error)
+    end
+
+    def source_parent_missing?(source_root)
+      with_pinned_absolute_directory(source_root.canonical_parent_path) do |_parent|
+        false
+      end
+    rescue Errno::ENOENT
+      true
     end
 
     def secure_library_file!(path, root: nil, require_durable: false)
@@ -4253,6 +4270,157 @@ class FileCopyService
       native_unlinkat(parent.fileno, quarantine_basename, AT_REMOVEDIR)
       sync_io(parent)
       true
+    end
+
+    def restore_quarantined_child_names!(parent, quarantine_basename, expected_entries, allow_nonatomic:)
+      with_pinned_relative_directory(parent, Pathname(quarantine_basename), create: false) do |quarantine, _created|
+        restore_inode_matched_children!(
+          quarantine,
+          expected_entries,
+          allow_nonatomic: allow_nonatomic
+        )
+      end
+    rescue Errno::ENOENT, Errno::EEXIST => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def restore_inode_matched_children!(directory, expected_entries, allow_nonatomic:, prefix: nil)
+      children = pinned_directory_children(directory)
+      expected_children = source_tree_child_names(expected_entries, prefix)
+      quarantined_names, plain_names = children.partition do |name|
+        SOURCE_TREE_CHILD_QUARANTINE_PATTERN.match?(name)
+      end
+      matches = match_child_quarantine_names(
+        directory,
+        quarantined_names,
+        expected_children,
+        expected_entries,
+        prefix,
+        plain_names
+      )
+      return child_restore_conflict unless matches
+
+      plain_names.each do |name|
+        result = restore_present_child_directory!(
+          directory,
+          name,
+          expected_children,
+          expected_entries,
+          prefix,
+          allow_nonatomic: allow_nonatomic
+        )
+        return result unless result == true
+      end
+
+      matches.each do |quarantine_name, original_name|
+        result = restore_matched_child_quarantine!(
+          directory,
+          quarantine_name,
+          original_name,
+          expected_entries,
+          prefix,
+          allow_nonatomic: allow_nonatomic
+        )
+        return result unless result == true
+      end
+
+      if pinned_directory_children(directory).any? { |name| SOURCE_TREE_CHILD_QUARANTINE_PATTERN.match?(name) }
+        return child_restore_conflict
+      end
+
+      sync_io(directory)
+      true
+    end
+
+    def restore_present_child_directory!(
+      directory,
+      name,
+      expected_children,
+      expected_entries,
+      prefix,
+      allow_nonatomic:
+    )
+      return true unless expected_children.include?(name)
+
+      relative = source_tree_relative(prefix, name)
+      expected = expected_entries.fetch(relative.to_s)
+      return true unless expected[2] == :directory && child_matches_snapshot?(directory, name, expected)
+
+      with_pinned_relative_directory(directory, Pathname(name), create: false) do |child, _created|
+        restore_inode_matched_children!(
+          child,
+          expected_entries,
+          allow_nonatomic: allow_nonatomic,
+          prefix: relative
+        )
+      end
+    end
+
+    def restore_matched_child_quarantine!(
+      directory,
+      quarantine_name,
+      original_name,
+      expected_entries,
+      prefix,
+      allow_nonatomic:
+    )
+      relative = source_tree_relative(prefix, original_name)
+      expected = expected_entries.fetch(relative.to_s)
+      if expected[2] == :directory
+        restored = with_pinned_relative_directory(directory, Pathname(quarantine_name), create: false) do |child, _created|
+          restore_inode_matched_children!(
+            child,
+            expected_entries,
+            allow_nonatomic: allow_nonatomic,
+            prefix: relative
+          )
+        end
+        return restored unless restored == true
+      end
+
+      renamed = rename_entry_noreplace(
+        directory,
+        quarantine_name,
+        original_name,
+        allow_nonatomic: allow_nonatomic,
+        directory: expected[2] == :directory
+      )
+      return child_restore_conflict unless renamed && child_matches_snapshot?(directory, original_name, expected)
+
+      true
+    end
+
+    def match_child_quarantine_names(
+      directory,
+      quarantined_names,
+      expected_children,
+      expected_entries,
+      prefix,
+      plain_names
+    )
+      used = {}
+      quarantined_names.map do |quarantine_name|
+        identity, type = pinned_child_type_and_identity(directory, quarantine_name)
+        match = expected_children.find do |name|
+          next if used[name] || plain_names.include?(name)
+
+          expected = expected_entries.fetch(source_tree_relative(prefix, name).to_s)
+          type && identity == expected.first(2) && type == expected[2]
+        end
+        return nil unless match
+
+        used[match] = true
+        [ quarantine_name, match ]
+      end
+    end
+
+    def child_matches_snapshot?(parent, basename, expected)
+      identity, type = pinned_child_type_and_identity(parent, basename)
+      type == expected[2] && identity == expected.first(2)
+    end
+
+    def child_restore_conflict
+      RemoteResult::Failed.new(Errno::EEXIST.new("source child quarantine could not be restored"))
     end
 
     def source_tree_quarantine_basename(device, inode)

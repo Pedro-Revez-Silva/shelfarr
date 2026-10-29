@@ -4778,6 +4778,46 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_not File.exist?(quarantine_path)
   end
 
+  test "restore_owned_source_tree restores child quarantine names before publishing the root" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(File.join(source_root_path, "Disc One"))
+    File.binwrite(File.join(source_root_path, "book.epub"), "epub bytes")
+    File.binwrite(File.join(source_root_path, "Disc One", "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    quarantine_path = source_tree_quarantine_path(snapshot)
+    File.rename(source_root_path, quarantine_path)
+    nested_quarantine = File.join(quarantine_path, ".shelfarr-remove-child-#{SecureRandom.hex(16)}")
+    File.rename(File.join(quarantine_path, "Disc One"), nested_quarantine)
+    File.rename(
+      File.join(nested_quarantine, "chapter.mp3"),
+      File.join(nested_quarantine, ".shelfarr-remove-child-#{SecureRandom.hex(16)}")
+    )
+    File.rename(
+      File.join(quarantine_path, "book.epub"),
+      File.join(quarantine_path, ".shelfarr-remove-child-#{SecureRandom.hex(16)}")
+    )
+    real_rename = FileCopyService.method(:native_rename_noreplace)
+
+    result = FileCopyService.stub(:native_rename_noreplace, lambda { |source_fd, source_name, destination_fd, destination_name|
+      if source_name.to_s.start_with?(".shelfarr-remove-") &&
+          !source_name.to_s.start_with?(".shelfarr-remove-child-")
+        false
+      else
+        real_rename.call(source_fd, source_name, destination_fd, destination_name)
+      end
+    }) do
+      FileCopyService.restore_owned_source_tree(snapshot, allow_nonatomic: false)
+    end
+
+    assert RemoteResult.failed?(result)
+    assert File.directory?(quarantine_path)
+    assert_not File.exist?(source_root_path)
+    assert_equal [ "Disc One", "book.epub" ], Dir.children(quarantine_path).sort
+    assert_equal [ "chapter.mp3" ], Dir.children(File.join(quarantine_path, "Disc One"))
+    assert_equal "epub bytes", File.binread(File.join(quarantine_path, "book.epub"))
+    assert_equal "chapter", File.binread(File.join(quarantine_path, "Disc One", "chapter.mp3"))
+  end
+
   test "create_private_directory creates a pinned owner-only child" do
     parent = File.join(@dest_dir, "private-staging")
 

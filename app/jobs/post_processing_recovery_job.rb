@@ -114,23 +114,34 @@ class PostProcessingRecoveryJob < ApplicationJob
 
   # Recovery has to finish the stored tree deletion before the client id is released.
   # A retained result is terminal only once no owned quarantine is still hidden.
+  # A cleanup failure is terminal only when the snapshotted parent directory is gone.
   def recover_directory_source_cleanup(download, payload, cleanup_state)
     removed = PostProcessingJob.remove_persisted_directory_source(payload)
-    if removed == false && directory_quarantine_unresolved?(payload)
-      Rails.logger.warn(
-        "[PostProcessingRecoveryJob] Source directory remains quarantined for download ##{download.id}; cleanup will retry"
-      )
-      Download.where(id: download.id, post_processing_cleanup_state: cleanup_state)
-        .update_all(updated_at: Time.current)
-      return
-    end
-    unless removed == true || removed == false
+    if directory_cleanup_pending?(removed, payload)
+      if removed == false
+        Rails.logger.warn(
+          "[PostProcessingRecoveryJob] Source directory remains quarantined for download ##{download.id}; cleanup will retry"
+        )
+      end
       Download.where(id: download.id, post_processing_cleanup_state: cleanup_state)
         .update_all(updated_at: Time.current)
       return
     end
 
     Download.clear_post_processing_cleanup!(download.id, cleanup_state)
+  end
+
+  def directory_cleanup_pending?(removed, payload)
+    return false if removed == true
+    return directory_quarantine_unresolved?(payload) if removed == false
+    return false if source_parent_confirmed_absent?(payload)
+
+    true
+  end
+
+  def source_parent_confirmed_absent?(payload)
+    source_root = FileCopyService.deserialize_source_root(payload.fetch("source_root"))
+    FileCopyService.source_parent_missing?(source_root) == true
   end
 
   def directory_quarantine_unresolved?(payload)
