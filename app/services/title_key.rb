@@ -58,14 +58,14 @@ class TitleKey
   end
 
   # Exact phrases split on every non-letter, including underscores. Marker
-  # parsing keeps the preserved characters so "Don't" stays one word and a
-  # wrapped year is not read as a volume.
+  # parsing keeps apostrophes, wrapped years, and dots, so "Don't" stays one
+  # word, "(1894)" is not a volume, and "C. G." is not a roman numeral.
   def self.normalize_boundaries(text, preserve: "")
     text.to_s.gsub(/[^A-Za-z0-9]/) { |char| preserve.include?(char) ? char : " " }
   end
 
   def self.normalize_marker_boundaries(text)
-    normalize_boundaries(text, preserve: "#{QUOTE_CHARACTERS}()[]")
+    normalize_boundaries(text, preserve: "#{QUOTE_CHARACTERS}()[].")
   end
 
   private

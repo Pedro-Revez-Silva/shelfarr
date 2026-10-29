@@ -527,6 +527,23 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert_nil result.book
   end
 
+  test "matches dotted author initials without reading them as a volume" do
+    existing_book = Book.create!(
+      title: "The Red Book C. G. Jung",
+      author: "Carl Gustav Jung",
+      book_type: :ebook
+    )
+
+    result = BookMatcherService.match(
+      title: "The Red Book C.G. Jung",
+      author: "Carl Gustav Jung",
+      book_type: :ebook
+    )
+
+    assert result.fuzzy?, "got #{result.match_type} with score #{result.score}"
+    assert_equal existing_book, result.book
+  end
+
   test "does not treat an unnumbered marker word as a volume" do
     brothers = Book.create!(
       title: "Band of Brothers",

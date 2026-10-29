@@ -154,12 +154,10 @@ class BookMatcherService
     def normalize(text)
       return "" if text.blank?
 
-      # Punctuation is folded before marker words so similarity and the volume
-      # conflict check share one string ("Vol. #2" and "Volume 2").
-      folded = TitleKey.new(
-        SequenceMarker.separate_marker_punctuation(text.to_s.gsub("&", " and "))
-      ).collapsed
-      SequenceMarker.rewrite(folded)
+      # Read the marker while dots remain, then fold punctuation. "Vol. #2" and
+      # "Volume 2" still share one string, and "C. G." is not volume 100.
+      prepared = SequenceMarker.separate_marker_punctuation(text.to_s.gsub("&", " and "))
+      TitleKey.new(SequenceMarker.rewrite(prepared)).collapsed
     end
 
     def string_similarity(str1, str2)
