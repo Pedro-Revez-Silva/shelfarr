@@ -89,6 +89,10 @@ class PostProcessingRecoveryJob < ApplicationJob
 
   def recover_locked_source_cleanup(download, cleanup_state)
     payload = JSON.parse(cleanup_state)
+    if payload["imported_file_snapshots"]
+      recover_partial_directory_cleanup(download, payload, cleanup_state)
+      return
+    end
     if payload["source_root"]
       recover_directory_source_cleanup(download, payload, cleanup_state)
       return
@@ -163,6 +167,31 @@ class PostProcessingRecoveryJob < ApplicationJob
       source_parent_confirmed_absent?(payload)
 
     true
+  end
+
+  def recover_partial_directory_cleanup(download, payload, cleanup_state)
+    removed = PostProcessingJob.remove_persisted_directory_source(payload)
+    if removed == :retry || RemoteResult.failed?(removed)
+      Download.where(id: download.id, post_processing_cleanup_state: cleanup_state)
+        .update_all(updated_at: Time.current)
+      return
+    end
+    unless removed == true
+      Rails.logger.warn(
+        "[PostProcessingRecoveryJob] Partial source cleanup was no longer safe for download ##{download.id}; it was retained"
+      )
+      clear_cleanup_state(download, cleanup_state)
+      return
+    end
+
+    if payload["client_cleanup"]
+      PostProcessingJob.resume_persisted_client_cleanup(download, payload["client_cleanup"])
+    end
+    clear_cleanup_state(download, cleanup_state)
+  end
+
+  def clear_cleanup_state(download, cleanup_state)
+    Download.clear_post_processing_cleanup!(download.id, cleanup_state)
   end
 
   def recover(download)

@@ -5143,6 +5143,10 @@ class FileCopyService
       raise Errno::ESTALE, "destination directory changed during publication"
     end
 
+    def removal_precondition_met?(before_remove)
+      before_remove.nil? || RemoteResult.succeeded?(before_remove.call)
+    end
+
     def remove_pinned_child_if_identity(
       parent,
       basename,
@@ -5199,7 +5203,7 @@ class FileCopyService
               if digest && !pinned_content_matches?(child, digest, expected_size)
                 restore_quarantined_child!(quarantine, parent, basename)
                 :mismatch
-              elsif before_remove && !before_remove.call
+              elsif !removal_precondition_met?(before_remove)
                 restore_quarantined_child!(quarantine, parent, basename)
                 :mismatch
               else
@@ -5368,7 +5372,7 @@ class FileCopyService
           end
           next unless matches
 
-          if before_remove && !before_remove.call
+          unless removal_precondition_met?(before_remove)
             restore_quarantined_child!(quarantine, parent, original_basename)
             remove_empty_cleanup_quarantine!(
               parent,
