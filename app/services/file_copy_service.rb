@@ -2593,12 +2593,55 @@ class FileCopyService
         end
         unless cleanup.in?([ :removed, :missing ])
           if in_flight_error
-            Rails.logger.warn("[FileCopyService] Retained a hardlink identity probe after capability failure")
+            Rails.logger.warn(
+              "[FileCopyService] Retained a hardlink identity probe after capability failure: " \
+                "#{hardlink_probe_removal_failure(cleanup, cleanup_error)}"
+            )
           else
-            raise cleanup_error || UnsafePathError,
-              "hardlink identity probe could not be removed safely"
+            raise_unremoved_hardlink_probe!(cleanup, cleanup_error)
           end
         end
+      end
+    end
+
+    def raise_unremoved_hardlink_probe!(cleanup, cleanup_error)
+      message = "hardlink identity probe could not be removed safely: " \
+        "#{hardlink_probe_removal_failure(cleanup, cleanup_error)}"
+      unless cleanup_error
+        raise UnsafePathError, message
+      end
+
+      failure = cleanup_error.exception(message)
+      failure = cleanup_error.class.new(message) if failure.equal?(cleanup_error)
+      raise failure, cause: cleanup_error
+    end
+
+    def hardlink_probe_removal_failure(cleanup, error)
+      return cleanup.to_s unless error
+
+      case error
+      when UnsafeFilePermissionsError
+        "mode"
+      when Errno::ELOOP, Errno::ENOTDIR
+        "symlink/non-directory"
+      when SystemCallError
+        error.class.name
+      when UnsafePathError
+        hardlink_probe_path_failure(error.message.to_s)
+      else
+        error.class.name
+      end
+    end
+
+    def hardlink_probe_path_failure(message)
+      if message.include?("owned by another user")
+        "ownership"
+      elsif message.match?(/symbolic link|non-directory|non-regular|not a regular file/)
+        "symlink/non-directory"
+      elsif message.include?("mismatched cleanup entry was retained")
+        "retained cleanup entry"
+      else
+        "unsafe path"
       end
     end
 

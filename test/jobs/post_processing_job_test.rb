@@ -572,6 +572,56 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
   end
 
+  test "copy and reference imports do not run the hardlink identity probe" do
+    SettingsService.set(:audiobookshelf_url, "")
+    probe = ->(*) { flunk "the hardlink identity probe runs only when the import hardlinks" }
+    source = File.join(@temp_source, "audiobook.mp3")
+    destination = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+
+    FileCopyService.stub(:verify_hardlink_identity_support!, probe) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert File.file?(destination)
+    refute_equal [ File.stat(source).dev, File.stat(source).ino ],
+      [ File.stat(destination).dev, File.stat(destination).ino ]
+
+    FileUtils.rm_rf(File.dirname(destination))
+    @request.update!(status: :downloading, issue_description: nil)
+    @download.update!(status: :completed, post_processing_job_id: nil)
+    SettingsService.set(:completed_download_import_mode, "reference")
+
+    FileCopyService.stub(:verify_hardlink_identity_support!, probe) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert File.symlink?(destination)
+    assert_equal Pathname(source).expand_path.to_s, File.readlink(destination)
+  end
+
+  test "hardlink imports run the hardlink identity probe" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    probed = false
+    real_probe = FileCopyService.method(:verify_hardlink_identity_support!)
+
+    FileCopyService.stub(:verify_hardlink_identity_support!, ->(*arguments) {
+      probed = true
+      real_probe.call(*arguments)
+    }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert probed
+    assert @request.reload.completed?, @request.issue_description
+    source = File.join(@temp_source, "audiobook.mp3")
+    destination = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    assert_equal [ File.stat(source).dev, File.stat(source).ino ],
+      [ File.stat(destination).dev, File.stat(destination).ino ]
+  end
+
   test "hardlinks directory imports and retains the source without scheduling cleanup" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "hardlink")

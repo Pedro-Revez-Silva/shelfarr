@@ -1971,6 +1971,108 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@dest_dir)
   end
 
+  test "hardlink identity probe cleanup names a mismatched probe" do
+    real_remove = FileCopyService.method(:remove_pinned_child_if_identity)
+    FileCopyService.stub(:remove_pinned_child_if_identity, lambda { |*arguments, **keywords|
+      _parent, basename, = arguments
+      replace_hardlink_probe(basename) { |path| File.write(path, "replacement probe") }
+      real_remove.call(*arguments, **keywords)
+    }) do
+      error = assert_hardlink_probe_removal_error("mismatch")
+
+      assert_instance_of FileCopyService::UnsafePathError, error
+      assert_nil error.cause
+    end
+  end
+
+  test "hardlink identity probe cleanup names a retained probe" do
+    real_remove = FileCopyService.method(:remove_pinned_child_if_identity)
+    FileCopyService.stub(:remove_pinned_child_if_identity, lambda { |*arguments, **keywords|
+      _parent, basename, = arguments
+      replace_hardlink_probe(basename) { |path| File.symlink(@src_file, path) }
+      real_remove.call(*arguments, **keywords)
+    }) do
+      error = assert_hardlink_probe_removal_error("retained")
+
+      assert_instance_of FileCopyService::UnsafePathError, error
+      assert_nil error.cause
+    end
+  end
+
+  test "hardlink identity probe cleanup names quarantine ownership and keeps its cause" do
+    FileCopyService.stub(:private_entry_owned_by_process?, ->(*) { false }) do
+      error = assert_hardlink_probe_removal_error("ownership")
+
+      assert_instance_of FileCopyService::UnsafePathError, error
+      assert_instance_of FileCopyService::UnsafePathError, error.cause
+      assert_equal "cleanup quarantine is owned by another user", error.cause.message
+    end
+  end
+
+  test "hardlink identity probe cleanup names an unsafe quarantine mode and keeps its cause" do
+    real_fchmod = FileCopyService.method(:native_fchmod)
+    FileCopyService.stub(:native_fchmod, ->(descriptor, _mode) { real_fchmod.call(descriptor, 0o600) }) do
+      error = assert_hardlink_probe_removal_error("mode")
+
+      assert_instance_of FileCopyService::UnsafeFilePermissionsError, error
+      assert_instance_of FileCopyService::UnsafeFilePermissionsError, error.cause
+      assert_equal "filesystem did not preserve safe directory permissions", error.cause.message
+    end
+  end
+
+  test "hardlink identity probe cleanup names a non-directory quarantine and keeps its cause" do
+    real_mkdir = FileCopyService.method(:native_mkdirat)
+    FileCopyService.stub(:native_mkdirat, lambda { |directory_fd, basename, mode|
+      result = real_mkdir.call(directory_fd, basename, mode)
+      next result unless basename.start_with?(".shelfarr-copy-quarantine-")
+
+      path = File.join(@dest_dir, basename)
+      FileUtils.rm_rf(path)
+      File.write(path, "not a directory")
+      result
+    }) do
+      error = assert_hardlink_probe_removal_error("symlink/non-directory")
+
+      assert_instance_of FileCopyService::UnsafePathError, error
+      assert_equal "destination contains a symbolic link or non-directory component", error.cause.message
+    end
+  end
+
+  test "hardlink identity probe cleanup names a cross-device removal failure and keeps its cause" do
+    FileCopyService.stub(:native_renameat, ->(*) { raise Errno::EXDEV, "cross-device link" }) do
+      error = assert_hardlink_probe_removal_error("Errno::EXDEV")
+
+      assert_instance_of Errno::EXDEV, error
+      assert_instance_of Errno::EXDEV, error.cause
+      assert_match(/cross-device link/, error.cause.message)
+    end
+  end
+
+  test "hardlink identity probe cleanup names a retained mismatched cleanup entry and keeps its cause" do
+    with_replaced_quarantine_entry do
+      FileCopyService.stub(:native_rename_noreplace, ->(*) { false }) do
+        error = assert_hardlink_probe_removal_error("retained cleanup entry")
+
+        assert_instance_of FileCopyService::UnsafePathError, error
+        assert_equal "mismatched cleanup entry was retained in quarantine", error.cause.message
+      end
+    end
+  end
+
+  test "hardlink identity probe cleanup names an occupied retained cleanup entry and keeps its cause" do
+    with_replaced_quarantine_entry do
+      FileCopyService.stub(:native_rename_noreplace, ->(*) { raise Errno::EEXIST }) do
+        error = assert_hardlink_probe_removal_error("retained cleanup entry")
+
+        assert_instance_of FileCopyService::UnsafePathError, error
+        assert_equal(
+          "mismatched cleanup entry was retained because its original path is occupied",
+          error.cause.message
+        )
+      end
+    end
+  end
+
   test "hardlink_noreplace preserves its typed fallback error when teardown is deferred" do
     destination = File.join(@dest_dir, "hardlinked.txt")
     capability_failure = lambda do |*|
@@ -5225,6 +5327,50 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
 
     FileCopyService.stub(:native_rename_noreplace, fallback, &operation)
+  end
+
+  def assert_hardlink_probe_removal_error(detail)
+    destination = File.join(@dest_dir, "hardlinked.txt")
+    error = FileCopyService.stub(:native_linkat, ->(*) {
+      flunk "hardlink identity probe cleanup must fail before the source is linked"
+    }) do
+      assert_raises(StandardError) do
+        FileCopyService.hardlink_noreplace(
+          @src_file,
+          destination,
+          root: @dest_dir,
+          source_root: nil
+        )
+      end
+    end
+
+    assert_equal "hardlink identity probe could not be removed safely: #{detail}", error.message
+    assert_not File.exist?(destination)
+    assert_equal 1, File.stat(@src_file).nlink
+    error
+  end
+
+  def replace_hardlink_probe(basename)
+    return unless basename.start_with?(".shelfarr-hardlink-probe-")
+
+    path = File.join(@dest_dir, basename)
+    return unless File.exist?(path) || File.symlink?(path)
+
+    File.unlink(path)
+    yield path
+  end
+
+  def with_replaced_quarantine_entry(&operation)
+    real_renameat = FileCopyService.method(:native_renameat)
+    FileCopyService.stub(:native_renameat, lambda { |source_fd, source_name, destination_fd, destination_name|
+      real_renameat.call(source_fd, source_name, destination_fd, destination_name)
+      next unless destination_name == FileCopyService::COPY_QUARANTINE_ENTRY
+
+      quarantine = Dir.children(@dest_dir).grep(/\A\.shelfarr-copy-quarantine-/).sole
+      entry = File.join(@dest_dir, quarantine, FileCopyService::COPY_QUARANTINE_ENTRY)
+      File.unlink(entry)
+      File.write(entry, "replacement quarantine entry")
+    }, &operation)
   end
 
   def copy_quarantine_path(expected_stat, token)
