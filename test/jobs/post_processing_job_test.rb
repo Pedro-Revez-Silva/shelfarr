@@ -1689,6 +1689,165 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_raises(ActiveRecord::RecordNotDestroyed) { @book.reload.destroy! }
   end
 
+  test "directory move recovery keeps the cleanup claim when the download filesystem is not mounted" do
+    category = File.join(@temp_download_base, "shelfarr")
+    nested_source = File.join(category, "Book")
+    FileUtils.mkdir_p(category)
+    FileUtils.mv(@temp_source, nested_source)
+    @temp_source = nested_source
+    @download.update!(download_path: @temp_source)
+    external_id = "f1" * 20
+    client = interrupt_directory_move_before_source_deletion(external_id: external_id)
+    source_stat = File.stat(@temp_source)
+    quarantine_name = ".shelfarr-remove-#{source_stat.dev.to_s(16)}-#{source_stat.ino.to_s(16)}"
+    quarantine = File.join(category, quarantine_name)
+    File.rename(@temp_source, quarantine)
+    original_state = @download.reload.post_processing_cleanup_state
+    hidden_disk = Dir.mktmpdir("unmounted-download")
+    preserved = File.join(hidden_disk, "shelfarr")
+    FileUtils.mv(category, preserved)
+    payload = JSON.parse(original_state)
+    # The mountpoint is still here, on a different device than the snapshot.
+    payload["source_root"]["parent_device"] = File.stat(@temp_download_base).dev + 1
+    @download.update!(post_processing_cleanup_state: JSON.generate(payload))
+    assert File.directory?(@temp_download_base)
+    assert_not File.exist?(category)
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert File.directory?(File.join(preserved, quarantine_name))
+    assert_equal "chapter audio", File.binread(File.join(preserved, quarantine_name, "Disc One", "chapter.mp3"))
+    assert @download.reload.post_processing_cleanup_state.present?
+    assert_nil @download.external_id_released_at
+    assert @request.reload.post_processing_recovery_pending?
+    assert_equal @download.id, DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )&.id
+
+    FileUtils.mv(preserved, category)
+    @download.update!(post_processing_cleanup_state: original_state)
+    PostProcessingRecoveryJob.perform_now
+
+    assert_not File.exist?(quarantine)
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+  ensure
+    FileUtils.rm_rf(hidden_disk) if hidden_disk
+  end
+
+  test "directory move recovery restores quarantined child names when the owned source file changed" do
+    external_id = "f2" * 20
+    client = interrupt_directory_move_before_source_deletion(external_id: external_id)
+    source_stat = File.stat(@temp_source)
+    quarantine = File.join(
+      @temp_download_base,
+      ".shelfarr-remove-#{source_stat.dev.to_s(16)}-#{source_stat.ino.to_s(16)}"
+    )
+    File.rename(@temp_source, quarantine)
+    disc_quarantine = File.join(quarantine, ".shelfarr-remove-child-#{SecureRandom.hex(16)}")
+    File.rename(File.join(quarantine, "Disc One"), disc_quarantine)
+    chapter_quarantine = File.join(disc_quarantine, ".shelfarr-remove-child-#{SecureRandom.hex(16)}")
+    File.rename(File.join(disc_quarantine, "chapter.mp3"), chapter_quarantine)
+    File.binwrite(chapter_quarantine, "tagged chapter")
+    library = File.join(@temp_dest_base, @book.author, @book.title)
+    assert_equal "chapter audio", File.binread(File.join(library, "Disc One", "chapter.mp3"))
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert_not File.exist?(quarantine)
+    assert_equal [ "Disc One", "audiobook.mp3" ], Dir.children(@temp_source).sort
+    assert_equal [ "chapter.mp3" ], Dir.children(File.join(@temp_source, "Disc One"))
+    assert_equal "tagged chapter", File.binread(File.join(@temp_source, "Disc One", "chapter.mp3"))
+    assert_equal "test audio content", File.binread(File.join(@temp_source, "audiobook.mp3"))
+    assert_equal "chapter audio", File.binread(File.join(library, "Disc One", "chapter.mp3"))
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_not @request.reload.post_processing_recovery_pending?
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+  end
+
+  test "directory move keeps the cleanup claim when a child rename raises ENOENT" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    nested = File.join(@temp_source, "Disc One")
+    FileUtils.mkdir_p(nested)
+    File.write(File.join(nested, "chapter.mp3"), "chapter audio")
+    client = DownloadClient.create!(
+      name: "Directory move child ENOENT",
+      client_type: "transmission",
+      url: "http://localhost:9091",
+      username: "transmission",
+      password: "transmission"
+    )
+    external_id = "f3" * 20
+    @download.update!(
+      download_client: client,
+      download_type: "torrent",
+      external_id: external_id
+    )
+    source_stat = File.stat(@temp_source)
+    quarantine = File.join(
+      @temp_download_base,
+      ".shelfarr-remove-#{source_stat.dev.to_s(16)}-#{source_stat.ino.to_s(16)}"
+    )
+    real_rename = FileCopyService.method(:native_rename_noreplace)
+
+    FileCopyService.stub(:native_rename_noreplace, lambda { |source_fd, source_name, destination_fd, destination_name|
+      if destination_name.to_s.start_with?(".shelfarr-remove-child-")
+        raise Errno::ENOENT, "missing child"
+      end
+
+      real_rename.call(source_fd, source_name, destination_fd, destination_name)
+    }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.completed?
+    assert File.directory?(quarantine)
+    assert_equal "chapter audio", File.binread(File.join(quarantine, "Disc One", "chapter.mp3"))
+    assert @download.reload.post_processing_cleanup_state.present?
+    assert_nil @download.external_id_released_at
+    assert_equal @download.id, DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )&.id
+    assert_raises(ActiveRecord::RecordNotDestroyed) { @request.destroy! }
+  end
+
+  test "directory cleanup recovery holds the post-processing lock while deleting" do
+    external_id = "f4" * 20
+    interrupt_directory_move_before_source_deletion(external_id: external_id)
+    held_during_delete = false
+    real_remove = FileCopyService.method(:remove_source_tree)
+
+    FileCopyService.stub(:remove_source_tree, lambda { |source_root, allow_nonatomic: false|
+      held_during_delete = post_processing_lock_busy?(@download.id)
+      real_remove.call(source_root, allow_nonatomic: allow_nonatomic)
+    }) do
+      PostProcessingRecoveryJob.perform_now
+    end
+
+    assert held_during_delete
+    assert_not File.exist?(@temp_source)
+    assert_nil @download.reload.post_processing_cleanup_state
+  end
+
   test "move import removes the source on NFS EINVAL when non-atomic publication is enabled" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "move")
@@ -4367,6 +4526,20 @@ class PostProcessingJobTest < ActiveJob::TestCase
   end
 
   private
+
+  def post_processing_lock_busy?(download_id)
+    slot = download_id % PostProcessingJob::POST_PROCESSING_LOCK_SLOTS
+    path = Rails.root.join("tmp/post-processing-locks/#{slot}.lock")
+    return false unless File.exist?(path)
+
+    File.open(path, File::RDWR) do |file|
+      acquired = file.flock(File::LOCK_EX | File::LOCK_NB)
+      return true unless acquired
+
+      file.flock(File::LOCK_UN)
+      false
+    end
+  end
 
   def files_under(directory)
     Dir.children(directory).flat_map do |entry|

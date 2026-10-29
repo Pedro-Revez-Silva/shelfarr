@@ -4762,7 +4762,7 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "library", File.binread(File.join(library, "keep.mp3"))
   end
 
-  test "remove_source_tree restores a quarantined directory that gained an unexpected file" do
+  test "remove_source_tree keeps an owned quarantine when a child quarantine name does not match" do
     source_root_path = File.join(@tmp_dir, "download")
     FileUtils.mkdir_p(source_root_path)
     File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
@@ -4773,9 +4773,9 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     File.binwrite(File.join(quarantine_path, foreign_name), "foreign")
 
     assert_equal false, FileCopyService.remove_source_tree(snapshot)
-    assert_equal "chapter", File.binread(File.join(source_root_path, "chapter.mp3"))
-    assert_equal "foreign", File.binread(File.join(source_root_path, foreign_name))
-    assert_not File.exist?(quarantine_path)
+    assert_not File.exist?(source_root_path)
+    assert_equal "chapter", File.binread(File.join(quarantine_path, "chapter.mp3"))
+    assert_equal "foreign", File.binread(File.join(quarantine_path, foreign_name))
   end
 
   test "restore_owned_source_tree restores child quarantine names before publishing the root" do
