@@ -1916,6 +1916,38 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  test "custom provider publishes an AZW3 whose filename contains mobi" do
+    Dir.mktmpdir do |dir|
+      setup_custom_provider_download(output_path: dir)
+      SettingsService.set(:ebook_filename_template, "{author} - {title}")
+      @custom_provider_request.book.update!(title: "Mobility", author: "Lydia Kiesling")
+      @custom_provider_download.search_result.update!(title: "Mobility")
+      @custom_provider_download.search_result.acquisition_provider.update!(allow_private_network: true)
+      azw3 = ("\0" * 60).b + "BOOKMOBI".b + ("x" * 64).b
+      url = "http://192.168.1.5/books/Mobility.azw3"
+
+      VCR.turned_off do
+        stub_request(:post, "http://provider.test/acquire")
+          .to_return(
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { download_type: "direct", direct_url: url }.to_json
+          )
+        stub_request(:get, url)
+          .to_return(status: 200, body: azw3, headers: { "Content-Type" => "application/octet-stream" })
+
+        DownloadJob.perform_now(@custom_provider_download.id)
+      end
+
+      @custom_provider_download.reload
+      @custom_provider_request.reload
+      assert @custom_provider_download.completed?, @custom_provider_request.issue_description
+      assert @custom_provider_request.completed?
+      assert_equal "Lydia Kiesling - Mobility.azw3", File.basename(@custom_provider_download.download_path)
+      assert_equal azw3, File.binread(@custom_provider_download.download_path)
+    end
+  end
+
   test "custom provider direct download never follows metadata addresses even with private network allowed" do
     Dir.mktmpdir do |dir|
       setup_custom_provider_download(output_path: dir)
@@ -1967,6 +1999,19 @@ class DownloadJobTest < ActiveJob::TestCase
     end
 
     assert_match(/Invalid direct download URL/, error.message)
+  end
+
+  test "infer_extension prefers a path format token over a surrounding mobi substring" do
+    job = DownloadJob.new
+    result = Struct.new(:title).new("Mobility")
+
+    assert_equal "azw3", job.send(:infer_extension, "http://192.168.1.5/books/Mobility.azw3", result)
+    assert_equal "azw3", job.send(:infer_extension, "http://192.168.1.5/mobi/Mobility.azw3?device=mobile", result)
+    assert_equal "azw3", job.send(:infer_extension, "http://192.168.1.5/books/Mobility%2Eazw3", result)
+    assert_equal "epub", job.send(:infer_extension, "https://www.gutenberg.org/ebooks/1342.epub3.images?download=1", result)
+    assert_equal "epub", job.send(:infer_extension, "https://www.gutenberg.org/ebooks/1342.epub.noimages", result)
+    assert_equal "mobi", job.send(:infer_extension, "https://www.gutenberg.org/ebooks/2.kf8.images", result)
+    assert_equal "mobi", job.send(:infer_extension, "https://cdn.example/pdf/2.kindle.images", result)
   end
 
   test "infer_audiobook_extension requires format context for ambiguous words like opus" do
