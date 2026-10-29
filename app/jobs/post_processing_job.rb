@@ -164,11 +164,16 @@ class PostProcessingJob < ApplicationJob
       # therefore retry the idempotent import without losing its source.
       cleanup_outcome = remove_import_source(source_cleanup)
       if remove_usenet_download && cleanup_outcome == :complete
-        cleanup_usenet_download(
+        client_cleanup_outcome = cleanup_usenet_download(
           download,
           source_path,
           source_directory: source_authorization.fetch(:directory)
         )
+        # The partial-move journal is the only record that this client removal
+        # still has to happen. An unconfirmed response must not drop it.
+        if client_cleanup_pending?(cleanup_state) && !self.class.usenet_cleanup_confirmed?(client_cleanup_outcome)
+          cleanup_outcome = :retry
+        end
       end
       if cleanup_state && cleanup_outcome != :retry
         clear_source_cleanup_state(download, cleanup_state)
@@ -646,7 +651,14 @@ class PostProcessingJob < ApplicationJob
 
   def cleanup_usenet_download(download, source_path = nil, source_directory: true)
     Rails.logger.info "[PostProcessingJob] Removing usenet download ##{download.id}"
-    download.download_client.adapter.remove_torrent(download.external_id, delete_files: true)
+    removed = download.download_client.adapter.remove_torrent(download.external_id, delete_files: true)
+    # A false body or a connection error is not proof the history item is gone.
+    # SABnzbd reports success for an id that is already archived.
+    unless removed == true
+      Rails.logger.warn "[PostProcessingJob] Usenet cleanup was not confirmed for download ##{download.id}"
+      return :retry
+    end
+
     Rails.logger.info "[PostProcessingJob] Usenet download removed successfully"
 
     # SABnzbd history delete with del_files doesn't remove completed storage directories.
@@ -654,8 +666,10 @@ class PostProcessingJob < ApplicationJob
     if source_path.present?
       remove_empty_download_job_directory(download, source_path, source_directory: source_directory)
     end
+    true
   rescue => e
     Rails.logger.warn "[PostProcessingJob] Usenet cleanup failed for download ##{download.id}: #{e.class}"
+    :retry
   end
 
   def remove_empty_download_job_directory(download, source_path, source_directory: true)
@@ -1398,6 +1412,25 @@ class PostProcessingJob < ApplicationJob
     FileCopyService.owned_source_tree_quarantined?(source_root)
   end
 
+  def self.usenet_cleanup_confirmed?(outcome)
+    outcome == true
+  end
+
+  def self.source_quarantine_unresolved?(snapshots)
+    Array(snapshots).any? do |snapshot|
+      quarantined = FileCopyService.source_file_quarantined?(snapshot)
+      return true if RemoteResult.failed?(quarantined)
+
+      quarantined == true
+    end
+  end
+
+  def self.saved_cleanup_source_snapshots(payload)
+    Array(payload["imported_file_snapshots"]).map do |pair|
+      FileCopyService.deserialize_file_snapshot(pair.fetch("source"))
+    end
+  end
+
   def remove_import_source_tree(
     source_root,
     imported_source_files,
@@ -1412,10 +1445,21 @@ class PostProcessingJob < ApplicationJob
       Rails.logger.warn(
         "[PostProcessingJob] Imported files are absent from the source snapshot; the source directory was retained"
       )
+      return false
     end
 
     unimported_files = expected_files - imported_files
-    unless destination_snapshots_current?(destination_snapshots)
+    destination_current = destination_snapshots_current?(destination_snapshots)
+    # A library mount that cannot be opened is not a changed import.
+    if RemoteResult.failed?(destination_current)
+      Rails.logger.warn(
+        "[PostProcessingJob] Imported library files could not be verified; source cleanup will be retried"
+      )
+      return :retry
+    end
+    unless destination_current
+      return retain_changed_import_source(imported_file_snapshots) if imported_file_snapshots
+
       return retain_directory_source(
         source_root,
         "An imported library file changed; the source directory was retained"
@@ -1452,9 +1496,31 @@ class PostProcessingJob < ApplicationJob
     remove_saved_imported_files(imported_file_snapshots)
   end
 
+  def retain_changed_import_source(imported_file_snapshots)
+    if imported_file_snapshots.blank?
+      Rails.logger.warn(
+        "[PostProcessingJob] An imported library file changed; the source directory was retained"
+      )
+      return false
+    end
+
+    outcome = remove_saved_imported_files(imported_file_snapshots)
+    return outcome if outcome == :retry || outcome == true || RemoteResult.failed?(outcome)
+    return :retry if self.class.source_quarantine_unresolved?(
+      imported_file_snapshots.map { |pair| pair.fetch(:source) }
+    )
+
+    Rails.logger.warn(
+      "[PostProcessingJob] An imported library file changed; the source directory was retained"
+    )
+    false
+  end
+
   def remove_saved_imported_files(imported_file_snapshots)
     retry_later = false
+    retained = false
 
+    # An earlier retain must not skip a later file still sitting in quarantine.
     imported_file_snapshots.each do |pair|
       removed = FileCopyService.remove_source_file(
         pair.fetch(:source),
@@ -1468,15 +1534,20 @@ class PostProcessingJob < ApplicationJob
         next
       end
 
-      Rails.logger.warn "[PostProcessingJob] Imported source file changed; it was retained"
-      return :retry if retry_later
-
-      return false
+      retained = true
     end
 
+    Rails.logger.warn "[PostProcessingJob] Imported source file changed; it was retained" if retained
     return :retry if retry_later
 
-    true
+    retained ? false : true
+  end
+
+  def client_cleanup_pending?(cleanup_state)
+    return false if cleanup_state.blank?
+
+    payload = JSON.parse(cleanup_state)
+    payload.is_a?(Hash) && payload.key?("client_cleanup")
   end
 
   def imported_file_cleanup_snapshots(source_root, imported_source_files, destination_snapshots_by_source)
@@ -1543,9 +1614,12 @@ class PostProcessingJob < ApplicationJob
   end
 
   def destination_snapshots_current?(snapshots)
-    snapshots.all? do |snapshot|
-      RemoteResult.succeeded?(FileCopyService.file_snapshot_current?(snapshot, require_durable: true))
+    snapshots.each do |snapshot|
+      current = FileCopyService.file_snapshot_current?(snapshot, require_durable: true)
+      return current if RemoteResult.failed?(current)
+      return false unless current
     end
+    true
   end
 
   def clear_source_cleanup_state(download, cleanup_state)

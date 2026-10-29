@@ -3312,6 +3312,196 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_nil @download.reload.post_processing_cleanup_state
   end
 
+  test "partial move recovery retries when the library is unavailable and a source file is quarantined" do
+    crashed = nil
+
+    VCR.turned_off do
+      history = stub_partial_move_usenet_history("SABnzbd_nzo_offline")
+      crashed = crash_during_partial_move_quarantine!(
+        external_id: "SABnzbd_nzo_offline",
+        client_name: "SABnzbd Offline Library"
+      )
+      library = crashed.fetch(:library)
+      hidden_library = "#{library}-offline"
+      File.rename(library, hidden_library)
+
+      PostProcessingRecoveryJob.perform_now
+
+      assert @download.reload.post_processing_cleanup_state.present?,
+        "cleanup journal was cleared while the library could not be opened"
+      assert_equal crashed.fetch(:pdf_bytes),
+        File.binread(Dir.glob(File.join(@temp_source, ".shelfarr-source-quarantine-*", "entry")).sole)
+      assert_not_requested history
+
+      File.rename(hidden_library, library)
+      PostProcessingRecoveryJob.perform_now
+
+      assert_requested history
+    end
+
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_empty Dir.glob(File.join(@temp_source, ".shelfarr-source-quarantine-*"))
+    assert_not File.exist?(crashed.fetch(:source_pdf))
+    assert File.exist?(crashed.fetch(:source_extra))
+  end
+
+  test "partial move recovery retries a failed library check after the imported files are already gone" do
+    _source_epub, _source_pdf, source_extra = prepare_ebook_download_with_two_books_and_repair_file
+    client = DownloadClient.create!(
+      name: "SABnzbd Offline Cleanup",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_offline_gone")
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+    job = PostProcessingJob.new(@download.id)
+    library = File.join(@temp_dest_base, @book.author, @book.title)
+
+    VCR.turned_off do
+      history = stub_partial_move_usenet_history("SABnzbd_nzo_offline_gone")
+
+      job.stub(:cleanup_usenet_download, ->(*) { raise Interrupt, "killed before client cleanup" }) do
+        assert_raises(Interrupt) { job.perform_now }
+      end
+
+      hidden_library = "#{library}-offline"
+      File.rename(library, hidden_library)
+      PostProcessingRecoveryJob.perform_now
+
+      assert @download.reload.post_processing_cleanup_state.present?,
+        "cleanup journal was cleared while the library could not be opened"
+      assert_not_requested history
+      assert File.exist?(source_extra)
+
+      File.rename(hidden_library, library)
+      PostProcessingRecoveryJob.perform_now
+
+      assert_requested history
+    end
+
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert File.exist?(source_extra)
+  end
+
+  test "partial move recovery restores a quarantined source when the library file changed" do
+    VCR.turned_off do
+      history = stub_partial_move_usenet_history("SABnzbd_nzo_changed")
+      crashed = crash_during_partial_move_quarantine!(
+        external_id: "SABnzbd_nzo_changed",
+        client_name: "SABnzbd Changed Library"
+      )
+      library_epub = Dir.glob(File.join(crashed.fetch(:library), "*.epub")).sole
+      library_pdf = Dir.glob(File.join(crashed.fetch(:library), "*.pdf")).sole
+      File.binwrite(library_epub, "PK\x03\x04replaced library bytes")
+      File.binwrite(library_pdf, "%PDF-1.7\nreplaced library bytes")
+
+      PostProcessingRecoveryJob.perform_now
+
+      assert File.exist?(crashed.fetch(:source_pdf)),
+        "quarantined source was left hidden after the library file changed"
+      assert_equal crashed.fetch(:pdf_bytes), File.binread(crashed.fetch(:source_pdf))
+      assert_empty Dir.glob(File.join(@temp_source, ".shelfarr-source-quarantine-*"))
+      assert_nil @download.reload.post_processing_cleanup_state
+      assert_not_requested history
+      assert File.exist?(crashed.fetch(:source_extra))
+    end
+  end
+
+  test "partial move recovery keeps usenet cleanup when the client connection fails" do
+    _source_epub, _source_pdf, source_extra = prepare_ebook_download_with_two_books_and_repair_file
+    client = DownloadClient.create!(
+      name: "SABnzbd Recovery Outage",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_outage")
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+    job = PostProcessingJob.new(@download.id)
+
+    VCR.turned_off do
+      outage = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("name" => "delete"))
+        .to_raise(Faraday::ConnectionFailed.new("down"))
+
+      job.stub(:cleanup_usenet_download, ->(*) { raise Interrupt, "killed before client cleanup" }) do
+        assert_raises(Interrupt) { job.perform_now }
+      end
+
+      assert @download.reload.post_processing_cleanup_state.present?
+      PostProcessingRecoveryJob.perform_now
+
+      assert @download.reload.post_processing_cleanup_state.present?,
+        "pending usenet cleanup was discarded after a connection error"
+      assert File.exist?(source_extra)
+
+      remove_request_stub(outage)
+      history = stub_partial_move_usenet_history("SABnzbd_nzo_outage")
+      PostProcessingRecoveryJob.perform_now
+
+      assert_requested history
+    end
+
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert File.exist?(source_extra)
+  end
+
+  test "partial move recovery keeps usenet cleanup when the client rejects removal" do
+    _source_epub, _source_pdf, source_extra = prepare_ebook_download_with_two_books_and_repair_file
+    client = DownloadClient.create!(
+      name: "SABnzbd Recovery Rejected",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_rejected")
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+    job = PostProcessingJob.new(@download.id)
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "queue", "name" => "delete", "value" => "SABnzbd_nzo_rejected"))
+        .to_return(
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: { "status" => false }.to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: { "status" => false }.to_json }
+        )
+      history = stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including(
+          "mode" => "history",
+          "name" => "delete",
+          "value" => "SABnzbd_nzo_rejected",
+          "del_files" => "1"
+        ))
+        .to_return(
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: { "status" => false }.to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: { "status" => true }.to_json }
+        )
+
+      job.stub(:cleanup_usenet_download, ->(*) { raise Interrupt, "killed before client cleanup" }) do
+        assert_raises(Interrupt) { job.perform_now }
+      end
+
+      PostProcessingRecoveryJob.perform_now
+
+      assert @download.reload.post_processing_cleanup_state.present?,
+        "pending usenet cleanup was discarded after the client rejected removal"
+      assert File.exist?(source_extra)
+
+      PostProcessingRecoveryJob.perform_now
+
+      assert_requested history, times: 2
+    end
+
+    assert_nil @download.reload.post_processing_cleanup_state
+  end
+
   test "NFS move retains the source and does not remove the completed usenet item" do
     client = DownloadClient.create!(
       name: "SABnzbd NFS Retain",
@@ -4790,6 +4980,60 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert @download.reload.post_processing_cleanup_state.present?
     assert_nil @download.external_id_released_at
     client
+  end
+
+  def crash_during_partial_move_quarantine!(external_id:, client_name:)
+    source_epub, source_pdf, source_extra = prepare_ebook_download_with_two_books_and_repair_file
+    pdf_bytes = File.binread(source_pdf)
+    client = DownloadClient.create!(
+      name: client_name,
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: external_id)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+    job = PostProcessingJob.new(@download.id)
+    real_remove = FileCopyService.method(:remove_source_file)
+    real_unlink = FileCopyService.method(:native_unlinkat)
+    removing = lambda do |source_snapshot, destination_snapshot: nil|
+      basename = source_snapshot.path.basename.to_s
+      if basename == "a.epub"
+        return real_remove.call(source_snapshot, destination_snapshot: destination_snapshot)
+      end
+
+      flunk "unexpected imported source #{basename}" unless basename == "b.pdf"
+
+      unlinking = lambda do |directory_fd, name, flags = 0|
+        raise Interrupt, "killed during quarantine" if name == FileCopyService::COPY_QUARANTINE_ENTRY
+
+        real_unlink.call(directory_fd, name, flags)
+      end
+      FileCopyService.stub(:native_unlinkat, unlinking) do
+        real_remove.call(source_snapshot, destination_snapshot: destination_snapshot)
+      end
+    end
+
+    FileCopyService.stub(:remove_source_file, removing) do
+      assert_raises(Interrupt) { job.perform_now }
+    end
+
+    assert @request.reload.completed?
+    assert_not File.exist?(source_epub)
+    assert_not File.exist?(source_pdf)
+    assert File.exist?(source_extra)
+    assert_equal pdf_bytes, File.binread(Dir.glob(File.join(@temp_source, ".shelfarr-source-quarantine-*", "entry")).sole)
+    assert @download.reload.post_processing_cleanup_state.present?
+
+    {
+      source_epub: source_epub,
+      source_pdf: source_pdf,
+      source_extra: source_extra,
+      pdf_bytes: pdf_bytes,
+      library: File.join(@temp_dest_base, @book.author, @book.title)
+    }
   end
 
   def prepare_ebook_download_with_unimported_repair_file

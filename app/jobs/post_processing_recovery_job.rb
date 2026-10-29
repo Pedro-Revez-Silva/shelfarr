@@ -172,11 +172,18 @@ class PostProcessingRecoveryJob < ApplicationJob
   def recover_partial_directory_cleanup(download, payload, cleanup_state)
     removed = PostProcessingJob.remove_persisted_directory_source(payload)
     if removed == :retry || RemoteResult.failed?(removed)
-      Download.where(id: download.id, post_processing_cleanup_state: cleanup_state)
-        .update_all(updated_at: Time.current)
+      defer_cleanup_retry(download, cleanup_state)
       return
     end
     unless removed == true
+      if PostProcessingJob.source_quarantine_unresolved?(PostProcessingJob.saved_cleanup_source_snapshots(payload))
+        Rails.logger.warn(
+          "[PostProcessingRecoveryJob] Partial source cleanup left a quarantined file for download ##{download.id}; the journal was kept"
+        )
+        defer_cleanup_retry(download, cleanup_state)
+        return
+      end
+
       Rails.logger.warn(
         "[PostProcessingRecoveryJob] Partial source cleanup was no longer safe for download ##{download.id}; it was retained"
       )
@@ -185,9 +192,18 @@ class PostProcessingRecoveryJob < ApplicationJob
     end
 
     if payload["client_cleanup"]
-      PostProcessingJob.resume_persisted_client_cleanup(download, payload["client_cleanup"])
+      outcome = PostProcessingJob.resume_persisted_client_cleanup(download, payload["client_cleanup"])
+      unless PostProcessingJob.usenet_cleanup_confirmed?(outcome)
+        defer_cleanup_retry(download, cleanup_state)
+        return
+      end
     end
     clear_cleanup_state(download, cleanup_state)
+  end
+
+  def defer_cleanup_retry(download, cleanup_state)
+    Download.where(id: download.id, post_processing_cleanup_state: cleanup_state)
+      .update_all(updated_at: Time.current)
   end
 
   def clear_cleanup_state(download, cleanup_state)
