@@ -68,14 +68,7 @@ class ZLibraryClient
       auth = login
       validate_saved_session!(auth) if saved_remix_auth
       # Login can succeed while /eapi/book/search is still bot-walled.
-      fetch_search_results(
-        auth,
-        query: "test",
-        file_types: %w[epub pdf],
-        limit: 1,
-        language: nil,
-        after_attempt: nil
-      )
+      search("test", limit: 1)
       true
     end
 
@@ -206,6 +199,7 @@ class ZLibraryClient
         end
 
         Rails.logger.info "[ZLibraryClient] Login succeeded via #{domain}"
+        auth = auth.merge(signature: signature)
         cache_auth(signature, auth)
         remember_healthy_domain(uri, health)
         return auth
@@ -284,7 +278,8 @@ class ZLibraryClient
       redirects_followed = 0
 
       loop do
-        # Replay a same-URL redirect when it sets a cookie. An unchanged jar is a loop.
+        # Replay a same-URL redirect when its cookies change, even if the body
+        # looks like a challenge. An unchanged jar is a loop.
         visit_key = [ method, normalize_login_url(url), login_cookie_header(cookies, url).to_s ]
         return { error: "redirect loop", url: url } if visited[visit_key]
 
@@ -304,7 +299,7 @@ class ZLibraryClient
           )
         end
 
-        if bot_wall_response?(response)
+        if bot_wall_response?(response) && !replayable_same_url_challenge?(response, url, cookies)
           return { bot_wall: true, error: "bot wall", response: response, url: url }
         end
         return { response: response, url: url } unless login_redirect?(response)
@@ -368,6 +363,22 @@ class ZLibraryClient
 
     def bot_wall_url?(url)
       url.to_s.match?(/diamwall/i)
+    end
+
+    # A same-URL redirect that changes the cookie jar can be a clearance page.
+    # Challenge-path targets and untrusted hosts are not replayed.
+    def replayable_same_url_challenge?(response, url, cookies)
+      return false unless login_redirect?(response)
+
+      location = redirect_location(response)
+      return false if location.blank? || location.match?(/diamwall/i)
+
+      target = safe_login_redirect_target(url, location)
+      return false if target.nil? || normalize_login_url(target) != normalize_login_url(url)
+
+      updated = cookies.dup
+      store_login_cookies!(updated, response, url)
+      login_cookie_header(updated, url).to_s != login_cookie_header(cookies, url).to_s
     end
 
     def login_redirect?(response)
@@ -716,10 +727,19 @@ class ZLibraryClient
 
     def bot_wall_response?(response)
       return true if redirect_location(response).match?(/diamwall/i)
-      # A book title can contain a challenge phrase. JSON is not the wall page.
+      # A book title can contain a challenge phrase. JSON and an HTML results page are not the wall.
       return false if response.headers["content-type"].to_s.match?(/\bjson\b/i)
 
-      response_body_string(response).match?(BOT_WALL_BODY_PATTERN)
+      body = response_body_string(response)
+      return false if html_search_results_page?(body)
+
+      body.match?(BOT_WALL_BODY_PATTERN)
+    end
+
+    def html_search_results_page?(body)
+      return false if body.blank? || !body.lstrip.start_with?("<")
+
+      Nokogiri::HTML(body).at_css("z-bookcard, #searchResultBox, .notFound")
     end
 
     def response_body_string(response)
@@ -1030,6 +1050,7 @@ class ZLibraryClient
         next if auth.nil? || (auth.is_a?(Hash) && auth[:error].present?)
 
         Rails.logger.info "[ZLibraryClient] Retrying eAPI via #{auth[:domain]}"
+        auth = auth.merge(signature: signature)
         cache_auth(signature, auth)
         yield auth
       rescue JSON::ParserError, Faraday::Error, Error => e
@@ -1106,13 +1127,14 @@ class ZLibraryClient
 
     def remember_search_origin!(auth, exchange)
       final_url = exchange[:url].to_s
-      return if final_url.blank?
+      signature = auth[:signature]
+      return if final_url.blank? || signature.blank?
 
       final_uri = URI.parse(final_url)
       base_url = login_base_url(final_uri, URI.parse(auth[:base_url]))
       return if base_url == auth[:base_url].to_s.delete_suffix("/")
 
-      cache_auth(credential_signature, auth.merge(domain: final_uri.host, base_url: base_url))
+      cache_auth(signature, auth.merge(domain: final_uri.host, base_url: base_url))
     end
 
     def raise_search_bot_wall!(domains)
