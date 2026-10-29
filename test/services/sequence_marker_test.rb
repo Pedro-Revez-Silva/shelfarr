@@ -174,13 +174,27 @@ class SequenceMarkerTest < ActiveSupport::TestCase
 
   test "reads a roman volume before a novel subtitle" do
     release = "The Dark Tower Book V A Novel - Stephen King English EPUB"
+    dotted = "The.Dark.Tower.Book.V.A.Novel.-.Stephen.King.English.EPUB"
 
     assert_equal [ "5" ], SequenceMarker.numbers("The Dark Tower Book V")
     assert_equal [ "5" ], SequenceMarker.numbers(release)
+    assert_equal [ "5" ], SequenceMarker.numbers(dotted)
     assert_equal [ "5" ], SequenceMarker.numbers("The Dark Tower Book V A Novel")
     assert_equal [ "5" ], SequenceMarker.numbers("The Dark Tower Book V. A Novel")
     assert_empty SequenceMarker.numbers("The Red Book C. G. Jung English EPUB")
     assert_empty SequenceMarker.numbers("The Red Book C.G. Jung English EPUB")
+  end
+
+  test "masks an extra undotted middle initial before reading a roman marker" do
+    source = SequenceMarker.without_author_credit(
+      "The Red Book C G Jung English EPUB",
+      author: "Carl Jung",
+      protected_title: "The Red Book"
+    )
+
+    assert_not_includes source, "Jung"
+    assert_empty SequenceMarker.numbers(source)
+    assert_not_includes SequenceMarker.neutralize(source), "100"
   end
 
   test "reads an abbreviated roman volume before a language code" do

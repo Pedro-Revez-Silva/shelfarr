@@ -1346,6 +1346,23 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert score.high_confidence?, score.total.to_s
   end
 
+  test "scores an extra undotted middle initial above the auto-select threshold" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(title: "The Red Book", author: "Carl Jung", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(title: "The Red Book C G Jung English EPUB", seeders: 50),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert score.breakdown[:auto_select_allowed], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+    assert score.high_confidence?, score.total.to_s
+  end
+
   test "scores undotted author initials above the auto-select threshold" do
     SettingsService.set(:ebook_approved_formats, [])
     SettingsService.set(:ebook_rejected_formats, [])
@@ -1462,18 +1479,21 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     SettingsService.set(:ebook_preferred_formats, [])
     book = Book.create!(title: "The Dark Tower Book V", author: "Stephen King", book_type: :ebook)
     request = Request.create!(book: book, user: @user, status: :pending, language: "en")
-    score = ReleaseScorer.score(
-      SearchResult.new(
-        title: "The Dark Tower Book V A Novel - Stephen King English EPUB",
-        seeders: 50
-      ),
-      request
-    )
 
-    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
-    assert score.breakdown[:auto_select_allowed], score.breakdown.inspect
-    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
-    assert score.high_confidence?, score.total.to_s
+    [
+      "The Dark Tower Book V A Novel - Stephen King English EPUB",
+      "The.Dark.Tower.Book.V.A.Novel.-.Stephen.King.English.EPUB"
+    ].each do |release_title|
+      score = ReleaseScorer.score(
+        SearchResult.new(title: release_title, seeders: 50),
+        request
+      )
+
+      assert_equal 100, score.breakdown[:title], "#{release_title} #{score.breakdown.inspect}"
+      assert score.breakdown[:auto_select_allowed], "#{release_title} #{score.breakdown.inspect}"
+      assert_operator score.total, :>=, 90, "#{release_title} total #{score.total} breakdown #{score.breakdown.inspect}"
+      assert score.high_confidence?, "#{release_title} #{score.total}"
+    end
   end
 
   test "scores an abbreviated roman volume before a language code above the auto-select threshold" do
