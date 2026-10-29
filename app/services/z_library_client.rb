@@ -10,6 +10,7 @@ require "uri"
 class ZLibraryClient
   class Error < StandardError; end
   class ConnectionError < Error; end
+  class SearchBotWallError < ConnectionError; end
   class AuthenticationError < Error; end
   class NotConfiguredError < Error; end
   class RateLimitError < Error; end
@@ -867,6 +868,9 @@ class ZLibraryClient
         yield auth
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError,
              JSON::ParserError, Error => e
+        # Refreshing the session repeats a rotation that already found every mirror walled.
+        raise if e.is_a?(SearchBotWallError)
+
         raise ConnectionError, "Failed to connect to Z-Library: #{e.message}" if transport_error?(e) && attempted_retry
 
         unless using_cached_auth && !attempted_retry
@@ -911,8 +915,11 @@ class ZLibraryClient
 
       exchange = post_search_exchange(auth, payload, after_attempt: after_attempt)
       response = usable_search_response(exchange)
+      walled = search_exchange_walled?(exchange)
       walled_domains = []
-      walled_domains << auth[:domain] if search_exchange_walled?(exchange)
+      walled_domains << auth[:domain] if walled
+      # Alternates that reject eAPI can still serve HTML. Try those before the walled mirror.
+      html_fallback_auths = walled ? [] : nil
 
       if response.nil? || search_html_fallback_response?(response)
         alternate_results = search_eapi_alternate_domains(
@@ -920,13 +927,25 @@ class ZLibraryClient
           payload,
           limit,
           after_attempt: after_attempt,
-          walled_domains: walled_domains
+          walled_domains: walled_domains,
+          html_fallback_auths: html_fallback_auths
         )
         return alternate_results if alternate_results
       end
 
       if response.nil?
         if search_exchange_walled?(exchange)
+          recovered = search_html_fallbacks(
+            html_fallback_auths,
+            walled_domains,
+            query: query,
+            file_types: file_types,
+            limit: limit,
+            language: language,
+            after_attempt: after_attempt
+          )
+          return recovered unless recovered.nil?
+
           return html_search_or_bot_wall(
             auth,
             walled_domains,
@@ -1001,7 +1020,14 @@ class ZLibraryClient
       JSON.parse(response.body)
     end
 
-    def search_eapi_alternate_domains(current_auth, payload, limit, after_attempt: nil, walled_domains: nil)
+    def search_eapi_alternate_domains(
+      current_auth,
+      payload,
+      limit,
+      after_attempt: nil,
+      walled_domains: nil,
+      html_fallback_auths: nil
+    )
       each_alternate_auth(current_auth, after_attempt: after_attempt) do |auth|
         exchange = post_search_exchange(auth, payload, after_attempt: after_attempt)
         if search_exchange_walled?(exchange)
@@ -1010,7 +1036,11 @@ class ZLibraryClient
         end
 
         response = usable_search_response(exchange)
-        next if response.nil? || search_html_fallback_response?(response)
+        if response && search_html_fallback_response?(response)
+          html_fallback_auths << auth if html_fallback_auths
+          next
+        end
+        next if response.nil?
 
         remember_search_origin!(auth, exchange)
         data = parse_response(response, context: "search")
@@ -1056,6 +1086,24 @@ class ZLibraryClient
       rescue JSON::ParserError, Faraday::Error, Error => e
         Rails.logger.debug "[ZLibraryClient] eAPI retry failed on #{uri.host}: #{e.message}"
       end
+    end
+
+    def search_html_fallbacks(auths, walled_domains, query:, file_types:, limit:, language:, after_attempt:)
+      Array(auths).each do |auth|
+        result = read_html_search(
+          auth,
+          query: query,
+          file_types: file_types,
+          limit: limit,
+          language: language,
+          after_attempt: after_attempt
+        )
+        return result unless result == :bot_wall
+
+        walled_domains << auth[:domain]
+      end
+
+      nil
     end
 
     def search_html(auth, query, file_types:, limit:, language:, after_attempt: nil)
@@ -1141,7 +1189,7 @@ class ZLibraryClient
       names = Array(domains).map { |domain| domain.to_s }.uniq
       message = "Z-Library search is bot-walled (#{names.join(', ')}). Configure another domain that serves the eAPI."
       Rails.logger.error "[ZLibraryClient] #{message}"
-      raise ConnectionError, message
+      raise SearchBotWallError, message
     end
 
     def observe_search_attempt(after_attempt)
