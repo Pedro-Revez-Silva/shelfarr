@@ -129,6 +129,30 @@ class GutenbergClientTest < ActiveSupport::TestCase
     assert RemoteResult.failed?(GutenbergClient.test_connection)
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "search uses the corrected Project Gutenberg URL without resetting the connection" do
+    SettingsService.set(:gutenberg_url, "https://old-gutenberg.example")
+    GutenbergClient.reset_connection!
+
+    stub_request(:get, "https://old-gutenberg.example/ebooks/search.opds/")
+      .with(query: hash_including("query" => "Pride"))
+      .to_return(status: 404)
+      .times(1)
+
+    assert_empty GutenbergClient.search(title: "Pride")
+
+    SettingsService.set(:gutenberg_url, "https://new-gutenberg.example")
+
+    corrected = stub_request(:get, "https://new-gutenberg.example/ebooks/search.opds/")
+      .with(query: hash_including("query" => "Pride"))
+      .to_return(status: 404)
+
+    results = GutenbergClient.search(title: "Pride")
+    assert_requested corrected, times: 1
+    assert_empty results
+    assert_not_requested :get, %r{old-gutenberg\.example/ebooks/search\.opds/}, times: 2
+  end
+
   test "configured URL must be an origin" do
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org/ebooks")
 

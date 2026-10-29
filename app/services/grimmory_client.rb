@@ -78,6 +78,7 @@ class GrimmoryClient
 
     def reset_connection!
       @connection = nil
+      @connection_settings_key = nil
       @access_token = nil
     end
 
@@ -101,8 +102,31 @@ class GrimmoryClient
       request { yield }
     end
 
+    # Faraday keeps the URL and bearer token it was built with. A job process
+    # does not see reset_connection! from the web process, so rebuild when the
+    # settings that produced them change.
     def connection
-      @connection ||= Faraday.new(url: base_url) do |f|
+      settings_key = connection_settings_key
+      return @connection if @connection && @connection_settings_key == settings_key
+
+      # The cached token was issued for the previous URL or password.
+      @access_token = nil
+      built = authorized_connection(settings_key[0])
+      @connection = built
+      @connection_settings_key = settings_key
+      built
+    end
+
+    def connection_settings_key
+      [
+        base_url,
+        SettingsService.get(:grimmory_username).to_s,
+        SettingsService.get(:grimmory_password).to_s
+      ]
+    end
+
+    def authorized_connection(url)
+      Faraday.new(url: url) do |f|
         f.request :json
         f.response :json, parser_options: { symbolize_names: false }
         f.adapter Faraday.default_adapter
