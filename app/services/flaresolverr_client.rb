@@ -110,6 +110,7 @@ class FlaresolverrClient
 
     def reset_connection!
       @connection = nil
+      @connection_settings_key = nil
     end
 
     private
@@ -140,8 +141,24 @@ class FlaresolverrClient
       HttpResponse.new(status: response.status, body: body)
     end
 
+    # Faraday keeps the URL it was built with. A job process does not see
+    # reset_connection! from the web process, so rebuild when it changes.
     def connection
-      @connection ||= Faraday.new(url: base_url) do |f|
+      settings_key = connection_settings_key
+      return @connection if @connection && @connection_settings_key == settings_key
+
+      built = build_connection(settings_key)
+      @connection = built
+      @connection_settings_key = settings_key
+      built
+    end
+
+    def connection_settings_key
+      base_url
+    end
+
+    def build_connection(url)
+      Faraday.new(url: url) do |f|
         f.request :json
         f.adapter Faraday.default_adapter
         f.headers["Content-Type"] = "application/json"

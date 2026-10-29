@@ -517,6 +517,83 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "libraries sends the corrected Audiobookshelf API key without resetting the connection" do
+    SettingsService.set(:audiobookshelf_url, "http://abs.example:13378")
+    SettingsService.set(:audiobookshelf_api_key, "old-key")
+    AudiobookshelfClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://abs.example:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer old-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "libraries" => [] }.to_json
+        )
+        .times(1)
+
+      assert_empty AudiobookshelfClient.libraries
+
+      SettingsService.set(:audiobookshelf_api_key, "new-key")
+
+      corrected = stub_request(:get, "http://abs.example:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer new-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [
+              { "id" => "lib-1", "name" => "Audiobooks", "mediaType" => "book", "folders" => [] }
+            ]
+          }.to_json
+        )
+
+      libraries = AudiobookshelfClient.libraries
+      assert_requested corrected, times: 1
+      assert_equal [ "lib-1" ], libraries.map(&:id)
+    end
+  end
+
+  # The jobs process never sees the web process's reset_connection!.
+  test "libraries sends the corrected Audiobookshelf URL without resetting the connection" do
+    SettingsService.set(:audiobookshelf_url, "http://old-abs.example:13378")
+    SettingsService.set(:audiobookshelf_api_key, "same-key")
+    AudiobookshelfClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://old-abs.example:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer same-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "libraries" => [] }.to_json
+        )
+        .times(1)
+
+      assert_empty AudiobookshelfClient.libraries
+
+      SettingsService.set(:audiobookshelf_url, "http://new-abs.example:13378")
+
+      corrected = stub_request(:get, "http://new-abs.example:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer same-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: {
+            "libraries" => [
+              { "id" => "lib-1", "name" => "Audiobooks", "mediaType" => "book", "folders" => [] }
+            ]
+          }.to_json
+        )
+
+      libraries = AudiobookshelfClient.libraries
+      assert_requested corrected, times: 1
+      assert_equal [ "lib-1" ], libraries.map(&:id)
+      assert_not_requested :get, %r{old-abs\.example:13378/api/libraries}, times: 2
+    end
+  end
+
   test "library_items raises Error on later-page 404 response" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries/my-lib/items?limit=500&page=0")

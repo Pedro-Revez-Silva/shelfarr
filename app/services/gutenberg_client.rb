@@ -67,22 +67,34 @@ class GutenbergClient
 
     def reset_connection!
       @connection = nil
-      @base_url = nil
+      @connection_settings_key = nil
     end
 
     def base_url
-      @base_url ||= normalize_base_url(SettingsService.get(:gutenberg_url, default: DEFAULT_BASE_URL))
+      normalize_base_url(SettingsService.get(:gutenberg_url, default: DEFAULT_BASE_URL))
     end
 
     private
 
+    # Faraday keeps the URL it was built with. A job process does not see
+    # reset_connection! from the web process, so rebuild when it changes.
     def connection
-      @connection ||= Faraday.new(url: base_url) do |faraday|
+      settings_key = connection_settings_key
+      return @connection if @connection && @connection_settings_key == settings_key
+
+      built = Faraday.new(url: settings_key) do |faraday|
         faraday.headers["User-Agent"] = USER_AGENT
         faraday.options.timeout = 30
         faraday.options.open_timeout = 10
         faraday.adapter Faraday.default_adapter
       end
+      @connection = built
+      @connection_settings_key = settings_key
+      built
+    end
+
+    def connection_settings_key
+      base_url
     end
 
     def normalize_base_url(url)

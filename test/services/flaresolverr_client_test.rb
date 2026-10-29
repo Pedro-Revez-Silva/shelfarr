@@ -81,6 +81,30 @@ class FlaresolverrClientTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "get uses the corrected FlareSolverr URL without resetting the connection" do
+    SettingsService.set(:flaresolverr_url, "http://old-flaresolverr.example:8191")
+    FlaresolverrClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:post, "http://old-flaresolverr.example:8191/v1")
+        .to_return(status: 200, body: flaresolverr_ok_body("<html>old</html>"))
+        .times(1)
+
+      assert_equal "<html>old</html>", FlaresolverrClient.get("https://example.com")
+
+      SettingsService.set(:flaresolverr_url, "http://new-flaresolverr.example:8191")
+
+      corrected = stub_request(:post, "http://new-flaresolverr.example:8191/v1")
+        .to_return(status: 200, body: flaresolverr_ok_body("<html>new</html>"))
+
+      html = FlaresolverrClient.get("https://example.com")
+      assert_requested corrected, times: 1
+      assert_equal "<html>new</html>", html
+      assert_not_requested :post, "http://old-flaresolverr.example:8191/v1", times: 2
+    end
+  end
+
   test "test_connection returns false on error" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8191/v1")
@@ -91,6 +115,18 @@ class FlaresolverrClientTest < ActiveSupport::TestCase
   end
 
   private
+
+  def flaresolverr_ok_body(html)
+    {
+      status: "ok",
+      message: "",
+      solution: {
+        status: 200,
+        url: "https://example.com",
+        response: html
+      }
+    }.to_json
+  end
 
   def stub_flaresolverr_success
     stub_request(:post, "http://localhost:8191/v1")

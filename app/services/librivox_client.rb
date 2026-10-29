@@ -64,6 +64,7 @@ class LibrivoxClient
 
     def reset_connection!
       @connection = nil
+      @connection_settings_key = nil
     end
 
     private
@@ -73,8 +74,13 @@ class LibrivoxClient
       base_url
     end
 
+    # Faraday keeps the URL it was built with. A job process does not see
+    # reset_connection! from the web process, so rebuild when it changes.
     def connection
-      @connection ||= Faraday.new(url: base_url) do |f|
+      settings_key = connection_settings_key
+      return @connection if @connection && @connection_settings_key == settings_key
+
+      built = Faraday.new(url: settings_key) do |f|
         f.request :url_encoded
         f.response :json, parser_options: { symbolize_names: false }, content_type: /\bjson$/
         f.adapter Faraday.default_adapter
@@ -82,6 +88,13 @@ class LibrivoxClient
         f.options.timeout = 30
         f.options.open_timeout = 10
       end
+      @connection = built
+      @connection_settings_key = settings_key
+      built
+    end
+
+    def connection_settings_key
+      base_url
     end
 
     def request

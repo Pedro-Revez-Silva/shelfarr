@@ -140,6 +140,7 @@ class AudiobookshelfClient
 
     def reset_connection!
       @connection = nil
+      @connection_settings_key = nil
     end
 
     def display_name
@@ -158,8 +159,20 @@ class AudiobookshelfClient
       raise ConnectionError, "Failed to connect to Audiobookshelf: #{e.message}"
     end
 
+    # Faraday keeps the URL and API key it was built with. A job process does
+    # not see reset_connection! from the web process, so rebuild when they change.
     def connection
-      @connection ||= open_connection(base_url, api_key)
+      settings_key = connection_settings_key
+      return @connection if @connection && @connection_settings_key == settings_key
+
+      built = open_connection(settings_key[0], settings_key[1])
+      @connection = built
+      @connection_settings_key = settings_key
+      built
+    end
+
+    def connection_settings_key
+      [ base_url, api_key ]
     end
 
     def open_connection(url, key)

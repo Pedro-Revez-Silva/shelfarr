@@ -209,6 +209,88 @@ class GrimmoryClientTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "libraries uses the corrected Grimmory password without resetting the connection" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:5173/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "old-token" }.to_json
+        )
+      stub_request(:get, "http://localhost:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer old-token" })
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+        .times(1)
+
+      assert_empty LibraryPlatformClient.libraries
+
+      SettingsService.set(:grimmory_password, "rotated")
+
+      stub_request(:post, "http://localhost:5173/api/v1/auth/login")
+        .with(body: { username: "admin", password: "rotated" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "new-token" }.to_json
+        )
+      corrected = stub_request(:get, "http://localhost:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer new-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "id" => "lib-1", "name" => "Ebooks", "paths" => [], "allowedFormats" => [ "epub" ] } ].to_json
+        )
+
+      libraries = LibraryPlatformClient.libraries
+      assert_requested corrected, times: 1
+      assert_equal [ "lib-1" ], libraries.map(&:id)
+    end
+  end
+
+  # The jobs process never sees the web process's reset_connection!.
+  test "libraries uses the corrected Grimmory URL without resetting the connection" do
+    VCR.turned_off do
+      stub_request(:post, "http://old-grimmory.example:5173/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "old-token" }.to_json
+        )
+      stub_request(:get, "http://old-grimmory.example:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer old-token" })
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json)
+        .times(1)
+
+      SettingsService.set(:grimmory_url, "http://old-grimmory.example:5173")
+      assert_empty LibraryPlatformClient.libraries
+
+      SettingsService.set(:grimmory_url, "http://new-grimmory.example:5173")
+
+      stub_request(:post, "http://new-grimmory.example:5173/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "new-token" }.to_json
+        )
+      corrected = stub_request(:get, "http://new-grimmory.example:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer new-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "id" => "lib-1", "name" => "Ebooks", "paths" => [], "allowedFormats" => [ "epub" ] } ].to_json
+        )
+
+      libraries = LibraryPlatformClient.libraries
+      assert_requested corrected, times: 1
+      assert_equal [ "lib-1" ], libraries.map(&:id)
+      assert_not_requested :get, %r{old-grimmory\.example:5173/api/v1/libraries}, times: 2
+    end
+  end
+
   private
 
   def stub_login
