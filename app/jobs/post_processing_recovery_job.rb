@@ -113,8 +113,17 @@ class PostProcessingRecoveryJob < ApplicationJob
   end
 
   # Recovery has to finish the stored tree deletion before the client id is released.
+  # A retained result is terminal only once no owned quarantine is still hidden.
   def recover_directory_source_cleanup(download, payload, cleanup_state)
     removed = PostProcessingJob.remove_persisted_directory_source(payload)
+    if removed == false && directory_quarantine_unresolved?(payload)
+      Rails.logger.warn(
+        "[PostProcessingRecoveryJob] Source directory remains quarantined for download ##{download.id}; cleanup will retry"
+      )
+      Download.where(id: download.id, post_processing_cleanup_state: cleanup_state)
+        .update_all(updated_at: Time.current)
+      return
+    end
     unless removed == true || removed == false
       Download.where(id: download.id, post_processing_cleanup_state: cleanup_state)
         .update_all(updated_at: Time.current)
@@ -122,6 +131,10 @@ class PostProcessingRecoveryJob < ApplicationJob
     end
 
     Download.clear_post_processing_cleanup!(download.id, cleanup_state)
+  end
+
+  def directory_quarantine_unresolved?(payload)
+    PostProcessingJob.directory_source_quarantine_pending?(payload) != false
   end
 
   def recover(download)

@@ -4711,6 +4711,57 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "other", File.binread(File.join(unrelated, "other.mp3"))
   end
 
+  test "remove_source_tree releases a finished source when a symlink replaces the original path" do
+    source_root_path = File.join(@tmp_dir, "download")
+    library = File.join(@tmp_dir, "library")
+    FileUtils.mkdir_p(source_root_path)
+    FileUtils.mkdir_p(library)
+    File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
+    File.binwrite(File.join(library, "chapter.mp3"), "library chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    FileUtils.rm_rf(source_root_path)
+    File.symlink(library, source_root_path)
+
+    assert_equal true, FileCopyService.remove_source_tree(snapshot)
+    assert File.symlink?(source_root_path)
+    assert_equal library, File.readlink(source_root_path)
+    assert_equal "library chapter", File.binread(File.join(library, "chapter.mp3"))
+  end
+
+  test "remove_source_tree releases a finished source when a file replaces the original path" do
+    source_root_path = File.join(@tmp_dir, "download")
+    FileUtils.mkdir_p(source_root_path)
+    File.binwrite(File.join(source_root_path, "chapter.mp3"), "chapter")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    FileUtils.rm_rf(source_root_path)
+    File.binwrite(source_root_path, "replacement file")
+
+    assert_equal true, FileCopyService.remove_source_tree(snapshot)
+    assert File.file?(source_root_path)
+    assert_equal "replacement file", File.binread(source_root_path)
+  end
+
+  test "remove_source_tree deletes an owned quarantine without following a symlink at the original path" do
+    source_root_path = File.join(@tmp_dir, "download")
+    library = File.join(@tmp_dir, "library")
+    FileUtils.mkdir_p(File.join(source_root_path, "Disc One"))
+    FileUtils.mkdir_p(library)
+    File.binwrite(File.join(source_root_path, "audiobook.mp3"), "audio")
+    File.binwrite(File.join(source_root_path, "Disc One", "chapter.mp3"), "chapter")
+    File.binwrite(File.join(library, "keep.mp3"), "library")
+    snapshot = FileCopyService.snapshot_source_root(source_root_path)
+    quarantine_path = source_tree_quarantine_path(snapshot)
+    File.rename(source_root_path, quarantine_path)
+    File.unlink(File.join(quarantine_path, "Disc One", "chapter.mp3"))
+    File.symlink(library, source_root_path)
+
+    assert_equal true, FileCopyService.remove_source_tree(snapshot)
+    assert_not File.exist?(quarantine_path)
+    assert File.symlink?(source_root_path)
+    assert_equal library, File.readlink(source_root_path)
+    assert_equal "library", File.binread(File.join(library, "keep.mp3"))
+  end
+
   test "remove_source_tree restores a quarantined directory that gained an unexpected file" do
     source_root_path = File.join(@tmp_dir, "download")
     FileUtils.mkdir_p(source_root_path)

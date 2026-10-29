@@ -1468,8 +1468,9 @@ class FileCopyService
     # The quarantine basename is derived from the snapshotted device and inode,
     # so a killed worker can find it without a second database write. Partial
     # progress inside that directory is resumed. A missing source with no
-    # owned quarantine left is already removed. A directory that only reused
-    # the inode is left untouched.
+    # owned quarantine left is already removed. A symlink or other
+    # non-directory at the original path is a replacement and is not followed.
+    # A directory that only reused the inode is left untouched.
     def remove_source_tree(
       source_root,
       allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
@@ -1488,11 +1489,8 @@ class FileCopyService
 
         source_basename = expanded.basename.to_s
         expected_identity = [ source_root.device, source_root.inode ]
-        source_identity = begin
-          pinned_child_identity(parent, source_basename, directory: true)
-        rescue Errno::ENOENT
-          :missing
-        end
+        source_identity = source_tree_directory_identity(parent, source_basename)
+        source_absent_or_replaced = source_identity == :missing || source_identity == :replaced
         if source_identity == expected_identity
           quarantine_and_remove_source_tree!(
             parent,
@@ -1512,11 +1510,11 @@ class FileCopyService
               resume: true
             )
             if removed == :not_owned
-              source_identity == :missing
+              source_absent_or_replaced
             else
               removed
             end
-          elsif source_identity == :missing
+          elsif source_absent_or_replaced
             true
           else
             quarantine_and_remove_source_tree!(
@@ -1529,6 +1527,55 @@ class FileCopyService
         end
       end
     rescue Errno::ENOENT => error
+      RemoteResult::Failed.new(error)
+    end
+
+    # Put an owned quarantine back when deletion is no longer allowed.
+    # An entry already at the original path is left in place.
+    def restore_owned_source_tree(source_root, allow_nonatomic:)
+      with_pinned_absolute_directory(source_root.canonical_parent_path) do |parent|
+        unless file_identity(parent.stat) == [ source_root.parent_device, source_root.parent_inode ]
+          raise Errno::ESTALE, "source parent identity changed during cleanup"
+        end
+        validate_current_directory_identity!(source_root.parent_path, parent)
+
+        expected_identity = [ source_root.device, source_root.inode ]
+        quarantine_basename = owned_source_tree_quarantine(parent, expected_identity)
+        return :absent unless quarantine_basename
+
+        source_basename = source_root.path.basename.to_s
+        unless source_tree_directory_identity(parent, source_basename) == :missing
+          return RemoteResult::Failed.new(Errno::EEXIST.new("source path is occupied"))
+        end
+
+        restored = rename_entry_noreplace(
+          parent,
+          quarantine_basename,
+          source_basename,
+          allow_nonatomic: allow_nonatomic,
+          directory: true
+        )
+        unless restored && source_tree_directory_identity(parent, source_basename) == expected_identity
+          return RemoteResult::Failed.new(Errno::EEXIST.new("owned source quarantine could not be restored"))
+        end
+
+        sync_io(parent)
+        :restored
+      end
+    rescue Errno::ENOENT
+      :absent
+    rescue Errno::EEXIST => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def owned_source_tree_quarantined?(source_root)
+      with_pinned_absolute_directory(source_root.canonical_parent_path) do |parent|
+        return false unless file_identity(parent.stat) == [ source_root.parent_device, source_root.parent_inode ]
+
+        validate_current_directory_identity!(source_root.parent_path, parent)
+        !owned_source_tree_quarantine(parent, [ source_root.device, source_root.inode ]).nil?
+      end
+    rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR, Errno::ESTALE, UnsafePathError => error
       RemoteResult::Failed.new(error)
     end
 
@@ -4605,6 +4652,16 @@ class FileCopyService
       "#{mount.fetch(5)},#{mount.fetch(6)}".split(",").any? do |option|
         option.match?(/\Aaname=drvfs(?:;|\z)/)
       end
+    end
+
+    # O_NOFOLLOW reports a symlink as ELOOP. That entry replaced the source
+    # directory; do not open its target.
+    def source_tree_directory_identity(parent, basename)
+      pinned_child_identity(parent, basename, directory: true)
+    rescue Errno::ENOENT
+      :missing
+    rescue Errno::ELOOP, Errno::ENOTDIR, UnsafePathError
+      :replaced
     end
 
     def pinned_child_identity(parent, basename, directory: false)
