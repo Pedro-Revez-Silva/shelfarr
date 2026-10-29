@@ -1317,6 +1317,7 @@ class PostProcessingJob < ApplicationJob
 
     removed = source_cleanup.fetch(:operation).call
     return :complete if removed == true
+    return :retry if removed == :retry
 
     source_snapshot = source_cleanup.fetch(:source_snapshot)
     if source_snapshot && RemoteResult.succeeded?(FileCopyService.source_file_quarantined?(source_snapshot))
@@ -1351,32 +1352,52 @@ class PostProcessingJob < ApplicationJob
     )
   end
 
+  def self.directory_source_quarantine_pending?(payload)
+    source_root = FileCopyService.deserialize_source_root(payload.fetch("source_root"))
+    FileCopyService.owned_source_tree_quarantined?(source_root)
+  end
+
   def remove_import_source_tree(source_root, imported_source_files, destination_snapshots)
     expected_files = source_root.entries.filter_map do |relative, manifest|
       relative if manifest[2] == :file
     end.sort
     unless imported_source_files.to_a.sort == expected_files
-      Rails.logger.warn(
-        "[PostProcessingJob] Source directory contains files that were not imported; it was retained"
+      return retain_directory_source(
+        source_root,
+        "Source directory contains files that were not imported; it was retained"
       )
-      return false
     end
 
     unless destination_snapshots_current?(destination_snapshots)
-      Rails.logger.warn(
-        "[PostProcessingJob] An imported library file changed; the source directory was retained"
+      return retain_directory_source(
+        source_root,
+        "An imported library file changed; the source directory was retained"
       )
-      return false
     end
 
     removed = FileCopyService.remove_source_tree(
       source_root,
       allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
     )
-    unless removed == true
-      Rails.logger.warn "[PostProcessingJob] Source directory was retained"
-    end
+    return retain_directory_source(source_root, "Source directory was retained") if removed == false
+
+    Rails.logger.warn "[PostProcessingJob] Source directory was retained" unless removed == true
     removed
+  end
+
+  def retain_directory_source(source_root, message)
+    restored = FileCopyService.restore_owned_source_tree(
+      source_root,
+      allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+    )
+    case restored
+    when :absent, :restored
+      Rails.logger.warn "[PostProcessingJob] #{message}"
+      false
+    else
+      Rails.logger.warn "[PostProcessingJob] Owned source quarantine remains; source cleanup will retry"
+      :retry
+    end
   end
 
   def destination_snapshots_current?(snapshots)

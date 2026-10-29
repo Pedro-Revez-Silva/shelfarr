@@ -1416,6 +1416,112 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_nothing_raised { @book.destroy! }
   end
 
+  test "directory move recovery releases the cleanup claim when a symlink replaces a finished source" do
+    external_id = "a7" * 20
+    client = interrupt_directory_move_before_source_deletion(external_id: external_id)
+    source_stat = File.stat(@temp_source)
+    quarantine = File.join(
+      @temp_download_base,
+      ".shelfarr-remove-#{source_stat.dev.to_s(16)}-#{source_stat.ino.to_s(16)}"
+    )
+    library = File.join(@temp_dest_base, @book.author, @book.title)
+    File.rename(@temp_source, quarantine)
+    FileUtils.rm_rf(quarantine)
+    File.symlink(library, @temp_source)
+    assert @request.post_processing_recovery_pending?
+    assert @book.post_processing_recovery_pending?
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert File.symlink?(@temp_source)
+    assert_equal library, File.readlink(@temp_source)
+    assert_equal "test audio content", File.binread(File.join(library, "audiobook.mp3"))
+    assert_equal "chapter audio", File.binread(File.join(library, "Disc One", "chapter.mp3"))
+    assert_not File.exist?(quarantine)
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_not @request.reload.post_processing_recovery_pending?
+    assert_not @book.reload.post_processing_recovery_pending?
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+    assert_nothing_raised { @request.destroy! }
+    assert_nothing_raised { @book.destroy! }
+  end
+
+  test "directory move recovery restores an owned quarantine when an imported file changed" do
+    external_id = "b8" * 20
+    client = interrupt_directory_move_before_source_deletion(external_id: external_id)
+    source_stat = File.stat(@temp_source)
+    quarantine = File.join(
+      @temp_download_base,
+      ".shelfarr-remove-#{source_stat.dev.to_s(16)}-#{source_stat.ino.to_s(16)}"
+    )
+    File.rename(@temp_source, quarantine)
+    File.unlink(File.join(quarantine, "Disc One", "chapter.mp3"))
+    library_file = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    File.binwrite(library_file, "tagged by the operator")
+    assert @request.post_processing_recovery_pending?
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert_not File.exist?(quarantine)
+    assert File.directory?(@temp_source)
+    assert_equal "test audio content", File.binread(File.join(@temp_source, "audiobook.mp3"))
+    assert_not File.exist?(File.join(@temp_source, "Disc One", "chapter.mp3"))
+    assert_equal "tagged by the operator", File.binread(library_file)
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+    assert_not @request.reload.post_processing_recovery_pending?
+    assert_not @book.reload.post_processing_recovery_pending?
+    assert_nil DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )
+    assert_nothing_raised { @request.destroy! }
+    assert_nothing_raised { @book.destroy! }
+  end
+
+  test "directory move recovery keeps the cleanup claim until an owned quarantine can be restored" do
+    external_id = "c9" * 20
+    client = interrupt_directory_move_before_source_deletion(external_id: external_id)
+    source_stat = File.stat(@temp_source)
+    quarantine = File.join(
+      @temp_download_base,
+      ".shelfarr-remove-#{source_stat.dev.to_s(16)}-#{source_stat.ino.to_s(16)}"
+    )
+    File.rename(@temp_source, quarantine)
+    File.unlink(File.join(quarantine, "audiobook.mp3"))
+    FileUtils.mkdir_p(@temp_source)
+    File.binwrite(File.join(@temp_source, "new-download.mp3"), "new download")
+    library_file = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    File.binwrite(library_file, "tagged by the operator")
+
+    PostProcessingRecoveryJob.perform_now
+
+    assert File.directory?(quarantine)
+    assert_equal "chapter audio", File.binread(File.join(quarantine, "Disc One", "chapter.mp3"))
+    assert_equal "new download", File.binread(File.join(@temp_source, "new-download.mp3"))
+    assert_equal "tagged by the operator", File.binread(library_file)
+    assert @download.reload.post_processing_cleanup_state.present?
+    assert_nil @download.external_id_released_at
+    assert @request.reload.post_processing_recovery_pending?
+    assert @book.reload.post_processing_recovery_pending?
+    assert_equal @download.id, DownloadJob.new.send(
+      :other_download_with_external_id,
+      external_id,
+      0,
+      download_client_id: client.id
+    )&.id
+    assert_raises(ActiveRecord::RecordNotDestroyed) { @request.destroy! }
+    assert_raises(ActiveRecord::RecordNotDestroyed) { @book.reload.destroy! }
+  end
+
   test "move import removes the source on NFS EINVAL when non-atomic publication is enabled" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:completed_download_import_mode, "move")
