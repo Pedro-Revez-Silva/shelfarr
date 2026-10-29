@@ -59,11 +59,11 @@ class SequenceMarker
   # Digits may be glued ("Vol2", "T2", "T.2", "T02"). A full word needs a
   # separator before a roman numeral or spelled number, so "Buchi" and "parti"
   # are not volumes. T.II / T II still count. An apostrophe belongs to the
-  # word, so a marker cannot start inside "Don't". A dotted initial
-  # ("C. G." / "C.G.") is not a roman numeral. A word after the numeral
-  # ("Book V A Novel") still is. "T. C. Boyle" is an author initial, not
-  # tome 100. A part label, release word, or language token after "T V"
-  # is still a volume.
+  # word, so a marker cannot start inside "Don't". A dotted initial followed
+  # by a spaced surname ("C. G. Jung", "C.G. Jung") is not a roman numeral.
+  # A scene dot is only a word break, so "Book.V.A.Novel" is still volume 5.
+  # "T. C. Boyle" is an author initial, not tome 100. A part label, release
+  # word, or language token after "T V" is still a volume.
   MARKER_TEMPLATE = <<~'PATTERN'
     (?<![A-Za-z]['`´’‘])
     \b
@@ -76,7 +76,7 @@ class SequenceMarker
     )
     (%{number})
     \b
-    (?!(?<=\b[ivxlcdm])(?:\.\s*|\s+)[a-z]\.)
+    (?!(?<=\b[ivxlcdm])(?:\.\s*|\s+)[a-z]\.(?:\s*[a-z]\.)*\s+[a-z])
   PATTERN
   FULL_PATTERN = Regexp.new(
     format(MARKER_TEMPLATE, words: WORD_ALTERNATION, number: ANY_NUMBER, followers: FOLLOWER_ALTERNATION),
@@ -281,15 +281,16 @@ class SequenceMarker
       token.is_a?(Array) ? [ text, token[1], token[2] ] : text
     end
 
-    # "C G Jung" and "C. Jung" credit Carl Gustav Jung. Mask them before a
-    # neighboring letter is read as a roman volume.
+    # "C G Jung" and "C. Jung" credit Carl Gustav Jung. A catalog name can
+    # omit middle initials the release still prints ("Carl Jung" / "C G Jung").
+    # Mask the credit before a neighboring letter is read as a roman volume.
     def initial_credit_spans(text, author)
       parts = author.to_s.scan(/[[:alpha:]]+/)
       return [] if parts.size < 2
 
       surname = Regexp.escape(parts.last)
       initials = parts[0...-1].map { |part| Regexp.escape(part[0]) }
-      patterns = [ full_initials_pattern(initials, surname) ]
+      patterns = [ full_initials_pattern(initials, surname), extra_middle_initials_pattern(initials.first, surname) ]
       patterns << first_initial_pattern(initials.first, surname) if initials.size > 1
 
       spans = []
@@ -310,6 +311,14 @@ class SequenceMarker
 
     def first_initial_pattern(letter, surname)
       /(?<![[:alnum:]])#{letter}(?:[._]+\s*|\s+)#{surname}(?![[:alnum:]])/i
+    end
+
+    # Extra single-letter initials may sit between the first initial and the
+    # surname. A longer word is not an initial, so the title itself stays.
+    def extra_middle_initials_pattern(letter, surname)
+      extra = "[a-z](?![[:alnum:]])\\.?"
+      separator = "(?:[._]+\\s*|\\s+)"
+      /(?<![[:alnum:]])#{letter}\.?(?:#{separator}#{extra})+(?:#{separator})?#{surname}(?![[:alnum:]])/i
     end
 
     def merge_spans(spans)
