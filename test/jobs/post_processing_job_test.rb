@@ -3205,6 +3205,113 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(source_extra)
   end
 
+  test "partial move recovery deletes remaining imported files and the completed usenet item" do
+    source_epub, source_pdf, source_extra = prepare_ebook_download_with_two_books_and_repair_file
+    pdf_bytes = File.binread(source_pdf)
+    client = DownloadClient.create!(
+      name: "SABnzbd Partial Recovery",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_partial")
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+    job = PostProcessingJob.new(@download.id)
+    real_remove = FileCopyService.method(:remove_source_file)
+    real_unlink = FileCopyService.method(:native_unlinkat)
+
+    removing = lambda do |source_snapshot, destination_snapshot: nil|
+      basename = source_snapshot.path.basename.to_s
+      if basename == "a.epub"
+        return real_remove.call(source_snapshot, destination_snapshot: destination_snapshot)
+      end
+
+      flunk "unexpected imported source #{basename}" unless basename == "b.pdf"
+
+      unlinking = lambda do |directory_fd, name, flags = 0|
+        if name == FileCopyService::COPY_QUARANTINE_ENTRY
+          raise Interrupt, "killed during quarantine"
+        end
+
+        real_unlink.call(directory_fd, name, flags)
+      end
+      FileCopyService.stub(:native_unlinkat, unlinking) do
+        real_remove.call(source_snapshot, destination_snapshot: destination_snapshot)
+      end
+    end
+
+    VCR.turned_off do
+      history = stub_partial_move_usenet_history("SABnzbd_nzo_partial")
+
+      FileCopyService.stub(:remove_source_file, removing) do
+        assert_raises(Interrupt) { job.perform_now }
+      end
+
+      assert @request.reload.completed?
+      assert_not File.exist?(source_epub)
+      assert_not File.exist?(source_pdf)
+      assert File.exist?(source_extra)
+      assert_equal pdf_bytes, File.binread(Dir.glob(File.join(@temp_source, ".shelfarr-source-quarantine-*", "entry")).sole)
+      assert @download.reload.post_processing_cleanup_state.present?
+      assert_not_requested history
+
+      FileCopyService.stub(:snapshot_source_file, ->(*) { flunk "recovery re-snapshotted a source file" }) do
+        PostProcessingRecoveryJob.perform_now
+      end
+
+      assert_requested history
+    end
+
+    library = File.join(@temp_dest_base, @book.author, @book.title)
+    assert File.exist?(File.join(library, "Test Author - Test Audiobook.epub"))
+    assert File.exist?(File.join(library, "Test Author - Test Audiobook.pdf"))
+    assert_not File.exist?(source_pdf)
+    assert_empty Dir.glob(File.join(@temp_source, ".shelfarr-source-quarantine-*"))
+    assert File.exist?(source_extra)
+    assert_nil @download.reload.post_processing_cleanup_state
+  end
+
+  test "partial move recovery removes the completed usenet item after imported files are already gone" do
+    _source_epub, _source_pdf, source_extra = prepare_ebook_download_with_two_books_and_repair_file
+    client = DownloadClient.create!(
+      name: "SABnzbd Partial Client Cleanup",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_client")
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+    job = PostProcessingJob.new(@download.id)
+
+    VCR.turned_off do
+      history = stub_partial_move_usenet_history("SABnzbd_nzo_client")
+
+      job.stub(:cleanup_usenet_download, ->(*) { raise Interrupt, "killed before client cleanup" }) do
+        assert_raises(Interrupt) { job.perform_now }
+      end
+
+      assert @request.reload.completed?
+      assert File.exist?(source_extra)
+      assert_not Dir.glob(File.join(@temp_source, "*.epub")).any?
+      assert_not Dir.glob(File.join(@temp_source, "*.pdf")).any?
+      assert @download.reload.post_processing_cleanup_state.present?
+      assert_not_requested history
+
+      FileCopyService.stub(:snapshot_source_file, ->(*) { flunk "recovery re-snapshotted a source file" }) do
+        PostProcessingRecoveryJob.perform_now
+      end
+
+      assert_requested history
+    end
+
+    assert File.exist?(source_extra)
+    assert_nil @download.reload.post_processing_cleanup_state
+  end
+
   test "NFS move retains the source and does not remove the completed usenet item" do
     client = DownloadClient.create!(
       name: "SABnzbd NFS Retain",
@@ -4695,6 +4802,47 @@ class PostProcessingJobTest < ActiveJob::TestCase
     @book.update!(book_type: :ebook)
     SettingsService.set(:ebook_output_path, @temp_dest_base)
     [ source_ebook, source_extra ]
+  end
+
+  def prepare_ebook_download_with_two_books_and_repair_file
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    source_epub = File.join(@temp_source, "a.epub")
+    source_pdf = File.join(@temp_source, "b.pdf")
+    source_extra = File.join(@temp_source, "release.par2")
+    write_valid_ebook_file(source_epub)
+    write_valid_ebook_file(source_pdf)
+    File.binwrite(source_extra, "PAR2\nrepair data")
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_filename_template, "{author} - {title}")
+    [ source_epub, source_pdf, source_extra ]
+  end
+
+  def stub_partial_move_usenet_history(external_id)
+    stub_request(:get, "http://localhost:8080/api")
+      .with(query: hash_including(
+        "mode" => "queue",
+        "name" => "delete",
+        "value" => external_id
+      ))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "status" => false, "nzo_ids" => [] }.to_json
+      )
+    stub_request(:get, "http://localhost:8080/api")
+      .with(query: hash_including(
+        "mode" => "history",
+        "name" => "delete",
+        "value" => external_id,
+        "del_files" => "1"
+      ))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "status" => true }.to_json
+      )
   end
 
   def without_atomic_file_publication(&operation)

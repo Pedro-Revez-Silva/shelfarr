@@ -4132,6 +4132,68 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "changed bytes", File.binread(destination)
   end
 
+  test "remove_source_file retains its source when the verified destination disappears" do
+    destination = File.join(@dest_dir, "published-missing.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    destination_snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      require_durable: true
+    )
+    source_snapshot = FileCopyService.snapshot_source_file(@src_file)
+    File.unlink(destination)
+
+    assert_not FileCopyService.remove_source_file(
+      source_snapshot,
+      destination_snapshot: destination_snapshot
+    )
+    assert_equal "test content", File.binread(@src_file)
+    assert_not File.exist?(destination)
+    assert_empty Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*"))
+  end
+
+  test "remove_source_file retains a quarantined source when its verified destination disappears" do
+    destination = File.join(@dest_dir, "published-quarantine.txt")
+    FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+    destination_snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      require_durable: true
+    )
+    source_snapshot = FileCopyService.snapshot_source_file(@src_file)
+    real_unlink = FileCopyService.method(:native_unlinkat)
+    interrupted = false
+
+    unlinking = lambda do |directory_fd, basename, flags = 0|
+      if !interrupted && basename == FileCopyService::COPY_QUARANTINE_ENTRY
+        interrupted = true
+        raise Interrupt, "simulated hard interruption"
+      end
+
+      real_unlink.call(directory_fd, basename, flags)
+    end
+
+    FileCopyService.stub(:native_unlinkat, unlinking) do
+      assert_raises(Interrupt) do
+        FileCopyService.remove_source_file(
+          source_snapshot,
+          destination_snapshot: destination_snapshot
+        )
+      end
+    end
+    File.unlink(destination)
+
+    assert_not FileCopyService.remove_source_file(
+      source_snapshot,
+      destination_snapshot: destination_snapshot
+    )
+    assert_equal "test content", File.binread(@src_file)
+    assert_not File.exist?(destination)
+    assert_empty Dir.glob(File.join(@tmp_dir, ".shelfarr-source-quarantine-*"))
+  end
+
   test "remove_source_file validates the destination when the source is already missing" do
     destination = File.join(@dest_dir, "missing-source-destination.txt")
     FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)

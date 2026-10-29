@@ -146,6 +146,14 @@ class PostProcessingJob < ApplicationJob
       book_path = imported_book_path(book, destination)
       @imported_library_entry = true
       cleanup_state = source_cleanup&.fetch(:state)
+      if remove_usenet_download && cleanup_state
+        cleanup_state = with_pending_client_cleanup(
+          cleanup_state,
+          source_path,
+          source_authorization.fetch(:directory)
+        )
+        source_cleanup[:state] = cleanup_state
+      end
       acquisition_finalized = RemoteResult.succeeded?(
         finalize_acquisition!(download, request, book, book_path, cleanup_state)
       )
@@ -155,15 +163,15 @@ class PostProcessingJob < ApplicationJob
       # Download ownership commit together. A hard kill before that commit can
       # therefore retry the idempotent import without losing its source.
       cleanup_outcome = remove_import_source(source_cleanup)
-      if cleanup_state && cleanup_outcome != :retry
-        clear_source_cleanup_state(download, cleanup_state)
-      end
       if remove_usenet_download && cleanup_outcome == :complete
         cleanup_usenet_download(
           download,
           source_path,
           source_directory: source_authorization.fetch(:directory)
         )
+      end
+      if cleanup_state && cleanup_outcome != :retry
+        clear_source_cleanup_state(download, cleanup_state)
       end
 
       run_completion_side_effects(request, download, book, book_path)
@@ -782,14 +790,10 @@ class PostProcessingJob < ApplicationJob
         indexed[path] = snapshots.dup.freeze
       end.freeze
       if move_completed_downloads?
-        # complete! treats a nil cleanup state as released, so the pending
-        # deletion has to be stored before that runs.
-        cleanup_state = JSON.generate(
-          "source_root" => FileCopyService.serialize_source_root(source_root),
-          "imported_source_files" => imported_source_files.to_a,
-          "destinations" => destination_snapshots.map { |snapshot|
-            FileCopyService.serialize_file_snapshot(snapshot)
-          }
+        imported_file_snapshots = imported_file_cleanup_snapshots(
+          source_root,
+          imported_source_files,
+          destination_snapshots_by_source
         )
         source_cleanup = {
           operation: lambda do
@@ -797,10 +801,15 @@ class PostProcessingJob < ApplicationJob
               source_root,
               imported_source_files,
               destination_snapshots,
-              destination_snapshots_by_source
+              imported_file_snapshots: imported_file_snapshots
             )
           end,
-          state: cleanup_state,
+          state: directory_move_cleanup_state(
+            source_root,
+            imported_source_files,
+            destination_snapshots,
+            imported_file_snapshots
+          ),
           source_snapshot: nil
         }
       elsif require_durable
@@ -1359,11 +1368,28 @@ class PostProcessingJob < ApplicationJob
     destination_snapshots = payload.fetch("destinations").map { |snapshot|
       FileCopyService.deserialize_file_snapshot(snapshot)
     }
+    imported_file_snapshots = Array(payload["imported_file_snapshots"]).map { |pair|
+      {
+        relative: pair.fetch("relative"),
+        source: FileCopyService.deserialize_file_snapshot(pair.fetch("source")),
+        destination: FileCopyService.deserialize_file_snapshot(pair.fetch("destination"))
+      }
+    }
     new(0).send(
       :remove_import_source_tree,
       source_root,
       payload.fetch("imported_source_files"),
-      destination_snapshots
+      destination_snapshots,
+      imported_file_snapshots: imported_file_snapshots
+    )
+  end
+
+  def self.resume_persisted_client_cleanup(download, client_cleanup)
+    new(download.id).send(
+      :cleanup_usenet_download,
+      download,
+      client_cleanup.fetch("source_path"),
+      source_directory: client_cleanup.fetch("source_directory")
     )
   end
 
@@ -1376,7 +1402,7 @@ class PostProcessingJob < ApplicationJob
     source_root,
     imported_source_files,
     destination_snapshots,
-    destination_snapshots_by_source = nil
+    imported_file_snapshots: nil
   )
     expected_files = source_root.entries.filter_map do |relative, manifest|
       relative if manifest[2] == :file
@@ -1410,29 +1436,95 @@ class PostProcessingJob < ApplicationJob
     # Ebook and comic imports skip files they will not publish. Move still has
     # to drop the bytes that were published; the skipped files stay here.
     return false if imported_files.empty?
+    return false if imported_file_snapshots.blank?
+
+    saved_files = imported_file_snapshots.map { |pair| pair.fetch(:relative) }.sort
+    unless saved_files == imported_files
+      Rails.logger.warn(
+        "[PostProcessingJob] Imported source snapshots do not match the download; the source directory was retained"
+      )
+      return false
+    end
 
     Rails.logger.warn(
       "[PostProcessingJob] Source directory contains files that were not imported; removing only the imported files"
     )
-    imported_files.all? do |relative|
-      remove_imported_source_file(source_root, relative, destination_snapshots_by_source)
+    remove_saved_imported_files(imported_file_snapshots)
+  end
+
+  def remove_saved_imported_files(imported_file_snapshots)
+    retry_later = false
+
+    imported_file_snapshots.each do |pair|
+      removed = FileCopyService.remove_source_file(
+        pair.fetch(:source),
+        destination_snapshot: pair.fetch(:destination)
+      )
+      next if removed == true
+
+      quarantined = FileCopyService.source_file_quarantined?(pair.fetch(:source))
+      if RemoteResult.succeeded?(quarantined) || RemoteResult.failed?(removed) || RemoteResult.failed?(quarantined)
+        retry_later = true
+        next
+      end
+
+      Rails.logger.warn "[PostProcessingJob] Imported source file changed; it was retained"
+      return :retry if retry_later
+
+      return false
+    end
+
+    return :retry if retry_later
+
+    true
+  end
+
+  def imported_file_cleanup_snapshots(source_root, imported_source_files, destination_snapshots_by_source)
+    expected_files = source_root.entries.filter_map do |relative, manifest|
+      relative if manifest[2] == :file
+    end
+    return nil if (expected_files - imported_source_files.to_a).empty?
+    return nil if imported_source_files.empty?
+
+    imported_source_files.to_a.sort.map do |relative|
+      source_path = source_root.path.join(relative).expand_path
+      snapshots = destination_snapshots_by_source[source_path.to_s]
+      return nil unless snapshots&.one?
+
+      {
+        relative: relative,
+        source: FileCopyService.snapshot_source_file(source_path.to_s, source_root: source_root),
+        destination: snapshots.first
+      }
     end
   end
 
-  def remove_imported_source_file(source_root, relative, destination_snapshots_by_source)
-    return false if destination_snapshots_by_source.nil?
-
-    source_path = source_root.path.join(relative).expand_path
-    snapshots = destination_snapshots_by_source[source_path.to_s]
-    return false unless snapshots&.one?
-
-    file_snapshot = FileCopyService.snapshot_source_file(source_path.to_s, source_root: source_root)
-    removed = FileCopyService.remove_source_file(
-      file_snapshot,
-      destination_snapshot: snapshots.first
+  def directory_move_cleanup_state(source_root, imported_source_files, destination_snapshots, imported_file_snapshots)
+    JSON.generate(
+      "source_root" => FileCopyService.serialize_source_root(source_root),
+      "imported_source_files" => imported_source_files.to_a,
+      "destinations" => destination_snapshots.map { |snapshot|
+        FileCopyService.serialize_file_snapshot(snapshot)
+      },
+      "imported_file_snapshots" => imported_file_snapshots&.map { |pair|
+        {
+          "relative" => pair.fetch(:relative),
+          "source" => FileCopyService.serialize_file_snapshot(pair.fetch(:source)),
+          "destination" => FileCopyService.serialize_file_snapshot(pair.fetch(:destination))
+        }
+      }
     )
-    Rails.logger.warn "[PostProcessingJob] Imported source file changed; it was retained" unless removed == true
-    removed == true
+  end
+
+  def with_pending_client_cleanup(cleanup_state, source_path, source_directory)
+    payload = JSON.parse(cleanup_state)
+    return cleanup_state unless payload["imported_file_snapshots"]
+
+    payload["client_cleanup"] = {
+      "source_path" => source_path,
+      "source_directory" => source_directory
+    }
+    JSON.generate(payload)
   end
 
   def retain_directory_source(source_root, message)
