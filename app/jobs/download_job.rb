@@ -40,6 +40,17 @@ class DownloadJob < ApplicationJob
   # Extensions that are also ordinary words ("Live at the Opus") and need
   # format-style context (".opus", "[opus]", "(opus)") in a title to count.
   AMBIGUOUS_AUDIOBOOK_EXTENSIONS = %w[opus].freeze
+  # Gutenberg paths use these tokens ahead of a qualifier: 1342.epub3.images,
+  # 2.kf8.images, 2.kindle.images.
+  EBOOK_PATH_EXTENSIONS = {
+    "azw3" => "azw3",
+    "epub" => "epub",
+    "epub3" => "epub",
+    "kf8" => "mobi",
+    "kindle" => "mobi",
+    "mobi" => "mobi",
+    "pdf" => "pdf"
+  }.freeze
 
   def perform(download_id)
     download = Download.find_by(id: download_id)
@@ -581,6 +592,9 @@ class DownloadJob < ApplicationJob
   end
 
   def infer_extension(url, search_result)
+    extension = ebook_extension_from_url(url)
+    return extension if extension.is_a?(String)
+
     normalized_url = url.to_s.downcase
 
     return "epub" if normalized_url.include?("epub")
@@ -597,6 +611,20 @@ class DownloadJob < ApplicationJob
     return "azw3" if title.include?("azw3")
 
     "epub"
+  end
+
+  def ebook_extension_from_url(url)
+    uri = URI.parse(normalize_direct_download_url(url))
+    path = uri.path.to_s
+    path = URI.decode_www_form_component(path) unless /%(?!\h\h)/.match?(path)
+    File.basename(path).downcase.split(".")[1..]&.reverse_each do |segment|
+      extension = EBOOK_PATH_EXTENSIONS[segment]
+      return extension if extension
+    end
+
+    nil
+  rescue URI::InvalidURIError => error
+    RemoteResult::Failed.new(error)
   end
 
   def infer_audiobook_extension(url, search_result)
