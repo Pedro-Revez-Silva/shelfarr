@@ -39,6 +39,9 @@ class ZLibraryClientTest < ActiveSupport::TestCase
   test "test_connection returns true when login succeeds" do
     VCR.turned_off do
       stub_zlibrary_login_success
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(status: 200, body: { success: 1, books: [] }.to_json, headers: json_headers)
+
       result = ZLibraryClient.test_connection
       assert_instance_of RemoteResult::Ok, result
       assert_equal true, result.value
@@ -559,7 +562,7 @@ class ZLibraryClientTest < ActiveSupport::TestCase
         request.headers["Cookie"].nil?
       end
       assert_requested profile, times: 2
-      assert_requested search, times: 2
+      assert_requested search, times: 3
       assert_not_requested login_post
       assert_not_requested wall
     end
@@ -707,6 +710,8 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       end
 
       profile.to_return(status: 200, body: { success: 1, user: { id: 12345 } }.to_json, headers: json_headers)
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(status: 200, body: { success: 1, books: [] }.to_json, headers: json_headers)
 
       assert ZLibraryClient.test_connection!
       assert_requested profile, times: 5
@@ -1220,6 +1225,189 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       end
 
       assert_match /invalid response/, error.message
+    end
+  end
+
+  test "search reports a bot wall when a saved-session search redirects to itself" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-library.sk/eapi/user/profile")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 200,
+          body: { success: 1, user: { id: 12345 } }.to_json,
+          headers: json_headers
+        )
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(status: 307, headers: { "Location" => "https://z-library.sk/eapi/book/search" })
+      stub_request(:get, %r{\Ahttps://z-library\.sk/s/})
+        .to_return { |request| { status: 307, headers: { "Location" => request.uri.to_s } } }
+
+      error = assert_raises(ZLibraryClient::ConnectionError) { ZLibraryClient.search("Middlemarch") }
+
+      assert_match(/search is bot-walled/i, error.message)
+      assert_match(/z-library\.sk/, error.message)
+      assert_no_match(/status 307/, error.message)
+      assert_requested :get, %r{\Ahttps://z-library\.sk/s/Middlemarch}
+
+      connection = assert_raises(ZLibraryClient::ConnectionError) { ZLibraryClient.test_connection! }
+      assert_match(/search is bot-walled/i, connection.message)
+    end
+  end
+
+  test "search replays a saved session after a same-url 307 sets a cookie" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      search_url = "https://z-library.sk/eapi/book/search"
+      stub_request(:post, search_url)
+        .to_return(
+          status: 307,
+          headers: { "Location" => search_url, "Set-Cookie" => "dw=1; Path=/" }
+        ).then
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            books: [ { id: 5, hash: "abc", name: "Middlemarch", extension: "epub" } ]
+          }.to_json,
+          headers: json_headers
+        )
+      results = ZLibraryClient.search("Middlemarch")
+
+      assert_equal "5", results.first.id
+      assert_equal "Middlemarch", results.first.title
+      assert_requested(:post, search_url, times: 1) do |request|
+        request.headers["Cookie"] == "remix_userid=12345; remix_userkey=saved-key"
+      end
+      assert_requested(:post, search_url, times: 1) do |request|
+        request.headers["Cookie"] == "dw=1; remix_userid=12345; remix_userkey=saved-key"
+      end
+    end
+  end
+
+  test "search tries the next domain when a saved-session search redirects to itself" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-lib.gd")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(status: 307, headers: { "Location" => "https://z-library.sk/eapi/book/search" })
+      html = stub_request(:get, %r{\Ahttps://z-library\.sk/s/})
+      recovered = stub_request(:post, "https://z-lib.gd/eapi/book/search")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            books: [ { id: 5, hash: "abc", name: "Middlemarch", extension: "epub" } ]
+          }.to_json,
+          headers: json_headers
+        )
+
+      results = ZLibraryClient.search("Middlemarch")
+
+      assert_equal "5", results.first.id
+      assert_requested recovered
+      assert_not_requested html
+    end
+  end
+
+  test "search follows a 307 onto another Z-Library domain" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(status: 307, headers: { "Location" => "https://z-lib.gd/eapi/book/search" })
+      recovered = stub_request(:post, "https://z-lib.gd/eapi/book/search")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            books: [ { id: 5, hash: "abc", name: "Middlemarch", extension: "epub" } ]
+          }.to_json,
+          headers: json_headers
+        )
+
+      assert_equal "5", ZLibraryClient.search("Middlemarch").first.id
+      assert_equal "5", ZLibraryClient.search("Another").first.id
+
+      assert_requested :post, "https://z-library.sk/eapi/book/search", times: 1
+      assert_requested recovered, times: 2
+    end
+  end
+
+  test "html search replays a cookie set by a same-url 307" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(
+          status: 400,
+          body: { success: 0, error: "Some errors occured." }.to_json,
+          headers: json_headers
+        )
+      html_url = "https://z-library.sk/s/Test%20Book?extensions%5B%5D=EPUB&extensions%5B%5D=PDF"
+      stub_request(:get, html_url)
+        .to_return(
+          status: 307,
+          headers: { "Location" => html_url, "Set-Cookie" => "dw=1; Path=/" }
+        ).then
+        .to_return(status: 200, body: zlibrary_search_html, headers: { "Content-Type" => "text/html" })
+
+      results = ZLibraryClient.search("Test Book")
+
+      assert_equal "999", results.first.id
+      assert_requested(:get, html_url, times: 1) do |request|
+        request.headers["Cookie"] == "dw=1; remix_userid=12345; remix_userkey=abc123"
+      end
+    end
+  end
+
+  test "search does not follow a diamwall redirect and reports a bot wall" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(
+          status: 307,
+          body: diamwall_html,
+          headers: {
+            "Content-Type" => "text/html",
+            "Location" => "https://z-library.sk/diamwall/challenge"
+          }
+        )
+      stub_request(:get, %r{\Ahttps://z-library\.sk/s/})
+        .to_return(
+          status: 307,
+          body: diamwall_html,
+          headers: {
+            "Content-Type" => "text/html",
+            "Location" => "https://z-library.sk/diamwall/challenge"
+          }
+        )
+      challenge = stub_request(:any, "https://z-library.sk/diamwall/challenge")
+
+      error = assert_raises(ZLibraryClient::ConnectionError) { ZLibraryClient.search("Middlemarch") }
+
+      assert_match(/search is bot-walled/i, error.message)
+      assert_not_requested challenge
     end
   end
 

@@ -67,6 +67,15 @@ class ZLibraryClient
       ensure_configured!
       auth = login
       validate_saved_session!(auth) if saved_remix_auth
+      # Login can succeed while /eapi/book/search is still bot-walled.
+      fetch_search_results(
+        auth,
+        query: "test",
+        file_types: %w[epub pdf],
+        limit: 1,
+        language: nil,
+        after_attempt: nil
+      )
       true
     end
 
@@ -75,35 +84,14 @@ class ZLibraryClient
 
       with_authenticated_retry(context: "search", after_attempt: after_attempt) do |auth|
         Rails.logger.info "[ZLibraryClient] Searching for '#{query}'"
-
-        payload = [ [ "message", query ], [ "limit", limit.to_s ] ]
-        Array(file_types).each { |ext| payload << [ "extensions[]", ext ] }
-        payload << [ "languages[]", language ] if language.present?
-
-        response = post_search(auth, payload, after_attempt: after_attempt)
-
-        if search_html_fallback_response?(response)
-          alternate_results = search_eapi_alternate_domains(
-            auth,
-            payload,
-            limit,
-            after_attempt: after_attempt
-          )
-          return alternate_results if alternate_results
-
-          Rails.logger.warn "[ZLibraryClient] eAPI search unavailable; falling back to HTML search"
-          return search_html(
-            auth,
-            query,
-            file_types: file_types,
-            limit: limit,
-            language: language,
-            after_attempt: after_attempt
-          )
-        end
-
-        data = parse_response(response, context: "search")
-        parse_search_results(data.fetch("books", []), limit)
+        fetch_search_results(
+          auth,
+          query: query,
+          file_types: file_types,
+          limit: limit,
+          language: language,
+          after_attempt: after_attempt
+        )
       end
     end
 
@@ -296,10 +284,11 @@ class ZLibraryClient
       redirects_followed = 0
 
       loop do
-        normalized = [ method, normalize_login_url(url) ]
-        return { error: "redirect loop" } if visited[normalized]
+        # Replay a same-URL redirect when it sets a cookie. An unchanged jar is a loop.
+        visit_key = [ method, normalize_login_url(url), login_cookie_header(cookies, url).to_s ]
+        return { error: "redirect loop", url: url } if visited[visit_key]
 
-        visited[normalized] = true
+        visited[visit_key] = true
         if bot_wall_url?(url)
           return { bot_wall: true, error: "bot wall", url: url }
         end
@@ -727,6 +716,8 @@ class ZLibraryClient
 
     def bot_wall_response?(response)
       return true if redirect_location(response).match?(/diamwall/i)
+      # A book title can contain a challenge phrase. JSON is not the wall page.
+      return false if response.headers["content-type"].to_s.match?(/\bjson\b/i)
 
       response_body_string(response).match?(BOT_WALL_BODY_PATTERN)
     end
@@ -893,13 +884,68 @@ class ZLibraryClient
       "remix_userid=#{auth[:remix_userid]}; remix_userkey=#{auth[:remix_userkey]}"
     end
 
-    def post_search(auth, payload, after_attempt: nil)
-      observe_search_attempt(after_attempt) do
-        connection.post("#{auth[:base_url]}/eapi/book/search") do |req|
-          req.headers["Cookie"] = cookie_header(auth)
-          req.body = URI.encode_www_form(payload)
-        end
+    def fetch_search_results(auth, query:, file_types:, limit:, language:, after_attempt:)
+      payload = [ [ "message", query ], [ "limit", limit.to_s ] ]
+      Array(file_types).each { |ext| payload << [ "extensions[]", ext ] }
+      payload << [ "languages[]", language ] if language.present?
+
+      exchange = post_search_exchange(auth, payload, after_attempt: after_attempt)
+      response = usable_search_response(exchange)
+      walled_domains = []
+      walled_domains << auth[:domain] if search_exchange_walled?(exchange)
+
+      if response.nil? || search_html_fallback_response?(response)
+        alternate_results = search_eapi_alternate_domains(
+          auth,
+          payload,
+          limit,
+          after_attempt: after_attempt,
+          walled_domains: walled_domains
+        )
+        return alternate_results if alternate_results
       end
+
+      if response.nil?
+        if search_exchange_walled?(exchange)
+          return html_search_or_bot_wall(
+            auth,
+            walled_domains,
+            query: query,
+            file_types: file_types,
+            limit: limit,
+            language: language,
+            after_attempt: after_attempt
+          )
+        end
+
+        raise ConnectionError, "Z-Library search failed: #{exchange[:error].presence || "no response"}"
+      end
+
+      if search_html_fallback_response?(response)
+        Rails.logger.warn "[ZLibraryClient] eAPI search unavailable; falling back to HTML search"
+        return search_html(
+          auth,
+          query,
+          file_types: file_types,
+          limit: limit,
+          language: language,
+          after_attempt: after_attempt
+        )
+      end
+
+      remember_search_origin!(auth, exchange)
+      data = parse_response(response, context: "search")
+      parse_search_results(data.fetch("books", []), limit)
+    end
+
+    def post_search_exchange(auth, payload, after_attempt: nil)
+      follow_exchange(
+        "#{auth[:base_url]}/eapi/book/search",
+        method: :post,
+        body: URI.encode_www_form(payload),
+        after_attempt: after_attempt,
+        seed_cookies: cookie_header(auth)
+      )
     end
 
     def get_file_response(auth, id:, hash:)
@@ -935,11 +981,18 @@ class ZLibraryClient
       JSON.parse(response.body)
     end
 
-    def search_eapi_alternate_domains(current_auth, payload, limit, after_attempt: nil)
+    def search_eapi_alternate_domains(current_auth, payload, limit, after_attempt: nil, walled_domains: nil)
       each_alternate_auth(current_auth, after_attempt: after_attempt) do |auth|
-        response = post_search(auth, payload, after_attempt: after_attempt)
-        next if search_html_fallback_response?(response)
+        exchange = post_search_exchange(auth, payload, after_attempt: after_attempt)
+        if search_exchange_walled?(exchange)
+          walled_domains << auth[:domain] if walled_domains
+          next
+        end
 
+        response = usable_search_response(exchange)
+        next if response.nil? || search_html_fallback_response?(response)
+
+        remember_search_origin!(auth, exchange)
         data = parse_response(response, context: "search")
         return parse_search_results(data.fetch("books", []), limit)
       end
@@ -985,17 +1038,88 @@ class ZLibraryClient
     end
 
     def search_html(auth, query, file_types:, limit:, language:, after_attempt: nil)
-      response = observe_search_attempt(after_attempt) do
-        connection.get(html_search_url(auth[:base_url], query, file_types: file_types, language: language)) do |req|
-          req.headers["Cookie"] = cookie_header(auth)
-        end
+      result = read_html_search(
+        auth,
+        query: query,
+        file_types: file_types,
+        limit: limit,
+        language: language,
+        after_attempt: after_attempt
+      )
+      return result unless result == :bot_wall
+
+      raise_search_bot_wall!([ auth[:domain] ])
+    end
+
+    def html_search_or_bot_wall(auth, walled_domains, query:, file_types:, limit:, language:, after_attempt:)
+      result = read_html_search(
+        auth,
+        query: query,
+        file_types: file_types,
+        limit: limit,
+        language: language,
+        after_attempt: after_attempt
+      )
+      return result unless result == :bot_wall
+
+      walled_domains << auth[:domain]
+      raise_search_bot_wall!(walled_domains)
+    end
+
+    def read_html_search(auth, query:, file_types:, limit:, language:, after_attempt:)
+      exchange = follow_exchange(
+        html_search_url(auth[:base_url], query, file_types: file_types, language: language),
+        method: :get,
+        after_attempt: after_attempt,
+        seed_cookies: cookie_header(auth)
+      )
+      return :bot_wall if search_exchange_walled?(exchange)
+
+      response = exchange[:response]
+      unless response&.status == 200
+        raise ConnectionError, "Z-Library HTML search failed with status #{response&.status || exchange[:error]}"
       end
 
-      unless response.status == 200
-        raise ConnectionError, "Z-Library HTML search failed with status #{response.status}"
-      end
+      remember_search_origin!(auth, exchange)
+      parse_html_search_results(response_body_string(response), limit)
+    end
 
-      parse_html_search_results(response.body.to_s, limit)
+    # A same-URL 307 whose cookie jar never changes comes back as a redirect loop.
+    def search_exchange_walled?(exchange)
+      return true if exchange[:bot_wall]
+      return true if exchange[:error] == "redirect loop"
+
+      response = exchange[:response]
+      return false unless response
+
+      response.status == BOT_WALL_HTTP_STATUS || bot_wall_response?(response)
+    end
+
+    def usable_search_response(exchange)
+      return if search_exchange_walled?(exchange)
+
+      response = exchange[:response]
+      return if response.nil? || login_redirect?(response)
+
+      response
+    end
+
+    def remember_search_origin!(auth, exchange)
+      final_url = exchange[:url].to_s
+      return if final_url.blank?
+
+      final_uri = URI.parse(final_url)
+      base_url = login_base_url(final_uri, URI.parse(auth[:base_url]))
+      return if base_url == auth[:base_url].to_s.delete_suffix("/")
+
+      cache_auth(credential_signature, auth.merge(domain: final_uri.host, base_url: base_url))
+    end
+
+    def raise_search_bot_wall!(domains)
+      names = Array(domains).map { |domain| domain.to_s }.uniq
+      message = "Z-Library search is bot-walled (#{names.join(', ')}). Configure another domain that serves the eAPI."
+      Rails.logger.error "[ZLibraryClient] #{message}"
+      raise ConnectionError, message
     end
 
     def observe_search_attempt(after_attempt)
