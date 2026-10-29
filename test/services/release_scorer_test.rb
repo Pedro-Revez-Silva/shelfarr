@@ -1431,4 +1431,72 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
     assert score.high_confidence?, score.total.to_s
   end
+
+  test "scores a terminal roman volume when the author is also inside the title" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(
+      title: "The Collected Works of Carl Gustav Jung Volume I",
+      author: "Carl Gustav Jung",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(
+        title: "The Collected Works of Carl Gustav Jung Volume I - Carl Gustav Jung English EPUB",
+        seeders: 50
+      ),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert score.breakdown[:auto_select_allowed], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+    assert score.high_confidence?, score.total.to_s
+  end
+
+  test "scores a roman volume followed by a novel subtitle above the auto-select threshold" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(title: "The Dark Tower Book V", author: "Stephen King", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score = ReleaseScorer.score(
+      SearchResult.new(
+        title: "The Dark Tower Book V A Novel - Stephen King English EPUB",
+        seeders: 50
+      ),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert score.breakdown[:auto_select_allowed], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+    assert score.high_confidence?, score.total.to_s
+  end
+
+  test "scores an abbreviated roman volume before a language code above the auto-select threshold" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    book = Book.create!(
+      title: "Les Mis\u00E9rables T. V",
+      author: "Victor Hugo",
+      book_type: :ebook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "fr")
+    score = ReleaseScorer.score(
+      SearchResult.new(
+        title: "Victor.Hugo.-.Les.Miserables.T.V.FR.EPUB",
+        seeders: 50
+      ),
+      request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert score.breakdown[:auto_select_allowed], score.breakdown.inspect
+    assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
+    assert score.high_confidence?, score.total.to_s
+  end
 end

@@ -42,28 +42,28 @@ class SequenceMarker
   NUMBER_WORD = NUMBER_WORDS.keys.join("|").freeze
   NUMERIC_NUMBER = "0*\\d+|#{ROMAN_NUMBER}"
   ANY_NUMBER = "#{NUMERIC_NUMBER}|#{NUMBER_WORD}"
-  # Words that follow "T V" in a release name, not an author credit.
-  FOLLOWER_WORDS = (
-    MARKER_WORDS + %w[
-      english dutch german french spanish italian portuguese russian japanese
-      korean chinese polish swedish danish norwegian finnish turkish arabic
-      hebrew hindi thai vietnamese czech hungarian romanian bulgarian
-      ukrainian greek epub pdf mobi azw azw3 ebook audiobook m4b mp3 flac
-      cbr cbz retail multi
-    ]
-  ).uniq.freeze
-  FOLLOWER_ALTERNATION = FOLLOWER_WORDS.sort_by { |word| -word.length }.join("|").freeze
+  # Release words after an abbreviated roman marker ("T V FR", "T V Partie").
+  # Language tokens come from the release parser, so codes and names stay one list.
+  FORMAT_WORDS = %w[
+    epub pdf mobi azw azw3 ebook audiobook m4b mp3 flac cbr cbz retail multi
+  ].freeze
+  FOLLOWER_WORDS = (MARKER_WORDS + ReleaseParserService.language_tokens + FORMAT_WORDS).uniq.freeze
+  FOLLOWER_ALTERNATION = FOLLOWER_WORDS.sort_by { |word| -word.length }.map { |word|
+    Regexp.escape(word)
+  }.join("|").freeze
   GLUED_VOLUME_PATTERN = /\A(?:#{WORD_ALTERNATION}|t)(0*\d+)\z/
   private_constant :WORD_ALTERNATION, :ROMAN_NUMBER, :NUMBER_WORD, :NUMERIC_NUMBER, :ANY_NUMBER,
-    :ROMAN_VALUES, :ROMAN_GLYPHS, :FOLLOWER_WORDS, :FOLLOWER_ALTERNATION, :GLUED_VOLUME_PATTERN
+    :ROMAN_VALUES, :ROMAN_GLYPHS, :FORMAT_WORDS, :FOLLOWER_WORDS, :FOLLOWER_ALTERNATION,
+    :GLUED_VOLUME_PATTERN
 
   # Digits may be glued ("Vol2", "T2", "T.2", "T02"). A full word needs a
   # separator before a roman numeral or spelled number, so "Buchi" and "parti"
   # are not volumes. T.II / T II still count. An apostrophe belongs to the
-  # word, so a marker cannot start inside "Don't". A single letter that
-  # continues as another initial ("C. G." / "C G") is not a roman numeral.
-  # "T. C. Boyle" is an author initial, not tome 100. A part label or release
-  # word after "T V" is still a volume.
+  # word, so a marker cannot start inside "Don't". A dotted initial
+  # ("C. G." / "C.G.") is not a roman numeral. A word after the numeral
+  # ("Book V A Novel") still is. "T. C. Boyle" is an author initial, not
+  # tome 100. A part label, release word, or language token after "T V"
+  # is still a volume.
   MARKER_TEMPLATE = <<~'PATTERN'
     (?<![A-Za-z]['`´’‘])
     \b
@@ -76,7 +76,7 @@ class SequenceMarker
     )
     (%{number})
     \b
-    (?!(?<=\b[ivxlcdm])(?:\.\s*|\s+)[a-z](?:\.|\s))
+    (?!(?<=\b[ivxlcdm])(?:\.\s*|\s+)[a-z]\.)
   PATTERN
   FULL_PATTERN = Regexp.new(
     format(MARKER_TEMPLATE, words: WORD_ALTERNATION, number: ANY_NUMBER, followers: FOLLOWER_ALTERNATION),
@@ -193,37 +193,49 @@ class SequenceMarker
       result = []
       index = 0
       while index < tokens.length
-        raw = token_raw(tokens[index])
+        current = tokens[index]
         nxt = tokens[index + 1]
-        following = token_raw(tokens[index + 2]) if tokens[index + 2]
-        if nxt && volume_token_pair?(raw, token_raw(nxt), following)
-          result << token_with_text("volume", tokens[index])
+        following = tokens[index + 2]
+        if nxt && volume_token_pair?(current, nxt, following)
+          result << token_with_text("volume", current)
           result << token_with_text(normalize_number(token_raw(nxt)), nxt)
           index += 2
-        elsif (number = glued_volume_number(raw))
-          result << token_with_text("volume", tokens[index])
-          result << token_with_text(number, tokens[index])
+        elsif (number = glued_volume_number(token_raw(current)))
+          result << token_with_text("volume", current)
+          result << token_with_text(number, current)
           index += 1
         else
-          result << token_with_text(token_compare(tokens[index]), tokens[index])
+          result << token_with_text(token_compare(current), current)
           index += 1
         end
       end
       result
     end
 
-    def volume_token_pair?(word, number, following)
+    def volume_token_pair?(word_token, number_token, following_token)
+      word = token_raw(word_token)
+      number = token_raw(number_token)
       return false unless volume_number_token?(number)
 
       if word == "t"
         return false unless roman_or_digit?(number)
-        return false if single_roman_letter?(number) && author_initial_follower?(following)
+        return false if single_roman_letter?(number) && author_initial_follower?(token_raw(following_token))
       else
         return false unless MARKER_WORDS.include?(word)
-        return false if single_roman_letter?(number) && another_initial?(following)
+        return false if single_roman_letter?(number) && initial_continuation?(following_token)
       end
 
       true
+    end
+
+    # The next letter is an initial when it carries a dot ("C. G.", "C.G.", "C G.").
+    # "Book V A Novel" does not, so the numeral stays a volume.
+    def initial_continuation?(following_token)
+      another_initial?(token_raw(following_token)) && trailing_dot?(following_token)
+    end
+
+    def trailing_dot?(token)
+      token.is_a?(Array) && token[4]
     end
 
     def author_initial_follower?(following)
@@ -330,7 +342,8 @@ class SequenceMarker
           TitleKey.new(match[0]).canonical,
           offsets[match.begin(0)],
           offsets[match.end(0) - 1] + 1,
-          match[0]
+          match[0],
+          folded[match.end(0)] == "."
         ]
       end
       tokens

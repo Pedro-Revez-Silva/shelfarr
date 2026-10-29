@@ -158,4 +158,38 @@ class SequenceMarkerTest < ActiveSupport::TestCase
     assert_empty SequenceMarker.numbers("T. C. Boyle Stories")
     assert_empty SequenceMarker.numbers("T C Boyle Stories")
   end
+
+  test "keeps the author inside a title that ends on a roman volume" do
+    protected_title = "The Collected Works of Carl Gustav Jung Volume I"
+    source = SequenceMarker.without_author_credit(
+      "The Collected Works of Carl Gustav Jung Volume I - Carl Gustav Jung English EPUB",
+      author: "Carl Gustav Jung",
+      protected_title: protected_title
+    )
+
+    assert_includes source, "Carl Gustav Jung Volume I"
+    assert_not_includes source, "Jung English"
+    assert_equal SequenceMarker.numbers(protected_title), SequenceMarker.numbers(source)
+  end
+
+  test "reads a roman volume before a novel subtitle" do
+    release = "The Dark Tower Book V A Novel - Stephen King English EPUB"
+
+    assert_equal [ "5" ], SequenceMarker.numbers("The Dark Tower Book V")
+    assert_equal [ "5" ], SequenceMarker.numbers(release)
+    assert_equal [ "5" ], SequenceMarker.numbers("The Dark Tower Book V A Novel")
+    assert_equal [ "5" ], SequenceMarker.numbers("The Dark Tower Book V. A Novel")
+    assert_empty SequenceMarker.numbers("The Red Book C. G. Jung English EPUB")
+    assert_empty SequenceMarker.numbers("The Red Book C.G. Jung English EPUB")
+  end
+
+  test "reads an abbreviated roman volume before a language code" do
+    release = "Victor.Hugo.-.Les.Miserables.T.V.FR.EPUB"
+
+    assert_equal [ "5" ], SequenceMarker.numbers("Les Mis\u00E9rables T. V")
+    assert_equal [ "5" ], SequenceMarker.numbers(release)
+    assert_equal [ "5" ], SequenceMarker.numbers("Les Miserables T. V FR EPUB")
+    assert_empty SequenceMarker.numbers("T. C. Boyle Stories")
+    assert_empty SequenceMarker.numbers("T C Boyle Stories")
+  end
 end

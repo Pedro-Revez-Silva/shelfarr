@@ -356,7 +356,25 @@ class ReleaseParserService
       LANGUAGES.map { |code, info| [ info[:name], code ] }.sort_by(&:first)
     end
 
+    # Release-name tokens the language patterns actually match, including
+    # codes such as "fr" and names such as "french".
+    def language_tokens
+      @language_tokens ||= LANGUAGE_PATTERNS.flat_map { |config|
+        literal_language_tokens(config[:pattern].source)
+      }.flat_map { |token| language_token_forms(token) }.uniq.freeze
+    end
+
     private
+
+    def literal_language_tokens(source)
+      source.gsub(/\\./, " ").gsub(/\[[^\]]*\]/, " ").scan(/[[:alpha:]][[:alnum:]]*/)
+    end
+
+    def language_token_forms(token)
+      [ token.downcase, ActiveSupport::Inflector.transliterate(token).downcase ].uniq.select { |form|
+        form.match?(/\A[[:alpha:]][[:alnum:]]+\z/)
+      }
+    end
 
     def empty_result
       {
