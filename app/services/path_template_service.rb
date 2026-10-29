@@ -7,6 +7,9 @@ class PathTemplateService
   ].freeze
   FORMATTABLE_VARIABLES = %w[seriesNum].freeze
   DEFAULT_FILENAME_TEMPLATE = "{author} - {title}".freeze
+  # ext4 NAME_MAX is 255 bytes. The 100-character sanitizer still leaves a
+  # multibyte name over that once the extension is appended.
+  MAX_COMPONENT_BYTES = 255
   TOKEN_PATTERN = /\{([^{}]+)\}/
 
   class UnsafePathError < StandardError; end
@@ -136,7 +139,7 @@ class PathTemplateService
       ext = extension.to_s
       ext = ".#{ext}" unless ext.start_with?(".")
 
-      "#{result}#{ext}"
+      limit_filename_bytes(result, ext)
     end
 
     def filename_template_for(book)
@@ -178,7 +181,27 @@ class PathTemplateService
     end
 
     def sanitize_path(path)
-      sanitize_path_segments(path).presence || "Unknown"
+      sanitize_path_segments(path)
+        .split("/")
+        .map { |component| truncate_utf8_bytes(component, MAX_COMPONENT_BYTES) }
+        .join("/")
+        .presence || "Unknown"
+    end
+
+    # The extension is appended after the stem is rendered, so it comes out of
+    # the 255-byte budget.
+    def limit_filename_bytes(stem, extension)
+      available = MAX_COMPONENT_BYTES - extension.bytesize
+      "#{truncate_utf8_bytes(stem, available)}#{extension}"
+    end
+
+    # byteslice can end on a partial codepoint; drop that tail.
+    def truncate_utf8_bytes(value, maximum_bytes)
+      value = value.to_s
+      return value if maximum_bytes >= value.bytesize
+
+      truncated = value.byteslice(0, maximum_bytes).to_s
+      truncated.valid_encoding? ? truncated : truncated.scrub("")
     end
 
     # Remove path traversal segments (..) while preserving dots in filenames

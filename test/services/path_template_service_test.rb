@@ -623,6 +623,85 @@ class PathTemplateServiceTest < ActiveSupport::TestCase
     assert_equal "Stephen King - The Shining.m4b", result
   end
 
+  # A 100-character stem of multibyte metadata is still over ext4's 255-byte
+  # NAME_MAX once the extension is appended.
+  test "build_filename keeps multibyte template names within the filesystem byte limit" do
+    series = "「お前ごときが魔王に勝てると思うな」と勇者パーティを追放されたので、王都で気ままに暮らしたい"
+    @book.update!(
+      author: "kiki",
+      series: series,
+      title: "#{series} 1",
+      series_position: "1",
+      year: 2018
+    )
+
+    filename = PathTemplateService.build_filename(
+      @book,
+      ".epub",
+      template: "{author} - {series - }{seriesNum:00 - }{title}"
+    )
+    path = PathTemplateService.build_path(
+      @book,
+      "{author}/{series/}{seriesNum:00 - }{title} ({year})"
+    )
+
+    expected = "kiki - #{series} - 01 - " \
+      "「お前ごときが魔王に勝てると思うな」と勇者パーティを追放されたの.epub"
+    assert_equal expected, filename
+    assert_operator filename.bytesize, :<=, 255
+    assert filename.valid_encoding?
+    assert_equal [ "kiki", series, "01 - #{series} 1 (2018)" ], path.split("/")
+    path.split("/").each do |component|
+      assert_operator component.bytesize, :<=, 255
+    end
+
+    Dir.mktmpdir do |dir|
+      folder = File.join(dir, path)
+      FileUtils.mkdir_p(folder)
+      published = File.join(folder, filename)
+      File.write(published, "epub")
+      assert File.exist?(published)
+    end
+  end
+
+  test "build_filename truncates a multibyte stem on a UTF-8 boundary" do
+    @book.update!(title: "あ" * 90)
+
+    filename = PathTemplateService.build_filename(@book, ".epub", template: "{title}")
+
+    assert_equal "#{"あ" * 83}.epub", filename
+    assert_equal 254, filename.bytesize
+    assert filename.valid_encoding?
+  end
+
+  test "build_path limits a multibyte folder component to 255 bytes" do
+    @book.update!(title: "あ" * 90, series_position: "1")
+
+    single = PathTemplateService.build_path(@book, "{title}")
+    composed = PathTemplateService.build_path(@book, "{seriesNum:00 - }{title}")
+
+    assert_equal "あ" * 85, single
+    assert_equal 255, single.bytesize
+    assert_equal "01 - #{"あ" * 83}", composed
+    assert_operator composed.bytesize, :<=, 255
+    assert single.valid_encoding?
+    assert composed.valid_encoding?
+
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, single))
+      FileUtils.mkdir_p(File.join(dir, composed))
+    end
+  end
+
+  test "build_filename keeps a multibyte name that already fits in 255 bytes" do
+    @book.update!(title: "あ" * 80)
+
+    filename = PathTemplateService.build_filename(@book, ".epub", template: "{title}")
+
+    assert_equal "#{"あ" * 80}.epub", filename
+    assert_operator filename.bytesize, :<=, 255
+  end
+
   test "filename_template_for returns audiobook template for audiobooks" do
     Setting.create!(key: "audiobook_filename_template", value: "{title}", value_type: "string", category: "paths")
 
