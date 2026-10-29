@@ -291,6 +291,72 @@ class GrimmoryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "libraries refreshes an expired token after a failed login once the previous password is restored" do
+    VCR.turned_off do
+      secret_login = stub_request(:post, "http://localhost:5173/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "cached-token" }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "expired-token" }.to_json
+          },
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: { accessToken: "fresh-token" }.to_json
+          }
+        )
+      cached_libraries = stub_request(:get, "http://localhost:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer cached-token" })
+        .to_return(
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json" },
+            body: [ { "id" => "lib-1", "name" => "Ebooks", "paths" => [], "allowedFormats" => [ "epub" ] } ].to_json
+          },
+          {
+            status: 401,
+            headers: { "Content-Type" => "application/json" },
+            body: {}.to_json
+          }
+        )
+      expired_libraries = stub_request(:get, "http://localhost:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer expired-token" })
+        .to_return(status: 401, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+      fresh_libraries = stub_request(:get, "http://localhost:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer fresh-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "id" => "lib-1", "name" => "Ebooks", "paths" => [], "allowedFormats" => [ "epub" ] } ].to_json
+        )
+
+      assert_equal [ "lib-1" ], GrimmoryClient.libraries.map(&:id)
+
+      SettingsService.set(:grimmory_password, "secrett")
+      wrong_login = stub_request(:post, "http://localhost:5173/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secrett" }.to_json)
+        .to_return(status: 401, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+      assert_raises(GrimmoryClient::AuthenticationError) { GrimmoryClient.libraries }
+
+      SettingsService.set(:grimmory_password, "secret")
+
+      assert_equal [ "lib-1" ], GrimmoryClient.libraries.map(&:id)
+      assert_requested secret_login, times: 3
+      assert_requested wrong_login, times: 1
+      assert_requested cached_libraries, times: 1
+      assert_requested expired_libraries, times: 1
+      assert_requested fresh_libraries, times: 1
+    end
+  end
+
   private
 
   def stub_login
