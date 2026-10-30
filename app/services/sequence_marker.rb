@@ -25,8 +25,8 @@ class SequenceMarker
     1000 => "m", 900 => "cm", 500 => "d", 400 => "cd",
     100 => "c", 90 => "xc", 50 => "l", 40 => "xl", 10 => "x", 9 => "ix", 5 => "v", 4 => "iv", 1 => "i"
   }.freeze
-  # Standard canonical forms through 3999. A few forms are ordinary words in
-  # the marker languages; only their uppercase spelling is an explicit numeral.
+  # Standard canonical forms through 3999, excluding words used as prose in
+  # the marker languages. Keep those words ordinary in every capitalization.
   AMBIGUOUS_ROMAN_WORDS = %w[di dix mi mix].freeze
   ROMAN_VALUES = (1..3999).each_with_object({}) { |number, table|
     remaining = number
@@ -37,14 +37,11 @@ class SequenceMarker
         remaining -= value
       end
     end
-    table[roman] = number.to_s
+    table[roman] = number.to_s unless AMBIGUOUS_ROMAN_WORDS.include?(roman)
   }.freeze
 
   WORD_ALTERNATION = MARKER_WORDS.sort_by { |word| -word.length }.join("|").freeze
-  ROMAN_NUMBER = (
-    (ROMAN_VALUES.keys - AMBIGUOUS_ROMAN_WORDS).sort_by { |token| -token.length }.join("|") +
-      "|(?-i:#{AMBIGUOUS_ROMAN_WORDS.map(&:upcase).join('|')})"
-  ).freeze
+  ROMAN_NUMBER = ROMAN_VALUES.keys.sort_by { |token| -token.length }.join("|").freeze
   NUMBER_WORD = NUMBER_WORDS.keys.join("|").freeze
   NUMERIC_NUMBER = "0*\\d+|#{ROMAN_NUMBER}"
   ANY_NUMBER = "#{NUMERIC_NUMBER}|#{NUMBER_WORD}"
@@ -186,7 +183,7 @@ class SequenceMarker
     end
 
     def sequence_phrase_forms(phrase)
-      TitleKey.new(neutralize(phrase.to_s)).forms.filter_map do |form|
+      TitleKey.new(phrase.to_s).forms.filter_map do |form|
         normalize_marker_tokens(form.split).presence
       end
     end
@@ -204,7 +201,7 @@ class SequenceMarker
         following = tokens[index + 2]
         if nxt && volume_token_pair?(current, nxt, following)
           result << token_with_text("volume", current)
-          result << token_with_text(normalize_number(token_number_source(nxt)), nxt)
+          result << token_with_text(normalize_number(token_raw(nxt)), nxt)
           index += 2
         elsif (number = glued_volume_number(token_raw(current)))
           result << token_with_text("volume", current)
@@ -220,7 +217,7 @@ class SequenceMarker
 
     def volume_token_pair?(word_token, number_token, following_token)
       word = token_raw(word_token)
-      number = token_number_source(number_token)
+      number = token_raw(number_token)
       return false unless volume_number_token?(number)
 
       if word == "t"
@@ -259,20 +256,15 @@ class SequenceMarker
     end
 
     def volume_number_token?(token)
-      roman_or_digit?(token) || NUMBER_WORDS.key?(token.downcase)
+      roman_or_digit?(token) || NUMBER_WORDS.key?(token)
     end
 
     def roman_or_digit?(token)
-      return true if token.match?(/\A\d+\z/)
-
-      normalized = token.downcase
-      return false if AMBIGUOUS_ROMAN_WORDS.include?(normalized) && token != token.upcase
-
-      ROMAN_VALUES.key?(normalized)
+      token.match?(/\A\d+\z/) || ROMAN_VALUES.key?(token)
     end
 
     def single_roman_letter?(token)
-      token.length == 1 && ROMAN_VALUES.key?(token.downcase)
+      token.length == 1 && ROMAN_VALUES.key?(token)
     end
 
     def glued_volume_number(token)
@@ -282,10 +274,6 @@ class SequenceMarker
 
     def token_raw(token)
       token.is_a?(Array) ? token[3] : token
-    end
-
-    def token_number_source(token)
-      token.is_a?(Array) ? token[5] : token
     end
 
     def token_compare(token)
@@ -367,8 +355,7 @@ class SequenceMarker
           offsets[match.begin(0)],
           offsets[match.end(0) - 1] + 1,
           match[0],
-          folded[match.end(0)] == ".",
-          text[offsets[match.begin(0)]...offsets[match.end(0) - 1] + 1]
+          folded[match.end(0)] == "."
         ]
       end
       tokens
