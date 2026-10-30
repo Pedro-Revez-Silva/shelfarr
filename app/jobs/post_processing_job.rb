@@ -1527,6 +1527,10 @@ class PostProcessingJob < ApplicationJob
         destination_snapshot: pair.fetch(:destination)
       )
       next if removed == true
+      if RemoteResult.failed?(removed) && removed.error.is_a?(Errno::ENOENT) &&
+          FileCopyService.source_parent_missing?(pair.fetch(:source)) == true
+        next
+      end
 
       quarantined = FileCopyService.source_file_quarantined?(pair.fetch(:source))
       if RemoteResult.succeeded?(quarantined) || RemoteResult.failed?(removed) || RemoteResult.failed?(quarantined)
