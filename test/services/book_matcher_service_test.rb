@@ -3,6 +3,28 @@
 require "test_helper"
 
 class BookMatcherServiceTest < ActiveSupport::TestCase
+  test "does not bind different Roman volumes above one hundred" do
+    Book.create!(title: "One Piece Volume CI", author: "Eiichiro Oda", book_type: :ebook)
+
+    result = BookMatcherService.match(
+      title: "One Piece Volume CII", author: "Eiichiro Oda", book_type: :ebook
+    )
+
+    assert result.no_match?
+    assert_nil result.book
+  end
+
+  test "matches high Roman volumes with their translated Arabic markers" do
+    book = Book.create!(title: "One Piece Volume CI", author: "Eiichiro Oda", book_type: :ebook)
+
+    result = BookMatcherService.match(
+      title: "One Piece Tome 101", author: "Eiichiro Oda", book_type: :ebook
+    )
+
+    assert result.exact?
+    assert_equal book, result.book
+  end
+
   setup do
     @audiobook = Book.create!(
       title: "The Final Empire",
