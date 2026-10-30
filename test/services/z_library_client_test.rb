@@ -1299,7 +1299,7 @@ class ZLibraryClientTest < ActiveSupport::TestCase
       assert_match(/search is bot-walled/i, error.message)
       assert_requested :post, %r{\Ahttps://[^/]+/eapi/book/search\z}, times: domains.size
       assert_requested :get, %r{\Ahttps://[^/]+/eapi/info/domains\z}, times: domains.size
-      assert_requested :get, %r{\Ahttps://[^/]+/s/}, times: 1
+      assert_requested :get, %r{\Ahttps://[^/]+/s/}, times: domains.size
       assert_requested :get, %r{\Ahttps://[^/]+/eapi/user/profile\z}, times: 1
     end
   end
@@ -1445,6 +1445,39 @@ class ZLibraryClientTest < ActiveSupport::TestCase
 
       assert_equal "999", results.first.id
       assert_equal "Test Book", results.first.title
+      assert_requested recovered
+      assert_not_requested walled_html
+    end
+  end
+
+  test "malformed search redirects remain recoverable connection errors" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .to_return(status: 307, headers: { "Location" => "https://[" })
+
+      assert_raises(ZLibraryClient::ConnectionError) { ZLibraryClient.search("Middlemarch") }
+      assert_raises(ZLibraryClient::ConnectionError) { ZLibraryClient.test_connection! }
+    end
+  end
+
+  test "search tries alternate HTML even when both eAPI endpoints are bot-walled" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-lib.gd")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:post, %r{\Ahttps://(?:z-library\.sk|z-lib\.gd)/eapi/book/search\z})
+        .to_return { |request| { status: 307, headers: { "Location" => request.uri.to_s } } }
+      walled_html = stub_request(:get, %r{\Ahttps://z-library\.sk/s/})
+        .to_return { |request| { status: 307, headers: { "Location" => request.uri.to_s } } }
+      recovered = stub_request(:get, "https://z-lib.gd/s/Middlemarch?extensions%5B%5D=EPUB&extensions%5B%5D=PDF")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(status: 200, body: zlibrary_search_html, headers: { "Content-Type" => "text/html" })
+
+      assert_equal "999", ZLibraryClient.search("Middlemarch").first.id
       assert_requested recovered
       assert_not_requested walled_html
     end
