@@ -3493,6 +3493,7 @@ class PostProcessingJobTest < ActiveJob::TestCase
       assert @download.reload.post_processing_cleanup_state.present?,
         "pending usenet cleanup was discarded after the client rejected removal"
       assert File.exist?(source_extra)
+      assert_nil @download.external_id_released_at
 
       PostProcessingRecoveryJob.perform_now
 
@@ -3500,6 +3501,29 @@ class PostProcessingJobTest < ActiveJob::TestCase
     end
 
     assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+  end
+
+  test "partial directory cleanup recovery holds the post-processing lock while deleting" do
+    VCR.turned_off do
+      stub_partial_move_usenet_history("SABnzbd_nzo_partial_lock")
+      crash_during_partial_move_quarantine!(
+        external_id: "SABnzbd_nzo_partial_lock", client_name: "SABnzbd Partial Lock"
+      )
+      held_during_delete = false
+      real_remove = FileCopyService.method(:remove_source_file)
+
+      FileCopyService.stub(:remove_source_file, lambda { |snapshot, destination_snapshot: nil|
+        held_during_delete = post_processing_lock_busy?(@download.id)
+        real_remove.call(snapshot, destination_snapshot: destination_snapshot)
+      }) do
+        PostProcessingRecoveryJob.perform_now
+      end
+
+      assert held_during_delete
+      assert_nil @download.reload.post_processing_cleanup_state
+      assert_not_nil @download.external_id_released_at
+    end
   end
 
   test "NFS move retains the source and does not remove the completed usenet item" do

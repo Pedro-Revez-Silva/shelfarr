@@ -1382,7 +1382,7 @@ class PostProcessingJob < ApplicationJob
     destination_snapshots = payload.fetch("destinations").map { |snapshot|
       FileCopyService.deserialize_file_snapshot(snapshot)
     }
-    imported_file_snapshots = Array(payload["imported_file_snapshots"]).map { |pair|
+    imported_file_snapshots = payload["imported_file_snapshots"]&.map { |pair|
       {
         relative: pair.fetch("relative"),
         source: FileCopyService.deserialize_file_snapshot(pair.fetch("source")),
