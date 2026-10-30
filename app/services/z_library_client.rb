@@ -313,7 +313,7 @@ class ZLibraryClient
         end
 
         target = safe_login_redirect_target(url, location)
-        return { error: "HTTP #{response.status} untrusted redirect", response: response, url: url } if target.nil?
+        return { error: "HTTP #{response.status} untrusted redirect", response: response, url: url } unless target.is_a?(String)
 
         store_login_cookies!(cookies, response, url)
         unless method == :get || LOGIN_METHOD_PRESERVING_STATUSES.include?(response.status)
@@ -375,7 +375,7 @@ class ZLibraryClient
       return false if location.blank? || location.match?(/diamwall/i)
 
       target = safe_login_redirect_target(url, location)
-      return false if target.nil? || normalize_login_url(target) != normalize_login_url(url)
+      return false unless target.is_a?(String) && normalize_login_url(target) == normalize_login_url(url)
 
       updated = cookies.dup
       store_login_cookies!(updated, response, url)
@@ -1032,6 +1032,7 @@ class ZLibraryClient
         exchange = post_search_exchange(auth, payload, after_attempt: after_attempt)
         if search_exchange_walled?(exchange)
           walled_domains << auth[:domain] if walled_domains
+          html_fallback_auths << auth if html_fallback_auths
           next
         end
 
