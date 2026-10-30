@@ -13,6 +13,21 @@ class SequenceMarkerTest < ActiveSupport::TestCase
     assert SequenceMarker.conflict?("Volume CI", "Tome CII")
   end
 
+  test "keeps Roman-looking prose while accepting explicit numerals" do
+    [ "Il Libro di famiglia", "Libro mi vida", "Livre dix histoires", "Book Mix" ].each do |title|
+      assert_empty SequenceMarker.numbers(title), title
+      assert_equal title, SequenceMarker.neutralize(title)
+      assert_equal title, SequenceMarker.strip(title)
+    end
+    assert_equal [ "101" ], SequenceMarker.numbers("Volume ci")
+    assert SequenceMarker.conflict?("Volume ci", "Tome cii")
+    assert_equal [ "501" ], SequenceMarker.numbers("Volume DI")
+    assert_equal [ "1009" ], SequenceMarker.numbers("Volume MIX")
+    assert_equal "Series Volume MIX", SequenceMarker.without_author_credit(
+      "Series Volume MIX - Author Name", author: "Author Name", protected_title: "Series Tome 1009"
+    ).strip.delete_suffix("-").strip
+  end
+
   test "conflicts when the first volume differs even if only one side has a part" do
     assert SequenceMarker.conflict?(
       "The Stormlight Archive Book 2",
