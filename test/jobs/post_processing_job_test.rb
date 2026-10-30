@@ -3504,6 +3504,48 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not_nil @download.external_id_released_at
   end
 
+  test "partial move recovery finishes after confirmed usenet removal deleted the source directory" do
+    prepare_ebook_download_with_two_books_and_repair_file
+    client = DownloadClient.create!(
+      name: "SABnzbd Removed Source", client_type: :sabnzbd,
+      url: "http://localhost:8080", api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_removed_source")
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+    job = PostProcessingJob.new(@download.id)
+    source_device = File.stat(@temp_source).dev
+
+    VCR.turned_off do
+      stub_partial_move_usenet_history("SABnzbd_nzo_removed_source")
+      stub_request(:get, "http://localhost:8080/api")
+        .with(query: hash_including("mode" => "history", "name" => "delete", "del_files" => "1"))
+        .to_return do
+          FileUtils.rm_rf(@temp_source)
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: { "status" => true }.to_json }
+        end
+      job.stub(:clear_source_cleanup_state, ->(*) { raise Interrupt, "killed after client removal" }) do
+        assert_raises(Interrupt) { job.perform_now }
+      end
+
+      assert_not File.exist?(@temp_source)
+      assert @download.reload.post_processing_cleanup_state.present?
+      assert_nil @download.external_id_released_at
+
+      FileCopyService.stub(:deepest_existing_directory_device, source_device + 1) do
+        PostProcessingRecoveryJob.perform_now
+      end
+      assert @download.reload.post_processing_cleanup_state.present?, "an unavailable mount must keep the journal"
+      assert_nil @download.external_id_released_at
+
+      PostProcessingRecoveryJob.perform_now
+    end
+
+    assert_nil @download.reload.post_processing_cleanup_state
+    assert_not_nil @download.external_id_released_at
+  end
+
   test "partial directory cleanup recovery holds the post-processing lock while deleting" do
     VCR.turned_off do
       stub_partial_move_usenet_history("SABnzbd_nzo_partial_lock")
