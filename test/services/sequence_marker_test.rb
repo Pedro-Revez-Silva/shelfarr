@@ -3,6 +3,16 @@
 require "test_helper"
 
 class SequenceMarkerTest < ActiveSupport::TestCase
+  test "reads canonical Roman numbers above one hundred without treating prose as numbers" do
+    { "CI" => "101", "CD" => "400", "D" => "500", "CMXCIX" => "999", "MMMCMXCIX" => "3999" }.each do |roman, number|
+      assert_equal [ number ], SequenceMarker.numbers("Series Tome #{roman}")
+      assert_equal "Series volume #{number}", SequenceMarker.neutralize("Series Volume #{roman}")
+    end
+    assert_empty SequenceMarker.numbers("Book mix")
+    assert_empty SequenceMarker.numbers("Book did")
+    assert SequenceMarker.conflict?("Volume CI", "Tome CII")
+  end
+
   test "conflicts when the first volume differs even if only one side has a part" do
     assert SequenceMarker.conflict?(
       "The Stormlight Archive Book 2",

@@ -22,10 +22,12 @@ class SequenceMarker
     "six" => "6", "seven" => "7", "eight" => "8", "nine" => "9", "ten" => "10"
   }.freeze
   ROMAN_GLYPHS = {
+    1000 => "m", 900 => "cm", 500 => "d", 400 => "cd",
     100 => "c", 90 => "xc", 50 => "l", 40 => "xl", 10 => "x", 9 => "ix", 5 => "v", 4 => "iv", 1 => "i"
   }.freeze
-  # Canonical forms only, so "mix" or "did" is not a volume number.
-  ROMAN_VALUES = (1..100).each_with_object({}) { |number, table|
+  # Standard canonical forms through 3999. "mix" is also an ordinary word;
+  # preserve its prose interpretation even though MIX can mean 1009.
+  ROMAN_VALUES = (1..3999).each_with_object({}) { |number, table|
     remaining = number
     roman = +""
     ROMAN_GLYPHS.each do |value, glyph|
@@ -34,7 +36,7 @@ class SequenceMarker
         remaining -= value
       end
     end
-    table[roman] = number.to_s
+    table[roman] = number.to_s unless roman == "mix"
   }.freeze
 
   WORD_ALTERNATION = MARKER_WORDS.sort_by { |word| -word.length }.join("|").freeze
