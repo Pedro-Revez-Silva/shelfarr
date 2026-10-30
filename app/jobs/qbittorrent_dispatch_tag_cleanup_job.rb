@@ -14,7 +14,7 @@ class QbittorrentDispatchTagCleanupJob < ApplicationJob
 
   def self.schedule(download_client_id, tag)
     CLEANUP_DELAYS.each do |delay|
-      set(wait: delay).perform_later(download_client_id, tag)
+      set(wait: delay).perform_later(download_client_id, tag) # rubocop:disable Shelfarr/SelfEnqueue -- All four cleanup deadlines must coexist.
     end
   end
 
