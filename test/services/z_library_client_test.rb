@@ -1483,6 +1483,33 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  %w[HTTP_500 timeout].each do |failure|
+    test "search continues to working current HTML after alternate #{failure}" do
+      SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-lib.gd")
+      SettingsService.set(:zlibrary_email, "")
+      SettingsService.set(:zlibrary_password, "")
+      SettingsService.set(:zlibrary_remix_userid, "12345")
+      SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+      VCR.turned_off do
+        stub_request(:post, %r{\Ahttps://(?:z-library\.sk|z-lib\.gd)/eapi/book/search\z})
+          .to_return { |request| { status: 307, headers: { "Location" => request.uri.to_s } } }
+        alternate = stub_request(:get, %r{\Ahttps://z-lib\.gd/s/})
+        if failure == "timeout"
+          alternate.to_raise(Faraday::TimeoutError.new("alternate unavailable"))
+        else
+          alternate.to_return(status: 500, body: "unavailable")
+        end
+        current = stub_request(:get, %r{\Ahttps://z-library\.sk/s/})
+          .to_return(status: 200, body: zlibrary_search_html, headers: { "Content-Type" => "text/html" })
+
+        assert_equal "999", ZLibraryClient.search("Middlemarch").first.id
+        assert_requested alternate
+        assert_requested current
+      end
+    end
+  end
+
   test "search follows a 307 onto another Z-Library domain" do
     SettingsService.set(:zlibrary_email, "")
     SettingsService.set(:zlibrary_password, "")
