@@ -357,11 +357,17 @@ class MetadataExtractorService
       return nil unless value&.bytesize == value_size
 
       budget[:metadata_bytes] += value_size if budget
-      value.force_encoding("UTF-8").scrub
+      utf8_metadata_text(value)
     ensure
       if defined?(item_end) && item_end
         file.seek([ item_end, file.size ].min, IO::SEEK_SET)
       end
+    end
+
+    def utf8_metadata_text(value)
+      FilenameBytes.utf8(value)
+    rescue EncodingError
+      value.encode(Encoding::UTF_8, Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "\uFFFD")
     end
 
     def parse_year(value)

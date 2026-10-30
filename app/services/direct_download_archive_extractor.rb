@@ -208,13 +208,10 @@ class DirectDownloadArchiveExtractor
   end
 
   def normalize_entry_name(name, directory:)
-    value = name.to_s.dup
-    value.force_encoding(Encoding::UTF_8) if value.encoding == Encoding::ASCII_8BIT
-    raise Error, "ZIP archive contains an unsafe path: #{entry_label(name)}" unless value.valid_encoding?
-
+    value = FilenameBytes.utf8(name)
     value = value.delete_suffix("/") if directory
     segments = value.split("/", -1)
-    unsafe = !value.valid_encoding? || value.blank? || value.start_with?("/", "\\") ||
+    unsafe = value.blank? || value.start_with?("/", "\\") ||
       value.include?("\\") || value.include?("\0") || value.bytesize > MAX_ENTRY_PATH_BYTES ||
       segments.size > MAX_ENTRY_DEPTH || segments.any? do |segment|
         segment.blank? || segment.in?([ ".", ".." ]) ||
@@ -224,6 +221,8 @@ class DirectDownloadArchiveExtractor
     raise Error, "ZIP archive contains an unsafe path: #{entry_label(name)}" if unsafe
 
     segments.join("/")
+  rescue EncodingError
+    raise Error, "ZIP archive contains an unsafe path: #{entry_label(name)}"
   end
 
   def entry_label(name)

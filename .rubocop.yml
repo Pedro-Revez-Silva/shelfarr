@@ -7,6 +7,7 @@ require:
   - ./lib/rubocop/cop/shelfarr/rescue_to_empty.rb
   - ./lib/rubocop/cop/shelfarr/unkeyed_faraday_memo.rb
   - ./lib/rubocop/cop/shelfarr/self_enqueue.rb
+  - ./lib/rubocop/cop/shelfarr/force_encoding.rb
 
 Shelfarr/SkippedTest:
   Enabled: true
@@ -40,6 +41,13 @@ Shelfarr/UnkeyedFaradayMemo:
     - "app/services/indexer_clients/**/*.rb"
 
 Shelfarr/SelfEnqueue:
+  Enabled: true
+  Severity: warning
+  Include:
+    - "app/**/*.rb"
+    - "lib/**/*.rb"
+
+Shelfarr/ForceEncoding:
   Enabled: true
   Severity: warning
   Include:

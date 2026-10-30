@@ -1082,10 +1082,16 @@ class DownloadJob < ApplicationJob
       size = file.stat.size
       return false unless size.between?(1, MAX_AUDIOBOOK_TEXT_BYTES)
 
-      content = file.read(size).to_s.force_encoding(Encoding::UTF_8)
-      content.valid_encoding? && !content.include?("\0") && !content.match?(/[^\t\n\r[:print:]]/)
+      content = FilenameBytes.utf8(file.read(size).to_s)
+      !content.include?("\0") && !content.match?(/[^\t\n\r[:print:]]/)
     end
-  rescue EOFError, Errno::ENOENT, Errno::EACCES => error
+  rescue EOFError, Errno::ENOENT, Errno::EACCES, EncodingError => error
+    rejected_audiobook_text(error)
+  end
+
+  def rejected_audiobook_text(error)
+    return false if error.is_a?(EncodingError)
+
     RemoteResult::Failed.new(error)
   end
 

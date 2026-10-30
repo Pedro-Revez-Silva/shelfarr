@@ -389,7 +389,7 @@ class SafeLibraryDeletionService
     duplicate = directory.dup
     listing = Dir.for_fd(duplicate.fileno)
     duplicate.autoclose = false
-    listing.each_child.to_a
+    listing.each_child.map { |entry| FilenameBytes.utf8(entry) }
   ensure
     listing&.close
     duplicate&.close unless duplicate&.closed?
