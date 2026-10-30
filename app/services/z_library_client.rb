@@ -1102,6 +1102,8 @@ class ZLibraryClient
         return result unless result == :bot_wall
 
         walled_domains << auth[:domain]
+      rescue JSON::ParserError, Faraday::Error, Error => error
+        Rails.logger.debug "[ZLibraryClient] HTML retry failed on #{auth[:domain]}: #{error.class}"
       end
 
       nil
