@@ -73,7 +73,7 @@ module FilesystemSyscalls
       ).call(directory_fd, path_pointer(basename), buffer, buffer_size)
       raise SystemCallError.new("readlinkat", Fiddle.last_error) if length == -1
 
-      buffer.byteslice(0, length).force_encoding(Encoding::UTF_8)
+      FilenameBytes.utf8(buffer.byteslice(0, length))
     end
 
     def unlinkat(directory_fd, basename, flags = 0)

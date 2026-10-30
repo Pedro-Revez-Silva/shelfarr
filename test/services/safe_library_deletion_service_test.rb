@@ -178,6 +178,21 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
     assert_equal "ebook bytes", File.binread(ebook)
   end
 
+  test "children_for tags a non-ASCII directory name as UTF-8" do
+    name = "Jürgen Weiß.epub"
+    File.binwrite(File.join(@root, name), "unicode bytes")
+    binary_name = name.dup.force_encoding(Encoding::ASCII_8BIT)
+
+    File.open(@root) do |directory|
+      children = SafeLibraryDeletionService.new(@book).send(:children_for, directory)
+      child = children.find { |entry| entry.bytes == name.bytes }
+
+      assert_equal name, child
+      assert_equal Encoding::UTF_8, child.encoding
+      refute_equal binary_name, child
+    end
+  end
+
   test "supports the configured comic library root" do
     SettingsService.set(:comicbook_output_path, @root)
     @book.update!(book_type: :comicbook)

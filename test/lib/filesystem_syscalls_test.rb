@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "fiddle"
 
 class FilesystemSyscallsTest < ActiveSupport::TestCase
   setup do
@@ -100,6 +101,21 @@ class FilesystemSyscallsTest < ActiveSupport::TestCase
     end
   ensure
     child_directory&.close unless child_directory&.closed?
+  end
+
+  test "readlinkat raises when the symlink target is not valid UTF-8" do
+    link_name = "bad-link"
+    begin
+      File.symlink("bad-\xFF".b, File.join(@temporary_directory, link_name))
+    rescue Errno::EILSEQ, ArgumentError
+      skip "host filesystem does not accept an invalid UTF-8 symlink target"
+    end
+
+    error = assert_raises(EncodingError) do
+      FilesystemSyscalls.readlinkat(@directory.fileno, link_name)
+    end
+
+    assert_match(/UTF-8/, error.message)
   end
 
   test "ftruncate preserves lengths beyond a signed 32-bit offset" do
