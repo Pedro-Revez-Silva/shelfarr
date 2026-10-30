@@ -14,15 +14,15 @@ class SequenceMarkerTest < ActiveSupport::TestCase
   end
 
   test "keeps Roman-looking prose while accepting explicit numerals" do
-    [ "Il Libro di famiglia", "Libro mi vida", "Livre dix histoires", "Book Mix" ].each do |title|
+    [ "Il Libro di famiglia", "Libro mi vida", "Livre dix histoires", "Book Mix" ].flat_map { |title| [ title, title.upcase ] }.each do |title|
       assert_empty SequenceMarker.numbers(title), title
       assert_equal title, SequenceMarker.neutralize(title)
       assert_equal title, SequenceMarker.strip(title)
     end
     assert_equal [ "101" ], SequenceMarker.numbers("Volume ci")
     assert SequenceMarker.conflict?("Volume ci", "Tome cii")
-    assert_equal [ "501" ], SequenceMarker.numbers("Volume DI")
-    assert_equal [ "1009" ], SequenceMarker.numbers("Volume MIX")
+    assert_empty SequenceMarker.numbers("Volume DI")
+    assert_empty SequenceMarker.numbers("Volume MIX")
     assert_equal "Series Volume MIX", SequenceMarker.without_author_credit(
       "Series Volume MIX - Author Name", author: "Author Name", protected_title: "Series Tome 1009"
     ).strip.delete_suffix("-").strip

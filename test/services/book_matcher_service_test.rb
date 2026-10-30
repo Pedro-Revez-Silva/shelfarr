@@ -3,6 +3,17 @@
 require "test_helper"
 
 class BookMatcherServiceTest < ActiveSupport::TestCase
+  test "matches Roman-looking prose regardless of title capitalization" do
+    [ "Il Libro di Famiglia", "Livre dix histoires", "Libro mi vida", "Book Mix" ].each do |title|
+      score = BookMatcherService.send(
+        :calculate_match_score,
+        query_title: title.upcase, book_title: title,
+        query_author: "An Author", book_author: "An Author"
+      )
+      assert_equal 100, score, title
+    end
+  end
+
   test "does not bind different Roman volumes above one hundred" do
     Book.create!(title: "One Piece Volume CI", author: "Eiichiro Oda", book_type: :ebook)
 
