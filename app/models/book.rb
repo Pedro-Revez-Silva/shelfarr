@@ -95,8 +95,9 @@ class Book < ApplicationRecord
   # Post-processing publishes library bytes before it can atomically attach
   # their path to this Book and complete the Request. Keep the Book record (and
   # therefore its recovery graph) alive while any non-completed Request owns
-  # that recoverable publication. Completed legacy requests are excluded
-  # because older Shelfarr versions did not clear successful owner IDs.
+  # that recoverable publication. Completed requests ignore owner ids that are
+  # proven finished, because older Shelfarr versions retained those ids.
+  # A queued or running importer is still a live claim.
   def post_processing_recovery_pending?
     return false unless persisted?
 
@@ -105,6 +106,9 @@ class Book < ApplicationRecord
       .merge(Download.completed.where.not(post_processing_cleanup_state: [ nil, "" ]))
       .exists?
     return true if cleanup_pending
+    # Do not load `requests` here. Callers destroy those rows and then this
+    # Book, and a loaded association would still look occupied.
+    return true if PostProcessingRecoveryJob.unfinished_active_job_ids(post_processing_owner_ids).any?
 
     requests
       .where.not(status: Request.statuses[:completed])
@@ -335,6 +339,14 @@ class Book < ApplicationRecord
   end
 
   private_class_method :normalize_reference_target_root, :conflicting_reference_target_roots?
+
+  def post_processing_owner_ids
+    Download.completed
+      .joins(:request)
+      .where(requests: { book_id: id })
+      .where.not(post_processing_job_id: [ nil, "" ])
+      .pluck(:post_processing_job_id)
+  end
 
   def prevent_destroy_during_active_acquisition
     message = if acquisition_reserved?
