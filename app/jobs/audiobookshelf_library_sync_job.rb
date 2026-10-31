@@ -121,6 +121,7 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   # and the explicit post_scan marker without letting either establish a new
   # recurring chain.
   def perform(scheduled: false, **_one_shot_metadata)
+    release_unconfigured_integration_connections!
     return unless LibraryPlatformClient.configured?
     return if scheduled && !sync_due?
 
@@ -169,5 +170,13 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
 
   def record_scheduled_attempt!
     Rails.cache.write(LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY, Time.current)
+  end
+
+  def release_unconfigured_integration_connections!
+    LibraryPlatformClient.release_unconfigured_connections!
+    IndexerClient.release_unconfigured_connections!
+    FlaresolverrClient.release_unconfigured_connection!
+    GutenbergClient.release_unconfigured_connection!
+    LibrivoxClient.release_unconfigured_connection!
   end
 end

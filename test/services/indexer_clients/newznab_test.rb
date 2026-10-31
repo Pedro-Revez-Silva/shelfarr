@@ -98,6 +98,33 @@ class IndexerClients::NewznabTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_all_connections!.
+  test "search drops the cached connection after the Newznab API key is removed" do
+    IndexerClients::Newznab.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:5076/api")
+        .with(query: hash_including("apikey" => "newznab-api-key", "t" => "caps"))
+        .to_return(status: 200, body: "<caps />", headers: { "Content-Type" => "application/xml" })
+
+      assert IndexerClients::Newznab.test_connection
+
+      SettingsService.set(:newznab_api_key, "")
+
+      error = assert_raises IndexerClients::Newznab::NotConfiguredError do
+        IndexerClients::Newznab.search("test", book_type: :ebook)
+      end
+      assert_equal "Newznab is not configured", error.message
+      assert_raises IndexerClients::Newznab::NotConfiguredError do
+        IndexerClients::Newznab.send(:connection)
+      end
+      assert_requested :get, "http://localhost:5076/api", query: hash_including("t" => "caps"), times: 1
+      assert_not_requested :get, "http://localhost:5076/api", query: hash_including("t" => "search")
+      assert_nil IndexerClients::Newznab.instance_variable_get(:@connection)
+      assert_nil IndexerClients::Newznab.instance_variable_get(:@connection_settings_key)
+    end
+  end
+
   test "preserves reverse proxy subpath when configured URL ends with api" do
     SettingsService.set(:newznab_url, "http://localhost:5076/nzbhydra2/api")
     IndexerClients::Newznab.reset_connection!

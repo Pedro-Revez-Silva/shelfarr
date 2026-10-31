@@ -82,10 +82,17 @@ class GrimmoryClient
       CONNECTION_MUTEX.synchronize { clear_connection_cache! }
     end
 
+    def release_unconfigured_connection!
+      reset_connection! unless configured?
+    end
+
     private
 
     def ensure_configured!
-      raise NotConfiguredError, "Grimmory is not configured" unless configured?
+      return if configured?
+
+      reset_connection!
+      raise NotConfiguredError, "Grimmory is not configured"
     end
 
     def request
@@ -107,6 +114,11 @@ class GrimmoryClient
     # settings that produced them change.
     def connection
       CONNECTION_MUTEX.synchronize do
+        unless configured?
+          clear_connection_cache!
+          raise NotConfiguredError, "Grimmory is not configured"
+        end
+
         settings_key = connection_settings_key
         rebuild_connection!(settings_key) if @connection.nil? || @connection_settings_key != settings_key
         @connection

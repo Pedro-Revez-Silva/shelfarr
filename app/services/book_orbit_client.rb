@@ -86,6 +86,10 @@ class BookOrbitClient
       CONNECTION_MUTEX.synchronize { clear_connection_cache! }
     end
 
+    def release_unconfigured_connection!
+      reset_connection! unless configured?
+    end
+
     private
 
     def fetch_library_items(id, page_size)
@@ -133,7 +137,10 @@ class BookOrbitClient
     end
 
     def ensure_configured!
-      raise NotConfiguredError, "BookOrbit is not configured" unless configured?
+      return if configured?
+
+      reset_connection!
+      raise NotConfiguredError, "BookOrbit is not configured"
     end
 
     def request
@@ -157,6 +164,11 @@ class BookOrbitClient
 
     def connection
       CONNECTION_MUTEX.synchronize do
+        unless configured?
+          clear_connection_cache!
+          raise NotConfiguredError, "BookOrbit is not configured"
+        end
+
         configuration = current_connection_configuration
         rebuild_connection!(configuration) if @connection.nil? || @connection_configuration != configuration
         @connection
