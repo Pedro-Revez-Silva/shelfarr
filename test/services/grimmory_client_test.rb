@@ -291,6 +291,42 @@ class GrimmoryClientTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "libraries drops the cached connection after Grimmory settings are removed" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:5173/api/v1/auth/login")
+        .with(body: { username: "admin", password: "secret" }.to_json)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "grimmory-token" }.to_json
+        )
+      stub_request(:get, "http://localhost:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer grimmory-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "id" => "lib-1", "name" => "Books", "paths" => [], "allowedFormats" => [ "epub" ] } ].to_json
+        )
+
+      assert_equal "Books", GrimmoryClient.libraries.first.name
+
+      SettingsService.set(:grimmory_url, "")
+      SettingsService.set(:grimmory_username, "")
+      SettingsService.set(:grimmory_password, "")
+
+      error = assert_raises GrimmoryClient::NotConfiguredError do
+        GrimmoryClient.libraries
+      end
+      assert_equal "Grimmory is not configured", error.message
+      assert_requested :post, "http://localhost:5173/api/v1/auth/login", times: 1
+      assert_requested :get, "http://localhost:5173/api/v1/libraries", times: 1
+      assert_nil GrimmoryClient.instance_variable_get(:@connection)
+      assert_nil GrimmoryClient.instance_variable_get(:@access_token)
+      assert_nil GrimmoryClient.instance_variable_get(:@connection_settings_key)
+    end
+  end
+
   test "libraries refreshes an expired token after a failed login once the previous password is restored" do
     VCR.turned_off do
       secret_login = stub_request(:post, "http://localhost:5173/api/v1/auth/login")

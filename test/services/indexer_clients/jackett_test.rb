@@ -155,6 +155,32 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_all_connections!.
+  test "search drops the cached connection after the Jackett API key is removed" do
+    IndexerClients::Jackett.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "jackett-api-key", "t" => "caps"))
+        .to_return(status: 200, body: "<caps />", headers: { "Content-Type" => "application/xml" })
+
+      assert IndexerClients::Jackett.test_connection
+
+      SettingsService.set(:jackett_api_key, "")
+
+      error = assert_raises IndexerClients::Jackett::NotConfiguredError do
+        IndexerClients::Jackett.search("test", book_type: :ebook)
+      end
+      assert_equal "Jackett is not configured", error.message
+      assert_raises IndexerClients::Jackett::NotConfiguredError do
+        IndexerClients::Jackett.send(:connection)
+      end
+      assert_requested :get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api}, times: 1
+      assert_nil IndexerClients::Jackett.instance_variable_get(:@connection)
+      assert_nil IndexerClients::Jackett.instance_variable_get(:@connection_settings_key)
+    end
+  end
+
   test "search retries one transient connection failure" do
     VCR.turned_off do
       request = stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})

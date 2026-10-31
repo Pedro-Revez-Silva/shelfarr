@@ -594,6 +594,35 @@ class AudiobookshelfClientTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "libraries drops the cached connection after Audiobookshelf settings are removed" do
+    SettingsService.set(:audiobookshelf_url, "http://abs.example:13378")
+    SettingsService.set(:audiobookshelf_api_key, "old-key")
+    AudiobookshelfClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://abs.example:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer old-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "libraries" => [] }.to_json
+        )
+
+      assert_empty AudiobookshelfClient.libraries
+
+      Setting.where(key: %w[audiobookshelf_url audiobookshelf_api_key]).delete_all
+
+      error = assert_raises AudiobookshelfClient::NotConfiguredError do
+        AudiobookshelfClient.libraries
+      end
+      assert_equal "Audiobookshelf is not configured", error.message
+      assert_requested :get, "http://abs.example:13378/api/libraries", times: 1
+      assert_nil AudiobookshelfClient.instance_variable_get(:@connection)
+      assert_nil AudiobookshelfClient.instance_variable_get(:@connection_settings_key)
+    end
+  end
+
   test "library_items raises Error on later-page 404 response" do
     VCR.turned_off do
       stub_request(:get, "http://localhost:13378/api/libraries/my-lib/items?limit=500&page=0")

@@ -55,6 +55,12 @@ class LibraryPlatformClient
       GrimmoryClient.reset_connection!
     end
 
+    def release_unconfigured_connections!
+      AudiobookshelfClient.release_unconfigured_connection!
+      BookOrbitClient.release_unconfigured_connection!
+      GrimmoryClient.release_unconfigured_connection!
+    end
+
     def reset_connection!
       reset_connections!
     end

@@ -153,6 +153,28 @@ class GutenbergClientTest < ActiveSupport::TestCase
     assert_not_requested :get, %r{old-gutenberg\.example/ebooks/search\.opds/}, times: 2
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "search drops the cached connection after Project Gutenberg is disabled" do
+    SettingsService.set(:gutenberg_url, "https://old-gutenberg.example")
+    GutenbergClient.reset_connection!
+
+    stub_request(:get, "https://old-gutenberg.example/ebooks/search.opds/")
+      .with(query: hash_including("query" => "Pride"))
+      .to_return(status: 404)
+
+    assert_empty GutenbergClient.search(title: "Pride")
+
+    SettingsService.set(:gutenberg_enabled, false)
+
+    error = assert_raises GutenbergClient::NotConfiguredError do
+      GutenbergClient.search(title: "Pride")
+    end
+    assert_equal "Project Gutenberg is not enabled", error.message
+    assert_requested :get, %r{old-gutenberg\.example/ebooks/search\.opds/}, times: 1
+    assert_nil GutenbergClient.instance_variable_get(:@connection)
+    assert_nil GutenbergClient.instance_variable_get(:@connection_settings_key)
+  end
+
   test "configured URL must be an origin" do
     SettingsService.set(:gutenberg_url, "https://www.gutenberg.org/ebooks")
 

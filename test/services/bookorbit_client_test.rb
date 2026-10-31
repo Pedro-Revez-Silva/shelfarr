@@ -862,6 +862,36 @@ class BookOrbitClientTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "libraries drops the cached connection after BookOrbit settings are removed" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:get, "http://localhost:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer bookorbit-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "id" => 1, "name" => "Books", "folders" => [] } ].to_json
+        )
+
+      assert_equal "Books", BookOrbitClient.libraries.first.name
+
+      SettingsService.set(:bookorbit_url, "")
+      SettingsService.set(:bookorbit_username, "")
+      SettingsService.set(:bookorbit_password, "")
+
+      error = assert_raises BookOrbitClient::NotConfiguredError do
+        BookOrbitClient.libraries
+      end
+      assert_equal "BookOrbit is not configured", error.message
+      assert_requested :post, "http://localhost:3000/api/v1/auth/login", times: 1
+      assert_requested :get, "http://localhost:3000/api/v1/libraries", times: 1
+      assert_nil BookOrbitClient.instance_variable_get(:@connection)
+      assert_nil BookOrbitClient.instance_variable_get(:@access_token)
+      assert_nil BookOrbitClient.instance_variable_get(:@connection_configuration)
+    end
+  end
+
   private
 
   def stub_login
