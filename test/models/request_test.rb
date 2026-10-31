@@ -338,6 +338,55 @@ class RequestTest < ActiveSupport::TestCase
     assert_nothing_raised { request.destroy! }
   end
 
+  test "reopening a completed request drops a legacy import owner" do
+    book = Book.create!(title: "Legacy reopen", book_type: :ebook, file_path: "/ebooks/legacy-reopen")
+    request = Request.create!(book: book, user: users(:one), status: :completed)
+    download = request.downloads.create!(
+      name: "Legacy reopen",
+      status: :completed,
+      post_processing_job_id: "legacy-success-owner"
+    )
+    result = request.search_results.create!(
+      guid: "legacy-reopen",
+      title: "Legacy reopen other format",
+      download_url: "https://example.com/legacy-reopen.epub",
+      status: :pending
+    )
+
+    request.select_result!(result)
+
+    assert_nil download.reload.post_processing_job_id
+    assert request.reload.downloading?
+    assert_not request.post_processing_recovery_pending?
+    assert_not book.reload.post_processing_recovery_pending?
+  end
+
+  test "reopening a completed request keeps a source cleanup claim" do
+    book = Book.create!(title: "Cleanup reopen", book_type: :ebook, file_path: "/ebooks/cleanup-reopen")
+    request = Request.create!(book: book, user: users(:one), status: :completed)
+    download = request.downloads.create!(
+      name: "Cleanup reopen",
+      status: :completed,
+      post_processing_job_id: "cleanup-owner",
+      post_processing_cleanup_state: '{"version":1}'
+    )
+    result = request.search_results.create!(
+      guid: "cleanup-reopen",
+      title: "Cleanup reopen other format",
+      download_url: "https://example.com/cleanup-reopen.epub",
+      status: :pending
+    )
+
+    request.select_result!(result)
+
+    download.reload
+    assert_equal "cleanup-owner", download.post_processing_job_id
+    assert_equal '{"version":1}', download.post_processing_cleanup_state
+    assert request.reload.downloading?
+    assert request.post_processing_recovery_pending?
+    assert book.reload.post_processing_recovery_pending?
+  end
+
   test "completed source cleanup state blocks request destruction" do
     request = Request.create!(
       book: Book.create!(title: "Completed cleanup", book_type: :ebook),

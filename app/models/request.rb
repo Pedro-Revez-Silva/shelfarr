@@ -700,9 +700,23 @@ class Request < ApplicationRecord
     # Same lock import claims use, so replacement cannot retire an id that
     # post-processing has just claimed.
     with_acquisition_transition_lock do
+      release_legacy_completed_import_owner!
       release_completed_external_ids!(release_import_owner: false)
       select_result_after_releasing_external_ids!(search_result)
     end
+  end
+
+  # A job id left on a completed request is an older successful import, not a
+  # live claim. Reopening that request must not turn it into recovery. Source
+  # cleanup is still a live claim and keeps its owner.
+  def release_legacy_completed_import_owner!
+    return unless completed?
+    return if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
+
+    downloads.completed.where.not(post_processing_job_id: [ nil, "" ]).update_all(
+      post_processing_job_id: nil,
+      updated_at: Time.current
+    )
   end
 
   def select_result_after_releasing_external_ids!(search_result)

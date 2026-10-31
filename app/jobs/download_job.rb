@@ -12,6 +12,7 @@ class DownloadJob < ApplicationJob
   # handling can classify them as transient without message matching.
   class DirectDownloadError < StandardError; end
   class BookAcquisitionConflictError < StandardError; end
+  PRESERVED_LIBRARY_FILE_MESSAGE = "This title already has a library file; the existing file was preserved"
 
   queue_as :default
 
@@ -201,7 +202,9 @@ class DownloadJob < ApplicationJob
     library_configuration_error = direct_library_configuration_error?(error)
     message = direct_library_failure_message if library_configuration_error
     message ||= "Direct download failed: #{error.message}"
-    if error.is_a?(BookAcquisitionConflictError) ||
+    if preserved_existing_library_file?(error)
+      download.request.mark_for_attention_after_idle_failure!(message)
+    elsif error.is_a?(BookAcquisitionConflictError) ||
         error.is_a?(DirectDownloadFileService::ConflictError) ||
         library_configuration_error ||
         transient_direct_download_error?(error)
@@ -209,6 +212,10 @@ class DownloadJob < ApplicationJob
     else
       download.request.handle_download_failure!(download, reason: message)
     end
+  end
+
+  def preserved_existing_library_file?(error)
+    error.is_a?(BookAcquisitionConflictError) && error.message == PRESERVED_LIBRARY_FILE_MESSAGE
   end
 
   def direct_library_configuration_error?(error)
@@ -1300,7 +1307,7 @@ class DownloadJob < ApplicationJob
     return unless book.acquisition_blocked?
 
     message = if book.acquired?
-      "This title already has a library file; the existing file was preserved"
+      PRESERVED_LIBRARY_FILE_MESSAGE
     elsif book.acquisition_reservation_owner_type == "Download"
       "A previous direct download still owns this title while its recovery state is being verified"
     else
