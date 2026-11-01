@@ -805,6 +805,7 @@
 
         <h2 id="notifications">Notifications <a class="anchor" href="#notifications" aria-label="Link to Notifications">#</a></h2>
         <p class="section-desc">In-app notifications are always on. The events below are comma-separated: <code>request_created</code>, <code>request_completed</code>, <code>request_failed</code>, <code>request_attention</code>.</p>
+        <p>A generic webhook posts JSON for each enabled event. Request events include <code>event</code>, <code>title</code>, <code>message</code>, <code>occurred_at</code>, an optional <code>topic</code>, and <code>request</code>, <code>book</code>, and <code>user</code>. <code>book.cover_url</code> is an absolute cover image URL the receiver can fetch, or <code>null</code> when the book has no cover.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>

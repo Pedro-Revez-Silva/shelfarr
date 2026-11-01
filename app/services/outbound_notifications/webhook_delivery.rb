@@ -109,6 +109,23 @@ module OutboundNotifications
         SettingsService.get(:webhook_topic).to_s.strip
       end
 
+      # Cover art is an external image URL. A path Shelfarr does not host is
+      # not fetchable by a remote receiver, so those become null.
+      def fetchable_cover_url(book)
+        value = book.cover_url.to_s.strip
+        return if value.blank?
+
+        value = "https:#{value}" if value.start_with?("//")
+        uri = parse_cover_url(value)
+        value if uri.is_a?(URI::HTTP) && uri.host.present?
+      end
+
+      def parse_cover_url(value)
+        URI.parse(value)
+      rescue URI::InvalidURIError => error
+        RemoteResult::Failed.new(error)
+      end
+
       def build_payload(event:, title:, message:, request:)
         payload = {
           event: event,
@@ -132,7 +149,8 @@ module OutboundNotifications
             id: request.book_id,
             title: request.book.title,
             author: request.book.author,
-            book_type: request.book.book_type
+            book_type: request.book.book_type,
+            cover_url: fetchable_cover_url(request.book)
           },
           user: {
             id: request.user_id,
