@@ -192,6 +192,37 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal "move", SettingsService.get(:completed_download_import_mode)
   end
 
+  test "library import modes default to blank and accept octal strings" do
+    assert_equal "", SettingsService.get(:library_import_file_mode)
+    assert_equal "", SettingsService.get(:library_import_folder_mode)
+
+    assert_equal "0664", SettingsService.set(:library_import_file_mode, " 0664 ")
+    assert_equal "775", SettingsService.set(:library_import_folder_mode, "775")
+    assert_equal "0664", Setting.find_by!(key: "library_import_file_mode").value
+    assert_equal "775", SettingsService.get(:library_import_folder_mode)
+
+    [ "668", "0o664", "999", "06640", "abc", "8" ].each do |invalid|
+      error = assert_raises(ArgumentError) do
+        SettingsService.set(:library_import_file_mode, invalid)
+      end
+      assert_match(/3 or 4 digit octal mode/, error.message)
+    end
+    assert_equal "", SettingsService.set(:library_import_folder_mode, "  ")
+    assert_equal "0664", SettingsService.get(:library_import_file_mode)
+    assert_equal "", SettingsService.get(:library_import_folder_mode)
+  end
+
+  test "corrupt library import modes are ignored" do
+    Setting.create!(
+      key: "library_import_file_mode",
+      value: "999",
+      value_type: "string",
+      category: "download"
+    )
+
+    assert_equal "", SettingsService.get(:library_import_file_mode)
+  end
+
   test "completed download import mode safely resolves corrupt persisted values to copy" do
     Setting.create!(
       key: "completed_download_import_mode",

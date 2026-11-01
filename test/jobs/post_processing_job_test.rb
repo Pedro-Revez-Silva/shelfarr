@@ -4989,6 +4989,164 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal [ "audio-lib" ], scanned
   end
 
+  test "blank library import modes leave copy and folder permissions unchanged" do
+    SettingsService.set(:audiobookshelf_url, "")
+    root_mode = File.stat(@temp_dest_base).mode & 0o777
+    source = File.join(@temp_source, "audiobook.mp3")
+    File.chmod(0o604, source)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination_dir = File.join(@temp_dest_base, @book.author, @book.title)
+    destination = File.join(destination_dir, "audiobook.mp3")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal 0o604, File.stat(source).mode & 0o777
+    assert_equal 0o640, File.stat(destination).mode & 0o777
+    assert_equal 0o750, File.stat(destination_dir).mode & 0o777
+    assert_equal 0o750, File.stat(File.dirname(destination_dir)).mode & 0o777
+    assert_equal root_mode, File.stat(@temp_dest_base).mode & 0o777
+  end
+
+  test "copy and move imports apply configured file and folder modes without changing the library root" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    root_mode = File.stat(@temp_dest_base).mode & 0o777
+    source = File.join(@temp_source, "audiobook.mp3")
+    File.chmod(0o604, source)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination_dir = File.join(@temp_dest_base, @book.author, @book.title)
+    destination = File.join(destination_dir, "audiobook.mp3")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal 0o604, File.stat(source).mode & 0o777
+    assert_equal 0o664, File.stat(destination).mode & 0o777
+    assert_equal 0o775, File.stat(destination_dir).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(destination_dir)).mode & 0o777
+    assert_equal root_mode, File.stat(@temp_dest_base).mode & 0o777
+
+    FileUtils.rm_rf(destination_dir)
+    move_source = File.join(@temp_download_base, "move-source")
+    FileUtils.mkdir_p(move_source)
+    File.write(File.join(move_source, "audiobook.mp3"), "moved audio")
+    File.chmod(0o604, File.join(move_source, "audiobook.mp3"))
+    @request.update!(status: :downloading, issue_description: nil)
+    @download.update!(status: :completed, download_path: move_source, post_processing_job_id: nil)
+    SettingsService.set(:completed_download_import_mode, "move")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    moved = File.join(destination_dir, "audiobook.mp3")
+    assert @request.reload.completed?, @request.issue_description
+    assert_not File.exist?(File.join(move_source, "audiobook.mp3"))
+    assert_equal 0o664, File.stat(moved).mode & 0o777
+    assert_equal 0o775, File.stat(destination_dir).mode & 0o777
+    assert_equal root_mode, File.stat(@temp_dest_base).mode & 0o777
+  end
+
+  test "hardlinked imports keep the shared inode mode and still apply the folder mode" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    source = File.join(@temp_source, "audiobook.mp3")
+    File.chmod(0o604, source)
+    root_mode = File.stat(@temp_dest_base).mode & 0o777
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination_dir = File.join(@temp_dest_base, @book.author, @book.title)
+    destination = File.join(destination_dir, "audiobook.mp3")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal [ File.stat(source).dev, File.stat(source).ino ],
+      [ File.stat(destination).dev, File.stat(destination).ino ]
+    assert_equal 0o604, File.stat(source).mode & 0o777
+    assert_equal 0o604, File.stat(destination).mode & 0o777
+    assert_equal 0o775, File.stat(destination_dir).mode & 0o777
+    assert_equal root_mode, File.stat(@temp_dest_base).mode & 0o777
+  end
+
+  test "hardlink fallback copies receive the configured file mode" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    source = File.join(@temp_source, "audiobook.mp3")
+    File.chmod(0o604, source)
+
+    FileCopyService.stub(:hardlink_noreplace, ->(*) { raise FileCopyService::HardlinkUnsupportedError, "unsupported" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp3")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal 0o604, File.stat(source).mode & 0o777
+    refute_equal [ File.stat(source).dev, File.stat(source).ino ],
+      [ File.stat(destination).dev, File.stat(destination).ino ]
+    assert_equal 0o664, File.stat(destination).mode & 0o777
+  end
+
+  test "a library import chmod failure is a warning and does not fail the import" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    real_fchmod = FileCopyService.method(:native_fchmod)
+    denying_fchmod = lambda do |descriptor, mode|
+      raise Errno::EPERM, "nfs" if [ 0o664, 0o775 ].include?(mode)
+
+      real_fchmod.call(descriptor, mode)
+    end
+
+    output = FileCopyService.stub(:native_fchmod, denying_fchmod) do
+      capture_private_post_processing_logs do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    destination_dir = File.join(@temp_dest_base, @book.author, @book.title)
+    destination = File.join(destination_dir, "audiobook.mp3")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal 0o640, File.stat(destination).mode & 0o777
+    assert_equal 0o750, File.stat(destination_dir).mode & 0o777
+    assert_includes output, "Could not apply the configured library import mode (Errno::EPERM)"
+    refute_includes output, @temp_dest_base
+    refute_includes output, @temp_source
+  end
+
+  test "reference imports do not chmod the download target" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "reference")
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    source = File.join(@temp_source, "audiobook.mp3")
+    File.chmod(0o604, source)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination_dir = File.join(@temp_dest_base, @book.author, @book.title)
+    destination = File.join(destination_dir, "audiobook.mp3")
+    assert @request.reload.completed?, @request.issue_description
+    assert File.symlink?(destination)
+    assert_equal 0o604, File.stat(source).mode & 0o777
+    assert_equal 0o775, File.stat(destination_dir).mode & 0o777
+  end
+
+  test "flat copy imports chmod the file and leave the library root unchanged" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:audiobook_path_template, "")
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0777")
+    root_mode = File.stat(@temp_dest_base).mode & 0o777
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, "audiobook.mp3")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal 0o664, File.stat(destination).mode & 0o777
+    assert_equal root_mode, File.stat(@temp_dest_base).mode & 0o777
+  end
+
   private
 
   def post_processing_lock_busy?(download_id)

@@ -141,6 +141,15 @@
             spellcheck: false,
             class: "w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 uppercase text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500",
             data: { action: "change->settings-form#autoSave" } %>
+      <% elsif %w[library_import_file_mode library_import_folder_mode].include?(key.to_s) %>
+        <%= form.text_field "settings[#{key}]",
+            value: data[:value],
+            id: "settings_#{key}",
+            placeholder: (key.to_s == "library_import_folder_mode" ? "0775" : "0664"),
+            spellcheck: false,
+            autocomplete: "off",
+            class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2",
+            data: { action: "change->settings-form#autoSave" } %>
       <% elsif SettingsService.manual_save_setting_key?(key) && !SettingsService.secret_setting_key?(key) %>
         <%= form.text_field "settings[#{key}]", value: data[:value], id: "settings_#{key}", autocomplete: "off", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
       <% elsif SettingsService.secret_setting_key?(key) %>

@@ -547,6 +547,44 @@ class FileCopyService
       path
     end
 
+    # chmod one library entry through a no-follow descriptor so a symlink cannot
+    # redirect the mode change onto another inode. Callers decide whether a
+    # failure is fatal.
+    def chmod_nofollow(path, mode, root:, directory:)
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        if directory
+          child = open_pinned_directory_child(parent, basename)
+          begin
+            native_fchmod(child.fileno, mode)
+          ensure
+            child.close unless child.closed?
+          end
+        else
+          with_pinned_regular_child(parent, basename) do |file|
+            native_fchmod(file.fileno, mode)
+          end
+        end
+        validate_current_directory_identity!(parent_path, parent)
+      end
+      path
+    end
+
+    # Stat a library file through a no-follow descriptor. Move cleanup compares
+    # this manifest, so a later mode change has to be recorded or the download
+    # is kept as if the library file had been replaced.
+    def library_file_manifest(path, root:)
+      manifest = nil
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        with_pinned_regular_child(parent, basename) do |file|
+          manifest = file_manifest_entry(file.stat).freeze
+        end
+        validate_current_directory_identity!(parent_path, parent)
+      end
+      manifest || RemoteResult::Failed.new(Errno::ENOENT.new("library file is absent"))
+    rescue SystemCallError, UnsafePathError => error
+      RemoteResult::Failed.new(error)
+    end
+
     def secure_private_directory!(path, root:)
       with_pinned_directory(path, root: root, create: true, mode: 0o700) do |directory|
         unless private_entry_owned_by_process?(directory.stat, directory)

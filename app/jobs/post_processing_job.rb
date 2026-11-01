@@ -1131,6 +1131,7 @@ class PostProcessingJob < ApplicationJob
   end
 
   def import_file(source, destination)
+    @published_as_hardlink = false
     if reference_completed_downloads?
       source_snapshot = reference_source_snapshot(source)
       regular_root_snapshot = @reference_regular_source_root unless
@@ -1153,6 +1154,7 @@ class PostProcessingJob < ApplicationJob
           source_root: @import_source_root,
           require_durable: @require_durable_import
         )
+        @published_as_hardlink = true
         @hardlinked_file_count += 1
       rescue FileCopyService::HardlinkUnsupportedError
         Rails.logger.warn(
@@ -1201,12 +1203,18 @@ class PostProcessingJob < ApplicationJob
         )
         record_imported_source!(source)
         Rails.logger.info "[PostProcessingJob] Reusing one identical previously imported file"
+        apply_configured_library_file_mode!(source, destination, published_as_hardlink: nil)
         return destination
       end
 
       imported = import_file(source, destination)
       verify_imported_destination!(source, imported, require_durable: true) if @require_durable_import
       record_imported_source!(source)
+      apply_configured_library_file_mode!(
+        source,
+        imported,
+        published_as_hardlink: @published_as_hardlink
+      )
       return imported
     rescue Errno::EEXIST
       # Another importer won this candidate after retry_safe_destination.
@@ -1324,6 +1332,67 @@ class PostProcessingJob < ApplicationJob
 
   def ensure_real_import_directory!(path)
     FileCopyService.ensure_directory(path, root: @import_base_path, mode: 0o750)
+    LibraryImportPermissions.apply_directory!(path, root: @import_base_path)
+  end
+
+  # Retained hardlinks are skipped: chmod would change the download file too.
+  # nil means the caller does not know whether this reuse shares that inode.
+  def apply_configured_library_file_mode!(source, destination, published_as_hardlink:)
+    return if reference_completed_downloads?
+
+    hardlinked = if published_as_hardlink.nil?
+      shared_download_hardlink?(source, destination)
+    else
+      published_as_hardlink
+    end
+    result = LibraryImportPermissions.apply_file!(
+      destination,
+      root: @import_base_path,
+      hardlinked: hardlinked
+    )
+    return if hardlinked || RemoteResult.failed?(result)
+    return if SettingsService.get(:library_import_file_mode).blank?
+
+    # The verified snapshot still has the pre-chmod mode and ctime. Move
+    # cleanup would otherwise keep the download.
+    record_post_chmod_library_snapshot!(source, destination)
+  end
+
+  def record_post_chmod_library_snapshot!(source, destination)
+    return unless defined?(@verified_library_snapshots) && @verified_library_snapshots
+
+    key = Pathname(source).expand_path.to_s
+    return unless @verified_library_snapshots.key?(key)
+
+    previous = @verified_library_snapshots[key].last
+    return unless previous
+
+    manifest = FileCopyService.library_file_manifest(destination, root: @import_base_path)
+    return if RemoteResult.failed?(manifest)
+    return unless manifest.is_a?(Array)
+    return unless manifest.values_at(0, 1, 2, 3) == previous.manifest.values_at(0, 1, 2, 3)
+
+    @verified_library_snapshots[key][-1] = FileCopyService::SourceFileSnapshot.new(
+      path: previous.path,
+      parent_path: previous.parent_path,
+      canonical_parent_path: previous.canonical_parent_path,
+      parent_device: previous.parent_device,
+      parent_inode: previous.parent_inode,
+      manifest: manifest,
+      content_digest: previous.content_digest
+    ).freeze
+  end
+
+  def shared_download_hardlink?(source, destination)
+    return false unless hardlink_completed_downloads?
+
+    FileCopyService.same_file_identity?(
+      source,
+      destination,
+      root: @import_base_path,
+      source_root: @import_source_root,
+      hardlink_mode: true
+    ) != false
   end
 
   def move_completed_downloads?

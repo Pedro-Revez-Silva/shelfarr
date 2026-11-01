@@ -121,6 +121,7 @@ class UploadZipImportFileService
           source_root: snapshot,
           allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
         )
+        LibraryImportPermissions.apply_tree!(destination.to_s, root: root.to_s)
         remove_manifest_by_path!(destination, root)
         destination.to_s
       rescue Errno::EEXIST
@@ -425,6 +426,11 @@ class UploadZipImportFileService
     end
   end
 
+  def finish_published_directory!(destination, root)
+    LibraryImportPermissions.apply_tree!(destination.to_s, root: root.to_s)
+    display_destination_path
+  end
+
   def publish!
     validate_reservation!
     root = self.class.send(:validated_reserved_root, upload)
@@ -435,7 +441,7 @@ class UploadZipImportFileService
       validate_reservation!
       if self.class.publication_complete?(upload, destination, root) == true
         @publication_verified = true
-        return display_destination_path
+        return finish_published_directory!(destination, root)
       end
 
       if File.exist?(destination) || File.symlink?(destination)
@@ -456,7 +462,7 @@ class UploadZipImportFileService
       rescue Errno::EEXIST
         if self.class.publication_complete?(upload, destination, root) == true
           @publication_verified = true
-          return display_destination_path
+          return finish_published_directory!(destination, root)
         end
 
         raise Error, "The reserved ZIP destination became occupied by another file or directory"
@@ -472,7 +478,7 @@ class UploadZipImportFileService
       end
       @publication_verified = true
     end
-    display_destination_path
+    finish_published_directory!(destination, root)
   rescue OwnedMediaImportFileService::Error,
     FileCopyService::UnsafePathError,
     FileCopyService::AtomicPublicationUnsupportedError,

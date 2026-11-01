@@ -595,6 +595,7 @@ module Admin
     def validate_setting_value(key, value)
       validate_setting_type(key, value) ||
         validate_completed_download_import_mode(key, value) ||
+        validate_library_import_mode(key, value) ||
         validate_path_template(key, value) ||
         validate_indexer_url(key, value) ||
         validate_ebooks_com_setting(key, value)
@@ -621,6 +622,15 @@ module Admin
       return nil if SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value.to_s)
 
       "must be one of: #{SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.join(', ')}"
+    end
+
+    def validate_library_import_mode(key, value)
+      return nil unless SettingsService::LIBRARY_IMPORT_PERMISSION_KEYS.include?(key.to_sym)
+
+      text = value.to_s.strip
+      return nil if text.empty? || text.match?(SettingsService::LIBRARY_IMPORT_MODE_FORMAT)
+
+      "must be a 3 or 4 digit octal mode (for example 0664), or blank"
     end
 
     def validate_path_template(key, value)
