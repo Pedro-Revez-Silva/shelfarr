@@ -64,6 +64,7 @@ class PostProcessingJob < ApplicationJob
 
     book = request.book
     acquisition_finalized = false
+    replaced_library_path = nil
 
     Rails.logger.info "[PostProcessingJob] Starting download ##{download.id}, book ##{book.id}"
 
@@ -82,7 +83,8 @@ class PostProcessingJob < ApplicationJob
       # instead of leaving Retry stuck in Attention Required. A later
       # finalize_acquisition! replaces that path only after import succeeds,
       # and still preserves a different verifiable library file.
-      if book.acquired? && RemoteResult.succeeded?(verifiable_library_entry?(book.file_path))
+      if book.acquired? && !download.replace_library_file? &&
+          RemoteResult.succeeded?(verifiable_library_entry?(book.file_path))
         acquisition_finalized = RemoteResult.succeeded?(
           finalize_acquisition!(
             download,
@@ -107,6 +109,11 @@ class PostProcessingJob < ApplicationJob
         base_path: base_path,
         language: import_language
       )
+      if download.replace_library_file? && book.file_path.present?
+        # A sibling folder keeps the old directory intact until the new import commits.
+        replaced_library_path = book.file_path
+        destination = unused_replacement_destination(destination, replaced_library_path)
+      end
       source_resolution = remap_download_path(download.download_path, download)
       source_path = source_resolution[:path]
       if source_path_unavailable?(source_path)
@@ -158,6 +165,10 @@ class PostProcessingJob < ApplicationJob
         finalize_acquisition!(download, request, book, book_path, cleanup_state)
       )
       return unless acquisition_finalized
+
+      if replaced_library_path
+        SafeLibraryDeletionService.delete_previous_library_file!(book, replaced_library_path)
+      end
 
       # Destructive source/client cleanup happens only after Book, Request, and
       # Download ownership commit together. A hard kill before that commit can
@@ -251,7 +262,9 @@ class PostProcessingJob < ApplicationJob
             .where(acquisition_reservation_token: nil)
         end
       elsif book.file_path != imported_path || @imported_library_entry
-        if book.file_path != imported_path && RemoteResult.succeeded?(verifiable_library_entry?(book.file_path))
+        if book.file_path != imported_path &&
+            RemoteResult.succeeded?(verifiable_library_entry?(book.file_path)) &&
+            !replacing_verified_library_file?(download, book, imported_path)
           raise BookAcquisitionConflictError,
             "Another acquisition already attached a different library file to this title"
         end
@@ -1722,6 +1735,31 @@ class PostProcessingJob < ApplicationJob
       new_path = duplicate_filename_candidate(path, counter)
     end
     new_path
+  end
+
+  def replacing_verified_library_file?(download, book, imported_path)
+    return false unless download.replace_library_file?
+    return false if imported_path.blank? || book.file_path.blank?
+    return false if SafeLibraryDeletionService.overlapping_library_paths?(imported_path, book.file_path)
+
+    true
+  end
+
+  def unused_replacement_destination(destination, existing_path)
+    candidate = destination
+    counter = 1
+    while replacement_destination_conflicts?(candidate, existing_path)
+      counter += 1
+      raise Errno::ENAMETOOLONG, destination if counter > 100
+
+      candidate = duplicate_filename_candidate(destination, counter)
+    end
+    candidate
+  end
+
+  def replacement_destination_conflicts?(candidate, existing_path)
+    path_occupied?(candidate) ||
+      SafeLibraryDeletionService.overlapping_library_paths?(candidate, existing_path)
   end
 
   def duplicate_filename_candidate(path, counter)

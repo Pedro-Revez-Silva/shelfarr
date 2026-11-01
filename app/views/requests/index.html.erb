@@ -180,7 +180,7 @@
 
               <% if Current.user.admin? %>
                 <% has_retry = request.can_retry? %>
-                <% has_cancel = request.can_be_cancelled? || request.can_delete_completed_history? %>
+                <% has_cancel = true %>
                 <% has_issue = request.issue_description.present? %>
                 <% if has_view_results || has_retry || has_cancel || has_issue %>
                   <div data-request-card-action-row class="mt-2 flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">

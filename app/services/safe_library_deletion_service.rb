@@ -10,6 +10,43 @@ require "rbconfig"
 class SafeLibraryDeletionService
   class Error < StandardError; end
 
+  def self.same_or_nested_path?(child, parent)
+    child_path = Pathname(child.to_s).expand_path
+    parent_path = Pathname(parent.to_s).expand_path
+    return true if child_path == parent_path
+
+    relative = child_path.relative_path_from(parent_path)
+    relative.to_s != ".." && !relative.to_s.start_with?("..#{File::SEPARATOR}")
+  rescue ArgumentError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def self.overlapping_library_paths?(left, right)
+    [ same_or_nested_path?(left, right), same_or_nested_path?(right, left) ].any? do |result|
+      result == true || RemoteResult.failed?(result)
+    end
+  end
+
+  # The previous library path is removed only after the Book row points at the
+  # new file. A new file inside the old directory is left in place.
+  def self.delete_previous_library_file!(book, previous_path)
+    current = book.file_path.to_s
+    return false if previous_path.blank? || current.blank?
+    return false if overlapping_library_paths?(current, previous_path)
+
+    record = book.class.find_by(id: book.id)
+    return false unless record
+
+    record.file_path = previous_path
+    new(record).delete!
+    true
+  rescue Error => error
+    Rails.logger.warn(
+      "[SafeLibraryDeletionService] Kept the previous library file for book ##{book.id}: #{error.class}"
+    )
+    RemoteResult::Failed.new(error)
+  end
+
   AT_REMOVEDIR = RbConfig::CONFIG.fetch("host_os").match?(/darwin/i) ? 0x80 : 0x200
   INTERNAL_DIRECTORIES = LibraryPathSafety::INTERNAL_DIRECTORIES
 

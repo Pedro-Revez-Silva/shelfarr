@@ -1,0 +1,14 @@
+<% replacing = request.book.acquired? %>
+<% button_options = {
+  method: :post,
+  class: local_assigns.fetch(:button_class, "px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition")
+} %>
+<% if replacing %>
+  <% button_options[:params] = { replace_library_file: "1" } %>
+  <% button_options[:form] = { "data-turbo-confirm" => Request::LIBRARY_FILE_REPLACEMENT_PROMPT } %>
+<% end %>
+<%= button_to(
+  result.blocklisted? ? "Retry Anyway" : (result.rejected? ? "Select Instead" : "Select"),
+  select_admin_request_search_result_path(request, result),
+  button_options
+) %>

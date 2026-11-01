@@ -5155,6 +5155,46 @@ class PostProcessingJobTest < ActiveJob::TestCase
       )
   end
 
+  test "a confirmed replacement removes the old library directory only after import succeeds" do
+    SettingsService.set(:audiobookshelf_url, "")
+    old_dir = File.join(@temp_dest_base, "old-copy")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(file_path: old_dir)
+    @download.update!(replace_library_file: true)
+
+    LibraryPlatformClient.stub(:configured?, false) do
+      NotificationService.stub(:request_completed, ->(_request) { true }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    @book.reload
+    assert @request.reload.completed?, @request.issue_description
+    assert_not_equal old_dir, @book.file_path
+    assert_equal "test audio content", File.binread(File.join(@book.file_path, "audiobook.mp3"))
+    assert_not File.exist?(old_dir)
+  end
+
+  test "a failed replacement import does not change the existing library directory" do
+    SettingsService.set(:audiobookshelf_url, "")
+    old_dir = File.join(@temp_dest_base, "old-copy")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(file_path: old_dir)
+    @download.update!(replace_library_file: true)
+
+    FileCopyService.stub(:cp_noreplace, ->(*) { raise "import failed" }) do
+      LibraryPlatformClient.stub(:configured?, false) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert_equal old_dir, @book.reload.file_path
+    assert_equal "old audio", File.binread(File.join(old_dir, "old.mp3"))
+    assert_not @request.reload.completed?
+  end
+
   def without_atomic_file_publication(&operation)
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
       FileCopyService.stub(:native_rename_noreplace, false, &operation)

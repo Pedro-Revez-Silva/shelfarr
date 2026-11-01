@@ -1695,7 +1695,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_in_as(@admin)
 
     request = @pending_request
-    request.define_singleton_method(:add_manual_magnet!) do |_magnet_url|
+    request.define_singleton_method(:add_manual_magnet!) do |_magnet_url, **|
       raise ActiveRecord::RecordNotUnique, "duplicate"
     end
     finder = Object.new
@@ -1769,7 +1769,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_in_as(@admin)
 
     request = @pending_request
-    request.define_singleton_method(:add_manual_nzb!) do |_nzb_url|
+    request.define_singleton_method(:add_manual_nzb!) do |_nzb_url, **|
       raise ActiveRecord::RecordNotUnique, "duplicate"
     end
     finder = Object.new

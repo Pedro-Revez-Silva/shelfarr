@@ -104,7 +104,7 @@
                   data-action="click->delete-modal#backdropClick">
             <div class="p-6">
               <h3 class="text-lg font-semibold text-white mb-2">Delete Book</h3>
-              <p class="text-gray-400 mb-4">Are you sure you want to delete "<%= @book.title %>" from the library? This will also remove all associated requests.</p>
+              <p class="text-gray-400 mb-4">Are you sure you want to delete "<%= @book.title %>" from the library? This will also remove all associated requests. Download client jobs are stopped. Files outside the library are kept.</p>
 
               <%= form_with url: library_path(@book), method: :delete, local: true, class: "space-y-4" do |f| %>
                 <div class="space-y-3">
@@ -113,15 +113,6 @@
                       <input type="checkbox" name="delete_files" value="1"
                              class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-red-600 focus:ring-red-500">
                       <span>Delete book files from disk<%= " and #{LibraryPlatformClient.display_name}" if LibraryPlatformClient.configured? %></span>
-                    </label>
-                  <% end %>
-
-                  <% has_torrents = @book.requests.any? { |r| r.downloads.any? { |d| d.external_id.present? && d.download_client.present? } } %>
-                  <% if has_torrents %>
-                    <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
-                      <input type="checkbox" name="remove_torrent" value="1"
-                             class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-red-600 focus:ring-red-500">
-                      <span>Remove torrent from download client</span>
                     </label>
                   <% end %>
                 </div>

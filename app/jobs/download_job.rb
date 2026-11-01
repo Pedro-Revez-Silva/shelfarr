@@ -393,7 +393,7 @@ class DownloadJob < ApplicationJob
     )
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook to: #{destination_dir}"
-    ensure_book_available_for_direct_download!(book)
+    ensure_book_available_for_direct_download!(book, download)
     mark_direct_download_active!(download)
     ensure_output_root!(base_path)
     file_service = DirectDownloadFileService.new(
@@ -478,7 +478,7 @@ class DownloadJob < ApplicationJob
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook file to: #{destination_path}"
-    ensure_book_available_for_direct_download!(book)
+    ensure_book_available_for_direct_download!(book, download)
     mark_direct_download_active!(download)
     ensure_output_root!(base_path)
     # Flat output shares destination_dir across books; track the file itself.
@@ -550,7 +550,7 @@ class DownloadJob < ApplicationJob
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading directly to: #{destination_path}"
-    ensure_book_available_for_direct_download!(book)
+    ensure_book_available_for_direct_download!(book, download)
     mark_direct_download_active!(download)
     ensure_output_root!(base_path)
     # Flat output shares destination_dir across books; track the file itself.
@@ -1296,12 +1296,19 @@ class DownloadJob < ApplicationJob
     file.rewind
   end
 
-  def ensure_book_available_for_direct_download!(book)
+  def ensure_book_available_for_direct_download!(book, download = nil)
     book.reload
 
     if book.acquisition_reserved? && !book.acquired?
       DirectDownloadFileService.reconcile_reservation!(book)
       book.reload
+    end
+
+    if book.acquired? && download&.replace_library_file?
+      return unless book.acquisition_reserved?
+
+      raise BookAcquisitionConflictError,
+        "Another acquisition still owns this title; no library file was replaced"
     end
 
     return unless book.acquisition_blocked?

@@ -114,6 +114,97 @@ class AcquiredLibraryRedownloadTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "a confirmed replacement swaps the library file only after the new download imports" do
+    Dir.mktmpdir do |dir|
+      SettingsService.set(:ebook_output_path, dir)
+      book = Book.create!(title: "Pride and Prejudice", author: "Austen, Jane", book_type: :ebook)
+      request = Request.create!(book: book, user: users(:one), status: :downloading)
+      original = request.search_results.create!(
+        guid: "gutenberg:1342:replace-original",
+        title: "Pride and Prejudice - Austen, Jane [EPUB]",
+        indexer: "Project Gutenberg",
+        source: SearchResult::SOURCE_GUTENBERG,
+        download_url: "https://www.gutenberg.org/ebooks/1342.epub3.images?download=1",
+        status: :selected
+      )
+      original_download = request.downloads.create!(
+        name: original.title,
+        search_result: original,
+        status: :queued
+      )
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.epub3.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: "PK\x03\x04" + ("original" * 64),
+            headers: { "Content-Type" => "application/epub+zip" }
+          )
+        DownloadJob.perform_now(original_download.id)
+      end
+
+      request.reload
+      book.reload
+      original_download.reload
+      original_library = book.file_path
+      original_file = original_download.download_path
+      original_bytes = File.binread(original_file)
+      replacement = request.search_results.create!(
+        guid: "gutenberg:1342:replace-pdf",
+        title: "Pride and Prejudice - Austen, Jane [PDF]",
+        indexer: "Project Gutenberg",
+        source: SearchResult::SOURCE_GUTENBERG,
+        download_url: "https://www.gutenberg.org/ebooks/1342.pdf.images?download=1",
+        status: :pending
+      )
+
+      post select_admin_request_search_result_path(request, replacement),
+        params: { replace_library_file: "1" }
+      assert_redirected_to requests_path
+      replacement_download = request.downloads.order(:id).last
+      assert replacement_download.replace_library_file?
+      assert_equal original_bytes, File.binread(original_file)
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.pdf.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(status: 500, body: "no file")
+        DownloadJob.perform_now(replacement_download.id)
+      end
+
+      book.reload
+      assert_equal original_library, book.file_path
+      assert_equal original_bytes, File.binread(original_file)
+      assert replacement_download.reload.failed?
+
+      retry_download = request.reload.select_result!(replacement, replace_library_file: true)
+      assert retry_download.replace_library_file?
+      pdf_bytes = "%PDF-1.7\n" + ("replacement" * 64)
+
+      VCR.turned_off do
+        stub_request(:get, "https://www.gutenberg.org/ebooks/1342.pdf.images")
+          .with(query: hash_including("download" => "1"))
+          .to_return(
+            status: 200,
+            body: pdf_bytes,
+            headers: { "Content-Type" => "application/pdf" }
+          )
+        DownloadJob.perform_now(retry_download.id)
+      end
+
+      book.reload
+      request.reload
+      retry_download.reload
+      assert request.completed?, request.issue_description
+      assert_equal pdf_bytes, File.binread(retry_download.download_path)
+      assert_not_equal original_library, book.file_path
+      assert_not File.exist?(original_library)
+      assert_not File.exist?(original_file)
+      assert retry_download.download_path.start_with?(book.file_path)
+    end
+  end
+
   private
 
   def assert_recovery_clear(download, label)
