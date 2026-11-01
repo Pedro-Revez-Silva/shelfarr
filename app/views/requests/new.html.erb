@@ -231,14 +231,20 @@
 
     if (count === 0) {
       submitBtn.disabled = true;
-      submitBtn.textContent = 'Select a format';
+      setSubmitLabel(submitBtn, 'Select a format');
     } else if (count === 1) {
       submitBtn.disabled = false;
-      submitBtn.textContent = 'Create Request';
+      setSubmitLabel(submitBtn, 'Create Request');
     } else {
       submitBtn.disabled = false;
-      submitBtn.textContent = `Create ${count} Requests`;
+      setSubmitLabel(submitBtn, `Create ${count} Requests`);
     }
+  }
+
+  function setSubmitLabel(submitBtn, text) {
+    submitBtn.value = text;
+    submitBtn.textContent = text;
+    submitBtn.setAttribute('value', text);
   }
 
   var bothButton = document.querySelector("[data-select-both-formats]");
