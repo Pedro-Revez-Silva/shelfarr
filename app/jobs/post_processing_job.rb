@@ -8,8 +8,8 @@ require "logger"
 # Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
   EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
-  EBOOK_SIDECAR_EXTENSIONS = %w[jpg jpeg png webp opf nfo txt].freeze
-  EBOOK_ALLOWED_EXTENSIONS = (EBOOK_FILE_EXTENSIONS + EBOOK_SIDECAR_EXTENSIONS).freeze
+  EBOOK_COVER_EXTENSIONS = %w[jpg jpeg png webp].freeze
+  AUDIOBOOK_COVER_EXTENSIONS = %w[bmp gif jpeg jpg png webp].freeze
   # SABnzbd (and some torrent clients) report a completed file path instead of
   # the job folder. Remap through the parent while preserving the reported file.
   COMPLETED_DOWNLOAD_FILE_EXTENSIONS = (
@@ -446,6 +446,8 @@ class PostProcessingJob < ApplicationJob
       "Refusing to import source outside configured download roots"
     when /no supported ebook files/i
       "No supported ebook files found in the completed download"
+    when /no supported audiobook files/i
+      "No supported audiobook files found in the completed download"
     when /unsupported ebook import file type/i
       "Unsupported ebook import file type or invalid ebook content"
     when /failed to enqueue post-processing retry/i
@@ -793,6 +795,7 @@ class PostProcessingJob < ApplicationJob
     }.fetch(completed_download_import_mode, "Copying")
     Rails.logger.info "[PostProcessingJob] #{action} library content"
     validate_ebook_source!(source) if readable_file_import?(book)
+    validate_audiobook_source!(source) if book&.audiobook?
     source_cleanup = nil
 
     if directory_source
@@ -930,8 +933,8 @@ class PostProcessingJob < ApplicationJob
 
     ensure_real_import_directory!(destination)
 
-    # Preserve dot-prefixed audiobook release files. Ebook/comic validation and
-    # recursive import intentionally retain their existing hidden-file policy.
+    # Ebook and comic imports ignore hidden names. Audiobook imports keep hidden
+    # audio and recognized covers, and leave other dotfiles in the download.
     files = source_manifest_children(source)
     files.reject! { |file| file.start_with?(".") } if readable_file_import?(book)
     Rails.logger.info "[PostProcessingJob] Found #{files.size} files/folders to import"
@@ -965,16 +968,13 @@ class PostProcessingJob < ApplicationJob
       ensure_real_import_directory!(entry.destination)
       import_audiobook_bundle_file(entry.source_path, entry.destination)
       entry.sidecar_paths.each do |sidecar|
+        next unless audiobook_bundle_cover?(sidecar)
+
         import_sidecar_file(sidecar, entry.destination, retry_safe: true)
       end
     end
 
-    tracked_destination = plan.tracked_entry.destination
-    ensure_real_import_directory!(tracked_destination)
-    plan.unassigned_paths.each do |path|
-      import_sidecar_file(path, tracked_destination, retry_safe: true)
-    end
-    @imported_book_path_override = tracked_destination
+    @imported_book_path_override = plan.tracked_entry.destination
   end
 
   def import_audiobook_bundle_file(source_file, destination)
@@ -989,7 +989,7 @@ class PostProcessingJob < ApplicationJob
       end
     elsif allowed_ebook_import_file?(source_file) && ebook_file?(source_file)
       import_renamed_file(source_file, destination, book, language: language)
-    elsif allowed_ebook_import_file?(source_file)
+    elsif allowed_ebook_import_file?(source_file) && ebook_cover_file?(source_file)
       import_sidecar_file(source_file, destination)
     else
       Rails.logger.info "[PostProcessingJob] Skipping one unsupported ebook import file"
@@ -1017,14 +1017,14 @@ class PostProcessingJob < ApplicationJob
     paths = ebook_directory_files(source)
 
     paths.each do |path|
+      extension = path_extension(path)
+      next unless ebook_import_candidate?(path, extension)
+
       if File.symlink?(path) && !reference_source_snapshot(path)
         raise "Unsupported ebook import file type: #{File.basename(path)}"
       end
 
-      extension = File.extname(path).delete_prefix(".").downcase
-      next unless EBOOK_ALLOWED_EXTENSIONS.include?(extension)
-
-      unless allowed_ebook_import_file?(path)
+      unless allowed_ebook_import_file?(path, extension: extension)
         raise "Unsupported ebook import file type: #{File.basename(path)}"
       end
 
@@ -1042,20 +1042,17 @@ class PostProcessingJob < ApplicationJob
   end
 
   def allowed_ebook_import_file?(path, extension: nil)
+    extension ||= path_extension(path)
+    return false unless ebook_import_candidate?(path, extension)
+
     if (snapshot = reference_source_snapshot(path)).is_a?(FileCopyService::ReferenceSourceSnapshot)
       target = snapshot.target_snapshot.path.to_s
-      extension ||= File.extname(path).delete_prefix(".").downcase
       return false unless File.file?(target) && !File.symlink?(target)
-
-      return false unless EBOOK_ALLOWED_EXTENSIONS.include?(extension)
 
       return RemoteResult.succeeded?(valid_ebook_import_content?(target, extension))
     end
     return false if File.symlink?(path)
     return false unless File.file?(path)
-
-    extension ||= File.extname(path).delete_prefix(".").downcase
-    return false unless EBOOK_ALLOWED_EXTENSIONS.include?(extension)
 
     RemoteResult.succeeded?(valid_ebook_import_content?(path, extension))
   end
@@ -1087,10 +1084,6 @@ class PostProcessingJob < ApplicationJob
       head.start_with?("\x89PNG\r\n\x1A\n".b)
     when "webp"
       head.start_with?("RIFF") && head.byteslice(8, 4) == "WEBP"
-    when "opf"
-      text_file_content?(head) && head.downcase.include?("<package")
-    when "nfo", "txt"
-      text_file_content?(head)
     else
       false
     end
@@ -1105,14 +1098,6 @@ class PostProcessingJob < ApplicationJob
       head.start_with?("\xFE\xED\xFA\xCF".b) ||
       head.start_with?("\xCE\xFA\xED\xFE".b) ||
       head.start_with?("\xCF\xFA\xED\xFE".b)
-  end
-
-  def text_file_content?(head)
-    return false if head.include?("\x00")
-
-    head.bytes.all? do |byte|
-      byte == 9 || byte == 10 || byte == 12 || byte == 13 || byte >= 32
-    end
   end
 
   def import_sidecar_file(source_file, destination, retry_safe: false)
@@ -1303,23 +1288,36 @@ class PostProcessingJob < ApplicationJob
 
   def import_directory_entry(source, destination)
     stat = File.lstat(source)
+    if stat.directory? && !stat.symlink?
+      import_audiobook_subdirectory(source, destination)
+    elsif audiobook_library_file?(source)
+      import_audiobook_leaf(source, destination, stat)
+    else
+      Rails.logger.info "[PostProcessingJob] Skipping one non-audiobook release file"
+    end
+  end
+
+  def import_audiobook_subdirectory(source, destination)
+    children = source_manifest_children(source)
+    return if children.none? { |entry| audiobook_tree_has_library_file?(File.join(source, entry)) }
+
+    nested_destination = File.join(destination, File.basename(source))
+    ensure_real_import_directory!(nested_destination)
+    children.each do |entry|
+      import_directory_entry(File.join(source, entry), nested_destination)
+    end
+  end
+
+  def import_audiobook_leaf(source, destination, stat)
     if stat.symlink?
       unless reference_completed_downloads? && reference_source_snapshot(source)
         raise "Refusing to import symbolic link: #{source}"
       end
-
-      import_file_without_duplicate_content(source, File.join(destination, File.basename(source)))
-    elsif stat.directory?
-      nested_destination = File.join(destination, File.basename(source))
-      ensure_real_import_directory!(nested_destination)
-      source_manifest_children(source).each do |entry|
-        import_directory_entry(File.join(source, entry), nested_destination)
-      end
-    elsif stat.file?
-      import_file_without_duplicate_content(source, File.join(destination, File.basename(source)))
-    else
+    elsif !stat.file?
       raise "Refusing to import non-regular path: #{source}"
     end
+
+    import_file_without_duplicate_content(source, File.join(destination, File.basename(source)))
   end
 
   def ensure_real_import_directory!(path)
@@ -1711,7 +1709,73 @@ class PostProcessingJob < ApplicationJob
   end
 
   def ebook_file?(path)
-    EBOOK_FILE_EXTENSIONS.include?(File.extname(path).delete_prefix(".").downcase)
+    EBOOK_FILE_EXTENSIONS.include?(path_extension(path))
+  end
+
+  def validate_audiobook_source!(source)
+    return unless File.directory?(source) && !File.symlink?(source)
+    return if audiobook_audio_descendant?(source)
+
+    raise "No supported audiobook files found in download"
+  end
+
+  def audiobook_audio_descendant?(source)
+    stat = File.lstat(source)
+    if stat.directory? && !stat.symlink?
+      source_manifest_children(source).any? { |entry| audiobook_audio_descendant?(File.join(source, entry)) }
+    else
+      audiobook_audio_file?(source)
+    end
+  end
+
+  def audiobook_tree_has_library_file?(source)
+    stat = File.lstat(source)
+    if stat.directory? && !stat.symlink?
+      source_manifest_children(source).any? { |entry| audiobook_tree_has_library_file?(File.join(source, entry)) }
+    else
+      audiobook_library_file?(source)
+    end
+  end
+
+  def audiobook_library_file?(path)
+    audiobook_audio_file?(path) || audiobook_cover_file?(path)
+  end
+
+  def audiobook_audio_file?(path)
+    AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS.include?(path_extension(path))
+  end
+
+  def audiobook_cover_file?(path)
+    recognized_cover_file?(path, AUDIOBOOK_COVER_EXTENSIONS)
+  end
+
+  def audiobook_bundle_cover?(path)
+    AUDIOBOOK_COVER_EXTENSIONS.include?(path_extension(path))
+  end
+
+  def ebook_cover_file?(path)
+    recognized_cover_file?(path, EBOOK_COVER_EXTENSIONS)
+  end
+
+  def ebook_import_candidate?(path, extension = nil)
+    extension ||= path_extension(path)
+    EBOOK_FILE_EXTENSIONS.include?(extension) || ebook_cover_file?(path)
+  end
+
+  # artwork, cover, folder, front, and thumbnail are the cover names already
+  # used when a multi-book audiobook folder is split into per-book folders.
+  def recognized_cover_file?(path, extensions)
+    extensions.include?(path_extension(path)) &&
+      AudiobookBundleImportPlanner::GENERIC_COVER_STEMS.include?(path_stem(path))
+  end
+
+  def path_extension(path)
+    File.extname(path.to_s).delete_prefix(".").downcase
+  end
+
+  def path_stem(path)
+    basename = File.basename(path.to_s)
+    basename.delete_suffix(File.extname(basename)).downcase
   end
 
   def handle_duplicate_filename(path)
