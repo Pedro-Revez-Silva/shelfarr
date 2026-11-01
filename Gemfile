@@ -3,8 +3,11 @@ source "https://rubygems.org"
 gem "rails", "~> 8.1.3", ">= 8.1.3.1"
 # Loofah CSS tokenizer. 1.0.7 leaves a bad URL open after an escaped backslash.
 gem "crass", ">= 1.0.8"
+# Request host parsing. 3.2.7 and older return an invalid Host verbatim.
+gem "rack", ">= 3.2.8"
 gem "propshaft"
-gem "sqlite3", ">= 2.1"
+# SQL string lengths. 2.9.6 casts a string of 4 GiB or more down to int.
+gem "sqlite3", ">= 2.10.2"
 gem "puma", ">= 5.0"
 gem "importmap-rails"
 gem "turbo-rails"
@@ -35,6 +38,8 @@ gem "faraday"
 gem "faraday-multipart"
 # Public and private suffix boundaries for credential-bearing redirects
 gem "public_suffix", "~> 7.0"
+# URI normalization. 2.9.0 keeps segments a later .. should have removed.
+gem "addressable", ">= 2.9.1"
 gem "resolv", "~> 0.3.2"
 gem "oj"
 gem "rubyzip", ">= 3.4.0", require: "zip"
