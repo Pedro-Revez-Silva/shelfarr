@@ -236,6 +236,85 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /Automatically enqueue search immediately for requests created by non-admin users/
   end
 
+  test "index shows the auto-select threshold and optional file size limits" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "h2", text: "Auto-Selection"
+    assert_select "label", text: "Auto-Select Confidence Threshold"
+    assert_select "input[name='settings[auto_select_confidence_threshold]'][min='0'][max='100'][value='90']"
+    assert_select "p", text: /Minimum confidence score \(0-100\) for auto-selection/
+    assert_select "h2", text: "Format Preferences"
+    assert_select "label", text: "Minimum Ebook Size"
+    assert_select "label", text: "Maximum Ebook Size"
+    assert_select "label", text: "Minimum Audiobook Size"
+    assert_select "label", text: "Maximum Audiobook Size"
+    assert_select "input[name='settings[ebook_min_file_size]'][value='']"
+    assert_select "input[name='settings[ebook_max_file_size]'][value='']"
+    assert_select "input[name='settings[audiobook_min_file_size]'][value='']"
+    assert_select "input[name='settings[audiobook_max_file_size]'][value='']"
+    assert_select "p", text: /Leave blank to keep scoring unchanged/, minimum: 4
+  end
+
+  test "admin can lower the auto-select confidence threshold" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: { auto_select_confidence_threshold: "75" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal 75, SettingsService.get(:auto_select_confidence_threshold)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { auto_select_confidence_threshold: "101" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match "0 to 100", flash[:alert]
+    assert_equal 75, SettingsService.get(:auto_select_confidence_threshold)
+  end
+
+  test "admin can save and clear per-format file size limits" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        ebook_min_file_size: "200 KB",
+        ebook_max_file_size: "50",
+        audiobook_min_file_size: "",
+        audiobook_max_file_size: "2 GB"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "200 KB", SettingsService.get(:ebook_min_file_size)
+    assert_equal "50 MB", SettingsService.get(:ebook_max_file_size)
+    assert_equal "", SettingsService.get(:audiobook_min_file_size)
+    assert_equal "2 GB", SettingsService.get(:audiobook_max_file_size)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { ebook_min_file_size: "huge" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match "file size", flash[:alert]
+    assert_equal "200 KB", SettingsService.get(:ebook_min_file_size)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { ebook_min_file_size: "80 MB", ebook_max_file_size: "50 MB" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match "less than or equal to Maximum Ebook Size", flash[:alert]
+    assert_equal "200 KB", SettingsService.get(:ebook_min_file_size)
+    assert_equal "50 MB", SettingsService.get(:ebook_max_file_size)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { ebook_min_file_size: "", ebook_max_file_size: "" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "", SettingsService.get(:ebook_min_file_size)
+    assert_equal "", SettingsService.get(:ebook_max_file_size)
+  end
+
   test "index shows ordered download type preferences" do
     get admin_settings_url
 

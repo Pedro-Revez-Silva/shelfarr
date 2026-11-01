@@ -50,6 +50,21 @@ class SettingsService
     PREFERRED_EAPI_HOSTS.map { |host| "https://#{host}" } + LEGACY_ZLIBRARY_URLS
   ).join("\n")
   ENV_OVERRIDE_PREFIX = "SHELFARR_SETTING_"
+  FILE_SIZE_LIMIT_KEYS = %i[
+    ebook_min_file_size ebook_max_file_size
+    audiobook_min_file_size audiobook_max_file_size
+  ].freeze
+  FILE_SIZE_LIMIT_PAIRS = [
+    %i[ebook_min_file_size ebook_max_file_size],
+    %i[audiobook_min_file_size audiobook_max_file_size]
+  ].freeze
+  FILE_SIZE_UNITS = {
+    "B" => 1,
+    "KB" => 1024,
+    "MB" => 1024 * 1024,
+    "GB" => 1024 * 1024 * 1024
+  }.freeze
+  FILE_SIZE_PATTERN = /\A(\d+(?:\.\d+)?)(?:\s*(KB|MB|GB|B))?\z/i
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
   COMPLETED_DOWNLOAD_IMPORT_MODES = %w[copy move hardlink reference].freeze
@@ -185,11 +200,15 @@ class SettingsService
     ebook_approved_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated ebook formats that may be auto-selected (leave blank to allow any detected format)" },
     ebook_rejected_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated ebook formats that should never be auto-selected" },
     ebook_preferred_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated ebook formats in preference order, from best to worst" },
+    ebook_min_file_size: { type: "string", default: "", category: "format_preferences", description: "Optional minimum ebook size. Leave blank to keep scoring unchanged. A number alone is megabytes; KB, MB, and GB also work. A smaller release is scored down and kept for manual review. Releases with no reported size are unchanged." },
+    ebook_max_file_size: { type: "string", default: "", category: "format_preferences", description: "Optional maximum ebook size. Leave blank to keep scoring unchanged. A number alone is megabytes; KB, MB, and GB also work. A larger release is scored down and kept for manual review. Releases with no reported size are unchanged." },
     audiobook_approved_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated audiobook formats that may be auto-selected (leave blank to allow any detected format)" },
     audiobook_rejected_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated audiobook formats that should never be auto-selected" },
     audiobook_preferred_formats: { type: "json", default: "[]", category: "format_preferences", description: "Comma-separated audiobook formats in preference order, from best to worst" },
     audiobook_prefer_single_file: { type: "boolean", default: false, category: "format_preferences", description: "Prefer single-file audiobook releases (for example .m4b) over chapter-split releases when detected" },
     audiobook_prefer_higher_bitrate: { type: "boolean", default: false, category: "format_preferences", description: "Prefer higher bitrate audiobook releases when the bitrate can be inferred from the title" },
+    audiobook_min_file_size: { type: "string", default: "", category: "format_preferences", description: "Optional minimum audiobook size. Leave blank to keep scoring unchanged. A number alone is megabytes; KB, MB, and GB also work. A smaller release is scored down and kept for manual review. Releases with no reported size are unchanged." },
+    audiobook_max_file_size: { type: "string", default: "", category: "format_preferences", description: "Optional maximum audiobook size. Leave blank to keep scoring unchanged. A number alone is megabytes; KB, MB, and GB also work. A larger release is scored down and kept for manual review. Releases with no reported size are unchanged." },
 
     default_language: { type: "string", default: "en", category: "language", description: "Default language for new requests" },
     enabled_languages: { type: "json", default: '["en"]', category: "language", description: "Languages available for selection when creating requests" },
@@ -320,6 +339,11 @@ class SettingsService
     ebooks_com_country_code: "Buyer Country Code",
     ebooks_com_search_limit: "Offer Limit",
     allow_nonatomic_nfs_directory_publication: "Allow Non-Atomic NFS Directory Publication",
+    auto_select_confidence_threshold: "Auto-Select Confidence Threshold",
+    ebook_min_file_size: "Minimum Ebook Size",
+    ebook_max_file_size: "Maximum Ebook Size",
+    audiobook_min_file_size: "Minimum Audiobook Size",
+    audiobook_max_file_size: "Maximum Audiobook Size",
     precreate_download_archives: "Pre-create Download Archives",
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
@@ -433,6 +457,20 @@ class SettingsService
         if value.nil? || value < MIN_HEALTH_CHECK_INTERVAL
           raise ArgumentError,
             "#{label_for(key)} must be at least #{MIN_HEALTH_CHECK_INTERVAL} seconds"
+        end
+      end
+
+      if key == :auto_select_confidence_threshold
+        value = Integer(value, exception: false)
+        unless value&.between?(0, 100)
+          raise ArgumentError, "#{label_for(key)} must be an integer from 0 to 100"
+        end
+      end
+
+      if file_size_limit_key?(key)
+        value = canonical_file_size_setting(value)
+        if value.present? && parse_file_size_bytes(value).nil?
+          raise ArgumentError, "#{label_for(key)} must be a file size such as 200 KB, 50 MB, or 1.5 GB. A number alone means megabytes."
         end
       end
 
@@ -722,6 +760,41 @@ class SettingsService
         INDEXER_SEARCH_SCOPE_OPTIONS.fetch(scope)
           .merge(value: scope)
       end
+    end
+
+    def file_size_limit_key?(key)
+      FILE_SIZE_LIMIT_KEYS.include?(key.to_sym)
+    end
+
+    def canonical_file_size_setting(value)
+      text = value.to_s.strip.gsub(/\s+/, " ")
+      return "" if text.blank?
+
+      match = text.match(FILE_SIZE_PATTERN)
+      return text unless match
+      return text unless match[1].to_f.positive?
+
+      "#{match[1]} #{(match[2] || "MB").upcase}"
+    end
+
+    def parse_file_size_bytes(value)
+      match = value.to_s.strip.match(FILE_SIZE_PATTERN)
+      return nil unless match
+
+      amount = match[1].to_f
+      unit = (match[2] || "MB").upcase
+      bytes = (amount * FILE_SIZE_UNITS.fetch(unit)).round
+      bytes.positive? ? bytes : nil
+    end
+
+    def file_size_limits_for(book_type)
+      type = book_type.to_s
+      return { min_bytes: nil, max_bytes: nil } unless %w[ebook audiobook].include?(type)
+
+      {
+        min_bytes: parse_file_size_bytes(get("#{type}_min_file_size")),
+        max_bytes: parse_file_size_bytes(get("#{type}_max_file_size"))
+      }
     end
 
     def format_preferences_for(book_type)

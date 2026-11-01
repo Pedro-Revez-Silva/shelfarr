@@ -413,6 +413,22 @@ class SearchResultTest < ActiveSupport::TestCase
     assert_equal :low, SearchResult.new(confidence_score: 69).confidence_level
   end
 
+  test "file size adjustment label explains an out of range release" do
+    large = SearchResult.new(score_breakdown: { file_size_adjustment: -40, file_size_status: "above_max" })
+    small = SearchResult.new(score_breakdown: { "file_size_adjustment" => -40, "file_size_status" => "below_min" })
+    neutral = SearchResult.new(score_breakdown: { file_size_adjustment: 0, file_size_status: "within" })
+
+    assert_equal(-40, large.file_size_adjustment)
+    assert_equal :above_max, large.file_size_limit_status
+    assert_equal "Size -40 (too large)", large.file_size_adjustment_label
+    assert_equal "Larger than the configured maximum file size", large.file_size_limit_explanation
+    assert_equal "Size -40 (too small)", small.file_size_adjustment_label
+    assert_equal "Smaller than the configured minimum file size", small.file_size_limit_explanation
+    assert_nil neutral.file_size_adjustment_label
+    assert_nil SearchResult.new.file_size_adjustment_label
+    assert_equal 0, SearchResult.new.file_size_adjustment
+  end
+
   test "format helpers fall back when score metadata is absent" do
     result = SearchResult.new(title: "The Pending Ebook - EPUB")
 

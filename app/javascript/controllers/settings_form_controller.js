@@ -271,6 +271,15 @@ export default class extends Controller {
   }
 
   handleActionClick(event) {
+    // Save All sits outside the form. Once an autosave marks the form inert,
+    // the browser drops that click before the submit handler can queue it.
+    const saveAll = event.target.closest("input[name='commit'][form='settings-configuration']");
+    if (saveAll && (this.autosaveInFlight || this.explicitSubmitInFlight)) {
+      event.preventDefault();
+      this.deferAction({ type: "submitter", submitter: saveAll });
+      return;
+    }
+
     const link = event.target.closest("a[data-turbo-method]");
     if (!link) return;
 

@@ -45,7 +45,7 @@
             "border-yellow-600/30 bg-yellow-950/10 hover:bg-yellow-950/20"
           end %>
 
-          <div class="<%= row_classes.join(' ') %>">
+          <div class="<%= row_classes.join(' ') %>" data-search-result-id="<%= result.id %>">
             <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
               <div class="min-w-0 flex-grow">
                 <p class="text-sm font-medium leading-6 text-white break-words" title="<%= result.title %>"><%= result.title %></p>
@@ -88,6 +88,11 @@
                   <% if result.preference_adjustment != 0 %>
                     <span class="<%= result.preference_adjustment.positive? ? 'text-blue-400' : 'text-red-400' %>">
                       Preference <%= result.preference_adjustment.positive? ? '+' : '' %><%= result.preference_adjustment %>
+                    </span>
+                  <% end %>
+                  <% if result.file_size_adjustment != 0 %>
+                    <span class="text-red-400" title="<%= result.file_size_limit_explanation %>">
+                      <%= result.file_size_adjustment_label %>
                     </span>
                   <% end %>
                   <% unless result.auto_select_allowed_by_preferences? %>

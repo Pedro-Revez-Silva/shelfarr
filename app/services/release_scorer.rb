@@ -3,6 +3,7 @@
 class ReleaseScorer
   COMIC_ISSUE_EXACT_BONUS = 15
   COMIC_ISSUE_UNKNOWN_MAX_SCORE = 49
+  FILE_SIZE_OUT_OF_RANGE_PENALTY = -40
   COMIC_ISSUE_VALUE_PATTERN = '\d+(?:\.\d+)?(?:[a-z]|-[a-z])?'
 
   WEIGHTS = {
@@ -39,10 +40,12 @@ class ReleaseScorer
   def score
     issue_status = @comic_issue_match&.fetch(:status, nil)
     format_score = calculate_format_score
+    size_limit = file_size_limit
     auto_select_allowed = @format_preferences.auto_select_allowed &&
       !explicit_format_conflict? &&
       !ambiguous_title_alias_match? &&
-      (@comic_issue_match.nil? || issue_status == :exact)
+      (@comic_issue_match.nil? || issue_status == :exact) &&
+      size_limit[:allowed]
     breakdown = {
       title: calculate_title_score,
       author: calculate_author_score,
@@ -50,6 +53,8 @@ class ReleaseScorer
       format: format_score,
       health: calculate_health_score,
       preference_adjustment: @format_preferences.score_adjustment,
+      file_size_adjustment: size_limit[:adjustment],
+      file_size_status: size_limit[:status],
       auto_select_allowed: auto_select_allowed,
       extension: @format_preferences.matched_extension,
       extensions: @format_preferences.detected_extensions,
@@ -69,7 +74,7 @@ class ReleaseScorer
       (breakdown[key] * weight) / 100.0
     end.round
 
-    total = (base_total + @format_preferences.score_adjustment + comic_issue_adjustment).clamp(0, 100)
+    total = (base_total + @format_preferences.score_adjustment + comic_issue_adjustment + size_limit[:adjustment]).clamp(0, 100)
     total = [ total, COMIC_ISSUE_UNKNOWN_MAX_SCORE ].min if issue_status == :unknown
     total = 0 if issue_status == :mismatch
 
@@ -245,6 +250,33 @@ class ReleaseScorer
     @search_result.download_url.present? &&
       @search_result.magnet_url.blank? &&
       @search_result.seeders.nil?
+  end
+
+  def file_size_limit
+    limits = SettingsService.file_size_limits_for(@book.book_type)
+    min_bytes = limits[:min_bytes]
+    max_bytes = limits[:max_bytes]
+    return { adjustment: 0, status: nil, allowed: true } if min_bytes.nil? && max_bytes.nil?
+
+    size_bytes = @search_result.size_bytes
+    return { adjustment: 0, status: "unknown", allowed: true } if size_bytes.nil?
+
+    size = size_bytes.to_i
+    if min_bytes && size < min_bytes
+      out_of_range_file_size("below_min")
+    elsif max_bytes && size > max_bytes
+      out_of_range_file_size("above_max")
+    else
+      { adjustment: 0, status: "within", allowed: true }
+    end
+  end
+
+  def out_of_range_file_size(status)
+    {
+      adjustment: FILE_SIZE_OUT_OF_RANGE_PENALTY,
+      status: status,
+      allowed: false
+    }
   end
 
   def comic_issue_adjustment
