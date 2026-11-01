@@ -96,13 +96,22 @@ fi
 
 ensure_storage_path_permissions "/rails/storage"
 
+# NAME_FILE is loaded into NAME when Rails boots. Count that as provided so
+# startup does not generate a different secret over the file.
+env_configured() {
+  local name="$1"
+  local file_name="${name}_FILE"
+
+  [ -n "${!name:-}" ] || [ -n "${!file_name:-}" ]
+}
+
 # =============================================================================
 # Secret Key Generation
 # =============================================================================
 # Auto-generate SECRET_KEY_BASE if not provided
 # This allows "just run docker-compose up" without manual key generation
 
-if [ -z "$RAILS_MASTER_KEY" ] && [ -z "$SECRET_KEY_BASE" ]; then
+if ! env_configured RAILS_MASTER_KEY && ! env_configured SECRET_KEY_BASE; then
   SECRET_FILE="/rails/storage/.secret_key_base"
 
   if [ -f "$SECRET_FILE" ]; then
@@ -125,7 +134,7 @@ fi
 
 ENCRYPTION_FILE="/rails/storage/.encryption_keys"
 
-if [ -z "$ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY" ]; then
+if ! env_configured ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY && ! env_configured ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY && ! env_configured ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT; then
   if [ -f "$ENCRYPTION_FILE" ]; then
     source "$ENCRYPTION_FILE"
     echo "Using existing auto-generated encryption keys"

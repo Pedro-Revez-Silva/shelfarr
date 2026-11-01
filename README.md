@@ -111,7 +111,7 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `SHELFARR_SETTING_ALLOW_NONATOMIC_NFS_DIRECTORY_PUBLICATION` | `false` | Allows directory imports when NFS rejects atomic no-replace renames. Enable only for a single-writer export. The fallback checks that the destination is absent before plain `rename(2)`, but NFS cannot make those two operations atomic; a concurrently created empty destination directory could be replaced. This can also be enabled under **Admin → Settings → Downloads → Output Paths**. |
 | `HTTP_PORT` | `80` | Internal container port. Change if port 80 is in use (e.g., behind gluetun) |
 | `TZ` | `UTC` | IANA time zone used for displayed timestamps (e.g., `America/New_York`) |
-| `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set |
+| `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set. `RAILS_MASTER_KEY_FILE` reads it from a file; see [Docker secrets](#docker-secrets) |
 | `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
 | `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vYYYY.MM.DD.N`, use `YYYY.MM.DD.N`) |
 | `LIBATION_BOOKS_PATH` | Docker named volume | Optional host path for retained Audible backup copies; useful for large libraries |
@@ -156,6 +156,41 @@ services:
 ```
 
 The env value takes precedence while set and is cast using the setting type. Nothing is written back to the database; removing the variable falls back to the stored value, or the default if none exists. Env-managed keys are read-only in Admin -> Settings. Other settings are not overridable, and unsupported `SHELFARR_SETTING_*` variables are ignored with a boot-time warning.
+
+Credential settings can be loaded from a file. See [Docker secrets](#docker-secrets).
+
+#### Docker secrets
+
+Credential environment variables can be loaded from a file, including a Docker secret. For a credential variable `NAME`, set `NAME_FILE` to the file path. Shelfarr reads that file once at startup and uses its contents as `NAME`, with one trailing newline removed.
+
+`NAME_FILE` is available for:
+
+- `SECRET_KEY_BASE`
+- `RAILS_MASTER_KEY`
+- `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY`
+- `ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY`
+- `ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT`
+- `SHELFARR_SETTING_OIDC_CLIENT_SECRET`
+- `SHELFARR_SETTING_HARDCOVER_OAUTH_CLIENT_SECRET`
+- `SHELFARR_SETTING_WEBHOOK_TOKEN`
+
+Leave `NAME` unset when `NAME_FILE` is set. An empty `NAME` counts as unset, including a Compose entry such as `RAILS_MASTER_KEY=${RAILS_MASTER_KEY}` when the host variable is absent. The process user (`PUID` inside the container) must be able to read the file. Startup fails if `NAME` and `NAME_FILE` are both non-empty, or if the file is missing, not a regular file, or otherwise unreadable. When `SECRET_KEY_BASE` or any Active Record encryption key comes from a file, Shelfarr keeps those values and skips generating replacements. Provide all three encryption keys together. `SHELFARR_LIBATION_TOKEN_FILE` remains the Audible companion token path.
+
+```yaml
+secrets:
+  oidc_client_secret:
+    file: ./oidc_client_secret.txt
+
+services:
+  shelfarr:
+    secrets:
+      - oidc_client_secret
+    environment:
+      SHELFARR_SETTING_OIDC_ENABLED: "true"
+      SHELFARR_SETTING_OIDC_ISSUER: "https://auth.example.com"
+      SHELFARR_SETTING_OIDC_CLIENT_ID: "shelfarr"
+      SHELFARR_SETTING_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+```
 
 ### Configuration
 
