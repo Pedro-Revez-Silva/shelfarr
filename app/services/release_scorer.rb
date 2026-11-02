@@ -14,7 +14,17 @@ class ReleaseScorer
     health: 5
   }.freeze
 
-  Result = Data.define(:total, :breakdown, :detected_languages, :detected_format) do
+  Result = Data.define(:total, :breakdown, :detected_languages, :detected_format, :total_before_file_size) do
+    def initialize(total:, breakdown:, detected_languages:, detected_format:, total_before_file_size: total)
+      super(
+        total: total,
+        breakdown: breakdown,
+        detected_languages: detected_languages,
+        detected_format: detected_format,
+        total_before_file_size: total_before_file_size
+      )
+    end
+
     def high_confidence?
       total >= 90
     end
@@ -74,15 +84,16 @@ class ReleaseScorer
       (breakdown[key] * weight) / 100.0
     end.round
 
-    total = (base_total + @format_preferences.score_adjustment + comic_issue_adjustment + size_limit[:adjustment]).clamp(0, 100)
-    total = [ total, COMIC_ISSUE_UNKNOWN_MAX_SCORE ].min if issue_status == :unknown
-    total = 0 if issue_status == :mismatch
+    match_total = base_total + @format_preferences.score_adjustment + comic_issue_adjustment
+    total_before_file_size = bounded_release_total(match_total, issue_status)
+    total = bounded_release_total(match_total + size_limit[:adjustment], issue_status)
 
     Result.new(
       total: total,
       breakdown: breakdown,
       detected_languages: @parsed[:languages],
-      detected_format: @parsed[:format]
+      detected_format: @parsed[:format],
+      total_before_file_size: total_before_file_size
     )
   end
 
@@ -283,6 +294,13 @@ class ReleaseScorer
 
   def file_size_limit
     self.class.file_size_assessment(@search_result.size_bytes, @book.book_type)
+  end
+
+  def bounded_release_total(value, issue_status)
+    total = value.clamp(0, 100)
+    total = [ total, COMIC_ISSUE_UNKNOWN_MAX_SCORE ].min if issue_status == :unknown
+    total = 0 if issue_status == :mismatch
+    total
   end
 
   def comic_issue_adjustment

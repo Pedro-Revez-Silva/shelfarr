@@ -888,8 +888,18 @@ class SearchJob < ApplicationJob
 
     Array(results).select do |tagged_result|
       broad_result_candidate?(tagged_result, request) &&
-        penalized_indexer_score(tagged_result, request) >= threshold
+        retention_indexer_score(tagged_result, request) >= threshold
     end
+  end
+
+  # The size penalty still lowers the stored score used for rank, display,
+  # and auto-select. Retention uses the score from before that penalty so an
+  # oversized match stays visible for manual review.
+  def retention_indexer_score(tagged_result, request)
+    result = indexer_result_from(tagged_result)
+    score = ReleaseScorer.score(search_result_for_scoring(result), request)
+    penalty = tagged_result.is_a?(Hash) ? tagged_result[:score_penalty].to_i : 0
+    [ score.total_before_file_size - penalty, 0 ].max
   end
 
   # Baseline sanity check for results found without category restrictions:

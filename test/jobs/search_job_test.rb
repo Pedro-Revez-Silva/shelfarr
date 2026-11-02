@@ -3106,6 +3106,97 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "keeps an oversized Newznab match visible when another release clears the broad filter" do
+    SettingsService.set(:indexer_provider, "newznab")
+    SettingsService.set(:newznab_url, "http://localhost:5076")
+    SettingsService.set(:newznab_api_key, "newznab-key")
+    SettingsService.set(:indexer_search_scope, "broad")
+    SettingsService.set(:min_match_confidence, 50)
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 40)
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+
+    book = Book.create!(title: "The Name of the Rose", author: "Umberto Eco", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+    title = "The Name of the Rose - Umberto Eco EPUB"
+    score_for = lambda do |size_bytes|
+      ReleaseScorer.score(
+        SearchResult.new(
+          title: title,
+          download_url: "http://localhost:5076/getnzb/preview",
+          size_bytes: size_bytes
+        ),
+        request
+      )
+    end
+    oversized_score = score_for.call(80.megabytes)
+    within_score = score_for.call(5.megabytes)
+    threshold = SettingsService.get(:min_match_confidence)
+
+    assert_equal 88, within_score.total
+    assert_equal 88, oversized_score.total - oversized_score.breakdown[:file_size_adjustment]
+    assert_equal 48, oversized_score.total
+    assert_operator oversized_score.total, :<, threshold
+    assert_operator within_score.total, :>=, threshold
+    refute oversized_score.breakdown[:auto_select_allowed]
+    assert within_score.breakdown[:auto_select_allowed]
+
+    empty_body = "<rss><channel></channel></rss>"
+    matches = newznab_results_xml([
+      { title: title, guid: "rose-80mb", size_bytes: 80.megabytes },
+      { title: title, guid: "rose-5mb", size_bytes: 5.megabytes }
+    ])
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:5076/api")
+        .with(query: hash_including("t" => "search"))
+        .to_return do |req|
+          body = if req.uri.query_values["q"] == book.title && !category_query_param?(req)
+            matches
+          else
+            empty_body
+          end
+          { status: 200, body: body, headers: { "Content-Type" => "application/xml" } }
+        end
+
+      assert_enqueued_with(job: DownloadJob) do
+        SearchJob.perform_now(request.id)
+      end
+      assert_requested(
+        :get,
+        "http://localhost:5076/api",
+        times: 1,
+        query: hash_including("q" => book.title, "t" => "search")
+      ) do |req|
+        !category_query_param?(req)
+      end
+    end
+
+    request.reload
+    oversized = request.search_results.find_by(guid: "rose-80mb")
+    within = request.search_results.find_by(guid: "rose-5mb")
+
+    assert oversized, "oversized release should stay available for manual review"
+    assert within
+    assert_equal oversized_score.total, oversized.confidence_score
+    assert_equal within_score.total, within.confidence_score
+    assert_equal "above_max", oversized.score_breakdown["file_size_status"]
+    assert_equal ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY, oversized.file_size_adjustment
+    assert_equal "Size -40 (too large)", oversized.file_size_adjustment_label
+    refute oversized.auto_select_allowed_by_preferences?
+    assert_equal "within", within.score_breakdown["file_size_status"]
+    assert_equal 0, within.file_size_adjustment
+    assert within.auto_select_allowed_by_preferences?
+    assert_equal [ within, oversized ], request.search_results.best_first.to_a
+    assert within.selected?
+    assert oversized.rejected?
+    assert oversized.downloadable?
+  end
+
   test "normalized search title treats cross-language volume markers like english ones" do
     job = SearchJob.new
     expected = job.send(:normalized_search_title, "The Witcher Book 2")
@@ -3406,6 +3497,30 @@ class SearchJobTest < ActiveJob::TestCase
 
   def category_query_param?(request)
     request.uri.query.to_s.match?(/(?:^|&)(?:categories(?:%5B%5D)?|cat)=/)
+  end
+
+  def newznab_results_xml(items)
+    entries = items.map do |item|
+      <<~ITEM
+        <item>
+          <title>#{item[:title]}</title>
+          <guid>#{item[:guid]}</guid>
+          <link>https://example.com/details/#{item[:guid]}</link>
+          <enclosure url="http://localhost:5076/getnzb/#{item[:guid]}?apikey=newznab-key" length="#{item[:size_bytes]}" type="application/x-nzb" />
+          <newznab:attr name="hydraIndexerName" value="NZBHydra Books" />
+          <newznab:attr name="category" value="7020" />
+        </item>
+      ITEM
+    end.join
+
+    <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+        <channel>
+          #{entries}
+        </channel>
+      </rss>
+    XML
   end
 
   def jackett_result_xml(title:, guid:)
