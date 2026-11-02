@@ -1757,7 +1757,22 @@ class PostProcessingJob < ApplicationJob
   end
 
   def audiobook_library_file?(path)
-    audiobook_audio_file?(path) || audiobook_cover_file?(path)
+    audiobook_audio_file?(path) || audiobook_cover_file?(path) || aaxc_voucher_file?(path)
+  end
+
+  # Audible cannot decrypt an AAXC file without the same-stem voucher.
+  def aaxc_voucher_file?(path)
+    return false unless path_extension(path) == "voucher"
+
+    stem = AudiobookBundleImportPlanner.stem_for(path)
+    directory = File.dirname(path.to_s)
+    source_manifest_children(directory).any? do |entry|
+      candidate = File.join(directory, entry)
+      next if File.directory?(candidate)
+
+      AudiobookBundleImportPlanner.extension_for(candidate) == "aaxc" &&
+        AudiobookBundleImportPlanner.stem_for(candidate) == stem
+    end
   end
 
   def audiobook_audio_file?(path)

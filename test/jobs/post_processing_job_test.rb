@@ -526,6 +526,33 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal File.binread(mp4), File.binread(File.join(destination, "bonus.mp4"))
   end
 
+  test "moves the matching voucher with an accepted aaxc file" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.binwrite(File.join(@temp_source, "Book.aaxc"), "encrypted audio")
+    File.binwrite(File.join(@temp_source, "Book.voucher"), "voucher bytes")
+    File.binwrite(File.join(@temp_source, "Extra.m4b"), "extra audio")
+    File.binwrite(File.join(@temp_source, "Extra.voucher"), "m4b voucher")
+    File.binwrite(File.join(@temp_source, "Other.voucher"), "unrelated voucher")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal "encrypted audio", File.binread(File.join(destination, "Book.aaxc"))
+    assert_equal "voucher bytes", File.binread(File.join(destination, "Book.voucher"))
+    assert_equal "extra audio", File.binread(File.join(destination, "Extra.m4b"))
+    assert_not File.exist?(File.join(destination, "Extra.voucher"))
+    assert_not File.exist?(File.join(destination, "Other.voucher"))
+    assert_not File.exist?(File.join(@temp_source, "Book.aaxc"))
+    assert_not File.exist?(File.join(@temp_source, "Book.voucher"))
+    assert_not File.exist?(File.join(@temp_source, "Extra.m4b"))
+    assert_equal "m4b voucher", File.binread(File.join(@temp_source, "Extra.voucher"))
+    assert_equal "unrelated voucher", File.binread(File.join(@temp_source, "Other.voucher"))
+  end
+
   test "does not import a video mp4 as an audiobook" do
     SettingsService.set(:audiobookshelf_url, "")
     FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
@@ -5445,8 +5472,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
       )
   end
 
+  # ffmpeg's audio-only MP4 uses the isom brand and puts moov after mdat.
   def write_audio_only_mp4(path)
-    File.binwrite(path, [ 24 ].pack("N") + "ftypM4A " + ("\0" * 12))
+    FileUtils.cp(file_fixture("audio_only_isom.mp4"), path)
   end
 
   def write_video_mp4(path)
