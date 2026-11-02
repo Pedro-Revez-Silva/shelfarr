@@ -3,6 +3,7 @@
 require "test_helper"
 require "open3"
 require "rbconfig"
+require "shellwords"
 require "tmpdir"
 
 class SecretEnvFilesTest < ActiveSupport::TestCase
@@ -227,11 +228,7 @@ class SecretEnvFilesTest < ActiveSupport::TestCase
     function = source[/^env_configured\(\) \{\n(?:.*\n)*?\}/]
     assert function, "docker entrypoint must define env_configured"
     secret_condition = "if ! env_configured RAILS_MASTER_KEY && ! env_configured SECRET_KEY_BASE; then"
-    encryption_condition = "if ! env_configured ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY && " \
-      "! env_configured ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY && " \
-      "! env_configured ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT; then"
     assert_includes source, secret_condition
-    assert_includes source, encryption_condition
 
     assert_equal "keep", entrypoint_decision(function, secret_condition, "SECRET_KEY_BASE_FILE" => "/run/secrets/secret_key_base")
     assert_equal "keep", entrypoint_decision(function, secret_condition, "RAILS_MASTER_KEY_FILE" => "/run/secrets/master")
@@ -244,17 +241,59 @@ class SecretEnvFilesTest < ActiveSupport::TestCase
     )
     assert_equal "generate", entrypoint_decision(function, secret_condition)
     assert_equal "generate", entrypoint_decision(function, secret_condition, "SECRET_KEY_BASE" => "", "SECRET_KEY_BASE_FILE" => "")
-    assert_equal "keep", entrypoint_decision(
-      function,
-      encryption_condition,
-      "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY_FILE" => "/run/secrets/primary"
+
+    persisted = persisted_encryption_keys
+    exports = encryption_key_exports(persisted)
+    loaded, contents = run_entrypoint_encryption({}, persisted: persisted)
+    assert_equal persisted, loaded
+    assert_equal exports, contents
+
+    loaded, contents = run_entrypoint_encryption(
+      { "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY" => "inline-primary" },
+      persisted: persisted
     )
-    assert_equal "keep", entrypoint_decision(
-      function,
-      encryption_condition,
-      "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT_FILE" => "/run/secrets/salt"
+    assert_equal "inline-primary", loaded["ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"]
+    assert_nil loaded["ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY"]
+    assert_nil loaded["ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"]
+    assert_equal exports, contents
+
+    [
+      { "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY_FILE" => "/run/secrets/primary" },
+      { "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT_FILE" => "/run/secrets/salt" }
+    ].each do |env|
+      loaded, contents = run_entrypoint_encryption(env, persisted: persisted)
+      assert_nil loaded["ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"], env.inspect
+      assert_equal exports, contents
+    end
+
+    loaded, contents = run_entrypoint_encryption({})
+    assert loaded.values.all?(&:present?)
+    assert_equal loaded.size, loaded.values.uniq.size
+    loaded.each do |name, value|
+      assert_includes contents, %(export #{name}="#{value}")
+    end
+  end
+
+  test "docker entrypoint loads persisted encryption keys when only the salt is inline" do
+    keys = persisted_encryption_keys
+    loaded, contents = run_entrypoint_encryption(
+      { "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT" => "inline-salt" },
+      persisted: keys
     )
-    assert_equal "generate", entrypoint_decision(function, encryption_condition)
+
+    assert_equal keys, loaded
+    assert_equal encryption_key_exports(keys), contents
+  end
+
+  test "docker entrypoint loads persisted encryption keys when only the deterministic key is inline" do
+    keys = persisted_encryption_keys
+    loaded, contents = run_entrypoint_encryption(
+      { "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY" => "inline-deterministic" },
+      persisted: keys
+    )
+
+    assert_equal keys, loaded
+    assert_equal encryption_key_exports(keys), contents
   end
 
   private
@@ -286,6 +325,58 @@ class SecretEnvFilesTest < ActiveSupport::TestCase
       'require "./config/boot"; STDOUT.write(ENV.fetch("SHELFARR_SETTING_OIDC_CLIENT_SECRET", ENV["SECRET_KEY_BASE"].to_s))',
       chdir: Rails.root.to_s
     )
+  end
+
+  def persisted_encryption_keys
+    {
+      "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY" => "persisted-primary",
+      "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY" => "persisted-deterministic",
+      "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT" => "persisted-salt"
+    }
+  end
+
+  def encryption_key_exports(keys)
+    ShelfarrEncryptionKeys::REQUIRED.map { |name| %(export #{name}="#{keys.fetch(name)}"\n) }.join
+  end
+
+  def run_entrypoint_encryption(env, persisted: nil)
+    source = Rails.root.join("bin/docker-entrypoint").read
+    functions = source[/^env_configured\(\) \{\n(?:.*\n)*?\}/]
+    block = source[/^ENCRYPTION_FILE="\/rails\/storage\/\.encryption_keys"\n(?:.*\n)*?^fi\n/]
+    assert functions, "docker entrypoint must define env_configured"
+    assert_includes block.to_s, 'source "$ENCRYPTION_FILE"'
+
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, ".encryption_keys")
+      File.write(path, encryption_key_exports(persisted)) if persisted
+      script = <<~BASH
+        set -e
+        #{functions}
+        #{block.sub(/\AENCRYPTION_FILE="[^"]*"/, "ENCRYPTION_FILE=#{Shellwords.escape(path)}")}
+        for name in \
+          ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY \
+          ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY \
+          ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT
+        do
+          if [ -n "${!name+x}" ]; then
+            printf '%s=%s\\n' "$name" "${!name}"
+          else
+            printf '%s=<UNSET>\\n' "$name"
+          fi
+        done
+      BASH
+      output, status = Open3.capture2e(entrypoint_env(env), "bash", "-c", script)
+      assert status.success?, output
+      keys = output.lines.filter_map do |line|
+        match = line.match(/\A(ACTIVE_RECORD_ENCRYPTION_[A-Z_]+)=(.*)\n\z/)
+        next unless match
+        next unless ShelfarrEncryptionKeys::REQUIRED.include?(match[1])
+
+        [ match[1], match[2] == "<UNSET>" ? nil : match[2] ]
+      end.to_h
+      assert_equal ShelfarrEncryptionKeys::REQUIRED.sort, keys.keys.sort, output
+      [ keys, File.exist?(path) ? File.read(path) : nil ]
+    end
   end
 
   def entrypoint_decision(function, condition, env = {})

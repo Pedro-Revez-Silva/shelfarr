@@ -134,7 +134,13 @@ fi
 
 ENCRYPTION_FILE="/rails/storage/.encryption_keys"
 
-if ! env_configured ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY && ! env_configured ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY && ! env_configured ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT; then
+# A *_FILE value is applied at Rails boot, so it suppresses this block on its
+# own. Otherwise only the primary key counts: an inline salt or deterministic
+# key still loads the persisted file.
+if [ -z "${ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY_FILE:-}" ] && \
+   [ -z "${ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY_FILE:-}" ] && \
+   [ -z "${ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT_FILE:-}" ] && \
+   [ -z "$ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY" ]; then
   if [ -f "$ENCRYPTION_FILE" ]; then
     source "$ENCRYPTION_FILE"
     echo "Using existing auto-generated encryption keys"
