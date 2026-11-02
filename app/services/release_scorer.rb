@@ -85,8 +85,9 @@ class ReleaseScorer
     end.round
 
     match_total = base_total + @format_preferences.score_adjustment + comic_issue_adjustment
+    # Size comes off the capped score so a bonus above 100 cannot absorb the penalty.
     total_before_file_size = bounded_release_total(match_total, issue_status)
-    total = bounded_release_total(match_total + size_limit[:adjustment], issue_status)
+    total = bounded_release_total(total_before_file_size + size_limit[:adjustment], issue_status)
 
     Result.new(
       total: total,

@@ -1626,6 +1626,40 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "an oversized preferred ebook loses the full size penalty from its capped score" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [ "epub" ])
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "")
+    book = Book.create!(title: "The Name of the Rose", author: "Umberto Eco", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    release = request.search_results.create!(
+      guid: "rose-epub-80mb",
+      title: "The Name of the Rose - Umberto Eco English EPUB",
+      download_url: "http://localhost:5076/getnzb/rose",
+      size_bytes: 80.megabytes,
+      seeders: nil
+    )
+
+    unlimited = release.calculate_score!
+    assert_equal 12, unlimited.breakdown[:preference_adjustment]
+    assert_equal 100, unlimited.total
+    assert_equal 100, release.confidence_score
+
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+    limited = release.calculate_score!
+
+    assert_equal "above_max", limited.breakdown[:file_size_status]
+    assert_equal ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY, release.file_size_adjustment
+    assert_equal "Size -40 (too large)", release.file_size_adjustment_label
+    assert_equal unlimited.total, limited.total_before_file_size
+    assert_equal unlimited.total + release.file_size_adjustment, limited.total
+    assert_equal 60, limited.total
+    assert_equal 60, release.confidence_score
+    refute limited.breakdown[:auto_select_allowed]
+  end
+
   test "comic releases ignore ebook and audiobook file size limits" do
     SettingsService.set(:ebook_max_file_size, "1 MB")
     SettingsService.set(:audiobook_max_file_size, "1 MB")
