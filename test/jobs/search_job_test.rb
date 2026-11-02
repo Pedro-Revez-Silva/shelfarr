@@ -1442,6 +1442,47 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "preliminary scoring uses a known file size before a result counts as a strong match" do
+    SettingsService.set(:indexer_search_scope, "strict")
+    SettingsService.set(:min_match_confidence, 80)
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+
+    book = Book.create!(title: "The Name of the Rose", author: "Umberto Eco", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "en")
+    result = IndexerClients::Result.new(
+      guid: "oversized-rose",
+      title: "The Name of the Rose - Umberto Eco English EPUB",
+      indexer: "TestIndexer",
+      size_bytes: 3.gigabytes,
+      seeders: 20,
+      leechers: 0,
+      download_url: nil,
+      magnet_url: "magnet:?xt=urn:btih:oversizedrose",
+      info_url: nil,
+      published_at: nil
+    )
+    job = SearchJob.new
+    preliminary = ReleaseScorer.score(job.send(:search_result_for_scoring, result), request)
+    persisted = request.search_results.create!(
+      guid: result.guid,
+      title: result.title,
+      size_bytes: result.size_bytes,
+      seeders: result.seeders,
+      magnet_url: result.magnet_url,
+      status: :pending
+    )
+    persisted.calculate_score!
+
+    assert_equal "above_max", preliminary.breakdown[:file_size_status].to_s
+    assert_equal persisted.confidence_score, preliminary.total
+    assert_operator preliminary.total, :<, SettingsService.get(:min_match_confidence)
+    refute job.send(:strong_indexer_match?, [ { result: result } ], request)
+  end
+
   test "stops issuing generic queries once a strong match is found" do
     SettingsService.set(:indexer_search_scope, "strict")
     book = Book.create!(

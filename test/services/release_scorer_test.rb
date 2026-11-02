@@ -1577,6 +1577,21 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert ignored.breakdown[:auto_select_allowed]
   end
 
+  test "non-positive file sizes count as unknown when a minimum is set" do
+    SettingsService.set(:audiobook_min_file_size, "50 MB")
+    SettingsService.set(:audiobook_max_file_size, "2 GB")
+    unknown = wind_score(size_bytes: nil)
+
+    [ 0, -1 ].each do |size_bytes|
+      score = wind_score(size_bytes: size_bytes)
+
+      assert_equal unknown.total, score.total, size_bytes
+      assert_equal 0, score.breakdown[:file_size_adjustment], size_bytes
+      assert_equal "unknown", score.breakdown[:file_size_status], size_bytes
+      assert score.breakdown[:auto_select_allowed], size_bytes
+    end
+  end
+
   test "a maximum alone does not penalize a smaller ebook" do
     SettingsService.set(:ebook_approved_formats, [])
     SettingsService.set(:ebook_rejected_formats, [])

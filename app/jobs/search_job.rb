@@ -878,7 +878,8 @@ class SearchJob < ApplicationJob
       title: result.title,
       seeders: result.seeders,
       download_url: result.download_url,
-      magnet_url: result.magnet_url
+      magnet_url: result.magnet_url,
+      size_bytes: result.size_bytes
     )
   end
 

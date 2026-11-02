@@ -461,7 +461,8 @@ class SettingsService
       end
 
       if key == :auto_select_confidence_threshold
-        value = Integer(value, exception: false)
+        # Integer() without a radix reads a leading zero as octal.
+        value = Integer(value.to_s, 10, exception: false)
         unless value&.between?(0, 100)
           raise ArgumentError, "#{label_for(key)} must be an integer from 0 to 100"
         end

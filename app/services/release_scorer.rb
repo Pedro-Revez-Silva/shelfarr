@@ -90,6 +90,35 @@ class ReleaseScorer
     def score(search_result, request)
       new(search_result, request).score
     end
+
+    def file_size_assessment(size_bytes, book_type)
+      limits = SettingsService.file_size_limits_for(book_type)
+      min_bytes = limits[:min_bytes]
+      max_bytes = limits[:max_bytes]
+      return { adjustment: 0, status: nil, allowed: true } if min_bytes.nil? && max_bytes.nil?
+
+      # Newznab and Jackett report enclosure length 0 when the size is unknown.
+      return { adjustment: 0, status: "unknown", allowed: true } if size_bytes.nil? || size_bytes.to_i <= 0
+
+      size = size_bytes.to_i
+      if min_bytes && size < min_bytes
+        out_of_range_file_size("below_min")
+      elsif max_bytes && size > max_bytes
+        out_of_range_file_size("above_max")
+      else
+        { adjustment: 0, status: "within", allowed: true }
+      end
+    end
+
+    private
+
+    def out_of_range_file_size(status)
+      {
+        adjustment: FILE_SIZE_OUT_OF_RANGE_PENALTY,
+        status: status,
+        allowed: false
+      }
+    end
   end
 
   private
@@ -253,30 +282,7 @@ class ReleaseScorer
   end
 
   def file_size_limit
-    limits = SettingsService.file_size_limits_for(@book.book_type)
-    min_bytes = limits[:min_bytes]
-    max_bytes = limits[:max_bytes]
-    return { adjustment: 0, status: nil, allowed: true } if min_bytes.nil? && max_bytes.nil?
-
-    size_bytes = @search_result.size_bytes
-    return { adjustment: 0, status: "unknown", allowed: true } if size_bytes.nil?
-
-    size = size_bytes.to_i
-    if min_bytes && size < min_bytes
-      out_of_range_file_size("below_min")
-    elsif max_bytes && size > max_bytes
-      out_of_range_file_size("above_max")
-    else
-      { adjustment: 0, status: "within", allowed: true }
-    end
-  end
-
-  def out_of_range_file_size(status)
-    {
-      adjustment: FILE_SIZE_OUT_OF_RANGE_PENALTY,
-      status: status,
-      allowed: false
-    }
+    self.class.file_size_assessment(@search_result.size_bytes, @book.book_type)
   end
 
   def comic_issue_adjustment

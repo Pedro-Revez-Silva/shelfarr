@@ -596,6 +596,9 @@ class SettingsServiceTest < ActiveSupport::TestCase
     error = assert_raises(ArgumentError) { SettingsService.set(:auto_select_confidence_threshold, 101) }
     assert_match "0 to 100", error.message
     assert_equal 70, SettingsService.get(:auto_select_confidence_threshold)
+
+    SettingsService.set(:auto_select_confidence_threshold, "075")
+    assert_equal 75, SettingsService.get(:auto_select_confidence_threshold)
   end
 
   test "file size limits are blank by default and parse optional units" do
