@@ -1635,19 +1635,11 @@ class DownloadJob < ApplicationJob
   # A finished import, cancellation, or replacement records the release on the
   # download. Request status can change later and must not revive that id.
   def other_download_with_external_id(external_id, current_download_id, download_client_id:)
-    return if external_id.blank? || download_client_id.blank?
-
-    Download.where(external_id: external_id.to_s, download_client_id: download_client_id)
-            .where.not(id: current_download_id)
-            .where.not(status: :failed)
-            .order(:id)
-            .detect { |download| live_external_id_owner?(download) }
-  end
-
-  def live_external_id_owner?(download)
-    return true unless download.completed?
-
-    download.external_id_released_at.blank?
+    Download.current_external_id_owner(
+      external_id,
+      download_client_id: download_client_id,
+      except_id: current_download_id
+    )
   end
 
   def reject_duplicate_external_id!(download, client_record, external_id, existing, download_type:)

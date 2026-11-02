@@ -648,7 +648,7 @@ class Request < ApplicationRecord
       jobs = downloads.where(external_id_released_at: nil)
         .where.not(external_id: [ nil, "" ])
         .where.not(download_client_id: nil)
-        .pluck(:download_client_id, :external_id)
+        .pluck(:download_client_id, :external_id, :id)
       owner_scope = downloads.completed.where.not(post_processing_job_id: [ nil, "" ])
       live_ids = PostProcessingRecoveryJob.unfinished_active_job_ids(owner_scope.pluck(:post_processing_job_id))
       if live_ids.any?
@@ -696,25 +696,33 @@ class Request < ApplicationRecord
   end
 
   def self.remove_download_client_jobs!(jobs)
-    Array(jobs).uniq.each do |client_id, external_id|
+    Array(jobs).uniq.each do |client_id, external_id, download_id|
       next if client_id.blank? || external_id.blank?
       next unless external_id.is_a?(String) && external_id.match?(StaleClientDispatchCleanupJob::SAFE_EXTERNAL_ID)
+      if Download.current_external_id_owner(external_id, download_client_id: client_id, except_id: download_id)
+        Rails.logger.info "[Request] Left a download client job that another request now owns"
+        next
+      end
 
       client_record = DownloadClient.find_by(id: client_id)
       adapter = client_record&.adapter
       next unless adapter
+      next if client_job_removed!(adapter, external_id)
 
-      begin
-        removed = adapter.remove_torrent(external_id, delete_files: false)
-        unless removed
-          Rails.logger.warn "[Request] Client did not confirm removal for download client ##{client_id}; scheduling cleanup"
-          enqueue_admin_client_cleanup(client_id, external_id)
-        end
-      rescue StandardError => e
-        Rails.logger.warn "[Request] Failed to remove download client job for client ##{client_id}: #{e.class}; scheduling cleanup"
-        enqueue_admin_client_cleanup(client_id, external_id)
-      end
+      Rails.logger.warn "[Request] Client did not confirm removal for download client ##{client_id}; scheduling cleanup"
+      enqueue_admin_client_cleanup(client_id, external_id)
+      raise CancellationBlockedError,
+        "Shelfarr could not confirm that the download client removed this download, so the request was kept."
     end
+  end
+
+  def self.client_job_removed!(adapter, external_id)
+    return true if adapter.remove_torrent(external_id, delete_files: false)
+
+    adapter.torrent_info(external_id).blank?
+  rescue StandardError => error
+    Rails.logger.warn "[Request] Failed to remove download client job: #{error.class}"
+    false
   end
 
   def self.enqueue_admin_client_cleanup(client_id, external_id)
@@ -854,7 +862,7 @@ class Request < ApplicationRecord
       end
 
       replacing = library_replacement_requested?(replace_library_file)
-      reject_unfinished_library_replacement! if replacing
+      reject_unfinished_library_replacement!(search_result) if replacing
       release_legacy_completed_import_owner!
       release_completed_external_ids!(release_import_owner: false)
       select_result_after_releasing_external_ids!(search_result, replace_library_file: replacing)
@@ -1066,13 +1074,21 @@ class Request < ApplicationRecord
     ActiveModel::Type::Boolean.new.cast(value) == true && book.reload.acquired?
   end
 
-  def reject_unfinished_library_replacement!
+  def reject_unfinished_library_replacement!(search_result)
     if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
       raise ArgumentError, "Cannot replace the library file while post-processing cleanup is still in progress"
     end
-    return unless direct_acquisition_recovery_pending?
+    if direct_acquisition_recovery_pending?
+      raise ArgumentError, "Cannot replace the library file while a direct download is awaiting recovery"
+    end
 
-    raise ArgumentError, "Cannot replace the library file while a direct download is awaiting recovery"
+    released = LibraryReplacement.release_conflicting_plans!(book, artifact_id: search_result.id)
+    if RemoteResult.failed?(released)
+      raise ArgumentError, "Cannot replace the library file while an earlier replacement plan cannot be read"
+    end
+    return if released == true
+
+    raise ArgumentError, "Cannot replace the library file while an earlier replacement still has files to remove"
   end
 
   def search_refresh_acquisition_blocked?

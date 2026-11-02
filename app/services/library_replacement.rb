@@ -105,6 +105,7 @@ class LibraryReplacement
         plan = load(candidate)
         return plan if RemoteResult.failed?(plan)
         next unless plan.is_a?(Plan) && plan.layout == layout
+        next unless same_replacement_artifact?(candidate, download.search_result_id)
 
         matched = same_path?(plan.previous_path, current)
         return matched if RemoteResult.failed?(matched)
@@ -121,6 +122,29 @@ class LibraryReplacement
       end
 
       nil
+    end
+
+    # A different release must not keep writing into the previous release's
+    # destination. Clear that plan before the new artifact chooses a path.
+    def release_conflicting_plans!(book, artifact_id:, except_download_id: nil)
+      return false unless book&.persisted?
+
+      scope = Download.joins(:request)
+        .where(requests: { book_id: book.id })
+        .where.not(library_replacement_state: [ nil, "" ])
+      scope = scope.where.not(id: except_download_id) if except_download_id
+      scope.find_each do |candidate|
+        next if same_replacement_artifact?(candidate, artifact_id)
+
+        plan = load(candidate)
+        return plan if RemoteResult.failed?(plan)
+        next unless plan.is_a?(Plan)
+        next if cleanup_actionable?(candidate, book)
+
+        prepared = prepare_cancellation!(candidate)
+        return prepared unless prepared == true
+      end
+      true
     end
 
     def matches_book?(plan, book)
@@ -219,14 +243,18 @@ class LibraryReplacement
 
       return true unless plan.is_a?(Publication)
 
-      removed = remove_published_files!(book, plan.published_paths, protected_path: nil)
+      removable = published_paths_not_referenced_by(book, plan.published_paths)
+      return removable if RemoteResult.failed?(removable)
+
+      removed = remove_published_files!(book, removable, protected_path: nil)
       return removed unless removed == true
 
       clear!(download, plan.raw)
     end
 
-    # Appends a path only after that file is in the library. Cancellation
-    # later deletes this list and does not guess from templates or filenames.
+    # Records the destination before publication so a later sync error cannot
+    # hide a file that already landed. Cancellation deletes this list and does
+    # not guess from templates or filenames.
     def record_published_path!(download, path)
       normalized = Pathname(path.to_s).expand_path.to_s
       return invalid_plan("published path is blank") if normalized.blank?
@@ -254,6 +282,45 @@ class LibraryReplacement
           scope.where(library_replacement_state: raw)
         end
         updated = scope.update_all(library_replacement_state: new_raw, updated_at: Time.current)
+        if updated == 1
+          download.library_replacement_state = new_raw
+          return true
+        end
+      end
+
+      invalid_plan("published library file could not be recorded")
+    rescue JSON::ParserError, ArgumentError, SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def forget_published_path!(download, path)
+      normalized = Pathname(path.to_s).expand_path.to_s
+      return invalid_plan("published path is blank") if normalized.blank?
+
+      5.times do
+        download.reload
+        raw = download.library_replacement_state.to_s
+        if raw.blank?
+          download.library_replacement_state = nil
+          return true
+        end
+
+        data = JSON.parse(raw)
+        return invalid_plan("replacement plan is not an object") unless data.is_a?(Hash)
+
+        paths = published_paths_from(data)
+        return paths if RemoteResult.failed?(paths)
+        unless paths.include?(normalized)
+          download.library_replacement_state = raw
+          return true
+        end
+
+        data["published_paths"] = paths - [ normalized ]
+        new_raw = JSON.generate(data)
+        updated = Download.where(id: download.id, library_replacement_state: raw).update_all(
+          library_replacement_state: new_raw,
+          updated_at: Time.current
+        )
         if updated == 1
           download.library_replacement_state = new_raw
           return true
@@ -389,8 +456,26 @@ class LibraryReplacement
         data.key?("published_paths")
     end
 
+    # A finished import already gave every journaled file to the Book,
+    # including a sidecar that sits beside a single library file.
     def publication_retained?(download, book)
       download.post_processing_job_id.blank? && book.file_path.present?
+    end
+
+    def published_paths_not_referenced_by(book, paths)
+      current = book.file_path.to_s
+      return Array(paths) if current.blank?
+
+      Array(paths).each_with_object([]) do |path, removable|
+        referenced = SafeLibraryDeletionService.same_or_nested_path?(path, current)
+        return referenced if RemoteResult.failed?(referenced)
+
+        removable << path unless referenced == true
+      end
+    end
+
+    def same_replacement_artifact?(candidate, artifact_id)
+      artifact_id.present? && candidate.search_result_id == artifact_id
     end
 
     def published_paths_from(data)

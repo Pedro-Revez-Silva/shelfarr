@@ -387,4 +387,106 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
       assert_select "input[name='replace_library_file'][value='1']"
     end
   end
+
+  test "admin cancel leaves a torrent that another request now owns" do
+    shared_hash = "0123456789abcdef0123456789abcdef01234567"
+    active_hash = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    client = DownloadClient.create!(
+      name: "Shared hash #{SecureRandom.hex(4)}",
+      client_type: :qbittorrent,
+      url: "http://127.0.0.1:9",
+      enabled: true,
+      priority: 2
+    )
+    book_a = Book.create!(title: "Bundle A", book_type: :audiobook)
+    request_a = Request.create!(book: book_a, user: @user, status: :downloading)
+    request_a.downloads.create!(
+      name: "Earlier bundle download",
+      status: :failed,
+      download_client: client,
+      external_id: shared_hash
+    )
+    request_a.downloads.create!(
+      name: "Current download",
+      status: :downloading,
+      download_client: client,
+      external_id: active_hash
+    )
+    book_b = Book.create!(title: "Bundle B", book_type: :audiobook)
+    request_b = Request.create!(book: book_b, user: @user, status: :downloading)
+    owned = request_b.downloads.create!(
+      name: "Bundle B download",
+      status: :downloading,
+      download_client: client,
+      external_id: shared_hash
+    )
+    removed = []
+    adapter = Object.new
+    adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
+      removed << [ external_id, delete_files ]
+      true
+    end
+    adapter.define_singleton_method(:torrent_info) { |_external_id| nil }
+
+    DownloadClients::Qbittorrent.stub(:new, adapter) do
+      delete request_path(request_a)
+    end
+
+    assert_redirected_to requests_path
+    assert_equal "Request cancelled", flash[:notice]
+    assert_not Request.exists?(request_a.id)
+    assert_equal [ [ active_hash, false ] ], removed
+    assert owned.reload.downloading?
+    assert_equal shared_hash, owned.external_id
+  end
+
+  test "library removal keeps the book when the download client cannot be reached" do
+    Dir.mktmpdir("shelfarr-client-offline") do |dir|
+      library_file = File.join(dir, "offline.epub")
+      File.binwrite(library_file, "keep these bytes")
+      SettingsService.set(:ebook_output_path, dir)
+      book = Book.create!(title: "Client offline", book_type: :ebook, file_path: library_file)
+      request = Request.create!(book: book, user: @user, status: :downloading)
+      client = DownloadClient.create!(
+        name: "Offline client #{SecureRandom.hex(4)}",
+        client_type: :qbittorrent,
+        url: "http://127.0.0.1:9",
+        enabled: true,
+        priority: 3
+      )
+      download = request.downloads.create!(
+        name: book.title,
+        status: :downloading,
+        download_client: client,
+        external_id: "offlinehash1"
+      )
+      attempts = 0
+      adapter = Object.new
+      adapter.define_singleton_method(:remove_torrent) do |_external_id, delete_files:|
+        attempts += 1
+        raise DownloadClients::Base::ConnectionError, "client offline" if attempts == 1
+
+        true
+      end
+      adapter.define_singleton_method(:torrent_info) { |_external_id| nil }
+
+      DownloadClients::Qbittorrent.stub(:new, adapter) do
+        delete library_path(book), params: { delete_files: "1" }
+
+        assert_redirected_to library_path(book)
+        assert_match(/download client/i, flash[:alert])
+        assert Book.exists?(book.id)
+        assert Request.exists?(request.id)
+        assert Download.exists?(download.id)
+        assert_equal "keep these bytes", File.binread(library_file)
+
+        delete library_path(book), params: { delete_files: "1" }
+      end
+
+      assert_redirected_to library_index_path
+      assert_not Book.exists?(book.id)
+      assert_not File.exist?(library_file)
+      assert_equal 2, attempts
+    end
+  end
 end

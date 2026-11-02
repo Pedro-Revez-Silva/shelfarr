@@ -733,6 +733,18 @@ class DirectDownloadFileService
 
     current = book.reload.file_path.to_s.presence
     if existing.nil? && current
+      released = LibraryReplacement.release_conflicting_plans!(
+        book,
+        artifact_id: download.search_result_id,
+        except_download_id: download.id
+      )
+      if RemoteResult.failed?(released)
+        raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+      end
+      unless released == true
+        raise LibraryReplacement::UnreadablePlanError, "an earlier replacement could not be removed"
+      end
+
       existing = LibraryReplacement.adopt!(download, book, layout: direct_plan_layout)
       if RemoteResult.failed?(existing)
         raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"

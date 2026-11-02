@@ -10,6 +10,7 @@ class StaleClientDispatchCleanupJob < ApplicationJob
 
   def perform(download_client_id, external_id, delete_files: true)
     return unless external_id.is_a?(String) && external_id.match?(SAFE_EXTERNAL_ID)
+    return if Download.current_external_id_owner(external_id, download_client_id: download_client_id)
 
     client_record = DownloadClient.find_by(id: download_client_id)
     return unless client_record

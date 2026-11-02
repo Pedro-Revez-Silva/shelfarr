@@ -1249,15 +1249,24 @@ class PostProcessingJob < ApplicationJob
         return destination
       end
 
-      imported = import_file(source, destination)
-      record_published_library_file!(imported)
+      record_published_library_file!(destination)
+      begin
+        imported = import_file(source, destination)
+      rescue Errno::EEXIST
+        # Another importer won this candidate after retry_safe_destination.
+        # Drop the intent so cancellation does not delete their file, then
+        # re-run content reconciliation before choosing a suffix.
+        forgotten = LibraryReplacement.forget_published_path!(@publication_download, destination)
+        unless forgotten == true
+          raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
+        end
+
+        next
+      end
+      record_published_library_file!(imported) unless imported == destination
       verify_imported_destination!(source, imported, require_durable: true) if @require_durable_import
       record_imported_source!(source)
       return imported
-    rescue Errno::EEXIST
-      # Another importer won this candidate after retry_safe_destination.
-      # Re-run content reconciliation before choosing a suffix.
-      next
     end
   end
 
@@ -1784,6 +1793,16 @@ class PostProcessingJob < ApplicationJob
 
     previous_path = book.file_path.to_s
     return if previous_path.blank?
+
+    released = LibraryReplacement.release_conflicting_plans!(
+      book,
+      artifact_id: download.search_result_id,
+      except_download_id: download.id
+    )
+    return released if RemoteResult.failed?(released)
+    unless released == true
+      raise LibraryReplacement::UnreadablePlanError, "an earlier replacement could not be removed"
+    end
 
     layout, extension = incoming_replacement_layout(
       book,
