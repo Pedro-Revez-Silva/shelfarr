@@ -929,10 +929,6 @@ class UploadProcessingJob < ApplicationJob
       end
     end
 
-    output_root = library_output_root_for(book)
-    LibraryImportPermissions.apply_file!(destination_file, root: output_root)
-    LibraryImportPermissions.apply_directory!(destination_dir, root: output_root)
-
     # Flat output shares destination_dir across books; track the file itself
     PathTemplateService.flat_output?(book) ? destination_file : destination_dir
   end
@@ -973,16 +969,6 @@ class UploadProcessingJob < ApplicationJob
 
   def path_occupied?(path)
     File.exist?(path) || File.symlink?(path)
-  end
-
-  def library_output_root_for(book)
-    if book.comicbook?
-      SettingsService.get(:comicbook_output_path, default: "/comics")
-    elsif book.ebook?
-      SettingsService.get(:ebook_output_path, default: "/ebooks")
-    else
-      SettingsService.get(:audiobook_output_path, default: "/audiobooks")
-    end
   end
 
   def build_destination_path(book, language: nil)

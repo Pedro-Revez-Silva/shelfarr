@@ -1591,23 +1591,6 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     end
   end
 
-  test "move_to_library applies configured library import modes" do
-    SettingsService.set(:library_import_file_mode, "0664")
-    SettingsService.set(:library_import_folder_mode, "0775")
-    book = Book.create!(title: "Copy Book", author: "Copy Author", book_type: :audiobook)
-    root_mode = File.stat(@temp_audiobook_dest).mode & 0o777
-    file = File.join(@temp_audiobook_dest, "Copy Author", "Copy Book", "Copy Author - Copy Book.m4b")
-
-    assert_equal File.dirname(file), UploadProcessingJob.new.send(:move_to_library, @upload, book)
-
-    assert_equal "test audio content", File.binread(file)
-    assert_equal 0o664, File.stat(file).mode & 0o777
-    assert_equal 0o775, File.stat(File.dirname(file)).mode & 0o777
-    assert_equal 0o775, File.stat(File.dirname(File.dirname(file))).mode & 0o777
-    assert_equal root_mode, File.stat(@temp_audiobook_dest).mode & 0o777
-    assert_not File.exist?(@test_file)
-  end
-
   test "move_to_library copies across filesystems when rename fails" do
     book = Book.create!(title: "Copy Book", author: "Copy Author", book_type: :audiobook)
     destination = File.join(@temp_audiobook_dest, "Copy Author", "Copy Book")

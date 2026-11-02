@@ -2,18 +2,16 @@
 
 # Optional modes applied after a library import has already succeeded.
 #
-# Hardlinked imports are skipped. A hardlink shares the download file's inode,
-# so chmod would also change the download client's copy and any other name for
-# that file. Copy, move, and hardlink-fallback copies own a separate inode and
-# receive the file mode. Reference symlinks are not chmodded by callers, because
-# that would follow the link onto the remote file. A tree import also skips any
-# file whose link count is greater than one, for the same shared-inode reason.
-# The configured library root is never chmodded.
+# A regular file with more than one link is skipped by the chmod itself. The
+# link count comes from the same pinned descriptor that would be chmodded, so
+# a shared download inode stays unchanged even when the caller does not know
+# the names are linked. Copy, move, and hardlink-fallback copies own a separate
+# inode and receive the file mode. Reference symlinks are not chmodded by
+# callers, because that would follow the link onto the remote file. The
+# configured library root is never chmodded.
 class LibraryImportPermissions
   class << self
-    def apply_file!(path, root:, hardlinked: false)
-      return if hardlinked
-
+    def apply_file!(path, root:)
       mode = mode_for(:library_import_file_mode)
       return if mode.nil?
 
@@ -58,7 +56,7 @@ class LibraryImportPermissions
 
     def mode_for(key)
       text = SettingsService.get(key).to_s.strip
-      return nil unless text.match?(SettingsService::LIBRARY_IMPORT_MODE_FORMAT)
+      return nil if text.empty? || !SettingsService.library_import_mode_acceptable?(key, text)
 
       Integer(text, 8)
     end
@@ -104,7 +102,7 @@ class LibraryImportPermissions
         end
         chmod_directory!(path, root, folder_mode) if folder_mode && path != root
       elsif stat.file? && file_mode
-        apply_file!(path.to_s, root: root, hardlinked: stat.nlink > 1)
+        apply_file!(path.to_s, root: root)
       end
       nil
     rescue SystemCallError, FileCopyService::UnsafePathError, ArgumentError => error

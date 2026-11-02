@@ -628,9 +628,9 @@ module Admin
       return nil unless SettingsService::LIBRARY_IMPORT_PERMISSION_KEYS.include?(key.to_sym)
 
       text = value.to_s.strip
-      return nil if text.empty? || text.match?(SettingsService::LIBRARY_IMPORT_MODE_FORMAT)
+      return nil if text.empty? || SettingsService.library_import_mode_acceptable?(key, text)
 
-      "must be a 3 or 4 digit octal mode (for example 0664), or blank"
+      SettingsService.library_import_mode_requirement(key)
     end
 
     def validate_path_template(key, value)

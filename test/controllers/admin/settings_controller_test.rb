@@ -405,6 +405,16 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to admin_settings_path
     assert_match(/must be a 3 or 4 digit octal mode/, flash[:alert])
     assert_equal "0664", SettingsService.get(:library_import_file_mode)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        library_import_folder_mode: "0664"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/owner read, write, and execute/, flash[:alert])
+    assert_equal "0775", SettingsService.get(:library_import_folder_mode)
   end
 
   test "bulk_update stores a valid completed download import mode" do

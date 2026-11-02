@@ -5132,6 +5132,105 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal 0o775, File.stat(destination_dir).mode & 0o777
   end
 
+  test "folder modes are applied after the imported file exists" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    destination_dir = File.join(@temp_dest_base, @book.author, @book.title)
+    file_present = []
+    real_apply = LibraryImportPermissions.method(:apply_directory!)
+
+    LibraryImportPermissions.stub(:apply_directory!, ->(path, root:) {
+      file_present << File.exist?(File.join(destination_dir, "audiobook.mp3"))
+      real_apply.call(path, root: root)
+    }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal [ true ], file_present
+    assert_equal 0o775, File.stat(destination_dir).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(destination_dir)).mode & 0o777
+  end
+
+  test "a failed import does not chmod library folders before publication finishes" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    author = File.join(@temp_dest_base, @book.author)
+    sibling = File.join(author, "Sibling Title")
+    FileUtils.mkdir_p(sibling)
+    File.chmod(0o750, author)
+    File.chmod(0o750, sibling)
+    File.binwrite(File.join(sibling, "kept.mp3"), "kept")
+
+    FileCopyService.stub(:cp_noreplace, ->(*) { raise Errno::ENOSPC, "library" }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    destination_dir = File.join(author, @book.title)
+    assert @request.reload.attention_needed?
+    assert_match(/out of space/, @request.issue_description)
+    assert_equal 0o750, File.stat(author).mode & 0o777
+    assert_equal 0o750, File.stat(sibling).mode & 0o777
+    assert_equal "kept", File.binread(File.join(sibling, "kept.mp3"))
+    assert_not File.exist?(File.join(destination_dir, "audiobook.mp3"))
+    if File.directory?(destination_dir)
+      assert_equal 0o750, File.stat(destination_dir).mode & 0o777
+    end
+  end
+
+  test "hardlink fallback retry reuses chapters published with the configured file mode" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    SettingsService.set(:library_import_file_mode, "0664")
+    source_file = File.join(@temp_source, "audiobook.mp3")
+    chapter = File.join(@temp_source, "chapter.mp3")
+    File.chmod(0o604, source_file)
+    File.write(chapter, "second chapter")
+    File.chmod(0o604, chapter)
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    state = { copies: 0, fail: true }
+    real_copy = FileCopyService.method(:cp_noreplace)
+    first_job = PostProcessingJob.new(@download.id)
+
+    output = FileCopyService.stub(:hardlink_noreplace, ->(*) {
+      raise FileCopyService::HardlinkUnsupportedError, "cross-filesystem"
+    }) do
+      FileCopyService.stub(:cp_noreplace, ->(*args, **kwargs) {
+        state[:copies] += 1
+        raise Errno::ENOSPC, "library" if state[:fail] && state[:copies] > 1
+
+        real_copy.call(*args, **kwargs)
+      }) do
+        first_job.perform_now
+
+        assert @request.reload.attention_needed?
+        assert @request.processing?
+        assert_equal [ "audiobook.mp3" ], Dir.children(destination).sort
+        assert_equal 0o664, File.stat(File.join(destination, "audiobook.mp3")).mode & 0o777
+        assert_equal 0o604, File.stat(source_file).mode & 0o777
+
+        state[:fail] = false
+        retry_job = PostProcessingJob.new(@download.id, 0, first_job.job_id)
+        capture_private_post_processing_logs do
+          retry_job.perform_now
+        end
+      end
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal [ "audiobook.mp3", "chapter.mp3" ], Dir.children(destination).sort
+    assert_equal "test audio content", File.binread(File.join(destination, "audiobook.mp3"))
+    assert_equal "second chapter", File.binread(File.join(destination, "chapter.mp3"))
+    assert_equal 0o664, File.stat(File.join(destination, "audiobook.mp3")).mode & 0o777
+    assert_equal 0o664, File.stat(File.join(destination, "chapter.mp3")).mode & 0o777
+    assert_equal 0o604, File.stat(source_file).mode & 0o777
+    assert_equal 0o604, File.stat(chapter).mode & 0o777
+    refute_equal [ File.stat(source_file).dev, File.stat(source_file).ino ],
+      [ File.stat(File.join(destination, "audiobook.mp3")).dev, File.stat(File.join(destination, "audiobook.mp3")).ino ]
+    assert_includes output, "0 hardlinked, 1 copied after unsupported fallback, 1 reused"
+  end
+
   test "flat copy imports chmod the file and leave the library root unchanged" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobook_path_template, "")

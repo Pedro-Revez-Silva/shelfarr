@@ -64,6 +64,38 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert @request.reload.completed?
   end
 
+  test "an identical existing hardlink is not chmodded" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    retained = File.join(@output_root, "retained-torrent.epub")
+    File.binwrite(retained, "PK\x03\x04same bytes")
+    File.chmod(0o604, retained)
+    FileUtils.mkdir_p(File.dirname(@destination))
+    File.link(retained, @destination)
+
+    publish_direct_ebook!("PK\x03\x04same bytes")
+
+    assert_equal [ File.stat(retained).dev, File.stat(retained).ino ],
+      [ File.stat(@destination).dev, File.stat(@destination).ino ]
+    assert_operator File.stat(@destination).nlink, :>, 1
+    assert_equal 0o604, File.stat(retained).mode & 0o777
+    assert_equal 0o604, File.stat(@destination).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "an identical existing private file still receives the configured mode" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    FileUtils.mkdir_p(File.dirname(@destination))
+    File.binwrite(@destination, "PK\x03\x04private bytes")
+    File.chmod(0o640, @destination)
+
+    publish_direct_ebook!("PK\x03\x04private bytes")
+
+    assert_equal 1, File.stat(@destination).nlink
+    assert_equal 0o664, File.stat(@destination).mode & 0o777
+    assert @request.reload.completed?
+  end
+
   test "a direct import chmod failure does not fail publication" do
     SettingsService.set(:library_import_file_mode, "0664")
     SettingsService.set(:library_import_folder_mode, "0775")

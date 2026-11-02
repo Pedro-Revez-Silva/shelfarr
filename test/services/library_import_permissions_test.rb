@@ -43,15 +43,28 @@ class LibraryImportPermissionsTest < ActiveSupport::TestCase
     assert_equal root_mode, @root.stat.mode & 0o777
   end
 
-  test "hardlinked files are skipped so the shared inode stays unchanged" do
+  test "a shared inode is skipped without a caller hint" do
     SettingsService.set(:library_import_file_mode, "0664")
     source = write_file(@outside.join("download.mp3"), 0o604)
     destination = @root.join("Author", "Title", "book.mp3")
     FileUtils.mkdir_p(destination.dirname)
     File.link(source, destination)
+    target = destination.expand_path
+    real_stat = File.method(:stat)
+    real_lstat = File.method(:lstat)
+    lie = lambda do |method, path|
+      stat = method.call(path)
+      stat.define_singleton_method(:nlink) { 1 } if Pathname(path).expand_path == target
+      stat
+    end
 
-    LibraryImportPermissions.apply_file!(destination.to_s, root: @root.to_s, hardlinked: true)
+    File.stub(:stat, ->(path) { lie.call(real_stat, path) }) do
+      File.stub(:lstat, ->(path) { lie.call(real_lstat, path) }) do
+        LibraryImportPermissions.apply_file!(destination.to_s, root: @root.to_s)
+      end
+    end
 
+    assert_operator destination.stat.nlink, :>, 1
     assert_equal 0o604, source.stat.mode & 0o777
     assert_equal 0o604, destination.stat.mode & 0o777
   end

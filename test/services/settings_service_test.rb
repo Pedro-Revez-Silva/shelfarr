@@ -223,6 +223,25 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal "", SettingsService.get(:library_import_file_mode)
   end
 
+  test "folder import modes must keep owner read write and execute" do
+    assert_equal "0775", SettingsService.set(:library_import_folder_mode, "0775")
+    assert_equal "700", SettingsService.set(:library_import_folder_mode, "700")
+    assert_equal "2755", SettingsService.set(:library_import_folder_mode, "2755")
+    assert_equal "0664", SettingsService.set(:library_import_file_mode, "0664")
+
+    [ "0664", "664", "640", "600" ].each do |mode|
+      error = assert_raises(ArgumentError) do
+        SettingsService.set(:library_import_folder_mode, mode)
+      end
+      assert_match(/owner read, write, and execute/, error.message)
+    end
+    assert_equal "2755", SettingsService.get(:library_import_folder_mode)
+    assert_equal "0664", SettingsService.get(:library_import_file_mode)
+
+    Setting.find_by!(key: "library_import_folder_mode").update!(value: "0664")
+    assert_equal "", SettingsService.get(:library_import_folder_mode)
+  end
+
   test "completed download import mode safely resolves corrupt persisted values to copy" do
     Setting.create!(
       key: "completed_download_import_mode",

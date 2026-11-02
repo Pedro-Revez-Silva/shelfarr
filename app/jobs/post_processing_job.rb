@@ -778,6 +778,7 @@ class PostProcessingJob < ApplicationJob
     @imported_renamed_files = []
     @imported_source_files = Set.new
     @verified_library_snapshots = Hash.new { |snapshots, path| snapshots[path] = [] }
+    @configured_library_directories = []
     @imported_book_path_override = nil
     @import_base_path = Pathname(base_path || get_base_path(book)).expand_path
     @defer_source_removal = move_completed_downloads?
@@ -858,6 +859,8 @@ class PostProcessingJob < ApplicationJob
       end
     end
 
+    apply_configured_library_directory_modes!
+
     if hardlink_completed_downloads?
       Rails.logger.info(
         "[PostProcessingJob] Hardlink import completed successfully: " \
@@ -881,6 +884,7 @@ class PostProcessingJob < ApplicationJob
     remove_instance_variable(:@import_source_file_snapshot) if instance_variable_defined?(:@import_source_file_snapshot)
     remove_instance_variable(:@reference_regular_source_root) if instance_variable_defined?(:@reference_regular_source_root)
     remove_instance_variable(:@verified_library_snapshots) if instance_variable_defined?(:@verified_library_snapshots)
+    remove_instance_variable(:@configured_library_directories) if instance_variable_defined?(:@configured_library_directories)
     remove_instance_variable(:@require_durable_import) if instance_variable_defined?(:@require_durable_import)
   end
 
@@ -1131,7 +1135,6 @@ class PostProcessingJob < ApplicationJob
   end
 
   def import_file(source, destination)
-    @published_as_hardlink = false
     if reference_completed_downloads?
       source_snapshot = reference_source_snapshot(source)
       regular_root_snapshot = @reference_regular_source_root unless
@@ -1154,7 +1157,6 @@ class PostProcessingJob < ApplicationJob
           source_root: @import_source_root,
           require_durable: @require_durable_import
         )
-        @published_as_hardlink = true
         @hardlinked_file_count += 1
       rescue FileCopyService::HardlinkUnsupportedError
         Rails.logger.warn(
@@ -1203,18 +1205,14 @@ class PostProcessingJob < ApplicationJob
         )
         record_imported_source!(source)
         Rails.logger.info "[PostProcessingJob] Reusing one identical previously imported file"
-        apply_configured_library_file_mode!(source, destination, published_as_hardlink: nil)
+        apply_configured_library_file_mode!(source, destination)
         return destination
       end
 
       imported = import_file(source, destination)
       verify_imported_destination!(source, imported, require_durable: true) if @require_durable_import
       record_imported_source!(source)
-      apply_configured_library_file_mode!(
-        source,
-        imported,
-        published_as_hardlink: @published_as_hardlink
-      )
+      apply_configured_library_file_mode!(source, imported)
       return imported
     rescue Errno::EEXIST
       # Another importer won this candidate after retry_safe_destination.
@@ -1330,31 +1328,30 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
+  # Keep the creation mode until the import finishes. A folder mode applied
+  # while ancestors are still being created can drop the owner's search bit
+  # and make the library unreachable before any file is published.
   def ensure_real_import_directory!(path)
     FileCopyService.ensure_directory(path, root: @import_base_path, mode: 0o750)
-    LibraryImportPermissions.apply_directory!(path, root: @import_base_path)
+    @configured_library_directories << path
   end
 
-  # Retained hardlinks are skipped: chmod would change the download file too.
-  # nil means the caller does not know whether this reuse shares that inode.
-  def apply_configured_library_file_mode!(source, destination, published_as_hardlink:)
+  def apply_configured_library_directory_modes!
+    @configured_library_directories.uniq.each do |path|
+      LibraryImportPermissions.apply_directory!(path, root: @import_base_path)
+    end
+  end
+
+  # Shared inodes are left unchanged by the chmod itself. When a mode was
+  # requested, refresh the verified snapshot so move cleanup sees the
+  # post-chmod ctime.
+  def apply_configured_library_file_mode!(source, destination)
     return if reference_completed_downloads?
 
-    hardlinked = if published_as_hardlink.nil?
-      shared_download_hardlink?(source, destination)
-    else
-      published_as_hardlink
-    end
-    result = LibraryImportPermissions.apply_file!(
-      destination,
-      root: @import_base_path,
-      hardlinked: hardlinked
-    )
-    return if hardlinked || RemoteResult.failed?(result)
+    result = LibraryImportPermissions.apply_file!(destination, root: @import_base_path)
+    return if RemoteResult.failed?(result)
     return if SettingsService.get(:library_import_file_mode).blank?
 
-    # The verified snapshot still has the pre-chmod mode and ctime. Move
-    # cleanup would otherwise keep the download.
     record_post_chmod_library_snapshot!(source, destination)
   end
 
@@ -1381,18 +1378,6 @@ class PostProcessingJob < ApplicationJob
       manifest: manifest,
       content_digest: previous.content_digest
     ).freeze
-  end
-
-  def shared_download_hardlink?(source, destination)
-    return false unless hardlink_completed_downloads?
-
-    FileCopyService.same_file_identity?(
-      source,
-      destination,
-      root: @import_base_path,
-      source_root: @import_source_root,
-      hardlink_mode: true
-    ) != false
   end
 
   def move_completed_downloads?

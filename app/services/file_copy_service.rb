@@ -548,8 +548,10 @@ class FileCopyService
     end
 
     # chmod one library entry through a no-follow descriptor so a symlink cannot
-    # redirect the mode change onto another inode. Callers decide whether a
-    # failure is fatal.
+    # redirect the mode change onto another inode. A regular file with more
+    # than one link is skipped: fchmod would change every name for that inode,
+    # including a retained download. The link count is read from the same
+    # descriptor that would be chmodded. Callers decide whether a failure is fatal.
     def chmod_nofollow(path, mode, root:, directory:)
       with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
         if directory
@@ -561,6 +563,8 @@ class FileCopyService
           end
         else
           with_pinned_regular_child(parent, basename) do |file|
+            next if file.stat.nlink > 1
+
             native_fchmod(file.fileno, mode)
           end
         end
@@ -1267,16 +1271,19 @@ class FileCopyService
       with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
         expected_identity = nil
         expected_mode = nil
+        expected_links = nil
         with_pinned_regular_child(parent, basename) do |file|
           stat = file.stat
           expected_identity = file_identity(stat)
           expected_mode = stat.mode & 0o7777
-          result = expected_mode.in?(HARDLINK_FALLBACK_FILE_MODES) ||
-            (expected_mode.in?(LIBRARY_FILE_MODES) && synthetic_library_file_mode?(parent, expected_mode))
+          expected_links = stat.nlink
+          result = hardlink_fallback_file_reusable?(expected_mode, parent, stat)
         end
         with_pinned_regular_child(parent, basename) do |current|
           stat = current.stat
-          unless file_identity(stat) == expected_identity && (stat.mode & 0o7777) == expected_mode
+          unless file_identity(stat) == expected_identity &&
+              (stat.mode & 0o7777) == expected_mode &&
+              stat.nlink == expected_links
             raise Errno::ESTALE, "library file changed during mode validation"
           end
         end
@@ -1285,6 +1292,28 @@ class FileCopyService
       result
     rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, UnsafePathError => error
       RemoteResult::Failed.new(error)
+    end
+
+    # 0600 and 0640 are the modes a fallback copy is published with. A
+    # configured import mode is also evidence of that copy, but only while the
+    # inode has one link. A second link may still be retained download data,
+    # and this check must not chmod the candidate to find out.
+    def hardlink_fallback_file_reusable?(mode, parent, stat)
+      return true if mode.in?(HARDLINK_FALLBACK_FILE_MODES)
+
+      configured = configured_library_import_file_mode
+      if configured && mode == configured
+        return stat.nlink == 1
+      end
+
+      mode.in?(LIBRARY_FILE_MODES) && synthetic_library_file_mode?(parent, mode)
+    end
+
+    def configured_library_import_file_mode
+      text = SettingsService.get(:library_import_file_mode).to_s
+      return if text.empty?
+
+      Integer(text, 8, exception: false)
     end
 
     def same_io_content?(source, destination_path, root: nil)
@@ -1758,9 +1787,11 @@ class FileCopyService
             next unless source_stat.size == destination_stat.size
             if hardlink_mode && file_identity(source_stat) != file_identity(destination_stat)
               destination_mode = destination_stat.mode & 0o7777
-              retry_safe_mode = destination_mode.in?(HARDLINK_FALLBACK_FILE_MODES) ||
-                (destination_mode.in?(LIBRARY_FILE_MODES) &&
-                  synthetic_library_file_mode?(parent, destination_mode))
+              retry_safe_mode = hardlink_fallback_file_reusable?(
+                destination_mode,
+                parent,
+                destination_stat
+              )
               next unless retry_safe_mode == true
             end
 
