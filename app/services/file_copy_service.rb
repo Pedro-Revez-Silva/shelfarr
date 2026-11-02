@@ -1421,10 +1421,16 @@ class FileCopyService
 
     # Atomically quarantine a source file, verify the exact snapshotted entry,
     # and only then remove it. A raced replacement is restored or retained.
-    def remove_source_file(source_snapshot, destination_snapshot: nil)
+    def remove_source_file(source_snapshot, destination_snapshot: nil, destination_snapshots: nil)
       expanded = source_snapshot.path
-      destination_validator = if destination_snapshot
-        -> { file_snapshot_current?(destination_snapshot, require_durable: true) }
+      snapshots = Array(destination_snapshots)
+      snapshots = [ destination_snapshot, *snapshots ] if destination_snapshot
+      destination_validator = if snapshots.any?
+        lambda do
+          snapshots.all? do |snapshot|
+            file_snapshot_current?(snapshot, require_durable: true) == true
+          end
+        end
       end
 
       with_pinned_absolute_directory(source_snapshot.canonical_parent_path) do |parent|

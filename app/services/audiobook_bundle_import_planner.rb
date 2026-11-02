@@ -22,6 +22,37 @@ class AudiobookBundleImportPlanner
     new(...).call
   end
 
+  # Known extensions skip a read. Other names, such as an audio-only .mp4, are
+  # audio when their content type says so.
+  def self.audio_file?(path)
+    return true if KNOWN_AUDIO_EXTENSIONS.include?(extension_for(path))
+
+    mime_type = File.open(path, "rb") do |file|
+      Marcel::MimeType.for(file, name: File.basename(path))
+    end
+    mime_type.to_s.start_with?("audio/")
+  rescue Errno::ENOENT, Errno::EACCES, IOError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  # Generic artwork names match every book. A file named like an audio file
+  # matches that book when its extension is one the caller allows.
+  def self.cover_file?(path, audio_stems:, extensions:)
+    return false unless extensions.include?(extension_for(path))
+
+    stem = stem_for(path)
+    GENERIC_COVER_STEMS.include?(stem) || audio_stems.any? { |audio_stem| audio_stem.to_s.downcase == stem }
+  end
+
+  def self.extension_for(path)
+    File.extname(path.to_s).delete_prefix(".").downcase
+  end
+
+  def self.stem_for(path)
+    basename = File.basename(path.to_s)
+    basename.delete_suffix(File.extname(basename)).downcase
+  end
+
   def initialize(source:, book:, base_path:, language: nil)
     @source = source
     @book = book
@@ -207,10 +238,10 @@ class AudiobookBundleImportPlanner
     companions = paths.reject { |path| audio_file?(path) }
 
     entries.map do |entry|
-      source_stem = File.basename(entry.source_path, File.extname(entry.source_path)).downcase
+      source_stem = self.class.stem_for(entry.source_path)
       matching_sidecars = companions.select do |companion|
-        companion_stem = File.basename(companion, File.extname(companion)).downcase
-        companion_stem == source_stem || (sidecar_file?(companion) && GENERIC_COVER_STEMS.include?(companion_stem))
+        self.class.stem_for(companion) == source_stem ||
+          self.class.cover_file?(companion, audio_stems: [ source_stem ], extensions: SIDECAR_EXTENSIONS)
       end
 
       Entry.new(
@@ -223,14 +254,7 @@ class AudiobookBundleImportPlanner
   end
 
   def audio_file?(path)
-    return true if KNOWN_AUDIO_EXTENSIONS.include?(extension_for(path))
-
-    mime_type = File.open(path, "rb") do |file|
-      Marcel::MimeType.for(file, name: File.basename(path))
-    end
-    mime_type.to_s.start_with?("audio/")
-  rescue Errno::ENOENT, Errno::EACCES, IOError => error
-    RemoteResult::Failed.new(error)
+    self.class.audio_file?(path)
   end
 
   def self_contained_book_file?(path)
@@ -242,7 +266,7 @@ class AudiobookBundleImportPlanner
   end
 
   def extension_for(path)
-    File.extname(path).delete_prefix(".").downcase
+    self.class.extension_for(path)
   end
 
   def normalized_title(value)

@@ -497,6 +497,81 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(@temp_source, "cover.jpg"))
   end
 
+  test "imports an audio-only mp4 audiobook" do
+    SettingsService.set(:audiobookshelf_url, "")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    source = File.join(@temp_source, "audiobook.mp4")
+    write_audio_only_mp4(source)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title, "audiobook.mp4")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal File.binread(source), File.binread(destination)
+  end
+
+  test "imports an audio-only mp4 part mixed with another audiobook file" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, false)
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book.m4b"), "book audio")
+    mp4 = File.join(@temp_source, "bonus.mp4")
+    write_audio_only_mp4(mp4)
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal "book audio", File.read(File.join(destination, "Book.m4b"))
+    assert_equal File.binread(mp4), File.binread(File.join(destination, "bonus.mp4"))
+  end
+
+  test "does not import a video mp4 as an audiobook" do
+    SettingsService.set(:audiobookshelf_url, "")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book.m4b"), "book audio")
+    write_video_mp4(File.join(@temp_source, "bonus.mp4"))
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal "book audio", File.read(File.join(destination, "Book.m4b"))
+    assert_not File.exist?(File.join(destination, "bonus.mp4"))
+    assert File.exist?(File.join(@temp_source, "bonus.mp4"))
+  end
+
+  test "imports a cover image named like the audiobook file" do
+    SettingsService.set(:audiobookshelf_url, "")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Dune.m4b"), "dune audio")
+    File.binwrite(File.join(@temp_source, "Dune.jpg"), "dune cover")
+    File.binwrite(File.join(@temp_source, "cover.jpg"), "generic cover")
+    File.binwrite(File.join(@temp_source, "banner.jpg"), "banner")
+    File.write(File.join(@temp_source, "release.nfo"), "nfo")
+    disc = File.join(@temp_source, "Disc 1")
+    FileUtils.mkdir_p(disc)
+    File.write(File.join(disc, "01.mp3"), "part")
+    File.binwrite(File.join(disc, "01.jpg"), "part cover")
+    File.binwrite(File.join(disc, "audiobook.jpg"), "unrelated")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    destination = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal "dune audio", File.read(File.join(destination, "Dune.m4b"))
+    assert_equal "dune cover", File.binread(File.join(destination, "Dune.jpg"))
+    assert_equal "generic cover", File.binread(File.join(destination, "cover.jpg"))
+    assert_equal "part", File.read(File.join(destination, "Disc 1", "01.mp3"))
+    assert_equal "part cover", File.binread(File.join(destination, "Disc 1", "01.jpg"))
+    assert_not File.exist?(File.join(destination, "banner.jpg"))
+    assert_not File.exist?(File.join(destination, "release.nfo"))
+    assert_not File.exist?(File.join(destination, "Disc 1", "audiobook.jpg"))
+    assert_equal "banner", File.binread(File.join(@temp_source, "banner.jpg"))
+    assert_equal "nfo", File.read(File.join(@temp_source, "release.nfo"))
+    assert_equal "unrelated", File.binread(File.join(disc, "audiobook.jpg"))
+  end
+
   test "splits audiobook bundles into subfolders even when audiobook path template is blank" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:audiobook_path_template, "")
@@ -1962,6 +2037,49 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal "release metadata", File.read(File.join(@temp_source, ".bundle-metadata.json"))
   end
 
+  test "moves a shared split-bundle cover once and still removes the usenet download" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    SettingsService.set(:completed_download_import_mode, "move")
+    SettingsService.set(:remove_completed_usenet_downloads, true)
+    @book.update!(title: "Book Two")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.write(File.join(@temp_source, "Book One.m4b"), "book one audio")
+    File.write(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    File.binwrite(File.join(@temp_source, "cover.png"), "shared cover")
+    File.write(File.join(@temp_source, "Book One.nfo"), "book one notes")
+    client = DownloadClient.create!(
+      name: "SABnzbd Shared Cover",
+      client_type: :sabnzbd,
+      url: "http://localhost:8080",
+      api_key: "test-api-key"
+    )
+    @download.update!(download_client: client, external_id: "SABnzbd_nzo_sharedcover")
+
+    VCR.turned_off do
+      history = stub_partial_move_usenet_history("SABnzbd_nzo_sharedcover")
+
+      PostProcessingJob.perform_now(@download.id)
+
+      assert_requested history
+    end
+
+    book_one = File.join(@temp_dest_base, @book.author, "Book One")
+    book_two = File.join(@temp_dest_base, @book.author, "Book Two")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal "book one audio", File.read(File.join(book_one, "Book One.m4b"))
+    assert_equal "book two audio", File.read(File.join(book_two, "Book Two.m4b"))
+    assert_equal "shared cover", File.binread(File.join(book_one, "cover.png"))
+    assert_equal "shared cover", File.binread(File.join(book_two, "cover.png"))
+    assert_not File.exist?(File.join(book_one, "Book One.nfo"))
+    assert_not File.exist?(File.join(book_two, "Book One.nfo"))
+    assert_not File.exist?(File.join(@temp_source, "Book One.m4b"))
+    assert_not File.exist?(File.join(@temp_source, "Book Two.m4b"))
+    assert_not File.exist?(File.join(@temp_source, "cover.png"))
+    assert_equal "book one notes", File.read(File.join(@temp_source, "Book One.nfo"))
+    assert_nil @download.reload.post_processing_cleanup_state
+  end
+
   test "leaves hidden release metadata in the download when bundle splitting falls back" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
@@ -3287,7 +3405,8 @@ class PostProcessingJobTest < ActiveJob::TestCase
     real_remove = FileCopyService.method(:remove_source_file)
     real_unlink = FileCopyService.method(:native_unlinkat)
 
-    removing = lambda do |source_snapshot, destination_snapshot: nil|
+    removing = lambda do |source_snapshot, destination_snapshot: nil, destination_snapshots: nil|
+      destination_snapshot ||= Array(destination_snapshots).first
       basename = source_snapshot.path.basename.to_s
       if basename == "a.epub"
         return real_remove.call(source_snapshot, destination_snapshot: destination_snapshot)
@@ -3620,8 +3739,9 @@ class PostProcessingJobTest < ActiveJob::TestCase
       held_during_delete = false
       real_remove = FileCopyService.method(:remove_source_file)
 
-      FileCopyService.stub(:remove_source_file, lambda { |snapshot, destination_snapshot: nil|
+      FileCopyService.stub(:remove_source_file, lambda { |snapshot, destination_snapshot: nil, destination_snapshots: nil|
         held_during_delete = post_processing_lock_busy?(@download.id)
+        destination_snapshot ||= Array(destination_snapshots).first
         real_remove.call(snapshot, destination_snapshot: destination_snapshot)
       }) do
         PostProcessingRecoveryJob.perform_now
@@ -5171,7 +5291,8 @@ class PostProcessingJobTest < ActiveJob::TestCase
     job = PostProcessingJob.new(@download.id)
     real_remove = FileCopyService.method(:remove_source_file)
     real_unlink = FileCopyService.method(:native_unlinkat)
-    removing = lambda do |source_snapshot, destination_snapshot: nil|
+    removing = lambda do |source_snapshot, destination_snapshot: nil, destination_snapshots: nil|
+      destination_snapshot ||= Array(destination_snapshots).first
       basename = source_snapshot.path.basename.to_s
       if basename == "a.epub"
         return real_remove.call(source_snapshot, destination_snapshot: destination_snapshot)
@@ -5322,6 +5443,14 @@ class PostProcessingJobTest < ActiveJob::TestCase
           ]
         }.to_json
       )
+  end
+
+  def write_audio_only_mp4(path)
+    File.binwrite(path, [ 24 ].pack("N") + "ftypM4A " + ("\0" * 12))
+  end
+
+  def write_video_mp4(path)
+    File.binwrite(path, [ 24 ].pack("N") + "ftypisom" + ("\0" * 12))
   end
 
   def stub_audiobookshelf_scan

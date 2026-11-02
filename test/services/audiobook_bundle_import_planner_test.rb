@@ -86,6 +86,24 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     assert_nil build_plan
   end
 
+  test "classifies audio-only mp4 content and cover names with the shared rules" do
+    audio = File.join(@source, "bonus.mp4")
+    video = File.join(@source, "trailer.mp4")
+    File.binwrite(audio, [ 24 ].pack("N") + "ftypM4A " + ("\0" * 12))
+    File.binwrite(video, [ 24 ].pack("N") + "ftypisom" + ("\0" * 12))
+    cover = write_file("Dune.jpg")
+    banner = write_file("banner.jpg")
+    generic = write_file("folder.png")
+    extensions = %w[bmp gif jpeg jpg png webp]
+
+    assert AudiobookBundleImportPlanner.audio_file?(audio)
+    assert_not AudiobookBundleImportPlanner.audio_file?(video)
+    assert AudiobookBundleImportPlanner.cover_file?(cover, audio_stems: [ "dune" ], extensions: extensions)
+    assert AudiobookBundleImportPlanner.cover_file?(generic, audio_stems: [], extensions: extensions)
+    assert_not AudiobookBundleImportPlanner.cover_file?(banner, audio_stems: [ "dune" ], extensions: extensions)
+    assert_not AudiobookBundleImportPlanner.cover_file?(cover, audio_stems: [ "dune" ], extensions: %w[png])
+  end
+
   test "does not split multipart M4B releases" do
     @book.title = "One Long Book"
     write_file("One Long Book - Part 1.m4b")

@@ -967,11 +967,7 @@ class PostProcessingJob < ApplicationJob
     plan.entries.each do |entry|
       ensure_real_import_directory!(entry.destination)
       import_audiobook_bundle_file(entry.source_path, entry.destination)
-      entry.sidecar_paths.each do |sidecar|
-        next unless audiobook_bundle_cover?(sidecar)
-
-        import_sidecar_file(sidecar, entry.destination, retry_safe: true)
-      end
+      import_audiobook_bundle_covers(entry)
     end
 
     @imported_book_path_override = plan.tracked_entry.destination
@@ -980,6 +976,19 @@ class PostProcessingJob < ApplicationJob
   def import_audiobook_bundle_file(source_file, destination)
     destination_file = File.join(destination, File.basename(source_file))
     import_file_without_duplicate_content(source_file, destination_file)
+  end
+
+  def import_audiobook_bundle_covers(entry)
+    audio_stem = AudiobookBundleImportPlanner.stem_for(entry.source_path)
+    entry.sidecar_paths.each do |sidecar|
+      next unless AudiobookBundleImportPlanner.cover_file?(
+        sidecar,
+        audio_stems: [ audio_stem ],
+        extensions: AUDIOBOOK_COVER_EXTENSIONS
+      )
+
+      import_sidecar_file(sidecar, entry.destination, retry_safe: true)
+    end
   end
 
   def import_ebook_directory_entry(source_file, destination, book, language: nil)
@@ -1381,10 +1390,13 @@ class PostProcessingJob < ApplicationJob
       FileCopyService.deserialize_file_snapshot(snapshot)
     }
     imported_file_snapshots = payload["imported_file_snapshots"]&.map { |pair|
+      serialized_destinations = pair["destinations"] || [ pair.fetch("destination") ]
       {
         relative: pair.fetch("relative"),
         source: FileCopyService.deserialize_file_snapshot(pair.fetch("source")),
-        destination: FileCopyService.deserialize_file_snapshot(pair.fetch("destination"))
+        destinations: serialized_destinations.map { |snapshot|
+          FileCopyService.deserialize_file_snapshot(snapshot)
+        }
       }
     }
     new(0).send(
@@ -1520,10 +1532,7 @@ class PostProcessingJob < ApplicationJob
 
     # An earlier retain must not skip a later file still sitting in quarantine.
     imported_file_snapshots.each do |pair|
-      removed = FileCopyService.remove_source_file(
-        pair.fetch(:source),
-        destination_snapshot: pair.fetch(:destination)
-      )
+      removed = remove_verified_source_file(pair.fetch(:source), pair.fetch(:destinations))
       next if removed == true
       if RemoteResult.failed?(removed) && removed.error.is_a?(Errno::ENOENT) &&
           FileCopyService.source_parent_missing?(pair.fetch(:source)) == true
@@ -1545,6 +1554,14 @@ class PostProcessingJob < ApplicationJob
     retained ? false : true
   end
 
+  # A shared cover is copied into each split book folder. Every copy has to
+  # still match before that one source file is removed.
+  def remove_verified_source_file(source_snapshot, destinations)
+    return false if destinations.empty?
+
+    FileCopyService.remove_source_file(source_snapshot, destination_snapshots: destinations)
+  end
+
   def client_cleanup_pending?(cleanup_state)
     return false if cleanup_state.blank?
 
@@ -1562,12 +1579,12 @@ class PostProcessingJob < ApplicationJob
     imported_source_files.to_a.sort.map do |relative|
       source_path = source_root.path.join(relative).expand_path
       snapshots = destination_snapshots_by_source[source_path.to_s]
-      return nil unless snapshots&.one?
+      return nil unless snapshots&.any?
 
       {
         relative: relative,
         source: FileCopyService.snapshot_source_file(source_path.to_s, source_root: source_root),
-        destination: snapshots.first
+        destinations: snapshots
       }
     end
   end
@@ -1583,7 +1600,9 @@ class PostProcessingJob < ApplicationJob
         {
           "relative" => pair.fetch(:relative),
           "source" => FileCopyService.serialize_file_snapshot(pair.fetch(:source)),
-          "destination" => FileCopyService.serialize_file_snapshot(pair.fetch(:destination))
+          "destinations" => pair.fetch(:destinations).map { |snapshot|
+            FileCopyService.serialize_file_snapshot(snapshot)
+          }
         }
       }
     )
@@ -1742,19 +1761,36 @@ class PostProcessingJob < ApplicationJob
   end
 
   def audiobook_audio_file?(path)
-    AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS.include?(path_extension(path))
+    AudiobookBundleImportPlanner.audio_file?(path)
   end
 
   def audiobook_cover_file?(path)
-    recognized_cover_file?(path, AUDIOBOOK_COVER_EXTENSIONS)
+    return false unless AUDIOBOOK_COVER_EXTENSIONS.include?(path_extension(path))
+
+    AudiobookBundleImportPlanner.cover_file?(
+      path,
+      audio_stems: sibling_audio_stems(path),
+      extensions: AUDIOBOOK_COVER_EXTENSIONS
+    )
   end
 
-  def audiobook_bundle_cover?(path)
-    AUDIOBOOK_COVER_EXTENSIONS.include?(path_extension(path))
+  def sibling_audio_stems(path)
+    directory = File.dirname(path.to_s)
+    source_manifest_children(directory).filter_map do |entry|
+      candidate = File.join(directory, entry)
+      next if File.directory?(candidate)
+      next unless audiobook_audio_file?(candidate)
+
+      AudiobookBundleImportPlanner.stem_for(candidate)
+    end
   end
 
   def ebook_cover_file?(path)
-    recognized_cover_file?(path, EBOOK_COVER_EXTENSIONS)
+    AudiobookBundleImportPlanner.cover_file?(
+      path,
+      audio_stems: [],
+      extensions: EBOOK_COVER_EXTENSIONS
+    )
   end
 
   def ebook_import_candidate?(path, extension = nil)
@@ -1762,20 +1798,8 @@ class PostProcessingJob < ApplicationJob
     EBOOK_FILE_EXTENSIONS.include?(extension) || ebook_cover_file?(path)
   end
 
-  # artwork, cover, folder, front, and thumbnail are the cover names already
-  # used when a multi-book audiobook folder is split into per-book folders.
-  def recognized_cover_file?(path, extensions)
-    extensions.include?(path_extension(path)) &&
-      AudiobookBundleImportPlanner::GENERIC_COVER_STEMS.include?(path_stem(path))
-  end
-
   def path_extension(path)
     File.extname(path.to_s).delete_prefix(".").downcase
-  end
-
-  def path_stem(path)
-    basename = File.basename(path.to_s)
-    basename.delete_suffix(File.extname(basename)).downcase
   end
 
   def handle_duplicate_filename(path)
