@@ -106,6 +106,9 @@ class Book < ApplicationRecord
       .merge(Download.completed.where.not(post_processing_cleanup_state: [ nil, "" ]))
       .exists?
     return true if cleanup_pending
+    # Replacement cleanup still names the previous file after the importer
+    # owner is gone. Query downloads directly so this association stays unloaded.
+    return true if LibraryReplacement.cleanup_actionable_for_book?(self)
     # Do not load `requests` here. Callers destroy those rows and then this
     # Book, and a loaded association would still look occupied.
     return true if PostProcessingRecoveryJob.unfinished_active_job_ids(post_processing_owner_ids).any?

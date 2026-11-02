@@ -275,6 +275,87 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "admin cancel removes a partial first import that matches the download" do
+    Dir.mktmpdir("shelfarr-partial-import") do |root|
+      library = File.join(root, "audiobooks")
+      source = File.join(root, "download")
+      FileUtils.mkdir_p(library)
+      FileUtils.mkdir_p(source)
+      SettingsService.set(:audiobook_output_path, library)
+      SettingsService.set(:audiobook_path_template, "{author}/{title}")
+      File.binwrite(File.join(source, "01.mp3"), "one")
+      File.binwrite(File.join(source, "02.mp3"), "two")
+      partial = File.join(library, "Ada", "Title")
+      FileUtils.mkdir_p(partial)
+      File.binwrite(File.join(partial, "01.mp3"), "one")
+      book = Book.create!(title: "Title", author: "Ada", book_type: :audiobook)
+      request = Request.create!(
+        book: book,
+        user: @user,
+        status: :processing,
+        attention_needed: true,
+        issue_description: "Import failed"
+      )
+      request.downloads.create!(
+        name: book.title,
+        status: :completed,
+        download_path: source,
+        post_processing_job_id: "finished-partial-import"
+      )
+
+      assert_difference [ "Request.count", "Download.count", "Book.count" ], -1 do
+        delete request_path(request)
+      end
+
+      assert_redirected_to requests_path
+      assert_equal "Request cancelled", flash[:notice]
+      assert_not File.exist?(partial)
+      assert_equal "two", File.binread(File.join(source, "02.mp3"))
+    end
+  end
+
+  test "admin cancel keeps a finished import when partial files cannot be tied to the source" do
+    Dir.mktmpdir("shelfarr-unrelated-partial") do |root|
+      library = File.join(root, "audiobooks")
+      source = File.join(root, "download")
+      FileUtils.mkdir_p(library)
+      FileUtils.mkdir_p(source)
+      SettingsService.set(:audiobook_output_path, library)
+      SettingsService.set(:audiobook_path_template, "{author}/{title}")
+      File.binwrite(File.join(source, "01.mp3"), "one")
+      File.binwrite(File.join(source, "02.mp3"), "two")
+      partial = File.join(library, "Ada", "Title")
+      FileUtils.mkdir_p(partial)
+      File.binwrite(File.join(partial, "01.mp3"), "one")
+      File.binwrite(File.join(partial, "unrelated.mp3"), "leave this")
+      book = Book.create!(title: "Title", author: "Ada", book_type: :audiobook)
+      request = Request.create!(
+        book: book,
+        user: @user,
+        status: :processing,
+        attention_needed: true,
+        issue_description: "Import failed"
+      )
+      download = request.downloads.create!(
+        name: book.title,
+        status: :completed,
+        download_path: source,
+        post_processing_job_id: "finished-unrelated-import"
+      )
+
+      assert_no_difference [ "Request.count", "Download.count", "Book.count" ] do
+        delete request_path(request)
+      end
+
+      assert_redirected_to request_path(request)
+      assert_match(/post-processing/i, flash[:alert])
+      assert_equal "finished-unrelated-import", download.reload.post_processing_job_id
+      assert_equal "leave this", File.binread(File.join(partial, "unrelated.mp3"))
+      assert_equal "one", File.binread(File.join(partial, "01.mp3"))
+      assert Book.exists?(book.id)
+    end
+  end
+
   test "admin is asked before a manual result replaces a library file" do
     book = Book.create!(
       title: "Already here",

@@ -5195,6 +5195,150 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not @request.reload.completed?
   end
 
+  test "a retried replacement reuses the isolated directory and removes the old copy" do
+    SettingsService.set(:audiobookshelf_url, "")
+    @book.update!(title: "Title", author: "Ada")
+    old_dir = File.join(@temp_dest_base, "Ada", "Title")
+    isolated = File.join(@temp_dest_base, "Ada", "Title (2)")
+    third = File.join(@temp_dest_base, "Ada", "Title (3)")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(file_path: old_dir)
+    @download.update!(replace_library_file: true)
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.binwrite(File.join(@temp_source, "01.mp3"), "track one")
+    File.binwrite(File.join(@temp_source, "02.mp3"), "track two")
+    copied = 0
+    real_copy = FileCopyService.method(:cp_noreplace)
+
+    FileCopyService.stub(:cp_noreplace, ->(source, destination, **kwargs) {
+      copied += 1
+      if copied == 1
+        state = @download.reload.library_replacement_state.to_s
+        assert_includes state, old_dir
+        assert_includes state, "Title (2)"
+        real_copy.call(source, destination, **kwargs)
+        raise Errno::ENOSPC
+      end
+
+      real_copy.call(source, destination, **kwargs)
+    }) do
+      LibraryPlatformClient.stub(:configured?, false) do
+        NotificationService.stub(:request_completed, ->(_request) { true }) do
+          PostProcessingJob.perform_now(@download.id)
+          assert @request.reload.attention_needed?
+          assert_equal old_dir, @book.reload.file_path
+          assert File.directory?(isolated)
+          assert_not File.exist?(third)
+          assert_includes @download.reload.library_replacement_state.to_s, old_dir
+
+          @request.clear_attention!
+          PostProcessingJob.new(@download.id, 0, @download.post_processing_job_id).perform_now
+        end
+      end
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal isolated, @book.reload.file_path
+    assert_equal "track one", File.binread(File.join(isolated, "01.mp3"))
+    assert_equal "track two", File.binread(File.join(isolated, "02.mp3"))
+    assert_not File.exist?(old_dir)
+    assert_not File.exist?(third)
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "replacement cleanup survives a crash after the new file is attached" do
+    SettingsService.set(:audiobookshelf_url, "")
+    @book.update!(title: "Title", author: "Ada")
+    old_dir = File.join(@temp_dest_base, "Ada", "Title")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(file_path: old_dir)
+    @download.update!(replace_library_file: true)
+
+    SafeLibraryDeletionService.stub(:delete_previous_library_file!, ->(*) {
+      RemoteResult::Failed.new(Errno::EIO.new("previous library file"))
+    }) do
+      LibraryPlatformClient.stub(:configured?, false) do
+        NotificationService.stub(:request_completed, ->(_request) { true }) do
+          PostProcessingJob.perform_now(@download.id)
+        end
+      end
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_not_equal old_dir, @book.reload.file_path
+    assert_equal "old audio", File.binread(File.join(old_dir, "old.mp3"))
+    assert_includes @download.reload.library_replacement_state.to_s, old_dir
+
+    LibraryPlatformClient.stub(:configured?, false) do
+      PostProcessingRecoveryJob.perform_now
+    end
+
+    assert_not File.exist?(old_dir)
+    assert_nil @download.reload.library_replacement_state
+    assert_equal "test audio content", File.binread(File.join(@book.reload.file_path, "audiobook.mp3"))
+  end
+
+  test "a flat ebook replacement keeps the output directory and attaches a sibling file" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Dune.epub"))
+    @book.update!(title: "Dune", author: "Frank Herbert", book_type: :ebook)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_path_template, "")
+    SettingsService.set(:ebook_filename_template, "{author} - {title}")
+    existing = File.join(@temp_dest_base, "Frank Herbert - Dune.epub")
+    replacement = File.join(@temp_dest_base, "Frank Herbert - Dune (2).epub")
+    File.binwrite(existing, "PK\x03\x04old ebook")
+    @book.update!(file_path: existing)
+    @download.update!(replace_library_file: true)
+
+    LibraryPlatformClient.stub(:configured?, false) do
+      NotificationService.stub(:request_completed, ->(_request) { true }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal replacement, @book.reload.file_path
+    assert File.exist?(replacement)
+    assert_not File.exist?(existing)
+    assert_not File.exist?("#{@temp_dest_base} (2)")
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "a split audiobook replacement imports the tracked book into the isolated folder" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    @book.update!(title: "Book Two", author: "Ada")
+    old_dir = File.join(@temp_dest_base, "Ada", "Book Two")
+    isolated = File.join(@temp_dest_base, "Ada", "Book Two (2)")
+    book_one = File.join(@temp_dest_base, "Ada", "Book One")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.m4b"), "old audio")
+    @book.update!(file_path: old_dir)
+    @download.update!(replace_library_file: true)
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.binwrite(File.join(@temp_source, "Book One.m4b"), "book one audio")
+    File.binwrite(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+
+    LibraryPlatformClient.stub(:configured?, false) do
+      NotificationService.stub(:request_completed, ->(_request) { true }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal isolated, @book.reload.file_path
+    assert_equal "book two audio", File.binread(File.join(isolated, "Book Two.m4b"))
+    assert_equal "book one audio", File.binread(File.join(book_one, "Book One.m4b"))
+    assert_not File.exist?(old_dir)
+    assert_not File.exist?(File.join(old_dir, "Book Two.m4b"))
+    assert_not File.exist?(File.join(isolated, "Book One.m4b"))
+  end
+
   def without_atomic_file_publication(&operation)
     FileCopyService.stub(:native_linkat, ->(*) { raise Errno::EOPNOTSUPP }) do
       FileCopyService.stub(:native_rename_noreplace, false, &operation)

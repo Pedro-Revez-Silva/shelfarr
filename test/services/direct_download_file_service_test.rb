@@ -858,7 +858,109 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "a retried direct replacement reuses the isolated directory" do
+    SettingsService.set(:audiobook_output_path, @output_root)
+    old_dir = File.join(@output_root, "Ada", "Title")
+    isolated = File.join(@output_root, "Ada", "Title (2)")
+    third = File.join(@output_root, "Ada", "Title (3)")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(title: "Title", author: "Ada", book_type: :audiobook, file_path: old_dir)
+    @download.update!(replace_library_file: true)
+    attempts = 0
+    real_move = FileCopyService.method(:mv_directory_noreplace)
+
+    FileCopyService.stub(:mv_directory_noreplace, lambda { |source, destination, **kwargs|
+      attempts += 1
+      if attempts == 1
+        state = @download.reload.library_replacement_state.to_s
+        assert_includes state, old_dir
+        assert_includes state, "Title (2)"
+        FileUtils.mkdir_p(destination)
+        File.binwrite(File.join(destination, "partial.mp3"), "partial")
+        raise Interrupt
+      end
+
+      FileUtils.rm_rf(destination)
+      real_move.call(source, destination, **kwargs)
+    }) do
+      service = direct_replacement_service(old_dir)
+      staging = service.create_staging!
+      source = stage_replacement_source(staging)
+
+      assert_raises(Interrupt) { service.publish_directory_and_finalize!(source) }
+      assert_equal old_dir, @book.reload.file_path
+      assert File.directory?(isolated)
+      assert_not File.exist?(third)
+      assert_includes @download.reload.library_replacement_state.to_s, old_dir
+
+      DirectDownloadFileService.send(:release_reservation!, @download.reload)
+      @book.update!(
+        acquisition_reservation_token: nil,
+        acquisition_reservation_owner_type: nil,
+        acquisition_reservation_owner_id: nil
+      )
+      retry_service = direct_replacement_service(old_dir)
+      retry_staging = retry_service.create_staging!
+      assert retry_service.publish_directory_and_finalize!(stage_replacement_source(retry_staging))
+    end
+
+    assert_equal isolated, @book.reload.file_path
+    assert_equal "new audio", File.binread(File.join(isolated, "track.mp3"))
+    assert_not File.exist?(old_dir)
+    assert_not File.exist?(third)
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "direct replacement cleanup survives a crash after the new file is attached" do
+    SettingsService.set(:audiobook_output_path, @output_root)
+    old_dir = File.join(@output_root, "Ada", "Title")
+    isolated = File.join(@output_root, "Ada", "Title (2)")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(title: "Title", author: "Ada", book_type: :audiobook, file_path: old_dir)
+    @download.update!(replace_library_file: true)
+    service = direct_replacement_service(old_dir)
+    staging = service.create_staging!
+    source = stage_replacement_source(staging)
+
+    SafeLibraryDeletionService.stub(:delete_previous_library_file!, ->(*) {
+      RemoteResult::Failed.new(Errno::EIO.new("previous library file"))
+    }) do
+      assert service.publish_directory_and_finalize!(source)
+    end
+
+    assert service.cleanup_after_run!
+    assert_equal isolated, @book.reload.file_path
+    assert_equal "old audio", File.binread(File.join(old_dir, "old.mp3"))
+    assert_includes @download.reload.library_replacement_state.to_s, old_dir
+
+    DirectDownloadRecoveryJob.perform_now
+
+    assert_not File.exist?(old_dir)
+    assert_nil @download.reload.library_replacement_state
+    assert_equal "new audio", File.binread(File.join(isolated, "track.mp3"))
+  end
+
   private
+
+  def direct_replacement_service(library_path)
+    DirectDownloadFileService.new(
+      download: @download,
+      book: @book,
+      output_root: @output_root,
+      destination_path: library_path,
+      book_path: library_path,
+      kind: :directory
+    )
+  end
+
+  def stage_replacement_source(staging)
+    source = File.join(staging, "extracted")
+    FileUtils.mkdir_p(source)
+    File.binwrite(File.join(source, "track.mp3"), "new audio")
+    source
+  end
 
   def build_service
     DirectDownloadFileService.new(

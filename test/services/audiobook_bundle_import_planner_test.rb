@@ -441,6 +441,19 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
     end
   end
 
+  test "sends the tracked book to an isolated replacement folder" do
+    write_file("Book One.m4b")
+    write_file("Book Two.m4b")
+    isolated = File.join(@destination, "Original Author", "Book Two (2)")
+
+    plan = build_plan(tracked_destination: isolated)
+
+    assert plan
+    assert_equal isolated, plan.tracked_entry.destination
+    assert_equal File.join(@destination, "Original Author", "Book One"),
+      plan.entries.find { |entry| entry.virtual_book.title == "Book One" }.destination
+  end
+
   test "does not split when no entry matches the requested book" do
     @book.title = "Unrelated Request"
     write_file("Book One.m4b")
@@ -451,8 +464,14 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
 
   private
 
-  def build_plan(base_path: @destination, language: nil)
-    AudiobookBundleImportPlanner.call(source: @source, book: @book, base_path: base_path, language: language)
+  def build_plan(base_path: @destination, language: nil, tracked_destination: nil)
+    AudiobookBundleImportPlanner.call(
+      source: @source,
+      book: @book,
+      base_path: base_path,
+      language: language,
+      tracked_destination: tracked_destination
+    )
   end
 
   def write_file(name)

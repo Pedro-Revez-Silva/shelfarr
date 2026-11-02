@@ -675,6 +675,16 @@ class DirectDownloadFileService
         raise Error, "Direct download is no longer active"
       end
 
+      current_book = Book.lock.find(book.id)
+      if current_book.file_path == @replacing_library_path &&
+          current_book.acquisition_reservation_token.present? &&
+          current_book.acquisition_reservation_owner_type == "Download" &&
+          current_book.acquisition_reservation_owner_id == current_download.id &&
+          current_download.direct_reservation_token == current_book.acquisition_reservation_token
+        token = current_book.acquisition_reservation_token
+        next
+      end
+
       claimed = Book.where(id: book.id, file_path: @replacing_library_path)
         .where(acquisition_reservation_token: nil)
         .update_all(
@@ -693,16 +703,16 @@ class DirectDownloadFileService
 
   # Retargets a confirmed replacement so the new bytes are not written into
   # the library directory that will be removed after the database swap.
+  # The chosen destination is stored before publication and reused on retry.
   def publish_acquired_replacement!
-    previous_library_path = current_replacement_library_path
-    prepare_replacement_destination! if previous_library_path
+    plan = ensure_replacement_plan!
     yield
-    remove_replaced_library_file!(previous_library_path)
+    LibraryReplacement.finish_cleanup!(download) if plan
     true
   rescue => error
-    if previous_library_path.present?
-      if recover_failed_replacement!(previous_library_path, error) == true
-        remove_replaced_library_file!(previous_library_path)
+    if plan
+      if recover_failed_replacement!(plan.previous_path, error) == true
+        LibraryReplacement.finish_cleanup!(download)
         return true
       end
 
@@ -713,18 +723,52 @@ class DirectDownloadFileService
     raise
   end
 
-  def current_replacement_library_path
-    @replacing_library_path = nil
+  def ensure_replacement_plan!
     return unless download.replace_library_file?
 
-    path = book.reload.file_path.to_s.presence
-    return if path.blank?
+    existing = LibraryReplacement.load(download)
+    if RemoteResult.failed?(existing)
+      raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+    end
 
-    @replacing_library_path = path
+    current = book.reload.file_path.to_s.presence
+    if existing.nil? && current
+      existing = LibraryReplacement.adopt!(download, book, layout: direct_plan_layout)
+      if RemoteResult.failed?(existing)
+        raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+      end
+    end
+
+    if existing.nil? && current
+      @replacing_library_path = current
+      chosen_destination, chosen_book = select_replacement_paths(current)
+      existing = LibraryReplacement.persist!(
+        download,
+        previous_path: current,
+        destination: chosen_destination,
+        book_path: chosen_book,
+        layout: direct_plan_layout
+      )
+      if RemoteResult.failed?(existing)
+        raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+      end
+    end
+    return unless existing.is_a?(LibraryReplacement::Plan)
+
+    matched = LibraryReplacement.matches_book?(existing, book)
+    raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read" if RemoteResult.failed?(matched)
+    raise ConflictError, "The existing library file changed before it could be replaced" unless matched
+
+    apply_direct_plan!(existing)
+    @replacing_library_path = existing.previous_path
+    existing
   end
 
-  def prepare_replacement_destination!
-    existing = @replacing_library_path
+  def direct_plan_layout
+    destination_path == book_path && kind == "file" ? "file" : "directory"
+  end
+
+  def select_replacement_paths(existing)
     candidate_book = book_path
     candidate_destination = destination_path
     counter = 1
@@ -735,21 +779,23 @@ class DirectDownloadFileService
       candidate_book = suffixed_library_path(book_path, counter)
       candidate_destination = relocated_destination(destination_path, book_path, candidate_book)
     end
-    return if candidate_destination == destination_path && candidate_book == book_path
+    [ candidate_destination, candidate_book ]
+  end
 
+  def apply_direct_plan!(plan)
+    @destination_path = Pathname(plan.destination).expand_path.to_s
+    @book_path = Pathname(plan.book_path).expand_path.to_s
     updated = Download.where(
       id: download.id,
       status: Download.statuses[:downloading],
       download_type: "direct"
     ).update_all(
-      direct_destination_path: candidate_destination,
-      direct_book_path: candidate_book,
+      direct_destination_path: @destination_path,
+      direct_book_path: @book_path,
       updated_at: Time.current
     )
     raise Error, "Direct download is no longer active" unless updated == 1
 
-    @destination_path = candidate_destination
-    @book_path = candidate_book
     download.reload
     validate_destination_paths!
   end
@@ -774,12 +820,6 @@ class DirectDownloadFileService
     return new_library_path if destination_path == old_path
 
     Pathname(new_library_path).join(destination_path.relative_path_from(old_path)).to_s
-  end
-
-  def remove_replaced_library_file!(previous_library_path)
-    return if previous_library_path.blank?
-
-    SafeLibraryDeletionService.delete_previous_library_file!(book.reload, previous_library_path)
   end
 
   def recover_failed_replacement!(previous_library_path, error)

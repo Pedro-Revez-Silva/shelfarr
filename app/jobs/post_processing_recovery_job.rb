@@ -6,6 +6,7 @@
 #   could enqueue post-processing.
 # * PostProcessingJob claimed the Download (or published only part of an
 #   idempotent import) and its worker was killed before atomic finalization.
+# * A stored replacement cleanup finishes after the new file is attached.
 #
 # The Download owner is transferred before enqueue. If that enqueue itself is
 # interrupted, a later pass can transfer the stale owner again. Solid Queue is
@@ -72,6 +73,7 @@ class PostProcessingRecoveryJob < ApplicationJob
   def perform
     cleanup_downloads.each { |download| recover_source_cleanup(download) }
     stale_downloads.each { |download| recover(download) }
+    LibraryReplacement.finish_pending_cleanups!
   end
 
   private

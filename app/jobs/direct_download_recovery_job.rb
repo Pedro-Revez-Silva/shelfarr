@@ -29,5 +29,7 @@ class DirectDownloadRecoveryJob < ApplicationJob
         )
       end
     end
+
+    LibraryReplacement.finish_pending_cleanups!
   end
 end

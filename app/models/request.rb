@@ -507,6 +507,7 @@ class Request < ApplicationRecord
   def post_processing_recovery_pending?
     return false unless persisted?
     return true if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
+    return true if LibraryReplacement.cleanup_actionable_for_request?(self)
     return true if live_post_processing_owner?
 
     return false if completed?
@@ -631,6 +632,7 @@ class Request < ApplicationRecord
     if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
       return post_processing_recovery_message
     end
+    return post_processing_recovery_message if LibraryReplacement.cleanup_actionable_for_request?(self)
     return post_processing_recovery_message if live_post_processing_owner?
     return direct_acquisition_recovery_message if direct_publication_in_progress?
     return upload_cancellation_blocked_message if admin_upload_or_backup_blocked?
@@ -653,6 +655,11 @@ class Request < ApplicationRecord
         raise CancellationBlockedError, post_processing_recovery_message
       end
 
+      # A finished importer can leave library files the Book row does not name.
+      # Reconcile those before forgetting the owner; if they cannot be
+      # identified, the owner stays.
+      reconcile_finished_imports!
+
       now = Time.current
       downloads.where(status: [ :queued, :downloading, :paused ]).update_all(
         status: Download.statuses[:failed],
@@ -671,6 +678,20 @@ class Request < ApplicationRecord
         )
       end
       jobs
+    end
+  end
+
+  def reconcile_finished_imports!
+    downloads.find_each do |download|
+      next if download.post_processing_cleanup_state.present?
+
+      finished_owner = download.completed? && download.post_processing_job_id.present?
+      next if download.library_replacement_state.blank? && !finished_owner
+
+      prepared = LibraryReplacement.prepare_cancellation!(download)
+      next if prepared == true
+
+      raise CancellationBlockedError, post_processing_recovery_message
     end
   end
 
