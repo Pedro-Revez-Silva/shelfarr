@@ -51,6 +51,31 @@ class LibraryDestinationOccupancy
       each_library_file(path).any? { |entry| foreign_media?(entry, book) }
     end
 
+    # Another acquired book may own this path, a parent, or a child. Deletion
+    # must refuse when that ownership cannot be judged.
+    def overlaps_acquired_book?(library_path, except_book_id: nil)
+      path = library_path.to_s
+      return true if path.blank?
+
+      relation = nil
+      library_path_aliases(Pathname(path)).each do |candidate|
+        match = Book.acquired.where(
+          "file_path = ? OR instr(file_path, ?) = 1 OR instr(?, file_path || ?) = 1",
+          candidate,
+          "#{candidate}/",
+          candidate,
+          "/"
+        )
+        relation = relation ? relation.or(match) : match
+      end
+      return true if relation.nil?
+
+      relation = relation.where.not(id: except_book_id) if except_book_id
+      relation.exists?
+    rescue ArgumentError, SystemCallError
+      true
+    end
+
     private
 
     def blocking_reservation?(path, except_upload_id:, except_import_id:)

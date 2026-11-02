@@ -8,9 +8,13 @@ class StaleClientDispatchCleanupJob < ApplicationJob
   queue_as :default
   retry_on CleanupError, wait: :polynomially_longer, attempts: 5
 
-  def perform(download_client_id, external_id, delete_files: true)
+  def perform(download_client_id, external_id, delete_files: true, except_download_id: nil)
     return unless external_id.is_a?(String) && external_id.match?(SAFE_EXTERNAL_ID)
-    return if Download.current_external_id_owner(external_id, download_client_id: download_client_id)
+    return if Download.current_external_id_owner(
+      external_id,
+      download_client_id: download_client_id,
+      except_id: except_download_id
+    )
 
     client_record = DownloadClient.find_by(id: download_client_id)
     return unless client_record

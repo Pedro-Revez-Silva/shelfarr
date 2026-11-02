@@ -543,7 +543,9 @@ class Request < ApplicationRecord
   end
 
   def manual_download_allowed?
-    !completed? && !processing? && !download_dispatch_in_progress?
+    return false if processing? || download_dispatch_in_progress?
+
+    !completed? || book.acquired?
   end
 
   alias_method :manual_magnet_allowed?, :manual_download_allowed?
@@ -568,7 +570,9 @@ class Request < ApplicationRecord
     raise ArgumentError, "Enter a magnet link with a valid info hash" if info_hash.blank?
 
     with_lock do
-      raise ArgumentError, "Cannot add a magnet link to a completed request" if completed?
+      if completed? && !library_replacement_requested?(replace_library_file)
+        raise ArgumentError, "Cannot add a magnet link to a completed request"
+      end
       raise ArgumentError, "Cannot add a magnet link while post-processing is active" if processing?
       raise ArgumentError, "Cannot replace a download while dispatch is in progress" if download_dispatch_in_progress?
 
@@ -594,7 +598,9 @@ class Request < ApplicationRecord
     raise ArgumentError, "Enter a valid HTTP(S) NZB URL" unless valid_manual_nzb_url?(nzb_url)
 
     with_lock do
-      raise ArgumentError, "Cannot add an NZB URL to a completed request" if completed?
+      if completed? && !library_replacement_requested?(replace_library_file)
+        raise ArgumentError, "Cannot add an NZB URL to a completed request"
+      end
       raise ArgumentError, "Cannot add an NZB URL while post-processing is active" if processing?
       raise ArgumentError, "Cannot replace a download while dispatch is in progress" if download_dispatch_in_progress?
 
@@ -710,7 +716,7 @@ class Request < ApplicationRecord
       next if client_job_removed!(adapter, external_id)
 
       Rails.logger.warn "[Request] Client did not confirm removal for download client ##{client_id}; scheduling cleanup"
-      enqueue_admin_client_cleanup(client_id, external_id)
+      enqueue_admin_client_cleanup(client_id, external_id, download_id)
       raise CancellationBlockedError,
         "Shelfarr could not confirm that the download client removed this download, so the request was kept."
     end
@@ -725,8 +731,13 @@ class Request < ApplicationRecord
     false
   end
 
-  def self.enqueue_admin_client_cleanup(client_id, external_id)
-    StaleClientDispatchCleanupJob.perform_later(client_id, external_id, delete_files: false)
+  def self.enqueue_admin_client_cleanup(client_id, external_id, download_id)
+    StaleClientDispatchCleanupJob.perform_later(
+      client_id,
+      external_id,
+      delete_files: false,
+      except_download_id: download_id
+    )
   rescue StandardError => e
     Rails.logger.error "[Request] Failed to enqueue download client cleanup: #{e.class}"
   end

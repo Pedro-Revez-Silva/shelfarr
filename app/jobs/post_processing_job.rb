@@ -746,6 +746,7 @@ class PostProcessingJob < ApplicationJob
   # Flat imports write into the shared output root, so the root must not be
   # recorded as the book's own path when the import produced a single file.
   # Pointing file_path at that file keeps downloads and deletions per-book.
+  # A directory replacement owns the folder, including every format inside it.
   def imported_book_path(book, destination)
     return @imported_book_path_override if @imported_book_path_override.present?
     if @replacement_plan&.file?
@@ -753,6 +754,7 @@ class PostProcessingJob < ApplicationJob
 
       return @replacement_plan.book_path
     end
+    return @replacement_plan.book_path if @replacement_plan
     return destination unless PathTemplateService.flat_output?(book)
     return destination unless @imported_renamed_files&.one?
 
@@ -1848,7 +1850,8 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  # A flat library can hold either one renamed file or a folder of tracks.
+  # A flat library can hold one renamed file or an isolated folder. Several
+  # media files in one release share that folder so every format stays owned.
   # The previous copy's extension describes that copy, not the incoming bytes.
   def incoming_replacement_layout(book, canonical_destination, previous_path, source_path)
     flat_file = flat_single_file_target?(book, canonical_destination, previous_path)
@@ -1858,6 +1861,11 @@ class PostProcessingJob < ApplicationJob
     directory = directory_source?(source_path)
     return directory if RemoteResult.failed?(directory)
     return [ "directory", nil ] if directory && !readable_file_import?(book)
+    if directory
+      multiple = multiple_incoming_media_files?(source_path)
+      return multiple if RemoteResult.failed?(multiple)
+      return [ "directory", nil ] if multiple
+    end
 
     extension = incoming_media_extension(book, source_path)
     return extension if RemoteResult.failed?(extension)
@@ -1877,6 +1885,20 @@ class PostProcessingJob < ApplicationJob
 
     true
   rescue ArgumentError, SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def multiple_incoming_media_files?(source_path)
+    count = 0
+    ebook_directory_files(source_path).each do |path|
+      next if File.symlink?(path)
+      next unless ebook_file?(path)
+
+      count += 1
+      return true if count > 1
+    end
+    false
+  rescue SystemCallError => error
     RemoteResult::Failed.new(error)
   end
 

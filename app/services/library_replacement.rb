@@ -417,7 +417,7 @@ class LibraryReplacement
       return false if decisions.any?(false)
 
       paths.zip(decisions).each do |path, decision|
-        next if decision == :absent
+        next if decision == :absent || decision == :retained
 
         deleted = delete_owned_path!(book, path)
         return deleted unless deleted == true
@@ -444,6 +444,7 @@ class LibraryReplacement
       root_match = same_path?(path, root)
       return root_match if RemoteResult.failed?(root_match)
       return false if root_match
+      return :retained if LibraryDestinationOccupancy.overlaps_acquired_book?(path, except_book_id: book.id)
 
       true
     end
@@ -504,7 +505,7 @@ class LibraryReplacement
     def delete_published_file!(book, path, protected_path)
       decision = published_file_decision(book, path, protected_path)
       return decision if RemoteResult.failed?(decision) || decision == false
-      return true if decision == :absent || decision == :directory
+      return true if decision == :absent || decision == :directory || decision == :retained
 
       delete_owned_path!(book, path)
     end
@@ -529,6 +530,7 @@ class LibraryReplacement
       root_match = same_path?(path, root)
       return root_match if RemoteResult.failed?(root_match)
       return false if root_match
+      return :retained if LibraryDestinationOccupancy.overlaps_acquired_book?(path, except_book_id: book.id)
 
       return :directory if File.directory?(path) && !File.symlink?(path)
 
@@ -566,6 +568,7 @@ class LibraryReplacement
         empty = empty_directory?(current)
         return empty if RemoteResult.failed?(empty)
         break unless empty
+        break if LibraryDestinationOccupancy.overlaps_acquired_book?(current, except_book_id: book.id)
 
         deleted = delete_owned_path!(book, current)
         return deleted unless deleted == true

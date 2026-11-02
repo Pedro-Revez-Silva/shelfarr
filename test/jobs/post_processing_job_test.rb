@@ -5321,9 +5321,10 @@ class PostProcessingJobTest < ActiveJob::TestCase
     SettingsService.set(:ebook_path_template, "")
     SettingsService.set(:ebook_filename_template, "{author} - {title}")
     existing = File.join(@temp_dest_base, "Frank Herbert - Dune.epub")
-    published_epub = File.join(@temp_dest_base, "Frank Herbert - Dune (2).epub")
-    published_pdf = File.join(@temp_dest_base, "Frank Herbert - Dune.pdf")
-    published_cover = File.join(@temp_dest_base, "cover.jpg")
+    folder = File.join(@temp_dest_base, "Frank Herbert - Dune")
+    published_epub = File.join(folder, "Frank Herbert - Dune.epub")
+    published_pdf = File.join(folder, "Frank Herbert - Dune.pdf")
+    published_cover = File.join(folder, "cover.jpg")
     File.binwrite(existing, "PK\x03\x04old ebook")
     @book.update!(file_path: existing)
     @download.update!(replace_library_file: true)
@@ -5474,6 +5475,47 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_nil @download.reload.library_replacement_state
   end
 
+  test "a flat replacement of several ebook formats keeps every file with the book" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "a.epub"))
+    write_valid_ebook_file(File.join(@temp_source, "b.pdf"))
+    @book.update!(title: "Title", author: "Ada", book_type: :ebook)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:ebook_path_template, "")
+    SettingsService.set(:ebook_filename_template, "{author} - {title}")
+    existing = File.join(@temp_dest_base, "Ada - Title.epub")
+    File.binwrite(existing, "PK\x03\x04old ebook")
+    @book.update!(file_path: existing)
+    @download.update!(replace_library_file: true)
+
+    LibraryPlatformClient.stub(:configured?, false) do
+      NotificationService.stub(:request_completed, ->(_request) { true }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    @book.reload
+    folder = @book.file_path
+    published_epub = File.join(folder, "Ada - Title.epub")
+    published_pdf = File.join(folder, "Ada - Title.pdf")
+
+    assert @request.reload.completed?, @request.issue_description
+    assert File.directory?(folder)
+    assert_equal "Ada - Title", File.basename(folder)
+    assert File.binread(published_epub).start_with?("PK\x03\x04")
+    assert File.binread(published_pdf).start_with?("%PDF")
+    assert_not File.exist?(existing)
+    assert_nil @download.reload.library_replacement_state
+    assert_not Dir.children(@temp_dest_base).any? { |name| name.end_with?(".pdf", ".epub") }
+
+    assert SafeLibraryDeletionService.new(@book).delete!
+    assert_not File.exist?(published_epub)
+    assert_not File.exist?(published_pdf)
+    assert_not File.exist?(folder)
+  end
+
   test "a split audiobook replacement imports the tracked book into the isolated folder" do
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:split_audiobook_bundle_imports, true)
@@ -5502,6 +5544,74 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(old_dir)
     assert_not File.exist?(File.join(old_dir, "Book Two.m4b"))
     assert_not File.exist?(File.join(isolated, "Book One.m4b"))
+  end
+
+  test "cancelling a failed split replacement keeps a file another acquired book owns" do
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:split_audiobook_bundle_imports, true)
+    SettingsService.set(:audiobook_path_template, "{author}/{title}")
+    @book.update!(title: "Book Two", author: "Ada")
+    old_dir = File.join(@temp_dest_base, "Ada", "Book Two")
+    book_one_dir = File.join(@temp_dest_base, "Ada", "Book One")
+    book_one_file = File.join(book_one_dir, "Book One.m4b")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.m4b"), "old audio")
+    @book.update!(file_path: old_dir)
+    @download.update!(replace_library_file: true)
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    File.binwrite(File.join(@temp_source, "Book One.m4b"), "book one audio")
+    File.binwrite(File.join(@temp_source, "Book Two.m4b"), "book two audio")
+    real_copy = FileCopyService.method(:cp_noreplace)
+
+    FileCopyService.stub(:cp_noreplace, lambda { |source, destination, **kwargs|
+      raise Errno::EIO if File.basename(source) == "Book Two.m4b"
+
+      real_copy.call(source, destination, **kwargs)
+    }) do
+      LibraryPlatformClient.stub(:configured?, false) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.attention_needed?
+    assert_equal old_dir, @book.reload.file_path
+    assert_equal "book one audio", File.binread(book_one_file)
+    assert_includes @download.reload.library_replacement_state.to_s, book_one_file
+
+    book_one = Book.create!(title: "Book One", author: "Ada", book_type: :audiobook)
+    solo = File.join(@temp_download_base, "book-one-solo")
+    FileUtils.mkdir_p(solo)
+    File.binwrite(File.join(solo, "Book One.m4b"), "book one audio")
+    solo_request = Request.create!(book: book_one, user: users(:one), status: :downloading)
+    solo_download = solo_request.downloads.create!(
+      name: "Book One",
+      status: :completed,
+      download_path: solo,
+      progress: 100
+    )
+    LibraryPlatformClient.stub(:configured?, false) do
+      NotificationService.stub(:request_completed, ->(_request) { true }) do
+        PostProcessingJob.perform_now(solo_download.id)
+      end
+    end
+
+    assert solo_request.reload.completed?, solo_request.issue_description
+    assert_equal book_one_dir, book_one.reload.file_path
+    assert_equal "book one audio", File.binread(book_one_file)
+
+    intruder = Book.find(@book.id)
+    intruder.file_path = book_one_file
+    assert_raises(SafeLibraryDeletionService::Error) do
+      SafeLibraryDeletionService.new(intruder).delete!
+    end
+    assert_equal "book one audio", File.binread(book_one_file)
+
+    @request.remove_as_admin!
+
+    assert_not Request.exists?(@request.id)
+    assert_equal book_one_dir, book_one.reload.file_path
+    assert_equal "book one audio", File.binread(book_one_file)
+    assert_equal "old audio", File.binread(File.join(old_dir, "old.m4b"))
   end
 
   test "deleting completed history keeps tracks an earlier failed import published" do

@@ -488,6 +488,44 @@ class DownloadClients::NzbgetTest < ActiveSupport::TestCase
     end
   end
 
+  test "queued removal keeps NZBGet files unless deletion was requested" do
+    VCR.turned_off do
+      park = stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(
+          body: hash_including(
+            "method" => "editqueue",
+            "params" => [ "GroupParkDelete", 0, "", [ 12345 ] ]
+          ),
+          basic_auth: [ "nzbget", "tegbzn6789" ]
+        )
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => true }.to_json
+        )
+
+      assert @client.remove_torrent("12345", delete_files: false)
+      assert_requested park
+
+      remove = stub_request(:post, "http://localhost:6789/jsonrpc")
+        .with(
+          body: hash_including(
+            "method" => "editqueue",
+            "params" => [ "GroupDelete", 0, "", [ 12345 ] ]
+          ),
+          basic_auth: [ "nzbget", "tegbzn6789" ]
+        )
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "result" => true }.to_json
+        )
+
+      assert @client.remove_torrent("12345", delete_files: true)
+      assert_requested remove
+    end
+  end
+
   test "normalizes queue states correctly" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:6789/jsonrpc")

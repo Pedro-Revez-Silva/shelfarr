@@ -89,4 +89,50 @@ class StaleClientDispatchCleanupJobTest < ActiveJob::TestCase
 
     assert_not_requested :get, %r{localhost:8080}
   end
+
+  test "scheduled cleanup removes a cancelled download that still owns its client id" do
+    client = DownloadClient.create!(
+      name: "Cancelled owner #{SecureRandom.hex(4)}",
+      client_type: :qbittorrent,
+      url: "http://127.0.0.1:9",
+      enabled: true,
+      priority: 4
+    )
+    book = Book.create!(title: "Finished import still seeding", book_type: :audiobook)
+    request = Request.create!(book: book, user: users(:one), status: :processing, attention_needed: true)
+    download = request.downloads.create!(
+      name: book.title,
+      status: :completed,
+      download_client: client,
+      external_id: "completed-import-job",
+      post_processing_job_id: "finished-import-not-queued"
+    )
+    calls = []
+    adapter = Object.new
+    adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
+      calls << [ external_id, delete_files ]
+      raise DownloadClients::Base::ConnectionError, "offline" if calls.size == 1
+
+      true
+    end
+    adapter.define_singleton_method(:torrent_info) { |_external_id| Object.new }
+
+    DownloadClients::Qbittorrent.stub(:new, adapter) do
+      assert_enqueued_jobs 1, only: StaleClientDispatchCleanupJob do
+        error = assert_raises(Request::CancellationBlockedError) { request.remove_as_admin! }
+        assert_match(/could not confirm/i, error.message)
+      end
+
+      assert download.reload.completed?
+      assert_nil download.external_id_released_at
+      assert Request.exists?(request.id)
+
+      perform_enqueued_jobs
+    end
+
+    assert_equal [
+      [ "completed-import-job", false ],
+      [ "completed-import-job", false ]
+    ], calls
+  end
 end

@@ -33,6 +33,7 @@ class SafeLibraryDeletionService
     current = book.file_path.to_s
     return false if previous_path.blank? || current.blank?
     return false if overlapping_library_paths?(current, previous_path)
+    return true if LibraryDestinationOccupancy.overlaps_acquired_book?(previous_path, except_book_id: book.id)
 
     record = book.class.find_by(id: book.id)
     return false unless record
@@ -60,6 +61,9 @@ class SafeLibraryDeletionService
     parts = relative.each_filename.to_a
     raise Error, "Shelfarr refuses to delete an output root" if parts.empty?
     operation = lambda do
+      if LibraryDestinationOccupancy.overlaps_acquired_book?(@path, except_book_id: @book.id)
+        raise Error, "This library path belongs to another acquired book"
+      end
       if LibraryDestinationOccupancy.shared_directory?(@path, @book)
         raise Error, "This library folder contains another book's files; remove only this format's files manually"
       end
