@@ -5,6 +5,12 @@ gem "rails", "~> 8.1.3", ">= 8.1.3.1"
 gem "rack", ">= 3.2.8"
 # Loofah CSS tokenizer. 1.0.7 leaves a bad URL open after an escaped backslash.
 gem "crass", ">= 1.0.8"
+# HTML scrubber. 2.25.2 turns an escaped CSS url() and some SVG hrefs into live references.
+gem "loofah", ">= 2.25.3"
+# HTML parser. 1.19.4 leaves < and > unescaped in serialized attribute values.
+gem "nokogiri", ">= 1.19.5"
+# Safe-list sanitizer. 1.7.1 shares one scrubber across concurrent sanitize calls.
+gem "rails-html-sanitizer", ">= 1.7.2"
 gem "propshaft"
 # sqlite3 2.9.6 can truncate a SQL string of 4 GiB or larger.
 gem "sqlite3", ">= 2.10.2"
