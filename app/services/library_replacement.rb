@@ -17,12 +17,18 @@ class LibraryReplacement
     :book_path,
     :layout,
     :cleanup_pending,
+    :published_paths,
+    :publications_recorded,
     :raw
   ) do
     def file?
       layout == "file"
     end
   end
+
+  # Files this import has actually copied into the library. Unlike a Plan,
+  # there is no previous copy to preserve.
+  Publication = Data.define(:published_paths, :raw)
 
   class << self
     def load(download)
@@ -31,6 +37,13 @@ class LibraryReplacement
 
       data = JSON.parse(raw)
       return invalid_plan("replacement plan is not an object") unless data.is_a?(Hash)
+
+      published_paths = published_paths_from(data)
+      return published_paths if RemoteResult.failed?(published_paths)
+
+      if publication_journal?(data)
+        return Publication.new(published_paths: published_paths, raw: raw)
+      end
 
       previous_path = data["previous_path"].to_s
       destination = data["destination"].to_s
@@ -46,6 +59,8 @@ class LibraryReplacement
         book_path: book_path,
         layout: layout,
         cleanup_pending: data["cleanup_pending"] != false,
+        published_paths: published_paths,
+        publications_recorded: data.key?("published_paths"),
         raw: raw
       )
     rescue JSON::ParserError => error
@@ -159,6 +174,12 @@ class LibraryReplacement
       book.reload
       return true unless cleanup_actionable?(download, book)
 
+      # The Book row can name the new path before that path is durable. Keep
+      # the previous copy until the attached file or directory is actually there.
+      present = attached_library_artifact?(book.file_path)
+      return present if RemoteResult.failed?(present)
+      return false unless present
+
       deleted = SafeLibraryDeletionService.delete_previous_library_file!(book, plan.previous_path)
       return deleted unless deleted == true
 
@@ -194,9 +215,65 @@ class LibraryReplacement
         return clear!(download, plan.raw)
       end
 
-      return true if book.file_path.present?
+      return clear!(download, plan.raw) if plan.is_a?(Publication) && publication_retained?(download, book)
 
-      clean_untracked_import!(download, book)
+      return true unless plan.is_a?(Publication)
+
+      removed = remove_published_files!(book, plan.published_paths, protected_path: nil)
+      return removed unless removed == true
+
+      clear!(download, plan.raw)
+    end
+
+    # Appends a path only after that file is in the library. Cancellation
+    # later deletes this list and does not guess from templates or filenames.
+    def record_published_path!(download, path)
+      normalized = Pathname(path.to_s).expand_path.to_s
+      return invalid_plan("published path is blank") if normalized.blank?
+
+      5.times do
+        download.reload
+        raw = download.library_replacement_state.to_s
+        data = raw.blank? ? {} : JSON.parse(raw)
+        return invalid_plan("replacement plan is not an object") unless data.is_a?(Hash)
+
+        paths = published_paths_from(data)
+        return paths if RemoteResult.failed?(paths)
+        if paths.include?(normalized)
+          download.library_replacement_state = raw.presence
+          return true
+        end
+        return invalid_plan("library walk is too large") if paths.size >= MAX_RELATIVE_FILES
+
+        data["published_paths"] = paths + [ normalized ]
+        new_raw = JSON.generate(data)
+        scope = Download.where(id: download.id)
+        scope = if raw.blank?
+          scope.where(library_replacement_state: [ nil, "" ])
+        else
+          scope.where(library_replacement_state: raw)
+        end
+        updated = scope.update_all(library_replacement_state: new_raw, updated_at: Time.current)
+        if updated == 1
+          download.library_replacement_state = new_raw
+          return true
+        end
+      end
+
+      invalid_plan("published library file could not be recorded")
+    rescue JSON::ParserError, ArgumentError, SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    # A finished import's files belong to the Book. Drop the publish journal
+    # without deleting them.
+    def release_publication!(download)
+      download.reload
+      state = load(download)
+      return state if RemoteResult.failed?(state)
+      return true unless state.is_a?(Publication)
+
+      clear!(download, state.raw)
     end
 
     def same_path?(left, right)
@@ -216,6 +293,8 @@ class LibraryReplacement
         book_path: payload["book_path"],
         layout: payload["layout"],
         cleanup_pending: true,
+        published_paths: [],
+        publications_recorded: false,
         raw: raw
       )
     end
@@ -249,8 +328,23 @@ class LibraryReplacement
     end
 
     def abandon!(book, plan)
+      unless plan.publications_recorded
+        # Nothing was journaled, so the only candidate is the free path chosen
+        # before publication. A reconstructed template path never reaches here.
+        return remove_planned_paths!(book, plan)
+      end
+
+      removed = remove_published_files!(book, plan.published_paths, protected_path: plan.previous_path)
+      return removed unless removed == true
+
+      # The isolated folder is created before the first byte. Remove it only
+      # once it no longer holds anything this import did not publish.
+      prune_empty_ancestors!(book, File.join(plan.destination.to_s, "child"), plan.previous_path)
+    end
+
+    def remove_planned_paths!(book, plan)
       paths = [ plan.book_path, plan.destination ].compact.uniq.sort_by(&:length)
-      decisions = paths.map { |path| removable_replacement_path?(book, plan, path) }
+      decisions = paths.map { |path| removable_planned_path?(book, plan, path) }
       failed = decisions.find { |decision| RemoteResult.failed?(decision) }
       return failed if failed
       return false if decisions.any?(false)
@@ -264,7 +358,7 @@ class LibraryReplacement
       true
     end
 
-    def removable_replacement_path?(book, plan, path)
+    def removable_planned_path?(book, plan, path)
       existed = path_exists?(path)
       return existed if RemoteResult.failed?(existed)
       return :absent unless existed
@@ -287,70 +381,130 @@ class LibraryReplacement
       true
     end
 
-    def clean_untracked_import!(download, book)
-      return true if book.file_path.present?
+    def publication_journal?(data)
+      data["previous_path"].blank? &&
+        data["destination"].blank? &&
+        data["book_path"].blank? &&
+        data["layout"].blank? &&
+        data.key?("published_paths")
+    end
+
+    def publication_retained?(download, book)
+      download.post_processing_job_id.blank? && book.file_path.present?
+    end
+
+    def published_paths_from(data)
+      value = data["published_paths"]
+      return [] if value.nil?
+      return invalid_plan("replacement plan is incomplete") unless value.is_a?(Array)
+      return invalid_plan("library walk is too large") if value.size > MAX_RELATIVE_FILES
+      return invalid_plan("replacement plan is incomplete") unless value.all? { |path| path.is_a?(String) && path.present? }
+
+      value
+    end
+
+    def remove_published_files!(book, paths, protected_path:)
+      files = Array(paths).map(&:to_s).uniq
+      files.each do |path|
+        deleted = delete_published_file!(book, path, protected_path)
+        return deleted unless deleted == true
+      end
+      files.each do |path|
+        pruned = prune_empty_ancestors!(book, path, protected_path)
+        return pruned unless pruned == true
+      end
+      true
+    end
+
+    def delete_published_file!(book, path, protected_path)
+      decision = published_file_decision(book, path, protected_path)
+      return decision if RemoteResult.failed?(decision) || decision == false
+      return true if decision == :absent || decision == :directory
+
+      delete_owned_path!(book, path)
+    end
+
+    def published_file_decision(book, path, protected_path)
+      existed = path_exists?(path)
+      return existed if RemoteResult.failed?(existed)
+      return :absent unless existed
+
+      if protected_path.present?
+        same = same_path?(path, protected_path)
+        return same if RemoteResult.failed?(same)
+        return false if same
+        return false if SafeLibraryDeletionService.overlapping_library_paths?(path, protected_path)
+      end
 
       root = output_root_for(book).to_s
-      return false if root.blank?
-
-      destination = PathTemplateService.build_destination(book, base_path: root)
-      return false if destination.blank?
-
-      contained = inside_root?(destination, root)
+      contained = inside_root?(path, root)
       return contained if RemoteResult.failed?(contained)
       return false unless contained
 
-      root_match = same_path?(destination, root)
+      root_match = same_path?(path, root)
       return root_match if RemoteResult.failed?(root_match)
       return false if root_match
-      return false if File.symlink?(destination)
 
-      existed = path_exists?(destination)
-      return existed if RemoteResult.failed?(existed)
-      return true unless existed
-      return false unless File.directory?(destination)
+      return :directory if File.directory?(path) && !File.symlink?(path)
 
-      source = download.download_path.to_s
-      return false if source.blank? || File.symlink?(source) || !File.directory?(source)
-      return false if SafeLibraryDeletionService.overlapping_library_paths?(destination, source)
-
-      destination_files = relative_library_files(destination)
-      return destination_files if RemoteResult.failed?(destination_files)
-      source_files = relative_library_files(source)
-      return source_files if RemoteResult.failed?(source_files)
-      return false unless destination_files.all? { |relative| source_files.include?(relative) }
-
-      delete_owned_path!(book, destination)
+      true
+    rescue SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
 
-    def relative_library_files(root)
-      root_path = Pathname(root).expand_path
-      return RemoteResult::Failed.new(Errno::ELOOP.new("symlink")) if File.symlink?(root_path)
-      return [] unless File.directory?(root_path)
+    def prune_empty_ancestors!(book, path, protected_path)
+      root = output_root_for(book).to_s
+      current = File.dirname(Pathname(path.to_s).expand_path.to_s)
+      MAX_RELATIVE_FILES.times do
+        root_match = same_path?(current, root)
+        return root_match if RemoteResult.failed?(root_match)
+        break if root_match
 
-      files = []
-      pending = [ root_path ]
-      visited = 0
-      while (current = pending.pop)
-        Dir.each_child(current.to_s) do |name|
-          visited += 1
-          if visited > MAX_RELATIVE_FILES
-            return RemoteResult::Failed.new(ArgumentError.new("library walk is too large"))
-          end
+        contained = inside_root?(current, root)
+        return contained if RemoteResult.failed?(contained)
+        break unless contained
 
-          path = current.join(name)
-          if File.symlink?(path)
-            return RemoteResult::Failed.new(Errno::ELOOP.new("symlink"))
-          elsif File.directory?(path)
-            pending << path
-          elsif File.file?(path)
-            files << path.relative_path_from(root_path).to_s
-          else
-            return RemoteResult::Failed.new(ArgumentError.new("unsupported library entry"))
-          end
+        if protected_path.present?
+          same = same_path?(current, protected_path)
+          return same if RemoteResult.failed?(same)
+          break if same
+          break if SafeLibraryDeletionService.overlapping_library_paths?(current, protected_path)
         end
+
+        break if File.symlink?(current)
+
+        existed = path_exists?(current)
+        return existed if RemoteResult.failed?(existed)
+        break unless existed
+        break unless File.directory?(current)
+
+        empty = empty_directory?(current)
+        return empty if RemoteResult.failed?(empty)
+        break unless empty
+
+        deleted = delete_owned_path!(book, current)
+        return deleted unless deleted == true
+
+        parent = File.dirname(current)
+        break if parent == current
+
+        current = parent
       end
-      files
+      true
+    rescue ArgumentError, SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def empty_directory?(path)
+      Dir.children(path).empty?
+    rescue SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def attached_library_artifact?(path)
+      return false if path.blank?
+
+      File.exist?(path)
     rescue SystemCallError => error
       RemoteResult::Failed.new(error)
     end

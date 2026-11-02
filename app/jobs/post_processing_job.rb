@@ -67,6 +67,7 @@ class PostProcessingJob < ApplicationJob
     @replacement_plan = nil
     @replacement_file_path = nil
     @replacement_file_override_used = false
+    @publication_download = download
 
     Rails.logger.info "[PostProcessingJob] Starting download ##{download.id}, book ##{book.id}"
 
@@ -111,16 +112,6 @@ class PostProcessingJob < ApplicationJob
         base_path: base_path,
         language: import_language
       )
-      if download.replace_library_file? && book.file_path.present?
-        # The isolated destination is stored before any bytes are published and
-        # reused if this import is retried.
-        replacement_plan = prepare_library_replacement!(download, book, destination)
-        if RemoteResult.failed?(replacement_plan)
-          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
-        end
-
-        destination = import_directory_for_replacement(destination, replacement_plan)
-      end
       source_resolution = remap_download_path(download.download_path, download)
       source_path = source_resolution[:path]
       if source_path_unavailable?(source_path)
@@ -134,6 +125,23 @@ class PostProcessingJob < ApplicationJob
         )
       rescue FileCopyService::ReferenceTargetUnavailableError
         return retry_source_path_later(download, request, source_path, source_path_retry_count)
+      end
+      if download.replace_library_file? && book.file_path.present?
+        # The isolated destination is stored before any bytes are published and
+        # reused if this import is retried. Layout comes from the incoming
+        # files, which are known only after the source path is resolved.
+        replacement_plan = prepare_library_replacement!(
+          download,
+          book,
+          destination,
+          source_path,
+          language: import_language
+        )
+        if RemoteResult.failed?(replacement_plan)
+          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+        end
+
+        destination = import_directory_for_replacement(destination, replacement_plan)
       end
 
       # Reference mode keeps download bytes as the only content; never delete
@@ -174,6 +182,7 @@ class PostProcessingJob < ApplicationJob
       return unless acquisition_finalized
 
       LibraryReplacement.finish_cleanup!(download) if @replacement_plan
+      LibraryReplacement.release_publication!(download)
 
       # Destructive source/client cleanup happens only after Book, Request, and
       # Download ownership commit together. A hard kill before that commit can
@@ -1241,6 +1250,7 @@ class PostProcessingJob < ApplicationJob
       end
 
       imported = import_file(source, destination)
+      record_published_library_file!(imported)
       verify_imported_destination!(source, imported, require_durable: true) if @require_durable_import
       record_imported_source!(source)
       return imported
@@ -1768,17 +1778,21 @@ class PostProcessingJob < ApplicationJob
     true
   end
 
-  def prepare_library_replacement!(download, book, canonical_destination)
+  def prepare_library_replacement!(download, book, canonical_destination, source_path, language:)
     existing = LibraryReplacement.load(download)
     return existing if RemoteResult.failed?(existing) || existing.is_a?(LibraryReplacement::Plan)
 
     previous_path = book.file_path.to_s
     return if previous_path.blank?
 
-    flat_file = flat_file_replacement?(book, canonical_destination, previous_path)
-    return flat_file if RemoteResult.failed?(flat_file)
+    layout, extension = incoming_replacement_layout(
+      book,
+      canonical_destination,
+      previous_path,
+      source_path
+    )
+    return layout if RemoteResult.failed?(layout)
 
-    layout = flat_file ? "file" : "directory"
     adopted = LibraryReplacement.adopt!(download, book, layout: layout)
     return adopted if RemoteResult.failed?(adopted) || adopted.is_a?(LibraryReplacement::Plan)
 
@@ -1786,8 +1800,12 @@ class PostProcessingJob < ApplicationJob
       book,
       canonical_destination,
       previous_path,
-      layout
+      layout,
+      extension,
+      language
     )
+    return destination if RemoteResult.failed?(destination)
+
     LibraryReplacement.persist!(
       download,
       previous_path: previous_path,
@@ -1811,7 +1829,24 @@ class PostProcessingJob < ApplicationJob
     end
   end
 
-  def flat_file_replacement?(book, canonical_destination, previous_path)
+  # A flat library can hold either one renamed file or a folder of tracks.
+  # The previous copy's extension describes that copy, not the incoming bytes.
+  def incoming_replacement_layout(book, canonical_destination, previous_path, source_path)
+    flat_file = flat_single_file_target?(book, canonical_destination, previous_path)
+    return flat_file if RemoteResult.failed?(flat_file)
+    return [ "directory", nil ] unless flat_file
+
+    directory = directory_source?(source_path)
+    return directory if RemoteResult.failed?(directory)
+    return [ "directory", nil ] if directory && !readable_file_import?(book)
+
+    extension = incoming_media_extension(book, source_path)
+    return extension if RemoteResult.failed?(extension)
+    extension = File.extname(previous_path) if extension.blank?
+    [ "file", extension ]
+  end
+
+  def flat_single_file_target?(book, canonical_destination, previous_path)
     return false unless PathTemplateService.flat_output?(book)
 
     root = Pathname(get_base_path(book)).expand_path
@@ -1822,20 +1857,73 @@ class PostProcessingJob < ApplicationJob
     return false if File.directory?(previous_path) && !File.symlink?(previous_path)
 
     true
-  rescue ArgumentError => error
+  rescue ArgumentError, SystemCallError => error
     RemoteResult::Failed.new(error)
   end
 
-  def choose_post_processing_replacement(book, canonical_destination, previous_path, layout)
+  def directory_source?(path)
+    File.directory?(path) && !File.symlink?(path)
+  rescue SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def incoming_media_extension(book, source_path)
+    directory = directory_source?(source_path)
+    return directory if RemoteResult.failed?(directory)
+    return File.extname(source_path).presence unless directory
+
+    ebook_directory_files(source_path).each do |path|
+      next if File.symlink?(path)
+
+      extension = File.extname(path)
+      normalized = extension.delete_prefix(".").downcase
+      return extension if EBOOK_FILE_EXTENSIONS.include?(normalized)
+    end
+    nil
+  rescue SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def choose_post_processing_replacement(book, canonical_destination, previous_path, layout, extension, language)
     if layout == "file"
-      filename = PathTemplateService.build_filename(book, File.extname(previous_path))
+      filename = PathTemplateService.build_filename(
+        book,
+        extension.presence || File.extname(previous_path),
+        language: language
+      )
       candidate = File.join(canonical_destination, filename)
       isolated = unused_replacement_destination(candidate, previous_path)
       return [ isolated, isolated ]
     end
 
-    isolated = unused_replacement_destination(canonical_destination, previous_path)
+    flat_root = flat_output_root?(book, canonical_destination)
+    return flat_root if RemoteResult.failed?(flat_root)
+
+    destination = flat_root ? flat_replacement_folder(book, canonical_destination, language) : canonical_destination
+    isolated = unused_replacement_destination(destination, previous_path)
     [ isolated, isolated ]
+  end
+
+  def flat_output_root?(book, canonical_destination)
+    return false unless PathTemplateService.flat_output?(book)
+
+    Pathname(canonical_destination).expand_path == Pathname(get_base_path(book)).expand_path
+  rescue ArgumentError, SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def flat_replacement_folder(book, root, language)
+    named = PathTemplateService.build_filename(book, ".m4b", language: language)
+    stem = File.basename(named, ".m4b")
+    stem = "Unknown" if stem.blank?
+    File.join(root, stem)
+  end
+
+  def record_published_library_file!(path)
+    recorded = LibraryReplacement.record_published_path!(@publication_download, path)
+    return if recorded == true
+
+    raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
   end
 
   def replacement_file_destination(directory)

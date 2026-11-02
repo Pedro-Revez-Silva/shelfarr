@@ -275,7 +275,7 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "admin cancel removes a partial first import that matches the download" do
+  test "admin cancel removes a partial first import that this import published" do
     Dir.mktmpdir("shelfarr-partial-import") do |root|
       library = File.join(root, "audiobooks")
       source = File.join(root, "download")
@@ -286,8 +286,9 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
       File.binwrite(File.join(source, "01.mp3"), "one")
       File.binwrite(File.join(source, "02.mp3"), "two")
       partial = File.join(library, "Ada", "Title")
+      published = File.join(partial, "01.mp3")
       FileUtils.mkdir_p(partial)
-      File.binwrite(File.join(partial, "01.mp3"), "one")
+      File.binwrite(published, "one")
       book = Book.create!(title: "Title", author: "Ada", book_type: :audiobook)
       request = Request.create!(
         book: book,
@@ -300,7 +301,8 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
         name: book.title,
         status: :completed,
         download_path: source,
-        post_processing_job_id: "finished-partial-import"
+        post_processing_job_id: "finished-partial-import",
+        library_replacement_state: JSON.generate("published_paths" => [ published ])
       )
 
       assert_difference [ "Request.count", "Download.count", "Book.count" ], -1 do
@@ -314,7 +316,7 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "admin cancel keeps a finished import when partial files cannot be tied to the source" do
+  test "admin cancel removes only a published partial and leaves an unrelated file" do
     Dir.mktmpdir("shelfarr-unrelated-partial") do |root|
       library = File.join(root, "audiobooks")
       source = File.join(root, "download")
@@ -325,9 +327,11 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
       File.binwrite(File.join(source, "01.mp3"), "one")
       File.binwrite(File.join(source, "02.mp3"), "two")
       partial = File.join(library, "Ada", "Title")
+      published = File.join(partial, "01.mp3")
+      unrelated = File.join(partial, "unrelated.mp3")
       FileUtils.mkdir_p(partial)
-      File.binwrite(File.join(partial, "01.mp3"), "one")
-      File.binwrite(File.join(partial, "unrelated.mp3"), "leave this")
+      File.binwrite(published, "one")
+      File.binwrite(unrelated, "leave this")
       book = Book.create!(title: "Title", author: "Ada", book_type: :audiobook)
       request = Request.create!(
         book: book,
@@ -336,23 +340,23 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
         attention_needed: true,
         issue_description: "Import failed"
       )
-      download = request.downloads.create!(
+      request.downloads.create!(
         name: book.title,
         status: :completed,
         download_path: source,
-        post_processing_job_id: "finished-unrelated-import"
+        post_processing_job_id: "finished-unrelated-import",
+        library_replacement_state: JSON.generate("published_paths" => [ published ])
       )
 
-      assert_no_difference [ "Request.count", "Download.count", "Book.count" ] do
+      assert_difference [ "Request.count", "Download.count", "Book.count" ], -1 do
         delete request_path(request)
       end
 
-      assert_redirected_to request_path(request)
-      assert_match(/post-processing/i, flash[:alert])
-      assert_equal "finished-unrelated-import", download.reload.post_processing_job_id
-      assert_equal "leave this", File.binread(File.join(partial, "unrelated.mp3"))
-      assert_equal "one", File.binread(File.join(partial, "01.mp3"))
-      assert Book.exists?(book.id)
+      assert_redirected_to requests_path
+      assert_equal "Request cancelled", flash[:notice]
+      assert_equal "leave this", File.binread(unrelated)
+      assert_not File.exist?(published)
+      assert_not Book.exists?(book.id)
     end
   end
 
