@@ -726,54 +726,58 @@ class DirectDownloadFileService
   def ensure_replacement_plan!
     return unless download.replace_library_file?
 
-    existing = LibraryReplacement.load(download)
-    if RemoteResult.failed?(existing)
-      raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
-    end
-
-    current = book.reload.file_path.to_s.presence
-    if existing.nil? && current
-      released = LibraryReplacement.release_conflicting_plans!(
-        book,
-        artifact_id: download.search_result_id,
-        except_download_id: download.id
-      )
-      if RemoteResult.failed?(released)
-        raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
-      end
-      unless released == true
-        raise LibraryReplacement::UnreadablePlanError, "an earlier replacement could not be removed"
-      end
-
-      existing = LibraryReplacement.adopt!(download, book, layout: direct_plan_layout)
+    # Retirement and the stored plan commit before publish_acquired_replacement!
+    # yields the file copy, so this lock is not held while bytes are written.
+    LibraryReplacement.with_book_lock(book) do
+      existing = LibraryReplacement.load(download)
       if RemoteResult.failed?(existing)
         raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
       end
-    end
 
-    if existing.nil? && current
-      @replacing_library_path = current
-      chosen_destination, chosen_book = select_replacement_paths(current)
-      existing = LibraryReplacement.persist!(
-        download,
-        previous_path: current,
-        destination: chosen_destination,
-        book_path: chosen_book,
-        layout: direct_plan_layout
-      )
-      if RemoteResult.failed?(existing)
-        raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+      current = book.reload.file_path.to_s.presence
+      if existing.nil? && current
+        released = LibraryReplacement.release_conflicting_plans!(
+          book,
+          artifact_id: download.search_result_id,
+          except_download_id: download.id
+        )
+        if RemoteResult.failed?(released)
+          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+        end
+        unless released == true
+          raise LibraryReplacement::UnreadablePlanError, "an earlier replacement could not be removed"
+        end
+
+        existing = LibraryReplacement.adopt!(download, book, layout: direct_plan_layout)
+        if RemoteResult.failed?(existing)
+          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+        end
       end
+
+      if existing.nil? && current
+        @replacing_library_path = current
+        chosen_destination, chosen_book = select_replacement_paths(current)
+        existing = LibraryReplacement.persist!(
+          download,
+          previous_path: current,
+          destination: chosen_destination,
+          book_path: chosen_book,
+          layout: direct_plan_layout
+        )
+        if RemoteResult.failed?(existing)
+          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+        end
+      end
+      return unless existing.is_a?(LibraryReplacement::Plan)
+
+      matched = LibraryReplacement.matches_book?(existing, book)
+      raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read" if RemoteResult.failed?(matched)
+      raise ConflictError, "The existing library file changed before it could be replaced" unless matched
+
+      apply_direct_plan!(existing)
+      @replacing_library_path = existing.previous_path
+      existing
     end
-    return unless existing.is_a?(LibraryReplacement::Plan)
-
-    matched = LibraryReplacement.matches_book?(existing, book)
-    raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read" if RemoteResult.failed?(matched)
-    raise ConflictError, "The existing library file changed before it could be replaced" unless matched
-
-    apply_direct_plan!(existing)
-    @replacing_library_path = existing.previous_path
-    existing
   end
 
   def direct_plan_layout

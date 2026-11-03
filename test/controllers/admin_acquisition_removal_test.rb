@@ -489,4 +489,99 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
       assert_equal 2, attempts
     end
   end
+
+  test "library removal stops a completed torrent that is still seeding" do
+    Dir.mktmpdir("shelfarr-seeding-removal") do |dir|
+      library_file = File.join(dir, "seeded.epub")
+      File.binwrite(library_file, "seeded bytes")
+      SettingsService.set(:ebook_output_path, dir)
+      book = Book.create!(title: "Still seeding", book_type: :ebook, file_path: library_file)
+      request = Request.create!(book: book, user: @user, status: :processing)
+      client = DownloadClient.create!(
+        name: "Seeding removal #{SecureRandom.hex(4)}",
+        client_type: :qbittorrent,
+        url: "http://127.0.0.1:9",
+        enabled: true,
+        priority: 4
+      )
+      info_hash = "0123456789abcdef0123456789abcdef01234567"
+      download = request.downloads.create!(
+        name: book.title,
+        status: :completed,
+        download_client: client,
+        external_id: info_hash,
+        progress: 100
+      )
+      request.complete!
+      assert download.reload.external_id_released_at
+      removed = []
+      adapter = Object.new
+      adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
+        removed << [ external_id, delete_files ]
+        true
+      end
+      adapter.define_singleton_method(:torrent_info) { |_external_id| nil }
+
+      DownloadClients::Qbittorrent.stub(:new, adapter) do
+        delete library_path(book), params: { delete_files: "1" }
+      end
+
+      assert_redirected_to library_index_path, flash[:alert].to_s
+      assert_not Book.exists?(book.id)
+      assert_not Request.exists?(request.id)
+      assert_not File.exist?(library_file)
+      assert_equal [ [ info_hash, false ] ], removed
+    end
+  end
+
+  test "library removal leaves a seeding torrent that another request now owns" do
+    Dir.mktmpdir("shelfarr-seeding-owner") do |dir|
+      library_file = File.join(dir, "owned-seed.epub")
+      File.binwrite(library_file, "owned seed bytes")
+      SettingsService.set(:ebook_output_path, dir)
+      book = Book.create!(title: "Released seed", book_type: :ebook, file_path: library_file)
+      request = Request.create!(book: book, user: @user, status: :processing)
+      client = DownloadClient.create!(
+        name: "Seeding owner #{SecureRandom.hex(4)}",
+        client_type: :qbittorrent,
+        url: "http://127.0.0.1:9",
+        enabled: true,
+        priority: 5
+      )
+      info_hash = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+      request.downloads.create!(
+        name: book.title,
+        status: :completed,
+        download_client: client,
+        external_id: info_hash,
+        progress: 100
+      )
+      request.complete!
+      other_book = Book.create!(title: "Current owner", book_type: :ebook)
+      other_request = Request.create!(book: other_book, user: @user, status: :downloading)
+      owned = other_request.downloads.create!(
+        name: "Current owner download",
+        status: :downloading,
+        download_client: client,
+        external_id: info_hash
+      )
+      removed = []
+      adapter = Object.new
+      adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
+        removed << [ external_id, delete_files ]
+        true
+      end
+      adapter.define_singleton_method(:torrent_info) { |_external_id| nil }
+
+      DownloadClients::Qbittorrent.stub(:new, adapter) do
+        delete library_path(book), params: { delete_files: "1" }
+      end
+
+      assert_redirected_to library_index_path, flash[:alert].to_s
+      assert_not Book.exists?(book.id)
+      assert_empty removed
+      assert owned.reload.downloading?
+      assert_equal info_hash, owned.external_id
+    end
+  end
 end

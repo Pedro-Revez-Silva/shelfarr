@@ -716,6 +716,62 @@ class FileCopyService
       end
     end
 
+    # Like with_private_lock, but the caller keeps the descriptor. Closing it
+    # releases the lock. A shared holder can outlive the call that acquired it.
+    def open_held_private_lock(path, root:, shared: false, nonblock: false)
+      with_pinned_destination_parent(path, root: root) do |parent, basename, parent_path|
+        attempts = 0
+        descriptor = begin
+          attempts += 1
+          native_openat(
+            parent.fileno,
+            basename,
+            File::RDWR | File::CREAT | File::NOFOLLOW,
+            0o600
+          )
+        rescue Errno::ENOENT
+          retry if attempts < 3
+
+          raise
+        end
+        lock = File.for_fd(descriptor, "r+b", autoclose: true)
+        acquired = nil
+        begin
+          stat = lock.stat
+          unless stat.file? && private_entry_owned_by_process?(stat, parent)
+            raise UnsafePathError, "private lock is not an application-owned regular file"
+          end
+
+          native_fchmod(lock.fileno, 0o600)
+          lock_flags = shared ? File::LOCK_SH : File::LOCK_EX
+          lock_flags |= File::LOCK_NB if nonblock
+          acquired = begin
+            lock.flock(lock_flags)
+          rescue Errno::EWOULDBLOCK => error
+            raise unless nonblock
+
+            RemoteResult::Failed.new(error)
+          end
+          if acquired && !RemoteResult.failed?(acquired)
+            identity = file_identity(lock.stat)
+            with_pinned_regular_child(parent, basename) do |current|
+              raise Errno::ESTALE, "private lock changed before use" unless file_identity(current.stat) == identity
+            end
+            validate_current_directory_identity!(parent_path, parent)
+          end
+        rescue
+          lock.close unless lock.closed?
+          raise
+        end
+        if acquired && !RemoteResult.failed?(acquired)
+          lock
+        else
+          lock.close unless lock.closed?
+          false
+        end
+      end
+    end
+
     # Open a regular file beneath a trusted root through no-follow parent
     # descriptors and transfer ownership of that exact descriptor to the
     # caller. The pathname may subsequently be replaced without changing the

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "pathname"
 
@@ -68,28 +69,32 @@ class LibraryReplacement
     end
 
     def persist!(download, previous_path:, destination:, book_path:, layout:)
-      existing = load(download)
-      return existing if existing.is_a?(Plan) || RemoteResult.failed?(existing)
+      # Choosing a destination and retiring another plan have to be one
+      # book-scoped critical section, or two replacements can both be admitted.
+      with_book_lock(download.request&.book) do
+        existing = load(download)
+        return existing if existing.is_a?(Plan) || RemoteResult.failed?(existing)
 
-      payload = {
-        "previous_path" => previous_path.to_s,
-        "destination" => destination.to_s,
-        "book_path" => book_path.to_s,
-        "layout" => layout.to_s,
-        "cleanup_pending" => true
-      }
-      raw = JSON.generate(payload)
-      updated = Download.where(id: download.id, library_replacement_state: [ nil, "" ]).update_all(
-        library_replacement_state: raw,
-        updated_at: Time.current
-      )
-      if updated == 1
-        download.library_replacement_state = raw
-        return plan_from(payload, raw)
+        payload = {
+          "previous_path" => previous_path.to_s,
+          "destination" => destination.to_s,
+          "book_path" => book_path.to_s,
+          "layout" => layout.to_s,
+          "cleanup_pending" => true
+        }
+        raw = JSON.generate(payload)
+        updated = Download.where(id: download.id, library_replacement_state: [ nil, "" ]).update_all(
+          library_replacement_state: raw,
+          updated_at: Time.current
+        )
+        if updated == 1
+          download.library_replacement_state = raw
+          return plan_from(payload, raw)
+        end
+
+        download.reload
+        load(download)
       end
-
-      download.reload
-      load(download)
     end
 
     def adopt!(download, book, layout:)
@@ -126,25 +131,74 @@ class LibraryReplacement
 
     # A different release must not keep writing into the previous release's
     # destination. Clear that plan before the new artifact chooses a path.
+    # A plan whose importer or direct lease is still running is left alone:
+    # its files are not retired, and the new admission does not start.
     def release_conflicting_plans!(book, artifact_id:, except_download_id: nil)
       return false unless book&.persisted?
 
-      scope = Download.joins(:request)
-        .where(requests: { book_id: book.id })
-        .where.not(library_replacement_state: [ nil, "" ])
-      scope = scope.where.not(id: except_download_id) if except_download_id
-      scope.find_each do |candidate|
-        next if same_replacement_artifact?(candidate, artifact_id)
+      with_book_lock(book) do
+        scope = Download.joins(:request)
+          .where(requests: { book_id: book.id })
+          .where.not(library_replacement_state: [ nil, "" ])
+        scope = scope.where.not(id: except_download_id) if except_download_id
+        scope.find_each do |candidate|
+          plan = load(candidate)
+          return plan if RemoteResult.failed?(plan)
+          next unless plan.is_a?(Plan)
+          return false if replacement_publication_live?(candidate)
+          next if same_replacement_artifact?(candidate, artifact_id)
+          next if cleanup_actionable?(candidate, book)
 
-        plan = load(candidate)
-        return plan if RemoteResult.failed?(plan)
-        next unless plan.is_a?(Plan)
-        next if cleanup_actionable?(candidate, book)
-
-        prepared = prepare_cancellation!(candidate)
-        return prepared unless prepared == true
+          prepared = prepare_cancellation!(candidate)
+          return prepared unless prepared == true
+        end
+        true
       end
-      true
+    end
+
+    # Hold the book row across plan retirement and admission. Re-entering on
+    # the same thread joins the lock already held by that admission.
+    def with_book_lock(book)
+      book_id = book.id if book&.persisted?
+      return yield if book_id.nil?
+
+      held = Thread.current[:library_replacement_book_lock]
+      return yield if held == book_id
+
+      Book.transaction do
+        locked = Book.where(id: book_id).update_all(updated_at: Time.current)
+        raise ActiveRecord::RecordNotFound, "Book is no longer available" unless locked == 1
+
+        Thread.current[:library_replacement_book_lock] = book_id
+        begin
+          yield
+        ensure
+          Thread.current[:library_replacement_book_lock] = held
+        end
+      end
+    end
+
+    # A later import can reuse a file this journal still names. The shared
+    # lock stays open until that import finishes finalizing the destination.
+    def share_reused_destination!(path)
+      destination_lock(path, shared: true, nonblock: false)
+    end
+
+    def release_destination_lock(lock)
+      return unless lock.is_a?(File)
+      return if lock.closed?
+
+      begin
+        lock.flock(File::LOCK_UN)
+      rescue SystemCallError => error
+        RemoteResult::Failed.new(error)
+      ensure
+        begin
+          lock.close unless lock.closed?
+        rescue SystemCallError => error
+          RemoteResult::Failed.new(error)
+        end
+      end
     end
 
     def matches_book?(plan, book)
@@ -598,13 +652,49 @@ class LibraryReplacement
     end
 
     def delete_owned_path!(book, path)
-      record = book.class.find_by(id: book.id)
-      return false unless record
+      lock = destination_lock(path, shared: false, nonblock: true)
+      return lock if RemoteResult.failed?(lock)
+      # A live import reused this path. Keep the file and let the rest of
+      # this cancellation continue with the other published paths.
+      return true unless lock.is_a?(File)
 
-      record.file_path = path
-      SafeLibraryDeletionService.new(record).delete!
-      true
-    rescue SafeLibraryDeletionService::Error => error
+      begin
+        record = book.class.find_by(id: book.id)
+        return false unless record
+
+        record.file_path = path
+        SafeLibraryDeletionService.new(record).delete!
+        true
+      rescue SafeLibraryDeletionService::Error => error
+        RemoteResult::Failed.new(error)
+      ensure
+        release_destination_lock(lock)
+      end
+    end
+
+    def replacement_publication_live?(download)
+      download.reload
+      return true if DirectDownloadFileService.live_recovery_lease?(download)
+
+      owner = download.post_processing_job_id.to_s
+      return false if owner.blank?
+
+      PostProcessingRecoveryJob.unfinished_active_job_ids([ owner ]).any?
+    end
+
+    def destination_lock(path, shared:, nonblock:)
+      normalized = Pathname(path.to_s).expand_path.to_s
+      tmp_root = Rails.root.join("tmp")
+      lock_root = tmp_root.join("library-destination-locks")
+      FileCopyService.ensure_directory(lock_root.to_s, root: tmp_root.to_s, mode: 0o700)
+      FileCopyService.secure_private_directory!(lock_root.to_s, root: tmp_root.to_s)
+      FileCopyService.open_held_private_lock(
+        lock_root.join(Digest::SHA256.hexdigest(normalized)).to_s,
+        root: lock_root.to_s,
+        shared: shared,
+        nonblock: nonblock
+      )
+    rescue ArgumentError, SystemCallError, FileCopyService::UnsafePathError => error
       RemoteResult::Failed.new(error)
     end
 

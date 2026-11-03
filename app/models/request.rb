@@ -210,15 +210,18 @@ class Request < ApplicationRecord
     failed_download = selected_result && downloads.where(status: :failed, search_result: selected_result).order(created_at: :desc, id: :desc).first
 
     if selected_result && failed_download
+      # The confirmation to replace an acquired file belongs to this attempt.
+      # Retrying it, including a fallback result, has to keep that choice.
+      replacing = failed_download.replace_library_file?
       if failed_download.configuration_failure?
-        select_result!(selected_result)
+        select_result!(selected_result, replace_library_file: replacing)
         return
       end
 
       reason = "Failed download (manual retry)"
       blocklist_result!(selected_result, reason: reason, download: failed_download)
 
-      if auto_select_enabled? && attempt_next_candidate!(failure_reason: reason, mark_exhausted: false) == :selected_next
+      if auto_select_enabled? && attempt_next_candidate!(failure_reason: reason, mark_exhausted: false, replace_library_file: replacing) == :selected_next
         return
       end
     end
@@ -287,7 +290,7 @@ class Request < ApplicationRecord
     blocklisted = blocklist_result!(download.search_result, reason: reason, download: download)
     return manual_review_after_release_failure!(reason, blocklisted:) unless auto_select_enabled?
 
-    attempt_next_candidate!(failure_reason: reason)
+    attempt_next_candidate!(failure_reason: reason, replace_library_file: download.replace_library_file?)
   end
 
   def blocklist_and_select_next!(reason:, search_result: nil)
@@ -305,7 +308,8 @@ class Request < ApplicationRecord
 
     return manual_review_after_release_failure!(reason, blocklisted:) unless auto_select_enabled?
 
-    attempt_next_candidate!(failure_reason: reason)
+    replacing = downloads.where(search_result: target).order(created_at: :desc, id: :desc).pick(:replace_library_file)
+    attempt_next_candidate!(failure_reason: reason, replace_library_file: replacing)
   end
 
   def cancel!(allow_direct_recovery: false)
@@ -651,8 +655,10 @@ class Request < ApplicationRecord
       message = admin_removal_blocked_message
       raise CancellationBlockedError, message if message
 
-      jobs = downloads.where(external_id_released_at: nil)
-        .where.not(external_id: [ nil, "" ])
+      # Releasing the id only drops Shelfarr's claim. A copy or hardlink import
+      # leaves the torrent seeding, so historical handles are removed too
+      # unless another request now owns that client job.
+      jobs = downloads.where.not(external_id: [ nil, "" ])
         .where.not(download_client_id: nil)
         .pluck(:download_client_id, :external_id, :id)
       owner_scope = downloads.completed.where.not(post_processing_job_id: [ nil, "" ])
@@ -972,13 +978,13 @@ class Request < ApplicationRecord
     :manual_review
   end
 
-  def attempt_next_candidate!(failure_reason:, mark_exhausted: true)
+  def attempt_next_candidate!(failure_reason:, mark_exhausted: true, replace_library_file: false)
     search_results.rejected.not_blocklisted.update_all(
       status: SearchResult.statuses[:pending],
       updated_at: Time.current
     )
 
-    selection = AutoSelectService.call(self)
+    selection = AutoSelectService.call(self, replace_library_file: replace_library_file)
     if selection.success?
       track_diagnostic(
         "fallback_selected",

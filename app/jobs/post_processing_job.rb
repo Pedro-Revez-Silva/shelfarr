@@ -68,6 +68,7 @@ class PostProcessingJob < ApplicationJob
     @replacement_file_path = nil
     @replacement_file_override_used = false
     @publication_download = download
+    @reused_destination_locks = []
 
     Rails.logger.info "[PostProcessingJob] Starting download ##{download.id}, book ##{book.id}"
 
@@ -216,6 +217,8 @@ class PostProcessingJob < ApplicationJob
       end
       Rails.logger.error "[PostProcessingJob] Download ##{download.id} failed: #{error_detail}"
       mark_post_processing_failure!(download, request, e) unless acquisition_finalized
+    ensure
+      release_reused_destination_locks!
     end
   end
 
@@ -1238,6 +1241,14 @@ class PostProcessingJob < ApplicationJob
     loop do
       destination, already_imported = retry_safe_destination(source, original_destination)
       if already_imported
+        # Cancellation of the import that first journaled this path must not
+        # delete it while this job is still going to attach it.
+        held = LibraryReplacement.share_reused_destination!(destination)
+        unless held.is_a?(File)
+          raise LibraryReplacement::UnreadablePlanError, "reused library file could not be protected"
+        end
+        (@reused_destination_locks ||= []) << held
+
         if hardlink_completed_downloads?
           @reused_file_count += 1
         end
@@ -1790,50 +1801,54 @@ class PostProcessingJob < ApplicationJob
   end
 
   def prepare_library_replacement!(download, book, canonical_destination, source_path, language:)
-    existing = LibraryReplacement.load(download)
-    return existing if RemoteResult.failed?(existing) || existing.is_a?(LibraryReplacement::Plan)
+    # The lock covers retirement and the new plan together. It is not held
+    # across the file copy that follows this method.
+    LibraryReplacement.with_book_lock(book) do
+      existing = LibraryReplacement.load(download)
+      return existing if RemoteResult.failed?(existing) || existing.is_a?(LibraryReplacement::Plan)
 
-    previous_path = book.file_path.to_s
-    return if previous_path.blank?
+      previous_path = book.file_path.to_s
+      return if previous_path.blank?
 
-    released = LibraryReplacement.release_conflicting_plans!(
-      book,
-      artifact_id: download.search_result_id,
-      except_download_id: download.id
-    )
-    return released if RemoteResult.failed?(released)
-    unless released == true
-      raise LibraryReplacement::UnreadablePlanError, "an earlier replacement could not be removed"
+      released = LibraryReplacement.release_conflicting_plans!(
+        book,
+        artifact_id: download.search_result_id,
+        except_download_id: download.id
+      )
+      return released if RemoteResult.failed?(released)
+      unless released == true
+        raise LibraryReplacement::UnreadablePlanError, "an earlier replacement could not be removed"
+      end
+
+      layout, extension = incoming_replacement_layout(
+        book,
+        canonical_destination,
+        previous_path,
+        source_path
+      )
+      return layout if RemoteResult.failed?(layout)
+
+      adopted = LibraryReplacement.adopt!(download, book, layout: layout)
+      return adopted if RemoteResult.failed?(adopted) || adopted.is_a?(LibraryReplacement::Plan)
+
+      destination, book_path = choose_post_processing_replacement(
+        book,
+        canonical_destination,
+        previous_path,
+        layout,
+        extension,
+        language
+      )
+      return destination if RemoteResult.failed?(destination)
+
+      LibraryReplacement.persist!(
+        download,
+        previous_path: previous_path,
+        destination: destination,
+        book_path: book_path,
+        layout: layout
+      )
     end
-
-    layout, extension = incoming_replacement_layout(
-      book,
-      canonical_destination,
-      previous_path,
-      source_path
-    )
-    return layout if RemoteResult.failed?(layout)
-
-    adopted = LibraryReplacement.adopt!(download, book, layout: layout)
-    return adopted if RemoteResult.failed?(adopted) || adopted.is_a?(LibraryReplacement::Plan)
-
-    destination, book_path = choose_post_processing_replacement(
-      book,
-      canonical_destination,
-      previous_path,
-      layout,
-      extension,
-      language
-    )
-    return destination if RemoteResult.failed?(destination)
-
-    LibraryReplacement.persist!(
-      download,
-      previous_path: previous_path,
-      destination: destination,
-      book_path: book_path,
-      layout: layout
-    )
   end
 
   def import_directory_for_replacement(canonical_destination, plan)
@@ -1958,6 +1973,14 @@ class PostProcessingJob < ApplicationJob
     stem = File.basename(named, ".m4b")
     stem = "Unknown" if stem.blank?
     File.join(root, stem)
+  end
+
+  def release_reused_destination_locks!
+    Array(@reused_destination_locks).each do |lock|
+      LibraryReplacement.release_destination_lock(lock)
+    end
+  ensure
+    @reused_destination_locks = nil
   end
 
   def record_published_library_file!(path)
