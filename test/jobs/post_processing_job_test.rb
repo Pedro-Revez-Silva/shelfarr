@@ -4989,6 +4989,55 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal [ "audio-lib" ], scanned
   end
 
+  test "copy import completes a chapter-per-file audiobook past the old publication journal cap" do
+    SettingsService.set(:audiobookshelf_url, "")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    file_count = 1_001
+    file_count.times do |index|
+      File.binwrite(File.join(@temp_source, format("chapter-%04d.mp3", index)), "x")
+    end
+
+    LibraryPlatformClient.stub(:configured?, false) do
+      NotificationService.stub(:request_completed, ->(_request) { true }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    imported_dir = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal file_count, Dir.children(imported_dir).size
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "retry completes a copy import whose publication journal already holds a thousand reused files" do
+    SettingsService.set(:audiobookshelf_url, "")
+    FileUtils.rm_f(File.join(@temp_source, "audiobook.mp3"))
+    imported_dir = File.join(@temp_dest_base, @book.author, @book.title)
+    FileUtils.mkdir_p(imported_dir)
+    reused_paths = Array.new(1_000) do |index|
+      name = format("chapter-%04d.mp3", index)
+      source = File.join(@temp_source, name)
+      destination = File.join(imported_dir, name)
+      File.binwrite(source, "x")
+      File.binwrite(destination, "x")
+      Pathname(destination).expand_path.to_s
+    end
+    new_name = "chapter-1000.mp3"
+    File.binwrite(File.join(@temp_source, new_name), "y")
+    @download.update!(library_replacement_state: JSON.generate("published_paths" => reused_paths))
+
+    LibraryPlatformClient.stub(:configured?, false) do
+      NotificationService.stub(:request_completed, ->(_request) { true }) do
+        PostProcessingJob.perform_now(@download.id)
+      end
+    end
+
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal "y", File.binread(File.join(@book.reload.file_path, new_name))
+    assert_equal 1_001, Dir.children(@book.file_path).size
+    assert_nil @download.reload.library_replacement_state
+  end
+
   private
 
   def post_processing_lock_busy?(download_id)

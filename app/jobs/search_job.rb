@@ -776,7 +776,10 @@ class SearchJob < ApplicationJob
       return
     end
 
-    result = AutoSelectService.call(request)
+    result = AutoSelectService.call(
+      request,
+      replace_library_file: request.library_replacement_consent?
+    )
 
     if result.success?
       Rails.logger.info "[SearchJob] Auto-selected result for request ##{request.id}"

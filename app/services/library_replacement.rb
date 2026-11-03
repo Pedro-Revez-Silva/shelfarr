@@ -8,7 +8,8 @@ require "pathname"
 # reuses that destination, and the previous file stays recorded until deletion
 # succeeds.
 class LibraryReplacement
-  MAX_RELATIVE_FILES = 1000
+  # Parent walks stop at the library root. The bound rejects a cycle those checks miss.
+  MAX_ANCESTOR_DEPTH = 1_000
 
   class UnreadablePlanError < StandardError; end
 
@@ -325,7 +326,6 @@ class LibraryReplacement
           download.library_replacement_state = raw.presence
           return true
         end
-        return invalid_plan("library walk is too large") if paths.size >= MAX_RELATIVE_FILES
 
         data["published_paths"] = paths + [ normalized ]
         new_raw = JSON.generate(data)
@@ -537,7 +537,6 @@ class LibraryReplacement
       value = data["published_paths"]
       return [] if value.nil?
       return invalid_plan("replacement plan is incomplete") unless value.is_a?(Array)
-      return invalid_plan("library walk is too large") if value.size > MAX_RELATIVE_FILES
       return invalid_plan("replacement plan is incomplete") unless value.all? { |path| path.is_a?(String) && path.present? }
 
       value
@@ -596,7 +595,7 @@ class LibraryReplacement
     def prune_empty_ancestors!(book, path, protected_path)
       root = output_root_for(book).to_s
       current = File.dirname(Pathname(path.to_s).expand_path.to_s)
-      MAX_RELATIVE_FILES.times do
+      MAX_ANCESTOR_DEPTH.times do
         root_match = same_path?(current, root)
         return root_match if RemoteResult.failed?(root_match)
         break if root_match

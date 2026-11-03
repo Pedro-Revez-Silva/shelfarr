@@ -197,6 +197,15 @@ class Request < ApplicationRecord
     end
   end
 
+  # Failure blocklists the chosen result. The confirmation remains on that
+  # failed download for the search Retry starts afterward.
+  def library_replacement_consent?
+    latest = downloads.order(created_at: :desc, id: :desc).first
+    return false unless latest&.failed?
+
+    latest.replace_library_file?
+  end
+
   # Retry now - reset for immediate processing.
   # If a selected release already failed, keep it blocklisted and try the next
   # eligible candidate before falling back to a fresh search. A configuration
