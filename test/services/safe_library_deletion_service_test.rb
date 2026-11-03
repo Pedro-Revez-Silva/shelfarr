@@ -185,4 +185,103 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
     assert SafeLibraryDeletionService.new(@book).delete!
     assert_not File.exist?(@path)
   end
+
+  test "removes a library file when renameat2 returns EINVAL" do
+    removed = with_rename_noreplace_einval do
+      SafeLibraryDeletionService.new(@book).delete!
+    end
+
+    assert_equal true, removed
+    assert_not File.exist?(@path)
+    assert_empty Dir.children(@root).grep(/\A\.shelfarr-delete-/)
+  end
+
+  test "removes a library directory when renameat2 returns EINVAL" do
+    folder = File.join(@root, "NFS Book")
+    FileUtils.mkdir_p(folder)
+    File.binwrite(File.join(folder, "book.epub"), "ebook bytes")
+    @book.update!(file_path: folder)
+
+    removed = with_rename_noreplace_einval do
+      SafeLibraryDeletionService.new(@book).delete!
+    end
+
+    assert_equal true, removed
+    assert_not File.exist?(folder)
+    assert_empty Dir.children(@root).grep(/\A\.shelfarr-delete-/)
+  end
+
+  test "refuses to replace an existing quarantine name when renameat2 returns EINVAL" do
+    folder = File.join(@root, "NFS Book")
+    FileUtils.mkdir_p(folder)
+    File.binwrite(File.join(folder, "book.epub"), "ebook bytes")
+    @book.update!(file_path: folder)
+    service = SafeLibraryDeletionService.new(@book)
+    quarantine = File.join(@root, service.send(:quarantine_basename, File.stat(folder)))
+    FileUtils.mkdir_p(quarantine)
+    File.binwrite(File.join(quarantine, "other.epub"), "other bytes")
+
+    service.stub(:quarantined_entries, []) do
+      with_rename_noreplace_einval do
+        FilesystemSyscalls.stub(:renameat, ->(*) { flunk "plain rename must not replace a present quarantine name" }) do
+          assert_raises(SafeLibraryDeletionService::Error) { service.delete! }
+        end
+      end
+    end
+
+    assert_equal "ebook bytes", File.binread(File.join(folder, "book.epub"))
+    assert_equal "other bytes", File.binread(File.join(quarantine, "other.epub"))
+  end
+
+  test "refuses to replace a different entry at the quarantine name when renameat2 returns EINVAL" do
+    service = SafeLibraryDeletionService.new(@book)
+    quarantine = File.join(@root, service.send(:quarantine_basename, File.stat(@path)))
+    FileUtils.mkdir_p(quarantine)
+    File.binwrite(File.join(quarantine, "nested.epub"), "kept bytes")
+
+    service.stub(:quarantined_entries, []) do
+      with_rename_noreplace_einval do
+        FilesystemSyscalls.stub(:renameat, ->(*) { flunk "plain rename must not replace a present quarantine name" }) do
+          assert_raises(SafeLibraryDeletionService::Error) { service.delete! }
+        end
+      end
+    end
+
+    assert_equal "original book", File.binread(@path)
+    assert_equal "kept bytes", File.binread(File.join(quarantine, "nested.epub"))
+  end
+
+  test "removes a reference symlink when renameat2 returns EINVAL" do
+    source = File.join(@root, "download-source.epub")
+    File.binwrite(source, "download bytes")
+    FileUtils.rm_f(@path)
+    File.symlink(source, @path)
+    @book.update!(file_path: @path)
+
+    assert with_rename_noreplace_einval { SafeLibraryDeletionService.new(@book).delete! }
+    assert_not File.symlink?(@path)
+    assert_not File.exist?(@path)
+    assert_equal "download bytes", File.binread(source)
+    assert_empty Dir.children(@root).grep(/\A\.shelfarr-delete-/)
+  end
+
+  test "restores the library file when removal fails after an EINVAL quarantine" do
+    with_rename_noreplace_einval do
+      FilesystemSyscalls.stub(:unlinkat, ->(*) { raise Errno::EIO, "unlinkat" }) do
+        error = assert_raises(SafeLibraryDeletionService::Error) do
+          SafeLibraryDeletionService.new(@book).delete!
+        end
+        assert_match(/could not safely remove the library path/, error.message)
+      end
+    end
+
+    assert_equal "original book", File.binread(@path)
+    assert_empty Dir.children(@root).grep(/\A\.shelfarr-delete-/)
+  end
+
+  private
+
+  def with_rename_noreplace_einval(&block)
+    FilesystemSyscalls.stub(:rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }, &block)
+  end
 end
