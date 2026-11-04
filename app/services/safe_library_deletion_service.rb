@@ -90,7 +90,187 @@ class SafeLibraryDeletionService
     raise Error, "Shelfarr could not safely remove the library path: #{error.message}"
   end
 
+  # Removes the entry only if it is still the one this proof describes.
+  # Returns :removed, :absent, or :retained. Anything else at the path, including
+  # a parent that is no longer the one published into, is left alone. The check
+  # is repeated after the name is claimed, so a swap between the check and the
+  # claim is restored instead of deleted.
+  def delete_proven_publication!(proof)
+    with_pinned_parent do |parent, basename|
+      next :retained unless FileCopyService.publication_parent_matches?(proof, parent.stat)
+      next :retained unless FileCopyService.stable_hardlink_identity?(parent)
+
+      if proof.fetch("kind") == "symlink"
+        remove_proven_symlink!(parent, basename, proof)
+      else
+        remove_proven_file!(parent, basename, proof)
+      end
+    end
+  rescue Errno::ENOENT
+    :absent
+  rescue Errno::ELOOP, Errno::ENOTDIR
+    :retained
+  rescue SystemCallError => error
+    raise Error, "Shelfarr could not safely remove the library path: #{error.message}"
+  end
+
+  # rmdir is the emptiness check. A file created at any moment before it wins,
+  # and the directory stays. Returns :removed, :absent, or :retained.
+  def remove_empty_directory!
+    if LibraryDestinationOccupancy.overlaps_acquired_book?(@path, except_book_id: @book.id) ||
+        LibraryDestinationOccupancy.shared_directory?(@path, @book)
+      return :retained
+    end
+
+    with_pinned_parent do |parent, basename|
+      native_unlinkat(parent.fileno, basename, AT_REMOVEDIR)
+      sync_directory(parent)
+      :removed
+    end
+  rescue Errno::ENOENT
+    :absent
+  rescue Errno::ENOTEMPTY, Errno::EEXIST, Errno::ELOOP, Errno::ENOTDIR
+    :retained
+  rescue SystemCallError => error
+    raise Error, "Shelfarr could not safely remove the library path: #{error.message}"
+  end
+
   private
+
+  def with_pinned_parent
+    root, relative = authorized_root_and_relative!
+    parts = relative.each_filename.to_a
+    raise Error, "Shelfarr refuses to delete an output root" if parts.empty?
+
+    with_pinned_absolute_directory(root) do |root_directory|
+      with_pinned_relative_directory(root_directory, parts[0...-1]) do |parent|
+        yield parent, parts.last
+      end
+    end
+  end
+
+  def remove_proven_file!(parent, basename, proof)
+    interrupted = "#{quarantine_prefix}#{proof.fetch('device')}-#{proof.fetch('inode')}"
+    return remove_claimed_file!(parent, interrupted, basename, proof) if entry_present?(parent, interrupted) == true
+
+    entry = IO.new(
+      native_openat(parent.fileno, basename, File::RDONLY | File::NOFOLLOW | File::NONBLOCK),
+      "rb",
+      autoclose: true
+    )
+    stat = entry.stat
+    entry.close
+    return :retained unless FileCopyService.publication_identity_matches?(proof, stat)
+
+    claimed = quarantine_basename(stat)
+    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, claimed) == true
+      raise Error, "This filesystem cannot atomically quarantine a library deletion"
+    end
+    sync_directory(parent)
+    remove_claimed_file!(parent, claimed, basename, proof)
+  rescue Errno::ENXIO, Errno::ENODEV, Errno::EOPNOTSUPP
+    :retained
+  ensure
+    entry&.close unless entry&.closed?
+  end
+
+  def remove_claimed_file!(parent, claimed, basename, proof)
+    descriptor = begin
+      native_openat(parent.fileno, claimed, File::RDONLY | File::NOFOLLOW | File::NONBLOCK)
+    rescue Errno::ELOOP
+      return restore_claimed_entry!(parent, claimed, basename)
+    end
+    entry = File.for_fd(descriptor, "rb", autoclose: true)
+    unless FileCopyService.publication_content_matches?(proof, entry)
+      entry.close
+      return restore_claimed_entry!(parent, claimed, basename)
+    end
+    identity = file_identity(entry.stat)
+    entry.close
+
+    verify_quarantined_identity!(parent, claimed, identity)
+    native_unlinkat(parent.fileno, claimed, 0)
+    sync_directory(parent)
+    :removed
+  ensure
+    entry&.close unless entry&.closed?
+  end
+
+  def remove_proven_symlink!(parent, basename, proof)
+    target = begin
+      native_readlinkat(parent.fileno, basename)
+    rescue Errno::EINVAL
+      return :retained
+    rescue Errno::ENOENT
+      return finish_interrupted_symlink_removal!(parent, proof)
+    end
+    return :retained unless same_link_target?(target, proof)
+
+    claimed = "#{quarantine_prefix}ref-#{SecureRandom.hex(8)}"
+    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, claimed) == true
+      raise Error, "This filesystem cannot atomically quarantine a library deletion"
+    end
+    sync_directory(parent)
+    remove_claimed_symlink!(parent, claimed, basename, proof)
+  end
+
+  def remove_claimed_symlink!(parent, claimed, basename, proof)
+    target = begin
+      native_readlinkat(parent.fileno, claimed)
+    rescue Errno::EINVAL
+      return restore_claimed_entry!(parent, claimed, basename)
+    end
+    return restore_claimed_entry!(parent, claimed, basename) unless same_link_target?(target, proof)
+
+    native_unlinkat(parent.fileno, claimed, 0)
+    sync_directory(parent)
+    :removed
+  end
+
+  def finish_interrupted_symlink_removal!(parent, proof)
+    quarantined_entries(parent).each do |name, identity|
+      next unless identity.first == :reference
+
+      target = begin
+        native_readlinkat(parent.fileno, name)
+      rescue Errno::EINVAL, Errno::ENOENT
+        next
+      end
+      next unless same_link_target?(target, proof)
+
+      native_unlinkat(parent.fileno, name, 0)
+      sync_directory(parent)
+      return :removed
+    end
+    :absent
+  end
+
+  def same_link_target?(target, proof)
+    target.b == proof.fetch("target").b
+  end
+
+  # A claimed entry that failed its proof belongs to someone else. If its name
+  # was taken meanwhile it stays quarantined, and the caller keeps the journal
+  # that explains it.
+  def restore_claimed_entry!(parent, claimed, basename)
+    unless native_rename_noreplace(parent.fileno, claimed, parent.fileno, basename) == true
+      raise Error, "A changed library entry stays quarantined for manual review"
+    end
+
+    sync_directory(parent)
+    :retained
+  rescue Errno::EEXIST
+    raise Error, "A changed library entry stays quarantined for manual review"
+  end
+
+  def entry_present?(parent, basename)
+    IO.new(native_openat(parent.fileno, basename, File::RDONLY | File::NOFOLLOW | File::NONBLOCK), "rb", autoclose: true).close
+    true
+  rescue Errno::ENOENT => error
+    RemoteResult::Failed.new(error)
+  rescue Errno::ELOOP
+    true
+  end
 
   def authorized_root_and_relative!
     candidates = current_root_pairs + upload_root_pairs + owned_import_root_pairs
@@ -442,6 +622,10 @@ class SafeLibraryDeletionService
 
   def native_unlinkat(directory_fd, basename, flags)
     FilesystemSyscalls.unlinkat(directory_fd, basename, flags)
+  end
+
+  def native_readlinkat(directory_fd, basename)
+    FilesystemSyscalls.readlinkat(directory_fd, basename)
   end
 
   def native_rename_noreplace(source_fd, source_basename, destination_fd, destination_basename)

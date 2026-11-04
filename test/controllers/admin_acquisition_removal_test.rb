@@ -302,7 +302,7 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
         status: :completed,
         download_path: source,
         post_processing_job_id: "finished-partial-import",
-        library_replacement_state: JSON.generate("published_paths" => [ published ])
+        library_replacement_state: proven_publication_state(published)
       )
 
       assert_difference [ "Request.count", "Download.count", "Book.count" ], -1 do
@@ -345,7 +345,7 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
         status: :completed,
         download_path: source,
         post_processing_job_id: "finished-unrelated-import",
-        library_replacement_state: JSON.generate("published_paths" => [ published ])
+        library_replacement_state: proven_publication_state(published)
       )
 
       assert_difference [ "Request.count", "Download.count", "Book.count" ], -1 do
@@ -583,5 +583,27 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
       assert owned.reload.downloading?
       assert_equal info_hash, owned.external_id
     end
+  end
+
+  private
+
+  def proven_publication_state(path)
+    stat = File.stat(path)
+    parent = File.stat(File.dirname(path))
+    JSON.generate(
+      "published_paths" => [ path ],
+      "publication_proofs" => [
+        {
+          "path" => path,
+          "kind" => "file",
+          "device" => stat.dev,
+          "inode" => stat.ino,
+          "size" => stat.size,
+          "digest" => Digest::SHA256.file(path).hexdigest,
+          "parent_device" => parent.dev,
+          "parent_inode" => parent.ino
+        }
+      ]
+    )
   end
 end

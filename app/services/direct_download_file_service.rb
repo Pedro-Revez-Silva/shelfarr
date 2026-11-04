@@ -541,7 +541,8 @@ class DirectDownloadFileService
           source,
           destination_path,
           root: output_root,
-          heartbeat: method(:refresh_heartbeat!)
+          heartbeat: method(:refresh_heartbeat!),
+          **publication_recorder { |proof| { destination_path => proof } }
         )
       rescue Errno::EEXIST
         unless FileCopyService.file_content_manifest(
@@ -581,7 +582,10 @@ class DirectDownloadFileService
           root: output_root,
           source_root: source_snapshot,
           heartbeat: method(:refresh_heartbeat!),
-          allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+          allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication),
+          **publication_recorder do |proofs|
+            proofs.transform_keys { |relative| File.join(destination_path, relative) }
+          end
         )
       rescue Errno::EEXIST
         unless FileCopyService.directory_content_manifest(
@@ -706,12 +710,13 @@ class DirectDownloadFileService
   # The chosen destination is stored before publication and reused on retry.
   def publish_acquired_replacement!
     plan = ensure_replacement_plan!
+    @replacement_plan_active = plan.present?
     yield
     LibraryReplacement.finish_cleanup!(download) if plan
     true
   rescue => error
     if plan
-      if recover_failed_replacement!(plan.previous_path, error) == true
+      if recover_failed_replacement!(error) == true
         LibraryReplacement.finish_cleanup!(download)
         return true
       end
@@ -721,6 +726,22 @@ class DirectDownloadFileService
     return true if recover_after_publication_error!(error) == true
 
     raise
+  end
+
+  # A replacement can be cancelled after this attempt stops, so its files need
+  # a proof before their names appear. Other direct publications are retained
+  # on failure and have nothing to prove.
+  def publication_recorder(&proofs_by_path)
+    return {} unless @replacement_plan_active
+
+    {
+      before_publish: lambda { |published|
+        recorded = LibraryReplacement.record_publication_proofs!(download, proofs_by_path.call(published))
+        unless recorded == true
+          raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
+        end
+      }
+    }
   end
 
   def ensure_replacement_plan!
@@ -838,7 +859,7 @@ class DirectDownloadFileService
     Pathname(new_library_path).join(destination_path.relative_path_from(old_path)).to_s
   end
 
-  def recover_failed_replacement!(previous_library_path, error)
+  def recover_failed_replacement!(error)
     download.reload
     if self.class.send(:publication_complete?, download) == true &&
         self.class.send(:reservation_owned?, download)
@@ -846,10 +867,12 @@ class DirectDownloadFileService
       return true
     end
 
-    if self.class.send(:valid_output_root_identity?, download) == true
-      self.class.send(:release_reservation!, download)
-    end
-    remove_unpublished_replacement!(previous_library_path) unless error.is_a?(ConflictError)
+    # An unverified root may no longer be the one this attempt published into.
+    # Keep the reservation, staging, and destination for recovery to judge.
+    return false unless self.class.send(:valid_output_root_identity?, download) == true
+
+    self.class.send(:release_reservation!, download)
+    remove_unpublished_replacement! unless error.is_a?(ConflictError)
     false
   rescue StandardError => cleanup_error
     Rails.logger.warn(
@@ -858,17 +881,12 @@ class DirectDownloadFileService
     RemoteResult::Failed.new(cleanup_error)
   end
 
-  def remove_unpublished_replacement!(previous_library_path)
-    path = download.reload.direct_destination_path.presence || destination_path
-    return if path.blank? || previous_library_path.blank?
-    return if SafeLibraryDeletionService.overlapping_library_paths?(path, previous_library_path)
+  def remove_unpublished_replacement!
+    removed = LibraryReplacement.remove_failed_publications!(download)
+    return if removed == true
 
-    record = Book.find(book.id)
-    record.file_path = path
-    SafeLibraryDeletionService.new(record).delete!
-  rescue Error => error
     Rails.logger.warn(
-      "[DirectDownloadFileService] Unpublished replacement was kept for download ##{download.id}: #{error.class}"
+      "[DirectDownloadFileService] Unpublished replacement was kept for download ##{download.id}"
     )
   end
 

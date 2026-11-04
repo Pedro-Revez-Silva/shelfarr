@@ -1180,7 +1180,7 @@ class PostProcessingJob < ApplicationJob
     destination_file
   end
 
-  def import_file(source, destination)
+  def import_file(source, destination, before_publish: nil)
     if reference_completed_downloads?
       source_snapshot = reference_source_snapshot(source)
       regular_root_snapshot = @reference_regular_source_root unless
@@ -1191,7 +1191,8 @@ class PostProcessingJob < ApplicationJob
         root: @import_base_path,
         source_root: source_snapshot ? nil : @import_source_root,
         source_snapshot: source_snapshot,
-        authorized_root_snapshot: regular_root_snapshot
+        authorized_root_snapshot: regular_root_snapshot,
+        before_publish: before_publish
       )
       @referenced_file_count += 1
     elsif hardlink_completed_downloads?
@@ -1201,7 +1202,8 @@ class PostProcessingJob < ApplicationJob
           destination,
           root: @import_base_path,
           source_root: @import_source_root,
-          require_durable: @require_durable_import
+          require_durable: @require_durable_import,
+          before_publish: before_publish
         )
         @hardlinked_file_count += 1
       rescue FileCopyService::HardlinkUnsupportedError
@@ -1214,7 +1216,8 @@ class PostProcessingJob < ApplicationJob
           root: @import_base_path,
           source_root: @import_source_root,
           hardlink_mode: true,
-          require_durable: @require_durable_import
+          require_durable: @require_durable_import,
+          before_publish: before_publish
         )
         @hardlink_fallback_copied_count += 1
       end
@@ -1225,7 +1228,8 @@ class PostProcessingJob < ApplicationJob
         root: @import_base_path,
         source_root: @import_source_root,
         source_snapshot: @import_source_file_snapshot,
-        require_durable: @require_durable_import
+        require_durable: @require_durable_import,
+        before_publish: before_publish
       )
     end
     destination
@@ -1263,13 +1267,21 @@ class PostProcessingJob < ApplicationJob
       end
 
       record_published_library_file!(destination)
+      proof = nil
       begin
-        imported = import_file(source, destination)
+        imported = import_file(
+          source,
+          destination,
+          before_publish: lambda { |publication_proof|
+            proof = publication_proof
+            record_publication_proof!(destination, publication_proof)
+          }
+        )
       rescue Errno::EEXIST
         # Another importer won this candidate after retry_safe_destination.
-        # Drop the intent so cancellation does not delete their file, then
-        # re-run content reconciliation before choosing a suffix.
-        forgotten = LibraryReplacement.forget_published_path!(@publication_download, destination)
+        # Drop this attempt's record of it, then re-run content reconciliation
+        # before choosing a suffix.
+        forgotten = LibraryReplacement.forget_published_path!(@publication_download, destination, proof: proof)
         unless forgotten == true
           raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
         end
@@ -1985,6 +1997,13 @@ class PostProcessingJob < ApplicationJob
 
   def record_published_library_file!(path)
     recorded = LibraryReplacement.record_published_path!(@publication_download, path)
+    return if recorded == true
+
+    raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
+  end
+
+  def record_publication_proof!(path, proof)
+    recorded = LibraryReplacement.record_publication_proofs!(@publication_download, path => proof)
     return if recorded == true
 
     raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"

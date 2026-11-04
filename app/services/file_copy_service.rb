@@ -136,7 +136,8 @@ class FileCopyService
     # directory. Publication uses an atomic no-replace operation and fails
     # closed when the destination filesystem cannot provide one. Every
     # destination component is opened from a pinned root descriptor with
-    # O_NOFOLLOW.
+    # O_NOFOLLOW. before_publish receives the private file's publication proof
+    # and may raise to stop before the destination name exists.
     def cp_noreplace(
       src,
       dest,
@@ -145,7 +146,8 @@ class FileCopyService
       source_snapshot: nil,
       heartbeat: nil,
       hardlink_mode: false,
-      require_durable: false
+      require_durable: false,
+      before_publish: nil
     )
       if hardlink_mode
         with_pinned_hardlink_source(src, source_root: source_root, validate_content: false, heartbeat: heartbeat) do |source, parent, basename, parent_path, manifest|
@@ -160,7 +162,8 @@ class FileCopyService
             source_validator: validator,
             accepted_modes: LIBRARY_FILE_MODES,
             require_durable: require_durable,
-            source_digest: file_manifest_digest(manifest)
+            source_digest: file_manifest_digest(manifest),
+            before_publish: before_publish
           )
         end
       else
@@ -178,7 +181,8 @@ class FileCopyService
             source_validator: validator,
             accepted_modes: LIBRARY_FILE_MODES,
             require_durable: require_durable,
-            source_digest: source_digest
+            source_digest: source_digest,
+            before_publish: before_publish
           )
         end
       end
@@ -189,7 +193,7 @@ class FileCopyService
     # source race. The source name is first linked to a private destination
     # entry, which must match the already-open source descriptor before the
     # existing no-replace publication protocol can make it final.
-    def hardlink_noreplace(src, dest, root:, source_root:, require_durable: false)
+    def hardlink_noreplace(src, dest, root:, source_root:, require_durable: false, before_publish: nil)
       with_pinned_hardlink_source(src, source_root: source_root, validate_content: false) do |source, source_parent, source_basename, source_parent_path, source_manifest|
         publish_hardlink_noreplace(
           source,
@@ -199,7 +203,8 @@ class FileCopyService
           source_manifest,
           dest,
           root: root,
-          require_durable: require_durable
+          require_durable: require_durable,
+          before_publish: before_publish
         )
       end
       dest
@@ -207,6 +212,31 @@ class FileCopyService
 
     def stable_hardlink_identity?(*filesystem_entries)
       !hardlink_identity_unreliable?(*filesystem_entries)
+    end
+
+    # A publication proof is taken from the private descriptor before its name
+    # is published, so a journal that outlives a crash can still tell this
+    # import's inode from whatever occupies the pathname afterwards. An inode
+    # number can be reused once the private file is gone. Size, mtime, and
+    # content keep such a reuse from passing as the published file.
+    def publication_identity_matches?(proof, stat)
+      return false unless stat.file?
+      return false unless file_identity(stat) == [ proof["device"], proof["inode"] ]
+      return false unless stat.size == proof["size"]
+
+      proof["mtime_ns"].nil? || publication_mtime(stat) == proof["mtime_ns"]
+    end
+
+    def publication_content_matches?(proof, io)
+      stat = io.stat
+      return false unless publication_identity_matches?(proof, stat)
+      return true if proof["digest"].nil?
+
+      pinned_content_matches?(io, proof["digest"], stat.size)
+    end
+
+    def publication_parent_matches?(proof, parent_stat)
+      file_identity(parent_stat) == [ proof["parent_device"], proof["parent_inode"] ]
     end
 
     # Create a no-replace library entry that is a symlink to a verified regular
@@ -220,7 +250,8 @@ class FileCopyService
       source_root:,
       source_snapshot: nil,
       authorized_roots: nil,
-      authorized_root_snapshot: nil
+      authorized_root_snapshot: nil,
+      before_publish: nil
     )
       source_path = Pathname(src).expand_path
       destination_path = Pathname(dest).expand_path
@@ -251,6 +282,9 @@ class FileCopyService
             raise Errno::EEXIST, destination_path.to_s
           end
 
+          # symlinkat is already a no-replace publication, so there is no
+          # private inode to bind. The exact target is the entry's identity.
+          before_publish&.call(publication_symlink_proof(target, parent))
           begin
             native_symlinkat(target, parent.fileno, basename)
           rescue Errno::EEXIST
@@ -360,10 +394,16 @@ class FileCopyService
 
     # Publish from a source descriptor already pinned by the caller (for
     # example, a verified HTTP Tempfile) without resolving its pathname again.
-    def cp_io_noreplace(source, dest, root: nil, heartbeat: nil)
+    def cp_io_noreplace(source, dest, root: nil, heartbeat: nil, before_publish: nil)
       raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
 
-      publish_source_io_noreplace(source, dest, root: root, heartbeat: heartbeat)
+      publish_source_io_noreplace(
+        source,
+        dest,
+        root: root,
+        heartbeat: heartbeat,
+        before_publish: before_publish
+      )
       dest
     end
 
@@ -413,7 +453,8 @@ class FileCopyService
       root:,
       source_root: nil,
       heartbeat: nil,
-      allow_nonatomic: false
+      allow_nonatomic: false,
+      before_publish: nil
     )
       source_root ||= snapshot_source_root(source, heartbeat: heartbeat)
       source_path = Pathname(source).expand_path
@@ -437,6 +478,10 @@ class FileCopyService
           secure_pinned_library_tree!(source_directory, heartbeat: heartbeat)
 
           with_pinned_destination_parent(destination_path, root: root) do |destination_parent, basename, parent_path|
+            if before_publish && !hardlink_identity_unreliable?(destination_parent)
+              before_publish.call(directory_publication_proofs(source_root, destination_parent))
+            end
+
             published = begin
               native_rename_noreplace(
                 source_parent.fileno,
@@ -2439,7 +2484,8 @@ class FileCopyService
       source_validator: nil,
       accepted_modes: LIBRARY_FILE_MODES,
       require_durable: false,
-      source_digest: nil
+      source_digest: nil,
+      before_publish: nil
     )
       raise Errno::EINVAL, "source is not a regular file" unless source.stat.file?
       source_size = source.stat.size
@@ -2539,6 +2585,10 @@ class FileCopyService
                 source_validator&.call
               end
               identity_reliable = !hardlink_identity_unreliable?(parent)
+              if before_publish && identity_reliable
+                digest = source_digest || io_content_identity(temporary, heartbeat: heartbeat).last
+                before_publish.call(publication_file_proof(temporary.stat, parent, digest: digest))
+              end
 
               publication_method = if identity_reliable
                 publish_private_child_atomically_noreplace!(
@@ -2612,7 +2662,8 @@ class FileCopyService
       source_manifest,
       destination,
       root:,
-      require_durable: false
+      require_durable: false,
+      before_publish: nil
     )
       source_identity = source_manifest.first(2)
       expected_stable_manifest = stable_hardlink_snapshot_entry(source_manifest)
@@ -2678,10 +2729,11 @@ class FileCopyService
             end
 
             file_durable = false
+            private_link_stat = nil
             with_pinned_regular_child(parent, temporary_basename) do |temporary|
-              temporary_stat = temporary.stat
-              unless file_identity(temporary_stat) == temporary_identity &&
-                  stable_hardlink_manifest_entry(temporary_stat) == expected_stable_manifest
+              private_link_stat = temporary.stat
+              unless file_identity(private_link_stat) == temporary_identity &&
+                  stable_hardlink_manifest_entry(private_link_stat) == expected_stable_manifest
                 raise Errno::ESTALE, "private hardlink does not match the pinned source"
               end
               file_durable = sync_io(temporary)
@@ -2699,6 +2751,9 @@ class FileCopyService
               source_manifest
             )
             validate_current_directory_identity!(parent_path, parent)
+            before_publish&.call(
+              publication_file_proof(private_link_stat, parent, digest: file_manifest_digest(source_manifest))
+            )
 
             begin
               publication_method = publish_private_child_atomically_noreplace!(
@@ -3145,6 +3200,64 @@ class FileCopyService
       RemoteResult::Failed.new(error)
     ensure
       source.seek(source_position) if source_position
+    end
+
+    def publication_file_proof(stat, parent, digest:)
+      parent_stat = parent.stat
+      proof = {
+        "kind" => "file",
+        "device" => stat.dev,
+        "inode" => stat.ino,
+        "size" => stat.size,
+        "parent_device" => parent_stat.dev,
+        "parent_inode" => parent_stat.ino
+      }
+      proof["digest"] = digest if digest
+      proof["mtime_ns"] = publication_mtime(stat) unless digest && unstable_file_timestamps?(parent) == true
+      proof
+    end
+
+    def publication_symlink_proof(target, parent)
+      parent_stat = parent.stat
+      {
+        "kind" => "symlink",
+        "target" => target.to_s,
+        "parent_device" => parent_stat.dev,
+        "parent_inode" => parent_stat.ino
+      }
+    end
+
+    # Every regular file keeps its inode when the staged tree is renamed, so
+    # each one is proven individually. A file added to the tree after
+    # publication has no proof and survives cancellation.
+    def directory_publication_proofs(source_root, destination_parent)
+      entries = source_root.entries
+      unstable = unstable_file_timestamps?(destination_parent) == true
+      entries.each_with_object({}) do |(relative, manifest), proofs|
+        next unless manifest[2] == :file
+
+        parent = File.dirname(relative)
+        parent_identity = parent == "." ? [ source_root.device, source_root.inode ] : entries.fetch(parent).first(2)
+        proof = {
+          "kind" => "file",
+          "device" => manifest.fetch(0),
+          "inode" => manifest.fetch(1),
+          "size" => manifest.fetch(3),
+          "parent_device" => parent_identity.first,
+          "parent_inode" => parent_identity.last,
+          "digest" => file_manifest_digest(manifest)
+        }.compact
+        proof["mtime_ns"] = publication_time(manifest.fetch(4)) unless proof["digest"] && unstable
+        proofs[relative] = proof
+      end
+    end
+
+    def publication_mtime(stat)
+      publication_time(stat.mtime.to_r)
+    end
+
+    def publication_time(time)
+      (time * 1_000_000_000).to_i
     end
 
     def validate_published_child!(
