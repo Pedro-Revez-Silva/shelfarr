@@ -3060,6 +3060,29 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Comic Title", matches[comic_book.id].first.item.title
   end
 
+  test "request page explains an out of range file size the same way as other score adjustments" do
+    sign_out
+    sign_in_as(@admin)
+    search_results(:pending_result).update!(
+      confidence_score: 55,
+      score_breakdown: {
+        preference_adjustment: -6,
+        file_size_adjustment: -40,
+        file_size_status: "below_min",
+        auto_select_allowed: false
+      }
+    )
+
+    get request_path(@pending_request)
+
+    assert_response :success
+    assert_match "Score: 55%", response.body
+    assert_match "Pref -6", response.body
+    assert_match "Size -40 (too small)", response.body
+    assert_match "Smaller than the configured minimum file size", response.body
+    assert_match "Manual review", response.body
+  end
+
   private
 
   def create_directory_download_request(suffix)

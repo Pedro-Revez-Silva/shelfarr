@@ -1,4 +1,4 @@
-<div class="flex items-center justify-between py-2 px-3 bg-gray-800 rounded <%= result.language_matches_request? ? '' : 'border border-yellow-600/30' %>" data-search-results-target="result">
+<div class="flex items-center justify-between py-2 px-3 bg-gray-800 rounded <%= result.language_matches_request? ? '' : 'border border-yellow-600/30' %>" data-search-results-target="result" data-search-result-id="<%= result.id %>">
   <div class="min-w-0 flex-grow mr-3">
     <p class="text-sm text-white truncate" title="<%= result.title %>"><%= result.title %></p>
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400 mt-1">
@@ -36,6 +36,11 @@
       <% if Current.user.admin? && result.preference_adjustment != 0 %>
         <span class="<%= result.preference_adjustment.positive? ? 'text-blue-400' : 'text-red-400' %>">
           Pref <%= result.preference_adjustment.positive? ? '+' : '' %><%= result.preference_adjustment %>
+        </span>
+      <% end %>
+      <% if Current.user.admin? && result.file_size_adjustment != 0 %>
+        <span class="text-red-400" title="<%= result.file_size_limit_explanation %>">
+          <%= result.file_size_adjustment_label %>
         </span>
       <% end %>
       <% if Current.user.admin? && !result.auto_select_allowed_by_preferences? %>

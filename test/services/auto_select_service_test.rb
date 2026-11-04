@@ -419,6 +419,181 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_french_release_auto_selected("The Pending Ebook.Another.Author.2024.TRUEFRENCH.EPUB")
   end
 
+  test "scores from 40 to 80 auto-select only when the admin threshold allows them" do
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    low = create_search_result(confidence_score: 40, seeders: 10, magnet_url: "magnet:?low-score")
+    mid = create_search_result(confidence_score: 80, seeders: 10, magnet_url: "magnet:?mid-score")
+
+    selection = AutoSelectService.call(@request)
+
+    assert_not selection.success?
+    assert_equal :no_matching_results, selection.reason
+    assert low.reload.pending?
+    assert mid.reload.pending?
+
+    SettingsService.set(:auto_select_confidence_threshold, 80)
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?
+      assert_equal mid, selection.search_result
+    end
+
+    assert mid.reload.selected?
+    assert_not low.reload.selected?
+  end
+
+  test "file size limits block auto-select only for releases outside the range" do
+    SettingsService.set(:auto_select_confidence_threshold, 40)
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+
+    outside = sized_ebook_result(size_bytes: 80.megabytes, magnet_url: "magnet:?outside-size")
+    outside.calculate_score!
+    assert_equal "above_max", outside.score_breakdown["file_size_status"]
+    assert_equal ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY, outside.file_size_adjustment
+    assert_not outside.auto_select_allowed_by_preferences?
+
+    selection = AutoSelectService.call(@request)
+
+    assert_not selection.success?
+    assert_equal :no_matching_results, selection.reason
+    assert outside.reload.pending?
+
+    inside = sized_ebook_result(size_bytes: 5.megabytes, magnet_url: "magnet:?inside-size")
+    inside.calculate_score!
+    assert_equal "within", inside.score_breakdown["file_size_status"]
+    assert_equal 0, inside.file_size_adjustment
+    assert inside.auto_select_allowed_by_preferences?
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?, selection.reason.to_s
+      assert_equal inside, selection.search_result
+    end
+
+    assert inside.reload.selected?
+    assert outside.reload.rejected?
+  end
+
+  test "a release with no reported size still auto-selects when size limits are set" do
+    SettingsService.set(:auto_select_confidence_threshold, 40)
+    SettingsService.set(:ebook_min_file_size, "1 MB")
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+    result = sized_ebook_result(size_bytes: nil, magnet_url: nil, download_url: "http://example.com/unknown-size.nzb", seeders: nil)
+    result.calculate_score!
+
+    assert_equal "unknown", result.score_breakdown["file_size_status"]
+    assert_equal 0, result.file_size_adjustment
+    assert result.auto_select_allowed_by_preferences?
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?, selection.reason.to_s
+      assert_equal result, selection.search_result
+    end
+  end
+
+  test "automatic selection reapplies a file size limit saved after search" do
+    SettingsService.set(:auto_select_confidence_threshold, 40)
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "")
+
+    oversized = sized_ebook_result(size_bytes: 80.megabytes, magnet_url: "magnet:?oversized-cached", seeders: 50)
+    oversized.calculate_score!
+    cached_score = oversized.confidence_score
+    oversized.update!(
+      confidence_score: cached_score - 8,
+      score_breakdown: oversized.score_breakdown.merge(
+        "search_attempt" => "author_title",
+        "search_query" => "The Pending Ebook",
+        "search_penalty" => 8
+      )
+    )
+    assert oversized.auto_select_allowed_by_preferences?
+    assert_operator oversized.confidence_score, :>, 45
+
+    inside = sized_ebook_result(size_bytes: 5.megabytes, magnet_url: "magnet:?inside-cached", seeders: 10)
+    inside.calculate_score!
+    inside.update!(confidence_score: 45)
+
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?, selection.reason.to_s
+      assert_equal inside, selection.search_result
+    end
+
+    oversized.reload
+    assert_not oversized.auto_select_allowed_by_preferences?
+    assert_equal "above_max", oversized.score_breakdown["file_size_status"]
+    assert_equal ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY, oversized.file_size_adjustment
+    assert_equal 8, oversized.score_breakdown["search_penalty"]
+    assert_equal "author_title", oversized.score_breakdown["search_attempt"]
+    assert_equal cached_score + ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY - 8, oversized.confidence_score
+    assert oversized.rejected?
+    assert inside.reload.selected?
+  end
+
+  test "automatic selection clears a stale file size penalty when the limit is removed" do
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+
+    result = sized_ebook_result(size_bytes: 80.megabytes, magnet_url: "magnet:?cleared-size-limit")
+    result.calculate_score!
+    penalized_score = result.confidence_score
+    result.update!(
+      confidence_score: penalized_score - 8,
+      score_breakdown: result.score_breakdown.merge(
+        "search_attempt" => "author_title",
+        "search_penalty" => 8
+      )
+    )
+    assert_not result.auto_select_allowed_by_preferences?
+    assert_operator result.confidence_score, :<, 90
+
+    SettingsService.set(:ebook_max_file_size, "")
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?, selection.reason.to_s
+      assert_equal result, selection.search_result
+    end
+
+    result.reload
+    assert_nil result.file_size_limit_status
+    assert_equal 0, result.file_size_adjustment
+    assert result.auto_select_allowed_by_preferences?
+    assert_equal 8, result.score_breakdown["search_penalty"]
+    assert_equal penalized_score - ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY - 8, result.confidence_score
+  end
+
+  test "blank file size settings leave a small release selectable" do
+    SettingsService.set(:auto_select_confidence_threshold, 40)
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "")
+    result = sized_ebook_result(size_bytes: 100, magnet_url: "magnet:?tiny-ebook")
+    result.calculate_score!
+
+    assert_nil result.file_size_limit_status
+    assert_equal 0, result.file_size_adjustment
+    assert result.auto_select_allowed_by_preferences?
+
+    assert_enqueued_with(job: DownloadJob) do
+      selection = AutoSelectService.call(@request)
+
+      assert selection.success?, selection.reason.to_s
+      assert_equal result, selection.search_result
+    end
+  end
+
   test "selection result error reason works" do
     result = AutoSelectService::SelectionResult.new(selected: false, reason: :error)
 
@@ -484,6 +659,18 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_equal :no_matching_results, selection.reason
     assert result.reload.pending?
     assert_equal 0, @request.downloads.count
+  end
+
+  def sized_ebook_result(size_bytes:, magnet_url:, download_url: nil, seeders: 20)
+    create_search_result(
+      title: "The Pending Ebook - Another Author English EPUB",
+      confidence_score: nil,
+      detected_language: nil,
+      size_bytes: size_bytes,
+      seeders: seeders,
+      magnet_url: magnet_url,
+      download_url: download_url
+    )
   end
 
   def create_search_result(attrs = {})

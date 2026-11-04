@@ -23,6 +23,19 @@
           </div>
 
           <% group.each do |key, data| %>
+            <% if key.to_s.end_with?("_file_size") %>
+              <div class="space-y-2">
+                <label for="settings_<%= key %>" class="font-medium text-gray-300"><%= SettingsService.label_for(key) %></label>
+                <p class="text-sm text-gray-500"><%= data[:definition][:description] %></p>
+                <%= form.text_field "settings[#{key}]",
+                      value: data[:value],
+                      id: "settings_#{key}",
+                      placeholder: "50 MB",
+                      class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2",
+                      data: { action: "change->settings-form#autoSave" } %>
+                <p class="text-xs text-gray-500">Leave blank for no limit. A number alone is megabytes.</p>
+              </div>
+            <% else %>
             <div class="space-y-2">
               <label for="settings_<%= key %>" class="font-medium text-gray-300"><%= key.to_s.humanize %></label>
               <p class="text-sm text-gray-500"><%= data[:definition][:description] %></p>
@@ -37,6 +50,7 @@
                 <p class="text-xs text-gray-500">Use comma-separated extensions such as <%= label == "Audiobooks" ? "m4b, mp3" : "epub, pdf" %>.</p>
               <% end %>
             </div>
+            <% end %>
           <% end %>
         </div>
       <% end %>
@@ -44,6 +58,7 @@
 
     <div class="rounded-xl border border-gray-800 bg-gray-950/70 px-4 py-3 text-sm text-gray-400">
       Auto-selection treats rejected formats as manual-review-only. Preferred formats still remain manually selectable even when they rank lower.
+      Minimum and maximum sizes are optional. A release inside the range, or with no reported size, keeps its score. A release outside the range is scored down and kept for manual review.
     </div>
   </div>
 </div>

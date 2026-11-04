@@ -675,4 +675,44 @@ class SettingsServiceTest < ActiveSupport::TestCase
       assert_not SettingsService.env_managed?(:oidc_enabled)
     end
   end
+
+  test "auto-select confidence threshold defaults to 90 and stays inside 0 to 100" do
+    Setting.where(key: "auto_select_confidence_threshold").delete_all
+
+    assert_equal 90, SettingsService::DEFINITIONS[:auto_select_confidence_threshold][:default]
+    assert_equal 90, SettingsService.get(:auto_select_confidence_threshold)
+
+    SettingsService.set(:auto_select_confidence_threshold, "70")
+    assert_equal 70, SettingsService.get(:auto_select_confidence_threshold)
+
+    error = assert_raises(ArgumentError) { SettingsService.set(:auto_select_confidence_threshold, 101) }
+    assert_match "0 to 100", error.message
+    assert_equal 70, SettingsService.get(:auto_select_confidence_threshold)
+
+    SettingsService.set(:auto_select_confidence_threshold, "075")
+    assert_equal 75, SettingsService.get(:auto_select_confidence_threshold)
+  end
+
+  test "file size limits are blank by default and parse optional units" do
+    assert_equal "", SettingsService.get(:ebook_min_file_size)
+    assert_equal "", SettingsService.get(:ebook_max_file_size)
+    assert_equal "", SettingsService.get(:audiobook_min_file_size)
+    assert_equal "", SettingsService.get(:audiobook_max_file_size)
+    assert_nil SettingsService.parse_file_size_bytes("")
+    assert_nil SettingsService.parse_file_size_bytes(nil)
+    assert_nil SettingsService.parse_file_size_bytes("0 MB")
+    assert_nil SettingsService.parse_file_size_bytes("lots")
+    assert_equal 200.kilobytes, SettingsService.parse_file_size_bytes("200 KB")
+    assert_equal 50.megabytes, SettingsService.parse_file_size_bytes("50")
+    assert_equal (1.5.gigabytes).round, SettingsService.parse_file_size_bytes("1.5 GB")
+
+    SettingsService.set(:audiobook_max_file_size, "2gb")
+    assert_equal "2 GB", SettingsService.get(:audiobook_max_file_size)
+    assert_equal({ min_bytes: nil, max_bytes: 2.gigabytes }, SettingsService.file_size_limits_for(:audiobook))
+    assert_equal({ min_bytes: nil, max_bytes: nil }, SettingsService.file_size_limits_for(:ebook))
+    assert_equal({ min_bytes: nil, max_bytes: nil }, SettingsService.file_size_limits_for(:comicbook))
+
+    assert_raises(ArgumentError) { SettingsService.set(:ebook_min_file_size, "lots") }
+    assert_equal "", SettingsService.get(:ebook_min_file_size)
+  end
 end

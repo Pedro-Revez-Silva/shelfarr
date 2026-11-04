@@ -3,6 +3,7 @@
 class ReleaseScorer
   COMIC_ISSUE_EXACT_BONUS = 15
   COMIC_ISSUE_UNKNOWN_MAX_SCORE = 49
+  FILE_SIZE_OUT_OF_RANGE_PENALTY = -40
   COMIC_ISSUE_VALUE_PATTERN = '\d+(?:\.\d+)?(?:[a-z]|-[a-z])?'
 
   WEIGHTS = {
@@ -13,7 +14,17 @@ class ReleaseScorer
     health: 5
   }.freeze
 
-  Result = Data.define(:total, :breakdown, :detected_languages, :detected_format) do
+  Result = Data.define(:total, :breakdown, :detected_languages, :detected_format, :total_before_file_size) do
+    def initialize(total:, breakdown:, detected_languages:, detected_format:, total_before_file_size: total)
+      super(
+        total: total,
+        breakdown: breakdown,
+        detected_languages: detected_languages,
+        detected_format: detected_format,
+        total_before_file_size: total_before_file_size
+      )
+    end
+
     def high_confidence?
       total >= 90
     end
@@ -39,10 +50,12 @@ class ReleaseScorer
   def score
     issue_status = @comic_issue_match&.fetch(:status, nil)
     format_score = calculate_format_score
+    size_limit = file_size_limit
     auto_select_allowed = @format_preferences.auto_select_allowed &&
       !explicit_format_conflict? &&
       !ambiguous_title_alias_match? &&
-      (@comic_issue_match.nil? || issue_status == :exact)
+      (@comic_issue_match.nil? || issue_status == :exact) &&
+      size_limit[:allowed]
     breakdown = {
       title: calculate_title_score,
       author: calculate_author_score,
@@ -50,6 +63,8 @@ class ReleaseScorer
       format: format_score,
       health: calculate_health_score,
       preference_adjustment: @format_preferences.score_adjustment,
+      file_size_adjustment: size_limit[:adjustment],
+      file_size_status: size_limit[:status],
       auto_select_allowed: auto_select_allowed,
       extension: @format_preferences.matched_extension,
       extensions: @format_preferences.detected_extensions,
@@ -69,21 +84,52 @@ class ReleaseScorer
       (breakdown[key] * weight) / 100.0
     end.round
 
-    total = (base_total + @format_preferences.score_adjustment + comic_issue_adjustment).clamp(0, 100)
-    total = [ total, COMIC_ISSUE_UNKNOWN_MAX_SCORE ].min if issue_status == :unknown
-    total = 0 if issue_status == :mismatch
+    match_total = base_total + @format_preferences.score_adjustment + comic_issue_adjustment
+    # Size comes off the capped score so a bonus above 100 cannot absorb the penalty.
+    total_before_file_size = bounded_release_total(match_total, issue_status)
+    total = bounded_release_total(total_before_file_size + size_limit[:adjustment], issue_status)
 
     Result.new(
       total: total,
       breakdown: breakdown,
       detected_languages: @parsed[:languages],
-      detected_format: @parsed[:format]
+      detected_format: @parsed[:format],
+      total_before_file_size: total_before_file_size
     )
   end
 
   class << self
     def score(search_result, request)
       new(search_result, request).score
+    end
+
+    def file_size_assessment(size_bytes, book_type)
+      limits = SettingsService.file_size_limits_for(book_type)
+      min_bytes = limits[:min_bytes]
+      max_bytes = limits[:max_bytes]
+      return { adjustment: 0, status: nil, allowed: true } if min_bytes.nil? && max_bytes.nil?
+
+      # Newznab and Jackett report enclosure length 0 when the size is unknown.
+      return { adjustment: 0, status: "unknown", allowed: true } if size_bytes.nil? || size_bytes.to_i <= 0
+
+      size = size_bytes.to_i
+      if min_bytes && size < min_bytes
+        out_of_range_file_size("below_min")
+      elsif max_bytes && size > max_bytes
+        out_of_range_file_size("above_max")
+      else
+        { adjustment: 0, status: "within", allowed: true }
+      end
+    end
+
+    private
+
+    def out_of_range_file_size(status)
+      {
+        adjustment: FILE_SIZE_OUT_OF_RANGE_PENALTY,
+        status: status,
+        allowed: false
+      }
     end
   end
 
@@ -245,6 +291,17 @@ class ReleaseScorer
     @search_result.download_url.present? &&
       @search_result.magnet_url.blank? &&
       @search_result.seeders.nil?
+  end
+
+  def file_size_limit
+    self.class.file_size_assessment(@search_result.size_bytes, @book.book_type)
+  end
+
+  def bounded_release_total(value, issue_status)
+    total = value.clamp(0, 100)
+    total = [ total, COMIC_ISSUE_UNKNOWN_MAX_SCORE ].min if issue_status == :unknown
+    total = 0 if issue_status == :mismatch
+    total
   end
 
   def comic_issue_adjustment

@@ -1519,4 +1519,173 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_operator score.total, :>=, 90, "total #{score.total} breakdown #{score.breakdown.inspect}"
     assert score.high_confidence?, score.total.to_s
   end
+
+  test "optional file size limits score down only releases outside the range" do
+    assert_equal({ title: 40, author: 20, language: 25, format: 10, health: 5 }, ReleaseScorer::WEIGHTS)
+
+    baseline = wind_score(size_bytes: 10.megabytes)
+    SettingsService.set(:audiobook_min_file_size, "")
+    SettingsService.set(:audiobook_max_file_size, "")
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "")
+
+    blank = wind_score(size_bytes: 100)
+    assert_equal baseline.total, blank.total
+    assert_equal 0, blank.breakdown[:file_size_adjustment].to_i
+    assert_nil blank.breakdown[:file_size_status]
+    assert blank.breakdown[:auto_select_allowed]
+
+    SettingsService.set(:audiobook_min_file_size, "50 MB")
+    SettingsService.set(:audiobook_max_file_size, "2 GB")
+
+    inside = wind_score(size_bytes: 50.megabytes)
+    at_max = wind_score(size_bytes: 2.gigabytes)
+    [ inside, at_max ].each do |score|
+      assert_equal baseline.total, score.total
+      assert_equal 0, score.breakdown[:file_size_adjustment]
+      assert_equal "within", score.breakdown[:file_size_status]
+      assert score.breakdown[:auto_select_allowed]
+      assert_equal baseline.breakdown[:preference_adjustment], score.breakdown[:preference_adjustment]
+    end
+
+    below = wind_score(size_bytes: 50.megabytes - 1)
+    above = wind_score(size_bytes: 2.gigabytes + 1)
+    [ below, above ].each do |score|
+      %i[title author language format health].each do |component|
+        assert_equal baseline.breakdown[component], score.breakdown[component], component
+      end
+      assert_equal baseline.breakdown[:preference_adjustment], score.breakdown[:preference_adjustment]
+      assert_equal ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY, score.breakdown[:file_size_adjustment]
+      assert_equal baseline.total + ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY, score.total
+      refute score.breakdown[:auto_select_allowed]
+    end
+    assert_equal "below_min", below.breakdown[:file_size_status]
+    assert_equal "above_max", above.breakdown[:file_size_status]
+
+    unknown = wind_score(size_bytes: nil)
+    assert_equal baseline.total, unknown.total
+    assert_equal 0, unknown.breakdown[:file_size_adjustment]
+    assert_equal "unknown", unknown.breakdown[:file_size_status]
+    assert unknown.breakdown[:auto_select_allowed]
+
+    SettingsService.set(:audiobook_min_file_size, "")
+    SettingsService.set(:audiobook_max_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "1 MB")
+    ignored = wind_score(size_bytes: 100)
+    assert_equal baseline.total, ignored.total
+    assert_nil ignored.breakdown[:file_size_status]
+    assert ignored.breakdown[:auto_select_allowed]
+  end
+
+  test "non-positive file sizes count as unknown when a minimum is set" do
+    SettingsService.set(:audiobook_min_file_size, "50 MB")
+    SettingsService.set(:audiobook_max_file_size, "2 GB")
+    unknown = wind_score(size_bytes: nil)
+
+    [ 0, -1 ].each do |size_bytes|
+      score = wind_score(size_bytes: size_bytes)
+
+      assert_equal unknown.total, score.total, size_bytes
+      assert_equal 0, score.breakdown[:file_size_adjustment], size_bytes
+      assert_equal "unknown", score.breakdown[:file_size_status], size_bytes
+      assert score.breakdown[:auto_select_allowed], size_bytes
+    end
+  end
+
+  test "a maximum alone does not penalize a smaller ebook" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+    book = Book.create!(title: "The Name of the Rose", author: "Umberto Eco", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    score_for = lambda do |size_bytes|
+      ReleaseScorer.score(
+        SearchResult.new(
+          title: "The Name of the Rose - Umberto Eco English EPUB",
+          seeders: 10,
+          size_bytes: size_bytes
+        ),
+        request
+      )
+    end
+
+    small = score_for.call(2.megabytes)
+    large = score_for.call(21.megabytes)
+
+    assert_equal "within", small.breakdown[:file_size_status]
+    assert_equal 0, small.breakdown[:file_size_adjustment]
+    assert small.breakdown[:auto_select_allowed]
+    assert_equal "above_max", large.breakdown[:file_size_status]
+    assert_equal ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY, large.breakdown[:file_size_adjustment]
+    refute large.breakdown[:auto_select_allowed]
+    assert_operator large.total, :<, small.total
+    %i[title author language format health].each do |component|
+      assert_equal small.breakdown[component], large.breakdown[component], component
+    end
+  end
+
+  test "an oversized preferred ebook loses the full size penalty from its capped score" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [ "epub" ])
+    SettingsService.set(:ebook_min_file_size, "")
+    SettingsService.set(:ebook_max_file_size, "")
+    book = Book.create!(title: "The Name of the Rose", author: "Umberto Eco", book_type: :ebook)
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    release = request.search_results.create!(
+      guid: "rose-epub-80mb",
+      title: "The Name of the Rose - Umberto Eco English EPUB",
+      download_url: "http://localhost:5076/getnzb/rose",
+      size_bytes: 80.megabytes,
+      seeders: nil
+    )
+
+    unlimited = release.calculate_score!
+    assert_equal 12, unlimited.breakdown[:preference_adjustment]
+    assert_equal 100, unlimited.total
+    assert_equal 100, release.confidence_score
+
+    SettingsService.set(:ebook_max_file_size, "20 MB")
+    limited = release.calculate_score!
+
+    assert_equal "above_max", limited.breakdown[:file_size_status]
+    assert_equal ReleaseScorer::FILE_SIZE_OUT_OF_RANGE_PENALTY, release.file_size_adjustment
+    assert_equal "Size -40 (too large)", release.file_size_adjustment_label
+    assert_equal unlimited.total, limited.total_before_file_size
+    assert_equal unlimited.total + release.file_size_adjustment, limited.total
+    assert_equal 60, limited.total
+    assert_equal 60, release.confidence_score
+    refute limited.breakdown[:auto_select_allowed]
+  end
+
+  test "comic releases ignore ebook and audiobook file size limits" do
+    SettingsService.set(:ebook_max_file_size, "1 MB")
+    SettingsService.set(:audiobook_max_file_size, "1 MB")
+    book = Book.create!(title: "Watchmen", author: "Alan Moore", book_type: :comicbook, series: "Watchmen")
+    request = Request.create!(book: book, user: @user, status: :pending, language: "en")
+    release = SearchResult.new(title: "Watchmen - Alan Moore English CBZ", seeders: 20, size_bytes: 80.megabytes)
+
+    limited = ReleaseScorer.score(release, request)
+    SettingsService.set(:ebook_max_file_size, "")
+    SettingsService.set(:audiobook_max_file_size, "")
+    plain = ReleaseScorer.score(release, request)
+
+    assert_equal plain.total, limited.total
+    assert_equal plain.breakdown[:auto_select_allowed], limited.breakdown[:auto_select_allowed]
+    assert_nil limited.breakdown[:file_size_status]
+    assert_equal 0, limited.breakdown[:file_size_adjustment].to_i
+  end
+
+  def wind_score(size_bytes:)
+    ReleaseScorer.score(
+      SearchResult.new(
+        title: "The Name of the Wind - Patrick Rothfuss - English Audiobook M4B",
+        seeders: 50,
+        size_bytes: size_bytes
+      ),
+      @request
+    )
+  end
 end

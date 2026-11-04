@@ -22,6 +22,12 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
     options.add_argument("--no-sandbox") if Process.uid.zero?
   end
 
+  setup do
+    # Selenium reuses its browser after reset_sessions!, including the window
+    # size left by a mobile test. Give each test the declared desktop viewport.
+    page.current_window.resize_to(1400, 1400)
+  end
+
   def sign_in_as(user)
     session = user.sessions.create!
     signed_session_id = ActionDispatch::TestRequest.create.cookie_jar.tap do |cookie_jar|
