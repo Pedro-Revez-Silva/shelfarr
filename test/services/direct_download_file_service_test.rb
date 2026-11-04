@@ -950,6 +950,16 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "an unreadable stored file mode cannot break direct publication" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    Setting.find_by!(key: "library_import_file_mode").update!(value: "0220")
+
+    publish_direct_ebook!("PK\x03\x04permissioned ebook")
+
+    assert @request.reload.completed?
+    assert_equal "", SettingsService.get(:library_import_file_mode)
+  end
+
   private
 
   def build_service

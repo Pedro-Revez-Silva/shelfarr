@@ -118,7 +118,7 @@ class SettingsService
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
     post_processing_source_path_retries: { type: "integer", default: 10, category: "download", description: "Number of post-processing retries while waiting for completed download files to appear" },
     completed_download_import_mode: { type: "string", default: "copy", category: "download", description: "Choose Copy, Move, Hardlink, or Reference. Hardlink requires one container-visible filesystem; unsupported or cross-filesystem links fall back to copy. Reference creates a library symlink to the download path (for debrid/rclone mounts) and never copies bytes." },
-    library_import_file_mode: { type: "string", default: "", category: "download", description: "Optional octal mode for files Shelfarr copies or moves into the library, for example 0664. Leave blank to leave file permissions unchanged. Hardlinked imports are skipped because they share the download file's inode, so chmod would change that download too; any library file with more than one link is skipped for the same reason. Unsupported hardlinks that fall back to a copy still use this mode. Reference symlinks are left unchanged. A chmod failure, such as on NFS or SMB, is logged and does not fail the import." },
+    library_import_file_mode: { type: "string", default: "", category: "download", description: "Optional octal mode for files Shelfarr copies or moves into the library, for example 0664. The mode must include owner read permission so Shelfarr can verify and serve the file. Leave blank to leave file permissions unchanged. Hardlinked imports are skipped because they share the download file's inode, so chmod would change that download too; any library file with more than one link is skipped for the same reason. Unsupported hardlinks that fall back to a copy still use this mode. Reference symlinks are left unchanged. A chmod failure, such as on NFS or SMB, is logged and does not fail the import." },
     library_import_folder_mode: { type: "string", default: "", category: "download", description: "Optional octal mode for folders under the library root that contain an import, for example 0775. The mode must include owner read, write, and execute. It is applied after the import is published, not while directories are created. Leave blank to leave folder permissions unchanged. The configured library root is never changed. A chmod failure, such as on NFS or SMB, is logged and does not fail the import." },
     split_audiobook_bundle_imports: { type: "boolean", default: false, category: "download", description: "Split releases containing multiple self-contained M4B/AAX books into per-book folders. MP3, FLAC, and other chapter-based releases stay together." },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
@@ -850,16 +850,15 @@ class SettingsService
     def library_import_mode_acceptable?(key, value)
       text = value.to_s.strip
       return false unless text.match?(LIBRARY_IMPORT_MODE_FORMAT)
-      return true unless key.to_sym == :library_import_folder_mode
-
-      (Integer(text, 8) & LIBRARY_IMPORT_FOLDER_OWNER_BITS) == LIBRARY_IMPORT_FOLDER_OWNER_BITS
+      required = key.to_sym == :library_import_folder_mode ? LIBRARY_IMPORT_FOLDER_OWNER_BITS : 0o400
+      (Integer(text, 8) & required) == required
     end
 
     def library_import_mode_requirement(key)
       if key.to_sym == :library_import_folder_mode
         "must be a 3 or 4 digit octal mode that includes owner read, write, and execute (for example 0775), or blank"
       else
-        "must be a 3 or 4 digit octal mode (for example 0664), or blank"
+        "must be a 3 or 4 digit octal mode that includes owner read (for example 0664), or blank"
       end
     end
 

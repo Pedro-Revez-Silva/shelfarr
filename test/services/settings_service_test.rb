@@ -212,6 +212,16 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal "", SettingsService.get(:library_import_folder_mode)
   end
 
+  test "file import modes must keep owner read permission" do
+    [ "0000", "0220", "200" ].each do |mode|
+      error = assert_raises(ArgumentError) do
+        SettingsService.set(:library_import_file_mode, mode)
+      end
+      assert_match(/owner read/, error.message)
+    end
+    assert_equal "0440", SettingsService.set(:library_import_file_mode, "0440")
+  end
+
   test "corrupt library import modes are ignored" do
     Setting.create!(
       key: "library_import_file_mode",
