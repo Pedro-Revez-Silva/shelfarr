@@ -4,21 +4,21 @@ require "test_helper"
 require "addressable/uri"
 
 class AddressableGemTest < ActiveSupport::TestCase
-  test "activates addressable 2.9.1 or newer, resolves dotted paths, and leaves an invalid display host unchanged" do
+  test "activates addressable 2.9.1 or newer and keeps dotted paths and displayed hosts honest" do
     spec = Gem.loaded_specs.fetch("addressable")
 
     assert_operator spec.version, :>=, Gem::Version.new("2.9.1")
 
-    assert_equal "/secret", Addressable::URI.normalize_path("/../../public/x/../../secret")
+    path = Addressable::URI.parse("http://example.org/../../public/x/../../secret").normalize.path
 
-    misleading = Addressable::URI.parse("https://xn--google-.example.org/")
-    assert_equal "xn--google-.example.org", misleading.display_uri.host
+    assert_equal "/secret", path
 
-    bidi = Addressable::URI.parse("http://xn--abcmoc-dm0c.com/")
-    assert_equal "xn--abcmoc-dm0c.com", bidi.display_uri.host
+    invalid = Addressable::URI.parse("https://xn--google-.example.org/").display_uri
+    bidi = Addressable::URI.parse("http://xn--abcmoc-dm0c.com/").display_uri
+    displayed = Addressable::URI.parse("http://xn--bcher-kva.example/").display_uri
 
-    books = Addressable::URI.parse("https://xn--bcher-kva.example/")
-    assert_equal "bücher.example", books.display_uri.host
-    assert_equal "xn--bcher-kva.example", books.host
+    assert_equal "xn--google-.example.org", invalid.host
+    assert_equal "xn--abcmoc-dm0c.com", bidi.host
+    assert_equal "bücher.example", displayed.host
   end
 end

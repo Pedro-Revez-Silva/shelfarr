@@ -152,7 +152,7 @@ class SettingsService
       default: false,
       category: "paths",
       env_overridable: true,
-      description: "Allow directory imports and source cleanup on NFS filesystems that reject atomic no-replace renames. Enable only when Shelfarr is the sole writer: a concurrently created empty destination or quarantine name could otherwise be replaced."
+      description: "Allow directory imports, source cleanup, and library deletion on NFS filesystems that reject atomic no-replace renames. Enable only when Shelfarr is the sole writer: a concurrently created empty destination or quarantine name could otherwise be replaced."
     },
 
     setup_wizard_completed: { type: "boolean", default: false, category: "setup", description: "The first-run setup wizard has been finished or skipped" },
