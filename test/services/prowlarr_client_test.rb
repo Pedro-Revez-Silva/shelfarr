@@ -863,6 +863,29 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  # The jobs process never sees the web process's reset_all_connections!.
+  test "search drops the cached connection after Prowlarr settings are removed" do
+    ProwlarrClient.reset_connection!
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:9696/api/v1/indexer")
+        .to_return(status: 200, body: "[]", headers: { "Content-Type" => "application/json" })
+
+      assert ProwlarrClient.test_connection
+
+      SettingsService.set(:prowlarr_url, "")
+      SettingsService.set(:prowlarr_api_key, "")
+
+      error = assert_raises ProwlarrClient::NotConfiguredError do
+        ProwlarrClient.search("atomic habits")
+      end
+      assert_equal "Prowlarr is not configured", error.message
+      assert_requested :get, "http://localhost:9696/api/v1/indexer", times: 1
+      assert_nil ProwlarrClient.instance_variable_get(:@connection)
+      assert_nil ProwlarrClient.instance_variable_get(:@connection_settings_key)
+    end
+  end
+
   test "#504 failed idempotent Prowlarr GET retries with the key stored at the retry" do
     SettingsService.set(:prowlarr_url, "http://prowlarr.example:9696")
     SettingsService.set(:prowlarr_api_key, "baked-key")
