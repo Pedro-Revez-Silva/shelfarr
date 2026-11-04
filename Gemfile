@@ -1,10 +1,19 @@
 source "https://rubygems.org"
 
 gem "rails", "~> 8.1.3", ">= 8.1.3.1"
+# Rack 3.2.7 and older return an invalid Host verbatim and retain multipart scan data.
+gem "rack", ">= 3.2.8"
 # Loofah CSS tokenizer. 1.0.7 leaves a bad URL open after an escaped backslash.
 gem "crass", ">= 1.0.8"
+# HTML scrubber. 2.25.2 turns an escaped CSS url() and some SVG hrefs into live references.
+gem "loofah", ">= 2.25.3"
+# HTML parser. 1.19.4 leaves < and > unescaped in serialized attribute values.
+gem "nokogiri", ">= 1.19.5"
+# Safe-list sanitizer. 1.7.1 shares one scrubber across concurrent sanitize calls.
+gem "rails-html-sanitizer", ">= 1.7.2"
 gem "propshaft"
-gem "sqlite3", ">= 2.1"
+# sqlite3 2.9.6 can truncate a SQL string of 4 GiB or larger.
+gem "sqlite3", ">= 2.10.2"
 gem "puma", ">= 5.0"
 gem "importmap-rails"
 gem "turbo-rails"
@@ -33,6 +42,8 @@ gem "image_processing", "~> 1.2"
 
 gem "faraday"
 gem "faraday-multipart"
+# Addressable 2.9.0 mis-normalizes dotted paths and can display a misleading host.
+gem "addressable", ">= 2.9.1"
 # Public and private suffix boundaries for credential-bearing redirects
 gem "public_suffix", "~> 7.0"
 gem "resolv", "~> 0.3.2"
