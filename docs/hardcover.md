@@ -112,7 +112,7 @@ Shelfarr is self-hosted, so it does not ship a shared Hardcover client. Register
 2. Enter the **client ID** and leave the client secret blank.
 3. Enable **Allow Sign-in With a Code**.
 
-The client ID, secret, and redirect URI can also be set with `SHELFARR_SETTING_HARDCOVER_OAUTH_CLIENT_ID`, `SHELFARR_SETTING_HARDCOVER_OAUTH_CLIENT_SECRET`, and `SHELFARR_SETTING_HARDCOVER_OAUTH_REDIRECT_URI`.
+The client ID, secret, and redirect URI can also be set with `SHELFARR_SETTING_HARDCOVER_OAUTH_CLIENT_ID`, `SHELFARR_SETTING_HARDCOVER_OAUTH_CLIENT_SECRET`, and `SHELFARR_SETTING_HARDCOVER_OAUTH_REDIRECT_URI`. The client secret can be loaded from a file with `SHELFARR_SETTING_HARDCOVER_OAUTH_CLIENT_SECRET_FILE`; see [Docker secrets](../README.md#docker-secrets).
 
 The sign-in uses the authorization code flow with PKCE (S256), a single-use state bound to the user's session, and Hardcover's issuer check. Access and refresh tokens are encrypted with Active Record encryption, filtered from logs, used only on the server, and rotated as Hardcover requires.
 
