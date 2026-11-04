@@ -499,16 +499,22 @@ class Request < ApplicationRecord
   end
 
   # A non-nil owner on a completed Download is the durable recovery claim for
-  # filesystem publication performed by PostProcessingJob. It is deliberately
-  # ignored once the Request is completed so pre-existing installations (where
-  # successful jobs retained their owner ID) are not prevented from deleting
-  # already-acquired books after upgrading.
+  # filesystem publication performed by PostProcessingJob. Owners that are
+  # proven finished are ignored once the Request is completed so older
+  # successful jobs, which retained their owner id, do not block deletion.
+  # A queued or running importer remains a live claim.
   def post_processing_recovery_pending?
     return false unless persisted?
     return true if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
+    return true if live_post_processing_owner?
+
     return false if completed?
 
     downloads.completed.where.not(post_processing_job_id: [ nil, "" ]).exists?
+  end
+
+  def live_post_processing_owner?
+    PostProcessingRecoveryJob.unfinished_active_job_ids(post_processing_owner_ids).any?
   end
 
   def post_processing_recovery_message
@@ -698,11 +704,34 @@ class Request < ApplicationRecord
 
   def select_result_under_lock!(search_result)
     # Same lock import claims use, so replacement cannot retire an id that
-    # post-processing has just claimed.
+    # post-processing has just claimed. Selection during processing is
+    # otherwise allowed, but the copy does not change request status.
     with_acquisition_transition_lock do
+      if live_post_processing_owner?
+        raise ArgumentError, "Cannot replace a download while its library import is still running"
+      end
+
+      release_legacy_completed_import_owner!
       release_completed_external_ids!(release_import_owner: false)
       select_result_after_releasing_external_ids!(search_result)
     end
+  end
+
+  def post_processing_owner_ids
+    downloads.completed.where.not(post_processing_job_id: [ nil, "" ]).pluck(:post_processing_job_id)
+  end
+
+  # Reopening a completed request must drop a job id left by an import that
+  # already finished, or that id becomes a recovery claim. A queued or running
+  # importer still owns its publication. Source cleanup stays a live claim.
+  def release_legacy_completed_import_owner!
+    return unless completed?
+    return if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
+
+    scope = downloads.completed.where.not(post_processing_job_id: [ nil, "" ])
+    live_ids = PostProcessingRecoveryJob.unfinished_active_job_ids(scope.pluck(:post_processing_job_id))
+    scope = scope.where.not(post_processing_job_id: live_ids) if live_ids.any?
+    scope.update_all(post_processing_job_id: nil, updated_at: Time.current)
   end
 
   def select_result_after_releasing_external_ids!(search_result)
