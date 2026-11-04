@@ -468,48 +468,21 @@ class LibraryController < ApplicationController
     end
 
     @book = Book.find(params[:id])
-
-    if acquisition_recovery_pending?(@book)
-      redirect_to library_path(@book),
-        alert: "This book has an upload or direct acquisition in progress, " \
-          "or a post-processing import awaiting recovery. " \
-          "Wait for it to finish, or retry its recovery, before removing the library record."
-      return
-    end
-
-    if params[:remove_torrent] == "1"
-      remove_associated_torrents(@book)
-    end
-
-    if params[:delete_files] == "1" && @book.file_path.present?
-      unless delete_book_files(@book)
-        redirect_to library_path(@book),
-          alert: "Shelfarr could not safely remove this book's files. The library record was kept."
-        return
-      end
-      delete_from_library_platform(@book)
-    end
-
-    Book.transaction do
-      # Keep request deletion and the Book restriction in one database
-      # transaction. A model-level acquisition guard which wins a race with
-      # the preflight below then rolls every record deletion back together.
-      ActivityTracker.track("book.deleted", trackable: @book, user: Current.user)
-      @book.requests.find_each(&:destroy!)
-      @book.requests.reset
-      @book.destroy!
-    end
-
+    delete_files = params[:delete_files] == "1"
+    @book.remove_from_library_as_admin!(delete_files: delete_files, user: Current.user)
+    delete_from_library_platform(@book) if delete_files
     redirect_to library_index_path, notice: "\"#{@book.title}\" has been removed from the library"
-  rescue ActiveRecord::RecordNotDestroyed => error
+  rescue SafeLibraryDeletionService::Error
+    redirect_to library_path(@book),
+      alert: "Shelfarr could not safely remove this book's files. The library record was kept."
+  rescue ActiveRecord::RecordNotDestroyed, Request::CancellationBlockedError => error
     Rails.logger.warn(
       "[LibraryController] Refused blocked library deletion for Book ##{@book&.id}: " \
         "#{error.class}"
     )
+    message = error.respond_to?(:record) ? error.record&.errors&.full_messages&.to_sentence : nil
     redirect_to library_path(@book),
-      alert: "This book could not be removed because an upload, post-processing import, " \
-        "or acquisition recovery is still in progress. " \
-        "Retry the recovery and try again."
+      alert: message.presence || error.message
   end
 
   private
@@ -520,17 +493,6 @@ class LibraryController < ApplicationController
 
   def download_failure_location
     library_path(@book)
-  end
-
-  def acquisition_recovery_pending?(book)
-    return true if book.owned_media_recovery_pending?
-    return true if book.post_processing_recovery_pending?
-
-    book.requests.any? do |request|
-      request.upload_cancellation_blocked? ||
-        request.post_processing_recovery_pending? ||
-        request.direct_acquisition_recovery_pending?
-    end
   end
 
   def load_owned_audible_items
@@ -634,33 +596,6 @@ class LibraryController < ApplicationController
 
   def record_not_found
     head :not_found
-  end
-
-  def remove_associated_torrents(book)
-    book.requests.each do |request|
-      request.downloads.each do |download|
-        next unless download.external_id.present? && download.download_client.present?
-
-        begin
-          client = download.download_client.adapter
-          client.remove_torrent(download.external_id, delete_files: false)
-          Rails.logger.info "[LibraryController] Removed torrent for download ##{download.id}"
-        rescue DownloadClients::Base::Error => e
-          Rails.logger.warn(
-            "[LibraryController] Failed to remove torrent for download ##{download.id}: #{e.class}"
-          )
-        end
-      end
-    end
-  end
-
-  def delete_book_files(book)
-    SafeLibraryDeletionService.new(book).delete!
-    Rails.logger.info "[LibraryController] Safely deleted library path for book ##{book.id}"
-    true
-  rescue SafeLibraryDeletionService::Error => error
-    Rails.logger.error "[LibraryController] Failed to delete files for book ##{book.id}: #{error.class}"
-    false
   end
 
   def delete_from_library_platform(book)

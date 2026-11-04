@@ -33,6 +33,7 @@ class Request < ApplicationRecord
   REQUEST_SCOPE_VALUES = %w[single collection].freeze
   MANUAL_MAGNET_GUID_PREFIX = "manual-magnet"
   MANUAL_NZB_GUID_PREFIX = "manual-nzb"
+  LIBRARY_FILE_REPLACEMENT_PROMPT = "Replace the existing library file? The current file stays until the new download imports successfully. A failed download leaves it unchanged."
 
   belongs_to :book
   belongs_to :user
@@ -196,6 +197,15 @@ class Request < ApplicationRecord
     end
   end
 
+  # Failure blocklists the chosen result. The confirmation remains on that
+  # failed download for the search Retry starts afterward.
+  def library_replacement_consent?
+    latest = downloads.order(created_at: :desc, id: :desc).first
+    return false unless latest&.failed?
+
+    latest.replace_library_file?
+  end
+
   # Retry now - reset for immediate processing.
   # If a selected release already failed, keep it blocklisted and try the next
   # eligible candidate before falling back to a fresh search. A configuration
@@ -209,15 +219,18 @@ class Request < ApplicationRecord
     failed_download = selected_result && downloads.where(status: :failed, search_result: selected_result).order(created_at: :desc, id: :desc).first
 
     if selected_result && failed_download
+      # The confirmation to replace an acquired file belongs to this attempt.
+      # Retrying it, including a fallback result, has to keep that choice.
+      replacing = failed_download.replace_library_file?
       if failed_download.configuration_failure?
-        select_result!(selected_result)
+        select_result!(selected_result, replace_library_file: replacing)
         return
       end
 
       reason = "Failed download (manual retry)"
       blocklist_result!(selected_result, reason: reason, download: failed_download)
 
-      if auto_select_enabled? && attempt_next_candidate!(failure_reason: reason, mark_exhausted: false) == :selected_next
+      if auto_select_enabled? && attempt_next_candidate!(failure_reason: reason, mark_exhausted: false, replace_library_file: replacing) == :selected_next
         return
       end
     end
@@ -286,7 +299,7 @@ class Request < ApplicationRecord
     blocklisted = blocklist_result!(download.search_result, reason: reason, download: download)
     return manual_review_after_release_failure!(reason, blocklisted:) unless auto_select_enabled?
 
-    attempt_next_candidate!(failure_reason: reason)
+    attempt_next_candidate!(failure_reason: reason, replace_library_file: download.replace_library_file?)
   end
 
   def blocklist_and_select_next!(reason:, search_result: nil)
@@ -304,7 +317,8 @@ class Request < ApplicationRecord
 
     return manual_review_after_release_failure!(reason, blocklisted:) unless auto_select_enabled?
 
-    attempt_next_candidate!(failure_reason: reason)
+    replacing = downloads.where(search_result: target).order(created_at: :desc, id: :desc).pick(:replace_library_file)
+    attempt_next_candidate!(failure_reason: reason, replace_library_file: replacing)
   end
 
   def cancel!(allow_direct_recovery: false)
@@ -506,6 +520,7 @@ class Request < ApplicationRecord
   def post_processing_recovery_pending?
     return false unless persisted?
     return true if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
+    return true if LibraryReplacement.cleanup_actionable_for_request?(self)
     return true if live_post_processing_owner?
 
     return false if completed?
@@ -541,24 +556,26 @@ class Request < ApplicationRecord
   end
 
   def manual_download_allowed?
-    !completed? && !processing? && !download_dispatch_in_progress?
+    return false if processing? || download_dispatch_in_progress?
+
+    !completed? || book.acquired?
   end
 
   alias_method :manual_magnet_allowed?, :manual_download_allowed?
   alias_method :manual_nzb_allowed?, :manual_download_allowed?
 
-  def select_result!(search_result)
+  def select_result!(search_result, replace_library_file: false)
     raise ArgumentError, "Result not downloadable" unless search_result.downloadable?
     raise ArgumentError, "Result does not belong to this request" unless search_result.request_id == id
 
     with_lock do
       raise ArgumentError, "Cannot replace a download while dispatch is in progress" if download_dispatch_in_progress?
 
-      select_result_under_lock!(search_result)
+      select_result_under_lock!(search_result, replace_library_file: replace_library_file)
     end
   end
 
-  def add_manual_magnet!(magnet_link)
+  def add_manual_magnet!(magnet_link, replace_library_file: false)
     magnet_link = magnet_link.to_s.strip
     raise ArgumentError, "Enter a valid magnet link" unless magnet_link.start_with?("magnet:?")
 
@@ -566,7 +583,9 @@ class Request < ApplicationRecord
     raise ArgumentError, "Enter a magnet link with a valid info hash" if info_hash.blank?
 
     with_lock do
-      raise ArgumentError, "Cannot add a magnet link to a completed request" if completed?
+      if completed? && !library_replacement_requested?(replace_library_file)
+        raise ArgumentError, "Cannot add a magnet link to a completed request"
+      end
       raise ArgumentError, "Cannot add a magnet link while post-processing is active" if processing?
       raise ArgumentError, "Cannot replace a download while dispatch is in progress" if download_dispatch_in_progress?
 
@@ -583,16 +602,18 @@ class Request < ApplicationRecord
       )
       search_result.save!
 
-      select_result_under_lock!(search_result)
+      select_result_under_lock!(search_result, replace_library_file: replace_library_file)
     end
   end
 
-  def add_manual_nzb!(nzb_url)
+  def add_manual_nzb!(nzb_url, replace_library_file: false)
     nzb_url = nzb_url.to_s.strip
     raise ArgumentError, "Enter a valid HTTP(S) NZB URL" unless valid_manual_nzb_url?(nzb_url)
 
     with_lock do
-      raise ArgumentError, "Cannot add an NZB URL to a completed request" if completed?
+      if completed? && !library_replacement_requested?(replace_library_file)
+        raise ArgumentError, "Cannot add an NZB URL to a completed request"
+      end
       raise ArgumentError, "Cannot add an NZB URL while post-processing is active" if processing?
       raise ArgumentError, "Cannot replace a download while dispatch is in progress" if download_dispatch_in_progress?
 
@@ -609,8 +630,162 @@ class Request < ApplicationRecord
       )
       search_result.save!
 
-      select_result_under_lock!(search_result)
+      select_result_under_lock!(search_result, replace_library_file: replace_library_file)
     end
+  end
+
+  # Stops in-flight work that can be stopped safely, then deletes the row.
+  # A live importer, an unfinished cleanup journal, or direct-download bytes
+  # that cannot be removed inside the managed library keep the record.
+  def remove_as_admin!
+    message = admin_removal_blocked_message
+    raise CancellationBlockedError, message if message
+
+    jobs = neutralize_for_admin_removal!
+    self.class.remove_download_client_jobs!(jobs)
+    clear_direct_recovery_for_admin_removal!
+    finish_admin_removal!(preserve_reference_roots: true)
+  end
+
+  def admin_removal_blocked_message
+    if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
+      return post_processing_recovery_message
+    end
+    return post_processing_recovery_message if LibraryReplacement.cleanup_actionable_for_request?(self)
+    return post_processing_recovery_message if live_post_processing_owner?
+    return direct_acquisition_recovery_message if direct_publication_in_progress?
+    return upload_cancellation_blocked_message if admin_upload_or_backup_blocked?
+
+    nil
+  end
+
+  def neutralize_for_admin_removal!
+    with_acquisition_transition_lock do
+      message = admin_removal_blocked_message
+      raise CancellationBlockedError, message if message
+
+      # Releasing the id only drops Shelfarr's claim. A copy or hardlink import
+      # leaves the torrent seeding, so historical handles are removed too
+      # unless another request now owns that client job.
+      jobs = downloads.where.not(external_id: [ nil, "" ])
+        .where.not(download_client_id: nil)
+        .pluck(:download_client_id, :external_id, :id)
+      owner_scope = downloads.completed.where.not(post_processing_job_id: [ nil, "" ])
+      live_ids = PostProcessingRecoveryJob.unfinished_active_job_ids(owner_scope.pluck(:post_processing_job_id))
+      if live_ids.any?
+        raise CancellationBlockedError, post_processing_recovery_message
+      end
+
+      # A finished importer can leave library files the Book row does not name.
+      # Reconcile those before forgetting the owner; if they cannot be
+      # identified, the owner stays.
+      reconcile_finished_imports!
+
+      now = Time.current
+      downloads.where(status: [ :queued, :downloading, :paused ]).update_all(
+        status: Download.statuses[:failed],
+        updated_at: now
+      )
+      # A cleanup journal is the only record of source bytes still to remove.
+      owner_scope.where(post_processing_cleanup_state: [ nil, "" ]).update_all(
+        post_processing_job_id: nil,
+        updated_at: now
+      )
+      unless completed?
+        update!(
+          status: :failed,
+          attention_needed: false,
+          issue_description: nil
+        )
+      end
+      jobs
+    end
+  end
+
+  def reconcile_finished_imports!
+    downloads.find_each do |download|
+      next if download.post_processing_cleanup_state.present?
+
+      finished_owner = download.completed? && download.post_processing_job_id.present?
+      next if download.library_replacement_state.blank? && !finished_owner
+
+      prepared = LibraryReplacement.prepare_cancellation!(download)
+      next if prepared == true
+
+      raise CancellationBlockedError, post_processing_recovery_message
+    end
+  end
+
+  def self.remove_download_client_jobs!(jobs)
+    Array(jobs).uniq.each do |client_id, external_id, download_id|
+      next if client_id.blank? || external_id.blank?
+      next unless external_id.is_a?(String) && external_id.match?(StaleClientDispatchCleanupJob::SAFE_EXTERNAL_ID)
+      if Download.current_external_id_owner(external_id, download_client_id: client_id, except_id: download_id)
+        Rails.logger.info "[Request] Left a download client job that another request now owns"
+        next
+      end
+
+      client_record = DownloadClient.find_by(id: client_id)
+      adapter = client_record&.adapter
+      next unless adapter
+      next if client_job_removed!(adapter, external_id)
+
+      Rails.logger.warn "[Request] Client did not confirm removal for download client ##{client_id}; scheduling cleanup"
+      enqueue_admin_client_cleanup(client_id, external_id, download_id)
+      raise CancellationBlockedError,
+        "Shelfarr could not confirm that the download client removed this download, so the request was kept."
+    end
+  end
+
+  def self.client_job_removed!(adapter, external_id)
+    return true if adapter.remove_torrent(external_id, delete_files: false)
+
+    adapter.torrent_info(external_id).blank?
+  rescue StandardError => error
+    Rails.logger.warn "[Request] Failed to remove download client job: #{error.class}"
+    false
+  end
+
+  def self.enqueue_admin_client_cleanup(client_id, external_id, download_id)
+    StaleClientDispatchCleanupJob.perform_later(
+      client_id,
+      external_id,
+      delete_files: false,
+      except_download_id: download_id
+    )
+  rescue StandardError => e
+    Rails.logger.error "[Request] Failed to enqueue download client cleanup: #{e.class}"
+  end
+
+  def clear_direct_recovery_for_admin_removal!
+    downloads.reload.find_each do |download|
+      next unless DIRECT_RECOVERY_COLUMNS.any? { |column| download.public_send(column).present? }
+      next if DirectDownloadFileService.release_stopped_acquisition!(download) == true
+
+      raise CancellationBlockedError, direct_acquisition_recovery_message
+    end
+  end
+
+  def finish_admin_removal!(preserve_reference_roots: true)
+    with_acquisition_transition_lock do
+      message = admin_removal_blocked_message
+      raise CancellationBlockedError, message if message
+      if direct_acquisition_recovery_pending?
+        raise CancellationBlockedError, direct_acquisition_recovery_message
+      end
+      if downloads.where(status: [ :queued, :downloading, :paused ]).exists?
+        raise CancellationBlockedError, "This request still has an active download. Wait for it to finish before removing it."
+      end
+
+      if preserve_reference_roots && completed?
+        LibraryDownloadRoots.new(book.reload).preserve_legacy_reference_roots!
+      end
+
+      @removing_as_admin = true
+      destroy!
+    end
+  rescue LibraryDownloadRoots::UnavailableRootError => error
+    raise CancellationBlockedError, error.message
   end
 
   def next_retry_in_words
@@ -661,13 +836,14 @@ class Request < ApplicationRecord
   def prevent_destroy_during_active_acquisition
     serialize_acquisition_transition!
 
-    message = if upload_cancellation_blocked?
+    message = if @removing_as_admin
+      admin_removal_blocked_message
+    elsif upload_cancellation_blocked?
       upload_cancellation_blocked_message
     elsif post_processing_recovery_pending?
       post_processing_recovery_message
-    elsif direct_acquisition_recovery_pending?
-      direct_acquisition_recovery_message
     end
+    message ||= direct_acquisition_recovery_message if direct_acquisition_recovery_pending?
     return unless message
 
     errors.add(:base, message)
@@ -702,7 +878,7 @@ class Request < ApplicationRecord
     scope.update_all(external_id_released_at: Time.current, updated_at: Time.current)
   end
 
-  def select_result_under_lock!(search_result)
+  def select_result_under_lock!(search_result, replace_library_file: false)
     # Same lock import claims use, so replacement cannot retire an id that
     # post-processing has just claimed. Selection during processing is
     # otherwise allowed, but the copy does not change request status.
@@ -711,9 +887,11 @@ class Request < ApplicationRecord
         raise ArgumentError, "Cannot replace a download while its library import is still running"
       end
 
+      replacing = library_replacement_requested?(replace_library_file)
+      reject_unfinished_library_replacement!(search_result) if replacing
       release_legacy_completed_import_owner!
       release_completed_external_ids!(release_import_owner: false)
-      select_result_after_releasing_external_ids!(search_result)
+      select_result_after_releasing_external_ids!(search_result, replace_library_file: replacing)
     end
   end
 
@@ -734,7 +912,7 @@ class Request < ApplicationRecord
     scope.update_all(post_processing_job_id: nil, updated_at: Time.current)
   end
 
-  def select_result_after_releasing_external_ids!(search_result)
+  def select_result_after_releasing_external_ids!(search_result, replace_library_file: false)
     downloads.where(status: [ :queued, :downloading, :paused ]).find_each do |download|
       cancel_download(download)
     end
@@ -760,7 +938,8 @@ class Request < ApplicationRecord
       name: search_result.title,
       size_bytes: search_result.size_bytes,
       search_result: search_result,
-      status: :queued
+      status: :queued,
+      replace_library_file: replace_library_file
     )
 
     update!(
@@ -808,13 +987,13 @@ class Request < ApplicationRecord
     :manual_review
   end
 
-  def attempt_next_candidate!(failure_reason:, mark_exhausted: true)
+  def attempt_next_candidate!(failure_reason:, mark_exhausted: true, replace_library_file: false)
     search_results.rejected.not_blocklisted.update_all(
       status: SearchResult.statuses[:pending],
       updated_at: Time.current
     )
 
-    selection = AutoSelectService.call(self)
+    selection = AutoSelectService.call(self, replace_library_file: replace_library_file)
     if selection.success?
       track_diagnostic(
         "fallback_selected",
@@ -898,6 +1077,44 @@ class Request < ApplicationRecord
 
   def download_dispatch_in_progress?
     downloads.downloading.where(external_id: [ nil, "" ]).exists?
+  end
+
+  def direct_publication_in_progress?
+    downloads.any? { |download| DirectDownloadFileService.live_recovery_lease?(download) }
+  end
+
+  # Pending uploads have no published bytes yet. Processing uploads, uploads
+  # that already reserved a destination, and Audible backups still do.
+  def admin_upload_or_backup_blocked?
+    return false unless persisted?
+    return true if uploads.processing.exists?
+    return true if uploads.where.not(status: Upload.statuses[:completed]).any?(&:recovery_state?)
+
+    upload_ids = uploads.select(:id)
+    OwnedMediaImport.cancellation_blocking.where(request_id: id)
+      .or(OwnedMediaImport.cancellation_blocking.where(upload_id: upload_ids))
+      .exists?
+  end
+
+  def library_replacement_requested?(value)
+    ActiveModel::Type::Boolean.new.cast(value) == true && book.reload.acquired?
+  end
+
+  def reject_unfinished_library_replacement!(search_result)
+    if downloads.completed.where.not(post_processing_cleanup_state: [ nil, "" ]).exists?
+      raise ArgumentError, "Cannot replace the library file while post-processing cleanup is still in progress"
+    end
+    if direct_acquisition_recovery_pending?
+      raise ArgumentError, "Cannot replace the library file while a direct download is awaiting recovery"
+    end
+
+    released = LibraryReplacement.release_conflicting_plans!(book, artifact_id: search_result.id)
+    if RemoteResult.failed?(released)
+      raise ArgumentError, "Cannot replace the library file while an earlier replacement plan cannot be read"
+    end
+    return if released == true
+
+    raise ArgumentError, "Cannot replace the library file while an earlier replacement still has files to remove"
   end
 
   def search_refresh_acquisition_blocked?

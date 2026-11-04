@@ -15,6 +15,35 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     clear_enqueued_jobs
   end
 
+  test "handle_download_failure keeps replace_library_file on the fallback download" do
+    SettingsService.set(:auto_select_enabled, true)
+    book = Book.create!(
+      title: "Fallback Book",
+      author: "Fallback Author",
+      book_type: :ebook,
+      file_path: "/ebooks/fallback-book.epub",
+      open_library_work_id: SecureRandom.uuid
+    )
+    request = Request.create!(book: book, user: users(:one), status: :downloading, language: "en")
+    selected = create_result(request, guid: "failed-replacement", status: :selected, seeders: 100)
+    fallback = create_result(request, guid: "fallback-replacement", status: :rejected, seeders: 20)
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      replace_library_file: true
+    )
+
+    assert_enqueued_with(job: DownloadJob) do
+      request.handle_download_failure!(failed_download, reason: "Dead torrent")
+    end
+
+    assert fallback.reload.selected?
+    retried = request.downloads.order(:id).last
+    assert_equal fallback.id, retried.search_result_id
+    assert retried.replace_library_file?
+  end
+
   test "handle_download_failure blocklists selected release and selects next candidate" do
     SettingsService.set(:auto_select_enabled, true)
     request = build_request

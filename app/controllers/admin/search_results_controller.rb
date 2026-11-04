@@ -17,7 +17,10 @@ module Admin
       end
 
       begin
-        @request.select_result!(@search_result)
+        @request.select_result!(
+          @search_result,
+          replace_library_file: params[:replace_library_file]
+        )
         redirect_back fallback_location: requests_path,
                       notice: "Download initiated for: #{@search_result.title}"
       rescue ArgumentError => e

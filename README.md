@@ -205,6 +205,8 @@ After logging in, go to **Admin → Settings**:
 
 The save bar stays visible as you scroll. Preferences save automatically and show **Saved** when complete; connection details and fields marked **Requires Save All** need **Save All**. Unused direct sources start collapsed—open their heading to configure them. Downloads lists output paths first, with polling and retry options under **Advanced download settings**.
 
+When cancelling a failed library import, Shelfarr removes partial files only when it can verify a private publication inode and unchanged content. Reference links, shared hardlinks, legacy entries without that provenance, and files it cannot verify within the cleanup read budget are retained; their paths are logged for manual review. The read budget is shared across a cancellation batch to limit time spent reading media while a database write transaction is open. A single filesystem call can still block on a slow or unavailable mount. An unresolved quarantine or filesystem error keeps the recovery journal and blocks cancellation. Explicitly deleting an acquired book's library files uses its recorded library ownership instead.
+
 Only the selected indexer and library platform's credentials are shown. Switching providers preserves stored credentials and any unfinished draft for the other provider. **Save All** saves the active provider's draft; switch back to save a draft for another provider. Custom indexer categories appear when Search Scope is **Custom**. Without JavaScript, provider fields and settings sections remain available and all changes require **Save All**.
 
 See the [settings overview](docs/screenshot-settings.jpg) and [mobile save feedback](docs/screenshot-settings-mobile.jpg).

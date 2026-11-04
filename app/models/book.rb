@@ -106,6 +106,9 @@ class Book < ApplicationRecord
       .merge(Download.completed.where.not(post_processing_cleanup_state: [ nil, "" ]))
       .exists?
     return true if cleanup_pending
+    # Replacement cleanup still names the previous file after the importer
+    # owner is gone. Query downloads directly so this association stays unloaded.
+    return true if LibraryReplacement.cleanup_actionable_for_book?(self)
     # Do not load `requests` here. Callers destroy those rows and then this
     # Book, and a loaded association would still look occupied.
     return true if PostProcessingRecoveryJob.unfinished_active_job_ids(post_processing_owner_ids).any?
@@ -339,6 +342,66 @@ class Book < ApplicationRecord
   end
 
   private_class_method :normalize_reference_target_root, :conflicting_reference_target_roots?
+
+  public
+
+  # Stops client jobs and recoverable direct downloads before the row is removed.
+  # Library files are deleted only after that cleanup succeeds, and only inside
+  # a managed library root.
+  def remove_from_library_as_admin!(delete_files:, user:)
+    message = library_admin_removal_blocked_message
+    raise Request::CancellationBlockedError, message if message
+
+    jobs = requests.flat_map(&:neutralize_for_admin_removal!)
+    Request.remove_download_client_jobs!(jobs)
+    requests.find_each(&:clear_direct_recovery_for_admin_removal!)
+
+    reload
+    message = library_admin_removal_blocked_message(after_neutralize: true)
+    raise Request::CancellationBlockedError, message if message
+
+    SafeLibraryDeletionService.new(self).delete! if delete_files && file_path.present?
+
+    transaction do
+      ActivityTracker.track("book.deleted", trackable: self, user: user)
+      requests.find_each do |request|
+        request.finish_admin_removal!(preserve_reference_roots: false)
+      end
+      requests.reset
+      destroy!
+    end
+  end
+
+  def library_admin_removal_blocked_message(after_neutralize: false)
+    if owned_media_recovery_pending?
+      return "An Audible backup still owns recovery state for this book"
+    end
+
+    requests.each do |request|
+      message = request.admin_removal_blocked_message
+      return message if message
+    end
+    return nil unless after_neutralize
+
+    if acquisition_reserved?
+      return "An acquisition still owns a recovery reservation for this book"
+    end
+    if post_processing_recovery_pending?
+      return "A completed download still owns recoverable post-processing for this book"
+    end
+
+    requests.each do |request|
+      if request.direct_acquisition_recovery_pending?
+        return request.direct_acquisition_recovery_message
+      end
+      if request.downloads.where(status: [ :queued, :downloading, :paused ]).exists?
+        return "This request still has an active download. Wait for it to finish before removing it."
+      end
+    end
+    nil
+  end
+
+  private
 
   def post_processing_owner_ids
     Download.completed

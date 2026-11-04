@@ -76,8 +76,9 @@ module DownloadClients
 
     def remove_torrent(nzbget_id, delete_files: false)
       id = nzbget_id.to_i
-
-      result = rpc_call("editqueue", [ "GroupDelete", 0, "", [ id ] ])
+      # GroupDelete removes downloaded files. GroupParkDelete keeps them.
+      queue_command = delete_files ? "GroupDelete" : "GroupParkDelete"
+      result = rpc_call("editqueue", [ queue_command, 0, "", [ id ] ])
 
       if result == true
         Rails.logger.info "[Nzbget] Removed download #{nzbget_id} from queue"

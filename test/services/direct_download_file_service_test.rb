@@ -22,98 +22,6 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     FileUtils.rm_rf(@output_root)
   end
 
-  test "applies configured library import modes after a direct file import" do
-    SettingsService.set(:library_import_file_mode, "0664")
-    SettingsService.set(:library_import_folder_mode, "0775")
-    root_mode = File.stat(@output_root).mode & 0o777
-
-    publish_direct_ebook!("PK\x03\x04permissioned ebook")
-
-    assert_equal 0o664, File.stat(@destination).mode & 0o777
-    assert_equal 0o775, File.stat(File.dirname(@destination)).mode & 0o777
-    assert_equal 0o775, File.stat(File.dirname(File.dirname(@destination))).mode & 0o777
-    assert_equal root_mode, File.stat(@output_root).mode & 0o777
-    assert @request.reload.completed?
-  end
-
-  test "directory imports apply folder and file modes and skip shared inodes" do
-    SettingsService.set(:library_import_file_mode, "0664")
-    SettingsService.set(:library_import_folder_mode, "0775")
-    service = directory_service
-    staging = service.create_staging!
-    source = File.join(staging, "extracted")
-    FileUtils.mkdir_p(File.join(source, "disc"))
-    File.binwrite(File.join(source, "chapter_01.mp3"), "one")
-    File.binwrite(File.join(source, "disc", "chapter_02.mp3"), "two")
-    File.link(File.join(source, "chapter_01.mp3"), File.join(source, "chapter_01-link.mp3"))
-    root_mode = File.stat(@output_root).mode & 0o777
-
-    assert service.publish_directory_and_finalize!(source)
-
-    linked = File.join(directory_destination, "chapter_01.mp3")
-    link_name = File.join(directory_destination, "chapter_01-link.mp3")
-    copied = File.join(directory_destination, "disc", "chapter_02.mp3")
-    assert_equal [ File.stat(linked).dev, File.stat(linked).ino ],
-      [ File.stat(link_name).dev, File.stat(link_name).ino ]
-    assert_equal 0o640, File.stat(linked).mode & 0o777
-    assert_equal 0o664, File.stat(copied).mode & 0o777
-    assert_equal 0o775, File.stat(File.join(directory_destination, "disc")).mode & 0o777
-    assert_equal 0o775, File.stat(directory_destination).mode & 0o777
-    assert_equal 0o775, File.stat(File.dirname(directory_destination)).mode & 0o777
-    assert_equal root_mode, File.stat(@output_root).mode & 0o777
-    assert @request.reload.completed?
-  end
-
-  test "an identical existing hardlink is not chmodded" do
-    SettingsService.set(:library_import_file_mode, "0664")
-    SettingsService.set(:library_import_folder_mode, "0775")
-    retained = File.join(@output_root, "retained-torrent.epub")
-    File.binwrite(retained, "PK\x03\x04same bytes")
-    File.chmod(0o604, retained)
-    FileUtils.mkdir_p(File.dirname(@destination))
-    File.link(retained, @destination)
-
-    publish_direct_ebook!("PK\x03\x04same bytes")
-
-    assert_equal [ File.stat(retained).dev, File.stat(retained).ino ],
-      [ File.stat(@destination).dev, File.stat(@destination).ino ]
-    assert_operator File.stat(@destination).nlink, :>, 1
-    assert_equal 0o604, File.stat(retained).mode & 0o777
-    assert_equal 0o604, File.stat(@destination).mode & 0o777
-    assert @request.reload.completed?
-  end
-
-  test "an identical existing private file still receives the configured mode" do
-    SettingsService.set(:library_import_file_mode, "0664")
-    FileUtils.mkdir_p(File.dirname(@destination))
-    File.binwrite(@destination, "PK\x03\x04private bytes")
-    File.chmod(0o640, @destination)
-
-    publish_direct_ebook!("PK\x03\x04private bytes")
-
-    assert_equal 1, File.stat(@destination).nlink
-    assert_equal 0o664, File.stat(@destination).mode & 0o777
-    assert @request.reload.completed?
-  end
-
-  test "a direct import chmod failure does not fail publication" do
-    SettingsService.set(:library_import_file_mode, "0664")
-    SettingsService.set(:library_import_folder_mode, "0775")
-    real_fchmod = FileCopyService.method(:native_fchmod)
-    denying_fchmod = lambda do |descriptor, mode|
-      raise Errno::EPERM, "smb" if [ 0o664, 0o775 ].include?(mode)
-
-      real_fchmod.call(descriptor, mode)
-    end
-
-    FileCopyService.stub(:native_fchmod, denying_fchmod) do
-      publish_direct_ebook!("PK\x03\x04chmod denied")
-    end
-
-    assert @request.reload.completed?
-    assert_equal 0o640, File.stat(@destination).mode & 0o777
-  end
-
   test "publishes a file outside a database transaction while a durable Book reservation is visible" do
     staging = @service.create_staging!
     observed_transaction = nil
@@ -950,6 +858,386 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "a retried direct replacement reuses the isolated directory" do
+    SettingsService.set(:audiobook_output_path, @output_root)
+    old_dir = File.join(@output_root, "Ada", "Title")
+    isolated = File.join(@output_root, "Ada", "Title (2)")
+    third = File.join(@output_root, "Ada", "Title (3)")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(title: "Title", author: "Ada", book_type: :audiobook, file_path: old_dir)
+    @download.update!(replace_library_file: true)
+    attempts = 0
+    real_move = FileCopyService.method(:mv_directory_noreplace)
+
+    FileCopyService.stub(:mv_directory_noreplace, lambda { |source, destination, **kwargs|
+      attempts += 1
+      if attempts == 1
+        state = @download.reload.library_replacement_state.to_s
+        assert_includes state, old_dir
+        assert_includes state, "Title (2)"
+        FileUtils.mkdir_p(destination)
+        File.binwrite(File.join(destination, "partial.mp3"), "partial")
+        raise Interrupt
+      end
+
+      FileUtils.rm_rf(destination)
+      real_move.call(source, destination, **kwargs)
+    }) do
+      service = direct_replacement_service(old_dir)
+      staging = service.create_staging!
+      source = stage_replacement_source(staging)
+
+      assert_raises(Interrupt) { service.publish_directory_and_finalize!(source) }
+      assert_equal old_dir, @book.reload.file_path
+      assert File.directory?(isolated)
+      assert_not File.exist?(third)
+      assert_includes @download.reload.library_replacement_state.to_s, old_dir
+
+      DirectDownloadFileService.send(:release_reservation!, @download.reload)
+      @book.update!(
+        acquisition_reservation_token: nil,
+        acquisition_reservation_owner_type: nil,
+        acquisition_reservation_owner_id: nil
+      )
+      retry_service = direct_replacement_service(old_dir)
+      retry_staging = retry_service.create_staging!
+      assert retry_service.publish_directory_and_finalize!(stage_replacement_source(retry_staging))
+    end
+
+    assert_equal isolated, @book.reload.file_path
+    assert_equal "new audio", File.binread(File.join(isolated, "track.mp3"))
+    assert_not File.exist?(old_dir)
+    assert_not File.exist?(third)
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "direct replacement cleanup survives a crash after the new file is attached" do
+    SettingsService.set(:audiobook_output_path, @output_root)
+    old_dir = File.join(@output_root, "Ada", "Title")
+    isolated = File.join(@output_root, "Ada", "Title (2)")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(title: "Title", author: "Ada", book_type: :audiobook, file_path: old_dir)
+    @download.update!(replace_library_file: true)
+    service = direct_replacement_service(old_dir)
+    staging = service.create_staging!
+    source = stage_replacement_source(staging)
+
+    SafeLibraryDeletionService.stub(:delete_previous_library_file!, ->(*) {
+      RemoteResult::Failed.new(Errno::EIO.new("previous library file"))
+    }) do
+      assert service.publish_directory_and_finalize!(source)
+    end
+
+    assert service.cleanup_after_run!
+    assert_equal isolated, @book.reload.file_path
+    assert_equal "old audio", File.binread(File.join(old_dir, "old.mp3"))
+    assert_includes @download.reload.library_replacement_state.to_s, old_dir
+
+    DirectDownloadRecoveryJob.perform_now
+
+    assert_not File.exist?(old_dir)
+    assert_nil @download.reload.library_replacement_state
+    assert_equal "new audio", File.binread(File.join(isolated, "track.mp3"))
+  end
+
+  test "replacement failure keeps every recovery record when the output root was substituted" do
+    original = File.join(@output_root, "original.epub")
+    destination = File.join(@output_root, "replacement.epub")
+    displaced = "#{@output_root}-displaced"
+    File.binwrite(original, "old library bytes")
+    @book.update!(file_path: original)
+    @download.update!(replace_library_file: true)
+    SettingsService.set(:ebook_output_path, @output_root)
+    service = replacement_file_service(destination)
+    staging = service.create_staging!
+    swap_then_fail = lambda do |_source, target, **_options|
+      File.rename(@output_root, displaced)
+      FileUtils.mkdir_p(File.dirname(target))
+      File.binwrite(target, "unrelated bytes on the substitute")
+      raise IOError, "output root was replaced during publication"
+    end
+
+    Tempfile.create([ "ebook-", ".epub" ], staging) do |source|
+      write_staged_file(source, "PK\x03\x04new ebook")
+      FileCopyService.stub(:cp_io_noreplace, swap_then_fail) do
+        assert_raises(IOError) { service.publish_file_and_finalize!(source) }
+      end
+    end
+
+    assert_equal "unrelated bytes on the substitute", File.binread(destination)
+    @download.reload
+    assert @download.direct_staging_path.present?
+    assert @download.direct_reservation_token.present?
+    assert_equal @download.direct_reservation_token, @book.reload.acquisition_reservation_token
+    assert_includes @download.library_replacement_state.to_s, original
+    assert_equal "old library bytes", File.binread(File.join(displaced, "original.epub"))
+  ensure
+    FileUtils.rm_rf(displaced)
+  end
+
+  test "a failed direct replacement keeps a file another writer published first" do
+    original = File.join(@output_root, "original.epub")
+    destination = File.join(@output_root, "replacement.epub")
+    File.binwrite(original, "old library bytes")
+    @book.update!(file_path: original)
+    @download.update!(replace_library_file: true)
+    SettingsService.set(:ebook_output_path, @output_root)
+    service = replacement_file_service(destination)
+    staging = service.create_staging!
+    foreign_then_fail = lambda do |_source, target, **_options|
+      File.binwrite(target, "unrelated bytes")
+      raise IOError, "storage failed before publication"
+    end
+
+    Tempfile.create([ "ebook-", ".epub" ], staging) do |source|
+      write_staged_file(source, "PK\x03\x04new ebook")
+      FileCopyService.stub(:cp_io_noreplace, foreign_then_fail) do
+        assert_raises(IOError) { service.publish_file_and_finalize!(source) }
+      end
+    end
+
+    assert_equal "unrelated bytes", File.binread(destination)
+    assert_equal original, @book.reload.file_path
+  end
+
+  test "a failed direct replacement removes the file it proved it published" do
+    original = File.join(@output_root, "original.epub")
+    destination = File.join(@output_root, "replacement.epub")
+    File.binwrite(original, "old library bytes")
+    @book.update!(file_path: original)
+    @download.update!(replace_library_file: true)
+    SettingsService.set(:ebook_output_path, @output_root)
+    service = replacement_file_service(destination)
+    staging = service.create_staging!
+    real_copy = FileCopyService.method(:cp_io_noreplace)
+    publish_then_fail = lambda do |source, target, **options|
+      real_copy.call(source, target, **options)
+      raise IOError, "sync failed after publication"
+    end
+
+    Tempfile.create([ "ebook-", ".epub" ], staging) do |source|
+      write_staged_file(source, "PK\x03\x04new ebook")
+      FileCopyService.stub(:cp_io_noreplace, publish_then_fail) do
+        DirectDownloadFileService.stub(:publication_complete?, false) do
+          assert_raises(IOError) { service.publish_file_and_finalize!(source) }
+        end
+      end
+    end
+
+    assert_not File.exist?(destination)
+    assert_equal "old library bytes", File.binread(original)
+    assert_includes @download.reload.library_replacement_state.to_s, original
+  end
+
+  test "cancelling a stopped direct directory replacement removes proven files and keeps additions" do
+    SettingsService.set(:audiobook_output_path, @output_root)
+    old_dir = File.join(@output_root, "Ada", "Title")
+    isolated = File.join(@output_root, "Ada", "Title (2)")
+    FileUtils.mkdir_p(old_dir)
+    File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+    @book.update!(title: "Title", author: "Ada", book_type: :audiobook, file_path: old_dir)
+    @download.update!(replace_library_file: true)
+    service = direct_replacement_service(old_dir)
+    staging = service.create_staging!
+    source = stage_replacement_source(staging)
+    FileUtils.mkdir_p(File.join(source, "disc"))
+    File.binwrite(File.join(source, "disc", "nested.mp3"), "nested audio")
+    real_move = FileCopyService.method(:mv_directory_noreplace)
+
+    FileCopyService.stub(:mv_directory_noreplace, lambda { |directory, destination, **options|
+      real_move.call(directory, destination, **options)
+      raise Interrupt
+    }) do
+      assert_raises(Interrupt) { service.publish_directory_and_finalize!(source) }
+    end
+
+    assert_equal "new audio", File.binread(File.join(isolated, "track.mp3"))
+    File.binwrite(File.join(isolated, "added-later.mp3"), "added later")
+
+    assert_equal true, LibraryReplacement.prepare_cancellation!(@download.reload)
+
+    assert_equal [ "added-later.mp3" ], Dir.children(isolated)
+    assert_equal "added later", File.binread(File.join(isolated, "added-later.mp3"))
+    assert_equal "old audio", File.binread(File.join(old_dir, "old.mp3"))
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "a failed attempt leaves a replacement another worker already attached" do
+    original = File.join(@output_root, "original.epub")
+    destination = File.join(@output_root, "replacement.epub")
+    File.binwrite(original, "old library bytes")
+    @book.update!(file_path: original)
+    @download.update!(replace_library_file: true)
+    SettingsService.set(:ebook_output_path, @output_root)
+    service = replacement_file_service(destination)
+    staging = service.create_staging!
+    real_copy = FileCopyService.method(:cp_io_noreplace)
+    publish_then_fail = lambda do |source, target, **options|
+      real_copy.call(source, target, **options)
+      Book.where(id: @book.id).update_all(file_path: target)
+      raise IOError, "sync failed after publication"
+    end
+
+    Tempfile.create([ "ebook-", ".epub" ], staging) do |source|
+      write_staged_file(source, "PK\x03\x04new ebook")
+      FileCopyService.stub(:cp_io_noreplace, publish_then_fail) do
+        DirectDownloadFileService.stub(:publication_complete?, false) do
+          assert_raises(IOError) { service.publish_file_and_finalize!(source) }
+        end
+      end
+    end
+
+    assert_equal "PK\x03\x04new ebook", File.binread(destination)
+    assert_equal "old library bytes", File.binread(original)
+  end
+
+  test "cancelling a stopped direct file replacement removes the proven file" do
+    original = File.join(@output_root, "original.epub")
+    destination = File.join(@output_root, "replacement.epub")
+    File.binwrite(original, "old library bytes")
+    @book.update!(file_path: original)
+    @download.update!(replace_library_file: true)
+    SettingsService.set(:ebook_output_path, @output_root)
+    service = replacement_file_service(destination)
+    staging = service.create_staging!
+    real_copy = FileCopyService.method(:cp_io_noreplace)
+
+    Tempfile.create([ "ebook-", ".epub" ], staging) do |source|
+      write_staged_file(source, "PK\x03\x04new ebook")
+      FileCopyService.stub(:cp_io_noreplace, lambda { |io, target, **options|
+        real_copy.call(io, target, **options)
+        raise Interrupt
+      }) do
+        assert_raises(Interrupt) { service.publish_file_and_finalize!(source) }
+      end
+    end
+
+    assert File.exist?(destination)
+    assert_equal true, LibraryReplacement.prepare_cancellation!(@download.reload)
+    assert_not File.exist?(destination)
+    assert_equal "old library bytes", File.binread(original)
+  end
+
+  test "a direct replacement that fails after a complete publication still finishes" do
+    original = File.join(@output_root, "original.epub")
+    destination = File.join(@output_root, "replacement.epub")
+    File.binwrite(original, "old library bytes")
+    @book.update!(file_path: original)
+    @download.update!(replace_library_file: true)
+    SettingsService.set(:ebook_output_path, @output_root)
+    service = replacement_file_service(destination)
+    staging = service.create_staging!
+    real_copy = FileCopyService.method(:cp_io_noreplace)
+
+    Tempfile.create([ "ebook-", ".epub" ], staging) do |source|
+      write_staged_file(source, "PK\x03\x04new ebook")
+      FileCopyService.stub(:cp_io_noreplace, lambda { |io, target, **options|
+        real_copy.call(io, target, **options)
+        raise IOError, "sync failed after publication"
+      }) do
+        assert service.publish_file_and_finalize!(source)
+      end
+    end
+
+    assert_equal destination, @book.reload.file_path
+    assert_not File.exist?(original)
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "applies configured library import modes after a direct file import" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    root_mode = File.stat(@output_root).mode & 0o777
+
+    publish_direct_ebook!("PK\x03\x04permissioned ebook")
+
+    assert_equal 0o664, File.stat(@destination).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(@destination)).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(File.dirname(@destination))).mode & 0o777
+    assert_equal root_mode, File.stat(@output_root).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "directory imports apply folder and file modes and skip shared inodes" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    service = directory_service
+    staging = service.create_staging!
+    source = File.join(staging, "extracted")
+    FileUtils.mkdir_p(File.join(source, "disc"))
+    File.binwrite(File.join(source, "chapter_01.mp3"), "one")
+    File.binwrite(File.join(source, "disc", "chapter_02.mp3"), "two")
+    File.link(File.join(source, "chapter_01.mp3"), File.join(source, "chapter_01-link.mp3"))
+    root_mode = File.stat(@output_root).mode & 0o777
+
+    assert service.publish_directory_and_finalize!(source)
+
+    linked = File.join(directory_destination, "chapter_01.mp3")
+    link_name = File.join(directory_destination, "chapter_01-link.mp3")
+    copied = File.join(directory_destination, "disc", "chapter_02.mp3")
+    assert_equal [ File.stat(linked).dev, File.stat(linked).ino ],
+      [ File.stat(link_name).dev, File.stat(link_name).ino ]
+    assert_equal 0o640, File.stat(linked).mode & 0o777
+    assert_equal 0o664, File.stat(copied).mode & 0o777
+    assert_equal 0o775, File.stat(File.join(directory_destination, "disc")).mode & 0o777
+    assert_equal 0o775, File.stat(directory_destination).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(directory_destination)).mode & 0o777
+    assert_equal root_mode, File.stat(@output_root).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "an identical existing hardlink is not chmodded" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    retained = File.join(@output_root, "retained-torrent.epub")
+    File.binwrite(retained, "PK\x03\x04same bytes")
+    File.chmod(0o604, retained)
+    FileUtils.mkdir_p(File.dirname(@destination))
+    File.link(retained, @destination)
+
+    publish_direct_ebook!("PK\x03\x04same bytes")
+
+    assert_equal [ File.stat(retained).dev, File.stat(retained).ino ],
+      [ File.stat(@destination).dev, File.stat(@destination).ino ]
+    assert_operator File.stat(@destination).nlink, :>, 1
+    assert_equal 0o604, File.stat(retained).mode & 0o777
+    assert_equal 0o604, File.stat(@destination).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "an identical existing private file still receives the configured mode" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    FileUtils.mkdir_p(File.dirname(@destination))
+    File.binwrite(@destination, "PK\x03\x04private bytes")
+    File.chmod(0o640, @destination)
+
+    publish_direct_ebook!("PK\x03\x04private bytes")
+
+    assert_equal 1, File.stat(@destination).nlink
+    assert_equal 0o664, File.stat(@destination).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "a direct import chmod failure does not fail publication" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    real_fchmod = FileCopyService.method(:native_fchmod)
+    denying_fchmod = lambda do |descriptor, mode|
+      raise Errno::EPERM, "smb" if [ 0o664, 0o775 ].include?(mode)
+
+      real_fchmod.call(descriptor, mode)
+    end
+
+    FileCopyService.stub(:native_fchmod, denying_fchmod) do
+      publish_direct_ebook!("PK\x03\x04chmod denied")
+    end
+
+    assert @request.reload.completed?
+    assert_equal 0o640, File.stat(@destination).mode & 0o777
+  end
+
   test "an unreadable stored file mode cannot break direct publication" do
     SettingsService.set(:library_import_file_mode, "0664")
     Setting.find_by!(key: "library_import_file_mode").update!(value: "0220")
@@ -961,6 +1249,43 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  def replacement_file_service(destination)
+    DirectDownloadFileService.new(
+      download: @download,
+      book: @book,
+      output_root: @output_root,
+      destination_path: destination,
+      book_path: destination,
+      kind: :file
+    )
+  end
+
+  def write_staged_file(file, contents)
+    file.binmode
+    file.write(contents)
+    file.flush
+    file.fsync
+    file.rewind
+  end
+
+  def direct_replacement_service(library_path)
+    DirectDownloadFileService.new(
+      download: @download,
+      book: @book,
+      output_root: @output_root,
+      destination_path: library_path,
+      book_path: library_path,
+      kind: :directory
+    )
+  end
+
+  def stage_replacement_source(staging)
+    source = File.join(staging, "extracted")
+    FileUtils.mkdir_p(source)
+    File.binwrite(File.join(source, "track.mp3"), "new audio")
+    source
+  end
 
   def build_service
     DirectDownloadFileService.new(

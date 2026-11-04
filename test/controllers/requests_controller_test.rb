@@ -1755,6 +1755,68 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action='#{manual_nzb_request_path(@pending_request)}']", count: 0
   end
 
+  test "admin can replace a completed library file with a manual magnet or NZB" do
+    book = Book.create!(
+      title: "Already shelved",
+      author: "Ada Lovelace",
+      book_type: :ebook,
+      file_path: "/ebooks/already-shelved.epub"
+    )
+    request = Request.create!(book: book, user: @user, status: :completed)
+    sign_out
+    sign_in_as(@admin)
+
+    get request_path(request)
+
+    assert_response :success
+    assert_select "form[action='#{manual_magnet_request_path(request)}']"
+    assert_select "form[action='#{manual_nzb_request_path(request)}']"
+    assert_select "input[name='replace_library_file'][value='1']", count: 2
+
+    assert_no_difference "Download.count" do
+      post manual_magnet_request_path(request), params: {
+        magnet_url: "magnet:?xt=urn:btih:#{'a' * 40}"
+      }
+    end
+    assert_equal "Cannot add a magnet link to a completed request", flash[:alert]
+    assert request.reload.completed?
+
+    assert_enqueued_with(job: DownloadJob) do
+      post manual_magnet_request_path(request), params: {
+        magnet_url: "magnet:?xt=urn:btih:#{'b' * 40}",
+        replace_library_file: "1"
+      }
+    end
+    magnet_download = request.downloads.order(:id).last
+    assert_redirected_to request_path(request)
+    assert_equal "Magnet link queued for download.", flash[:notice]
+    assert request.reload.downloading?
+    assert magnet_download.replace_library_file?
+
+    nzb_request = Request.create!(book: book, user: @user, status: :completed)
+    assert_enqueued_with(job: DownloadJob) do
+      post manual_nzb_request_path(nzb_request), params: {
+        nzb_url: "https://downloads.example/already-shelved.nzb",
+        replace_library_file: "1"
+      }
+    end
+    nzb_download = nzb_request.downloads.order(:id).last
+    assert_equal "NZB URL queued for download.", flash[:notice]
+    assert nzb_request.reload.downloading?
+    assert nzb_download.replace_library_file?
+
+    blocked = Request.create!(book: book, user: @user, status: :completed)
+    blocked.downloads.create!(name: "Dispatch", status: :downloading, external_id: nil)
+    assert_no_difference "Download.count" do
+      post manual_nzb_request_path(blocked), params: {
+        nzb_url: "https://downloads.example/other.nzb",
+        replace_library_file: "1"
+      }
+    end
+    assert_equal "Cannot replace a download while dispatch is in progress", flash[:alert]
+    assert blocked.reload.completed?
+  end
+
   test "show hides manual download forms for processing request" do
     @pending_request.update!(status: :processing)
     sign_out
@@ -1820,7 +1882,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_in_as(@admin)
 
     request = @pending_request
-    request.define_singleton_method(:add_manual_magnet!) do |_magnet_url|
+    request.define_singleton_method(:add_manual_magnet!) do |_magnet_url, **|
       raise ActiveRecord::RecordNotUnique, "duplicate"
     end
     finder = Object.new
@@ -1894,7 +1956,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     sign_in_as(@admin)
 
     request = @pending_request
-    request.define_singleton_method(:add_manual_nzb!) do |_nzb_url|
+    request.define_singleton_method(:add_manual_nzb!) do |_nzb_url, **|
       raise ActiveRecord::RecordNotUnique, "duplicate"
     end
     finder = Object.new

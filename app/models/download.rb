@@ -40,6 +40,20 @@ class Download < ApplicationRecord
     "#{progress}%"
   end
 
+  # Failed rows are history. A completed row owns its client id only until
+  # that id is released. Anything still queued or running owns it now.
+  def self.current_external_id_owner(external_id, download_client_id:, except_id: nil)
+    return if external_id.blank? || download_client_id.blank?
+
+    scope = where(external_id: external_id.to_s, download_client_id: download_client_id)
+    scope = scope.where.not(id: except_id) if except_id.present?
+    scope.where.not(status: :failed).order(:id).detect(&:current_external_id_owner?)
+  end
+
+  def current_external_id_owner?
+    !completed? || external_id_released_at.blank?
+  end
+
   def claim_post_processing!(job_id, expected_owner_job_id: nil)
     if post_processing_job_id == job_id
       return self.class.where(id: id, post_processing_job_id: job_id).exists?

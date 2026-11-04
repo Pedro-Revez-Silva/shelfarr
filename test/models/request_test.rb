@@ -612,4 +612,63 @@ class RequestTest < ActiveSupport::TestCase
     end
     SolidQueue::Record.establish_connection(original_queue_config) if original_queue_config
   end
+
+  test "a live direct replacement lease blocks retirement from another request" do
+    Dir.mktmpdir do |root|
+      library = File.join(root, "audiobooks")
+      FileUtils.mkdir_p(library)
+      SettingsService.set(:audiobook_output_path, library)
+      old_dir = File.join(library, "Ada", "Title")
+      isolated = File.join(library, "Ada", "Title (2)")
+      published = File.join(isolated, "01.mp3")
+      FileUtils.mkdir_p(old_dir)
+      FileUtils.mkdir_p(isolated)
+      File.binwrite(File.join(old_dir, "old.mp3"), "old audio")
+      File.binwrite(published, "new track")
+      book = Book.create!(title: "Title", author: "Ada", book_type: :audiobook, file_path: old_dir)
+      earlier = Request.create!(book: book, user: users(:one), status: :failed)
+      other = earlier.search_results.create!(
+        guid: "direct-lease-other",
+        title: "Other release",
+        indexer: "Test",
+        download_url: "https://example.com/other.torrent",
+        status: :pending
+      )
+      later = Request.create!(book: book, user: users(:one), status: :downloading)
+      result = later.search_results.create!(
+        guid: "direct-lease-current",
+        title: "Current release",
+        indexer: "Test",
+        download_url: "https://example.com/current.torrent",
+        status: :selected
+      )
+      live = later.downloads.create!(
+        name: "Current release",
+        search_result: result,
+        status: :downloading,
+        download_type: "direct",
+        direct_staging_path: File.join(library, ".shelfarr-staging-v2", "direct-downloads", "download"),
+        replace_library_file: true,
+        library_replacement_state: JSON.generate(
+          "previous_path" => old_dir,
+          "destination" => isolated,
+          "book_path" => isolated,
+          "layout" => "directory",
+          "cleanup_pending" => true,
+          "published_paths" => [ published ]
+        )
+      )
+      live.touch
+
+      error = assert_raises(ArgumentError) do
+        earlier.select_result!(other, replace_library_file: true)
+      end
+
+      assert_match(/library file/i, error.message)
+      assert_equal "new track", File.binread(published)
+      assert_includes live.reload.library_replacement_state.to_s, published
+      assert_equal "old audio", File.binread(File.join(old_dir, "old.mp3"))
+      assert_equal 0, earlier.downloads.count
+    end
+  end
 end

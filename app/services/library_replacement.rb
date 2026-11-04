@@ -1,0 +1,787 @@
+# frozen_string_literal: true
+
+require "digest"
+require "json"
+require "pathname"
+
+# Remembers a confirmed replacement before bytes are published. A later attempt
+# reuses that destination, and the previous file stays recorded until deletion
+# succeeds.
+class LibraryReplacement
+  # Parent walks stop at the library root. The bound rejects a cycle those checks miss.
+  MAX_ANCESTOR_DEPTH = 1_000
+  # Cancellation can run under SQLite's global writer lock. Bound the added
+  # content-read work across the whole batch; keep files whose proof cannot
+  # finish in time rather than weakening verification or extending that lock.
+  PUBLICATION_VERIFICATION_SECONDS = 0.5
+  PROOF_PARENT_FIELDS = %w[parent_device parent_inode].freeze
+  PROOF_FILE_FIELDS = %w[device inode size].freeze
+
+  class UnreadablePlanError < StandardError; end
+
+  Plan = Data.define(
+    :previous_path,
+    :destination,
+    :book_path,
+    :layout,
+    :cleanup_pending,
+    :published_paths,
+    :publication_proofs,
+    :raw
+  ) do
+    def file?
+      layout == "file"
+    end
+  end
+
+  # Files this import has chosen for the library. Unlike a Plan, there is no
+  # previous copy to preserve.
+  Publication = Data.define(:published_paths, :publication_proofs, :raw)
+
+  class << self
+    def load(download)
+      raw = download.library_replacement_state
+      return if raw.blank?
+
+      data = JSON.parse(raw)
+      return invalid_plan("replacement plan is not an object") unless data.is_a?(Hash)
+
+      published_paths = published_paths_from(data)
+      return published_paths if RemoteResult.failed?(published_paths)
+
+      publication_proofs = publication_proofs_from(data)
+      return publication_proofs if RemoteResult.failed?(publication_proofs)
+
+      if publication_journal?(data)
+        return Publication.new(published_paths: published_paths, publication_proofs: publication_proofs, raw: raw)
+      end
+
+      previous_path = data["previous_path"].to_s
+      destination = data["destination"].to_s
+      book_path = data["book_path"].to_s
+      layout = data["layout"].to_s
+      if previous_path.blank? || destination.blank? || book_path.blank? || !layout.in?(%w[file directory])
+        return invalid_plan("replacement plan is incomplete")
+      end
+
+      Plan.new(
+        previous_path: previous_path,
+        destination: destination,
+        book_path: book_path,
+        layout: layout,
+        cleanup_pending: data["cleanup_pending"] != false,
+        published_paths: published_paths,
+        publication_proofs: publication_proofs,
+        raw: raw
+      )
+    rescue JSON::ParserError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def persist!(download, previous_path:, destination:, book_path:, layout:)
+      # Choosing a destination and retiring another plan have to be one
+      # book-scoped critical section, or two replacements can both be admitted.
+      with_book_lock(download.request&.book) do
+        existing = load(download)
+        return existing if existing.is_a?(Plan) || RemoteResult.failed?(existing)
+
+        payload = {
+          "previous_path" => previous_path.to_s,
+          "destination" => destination.to_s,
+          "book_path" => book_path.to_s,
+          "layout" => layout.to_s,
+          "cleanup_pending" => true
+        }
+        raw = JSON.generate(payload)
+        updated = Download.where(id: download.id, library_replacement_state: [ nil, "" ]).update_all(
+          library_replacement_state: raw,
+          updated_at: Time.current
+        )
+        if updated == 1
+          download.library_replacement_state = raw
+          return plan_from(payload, raw)
+        end
+
+        download.reload
+        load(download)
+      end
+    end
+
+    def adopt!(download, book, layout:)
+      current = book.file_path.to_s
+      return if current.blank?
+
+      donors = Download.joins(:request)
+        .where(requests: { book_id: book.id })
+        .where.not(id: download.id)
+        .where.not(library_replacement_state: [ nil, "" ])
+        .order(updated_at: :desc, id: :desc)
+      donors.each do |candidate|
+        plan = load(candidate)
+        return plan if RemoteResult.failed?(plan)
+        next unless plan.is_a?(Plan) && plan.layout == layout
+        next unless same_replacement_artifact?(candidate, download.search_result_id)
+
+        matched = same_path?(plan.previous_path, current)
+        return matched if RemoteResult.failed?(matched)
+        next unless matched
+        next if swap_committed?(book, plan)
+
+        return persist!(
+          download,
+          previous_path: plan.previous_path,
+          destination: plan.destination,
+          book_path: plan.book_path,
+          layout: plan.layout
+        )
+      end
+
+      nil
+    end
+
+    # A different release must not keep writing into the previous release's
+    # destination. Clear that plan before the new artifact chooses a path.
+    # A plan whose importer or direct lease is still running is left alone:
+    # its files are not retired, and the new admission does not start.
+    def release_conflicting_plans!(book, artifact_id:, except_download_id: nil)
+      return false unless book&.persisted?
+
+      with_book_lock(book) do
+        scope = Download.joins(:request)
+          .where(requests: { book_id: book.id })
+          .where.not(library_replacement_state: [ nil, "" ])
+        scope = scope.where.not(id: except_download_id) if except_download_id
+        scope.find_each do |candidate|
+          plan = load(candidate)
+          return plan if RemoteResult.failed?(plan)
+          next unless plan.is_a?(Plan)
+          return false if replacement_publication_live?(candidate)
+          next if same_replacement_artifact?(candidate, artifact_id)
+          next if cleanup_actionable?(candidate, book)
+
+          prepared = prepare_cancellation!(candidate)
+          return prepared unless prepared == true
+        end
+        true
+      end
+    end
+
+    # Hold the book row across plan retirement and admission. Re-entering on
+    # the same thread joins the lock already held by that admission.
+    def with_book_lock(book)
+      book_id = book.id if book&.persisted?
+      return yield if book_id.nil?
+
+      held = Thread.current[:library_replacement_book_lock]
+      return yield if held == book_id
+
+      Book.transaction do
+        locked = Book.where(id: book_id).update_all(updated_at: Time.current)
+        raise ActiveRecord::RecordNotFound, "Book is no longer available" unless locked == 1
+
+        Thread.current[:library_replacement_book_lock] = book_id
+        begin
+          yield
+        ensure
+          Thread.current[:library_replacement_book_lock] = held
+        end
+      end
+    end
+
+    # A later import can reuse a file this journal still names. The shared
+    # lock stays open until that import finishes finalizing the destination.
+    def share_reused_destination!(path)
+      destination_lock(path, shared: true, nonblock: false)
+    end
+
+    def release_destination_lock(lock)
+      return unless lock.is_a?(File)
+      return if lock.closed?
+
+      begin
+        lock.flock(File::LOCK_UN)
+      rescue SystemCallError => error
+        RemoteResult::Failed.new(error)
+      ensure
+        begin
+          lock.close unless lock.closed?
+        rescue SystemCallError => error
+          RemoteResult::Failed.new(error)
+        end
+      end
+    end
+
+    def matches_book?(plan, book)
+      current = book.file_path.to_s
+      return false if current.blank?
+
+      previous_match = same_path?(current, plan.previous_path)
+      return previous_match if RemoteResult.failed?(previous_match)
+      return true if previous_match
+
+      same_path?(current, plan.book_path)
+    end
+
+    # True when the new file is attached and the previous file still has to be
+    # removed. An unreadable record also blocks forgetting the download.
+    def cleanup_actionable?(download, book = nil)
+      plan = load(download)
+      return true if RemoteResult.failed?(plan)
+      return false unless plan.is_a?(Plan) && plan.cleanup_pending
+
+      book ||= download.request&.book
+      return true unless book
+
+      swap_committed?(book, plan)
+    end
+
+    def cleanup_actionable_for_request?(request)
+      request.downloads.where.not(library_replacement_state: [ nil, "" ]).any? do |download|
+        cleanup_actionable?(download)
+      end
+    end
+
+    def cleanup_actionable_for_book?(book)
+      return false unless book&.persisted?
+
+      Download.joins(:request)
+        .where(requests: { book_id: book.id })
+        .where.not(library_replacement_state: [ nil, "" ])
+        .any? { |download| cleanup_actionable?(download, book) }
+    end
+
+    def finish_cleanup!(download)
+      download.reload
+      plan = load(download)
+      return plan if RemoteResult.failed?(plan)
+      return true unless plan.is_a?(Plan)
+
+      book = download.request&.book
+      return false unless book
+
+      book.reload
+      return true unless cleanup_actionable?(download, book)
+
+      # The Book row can name the new path before that path is durable. Keep
+      # the previous copy until the attached file or directory is actually there.
+      present = attached_library_artifact?(book.file_path)
+      return present if RemoteResult.failed?(present)
+      return false unless present
+
+      deleted = SafeLibraryDeletionService.delete_previous_library_file!(book, plan.previous_path)
+      return deleted unless deleted == true
+
+      clear!(download, plan.raw)
+    end
+
+    def finish_pending_cleanups!
+      Download.where.not(library_replacement_state: [ nil, "" ]).find_each do |download|
+        finish_cleanup!(download)
+      rescue StandardError => error
+        Rails.logger.warn(
+          "[LibraryReplacement] Could not finish cleanup for download ##{download.id}: #{error.class}"
+        )
+      end
+    end
+
+    # Removes a partial publish that can be tied to this download, or reports
+    # that the published files could not be established. A committed swap is
+    # left for finish_cleanup! so the previous file is not dropped.
+    def prepare_cancellation!(download)
+      plan = load(download)
+      return plan if RemoteResult.failed?(plan)
+
+      book = download.request&.book
+      return false unless book
+
+      if plan.is_a?(Plan)
+        return false if cleanup_actionable?(download, book)
+
+        abandoned = abandon!(book, plan)
+        return abandoned unless abandoned == true
+
+        return clear!(download, plan.raw)
+      end
+
+      return clear!(download, plan.raw) if plan.is_a?(Publication) && publication_retained?(download, book)
+
+      return true unless plan.is_a?(Publication)
+
+      removable = published_paths_not_referenced_by(book, plan.published_paths)
+      return removable if RemoteResult.failed?(removable)
+
+      removed = remove_published_files!(book, removable, plan.publication_proofs, protected_path: nil)
+      return removed unless removed == true
+
+      clear!(download, plan.raw)
+    end
+
+    # Removes what a failed replacement attempt can prove it published, and
+    # keeps the plan so a retry returns to the same destination.
+    def remove_failed_publications!(download)
+      plan = load(download.reload)
+      return plan if RemoteResult.failed?(plan)
+      return true unless plan.is_a?(Plan)
+
+      book = download.request&.book
+      return false unless book
+      return false if cleanup_actionable?(download, book.reload)
+
+      abandon!(book, plan)
+    end
+
+    # Names a destination before anything is published there. This is only an
+    # intent: the path may never be created, and a later writer may use it.
+    # Cancellation needs the proof below before it deletes anything.
+    def record_published_path!(download, path)
+      normalized = Pathname(path.to_s).expand_path.to_s
+      return invalid_plan("published path is blank") if normalized.blank?
+
+      update_journal!(download) do |data|
+        paths = published_paths_from(data)
+        next paths if RemoteResult.failed?(paths)
+        next false if paths.include?(normalized)
+
+        data["published_paths"] = paths + [ normalized ]
+        true
+      end
+    rescue ArgumentError, SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    # Commits what is about to be published, keyed by destination, before the
+    # name exists. A crash at any later point leaves a proof that either matches
+    # the file this import published or matches nothing. Writing it after the
+    # copy instead would lose a file that landed before the journal did.
+    def record_publication_proofs!(download, proofs_by_path)
+      entries = proofs_by_path.map do |path, proof|
+        proof.merge("path" => Pathname(path.to_s).expand_path.to_s)
+      end
+
+      update_journal!(download) do |data|
+        paths = published_paths_from(data)
+        next paths if RemoteResult.failed?(paths)
+
+        existing = publication_proofs_from(data)
+        next existing if RemoteResult.failed?(existing)
+
+        data["published_paths"] = paths | entries.map { |entry| entry["path"] }
+        data["publication_proofs"] = existing | entries
+        true
+      end
+    rescue ArgumentError, SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def forget_published_path!(download, path, proof: nil)
+      normalized = Pathname(path.to_s).expand_path.to_s
+      return invalid_plan("published path is blank") if normalized.blank?
+
+      update_journal!(download) do |data|
+        next false if data.empty?
+
+        paths = published_paths_from(data)
+        next paths if RemoteResult.failed?(paths)
+
+        proofs = publication_proofs_from(data)
+        next proofs if RemoteResult.failed?(proofs)
+
+        remaining = proof ? proofs - [ proof.merge("path" => normalized) ] : proofs
+        retained = remaining.any? { |entry| entry["path"] == normalized }
+        next false if remaining == proofs && (retained || !paths.include?(normalized))
+
+        data["publication_proofs"] = remaining unless remaining == proofs
+        data["published_paths"] = paths - [ normalized ] unless retained
+        true
+      end
+    rescue ArgumentError, SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    # A finished import's files belong to the Book. Drop the publish journal
+    # without deleting them.
+    def release_publication!(download)
+      download.reload
+      state = load(download)
+      return state if RemoteResult.failed?(state)
+      return true unless state.is_a?(Publication)
+
+      clear!(download, state.raw)
+    end
+
+    def same_path?(left, right)
+      return false if left.blank? || right.blank?
+
+      Pathname(left).expand_path == Pathname(right).expand_path
+    rescue ArgumentError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    private
+
+    def plan_from(payload, raw)
+      Plan.new(
+        previous_path: payload["previous_path"],
+        destination: payload["destination"],
+        book_path: payload["book_path"],
+        layout: payload["layout"],
+        cleanup_pending: true,
+        published_paths: [],
+        publication_proofs: [],
+        raw: raw
+      )
+    end
+
+    # Compare-and-swap of the journal. The block edits data and returns true to
+    # write it, false for no change, or a failed result to stop.
+    def update_journal!(download)
+      5.times do
+        download.reload
+        raw = download.library_replacement_state.to_s
+        data = raw.blank? ? {} : JSON.parse(raw)
+        return invalid_plan("replacement plan is not an object") unless data.is_a?(Hash)
+
+        changed = yield data
+        return changed if RemoteResult.failed?(changed)
+        unless changed
+          download.library_replacement_state = raw.presence
+          return true
+        end
+
+        new_raw = JSON.generate(data)
+        scope = Download.where(id: download.id)
+        scope = if raw.blank?
+          scope.where(library_replacement_state: [ nil, "" ])
+        else
+          scope.where(library_replacement_state: raw)
+        end
+        updated = scope.update_all(library_replacement_state: new_raw, updated_at: Time.current)
+        if updated == 1
+          download.library_replacement_state = new_raw
+          return true
+        end
+      end
+
+      invalid_plan("published library file could not be recorded")
+    rescue JSON::JSONError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def invalid_plan(message)
+      RemoteResult::Failed.new(JSON::ParserError.new(message))
+    end
+
+    def clear!(download, raw)
+      updated = Download.where(id: download.id, library_replacement_state: raw).update_all(
+        library_replacement_state: nil,
+        updated_at: Time.current
+      )
+      if updated == 1
+        download.library_replacement_state = nil
+        return true
+      end
+
+      download.reload
+      download.library_replacement_state.blank?
+    end
+
+    def swap_committed?(book, plan)
+      current = book.file_path.to_s
+      return false if current.blank?
+
+      same = same_path?(current, plan.previous_path)
+      return false if same == true || RemoteResult.failed?(same)
+
+      !SafeLibraryDeletionService.overlapping_library_paths?(current, plan.previous_path)
+    end
+
+    # A path that was only selected, or one with no matching proof, is never
+    # deleted: another writer may have used it after this plan chose it.
+    def abandon!(book, plan)
+      removed = remove_published_files!(
+        book,
+        plan.published_paths,
+        plan.publication_proofs,
+        protected_path: plan.previous_path
+      )
+      return removed unless removed == true
+
+      # The isolated folder is created before the first byte. Remove it only
+      # once it no longer holds anything this import did not publish.
+      prune_empty_ancestors!(book, File.join(plan.destination.to_s, "child"), plan.previous_path)
+    end
+
+    def publication_journal?(data)
+      data["previous_path"].blank? &&
+        data["destination"].blank? &&
+        data["book_path"].blank? &&
+        data["layout"].blank? &&
+        data.key?("published_paths")
+    end
+
+    # A finished import already gave every journaled file to the Book,
+    # including a sidecar that sits beside a single library file.
+    def publication_retained?(download, book)
+      download.post_processing_job_id.blank? && book.file_path.present?
+    end
+
+    def published_paths_not_referenced_by(book, paths)
+      current = book.file_path.to_s
+      return Array(paths) if current.blank?
+
+      Array(paths).each_with_object([]) do |path, removable|
+        referenced = SafeLibraryDeletionService.same_or_nested_path?(path, current)
+        return referenced if RemoteResult.failed?(referenced)
+
+        removable << path unless referenced == true
+      end
+    end
+
+    def same_replacement_artifact?(candidate, artifact_id)
+      artifact_id.present? && candidate.search_result_id == artifact_id
+    end
+
+    def published_paths_from(data)
+      value = data["published_paths"]
+      return [] if value.nil?
+      return invalid_plan("replacement plan is incomplete") unless value.is_a?(Array)
+      return invalid_plan("replacement plan is incomplete") unless value.all? { |path| path.is_a?(String) && path.present? }
+
+      value
+    end
+
+    def publication_proofs_from(data)
+      value = data["publication_proofs"]
+      return [] if value.nil?
+      return invalid_plan("replacement plan is incomplete") unless value.is_a?(Array) && value.all? { |proof| publication_proof?(proof) }
+
+      value
+    end
+
+    def publication_proof?(proof)
+      return false unless proof.is_a?(Hash) && proof["path"].is_a?(String) && proof["path"].present?
+      return false unless proof.values_at(*PROOF_PARENT_FIELDS).all?(Integer)
+
+      case proof["kind"]
+      when "file"
+        proof.values_at(*PROOF_FILE_FIELDS).all?(Integer) &&
+          (proof["mtime_ns"].is_a?(Integer) || proof["digest"].is_a?(String))
+      when "symlink"
+        proof["target"].is_a?(String) && proof["target"].present?
+      else
+        false
+      end
+    end
+
+    def remove_published_files!(book, paths, proofs, protected_path:)
+      files = Array(paths).map(&:to_s).uniq
+      proofs_by_path = Array(proofs).group_by { |proof| proof["path"] }
+      deadline = FileCopyService.publication_verification_time + PUBLICATION_VERIFICATION_SECONDS
+      files.each do |path|
+        deleted = delete_published_file!(book, path, proofs_by_path.fetch(path, []), protected_path, deadline: deadline)
+        return deleted unless deleted == true
+      end
+      files.each do |path|
+        pruned = prune_empty_ancestors!(book, path, protected_path)
+        return pruned unless pruned == true
+      end
+      true
+    end
+
+    def delete_published_file!(book, path, proofs, protected_path, deadline: nil)
+      decision = published_file_decision(book, path, protected_path)
+      return decision if RemoteResult.failed?(decision) || decision == false
+      return true if decision == :directory || decision == :retained
+
+      if decision == :absent
+        # The missing name can still have an interrupted quarantine. Keep its
+        # recovery record until every recorded claim has been reconciled.
+        deleted = delete_proven_path!(book, path, proofs, deadline: deadline) if proofs.any?
+        return false if deleted == :busy
+      else
+        deleted = delete_proven_path!(book, path, proofs, deadline: deadline)
+      end
+      return deleted if RemoteResult.failed?(deleted) || deleted == false
+      return true unless deleted == :retained
+
+      Rails.logger.warn(
+        "[LibraryReplacement] Kept #{path.inspect} for book ##{book.id}: publication ownership or content could not be verified within the cleanup budget"
+      )
+      true
+    end
+
+    def delete_proven_path!(book, path, proofs, deadline: nil)
+      with_destination_claim(path) do
+        record = book.class.find_by(id: book.id)
+        next false unless record
+
+        record.file_path = path
+        service = SafeLibraryDeletionService.new(record)
+        outcome = :retained
+        proofs.each do |proof|
+          result = service.delete_proven_publication!(proof, deadline: deadline)
+          return result if RemoteResult.failed?(result) || result == false
+
+          outcome = result if result == :removed || (result == :absent && outcome != :removed)
+        end
+        outcome
+      end
+    end
+
+    # A live import reused this path when the lock is busy. Keep the file and
+    # let the rest of this cancellation continue with the other paths.
+    def with_destination_claim(path)
+      lock = destination_lock(path, shared: false, nonblock: true)
+      return lock if RemoteResult.failed?(lock)
+      return :busy unless lock.is_a?(File)
+
+      begin
+        yield
+      rescue SafeLibraryDeletionService::Error => error
+        RemoteResult::Failed.new(error)
+      ensure
+        release_destination_lock(lock)
+      end
+    end
+
+    def published_file_decision(book, path, protected_path)
+      existed = path_exists?(path)
+      return existed if RemoteResult.failed?(existed)
+      return :absent unless existed
+
+      if protected_path.present?
+        same = same_path?(path, protected_path)
+        return same if RemoteResult.failed?(same)
+        return false if same
+        return false if SafeLibraryDeletionService.overlapping_library_paths?(path, protected_path)
+      end
+
+      root = output_root_for(book).to_s
+      contained = inside_root?(path, root)
+      return contained if RemoteResult.failed?(contained)
+      return false unless contained
+
+      root_match = same_path?(path, root)
+      return root_match if RemoteResult.failed?(root_match)
+      return false if root_match
+      return :retained if LibraryDestinationOccupancy.overlaps_acquired_book?(path, except_book_id: book.id)
+
+      return :directory if File.directory?(path) && !File.symlink?(path)
+
+      true
+    rescue SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def prune_empty_ancestors!(book, path, protected_path)
+      root = output_root_for(book).to_s
+      current = File.dirname(Pathname(path.to_s).expand_path.to_s)
+      MAX_ANCESTOR_DEPTH.times do
+        root_match = same_path?(current, root)
+        return root_match if RemoteResult.failed?(root_match)
+        break if root_match
+
+        contained = inside_root?(current, root)
+        return contained if RemoteResult.failed?(contained)
+        break unless contained
+
+        if protected_path.present?
+          same = same_path?(current, protected_path)
+          return same if RemoteResult.failed?(same)
+          break if same
+          break if SafeLibraryDeletionService.overlapping_library_paths?(current, protected_path)
+        end
+
+        break if File.symlink?(current)
+
+        existed = path_exists?(current)
+        return existed if RemoteResult.failed?(existed)
+        break unless existed
+        break unless File.directory?(current)
+
+        pruned = remove_empty_directory!(book, current)
+        return pruned if RemoteResult.failed?(pruned) || pruned == false
+        break if pruned == :retained
+
+        parent = File.dirname(current)
+        break if parent == current
+
+        current = parent
+      end
+      true
+    rescue ArgumentError, SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def remove_empty_directory!(book, path)
+      with_destination_claim(path) do
+        record = book.class.find_by(id: book.id)
+        next false unless record
+
+        record.file_path = path
+        SafeLibraryDeletionService.new(record).remove_empty_directory!
+      end
+    end
+
+    def attached_library_artifact?(path)
+      return false if path.blank?
+
+      File.exist?(path)
+    rescue SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def replacement_publication_live?(download)
+      download.reload
+      return true if DirectDownloadFileService.live_recovery_lease?(download)
+
+      owner = download.post_processing_job_id.to_s
+      return false if owner.blank?
+
+      PostProcessingRecoveryJob.unfinished_active_job_ids([ owner ]).any?
+    end
+
+    def destination_lock(path, shared:, nonblock:)
+      normalized = Pathname(path.to_s).expand_path.to_s
+      tmp_root = Rails.root.join("tmp")
+      lock_root = tmp_root.join("library-destination-locks")
+      FileCopyService.ensure_directory(lock_root.to_s, root: tmp_root.to_s, mode: 0o700)
+      FileCopyService.secure_private_directory!(lock_root.to_s, root: tmp_root.to_s)
+      FileCopyService.open_held_private_lock(
+        lock_root.join(Digest::SHA256.hexdigest(normalized)).to_s,
+        root: lock_root.to_s,
+        shared: shared,
+        nonblock: nonblock
+      )
+    rescue ArgumentError, SystemCallError, FileCopyService::UnsafePathError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def path_exists?(path)
+      return false if path.blank?
+
+      File.exist?(path) || File.symlink?(path)
+    rescue SystemCallError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def inside_root?(path, root)
+      return false if path.blank? || root.blank?
+
+      relative = Pathname(path).expand_path.relative_path_from(Pathname(root).expand_path)
+      relative.to_s != ".." && !relative.to_s.start_with?("..#{File::SEPARATOR}")
+    rescue ArgumentError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def output_root_for(book)
+      if book.comicbook?
+        SettingsService.get(:comicbook_output_path)
+      elsif book.ebook?
+        SettingsService.get(:ebook_output_path)
+      else
+        SettingsService.get(:audiobook_output_path)
+      end
+    end
+  end
+end

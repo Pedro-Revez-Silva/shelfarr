@@ -143,11 +143,12 @@ class AudiobookBundleImportPlanner
     basename.delete_suffix(File.extname(basename)).downcase
   end
 
-  def initialize(source:, book:, base_path:, language: nil)
+  def initialize(source:, book:, base_path:, language: nil, tracked_destination: nil)
     @source = source
     @book = book
     @base_path = base_path
     @language = language
+    @tracked_destination = tracked_destination
   end
 
   def call
@@ -169,6 +170,9 @@ class AudiobookBundleImportPlanner
     return unless tracked_entry
 
     entries = preserve_tracked_metadata(entries, tracked_entry)
+    # The tracked book has to land in the isolated replacement folder so the
+    # previous copy stays outside the new tree.
+    entries = move_tracked_entry(entries, tracked_entry) if tracked_destination.present?
     return unless destinations_disjoint?(entries)
     validate_destinations_outside_source!(entries)
 
@@ -182,7 +186,7 @@ class AudiobookBundleImportPlanner
 
   private
 
-  attr_reader :source, :book, :base_path, :language
+  attr_reader :source, :book, :base_path, :language, :tracked_destination
 
   def immediate_source_paths
     Dir.children(source).map { |entry| File.join(source, entry) }
@@ -271,6 +275,19 @@ class AudiobookBundleImportPlanner
       .sub(/\s+\d+\s+of\s+\d+\z/, "")
       .sub(/\s+\d+\z/, "")
       .squish
+  end
+
+  def move_tracked_entry(entries, tracked_entry)
+    entries.map do |entry|
+      next entry unless entry.source_path == tracked_entry.source_path
+
+      Entry.new(
+        source_path: entry.source_path,
+        virtual_book: entry.virtual_book,
+        destination: tracked_destination,
+        sidecar_paths: entry.sidecar_paths
+      )
+    end
   end
 
   def preserve_tracked_metadata(entries, tracked_entry)

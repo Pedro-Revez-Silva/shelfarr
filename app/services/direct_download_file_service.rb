@@ -193,6 +193,28 @@ class DirectDownloadFileService
       (configured + persisted).map { |root| Pathname(root).expand_path.to_s }.uniq
     end
 
+    def live_recovery_lease?(download)
+      recovery_lease_fresh?(download)
+    end
+
+    # Finalizes a completed publication, otherwise removes staging that still
+    # belongs to this download. Returns false when those bytes cannot be
+    # removed without guessing, so the caller keeps the recovery row.
+    def release_stopped_acquisition!(download)
+      download.reload
+      if publication_complete?(download) == true && reservation_owned?(download)
+        service_for(download).send(:finalize_database!, allow_failed: true)
+        download.reload
+      end
+
+      cleanup_staging_and_state!(download, release_reservation: true)
+    rescue StandardError => error
+      Rails.logger.warn(
+        "[DirectDownloadFileService] Could not release direct download ##{download.id}: #{error.class}"
+      )
+      RemoteResult::Failed.new(error)
+    end
+
     private
 
     def staging_parent_path(root:)
@@ -508,79 +530,79 @@ class DirectDownloadFileService
   end
 
   def publish_file_and_finalize!(source)
-    expected = digest_io(source)
-    persist_manifest!(expected)
-    reserve_book!
-    ensure_output_root_identity!
-    ensure_destination_parent!
-    ensure_output_root_identity!
-    @publication_started = true
-    begin
-      FileCopyService.cp_io_noreplace(
-        source,
-        destination_path,
-        root: output_root,
-        heartbeat: method(:refresh_heartbeat!)
-      )
-    rescue Errno::EEXIST
-      unless FileCopyService.file_content_manifest(
-        destination_path,
-        root: output_root,
-        heartbeat: method(:refresh_heartbeat!)
-      ) == expected
-        raise ConflictError, "A different library file already exists; it was preserved"
+    publish_acquired_replacement! do
+      expected = digest_io(source)
+      persist_manifest!(expected)
+      reserve_book!
+      ensure_output_root_identity!
+      ensure_destination_parent!
+      ensure_output_root_identity!
+      @publication_started = true
+      begin
+        FileCopyService.cp_io_noreplace(
+          source,
+          destination_path,
+          root: output_root,
+          heartbeat: method(:refresh_heartbeat!),
+          **publication_recorder { |proof| { destination_path => proof } }
+        )
+      rescue Errno::EEXIST
+        unless FileCopyService.file_content_manifest(
+          destination_path,
+          root: output_root,
+          heartbeat: method(:refresh_heartbeat!)
+        ) == expected
+          raise ConflictError, "A different library file already exists; it was preserved"
+        end
       end
+      apply_configured_import_permissions!
+      ensure_publication_verified!
+      finalize_database!
     end
-    apply_configured_import_permissions!
-    ensure_publication_verified!
-    finalize_database!
-  rescue => error
-    return true if recover_after_publication_error!(error) == true
-
-    raise
   end
 
   def publish_directory_and_finalize!(source_directory)
-    expected = FileCopyService.directory_content_manifest(
-      source_directory,
-      root: staging_path,
-      heartbeat: method(:refresh_heartbeat!)
-    )
-    persist_manifest!(expected)
-    reserve_book!
-    ensure_output_root_identity!
-    ensure_destination_parent!
-    source_snapshot = FileCopyService.snapshot_source_root(
-      source_directory,
-      heartbeat: method(:refresh_heartbeat!)
-    )
-    ensure_output_root_identity!
-    @publication_started = true
-    begin
-      FileCopyService.mv_directory_noreplace(
+    publish_acquired_replacement! do
+      expected = FileCopyService.directory_content_manifest(
         source_directory,
-        destination_path,
-        root: output_root,
-        source_root: source_snapshot,
-        heartbeat: method(:refresh_heartbeat!),
-        allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication)
-      )
-    rescue Errno::EEXIST
-      unless FileCopyService.directory_content_manifest(
-        destination_path,
-        root: output_root,
+        root: staging_path,
         heartbeat: method(:refresh_heartbeat!)
-      ) == expected
-        raise ConflictError, "A different audiobook directory already exists; it was preserved"
+      )
+      persist_manifest!(expected)
+      reserve_book!
+      ensure_output_root_identity!
+      ensure_destination_parent!
+      source_snapshot = FileCopyService.snapshot_source_root(
+        source_directory,
+        heartbeat: method(:refresh_heartbeat!)
+      )
+      ensure_output_root_identity!
+      @publication_started = true
+      begin
+        FileCopyService.mv_directory_noreplace(
+          source_directory,
+          destination_path,
+          root: output_root,
+          source_root: source_snapshot,
+          heartbeat: method(:refresh_heartbeat!),
+          allow_nonatomic: SettingsService.get(:allow_nonatomic_nfs_directory_publication),
+          **publication_recorder do |proofs|
+            proofs.transform_keys { |relative| File.join(destination_path, relative) }
+          end
+        )
+      rescue Errno::EEXIST
+        unless FileCopyService.directory_content_manifest(
+          destination_path,
+          root: output_root,
+          heartbeat: method(:refresh_heartbeat!)
+        ) == expected
+          raise ConflictError, "A different audiobook directory already exists; it was preserved"
+        end
       end
+      apply_configured_import_permissions!
+      ensure_publication_verified!
+      finalize_database!
     end
-    apply_configured_import_permissions!
-    ensure_publication_verified!
-    finalize_database!
-  rescue => error
-    return true if recover_after_publication_error!(error) == true
-
-    raise
   end
 
   def cleanup_after_run!
@@ -625,6 +647,8 @@ class DirectDownloadFileService
   end
 
   def reserve_book!
+    return reserve_existing_library_file! if @replacing_library_path.present?
+
     token = SecureRandom.hex(32)
     ActiveRecord::Base.transaction do
       current_download = Download.lock.find(download.id)
@@ -648,6 +672,226 @@ class DirectDownloadFileService
     end
     download.reload
     token
+  end
+
+  def reserve_existing_library_file!
+    token = SecureRandom.hex(32)
+    ActiveRecord::Base.transaction do
+      current_download = Download.lock.find(download.id)
+      unless current_download.downloading? && current_download.download_type == "direct" &&
+          current_download.direct_staging_path == staging_path
+        raise Error, "Direct download is no longer active"
+      end
+
+      current_book = Book.lock.find(book.id)
+      if current_book.file_path == @replacing_library_path &&
+          current_book.acquisition_reservation_token.present? &&
+          current_book.acquisition_reservation_owner_type == "Download" &&
+          current_book.acquisition_reservation_owner_id == current_download.id &&
+          current_download.direct_reservation_token == current_book.acquisition_reservation_token
+        token = current_book.acquisition_reservation_token
+        next
+      end
+
+      claimed = Book.where(id: book.id, file_path: @replacing_library_path)
+        .where(acquisition_reservation_token: nil)
+        .update_all(
+          acquisition_reservation_token: token,
+          acquisition_reservation_owner_type: "Download",
+          acquisition_reservation_owner_id: download.id,
+          updated_at: Time.current
+        )
+      raise ConflictError, "The existing library file changed before it could be replaced" unless claimed == 1
+
+      current_download.update!(direct_reservation_token: token)
+    end
+    download.reload
+    token
+  end
+
+  # Retargets a confirmed replacement so the new bytes are not written into
+  # the library directory that will be removed after the database swap.
+  # The chosen destination is stored before publication and reused on retry.
+  def publish_acquired_replacement!
+    plan = ensure_replacement_plan!
+    @replacement_plan_active = plan.present?
+    yield
+    LibraryReplacement.finish_cleanup!(download) if plan
+    true
+  rescue => error
+    if plan
+      if recover_failed_replacement!(error) == true
+        LibraryReplacement.finish_cleanup!(download)
+        return true
+      end
+
+      raise
+    end
+    return true if recover_after_publication_error!(error) == true
+
+    raise
+  end
+
+  # A replacement can be cancelled after this attempt stops, so its files need
+  # a proof before their names appear. Other direct publications are retained
+  # on failure and have nothing to prove.
+  def publication_recorder(&proofs_by_path)
+    return {} unless @replacement_plan_active
+
+    {
+      before_publish: lambda { |published|
+        recorded = LibraryReplacement.record_publication_proofs!(download, proofs_by_path.call(published))
+        unless recorded == true
+          raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
+        end
+      }
+    }
+  end
+
+  def ensure_replacement_plan!
+    return unless download.replace_library_file?
+
+    # Retirement and the stored plan commit before publish_acquired_replacement!
+    # yields the file copy, so this lock is not held while bytes are written.
+    LibraryReplacement.with_book_lock(book) do
+      existing = LibraryReplacement.load(download)
+      if RemoteResult.failed?(existing)
+        raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+      end
+
+      current = book.reload.file_path.to_s.presence
+      if existing.nil? && current
+        released = LibraryReplacement.release_conflicting_plans!(
+          book,
+          artifact_id: download.search_result_id,
+          except_download_id: download.id
+        )
+        if RemoteResult.failed?(released)
+          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+        end
+        unless released == true
+          raise LibraryReplacement::UnreadablePlanError, "an earlier replacement could not be removed"
+        end
+
+        existing = LibraryReplacement.adopt!(download, book, layout: direct_plan_layout)
+        if RemoteResult.failed?(existing)
+          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+        end
+      end
+
+      if existing.nil? && current
+        @replacing_library_path = current
+        chosen_destination, chosen_book = select_replacement_paths(current)
+        existing = LibraryReplacement.persist!(
+          download,
+          previous_path: current,
+          destination: chosen_destination,
+          book_path: chosen_book,
+          layout: direct_plan_layout
+        )
+        if RemoteResult.failed?(existing)
+          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+        end
+      end
+      return unless existing.is_a?(LibraryReplacement::Plan)
+
+      matched = LibraryReplacement.matches_book?(existing, book)
+      raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read" if RemoteResult.failed?(matched)
+      raise ConflictError, "The existing library file changed before it could be replaced" unless matched
+
+      apply_direct_plan!(existing)
+      @replacing_library_path = existing.previous_path
+      existing
+    end
+  end
+
+  def direct_plan_layout
+    destination_path == book_path && kind == "file" ? "file" : "directory"
+  end
+
+  def select_replacement_paths(existing)
+    candidate_book = book_path
+    candidate_destination = destination_path
+    counter = 1
+    while replacement_path_conflicts?(candidate_destination, candidate_book, existing)
+      counter += 1
+      raise Error, "Could not find a free library path for the replacement" if counter > 100
+
+      candidate_book = suffixed_library_path(book_path, counter)
+      candidate_destination = relocated_destination(destination_path, book_path, candidate_book)
+    end
+    [ candidate_destination, candidate_book ]
+  end
+
+  def apply_direct_plan!(plan)
+    @destination_path = Pathname(plan.destination).expand_path.to_s
+    @book_path = Pathname(plan.book_path).expand_path.to_s
+    updated = Download.where(
+      id: download.id,
+      status: Download.statuses[:downloading],
+      download_type: "direct"
+    ).update_all(
+      direct_destination_path: @destination_path,
+      direct_book_path: @book_path,
+      updated_at: Time.current
+    )
+    raise Error, "Direct download is no longer active" unless updated == 1
+
+    download.reload
+    validate_destination_paths!
+  end
+
+  def replacement_path_conflicts?(destination, library_path, existing)
+    [ destination, library_path ].any? do |path|
+      SafeLibraryDeletionService.overlapping_library_paths?(path, existing) ||
+        File.exist?(path) || File.symlink?(path)
+    end
+  end
+
+  def suffixed_library_path(path, counter)
+    directory = File.dirname(path)
+    extension = File.extname(path)
+    base = File.basename(path, extension)
+    File.join(directory, "#{base} (#{counter})#{extension}")
+  end
+
+  def relocated_destination(destination, old_library_path, new_library_path)
+    destination_path = Pathname(destination).expand_path
+    old_path = Pathname(old_library_path).expand_path
+    return new_library_path if destination_path == old_path
+
+    Pathname(new_library_path).join(destination_path.relative_path_from(old_path)).to_s
+  end
+
+  def recover_failed_replacement!(error)
+    download.reload
+    if self.class.send(:publication_complete?, download) == true &&
+        self.class.send(:reservation_owned?, download)
+      finalize_database!(allow_failed: true)
+      return true
+    end
+
+    # An unverified root may no longer be the one this attempt published into.
+    # Keep the reservation, staging, and destination for recovery to judge.
+    return false unless self.class.send(:valid_output_root_identity?, download) == true
+
+    self.class.send(:release_reservation!, download)
+    remove_unpublished_replacement! unless error.is_a?(ConflictError)
+    false
+  rescue StandardError => cleanup_error
+    Rails.logger.warn(
+      "[DirectDownloadFileService] Replacement cleanup failed for download ##{download.id}: #{cleanup_error.class}"
+    )
+    RemoteResult::Failed.new(cleanup_error)
+  end
+
+  def remove_unpublished_replacement!
+    removed = LibraryReplacement.remove_failed_publications!(download)
+    return if removed == true
+
+    Rails.logger.warn(
+      "[DirectDownloadFileService] Unpublished replacement was kept for download ##{download.id}"
+    )
   end
 
   def finalize_database!(allow_failed: false)

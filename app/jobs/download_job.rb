@@ -393,7 +393,7 @@ class DownloadJob < ApplicationJob
     )
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook to: #{destination_dir}"
-    ensure_book_available_for_direct_download!(book)
+    ensure_book_available_for_direct_download!(book, download)
     mark_direct_download_active!(download)
     ensure_output_root!(base_path)
     file_service = DirectDownloadFileService.new(
@@ -478,7 +478,7 @@ class DownloadJob < ApplicationJob
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading #{source_name} audiobook file to: #{destination_path}"
-    ensure_book_available_for_direct_download!(book)
+    ensure_book_available_for_direct_download!(book, download)
     mark_direct_download_active!(download)
     ensure_output_root!(base_path)
     # Flat output shares destination_dir across books; track the file itself.
@@ -550,7 +550,7 @@ class DownloadJob < ApplicationJob
     destination_path = File.join(destination_dir, filename)
 
     Rails.logger.info "[DownloadJob] Downloading directly to: #{destination_path}"
-    ensure_book_available_for_direct_download!(book)
+    ensure_book_available_for_direct_download!(book, download)
     mark_direct_download_active!(download)
     ensure_output_root!(base_path)
     # Flat output shares destination_dir across books; track the file itself.
@@ -1302,12 +1302,19 @@ class DownloadJob < ApplicationJob
     file.rewind
   end
 
-  def ensure_book_available_for_direct_download!(book)
+  def ensure_book_available_for_direct_download!(book, download = nil)
     book.reload
 
     if book.acquisition_reserved? && !book.acquired?
       DirectDownloadFileService.reconcile_reservation!(book)
       book.reload
+    end
+
+    if book.acquired? && download&.replace_library_file?
+      return unless book.acquisition_reserved?
+
+      raise BookAcquisitionConflictError,
+        "Another acquisition still owns this title; no library file was replaced"
     end
 
     return unless book.acquisition_blocked?
@@ -1634,19 +1641,11 @@ class DownloadJob < ApplicationJob
   # A finished import, cancellation, or replacement records the release on the
   # download. Request status can change later and must not revive that id.
   def other_download_with_external_id(external_id, current_download_id, download_client_id:)
-    return if external_id.blank? || download_client_id.blank?
-
-    Download.where(external_id: external_id.to_s, download_client_id: download_client_id)
-            .where.not(id: current_download_id)
-            .where.not(status: :failed)
-            .order(:id)
-            .detect { |download| live_external_id_owner?(download) }
-  end
-
-  def live_external_id_owner?(download)
-    return true unless download.completed?
-
-    download.external_id_released_at.blank?
+    Download.current_external_id_owner(
+      external_id,
+      download_client_id: download_client_id,
+      except_id: current_download_id
+    )
   end
 
   def reject_duplicate_external_id!(download, client_record, external_id, existing, download_type:)

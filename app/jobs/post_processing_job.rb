@@ -64,6 +64,11 @@ class PostProcessingJob < ApplicationJob
 
     book = request.book
     acquisition_finalized = false
+    @replacement_plan = nil
+    @replacement_file_path = nil
+    @replacement_file_override_used = false
+    @publication_download = download
+    @reused_destination_locks = []
 
     Rails.logger.info "[PostProcessingJob] Starting download ##{download.id}, book ##{book.id}"
 
@@ -82,7 +87,8 @@ class PostProcessingJob < ApplicationJob
       # instead of leaving Retry stuck in Attention Required. A later
       # finalize_acquisition! replaces that path only after import succeeds,
       # and still preserves a different verifiable library file.
-      if book.acquired? && RemoteResult.succeeded?(verifiable_library_entry?(book.file_path))
+      if book.acquired? && !download.replace_library_file? &&
+          RemoteResult.succeeded?(verifiable_library_entry?(book.file_path))
         acquisition_finalized = RemoteResult.succeeded?(
           finalize_acquisition!(
             download,
@@ -120,6 +126,23 @@ class PostProcessingJob < ApplicationJob
         )
       rescue FileCopyService::ReferenceTargetUnavailableError
         return retry_source_path_later(download, request, source_path, source_path_retry_count)
+      end
+      if download.replace_library_file? && book.file_path.present?
+        # The isolated destination is stored before any bytes are published and
+        # reused if this import is retried. Layout comes from the incoming
+        # files, which are known only after the source path is resolved.
+        replacement_plan = prepare_library_replacement!(
+          download,
+          book,
+          destination,
+          source_path,
+          language: import_language
+        )
+        if RemoteResult.failed?(replacement_plan)
+          raise LibraryReplacement::UnreadablePlanError, "stored replacement plan could not be read"
+        end
+
+        destination = import_directory_for_replacement(destination, replacement_plan)
       end
 
       # Reference mode keeps download bytes as the only content; never delete
@@ -159,6 +182,9 @@ class PostProcessingJob < ApplicationJob
       )
       return unless acquisition_finalized
 
+      LibraryReplacement.finish_cleanup!(download) if @replacement_plan
+      LibraryReplacement.release_publication!(download)
+
       # Destructive source/client cleanup happens only after Book, Request, and
       # Download ownership commit together. A hard kill before that commit can
       # therefore retry the idempotent import without losing its source.
@@ -191,6 +217,8 @@ class PostProcessingJob < ApplicationJob
       end
       Rails.logger.error "[PostProcessingJob] Download ##{download.id} failed: #{error_detail}"
       mark_post_processing_failure!(download, request, e) unless acquisition_finalized
+    ensure
+      release_reused_destination_locks!
     end
   end
 
@@ -251,7 +279,9 @@ class PostProcessingJob < ApplicationJob
             .where(acquisition_reservation_token: nil)
         end
       elsif book.file_path != imported_path || @imported_library_entry
-        if book.file_path != imported_path && RemoteResult.succeeded?(verifiable_library_entry?(book.file_path))
+        if book.file_path != imported_path &&
+            RemoteResult.succeeded?(verifiable_library_entry?(book.file_path)) &&
+            !replacing_verified_library_file?(download, book, imported_path)
           raise BookAcquisitionConflictError,
             "Another acquisition already attached a different library file to this title"
         end
@@ -729,8 +759,15 @@ class PostProcessingJob < ApplicationJob
   # Flat imports write into the shared output root, so the root must not be
   # recorded as the book's own path when the import produced a single file.
   # Pointing file_path at that file keeps downloads and deletions per-book.
+  # A directory replacement owns the folder, including every format inside it.
   def imported_book_path(book, destination)
     return @imported_book_path_override if @imported_book_path_override.present?
+    if @replacement_plan&.file?
+      return @imported_renamed_files.first if @imported_renamed_files&.one?
+
+      return @replacement_plan.book_path
+    end
+    return @replacement_plan.book_path if @replacement_plan
     return destination unless PathTemplateService.flat_output?(book)
     return destination unless @imported_renamed_files&.one?
 
@@ -790,6 +827,7 @@ class PostProcessingJob < ApplicationJob
     @verified_library_snapshots = Hash.new { |snapshots, path| snapshots[path] = [] }
     @configured_library_directories = []
     @imported_book_path_override = nil
+    @replacement_file_override_used = false
     @import_base_path = Pathname(base_path || get_base_path(book)).expand_path
     @defer_source_removal = move_completed_downloads?
     # Reference mode only publishes symlinks; fsync durability of library
@@ -969,8 +1007,15 @@ class PostProcessingJob < ApplicationJob
       source: source,
       book: book,
       base_path: base_path || get_base_path(book),
-      language: language
+      language: language,
+      tracked_destination: replacement_tracked_destination
     )
+  end
+
+  def replacement_tracked_destination
+    return if @replacement_plan.nil? || @replacement_plan.file?
+
+    @replacement_plan.destination
   end
 
   def import_split_audiobook_bundle(plan)
@@ -1129,14 +1174,19 @@ class PostProcessingJob < ApplicationJob
   end
 
   def import_renamed_file(source, destination, book, language: nil)
-    destination_file = renamed_destination_file(source, destination, book, language: language)
+    override = replacement_file_destination(destination)
+    if RemoteResult.failed?(override)
+      raise LibraryReplacement::UnreadablePlanError, "replacement file is outside the import directory"
+    end
+
+    destination_file = override.presence || renamed_destination_file(source, destination, book, language: language)
     Rails.logger.info "[PostProcessingJob] Applying the configured library filename template"
     destination_file = import_file_without_duplicate_content(source, destination_file)
     @imported_renamed_files << destination_file
     destination_file
   end
 
-  def import_file(source, destination)
+  def import_file(source, destination, before_publish: nil)
     if reference_completed_downloads?
       source_snapshot = reference_source_snapshot(source)
       regular_root_snapshot = @reference_regular_source_root unless
@@ -1147,7 +1197,8 @@ class PostProcessingJob < ApplicationJob
         root: @import_base_path,
         source_root: source_snapshot ? nil : @import_source_root,
         source_snapshot: source_snapshot,
-        authorized_root_snapshot: regular_root_snapshot
+        authorized_root_snapshot: regular_root_snapshot,
+        before_publish: before_publish
       )
       @referenced_file_count += 1
     elsif hardlink_completed_downloads?
@@ -1157,7 +1208,8 @@ class PostProcessingJob < ApplicationJob
           destination,
           root: @import_base_path,
           source_root: @import_source_root,
-          require_durable: @require_durable_import
+          require_durable: @require_durable_import,
+          before_publish: before_publish
         )
         @hardlinked_file_count += 1
       rescue FileCopyService::HardlinkUnsupportedError
@@ -1170,7 +1222,8 @@ class PostProcessingJob < ApplicationJob
           root: @import_base_path,
           source_root: @import_source_root,
           hardlink_mode: true,
-          require_durable: @require_durable_import
+          require_durable: @require_durable_import,
+          before_publish: before_publish
         )
         @hardlink_fallback_copied_count += 1
       end
@@ -1181,7 +1234,8 @@ class PostProcessingJob < ApplicationJob
         root: @import_base_path,
         source_root: @import_source_root,
         source_snapshot: @import_source_file_snapshot,
-        require_durable: @require_durable_import
+        require_durable: @require_durable_import,
+        before_publish: before_publish
       )
     end
     destination
@@ -1197,6 +1251,14 @@ class PostProcessingJob < ApplicationJob
     loop do
       destination, already_imported = retry_safe_destination(source, original_destination)
       if already_imported
+        # Cancellation of the import that first journaled this path must not
+        # delete it while this job is still going to attach it.
+        held = LibraryReplacement.share_reused_destination!(destination)
+        unless held.is_a?(File)
+          raise LibraryReplacement::UnreadablePlanError, "reused library file could not be protected"
+        end
+        (@reused_destination_locks ||= []) << held
+
         if hardlink_completed_downloads?
           @reused_file_count += 1
         end
@@ -1211,15 +1273,33 @@ class PostProcessingJob < ApplicationJob
         return destination
       end
 
-      imported = import_file(source, destination)
+      record_published_library_file!(destination)
+      proof = nil
+      begin
+        imported = import_file(
+          source,
+          destination,
+          before_publish: lambda { |publication_proof|
+            proof = publication_proof
+            record_publication_proof!(destination, publication_proof)
+          }
+        )
+      rescue Errno::EEXIST
+        # Another importer won this candidate after retry_safe_destination.
+        # Drop this attempt's record of it, then re-run content reconciliation
+        # before choosing a suffix.
+        forgotten = LibraryReplacement.forget_published_path!(@publication_download, destination, proof: proof)
+        unless forgotten == true
+          raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
+        end
+
+        next
+      end
+      record_published_library_file!(imported) unless imported == destination
       verify_imported_destination!(source, imported, require_durable: true) if @require_durable_import
       record_imported_source!(source)
       apply_configured_library_file_mode!(source, imported)
       return imported
-    rescue Errno::EEXIST
-      # Another importer won this candidate after retry_safe_destination.
-      # Re-run content reconciliation before choosing a suffix.
-      next
     end
   end
 
@@ -1887,6 +1967,240 @@ class PostProcessingJob < ApplicationJob
       new_path = duplicate_filename_candidate(path, counter)
     end
     new_path
+  end
+
+  def replacing_verified_library_file?(download, book, imported_path)
+    return false unless download.replace_library_file?
+    return false if imported_path.blank? || book.file_path.blank?
+    return false if SafeLibraryDeletionService.overlapping_library_paths?(imported_path, book.file_path)
+
+    true
+  end
+
+  def prepare_library_replacement!(download, book, canonical_destination, source_path, language:)
+    # The lock covers retirement and the new plan together. It is not held
+    # across the file copy that follows this method.
+    LibraryReplacement.with_book_lock(book) do
+      existing = LibraryReplacement.load(download)
+      return existing if RemoteResult.failed?(existing) || existing.is_a?(LibraryReplacement::Plan)
+
+      previous_path = book.file_path.to_s
+      return if previous_path.blank?
+
+      released = LibraryReplacement.release_conflicting_plans!(
+        book,
+        artifact_id: download.search_result_id,
+        except_download_id: download.id
+      )
+      return released if RemoteResult.failed?(released)
+      unless released == true
+        raise LibraryReplacement::UnreadablePlanError, "an earlier replacement could not be removed"
+      end
+
+      layout, extension = incoming_replacement_layout(
+        book,
+        canonical_destination,
+        previous_path,
+        source_path
+      )
+      return layout if RemoteResult.failed?(layout)
+
+      adopted = LibraryReplacement.adopt!(download, book, layout: layout)
+      return adopted if RemoteResult.failed?(adopted) || adopted.is_a?(LibraryReplacement::Plan)
+
+      destination, book_path = choose_post_processing_replacement(
+        book,
+        canonical_destination,
+        previous_path,
+        layout,
+        extension,
+        language
+      )
+      return destination if RemoteResult.failed?(destination)
+
+      LibraryReplacement.persist!(
+        download,
+        previous_path: previous_path,
+        destination: destination,
+        book_path: book_path,
+        layout: layout
+      )
+    end
+  end
+
+  def import_directory_for_replacement(canonical_destination, plan)
+    return canonical_destination unless plan.is_a?(LibraryReplacement::Plan)
+
+    @replacement_plan = plan
+    @replacement_file_override_used = false
+    if plan.file?
+      @replacement_file_path = plan.destination
+      File.dirname(plan.destination)
+    else
+      @replacement_file_path = nil
+      plan.destination
+    end
+  end
+
+  # A flat library can hold one renamed file or an isolated folder. Several
+  # media files in one release share that folder so every format stays owned.
+  # The previous copy's extension describes that copy, not the incoming bytes.
+  def incoming_replacement_layout(book, canonical_destination, previous_path, source_path)
+    flat_file = flat_single_file_target?(book, canonical_destination, previous_path)
+    return flat_file if RemoteResult.failed?(flat_file)
+    return [ "directory", nil ] unless flat_file
+
+    directory = directory_source?(source_path)
+    return directory if RemoteResult.failed?(directory)
+    return [ "directory", nil ] if directory && !readable_file_import?(book)
+    if directory
+      multiple = multiple_incoming_media_files?(source_path)
+      return multiple if RemoteResult.failed?(multiple)
+      return [ "directory", nil ] if multiple
+    end
+
+    extension = incoming_media_extension(book, source_path)
+    return extension if RemoteResult.failed?(extension)
+    extension = File.extname(previous_path) if extension.blank?
+    [ "file", extension ]
+  end
+
+  def flat_single_file_target?(book, canonical_destination, previous_path)
+    return false unless PathTemplateService.flat_output?(book)
+
+    root = Pathname(get_base_path(book)).expand_path
+    return false unless Pathname(canonical_destination).expand_path == root
+
+    file = Pathname(previous_path).expand_path
+    return false unless file.parent == root
+    return false if File.directory?(previous_path) && !File.symlink?(previous_path)
+
+    true
+  rescue ArgumentError, SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def multiple_incoming_media_files?(source_path)
+    count = 0
+    ebook_directory_files(source_path).each do |path|
+      next if File.symlink?(path)
+      next unless ebook_file?(path)
+
+      count += 1
+      return true if count > 1
+    end
+    false
+  rescue SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def directory_source?(path)
+    File.directory?(path) && !File.symlink?(path)
+  rescue SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def incoming_media_extension(book, source_path)
+    directory = directory_source?(source_path)
+    return directory if RemoteResult.failed?(directory)
+    return File.extname(source_path).presence unless directory
+
+    ebook_directory_files(source_path).each do |path|
+      next if File.symlink?(path)
+
+      extension = File.extname(path)
+      normalized = extension.delete_prefix(".").downcase
+      return extension if EBOOK_FILE_EXTENSIONS.include?(normalized)
+    end
+    nil
+  rescue SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def choose_post_processing_replacement(book, canonical_destination, previous_path, layout, extension, language)
+    if layout == "file"
+      filename = PathTemplateService.build_filename(
+        book,
+        extension.presence || File.extname(previous_path),
+        language: language
+      )
+      candidate = File.join(canonical_destination, filename)
+      isolated = unused_replacement_destination(candidate, previous_path)
+      return [ isolated, isolated ]
+    end
+
+    flat_root = flat_output_root?(book, canonical_destination)
+    return flat_root if RemoteResult.failed?(flat_root)
+
+    destination = flat_root ? flat_replacement_folder(book, canonical_destination, language) : canonical_destination
+    isolated = unused_replacement_destination(destination, previous_path)
+    [ isolated, isolated ]
+  end
+
+  def flat_output_root?(book, canonical_destination)
+    return false unless PathTemplateService.flat_output?(book)
+
+    Pathname(canonical_destination).expand_path == Pathname(get_base_path(book)).expand_path
+  rescue ArgumentError, SystemCallError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def flat_replacement_folder(book, root, language)
+    named = PathTemplateService.build_filename(book, ".m4b", language: language)
+    stem = File.basename(named, ".m4b")
+    stem = "Unknown" if stem.blank?
+    File.join(root, stem)
+  end
+
+  def release_reused_destination_locks!
+    Array(@reused_destination_locks).each do |lock|
+      LibraryReplacement.release_destination_lock(lock)
+    end
+  ensure
+    @reused_destination_locks = nil
+  end
+
+  def record_published_library_file!(path)
+    recorded = LibraryReplacement.record_published_path!(@publication_download, path)
+    return if recorded == true
+
+    raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
+  end
+
+  def record_publication_proof!(path, proof)
+    recorded = LibraryReplacement.record_publication_proofs!(@publication_download, path => proof)
+    return if recorded == true
+
+    raise LibraryReplacement::UnreadablePlanError, "published library file could not be recorded"
+  end
+
+  def replacement_file_destination(directory)
+    return if @replacement_file_override_used || @replacement_file_path.blank?
+
+    file = Pathname(@replacement_file_path).expand_path
+    return unless file.parent == Pathname(directory).expand_path
+
+    @replacement_file_override_used = true
+    file.to_s
+  rescue ArgumentError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def unused_replacement_destination(destination, existing_path)
+    candidate = destination
+    counter = 1
+    while replacement_destination_conflicts?(candidate, existing_path)
+      counter += 1
+      raise Errno::ENAMETOOLONG, destination if counter > 100
+
+      candidate = duplicate_filename_candidate(destination, counter)
+    end
+    candidate
+  end
+
+  def replacement_destination_conflicts?(candidate, existing_path)
+    path_occupied?(candidate) ||
+      SafeLibraryDeletionService.overlapping_library_paths?(candidate, existing_path)
   end
 
   def duplicate_filename_candidate(path, counter)

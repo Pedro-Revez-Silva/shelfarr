@@ -15,12 +15,13 @@ class AutoSelectService
     end
   end
 
-  def self.call(request)
-    new(request).call
+  def self.call(request, replace_library_file: false)
+    new(request, replace_library_file: replace_library_file).call
   end
 
-  def initialize(request)
+  def initialize(request, replace_library_file: false)
     @request = request
+    @replace_library_file = replace_library_file
     @min_seeders = SettingsService.get(:auto_select_min_seeders, default: 1)
     @confidence_threshold = SettingsService.get(:auto_select_confidence_threshold, default: 90)
     @requested_language = request.effective_language
@@ -53,7 +54,7 @@ class AutoSelectService
       return SelectionResult.new(selected: false, reason: :below_seeder_threshold, search_result: best_result)
     end
 
-    @request.select_result!(best_result)
+    @request.select_result!(best_result, replace_library_file: @replace_library_file)
     log_success(best_result)
     SelectionResult.new(selected: true, reason: :auto_selected, search_result: best_result)
   rescue => e

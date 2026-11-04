@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_26_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -151,12 +151,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_26_120000) do
     t.string "download_type"
     t.string "external_id"
     t.datetime "external_id_released_at"
+    t.text "library_replacement_state"
     t.string "name"
     t.integer "not_found_count", default: 0, null: false
     t.text "post_processing_cleanup_state"
     t.string "post_processing_job_id"
     t.integer "progress", default: 0
     t.integer "request_id", null: false
+    t.boolean "replace_library_file", default: false, null: false
     t.integer "search_result_id"
     t.bigint "size_bytes"
     t.integer "status", default: 0, null: false

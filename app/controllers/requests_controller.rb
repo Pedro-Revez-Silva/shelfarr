@@ -199,6 +199,20 @@ class RequestsController < ApplicationController
       return
     end
 
+    if Current.user.admin?
+      completed = @request.completed?
+      book = @request.book
+      @request.remove_as_admin!
+      ActivityTracker.track(
+        completed ? "request.deleted" : "request.cancelled",
+        trackable: @request
+      )
+      book.destroy if book.requests.reload.empty? && !book.acquisition_blocked?
+      notice = completed ? "Request deleted. Library files were kept." : "Request cancelled"
+      redirect_to destroy_redirect_location, notice: notice, status: :see_other
+      return
+    end
+
     if @request.completed?
       book = @request.book
       @request.destroy_completed_history!
@@ -276,7 +290,7 @@ class RequestsController < ApplicationController
       return
     end
 
-    @request.add_manual_magnet!(params[:magnet_url])
+    @request.add_manual_magnet!(params[:magnet_url], replace_library_file: params[:replace_library_file])
     redirect_to @request, notice: "Magnet link queued for download."
   rescue ArgumentError => e
     redirect_to @request, alert: e.message
@@ -290,7 +304,7 @@ class RequestsController < ApplicationController
       return
     end
 
-    @request.add_manual_nzb!(params[:nzb_url])
+    @request.add_manual_nzb!(params[:nzb_url], replace_library_file: params[:replace_library_file])
     redirect_to @request, notice: "NZB URL queued for download."
   rescue ArgumentError => e
     redirect_to @request, alert: e.message
