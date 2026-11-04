@@ -351,8 +351,8 @@ class SafeLibraryDeletionService
     raise Error, "This filesystem cannot atomically quarantine a library deletion"
   end
 
-  # NFSv4 rejects RENAME_NOREPLACE with EINVAL. Import's checked renameat
-  # leaves an existing name in place instead of replacing it.
+  # NFSv4 rejects RENAME_NOREPLACE with EINVAL. A checked plain rename is
+  # safe only under the same explicit single-writer policy used by imports.
   def rename_library_entry_noreplace(parent, source_basename, destination_basename, directory:)
     renamed = native_rename_noreplace(
       parent.fileno,
@@ -362,6 +362,7 @@ class SafeLibraryDeletionService
     )
     return true if renamed == true
     return false unless noreplace_unsupported?(renamed)
+    return false unless SettingsService.get(:allow_nonatomic_nfs_directory_publication)
 
     fallback = rename_noreplace_fallback(
       parent,

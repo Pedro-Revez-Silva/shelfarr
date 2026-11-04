@@ -279,9 +279,39 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@root).grep(/\A\.shelfarr-delete-/)
   end
 
+  test "EINVAL deletion requires the single-writer NFS opt-in" do
+    with_rename_noreplace_einval(allow_nonatomic: false) do
+      FilesystemSyscalls.stub(:renameat, ->(*) { flunk "non-atomic rename was not authorized" }) do
+        assert_raises(SafeLibraryDeletionService::Error) do
+          SafeLibraryDeletionService.new(@book).delete!
+        end
+      end
+    end
+
+    assert_equal "original book", File.binread(@path)
+  end
+
+  test "restoration retains quarantine when non-atomic rename is not authorized" do
+    service = SafeLibraryDeletionService.new(@book)
+    quarantine = File.join(@root, service.send(:quarantine_basename, File.stat(@path)))
+    File.rename(@path, quarantine)
+
+    File.open(@root) do |parent|
+      with_rename_noreplace_einval(allow_nonatomic: false) do
+        FilesystemSyscalls.stub(:renameat, ->(*) { flunk "restoration must not race another writer" }) do
+          service.send(:restore_quarantined_entry, parent, File.basename(quarantine), File.basename(@path), directory: false)
+        end
+      end
+    end
+
+    assert_equal "original book", File.binread(quarantine)
+    assert_not File.exist?(@path)
+  end
+
   private
 
-  def with_rename_noreplace_einval(&block)
+  def with_rename_noreplace_einval(allow_nonatomic: true, &block)
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, allow_nonatomic)
     FilesystemSyscalls.stub(:rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }, &block)
   end
 end
