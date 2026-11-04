@@ -5,9 +5,25 @@ require "open3"
 require "rbconfig"
 require "shellwords"
 require "tmpdir"
+require "timeout"
 
 class SecretEnvFilesTest < ActiveSupport::TestCase
   SECRET = "shelfarr-test-secret"
+
+  test "a FIFO secret is rejected without waiting for a writer" do
+    Dir.mktmpdir("secret-fifo") do |dir|
+      path = File.join(dir, "secret.pipe")
+      File.mkfifo(path, 0o600)
+
+      error = assert_raises(Shelfarr::SecretEnvFiles::Error) do
+        Timeout.timeout(1) do
+          Shelfarr::SecretEnvFiles.load!({ "SECRET_KEY_BASE_FILE" => path })
+        end
+      end
+
+      assert_match(/not a regular file/, error.message)
+    end
+  end
 
   test "boot loads a credential from NAME_FILE and strips one trailing newline" do
     Dir.mktmpdir do |dir|
