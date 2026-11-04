@@ -22,6 +22,7 @@ class SettingsServiceTest < ActiveSupport::TestCase
       oidc_link_existing_users oidc_auto_create_users oidc_default_role
       webhook_enabled webhook_url webhook_token webhook_events webhook_topic
       health_check_interval
+      default_request_format
     ]).delete_all
   end
 
@@ -190,6 +191,37 @@ class SettingsServiceTest < ActiveSupport::TestCase
 
     assert_equal "Completed Download Import Mode must be one of: copy, move, hardlink, reference", error.message
     assert_equal "move", SettingsService.get(:completed_download_import_mode)
+  end
+
+  test "default request format asks each time until an admin chooses one" do
+    assert_equal "ask", SettingsService.get(:default_request_format)
+    assert_equal [], SettingsService.default_request_formats
+
+    {
+      "audiobook" => [ "audiobook" ],
+      "ebook" => [ "ebook" ],
+      "both" => %w[audiobook ebook],
+      "ask" => []
+    }.each do |choice, formats|
+      assert_equal choice, SettingsService.set(:default_request_format, choice)
+      assert_equal formats, SettingsService.default_request_formats
+    end
+  end
+
+  test "default request format rejects an unknown choice and ignores a corrupt saved value" do
+    SettingsService.set(:default_request_format, "ebook")
+
+    error = assert_raises(ArgumentError) do
+      SettingsService.set(:default_request_format, "everything")
+    end
+
+    assert_equal "Default Request Format must be one of: ask, audiobook, ebook, both", error.message
+    assert_equal "ebook", SettingsService.get(:default_request_format)
+
+    Setting.find_by!(key: "default_request_format").update!(value: "everything")
+
+    assert_equal "ask", SettingsService.get(:default_request_format)
+    assert_equal [], SettingsService.default_request_formats
   end
 
   test "completed download import mode safely resolves corrupt persisted values to copy" do

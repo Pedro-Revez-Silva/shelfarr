@@ -595,6 +595,7 @@ module Admin
     def validate_setting_value(key, value)
       validate_setting_type(key, value) ||
         validate_completed_download_import_mode(key, value) ||
+        validate_default_request_format(key, value) ||
         validate_path_template(key, value) ||
         validate_indexer_url(key, value) ||
         validate_ebooks_com_setting(key, value) ||
@@ -660,6 +661,13 @@ module Admin
       return nil if SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value.to_s)
 
       "must be one of: #{SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.join(', ')}"
+    end
+
+    def validate_default_request_format(key, value)
+      return nil unless key.to_s == "default_request_format"
+      return nil if SettingsService::DEFAULT_REQUEST_FORMATS.include?(value.to_s)
+
+      "must be one of: #{SettingsService::DEFAULT_REQUEST_FORMATS.join(', ')}"
     end
 
     def validate_path_template(key, value)

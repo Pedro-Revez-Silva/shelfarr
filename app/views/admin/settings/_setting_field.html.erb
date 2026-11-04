@@ -80,6 +80,8 @@
         <%= form.select "settings[#{key}]", options_for_select([["User", "user"], ["Admin", "admin"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
       <% elsif key.to_s == "metadata_source" %>
         <%= form.select "settings[#{key}]", options_for_select([["Auto", "auto"], ["Hardcover", "hardcover"], ["Google Books", "google_books"], ["Open Library", "openlibrary"], ["Comic Vine", "comic_vine"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
+      <% elsif key.to_s == "default_request_format" %>
+        <%= form.select "settings[#{key}]", options_for_select(SettingsService::DEFAULT_REQUEST_FORMAT_OPTIONS, data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { action: "change->settings-form#autoSave" } %>
       <% elsif key.to_s == "telegram_update_mode" %>
         <%= form.select "settings[#{key}]", options_for_select([["Polling", "polling"], ["Webhook", "webhook"]], data[:value]), {}, id: "settings_#{key}", class: "w-full rounded-md border border-gray-700 bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 px-3 py-2", data: { settings_form_manual_save: true } %>
       <% elsif key.to_s == "discord_webhook_url" %>
