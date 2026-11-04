@@ -403,6 +403,212 @@ class AudiobookshelfLibrarySyncOverlapTest < ActiveJob::TestCase
     LibraryItem.where(audiobookshelf_id: "ab-keep").delete_all
   end
 
+  # The jobs process never sees the web process's reset_connection!.
+  test "scheduled sync does not contact a library platform after its settings are removed" do
+    LibraryItem.destroy_all
+    LibraryPlatformClient.reset_connections!
+    SettingsService.set(:bookorbit_url, "http://bookorbit.example:3000")
+    SettingsService.set(:bookorbit_username, "admin")
+    SettingsService.set(:bookorbit_password, "secret")
+    SettingsService.set(:grimmory_url, "http://grimmory.example:5173")
+    SettingsService.set(:grimmory_username, "admin")
+    SettingsService.set(:grimmory_password, "secret")
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:13378/api/libraries")
+        .with(headers: { "Authorization" => "Bearer test-api-key" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "libraries" => [] }.to_json
+        )
+      stub_request(:post, "http://bookorbit.example:3000/api/v1/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "bookorbit-token" }.to_json
+        )
+      stub_request(:get, "http://bookorbit.example:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer bookorbit-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "id" => 1, "name" => "Books", "folders" => [] } ].to_json
+        )
+      stub_request(:post, "http://grimmory.example:5173/api/v1/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "grimmory-token" }.to_json
+        )
+      stub_request(:get, "http://grimmory.example:5173/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer grimmory-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "id" => "lib-1", "name" => "Books", "paths" => [], "allowedFormats" => [ "epub" ] } ].to_json
+        )
+
+      assert_empty AudiobookshelfClient.libraries
+      assert_equal "Books", BookOrbitClient.libraries.first.name
+      assert_equal "Books", GrimmoryClient.libraries.first.name
+
+      SettingsService.set(:audiobookshelf_url, "")
+      SettingsService.set(:audiobookshelf_api_key, "")
+      SettingsService.set(:bookorbit_url, "")
+      SettingsService.set(:bookorbit_username, "")
+      SettingsService.set(:bookorbit_password, "")
+      SettingsService.set(:grimmory_url, "")
+      SettingsService.set(:grimmory_username, "")
+      SettingsService.set(:grimmory_password, "")
+
+      AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
+
+      assert_requested :get, "http://localhost:13378/api/libraries", times: 1
+      assert_requested :post, "http://bookorbit.example:3000/api/v1/auth/login", times: 1
+      assert_requested :get, "http://bookorbit.example:3000/api/v1/libraries", times: 1
+      assert_requested :post, "http://grimmory.example:5173/api/v1/auth/login", times: 1
+      assert_requested :get, "http://grimmory.example:5173/api/v1/libraries", times: 1
+      assert_not_requested :get, %r{http://localhost:13378/api/libraries/.+/items}
+      assert_not_requested :post, %r{http://bookorbit\.example:3000/api/v1/libraries/.+/books}
+      assert_not_requested :get, %r{http://grimmory\.example:5173/api/v1/libraries/.+/book}
+      assert_nil AudiobookshelfClient.instance_variable_get(:@connection)
+      assert_nil AudiobookshelfClient.instance_variable_get(:@connection_settings_key)
+      assert_nil BookOrbitClient.instance_variable_get(:@connection)
+      assert_nil BookOrbitClient.instance_variable_get(:@access_token)
+      assert_nil BookOrbitClient.instance_variable_get(:@connection_configuration)
+      assert_nil GrimmoryClient.instance_variable_get(:@connection)
+      assert_nil GrimmoryClient.instance_variable_get(:@access_token)
+      assert_nil GrimmoryClient.instance_variable_get(:@connection_settings_key)
+    end
+  ensure
+    LibraryPlatformClient.reset_connections!
+    SettingsService.set(:library_platform, "audiobookshelf")
+  end
+
+  # The jobs process never sees the web process's reset_connection!.
+  test "scheduled sync keeps a configured platform after another library integration is removed" do
+    LibraryItem.destroy_all
+    LibraryPlatformClient.reset_connections!
+    SettingsService.set(:bookorbit_url, "http://bookorbit.example:3000")
+    SettingsService.set(:bookorbit_username, "admin")
+    SettingsService.set(:bookorbit_password, "secret")
+
+    VCR.turned_off do
+      stub_request(:post, "http://bookorbit.example:3000/api/v1/auth/login")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "bookorbit-token" }.to_json
+        )
+        .times(1)
+      stub_request(:get, "http://bookorbit.example:3000/api/v1/libraries")
+        .with(headers: { "Authorization" => "Bearer bookorbit-token" })
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [ { "id" => 1, "name" => "Books", "folders" => [] } ].to_json
+        )
+        .times(1)
+      assert_equal "Books", BookOrbitClient.libraries.first.name
+
+      SettingsService.set(:bookorbit_url, "")
+      SettingsService.set(:bookorbit_username, "")
+      SettingsService.set(:bookorbit_password, "")
+
+      items = stub_request(:get, "http://localhost:13378/api/libraries/lib-audio/items")
+        .with(query: hash_including("limit" => "500", "page" => "0"))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "results" => [], "total" => 0 }.to_json
+        )
+
+      AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
+
+      assert_requested items, times: 1
+      assert_requested :get, "http://bookorbit.example:3000/api/v1/libraries", times: 1
+      assert_nil BookOrbitClient.instance_variable_get(:@connection)
+      assert_nil BookOrbitClient.instance_variable_get(:@access_token)
+    end
+  ensure
+    LibraryPlatformClient.reset_connections!
+  end
+
+  # The jobs process never sees the web process's reset_connection!.
+  test "scheduled sync drops cached connections for removed sibling integrations" do
+    LibraryItem.destroy_all
+    SettingsService.set(:flaresolverr_url, "http://flaresolverr.example:8191")
+    SettingsService.set(:gutenberg_enabled, true)
+    SettingsService.set(:gutenberg_url, "https://gutenberg.example")
+    SettingsService.set(:librivox_enabled, true)
+    SettingsService.set(:librivox_url, "https://librivox.example")
+    SettingsService.set(:prowlarr_url, "http://prowlarr.example:9696")
+    SettingsService.set(:prowlarr_api_key, "prowlarr-key")
+    SettingsService.set(:jackett_url, "http://jackett.example:9117")
+    SettingsService.set(:jackett_api_key, "jackett-key")
+    SettingsService.set(:newznab_url, "http://newznab.example:5076")
+    SettingsService.set(:newznab_api_key, "newznab-key")
+
+    prowlarr = IndexerClients::Prowlarr.send(:connection)
+    IndexerClients::Jackett.send(:connection)
+    IndexerClients::Newznab.send(:connection)
+    FlaresolverrClient.send(:connection)
+    GutenbergClient.send(:connection)
+    LibrivoxClient.send(:connection)
+
+    SettingsService.set(:flaresolverr_url, "")
+    SettingsService.set(:gutenberg_enabled, false)
+    SettingsService.set(:librivox_url, "")
+    SettingsService.set(:jackett_api_key, "")
+    SettingsService.set(:newznab_api_key, "")
+
+    items = stub_request(:get, "http://localhost:13378/api/libraries/lib-audio/items")
+      .with(query: hash_including("limit" => "500", "page" => "0"))
+      .to_return(
+        status: 200,
+        headers: { "Content-Type" => "application/json" },
+        body: { "results" => [], "total" => 0 }.to_json
+      )
+
+    AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
+
+    assert_requested items, times: 1
+    assert_same prowlarr, IndexerClients::Prowlarr.instance_variable_get(:@connection)
+    assert_nil IndexerClients::Jackett.instance_variable_get(:@connection)
+    assert_nil IndexerClients::Jackett.instance_variable_get(:@connection_settings_key)
+    assert_nil IndexerClients::Newznab.instance_variable_get(:@connection)
+    assert_nil IndexerClients::Newznab.instance_variable_get(:@connection_settings_key)
+    assert_nil FlaresolverrClient.instance_variable_get(:@connection)
+    assert_nil FlaresolverrClient.instance_variable_get(:@connection_settings_key)
+    assert_nil GutenbergClient.instance_variable_get(:@connection)
+    assert_nil GutenbergClient.instance_variable_get(:@connection_settings_key)
+    assert_nil LibrivoxClient.instance_variable_get(:@connection)
+    assert_nil LibrivoxClient.instance_variable_get(:@connection_settings_key)
+    assert_not_requested :post, %r{flaresolverr\.example}
+    assert_not_requested :get, %r{gutenberg\.example}
+    assert_not_requested :get, %r{librivox\.example}
+    assert_not_requested :get, %r{jackett\.example}
+    assert_not_requested :get, %r{newznab\.example}
+    assert_not_requested :get, %r{prowlarr\.example}
+  ensure
+    IndexerClient.reset_all_connections!
+    FlaresolverrClient.reset_connection!
+    GutenbergClient.reset_connection!
+    LibrivoxClient.reset_connection!
+    SettingsService.set(:flaresolverr_url, "")
+    SettingsService.set(:gutenberg_enabled, false)
+    SettingsService.set(:gutenberg_url, "https://www.gutenberg.org")
+    SettingsService.set(:librivox_enabled, false)
+    SettingsService.set(:librivox_url, "https://librivox.org")
+    SettingsService.set(:prowlarr_url, "")
+    SettingsService.set(:prowlarr_api_key, "")
+    SettingsService.set(:jackett_url, "")
+    SettingsService.set(:jackett_api_key, "")
+    SettingsService.set(:newznab_url, "")
+    SettingsService.set(:newznab_api_key, "")
+  end
+
   private
 
   def with_claimed_syncs(release)
