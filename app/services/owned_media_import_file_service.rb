@@ -678,6 +678,8 @@ class OwnedMediaImportFileService
       end
     end
 
+    LibraryImportPermissions.apply_file!(destination.to_s, root: @output_root.to_s)
+    LibraryImportPermissions.apply_directory!(destination.dirname.to_s, root: @output_root.to_s)
     reserved_library_path!(destination)
   rescue Errno::EEXIST
     raise Error, "The planned audiobook destination became occupied"

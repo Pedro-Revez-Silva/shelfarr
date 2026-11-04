@@ -875,7 +875,7 @@ class UploadImportFileService
                   :validate_open_file!, existing, upload.file_size, upload.content_sha256
                 )
                 validate_published_parent!(destination.parent, destination_parent)
-                return book_library_path
+                return apply_published_file_permissions!(destination, root)
               end
             rescue Errno::ENOENT => error
               RemoteResult::Failed.new(error)
@@ -900,7 +900,7 @@ class UploadImportFileService
         end
       end
     end
-    book_library_path
+    apply_published_file_permissions!(Pathname(upload.destination_path), root)
   rescue AmbiguousPublicationError
     # Publication may have succeeded into a directory which was renamed while
     # its descriptor was pinned. Never clear that reservation automatically:
@@ -911,6 +911,12 @@ class UploadImportFileService
     raise Error, "The reserved upload destination became occupied by another file"
   rescue Errno::EXDEV, Errno::EPERM, Errno::ENOTSUP, Errno::ELOOP, Errno::ENOTDIR => error
     raise Error, "The library filesystem cannot publish uploads atomically: #{error.message}"
+  end
+
+  def apply_published_file_permissions!(destination, root)
+    LibraryImportPermissions.apply_file!(destination.to_s, root: root.to_s)
+    LibraryImportPermissions.apply_directory!(destination.parent.to_s, root: root.to_s)
+    book_library_path
   end
 
   def cleanup_source_after_completion!

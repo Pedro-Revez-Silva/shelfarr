@@ -68,6 +68,9 @@ class SettingsService
 
   DOWNLOAD_TYPES = %w[torrent usenet direct].freeze
   COMPLETED_DOWNLOAD_IMPORT_MODES = %w[copy move hardlink reference].freeze
+  LIBRARY_IMPORT_PERMISSION_KEYS = %i[library_import_file_mode library_import_folder_mode].freeze
+  LIBRARY_IMPORT_MODE_FORMAT = /\A[0-7]{3,4}\z/
+  LIBRARY_IMPORT_FOLDER_OWNER_BITS = 0o700
   LIBRARY_PLATFORMS = %w[audiobookshelf bookorbit grimmory].freeze
   INDEXER_SEARCH_SCOPES = %w[broad strict unrestricted custom].freeze
   INDEXER_SEARCH_SCOPE_OPTIONS = {
@@ -137,6 +140,8 @@ class SettingsService
     download_enqueue_timeout_minutes: { type: "integer", default: 5, category: "download", description: "Minutes a download may stay queued in Shelfarr before being flagged as never dispatched to the download client" },
     post_processing_source_path_retries: { type: "integer", default: 10, category: "download", description: "Number of post-processing retries while waiting for completed download files to appear" },
     completed_download_import_mode: { type: "string", default: "copy", category: "download", description: "Choose Copy, Move, Hardlink, or Reference. Hardlink requires one container-visible filesystem; unsupported or cross-filesystem links fall back to copy. Reference creates a library symlink to the download path (for debrid/rclone mounts) and never copies bytes." },
+    library_import_file_mode: { type: "string", default: "", category: "download", description: "Optional octal mode for files Shelfarr copies or moves into the library, for example 0664. The mode must include owner read permission so Shelfarr can verify and serve the file. Leave blank to leave file permissions unchanged. Hardlinked imports are skipped because they share the download file's inode, so chmod would change that download too; any library file with more than one link is skipped for the same reason. Unsupported hardlinks that fall back to a copy still use this mode. Reference symlinks are left unchanged. A chmod failure, such as on NFS or SMB, is logged and does not fail the import." },
+    library_import_folder_mode: { type: "string", default: "", category: "download", description: "Optional octal mode for folders under the library root that contain an import, for example 0775. The mode must include owner read, write, and execute. It is applied after the import is published, not while directories are created. Leave blank to leave folder permissions unchanged. The configured library root is never changed. A chmod failure, such as on NFS or SMB, is logged and does not fail the import." },
     split_audiobook_bundle_imports: { type: "boolean", default: false, category: "download", description: "Split releases containing multiple self-contained M4B/AAX books into per-book folders. MP3, FLAC, and other chapter-based releases stay together." },
     remove_completed_usenet_downloads: { type: "boolean", default: true, category: "download", description: "Remove usenet downloads from client after successful import" },
     precreate_download_archives: { type: "boolean", default: false, category: "download", description: "Pre-create cached ZIP archives for eligible non-reference directory imports after library scan and completion notification so the first download is instant. When disabled, cached archives are created lazily in tmp/downloads. Reference-mode directory downloads cannot be cached and create a one-shot ZIP in the container's OS temp directory instead. Keep both locations disk-backed before downloading large books; tmpfs can OOM-kill the worker." },
@@ -352,6 +357,8 @@ class SettingsService
     ebook_max_file_size: "Maximum Ebook Size",
     audiobook_min_file_size: "Minimum Audiobook Size",
     audiobook_max_file_size: "Maximum Audiobook Size",
+    library_import_file_mode: "Library Import File Mode",
+    library_import_folder_mode: "Library Import Folder Mode",
     precreate_download_archives: "Pre-create Download Archives",
     audiobookshelf_audiobook_library_id: "Audiobook Library",
     audiobookshelf_ebook_library_id: "Ebook Library",
@@ -439,6 +446,7 @@ class SettingsService
       if key == :completed_download_import_mode
         return COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value) ? value : "copy"
       end
+      return normalize_library_import_mode(key, value) if LIBRARY_IMPORT_PERMISSION_KEYS.include?(key)
 
       if key == :default_request_format
         normalized = value.to_s
@@ -464,6 +472,8 @@ class SettingsService
           raise ArgumentError, "#{label_for(key)} must be one of: #{COMPLETED_DOWNLOAD_IMPORT_MODES.join(', ')}"
         end
       end
+
+      value = library_import_mode_for_write!(key, value) if LIBRARY_IMPORT_PERMISSION_KEYS.include?(key)
 
       if key == :default_request_format
         value = value.to_s
@@ -942,6 +952,39 @@ class SettingsService
         normalized = value.to_s.strip.downcase
         normalized.presence
       end.uniq
+    end
+
+    public
+
+    def library_import_mode_acceptable?(key, value)
+      text = value.to_s.strip
+      return false unless text.match?(LIBRARY_IMPORT_MODE_FORMAT)
+      required = key.to_sym == :library_import_folder_mode ? LIBRARY_IMPORT_FOLDER_OWNER_BITS : 0o400
+      (Integer(text, 8) & required) == required
+    end
+
+    def library_import_mode_requirement(key)
+      if key.to_sym == :library_import_folder_mode
+        "must be a 3 or 4 digit octal mode that includes owner read, write, and execute (for example 0775), or blank"
+      else
+        "must be a 3 or 4 digit octal mode that includes owner read (for example 0664), or blank"
+      end
+    end
+
+    private
+
+    def normalize_library_import_mode(key, value)
+      text = value.to_s.strip
+      return "" if text.empty?
+
+      library_import_mode_acceptable?(key, text) ? text : ""
+    end
+
+    def library_import_mode_for_write!(key, value)
+      text = value.to_s.strip
+      return text if text.empty? || library_import_mode_acceptable?(key, text)
+
+      raise ArgumentError, "#{label_for(key)} #{library_import_mode_requirement(key)}"
     end
 
     def default_format_preferences

@@ -379,6 +379,23 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /reference-mode directory downloads use the container's OS temp directory/
   end
 
+  test "index shows library import permission modes next to the import mode" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label[for='settings_library_import_file_mode']", text: "Library Import File Mode"
+    assert_select "input[name='settings[library_import_file_mode]'][placeholder='0664']"
+    assert_select "label[for='settings_library_import_folder_mode']", text: "Library Import Folder Mode"
+    assert_select "input[name='settings[library_import_folder_mode]'][placeholder='0775']"
+    assert_select "p", text: /Hardlinked imports are skipped because they share the download file's inode/
+    assert_select "p", text: /The configured library root is never changed/
+    body = response.body
+    assert_operator body.index("settings_completed_download_import_mode"), :<,
+      body.index("settings_library_import_file_mode")
+    assert_operator body.index("settings_library_import_file_mode"), :<,
+      body.index("settings_library_import_folder_mode")
+  end
+
   test "index shows completed download import mode options and hardlink guidance" do
     SettingsService.set(:completed_download_import_mode, "hardlink")
 
@@ -478,6 +495,39 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal true, SettingsService.get(:precreate_download_archives)
+  end
+
+  test "bulk_update stores library import modes and rejects invalid octal" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        library_import_file_mode: "0664",
+        library_import_folder_mode: "0775"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "0664", SettingsService.get(:library_import_file_mode)
+    assert_equal "0775", SettingsService.get(:library_import_folder_mode)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        library_import_file_mode: "668"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/must be a 3 or 4 digit octal mode/, flash[:alert])
+    assert_equal "0664", SettingsService.get(:library_import_file_mode)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: {
+        library_import_folder_mode: "0664"
+      }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/owner read, write, and execute/, flash[:alert])
+    assert_equal "0775", SettingsService.get(:library_import_folder_mode)
   end
 
   test "bulk_update stores a valid completed download import mode" do

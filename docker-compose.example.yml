@@ -43,6 +43,9 @@ services:
       # - HTTP_PORT=8080
       # Optional: Set your own key instead of auto-generating
       # - RAILS_MASTER_KEY=your-64-char-hex-key
+      # Or load a credential from a Docker secret file (leave the value itself unset):
+      # - SECRET_KEY_BASE_FILE=/run/secrets/secret_key_base
+      # - SHELFARR_SETTING_OIDC_CLIENT_SECRET_FILE=/run/secrets/oidc_client_secret
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${HTTP_PORT:-80}/up"]
       interval: 30s
