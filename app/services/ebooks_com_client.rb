@@ -239,7 +239,7 @@ class EbooksComClient
     end
 
     def parse_response_body(body)
-      JSON.parse(body.dup.force_encoding(Encoding::UTF_8), max_nesting: MAX_JSON_NESTING)
+      JSON.parse(FilenameBytes.utf8(body), max_nesting: MAX_JSON_NESTING)
     end
 
     def response_cache_key(path, params)

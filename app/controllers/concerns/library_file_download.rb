@@ -216,7 +216,7 @@ module LibraryFileDownload
     ).unicode_normalize(:nfc)
     value = value.gsub(/[\/\\:*?"<>|\x00-\x1f\x7f]/, "_").strip
     value = "library-download" if value.blank?
-    value = value.byteslice(0, byte_budget).to_s.force_encoding(Encoding::UTF_8).scrub("_")
+    value = FilenameBytes.utf8(value.byteslice(0, byte_budget).to_s.scrub("_"))
     value = value.sub(/[ .]+\z/, "")
     value = "library-download" if value.blank?
     "#{value}#{extension}"
