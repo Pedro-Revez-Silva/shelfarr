@@ -256,7 +256,13 @@ class SearchController < ApplicationController
       default: ContentKinds::BOOK
     )
     @available_book_types = RequestOptionPolicy.book_types_for(@content_kind)
-    @collection_entries = collection_entries
+    entries = collection_entries
+    @collection_entries = case entries
+    when RemoteResult::Failed
+      []
+    else
+      entries
+    end
 
     redirect_to search_path, alert: "Missing title information" if @work_id.blank? || @title.blank?
   end
@@ -447,7 +453,12 @@ class SearchController < ApplicationController
   def enrich_details_from_source
     return if @work_id.blank?
 
-    @details_enrichment_loaded = enrich_details_for_source(@work_id) || @details_enrichment_loaded
+    loaded = enrich_details_for_source(@work_id)
+    @details_enrichment_loaded = if RemoteResult.failed?(loaded)
+      @details_enrichment_loaded
+    else
+      loaded || @details_enrichment_loaded
+    end
     return if essential_details_present?
 
     alternate_work_ids = @source_work_ids.reject do |work_id|
@@ -514,7 +525,7 @@ class SearchController < ApplicationController
     end
   rescue HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, ComicVineClient::Error, MetadataService::Error => e
     Rails.logger.warn("[SearchController] Details enrichment failed for #{work_id}: #{e.message}")
-    false
+    RemoteResult::Failed.new(e)
   end
 
   def enrich_hardcover_details(source_id)
@@ -635,7 +646,7 @@ class SearchController < ApplicationController
     end
   rescue MetadataCollectionService::Error, HardcoverClient::Error, ComicVineClient::Error => e
     Rails.logger.warn("[SearchController] Collection items failed for #{@collection_source}:#{@collection_id}: #{e.message}")
-    []
+    RemoteResult::Failed.new(e)
   end
 
   def collection_item_status(item, lookup)

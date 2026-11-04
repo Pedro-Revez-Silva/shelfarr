@@ -178,7 +178,10 @@ module Hardcover
         default = DEFAULT_ENDPOINTS.fetch(name)
         return default if name == "issuer"
 
-        hardcover_endpoint(discovery[name]) || default
+        resolved = hardcover_endpoint(discovery[name])
+        return default if RemoteResult.failed?(resolved)
+
+        resolved || default
       end
 
       def reset_discovery!
@@ -210,7 +213,10 @@ module Hardcover
         raise Error, "discovery issuer mismatch" unless body["issuer"] == ISSUER
 
         DEFAULT_ENDPOINTS.keys.excluding("issuer").index_with do |key|
-          hardcover_endpoint(body[key]) || DEFAULT_ENDPOINTS[key]
+          resolved = hardcover_endpoint(body[key])
+          next DEFAULT_ENDPOINTS[key] if RemoteResult.failed?(resolved)
+
+          resolved || DEFAULT_ENDPOINTS[key]
         end
       end
 

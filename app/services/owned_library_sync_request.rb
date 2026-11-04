@@ -55,10 +55,10 @@ class OwnedLibrarySyncRequest
           arguments.fourth.to_s == poll_token.to_s
         exact_delivery || exact_poll_chain
       end
-  rescue ActiveRecord::ActiveRecordError, NameError
+  rescue ActiveRecord::ActiveRecordError, NameError => error
     # If queue inspection is unavailable, preserving the current claim is
     # safer than amplifying a backlog with replacement deliveries.
-    true
+    RemoteResult::Failed.new(error)
   end
 
   def initialize(connection:, mode: :manual, now: Time.current)

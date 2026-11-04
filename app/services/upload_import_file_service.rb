@@ -159,7 +159,7 @@ class UploadImportFileService
       end
       removed
     rescue Errno::ENOENT
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- the ingress file is already gone
     rescue Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR, Error => error
       Rails.logger.warn(
         "[UploadImportFileService] Refused unsafe ingress cleanup: #{error.class}"
@@ -288,7 +288,7 @@ class UploadImportFileService
       Upload.where(id: upload.id, status: Upload.statuses[:completed])
         .update_all(cleanup_source_path: nil, updated_at: Time.current)
       upload.reload
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- the completed upload source is already gone
     end
 
     def complete_reservation?(upload)

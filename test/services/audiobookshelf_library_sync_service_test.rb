@@ -816,4 +816,39 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
   ensure
     SettingsService.set(:audiobookshelf_audiobook_scan_library_ids, "")
   end
+
+  test "does not prune cached items when the library client returns a raw empty list" do
+    existing = cached_library_item
+    LibraryPlatformClient.stub(:library_items, []) do
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert_not result.success?
+      assert_includes result.errors, "lib-audio: empty inventory was not an explicit empty success"
+      assert_equal "Existing Title", existing.reload.title
+    end
+  end
+
+  test "does not prune cached items when an ok result holds an empty list" do
+    existing = cached_library_item
+    LibraryPlatformClient.stub(:library_items, RemoteResult::Ok.new([])) do
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert_not result.success?
+      assert_includes result.errors, "lib-audio: empty inventory was not an explicit empty success"
+      assert_equal "Existing Title", existing.reload.title
+    end
+  end
+
+  private
+
+  def cached_library_item
+    LibraryItem.create!(
+      library_platform: "audiobookshelf",
+      library_id: "lib-audio",
+      audiobookshelf_id: "ab-existing",
+      title: "Existing Title",
+      author: "Author",
+      synced_at: 1.day.ago
+    )
+  end
 end

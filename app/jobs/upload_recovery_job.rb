@@ -32,7 +32,7 @@ class UploadRecoveryJob < ApplicationJob
       Rails.logger.warn(
         "[UploadRecoveryJob] Could not inspect jobs for upload ##{upload_id}: #{error.class}"
       )
-      true
+      RemoteResult::Failed.new(error)
     end
 
     private
@@ -60,7 +60,7 @@ class UploadRecoveryJob < ApplicationJob
         else
           UploadImportFileService.cleanup_completed_source!(upload)
         end
-        next if cleaned
+        next if cleaned == true
 
         Rails.logger.warn(
           "[UploadRecoveryJob] Completed source cleanup remains pending for upload ##{upload.id}"

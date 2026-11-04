@@ -46,7 +46,7 @@ class OwnedMediaBackupJob < ApplicationJob
         "[OwnedMediaBackupJob] Could not inspect upload-processing jobs for " \
           "upload ##{upload_id}: #{error.class}"
       )
-      true
+      RemoteResult::Failed.new(error)
     end
 
     private

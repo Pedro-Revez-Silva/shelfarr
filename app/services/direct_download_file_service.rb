@@ -722,12 +722,12 @@ class DirectDownloadFileService
     if plan
       if recover_failed_replacement!(error) == true
         LibraryReplacement.finish_cleanup!(download)
-        return true
+        return true # rubocop:disable Shelfarr/RescueToEmpty -- proven replacement recovery is success
       end
 
       raise
     end
-    return true if recover_after_publication_error!(error) == true
+    return true if recover_after_publication_error!(error) == true # rubocop:disable Shelfarr/RescueToEmpty -- proven publication recovery is success
 
     raise
   end

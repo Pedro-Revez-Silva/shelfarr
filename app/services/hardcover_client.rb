@@ -807,8 +807,8 @@ class HardcoverClient
       return false if Rails.cache.read(key).present?
 
       !cache_operational?(credential_digest)
-    rescue StandardError
-      true
+    rescue StandardError => error
+      RemoteResult::Failed.new(error)
     end
 
     def release_request_lock(token, credential_digest, acquired_at:)

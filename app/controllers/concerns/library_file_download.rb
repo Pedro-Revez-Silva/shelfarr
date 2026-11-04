@@ -19,15 +19,15 @@ module LibraryFileDownload
 
     begin
       boundary = canonical_download_boundary(book.file_path)
-    rescue Errno::ENOENT
+    rescue Errno::ENOENT => error
       redirect_to download_failure_location, alert: "File not found on server"
-      return
-    rescue UnsafeDownloadPathError, SystemCallError, ArgumentError
+      return RemoteResult::Failed.new(error)
+    rescue UnsafeDownloadPathError, SystemCallError, ArgumentError => error
       Rails.logger.warn(
         "[Security] Rejected unsafe library download path for #{download_log_context}"
       )
       redirect_to download_failure_location, alert: "Invalid file path"
-      return
+      return RemoteResult::Failed.new(error)
     end
 
     if boundary.kind == :directory

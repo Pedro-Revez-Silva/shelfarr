@@ -52,7 +52,16 @@ class AudiobookshelfLibrarySyncService
           items = []
         when RemoteResult::Ok
           items = result.value
+          if items.respond_to?(:empty?) && items.empty?
+            errors << "#{library_id}: empty inventory was not an explicit empty success"
+            next
+          end
         else
+          if result.nil? || result == false || result == []
+            errors << "#{library_id}: empty inventory was not an explicit empty success"
+            next
+          end
+
           items = result
         end
         synced_count = sync_library_items(library_platform, library_id, items, synced_at: now)

@@ -70,14 +70,16 @@ class UploadZipImportFileService
       remove_verified_manifest!(upload, destination, root, already_verified: true)
       clear_cleanup_source!(upload)
       true
-    rescue Errno::ENOENT
+    rescue Errno::ENOENT => error
       # A source which was already unlinked by external retention cleanup is
       # safe to forget only while our complete publication still verifies.
-      return false unless publication_complete?(upload, destination, root) == true
+      unless publication_complete?(upload, destination, root) == true
+        return RemoteResult::Failed.new(error)
+      end
 
       remove_verified_manifest!(upload, destination, root, already_verified: true)
       clear_cleanup_source!(upload)
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- the missing source still has a verified publication
     rescue Error, FileCopyService::UnsafePathError, SystemCallError => error
       Rails.logger.error(
         "[UploadZipImportFileService] Could not finish ZIP upload ##{upload.id}: " \

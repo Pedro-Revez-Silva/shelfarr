@@ -83,7 +83,7 @@ class SafeLibraryDeletionService
     raise Error, "Shelfarr could not coordinate library deletion: #{error.message}"
   rescue Errno::ENOENT
     # A path which was authorized from durable provenance and is already gone needs no further filesystem work.
-    true
+    true # rubocop:disable Shelfarr/RescueToEmpty -- an already-removed library path is a completed deletion
   rescue Errno::ELOOP, Errno::EACCES, Errno::ENOTDIR, Errno::EPERM => error
     raise Error, "Shelfarr could not safely remove the library path: #{error.message}"
   rescue SystemCallError => error
@@ -225,7 +225,7 @@ class SafeLibraryDeletionService
   rescue Errno::ENOENT => error
     RemoteResult::Failed.new(error)
   rescue Errno::ELOOP
-    true
+    true # rubocop:disable Shelfarr/RescueToEmpty -- O_NOFOLLOW ELOOP means the symlink is present; callers use == true
   end
 
   def authorized_root_and_relative!
@@ -249,16 +249,20 @@ class SafeLibraryDeletionService
   end
 
   def current_root_pairs
+    pairs = []
     [
       SettingsService.get(:audiobook_output_path),
       SettingsService.get(:ebook_output_path),
       SettingsService.get(:comicbook_output_path)
-    ].compact_blank.flat_map do |root|
+    ].compact_blank.each do |root|
       canonical = Pathname(root).expand_path.realpath.to_s
-      [ [ root, canonical ], [ canonical, canonical ] ]
+      pairs << [ root, canonical ]
+      pairs << [ canonical, canonical ]
     rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP => error
-      RemoteResult::Failed.new(error)
+      failure = RemoteResult::Failed.new(error)
+      next if RemoteResult.failed?(failure)
     end
+    pairs
   end
 
   def upload_root_pairs
@@ -274,7 +278,8 @@ class SafeLibraryDeletionService
         relative = path.relative_path_from(canonical_root)
         configured_root.join(relative)
       rescue ArgumentError => error
-        RemoteResult::Failed.new(error)
+        failure = RemoteResult::Failed.new(error)
+        next if RemoteResult.failed?(failure)
       end
       next unless @path.in?(canonical_paths + display_paths) || @path.to_s == upload.file_path.to_s
 
@@ -430,9 +435,9 @@ class SafeLibraryDeletionService
     rescue Errno::ELOOP
       native_unlinkat(parent.fileno, quarantine, 0)
       sync_directory(parent)
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- ELOOP confirms the claimed symlink and the unlink completed
     rescue Errno::ENOENT
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- the reference symlink is already gone
     rescue
       restore_quarantined_entry(parent, quarantine, basename, directory: false)
       raise
@@ -494,9 +499,9 @@ class SafeLibraryDeletionService
     rescue Errno::ELOOP
       native_unlinkat(parent.fileno, basename, 0)
       sync_directory(parent)
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- ELOOP confirms the quarantined symlink and the unlink completed
     rescue Errno::ENOENT
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- the quarantined reference symlink is already gone
     end
   end
 

@@ -458,8 +458,8 @@ module IndexerClients
         return true if disabled_till.blank?
 
         Time.parse(disabled_till.to_s) <= Time.current
-      rescue ArgumentError
-        true
+      rescue ArgumentError => error
+        RemoteResult::Failed.new(error)
       end
 
       def indexer_ids(indexers)
