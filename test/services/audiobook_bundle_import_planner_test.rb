@@ -78,12 +78,39 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
   test "does not split when file contents reveal another audio format" do
     write_file("Book One.m4b")
     write_file("Book Two.m4b")
-    File.binwrite(
-      File.join(@source, "bonus.mp4"),
-      [ 24 ].pack("N") + "ftypM4A " + ("\0" * 12)
-    )
+    FileUtils.cp(file_fixture("audio_only_isom.mp4"), File.join(@source, "bonus.mp4"))
 
     assert_nil build_plan
+  end
+
+  test "classifies audio-only mp4 content and cover names with the shared rules" do
+    branded = File.join(@source, "chapter.mp4")
+    audio = File.join(@source, "bonus.mp4")
+    video = File.join(@source, "trailer.mp4")
+    soundtrack = File.join(@source, "soundtrack.mp4")
+    File.binwrite(branded, [ 24 ].pack("N") + "ftypM4A " + ("\0" * 12))
+    FileUtils.cp(file_fixture("audio_only_isom.mp4"), audio)
+    File.binwrite(video, [ 24 ].pack("N") + "ftypisom" + ("\0" * 12))
+    File.binwrite(soundtrack, isom_mp4_with_handlers("soun", "vide"))
+    extended = File.join(@source, "extended.mp4")
+    File.binwrite(extended, isom_audio_mp4_with_extended_mdat)
+    cover = write_file("Dune.jpg")
+    banner = write_file("banner.jpg")
+    generic = write_file("folder.png")
+    extensions = %w[bmp gif jpeg jpg png webp]
+    fixture = file_fixture("audio_only_isom.mp4").binread
+
+    assert_equal "isom", fixture.byteslice(8, 4)
+    assert_equal "isomiso2mp41", fixture.byteslice(16, 12)
+    assert AudiobookBundleImportPlanner.audio_file?(branded)
+    assert AudiobookBundleImportPlanner.audio_file?(audio)
+    assert AudiobookBundleImportPlanner.audio_file?(extended)
+    assert_not AudiobookBundleImportPlanner.audio_file?(video)
+    assert_not AudiobookBundleImportPlanner.audio_file?(soundtrack)
+    assert AudiobookBundleImportPlanner.cover_file?(cover, audio_stems: [ "dune" ], extensions: extensions)
+    assert AudiobookBundleImportPlanner.cover_file?(generic, audio_stems: [], extensions: extensions)
+    assert_not AudiobookBundleImportPlanner.cover_file?(banner, audio_stems: [ "dune" ], extensions: extensions)
+    assert_not AudiobookBundleImportPlanner.cover_file?(cover, audio_stems: [ "dune" ], extensions: %w[png])
   end
 
   test "does not split multipart M4B releases" do
@@ -476,6 +503,26 @@ class AudiobookBundleImportPlannerTest < ActiveSupport::TestCase
 
   def write_file(name)
     File.join(@source, name).tap { |path| File.binwrite(path, "audio") }
+  end
+
+  def isom_audio_mp4_with_extended_mdat
+    payload = "pad"
+    largesize = 16 + payload.bytesize
+    mdat = [ 1 ].pack("N") + "mdat" + [ largesize ].pack("Q>") + payload
+    mp4_box("ftyp", "isom\0\0\x02\0isomiso2mp41") + mdat + mp4_box("moov", mp4_box("trak", mp4_box("mdia", mp4_hdlr("soun"))))
+  end
+
+  def isom_mp4_with_handlers(*handlers)
+    tracks = handlers.map { |handler| mp4_box("trak", mp4_box("mdia", mp4_hdlr(handler))) }.join
+    mp4_box("ftyp", "isom\0\0\x02\0isomiso2mp41") + mp4_box("mdat", "x") + mp4_box("moov", tracks)
+  end
+
+  def mp4_hdlr(handler)
+    mp4_box("hdlr", "\0\0\0\0\0\0\0\0#{handler}\0")
+  end
+
+  def mp4_box(type, payload)
+    [ payload.bytesize + 8 ].pack("N") + type + payload
   end
 
   def metadata(title:, author:, year: nil)

@@ -460,14 +460,15 @@ class LibraryDownloadArchiveService
   end
 
   def utf8_filename!(component)
-    utf8_filename(component) || raise(UnsafePathError, "library tree contains an invalid filename")
+    FilenameBytes.utf8(component)
+  rescue EncodingError
+    raise UnsafePathError, "library tree contains an invalid filename"
   end
 
   def utf8_filename(component)
-    # Retag valid UTF-8 bytes without transcoding. ASCII-8BIT#encode(UTF-8)
-    # raises on non-ASCII bytes even when those bytes are already UTF-8.
-    name = component.to_s.dup.force_encoding(Encoding::UTF_8)
-    name if name.valid_encoding?
+    FilenameBytes.utf8(component)
+  rescue EncodingError
+    nil # rubocop:disable Shelfarr/RescueToEmpty -- ZIP snapshot comparison locks nil for an invalid name
   end
 
   def with_build_admission

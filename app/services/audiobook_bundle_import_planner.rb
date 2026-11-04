@@ -4,6 +4,8 @@ class AudiobookBundleImportPlanner
   KNOWN_AUDIO_EXTENSIONS = %w[
     aa aac aax aaxc aiff alac flac m4a m4b mp3 ogg opus wav wma
   ].freeze
+  MP4_BOX_HEADER_SIZE = 8
+  MAX_MP4_BOXES = 4096
   SELF_CONTAINED_BOOK_EXTENSIONS = %w[aax m4b].freeze
   SIDECAR_EXTENSIONS = %w[bmp cue gif jpeg jpg nfo opf png txt webp].freeze
   GENERIC_COVER_STEMS = %w[artwork cover folder front thumbnail].freeze
@@ -20,6 +22,125 @@ class AudiobookBundleImportPlanner
 
   def self.call(...)
     new(...).call
+  end
+
+  # Known extensions skip a read. Other names are audio when their content
+  # type says so. ffmpeg's audio-only MP4 uses the isom brand, which Marcel
+  # reports as video/mp4, so a .mp4 is audio when its tracks are sound only.
+  def self.audio_file?(path)
+    return true if KNOWN_AUDIO_EXTENSIONS.include?(extension_for(path))
+
+    File.open(path, "rb") do |file|
+      mime_type = Marcel::MimeType.for(file, name: File.basename(path))
+      return true if mime_type.to_s.start_with?("audio/")
+
+      extension_for(path) == "mp4" && mp4_audio_only?(file)
+    end
+  rescue Errno::ENOENT, Errno::EACCES, IOError => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def self.mp4_audio_only?(file)
+    file.rewind
+    handlers = []
+    return false unless collect_mp4_handlers(file, file.size, :root, handlers, { count: 0 })
+
+    handlers.include?("soun") && !handlers.include?("vide")
+  end
+  private_class_method :mp4_audio_only?
+
+  def self.collect_mp4_handlers(file, range_end, context, handlers, budget)
+    while file.pos + MP4_BOX_HEADER_SIZE <= range_end
+      return false if budget[:count] >= MAX_MP4_BOXES
+
+      budget[:count] += 1
+      box = read_mp4_box(file, range_end)
+      break unless box
+
+      next_context = mp4_child_context(context, box[:type])
+      if next_context == :handler
+        handler = mp4_handler_type(file, box[:end])
+        handlers << handler if handler
+      elsif next_context && !collect_mp4_handlers(file, box[:end], next_context, handlers, budget)
+        return false
+      end
+
+      file.seek(box[:end])
+    end
+    true
+  end
+  private_class_method :collect_mp4_handlers
+
+  def self.mp4_child_context(context, type)
+    case context
+    when :root
+      :moov if type == "moov"
+    when :moov
+      :trak if type == "trak"
+    when :trak
+      :mdia if type == "mdia"
+    when :mdia
+      :handler if type == "hdlr"
+    end
+  end
+  private_class_method :mp4_child_context
+
+  def self.read_mp4_box(file, range_end)
+    box_start = file.pos
+    header = file.read(MP4_BOX_HEADER_SIZE)
+    return unless header&.bytesize == MP4_BOX_HEADER_SIZE
+
+    box_size = header.byteslice(0, 4).unpack1("N")
+    type = header.byteslice(4, 4)
+    header_size = MP4_BOX_HEADER_SIZE
+
+    if box_size == 1
+      return if file.pos + 8 > range_end
+
+      extended_size = file.read(8)
+      return unless extended_size&.bytesize == 8
+
+      box_size = extended_size.unpack1("Q>")
+      header_size = 16
+    elsif box_size.zero?
+      box_size = range_end - box_start
+    end
+
+    return if box_size < header_size
+
+    box_end = box_start + box_size
+    return if box_end > range_end
+
+    { type: type, end: box_end }
+  end
+  private_class_method :read_mp4_box
+
+  def self.mp4_handler_type(file, box_end)
+    return if file.pos + 12 > box_end
+
+    payload = file.read(12)
+    return unless payload&.bytesize == 12
+
+    payload.byteslice(8, 4)
+  end
+  private_class_method :mp4_handler_type
+
+  # Generic artwork names match every book. A file named like an audio file
+  # matches that book when its extension is one the caller allows.
+  def self.cover_file?(path, audio_stems:, extensions:)
+    return false unless extensions.include?(extension_for(path))
+
+    stem = stem_for(path)
+    GENERIC_COVER_STEMS.include?(stem) || audio_stems.any? { |audio_stem| audio_stem.to_s.downcase == stem }
+  end
+
+  def self.extension_for(path)
+    File.extname(path.to_s).delete_prefix(".").downcase
+  end
+
+  def self.stem_for(path)
+    basename = File.basename(path.to_s)
+    basename.delete_suffix(File.extname(basename)).downcase
   end
 
   def initialize(source:, book:, base_path:, language: nil, tracked_destination: nil)
@@ -224,10 +345,10 @@ class AudiobookBundleImportPlanner
     companions = paths.reject { |path| audio_file?(path) }
 
     entries.map do |entry|
-      source_stem = File.basename(entry.source_path, File.extname(entry.source_path)).downcase
+      source_stem = self.class.stem_for(entry.source_path)
       matching_sidecars = companions.select do |companion|
-        companion_stem = File.basename(companion, File.extname(companion)).downcase
-        companion_stem == source_stem || (sidecar_file?(companion) && GENERIC_COVER_STEMS.include?(companion_stem))
+        self.class.stem_for(companion) == source_stem ||
+          self.class.cover_file?(companion, audio_stems: [ source_stem ], extensions: SIDECAR_EXTENSIONS)
       end
 
       Entry.new(
@@ -240,14 +361,7 @@ class AudiobookBundleImportPlanner
   end
 
   def audio_file?(path)
-    return true if KNOWN_AUDIO_EXTENSIONS.include?(extension_for(path))
-
-    mime_type = File.open(path, "rb") do |file|
-      Marcel::MimeType.for(file, name: File.basename(path))
-    end
-    mime_type.to_s.start_with?("audio/")
-  rescue Errno::ENOENT, Errno::EACCES, IOError => error
-    RemoteResult::Failed.new(error)
+    self.class.audio_file?(path)
   end
 
   def self_contained_book_file?(path)
@@ -259,7 +373,7 @@ class AudiobookBundleImportPlanner
   end
 
   def extension_for(path)
-    File.extname(path).delete_prefix(".").downcase
+    self.class.extension_for(path)
   end
 
   def normalized_title(value)
