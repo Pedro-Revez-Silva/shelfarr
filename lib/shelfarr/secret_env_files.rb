@@ -45,8 +45,7 @@ module Shelfarr
       end
 
       def read_secret(file_name, path)
-        secret = File.open(path, "rb") { |file| read_regular_file(file, file_name, path) }
-        secret.force_encoding(Encoding::UTF_8)
+        secret = File.open(path, "r:UTF-8") { |file| read_regular_file(file, file_name, path) }
         raise Error, "#{file_name} #{path} is not valid UTF-8" unless secret.valid_encoding?
 
         secret
