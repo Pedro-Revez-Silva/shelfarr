@@ -34,7 +34,7 @@ class GutenbergClient
     end
 
     def search(title:, author: nil, language: nil, limit: nil)
-      raise NotConfiguredError, "Project Gutenberg is not enabled" unless configured?
+      ensure_configured!
 
       query = [ title, author ].compact_blank.join(" ")
       return [] if query.blank?
@@ -57,8 +57,7 @@ class GutenbergClient
     end
 
     def test_connection
-      raise NotConfiguredError, "Project Gutenberg is not enabled" unless configured?
-
+      ensure_configured!
       search(title: "pride prejudice", language: "en", limit: 1)
       true
     rescue Error => error
@@ -70,6 +69,10 @@ class GutenbergClient
       @connection_settings_key = nil
     end
 
+    def release_unconfigured_connection!
+      reset_connection! unless configured?
+    end
+
     def base_url
       normalize_base_url(SettingsService.get(:gutenberg_url, default: DEFAULT_BASE_URL))
     end
@@ -78,7 +81,15 @@ class GutenbergClient
 
     # Faraday keeps the URL it was built with. A job process does not see
     # reset_connection! from the web process, so rebuild when it changes.
+    def ensure_configured!
+      return if configured?
+
+      reset_connection!
+      raise NotConfiguredError, "Project Gutenberg is not enabled"
+    end
+
     def connection
+      ensure_configured!
       settings_key = connection_settings_key
       return @connection if @connection && @connection_settings_key == settings_key
 

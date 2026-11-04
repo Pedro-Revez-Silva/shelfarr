@@ -67,16 +67,25 @@ class LibrivoxClient
       @connection_settings_key = nil
     end
 
+    def release_unconfigured_connection!
+      reset_connection! unless configured?
+    end
+
     private
 
     def ensure_configured!
-      raise NotConfiguredError, "LibriVox is not enabled" unless configured?
+      unless configured?
+        reset_connection!
+        raise NotConfiguredError, "LibriVox is not enabled"
+      end
+
       base_url
     end
 
     # Faraday keeps the URL it was built with. A job process does not see
     # reset_connection! from the web process, so rebuild when it changes.
     def connection
+      ensure_configured!
       settings_key = connection_settings_key
       return @connection if @connection && @connection_settings_key == settings_key
 
