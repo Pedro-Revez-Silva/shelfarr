@@ -595,6 +595,7 @@ module Admin
     def validate_setting_value(key, value)
       validate_setting_type(key, value) ||
         validate_completed_download_import_mode(key, value) ||
+        validate_library_import_mode(key, value) ||
         validate_default_request_format(key, value) ||
         validate_path_template(key, value) ||
         validate_indexer_url(key, value) ||
@@ -622,6 +623,15 @@ module Admin
       return nil if SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value.to_s)
 
       "must be one of: #{SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.join(', ')}"
+    end
+
+    def validate_library_import_mode(key, value)
+      return nil unless SettingsService::LIBRARY_IMPORT_PERMISSION_KEYS.include?(key.to_sym)
+
+      text = value.to_s.strip
+      return nil if text.empty? || SettingsService.library_import_mode_acceptable?(key, text)
+
+      SettingsService.library_import_mode_requirement(key)
     end
 
     def validate_default_request_format(key, value)

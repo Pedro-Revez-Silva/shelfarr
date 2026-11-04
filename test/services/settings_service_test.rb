@@ -193,6 +193,66 @@ class SettingsServiceTest < ActiveSupport::TestCase
     assert_equal "move", SettingsService.get(:completed_download_import_mode)
   end
 
+  test "library import modes default to blank and accept octal strings" do
+    assert_equal "", SettingsService.get(:library_import_file_mode)
+    assert_equal "", SettingsService.get(:library_import_folder_mode)
+
+    assert_equal "0664", SettingsService.set(:library_import_file_mode, " 0664 ")
+    assert_equal "775", SettingsService.set(:library_import_folder_mode, "775")
+    assert_equal "0664", Setting.find_by!(key: "library_import_file_mode").value
+    assert_equal "775", SettingsService.get(:library_import_folder_mode)
+
+    [ "668", "0o664", "999", "06640", "abc", "8" ].each do |invalid|
+      error = assert_raises(ArgumentError) do
+        SettingsService.set(:library_import_file_mode, invalid)
+      end
+      assert_match(/3 or 4 digit octal mode/, error.message)
+    end
+    assert_equal "", SettingsService.set(:library_import_folder_mode, "  ")
+    assert_equal "0664", SettingsService.get(:library_import_file_mode)
+    assert_equal "", SettingsService.get(:library_import_folder_mode)
+  end
+
+  test "file import modes must keep owner read permission" do
+    [ "0000", "0220", "200" ].each do |mode|
+      error = assert_raises(ArgumentError) do
+        SettingsService.set(:library_import_file_mode, mode)
+      end
+      assert_match(/owner read/, error.message)
+    end
+    assert_equal "0440", SettingsService.set(:library_import_file_mode, "0440")
+  end
+
+  test "corrupt library import modes are ignored" do
+    Setting.create!(
+      key: "library_import_file_mode",
+      value: "999",
+      value_type: "string",
+      category: "download"
+    )
+
+    assert_equal "", SettingsService.get(:library_import_file_mode)
+  end
+
+  test "folder import modes must keep owner read write and execute" do
+    assert_equal "0775", SettingsService.set(:library_import_folder_mode, "0775")
+    assert_equal "700", SettingsService.set(:library_import_folder_mode, "700")
+    assert_equal "2755", SettingsService.set(:library_import_folder_mode, "2755")
+    assert_equal "0664", SettingsService.set(:library_import_file_mode, "0664")
+
+    [ "0664", "664", "640", "600" ].each do |mode|
+      error = assert_raises(ArgumentError) do
+        SettingsService.set(:library_import_folder_mode, mode)
+      end
+      assert_match(/owner read, write, and execute/, error.message)
+    end
+    assert_equal "2755", SettingsService.get(:library_import_folder_mode)
+    assert_equal "0664", SettingsService.get(:library_import_file_mode)
+
+    Setting.find_by!(key: "library_import_folder_mode").update!(value: "0664")
+    assert_equal "", SettingsService.get(:library_import_folder_mode)
+  end
+
   test "default request format asks each time until an admin chooses one" do
     assert_equal "ask", SettingsService.get(:default_request_format)
     assert_equal [], SettingsService.default_request_formats

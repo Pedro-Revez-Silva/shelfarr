@@ -117,6 +117,21 @@ class OwnedMediaImportFileServiceTest < ActiveSupport::TestCase
     assert_equal "durable audiobook bytes", File.binread(destination)
   end
 
+  test "applies configured library import modes after the staging link is removed" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    root_mode = File.stat(@output_root).mode & 0o777
+    service = persistent_service
+    result = service.with_destination_lock { service.finalize! }
+    destination = @media_import.reload.destination_path
+
+    assert_equal File.dirname(destination), result
+    assert_not File.exist?(@upload.reload.file_path)
+    assert_equal 0o664, File.stat(destination).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(destination)).mode & 0o777
+    assert_equal root_mode, File.stat(@output_root).mode & 0o777
+  end
+
   test "reconciles a hard exit after staging unlink but before the database commit" do
     service = persistent_service
     result = service.with_destination_lock { service.finalize! }

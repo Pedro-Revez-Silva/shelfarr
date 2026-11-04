@@ -107,6 +107,33 @@ class UploadImportFileServiceTest < ActiveSupport::TestCase
     FileUtils.rm_rf(@other_library_root)
   end
 
+  test "applies configured library import modes after publication" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    root_mode = File.stat(@library_root).mode & 0o777
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+    service.publish!
+
+    destination = Pathname(@upload.reload.destination_path)
+    assert_equal 0o664, destination.stat.mode & 0o777
+    assert_equal 0o775, destination.parent.stat.mode & 0o777
+    assert_equal root_mode, File.stat(@library_root).mode & 0o777
+    assert File.exist?(@source)
+  end
+
+  test "linkat publication still receives the configured file mode" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    service = UploadImportFileService.new(upload: @upload, book: @book)
+    service.reserve!
+
+    FilesystemSyscalls.stub(:rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }) do
+      assert_equal service.book_library_path, service.publish!
+    end
+
+    assert_equal 0o664, File.stat(@upload.reload.destination_path).mode & 0o777
+  end
+
   test "reserves a unique snapshotted path and atomically publishes verified bytes" do
     service = UploadImportFileService.new(upload: @upload, book: @book)
     service.reserve!
