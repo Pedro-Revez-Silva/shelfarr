@@ -438,7 +438,7 @@
           <ul>
             <li><strong>Discord</strong> &mdash; create an incoming webhook for a channel and paste the URL into <code>discord_webhook_url</code>.</li>
             <li><strong>Telegram</strong> &mdash; create a bot with BotFather, enter the token, and approve your group with the pairing code (or list chat IDs manually). The bot also accepts request commands.</li>
-            <li><strong>Webhook</strong> &mdash; any endpoint that accepts JSON, including ntfy. Add a Bearer token and topic if your receiver needs them.</li>
+            <li><strong>Webhook</strong> &mdash; any endpoint that accepts JSON, including ntfy. Add a Bearer token and topic if your receiver needs them. Request events include <code>book.cover_url</code>, an absolute cover image URL, or <code>null</code> when the book has no cover.</li>
           </ul>
           <p class="section-desc">Full field list: <a class="inline" href="configuration.html#notifications">Settings reference &rarr; Notifications</a>.</p>
         </section>

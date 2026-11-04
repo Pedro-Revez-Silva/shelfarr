@@ -435,14 +435,13 @@ class SafeLibraryDeletionService
     entry.close
 
     quarantine = quarantine_basename(stat)
-    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, quarantine) == true
-      raise Error, "This filesystem cannot atomically quarantine a library deletion"
-    end
+    directory = stat.directory?
+    quarantine_library_entry!(parent, basename, quarantine, directory: directory)
     sync_directory(parent)
     begin
       delete_quarantined_entry!(parent, quarantine, expected_identity: file_identity(stat))
     rescue
-      restore_quarantined_entry(parent, quarantine, basename)
+      restore_quarantined_entry(parent, quarantine, basename, directory: directory)
       raise
     end
   rescue Errno::ENXIO, Errno::ENODEV, Errno::EOPNOTSUPP
@@ -461,9 +460,7 @@ class SafeLibraryDeletionService
     end
 
     quarantine = "#{quarantine_prefix}ref-#{SecureRandom.hex(8)}"
-    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, quarantine) == true
-      raise Error, "This filesystem cannot atomically quarantine a library deletion"
-    end
+    quarantine_library_entry!(parent, basename, quarantine, directory: false)
     sync_directory(parent)
 
     begin
@@ -472,7 +469,7 @@ class SafeLibraryDeletionService
         quarantine,
         File::RDONLY | File::NOFOLLOW | File::NONBLOCK
       )
-      restore_quarantined_entry(parent, quarantine, basename)
+      restore_quarantined_entry(parent, quarantine, basename, directory: false)
       raise Error, "Shelfarr refuses to remove a non-symlink library entry claimed as a reference"
     rescue Errno::ELOOP
       native_unlinkat(parent.fileno, quarantine, 0)
@@ -481,7 +478,7 @@ class SafeLibraryDeletionService
     rescue Errno::ENOENT
       true
     rescue
-      restore_quarantined_entry(parent, quarantine, basename)
+      restore_quarantined_entry(parent, quarantine, basename, directory: false)
       raise
     end
   end
@@ -547,14 +544,74 @@ class SafeLibraryDeletionService
     end
   end
 
-  def restore_quarantined_entry(parent, quarantine, original)
-    return unless native_rename_noreplace(parent.fileno, quarantine, parent.fileno, original) == true
+  def restore_quarantined_entry(parent, quarantine, original, directory:)
+    return unless rename_library_entry_noreplace(
+      parent,
+      quarantine,
+      original,
+      directory: directory
+    ) == true
 
     sync_directory(parent)
   rescue SystemCallError => error
     # Retaining the quarantine is safer than replacing a concurrently restored
     # original path. A later retry can reconcile its encoded inode identity.
     RemoteResult::Failed.new(error)
+  end
+
+  def quarantine_library_entry!(parent, source_basename, destination_basename, directory:)
+    renamed = rename_library_entry_noreplace(
+      parent,
+      source_basename,
+      destination_basename,
+      directory: directory
+    )
+    return if renamed == true
+    raise Error, "The library quarantine name is already in use" if renamed == :occupied
+
+    raise Error, "This filesystem cannot atomically quarantine a library deletion"
+  end
+
+  # NFSv4 rejects RENAME_NOREPLACE with EINVAL. A checked plain rename is
+  # safe only under the same explicit single-writer policy used by imports.
+  def rename_library_entry_noreplace(parent, source_basename, destination_basename, directory:)
+    renamed = native_rename_noreplace(
+      parent.fileno,
+      source_basename,
+      parent.fileno,
+      destination_basename
+    )
+    return true if renamed == true
+    return false unless noreplace_unsupported?(renamed)
+    return false unless SettingsService.get(:allow_nonatomic_nfs_directory_publication)
+
+    fallback = rename_noreplace_fallback(
+      parent,
+      source_basename,
+      destination_basename,
+      directory: directory
+    )
+    return true if fallback == true
+    return :occupied if fallback == false || RemoteResult.failed?(fallback)
+
+    false
+  end
+
+  def rename_noreplace_fallback(parent, source_basename, destination_basename, directory:)
+    FileCopyService.send(
+      :rename_entry_noreplace,
+      parent,
+      source_basename,
+      destination_basename,
+      allow_nonatomic: true,
+      directory: directory
+    )
+  rescue FileCopyService::UnsafePathError, Errno::ELOOP => error
+    RemoteResult::Failed.new(error)
+  end
+
+  def noreplace_unsupported?(result)
+    RemoteResult.failed?(result) && result.error.is_a?(Errno::EINVAL)
   end
 
   def verify_quarantined_identity!(parent, basename, expected_identity)

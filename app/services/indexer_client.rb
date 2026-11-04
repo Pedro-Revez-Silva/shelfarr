@@ -40,6 +40,10 @@ class IndexerClient
       PROVIDERS.values.each(&:reset_connection!)
     end
 
+    def release_unconfigured_connections!
+      PROVIDERS.each_value(&:release_unconfigured_connection!)
+    end
+
     def display_name
       current&.display_name || "Indexer"
     end

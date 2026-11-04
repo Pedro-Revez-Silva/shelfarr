@@ -490,6 +490,76 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "Test Book"
   end
 
+  test "new offers both formats and leaves the choice unselected" do
+    get new_request_path, params: book_request_params("OL_BOTH_FORM")
+
+    assert_response :success
+    assert_select "button[type='button'][data-select-both-formats]", text: "Both"
+    assert_select "input[name='book_types[]'][value='audiobook'][checked]", count: 0
+    assert_select "input[name='book_types[]'][value='ebook'][checked]", count: 0
+    assert_equal "ask", SettingsService.get(:default_request_format)
+  end
+
+  test "new does not offer both for comics and manga" do
+    get new_request_path, params: {
+      work_id: "comic_vine:4000-both-hidden",
+      title: "Issue One",
+      content_kind: "graphic"
+    }
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='comicbook'][checked]"
+    assert_select "button[data-select-both-formats]", count: 0
+  end
+
+  test "new selects both formats when that is the default request format" do
+    SettingsService.set(:default_request_format, "both")
+
+    get new_request_path, params: book_request_params("OL_BOTH_DEFAULT")
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='audiobook'][checked]:not([disabled])"
+    assert_select "input[name='book_types[]'][value='ebook'][checked]:not([disabled])"
+  end
+
+  test "new selects only the configured default format" do
+    SettingsService.set(:default_request_format, "ebook")
+
+    get new_request_path, params: book_request_params("OL_EBOOK_DEFAULT")
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='ebook'][checked]:not([disabled])"
+    assert_select "input[name='book_types[]'][value='audiobook'][checked]", count: 0
+  end
+
+  test "new keeps an explicit format choice ahead of the default" do
+    SettingsService.set(:default_request_format, "both")
+
+    get new_request_path, params: book_request_params("OL_EXPLICIT_FORMAT").merge(book_type: "audiobook")
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='audiobook'][checked]:not([disabled])"
+    assert_select "input[name='book_types[]'][value='ebook'][checked]", count: 0
+  end
+
+  test "new does not preselect a default format the user already has" do
+    Book.create!(
+      title: "Already Owned",
+      author: "Owner",
+      book_type: :ebook,
+      open_library_work_id: "OL_DEFAULT_OWNED",
+      file_path: "/ebooks/already-owned.epub"
+    )
+    SettingsService.set(:default_request_format, "both")
+
+    get new_request_path, params: book_request_params("OL_DEFAULT_OWNED", title: "Already Owned")
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='audiobook'][checked]:not([disabled])"
+    assert_select "input[name='book_types[]'][value='ebook'][disabled]"
+    assert_select "input[name='book_types[]'][value='ebook'][checked]", count: 0
+  end
+
   test "new shows a nonblocking BookOrbit warning only for the matching format" do
     original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -975,6 +1045,61 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='content_kind'][value='graphic']"
     assert_select "input[name='book_types[]'][value='comicbook'][checked]"
     assert_select "input[name='book_types[]'][value='ebook']", count: 0
+  end
+
+  test "create with both creates an ebook request and an audiobook request" do
+    assert_difference "Book.count", 2 do
+      assert_difference "Request.count", 2 do
+        post_both_formats("OL_BOTH_CREATE", title: "Read and Listen")
+      end
+    end
+
+    assert_redirected_to requests_path
+    assert_match "2 requests created for Read and Listen", flash[:notice]
+    assert_equal %w[audiobook ebook], Book.where(open_library_work_id: "OL_BOTH_CREATE").pluck(:book_type).sort
+  end
+
+  test "create with both skips a format the user already requested" do
+    book = Book.create!(
+      title: "Half Requested",
+      author: "Owner",
+      book_type: :audiobook,
+      open_library_work_id: "OL_BOTH_SKIP_ACTIVE"
+    )
+    Request.create!(book: book, user: @user, status: :pending)
+
+    assert_difference "Request.count", 1 do
+      post_both_formats("OL_BOTH_SKIP_ACTIVE", title: "Half Requested")
+    end
+
+    created = Request.order(:id).last
+    assert_equal "ebook", created.book.book_type
+    assert_redirected_to request_path(created)
+    assert_match "Request created for Half Requested by Owner", flash[:notice]
+    assert_match "already has an active request", flash[:alert]
+  end
+
+  test "create requests each selected format and skips one already in the library" do
+    Book.create!(
+      title: "Library Ebook",
+      author: "Owner",
+      book_type: :ebook,
+      open_library_work_id: "OL_BOTH_SELECTED",
+      file_path: "/ebooks/library.epub"
+    )
+
+    assert_difference "Request.count", 1 do
+      MetadataService.stub(:book_details, nil) do
+        post requests_path, params: book_request_params("OL_BOTH_SELECTED", title: "Library Ebook").merge(
+          book_types: %w[audiobook ebook]
+        )
+      end
+    end
+
+    created = Request.order(:id).last
+    assert_equal "audiobook", created.book.book_type
+    assert_redirected_to request_path(created)
+    assert_match "already in your library", flash[:alert]
   end
 
   test "create creates book and request" do
@@ -3035,6 +3160,20 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
       acquisition_reservation_owner_id: download.id
     )
     download.update!(direct_reservation_token: token)
+  end
+
+  def book_request_params(work_id, title: "Both Formats")
+    {
+      work_id: work_id,
+      title: title,
+      author: "Owner"
+    }
+  end
+
+  def post_both_formats(work_id, title:)
+    MetadataService.stub(:book_details, nil) do
+      post requests_path, params: book_request_params(work_id, title: title).merge(book_type: "both")
+    end
   end
 
   def create_store_offer
