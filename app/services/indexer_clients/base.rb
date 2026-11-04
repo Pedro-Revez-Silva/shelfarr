@@ -28,6 +28,10 @@ module IndexerClients
         @connection_settings_key = nil
       end
 
+      def release_unconfigured_connection!
+        reset_connection! unless configured?
+      end
+
       def display_name
         name.demodulize
       end
@@ -43,6 +47,7 @@ module IndexerClients
       # not see reset_all_connections! from the web process, so rebuild when
       # those settings change.
       def connection
+        ensure_configured!
         settings_key = connection_settings_key
         return @connection if @connection && @connection_settings_key == settings_key
 
@@ -65,7 +70,10 @@ module IndexerClients
       end
 
       def ensure_configured!
-        raise NotConfiguredError, "#{display_name} is not configured" unless configured?
+        return if configured?
+
+        reset_connection!
+        raise NotConfiguredError, "#{display_name} is not configured"
       end
 
       def request(idempotent: false)

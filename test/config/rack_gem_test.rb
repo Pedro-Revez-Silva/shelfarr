@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "rack/mock"
 
 class RackGemTest < ActiveSupport::TestCase
-  test "activates rack 3.2.8 or newer and drops an invalid Host from generated URLs" do
+  test "activates rack 3.2.8 or newer and does not return an invalid Host from host_with_port" do
     spec = Gem.loaded_specs.fetch("rack")
 
     assert_operator spec.version, :>=, Gem::Version.new("3.2.8")
