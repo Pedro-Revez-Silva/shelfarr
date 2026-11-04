@@ -209,6 +209,34 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
     assert_not File.exist?(@folder)
   end
 
+  test "a proven removal on NFS uses the checked rename only with the single-writer opt-in" do
+    import_failing_at_second_track(:cp_noreplace)
+
+    without_rename_noreplace(allow_nonatomic: false) do
+      assert RemoteResult.failed?(LibraryReplacement.prepare_cancellation!(@download.reload))
+    end
+    assert_equal "track one", File.binread(@track)
+    assert_equal [ @track ], proofs.map { |proof| proof["path"] }
+
+    without_rename_noreplace(allow_nonatomic: true) do
+      assert_equal true, LibraryReplacement.prepare_cancellation!(@download.reload)
+    end
+    assert_not File.exist?(@track)
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "a proven reference removal on NFS uses the checked rename" do
+    SettingsService.set(:completed_download_import_mode, "reference")
+    import_failing_at_second_track(:reference_noreplace)
+
+    without_rename_noreplace(allow_nonatomic: true) do
+      assert_equal true, LibraryReplacement.prepare_cancellation!(@download.reload)
+    end
+
+    assert_not File.symlink?(@track)
+    assert_equal "track one", File.binread(File.join(@source, "01.mp3"))
+  end
+
   test "a replacement plan with no proof keeps whatever now occupies its destination" do
     previous = File.join(@library, "Ada", "Previous")
     destination = File.join(@library, "Ada", "Planned")
@@ -454,6 +482,11 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
 
     assert @request.reload.attention_needed?, "the import was expected to stop"
     assert_nil @book.reload.file_path
+  end
+
+  def without_rename_noreplace(allow_nonatomic:, &block)
+    SettingsService.set(:allow_nonatomic_nfs_directory_publication, allow_nonatomic)
+    FilesystemSyscalls.stub(:rename_noreplace, ->(*) { raise Errno::EINVAL, "renameat2" }, &block)
   end
 
   def proofs

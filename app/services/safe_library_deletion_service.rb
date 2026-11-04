@@ -163,9 +163,7 @@ class SafeLibraryDeletionService
     return :retained unless FileCopyService.publication_identity_matches?(proof, stat)
 
     claimed = quarantine_basename(stat)
-    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, claimed) == true
-      raise Error, "This filesystem cannot atomically quarantine a library deletion"
-    end
+    quarantine_library_entry!(parent, basename, claimed, directory: false)
     sync_directory(parent)
     remove_claimed_file!(parent, claimed, basename, proof)
   rescue Errno::ENXIO, Errno::ENODEV, Errno::EOPNOTSUPP
@@ -207,9 +205,7 @@ class SafeLibraryDeletionService
     return :retained unless same_link_target?(target, proof)
 
     claimed = "#{quarantine_prefix}ref-#{SecureRandom.hex(8)}"
-    unless native_rename_noreplace(parent.fileno, basename, parent.fileno, claimed) == true
-      raise Error, "This filesystem cannot atomically quarantine a library deletion"
-    end
+    quarantine_library_entry!(parent, basename, claimed, directory: false)
     sync_directory(parent)
     remove_claimed_symlink!(parent, claimed, basename, proof)
   end
@@ -253,7 +249,7 @@ class SafeLibraryDeletionService
   # was taken meanwhile it stays quarantined, and the caller keeps the journal
   # that explains it.
   def restore_claimed_entry!(parent, claimed, basename)
-    unless native_rename_noreplace(parent.fileno, claimed, parent.fileno, basename) == true
+    unless rename_library_entry_noreplace(parent, claimed, basename, directory: false) == true
       raise Error, "A changed library entry stays quarantined for manual review"
     end
 
