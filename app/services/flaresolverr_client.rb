@@ -113,12 +113,17 @@ class FlaresolverrClient
       @connection_settings_key = nil
     end
 
+    def release_unconfigured_connection!
+      reset_connection! unless configured?
+    end
+
     private
 
     def ensure_configured!
-      unless configured?
-        raise Error, "FlareSolverr is not configured"
-      end
+      return if configured?
+
+      reset_connection!
+      raise Error, "FlareSolverr is not configured"
     end
 
     def capped_post(payload)
@@ -144,6 +149,7 @@ class FlaresolverrClient
     # Faraday keeps the URL it was built with. A job process does not see
     # reset_connection! from the web process, so rebuild when it changes.
     def connection
+      ensure_configured!
       settings_key = connection_settings_key
       return @connection if @connection && @connection_settings_key == settings_key
 

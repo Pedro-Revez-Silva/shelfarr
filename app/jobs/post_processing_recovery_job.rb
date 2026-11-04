@@ -42,6 +42,25 @@ class PostProcessingRecoveryJob < ApplicationJob
       true
     end
 
+    # An unfinished Solid Queue row is the proof a PostProcessingJob has not
+    # returned. The library copy itself does not update the Download row.
+    # No such row means the owner is a finished import or a legacy id.
+    # A failed queue read is not proof, so every owner stays live.
+    def unfinished_active_job_ids(active_job_ids)
+      ids = Array(active_job_ids).filter_map { |id| id.to_s.presence }.uniq
+      return [] if ids.empty?
+
+      SolidQueue::Job
+        .where(class_name: PostProcessingJob.name, finished_at: nil, active_job_id: ids)
+        .where.missing(:failed_execution)
+        .pluck(:active_job_id)
+    rescue StandardError => error
+      Rails.logger.warn(
+        "[PostProcessingRecoveryJob] Could not prove import owners finished: #{error.class}"
+      )
+      ids
+    end
+
     private
 
     def solid_queue_adapter?

@@ -3,7 +3,7 @@ source "https://rubygems.org"
 gem "rails", "~> 8.1.3", ">= 8.1.3.1"
 # Loofah CSS tokenizer. 1.0.7 leaves a bad URL open after an escaped backslash.
 gem "crass", ">= 1.0.8"
-# Request host parsing. 3.2.7 and older return an invalid Host verbatim.
+# Rack 3.2.7 and older return an invalid Host from host_with_port.
 gem "rack", ">= 3.2.8"
 gem "propshaft"
 gem "sqlite3", ">= 2.1"
