@@ -105,7 +105,7 @@
               check = format_checks.fetch(book_type)
               library_match = Array(@synced_library_matches_by_book_type[book_type]).first
               label, description, border_class, text_class = format_labels.fetch(book_type)
-              selected = params[:book_type] == book_type || params[:book_types]&.include?(book_type) || requestable_book_types.one?
+              selected = request_format_selected?(book_type, requestable_book_types: requestable_book_types, blocked: check.block?)
             %>
             <label class="relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-2 focus-within:ring-offset-gray-900 <%= check.block? ? 'bg-gray-800/50 border-gray-700 opacity-60 cursor-not-allowed' : 'bg-gray-800 border-gray-700 hover:' + border_class %>" data-format="<%= book_type %>" data-border-class="<%= border_class %>">
               <input
@@ -114,7 +114,7 @@
                 value="<%= book_type %>"
                 class="sr-only"
                 <%= 'disabled' if check.block? %>
-                <%= 'checked' if selected && !check.block? %>
+                <%= 'checked' if selected %>
               >
               <span class="flex flex-1">
                 <span class="flex min-w-0 flex-col">
@@ -149,6 +149,19 @@
             </label>
           <% end %>
         </div>
+        <% if both_request_format_available?(requestable_book_types) %>
+          <% selectable_both = %w[audiobook ebook].any? { |type| !format_checks.fetch(type).block? } %>
+          <div class="mt-3">
+            <button
+              type="button"
+              class="inline-flex items-center rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm font-medium text-gray-200 transition hover:border-blue-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+              data-select-both-formats
+              <%= "disabled" unless selectable_both %>
+            >
+              Both
+            </button>
+          </div>
+        <% end %>
       </fieldset>
 
       <div>
@@ -218,14 +231,32 @@
 
     if (count === 0) {
       submitBtn.disabled = true;
-      submitBtn.textContent = 'Select a format';
+      setSubmitLabel(submitBtn, 'Select a format');
     } else if (count === 1) {
       submitBtn.disabled = false;
-      submitBtn.textContent = 'Create Request';
+      setSubmitLabel(submitBtn, 'Create Request');
     } else {
       submitBtn.disabled = false;
-      submitBtn.textContent = `Create ${count} Requests`;
+      setSubmitLabel(submitBtn, `Create ${count} Requests`);
     }
+  }
+
+  function setSubmitLabel(submitBtn, text) {
+    submitBtn.value = text;
+    submitBtn.textContent = text;
+    submitBtn.setAttribute('value', text);
+  }
+
+  var bothButton = document.querySelector("[data-select-both-formats]");
+  if (bothButton) {
+    bothButton.addEventListener("click", function() {
+      document.querySelectorAll("input[name='book_types[]']").forEach(function(checkbox) {
+        if (checkbox.disabled) return;
+        if (checkbox.value === "audiobook" || checkbox.value === "ebook") checkbox.checked = true;
+      });
+      updateCheckboxVisuals();
+      updateSubmitButton();
+    });
   }
 
   updateCheckboxVisuals();

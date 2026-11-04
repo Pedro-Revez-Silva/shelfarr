@@ -20,6 +20,27 @@ module RequestsHelper
     "failed" => "bg-red-500/20 text-red-400"
   }.freeze
 
+  def request_format_selected?(book_type, requestable_book_types:, blocked:)
+    return false if blocked
+
+    explicit = explicit_request_formats
+    return true if explicit.include?(book_type.to_s)
+    return true if Array(requestable_book_types).one?
+    return false if explicit.any?
+
+    SettingsService.default_request_formats.include?(book_type.to_s)
+  end
+
+  def both_request_format_available?(requestable_book_types)
+    (%w[audiobook ebook] - Array(requestable_book_types).map(&:to_s)).empty?
+  end
+
+  def explicit_request_formats
+    [ params[:book_type], *Array(params[:book_types]) ].compact_blank.flat_map do |type|
+      type.to_s.strip == "both" ? %w[audiobook ebook] : type.to_s
+    end.uniq
+  end
+
   def request_status_color(status)
     REQUEST_STATUS_COLORS[status.to_s] || "bg-gray-700 text-gray-300"
   end
