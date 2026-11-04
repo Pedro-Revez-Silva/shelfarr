@@ -1146,6 +1146,109 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_nil @download.reload.library_replacement_state
   end
 
+  end
+
+  test "applies configured library import modes after a direct file import" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    root_mode = File.stat(@output_root).mode & 0o777
+
+    publish_direct_ebook!("PK\x03\x04permissioned ebook")
+
+    assert_equal 0o664, File.stat(@destination).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(@destination)).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(File.dirname(@destination))).mode & 0o777
+    assert_equal root_mode, File.stat(@output_root).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "directory imports apply folder and file modes and skip shared inodes" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    service = directory_service
+    staging = service.create_staging!
+    source = File.join(staging, "extracted")
+    FileUtils.mkdir_p(File.join(source, "disc"))
+    File.binwrite(File.join(source, "chapter_01.mp3"), "one")
+    File.binwrite(File.join(source, "disc", "chapter_02.mp3"), "two")
+    File.link(File.join(source, "chapter_01.mp3"), File.join(source, "chapter_01-link.mp3"))
+    root_mode = File.stat(@output_root).mode & 0o777
+
+    assert service.publish_directory_and_finalize!(source)
+
+    linked = File.join(directory_destination, "chapter_01.mp3")
+    link_name = File.join(directory_destination, "chapter_01-link.mp3")
+    copied = File.join(directory_destination, "disc", "chapter_02.mp3")
+    assert_equal [ File.stat(linked).dev, File.stat(linked).ino ],
+      [ File.stat(link_name).dev, File.stat(link_name).ino ]
+    assert_equal 0o640, File.stat(linked).mode & 0o777
+    assert_equal 0o664, File.stat(copied).mode & 0o777
+    assert_equal 0o775, File.stat(File.join(directory_destination, "disc")).mode & 0o777
+    assert_equal 0o775, File.stat(directory_destination).mode & 0o777
+    assert_equal 0o775, File.stat(File.dirname(directory_destination)).mode & 0o777
+    assert_equal root_mode, File.stat(@output_root).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "an identical existing hardlink is not chmodded" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    retained = File.join(@output_root, "retained-torrent.epub")
+    File.binwrite(retained, "PK\x03\x04same bytes")
+    File.chmod(0o604, retained)
+    FileUtils.mkdir_p(File.dirname(@destination))
+    File.link(retained, @destination)
+
+    publish_direct_ebook!("PK\x03\x04same bytes")
+
+    assert_equal [ File.stat(retained).dev, File.stat(retained).ino ],
+      [ File.stat(@destination).dev, File.stat(@destination).ino ]
+    assert_operator File.stat(@destination).nlink, :>, 1
+    assert_equal 0o604, File.stat(retained).mode & 0o777
+    assert_equal 0o604, File.stat(@destination).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "an identical existing private file still receives the configured mode" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    FileUtils.mkdir_p(File.dirname(@destination))
+    File.binwrite(@destination, "PK\x03\x04private bytes")
+    File.chmod(0o640, @destination)
+
+    publish_direct_ebook!("PK\x03\x04private bytes")
+
+    assert_equal 1, File.stat(@destination).nlink
+    assert_equal 0o664, File.stat(@destination).mode & 0o777
+    assert @request.reload.completed?
+  end
+
+  test "a direct import chmod failure does not fail publication" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    SettingsService.set(:library_import_folder_mode, "0775")
+    real_fchmod = FileCopyService.method(:native_fchmod)
+    denying_fchmod = lambda do |descriptor, mode|
+      raise Errno::EPERM, "smb" if [ 0o664, 0o775 ].include?(mode)
+
+      real_fchmod.call(descriptor, mode)
+    end
+
+    FileCopyService.stub(:native_fchmod, denying_fchmod) do
+      publish_direct_ebook!("PK\x03\x04chmod denied")
+    end
+
+    assert @request.reload.completed?
+    assert_equal 0o640, File.stat(@destination).mode & 0o777
+  test "an unreadable stored file mode cannot break direct publication" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    Setting.find_by!(key: "library_import_file_mode").update!(value: "0220")
+
+    publish_direct_ebook!("PK\x03\x04permissioned ebook")
+
+    assert @request.reload.completed?
+    assert_equal "", SettingsService.get(:library_import_file_mode)
+  end
+
+
   private
 
   def replacement_file_service(destination)

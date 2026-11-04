@@ -3580,6 +3580,62 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal "test content", File.binread(displaced)
   end
 
+  test "secure_library_file_mode accepts a private copy at the configured mode" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    destination = File.join(@dest_dir, "chapter.mp3")
+    File.binwrite(destination, "chapter")
+    File.chmod(0o664, destination)
+
+    assert FileCopyService.secure_library_file_mode?(destination, root: @dest_dir)
+
+    linked = File.join(@dest_dir, "chapter-link.mp3")
+    File.link(destination, linked)
+    assert_not RemoteResult.succeeded?(
+      FileCopyService.secure_library_file_mode?(destination, root: @dest_dir)
+    )
+    assert_equal 0o664, File.stat(destination).mode & 0o777
+
+    File.unlink(linked)
+    File.chmod(0o640, destination)
+    assert FileCopyService.secure_library_file_mode?(destination, root: @dest_dir)
+
+    File.chmod(0o644, destination)
+    assert_not RemoteResult.succeeded?(
+      FileCopyService.secure_library_file_mode?(destination, root: @dest_dir)
+    )
+  end
+
+  test "hardlink verification accepts a private copy at the configured mode" do
+    SettingsService.set(:library_import_file_mode, "0664")
+    destination = File.join(@dest_dir, "chapter.mp3")
+    FileUtils.cp(@src_file, destination)
+    File.chmod(0o664, destination)
+    source_mode = File.stat(@src_file).mode & 0o777
+
+    snapshot = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      hardlink_mode: true
+    )
+
+    assert snapshot
+    assert_equal 0o664, File.stat(destination).mode & 0o777
+    assert_equal source_mode, File.stat(@src_file).mode & 0o777
+
+    File.link(destination, File.join(@dest_dir, "chapter-link.mp3"))
+    shared = FileCopyService.verified_library_file_snapshot(
+      @src_file,
+      destination,
+      root: @dest_dir,
+      hardlink_mode: true
+    )
+
+    assert_nil shared
+    assert_equal 0o664, File.stat(destination).mode & 0o777
+    assert_equal source_mode, File.stat(@src_file).mode & 0o777
+  end
+
   test "secure_library_file_mode checks a pinned revalidated regular file" do
     destination = File.join(@dest_dir, "library.txt")
     symlink = File.join(@dest_dir, "library-link.txt")

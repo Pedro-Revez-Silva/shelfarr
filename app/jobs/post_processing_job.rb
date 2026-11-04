@@ -825,6 +825,7 @@ class PostProcessingJob < ApplicationJob
     @imported_renamed_files = []
     @imported_source_files = Set.new
     @verified_library_snapshots = Hash.new { |snapshots, path| snapshots[path] = [] }
+    @configured_library_directories = []
     @imported_book_path_override = nil
     @replacement_file_override_used = false
     @import_base_path = Pathname(base_path || get_base_path(book)).expand_path
@@ -907,6 +908,8 @@ class PostProcessingJob < ApplicationJob
       end
     end
 
+    apply_configured_library_directory_modes!
+
     if hardlink_completed_downloads?
       Rails.logger.info(
         "[PostProcessingJob] Hardlink import completed successfully: " \
@@ -930,6 +933,7 @@ class PostProcessingJob < ApplicationJob
     remove_instance_variable(:@import_source_file_snapshot) if instance_variable_defined?(:@import_source_file_snapshot)
     remove_instance_variable(:@reference_regular_source_root) if instance_variable_defined?(:@reference_regular_source_root)
     remove_instance_variable(:@verified_library_snapshots) if instance_variable_defined?(:@verified_library_snapshots)
+    remove_instance_variable(:@configured_library_directories) if instance_variable_defined?(:@configured_library_directories)
     remove_instance_variable(:@require_durable_import) if instance_variable_defined?(:@require_durable_import)
   end
 
@@ -1265,6 +1269,7 @@ class PostProcessingJob < ApplicationJob
         )
         record_imported_source!(source)
         Rails.logger.info "[PostProcessingJob] Reusing one identical previously imported file"
+        apply_configured_library_file_mode!(source, destination)
         return destination
       end
 
@@ -1293,6 +1298,7 @@ class PostProcessingJob < ApplicationJob
       record_published_library_file!(imported) unless imported == destination
       verify_imported_destination!(source, imported, require_durable: true) if @require_durable_import
       record_imported_source!(source)
+      apply_configured_library_file_mode!(source, imported)
       return imported
     end
   end
@@ -1417,8 +1423,56 @@ class PostProcessingJob < ApplicationJob
     import_file_without_duplicate_content(source, File.join(destination, File.basename(source)))
   end
 
+  # Keep the creation mode until the import finishes. A folder mode applied
+  # while ancestors are still being created can drop the owner's search bit
+  # and make the library unreachable before any file is published.
   def ensure_real_import_directory!(path)
     FileCopyService.ensure_directory(path, root: @import_base_path, mode: 0o750)
+    @configured_library_directories << path
+  end
+
+  def apply_configured_library_directory_modes!
+    @configured_library_directories.uniq.each do |path|
+      LibraryImportPermissions.apply_directory!(path, root: @import_base_path)
+    end
+  end
+
+  # Shared inodes are left unchanged by the chmod itself. When a mode was
+  # requested, refresh the verified snapshot so move cleanup sees the
+  # post-chmod ctime.
+  def apply_configured_library_file_mode!(source, destination)
+    return if reference_completed_downloads?
+
+    result = LibraryImportPermissions.apply_file!(destination, root: @import_base_path)
+    return if RemoteResult.failed?(result)
+    return if SettingsService.get(:library_import_file_mode).blank?
+
+    record_post_chmod_library_snapshot!(source, destination)
+  end
+
+  def record_post_chmod_library_snapshot!(source, destination)
+    return unless defined?(@verified_library_snapshots) && @verified_library_snapshots
+
+    key = Pathname(source).expand_path.to_s
+    return unless @verified_library_snapshots.key?(key)
+
+    previous = @verified_library_snapshots[key].last
+    return unless previous
+
+    manifest = FileCopyService.library_file_manifest(destination, root: @import_base_path)
+    return if RemoteResult.failed?(manifest)
+    return unless manifest.is_a?(Array)
+    return unless manifest.values_at(0, 1, 2, 3) == previous.manifest.values_at(0, 1, 2, 3)
+
+    @verified_library_snapshots[key][-1] = FileCopyService::SourceFileSnapshot.new(
+      path: previous.path,
+      parent_path: previous.parent_path,
+      canonical_parent_path: previous.canonical_parent_path,
+      parent_device: previous.parent_device,
+      parent_inode: previous.parent_inode,
+      manifest: manifest,
+      content_digest: previous.content_digest
+    ).freeze
   end
 
   def move_completed_downloads?

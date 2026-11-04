@@ -58,7 +58,9 @@ class DirectDownloadFileService
       return cleanup_completed_state!(download) if completed_publication?(download)
 
       if publication_complete?(download) == true && reservation_owned?(download)
-        service_for(download).send(:finalize_database!, allow_failed: true)
+        service = service_for(download)
+        service.send(:apply_configured_import_permissions!)
+        service.send(:finalize_database!, allow_failed: true)
         return cleanup_completed_state!(download.reload)
       end
 
@@ -553,6 +555,7 @@ class DirectDownloadFileService
           raise ConflictError, "A different library file already exists; it was preserved"
         end
       end
+      apply_configured_import_permissions!
       ensure_publication_verified!
       finalize_database!
     end
@@ -596,6 +599,7 @@ class DirectDownloadFileService
           raise ConflictError, "A different audiobook directory already exists; it was preserved"
         end
       end
+      apply_configured_import_permissions!
       ensure_publication_verified!
       finalize_database!
     end
@@ -946,6 +950,15 @@ class DirectDownloadFileService
     false
   rescue ActiveRecord::RecordNotFound => error
     RemoteResult::Failed.new(error)
+  end
+
+  def apply_configured_import_permissions!
+    if kind.to_s == "directory"
+      LibraryImportPermissions.apply_tree!(destination_path, root: output_root)
+    else
+      LibraryImportPermissions.apply_file!(destination_path, root: output_root)
+      LibraryImportPermissions.apply_directory!(File.dirname(destination_path), root: output_root)
+    end
   end
 
   def ensure_destination_parent!
