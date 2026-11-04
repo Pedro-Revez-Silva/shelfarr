@@ -5549,7 +5549,6 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_equal root_mode, File.stat(@temp_dest_base).mode & 0o777
   end
 
-
   private
 
   def post_processing_lock_busy?(download_id)

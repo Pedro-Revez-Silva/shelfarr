@@ -1146,8 +1146,6 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert_nil @download.reload.library_replacement_state
   end
 
-  end
-
   test "applies configured library import modes after a direct file import" do
     SettingsService.set(:library_import_file_mode, "0664")
     SettingsService.set(:library_import_folder_mode, "0775")
@@ -1238,6 +1236,8 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
 
     assert @request.reload.completed?
     assert_equal 0o640, File.stat(@destination).mode & 0o777
+  end
+
   test "an unreadable stored file mode cannot break direct publication" do
     SettingsService.set(:library_import_file_mode, "0664")
     Setting.find_by!(key: "library_import_file_mode").update!(value: "0220")
@@ -1247,7 +1247,6 @@ class DirectDownloadFileServiceTest < ActiveSupport::TestCase
     assert @request.reload.completed?
     assert_equal "", SettingsService.get(:library_import_file_mode)
   end
-
 
   private
 

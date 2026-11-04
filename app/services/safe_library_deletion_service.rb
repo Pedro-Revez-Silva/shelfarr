@@ -97,16 +97,25 @@ class SafeLibraryDeletionService
   # a parent that is no longer the one published into, is left alone. The check
   # is repeated after the name is claimed, so a swap between the check and the
   # claim is restored instead of deleted.
-  def delete_proven_publication!(proof)
+  def delete_proven_publication!(proof, deadline: nil)
     with_pinned_parent do |parent, basename|
       next :retained unless FileCopyService.publication_parent_matches?(proof, parent.stat)
       next :retained unless FileCopyService.stable_hardlink_identity?(parent)
 
-      if proof.fetch("kind") == "symlink"
-        remove_proven_symlink!(parent, basename, proof)
-      else
-        remove_proven_file!(parent, basename, proof)
+      unless proof.fetch("kind") == "file" && proof["exclusive_inode"] == true
+        # Target-only symlink proofs and shared hardlink inodes cannot prove
+        # who created a name. Legacy file proofs lack that guarantee too.
+        interrupted = if proof.fetch("kind") == "file"
+          entry_present?(parent, "#{quarantine_prefix}#{proof.fetch('device')}-#{proof.fetch('inode')}") == true
+        else
+          quarantined_entries(parent).any? { |_name, identity| identity.first == :reference }
+        end
+        raise Error, "An unproven library entry stays quarantined for manual review" if interrupted
+
+        next :retained
       end
+
+      remove_proven_file!(parent, basename, proof, deadline: deadline)
     end
   rescue Errno::ENOENT
     :absent
@@ -151,9 +160,9 @@ class SafeLibraryDeletionService
     end
   end
 
-  def remove_proven_file!(parent, basename, proof)
+  def remove_proven_file!(parent, basename, proof, deadline:)
     interrupted = "#{quarantine_prefix}#{proof.fetch('device')}-#{proof.fetch('inode')}"
-    return remove_claimed_file!(parent, interrupted, basename, proof) if entry_present?(parent, interrupted) == true
+    return remove_claimed_file!(parent, interrupted, basename, proof, deadline: deadline) if entry_present?(parent, interrupted) == true
 
     entry = IO.new(
       native_openat(parent.fileno, basename, File::RDONLY | File::NOFOLLOW | File::NONBLOCK),
@@ -167,21 +176,21 @@ class SafeLibraryDeletionService
     claimed = quarantine_basename(stat)
     quarantine_library_entry!(parent, basename, claimed, directory: false)
     sync_directory(parent)
-    remove_claimed_file!(parent, claimed, basename, proof)
+    remove_claimed_file!(parent, claimed, basename, proof, deadline: deadline)
   rescue Errno::ENXIO, Errno::ENODEV, Errno::EOPNOTSUPP
     :retained
   ensure
     entry&.close unless entry&.closed?
   end
 
-  def remove_claimed_file!(parent, claimed, basename, proof)
+  def remove_claimed_file!(parent, claimed, basename, proof, deadline:)
     descriptor = begin
       native_openat(parent.fileno, claimed, File::RDONLY | File::NOFOLLOW | File::NONBLOCK)
     rescue Errno::ELOOP
       return restore_claimed_entry!(parent, claimed, basename)
     end
     entry = File.for_fd(descriptor, "rb", autoclose: true)
-    unless FileCopyService.publication_content_matches?(proof, entry)
+    unless FileCopyService.publication_content_matches?(proof, entry, deadline: deadline)
       entry.close
       return restore_claimed_entry!(parent, claimed, basename)
     end
@@ -194,57 +203,6 @@ class SafeLibraryDeletionService
     :removed
   ensure
     entry&.close unless entry&.closed?
-  end
-
-  def remove_proven_symlink!(parent, basename, proof)
-    target = begin
-      native_readlinkat(parent.fileno, basename)
-    rescue Errno::EINVAL
-      return :retained
-    rescue Errno::ENOENT
-      return finish_interrupted_symlink_removal!(parent, proof)
-    end
-    return :retained unless same_link_target?(target, proof)
-
-    claimed = "#{quarantine_prefix}ref-#{SecureRandom.hex(8)}"
-    quarantine_library_entry!(parent, basename, claimed, directory: false)
-    sync_directory(parent)
-    remove_claimed_symlink!(parent, claimed, basename, proof)
-  end
-
-  def remove_claimed_symlink!(parent, claimed, basename, proof)
-    target = begin
-      native_readlinkat(parent.fileno, claimed)
-    rescue Errno::EINVAL
-      return restore_claimed_entry!(parent, claimed, basename)
-    end
-    return restore_claimed_entry!(parent, claimed, basename) unless same_link_target?(target, proof)
-
-    native_unlinkat(parent.fileno, claimed, 0)
-    sync_directory(parent)
-    :removed
-  end
-
-  def finish_interrupted_symlink_removal!(parent, proof)
-    quarantined_entries(parent).each do |name, identity|
-      next unless identity.first == :reference
-
-      target = begin
-        native_readlinkat(parent.fileno, name)
-      rescue Errno::EINVAL, Errno::ENOENT
-        next
-      end
-      next unless same_link_target?(target, proof)
-
-      native_unlinkat(parent.fileno, name, 0)
-      sync_directory(parent)
-      return :removed
-    end
-    :absent
-  end
-
-  def same_link_target?(target, proof)
-    target.b == proof.fetch("target").b
   end
 
   # A claimed entry that failed its proof belongs to someone else. If its name

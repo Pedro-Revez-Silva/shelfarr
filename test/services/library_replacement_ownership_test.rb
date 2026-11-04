@@ -225,7 +225,7 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
     assert_nil @download.reload.library_replacement_state
   end
 
-  test "a proven reference removal on NFS uses the checked rename" do
+  test "an unproven reference on NFS is retained even with the rename opt-in" do
     SettingsService.set(:completed_download_import_mode, "reference")
     import_failing_at_second_track(:reference_noreplace)
 
@@ -233,7 +233,7 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
       assert_equal true, LibraryReplacement.prepare_cancellation!(@download.reload)
     end
 
-    assert_not File.symlink?(@track)
+    assert File.symlink?(@track)
     assert_equal "track one", File.binread(File.join(@source, "01.mp3"))
   end
 
@@ -335,7 +335,7 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
     assert_empty LibraryReplacement.load(@download.reload).published_paths
   end
 
-  test "hardlink cancellation drops the library name and keeps the source" do
+  test "hardlink cancellation retains the ambiguous name and its source" do
     SettingsService.set(:completed_download_import_mode, "hardlink")
     import_failing_at_second_track(:hardlink_noreplace)
 
@@ -345,7 +345,7 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
 
     @request.remove_as_admin!
 
-    assert_not File.exist?(@track)
+    assert File.exist?(@track)
     assert_equal "track one", File.binread(source)
   end
 
@@ -407,7 +407,7 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
     assert_equal "unrelated bytes", File.binread(@track)
   end
 
-  test "reference cancellation unlinks the proven symlink and not its target" do
+  test "reference cancellation retains the unproven link and its target" do
     SettingsService.set(:completed_download_import_mode, "reference")
     import_failing_at_second_track(:reference_noreplace)
 
@@ -416,7 +416,7 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
 
     @request.remove_as_admin!
 
-    assert_not File.symlink?(@track)
+    assert File.symlink?(@track)
     assert_equal "track one", File.binread(File.join(@source, "01.mp3"))
   end
 
@@ -457,18 +457,178 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
     assert_equal "unrelated bytes", File.binread(@track)
   end
 
-  test "a reference removal stopped after its claim is finished on the next attempt" do
+  test "a legacy reference quarantine blocks cancellation for manual recovery" do
     SettingsService.set(:completed_download_import_mode, "reference")
     import_failing_at_second_track(:reference_noreplace)
     File.rename(@track, File.join(@folder, ".shelfarr-delete-#{@book.id}-ref-0123456789abcdef"))
 
-    @request.remove_as_admin!
+    assert_raises(Request::CancellationBlockedError) { @request.remove_as_admin! }
 
-    assert_not File.exist?(@folder)
+    assert File.symlink?(File.join(@folder, ".shelfarr-delete-#{@book.id}-ref-0123456789abcdef"))
+    assert @download.reload.library_replacement_state.present?
     assert_equal "track one", File.binread(File.join(@source, "01.mp3"))
   end
 
+  test "a failed reference publication does not own a later identical target link" do
+    SettingsService.set(:completed_download_import_mode, "reference")
+    FileCopyService.stub(:native_symlinkat, ->(*) { raise Errno::EIO }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+    assert @request.reload.attention_needed?
+    assert_not File.symlink?(@track)
+    target = File.join(@source, "01.mp3")
+    File.symlink(target, @track)
+
+    @request.remove_as_admin!
+
+    assert File.symlink?(@track), "the failed import never created this link"
+    assert_equal target, File.readlink(@track)
+  end
+
+  test "a failed hardlink publication does not own a later last link to the same inode" do
+    SettingsService.set(:completed_download_import_mode, "hardlink")
+    FileCopyService.stub(:publish_private_child_atomically_noreplace!, ->(*) { raise Errno::EIO }) do
+      PostProcessingJob.perform_now(@download.id)
+    end
+    assert @request.reload.attention_needed?
+    assert_not File.exist?(@track)
+    source = File.join(@source, "01.mp3")
+    File.link(source, @track)
+    File.unlink(source)
+
+    @request.remove_as_admin!
+
+    assert File.exist?(@track), "the foreign name was the inode's last link"
+    assert_equal "track one", File.binread(@track)
+  end
+
+  test "a writer editing an already hashed chunk prevents proven deletion" do
+    File.binwrite(File.join(@source, "01.mp3"), "a" * (FileCopyService::BUFFER_SIZE * 2))
+    import_failing_at_second_track(:cp_noreplace)
+    real_hash = FileCopyService.method(:io_content_identity)
+    modified = false
+    File.open(@track, "r+b") do |writer|
+      FileCopyService.stub(:io_content_identity, lambda { |io, **options|
+        original_read = io.method(:read)
+        io.define_singleton_method(:read) do |*args|
+          result = original_read.call(*args)
+          if result && !modified
+            writer.rewind
+            writer.write("B")
+            writer.flush
+            modified = true
+          end
+          result
+        end
+        real_hash.call(io, **options)
+      }) do
+        @request.remove_as_admin!
+      end
+    end
+
+    assert modified
+    assert File.exist?(@track), "the digest read missed the writer's edit"
+    assert_equal "B", File.binread(@track, 1)
+  end
+
+  test "an interrupted claim read error preserves the journal when its original path is absent" do
+    import_failing_at_second_track(:cp_noreplace)
+    claimed = claim_track!
+    journal = @download.reload.library_replacement_state
+
+    FileCopyService.stub(:publication_content_matches?, ->(*) { raise Errno::EIO }) do
+      assert RemoteResult.failed?(LibraryReplacement.prepare_cancellation!(@download.reload))
+    end
+
+    assert_equal journal, @download.reload.library_replacement_state
+    assert_equal "track one", File.binread(claimed)
+  end
+
+  test "an absent stale proof does not hide a later interrupted claim" do
+    import_failing_at_second_track(:cp_noreplace)
+    actual = proofs.sole
+    stale = actual.merge("inode" => actual.fetch("inode") + 1_000_000)
+    @download.update!(library_replacement_state: JSON.generate(
+      "published_paths" => [ @track ], "publication_proofs" => [ stale, actual ]
+    ))
+    claimed = claim_track!
+
+    assert_equal true, LibraryReplacement.prepare_cancellation!(@download.reload)
+
+    assert_not File.exist?(claimed), "all recorded proofs must be tried"
+    assert_nil @download.reload.library_replacement_state
+  end
+
+  test "a legacy file proof without exclusive inode provenance retains the file" do
+    import_failing_at_second_track(:cp_noreplace)
+    state = JSON.parse(@download.reload.library_replacement_state)
+    state.fetch("publication_proofs").each { |proof| proof.delete("exclusive_inode") }
+    @download.update!(library_replacement_state: JSON.generate(state))
+
+    @request.remove_as_admin!
+
+    assert_equal "track one", File.binread(@track)
+  end
+
+  test "a copy adopted through another hardlink is retained" do
+    import_failing_at_second_track(:cp_noreplace)
+    adopted = File.join(@library, "adopted.mp3")
+    File.link(@track, adopted)
+
+    @request.remove_as_admin!
+
+    assert_equal "track one", File.binread(@track)
+    assert_equal "track one", File.binread(adopted)
+  end
+
+  test "a busy absent-path claim keeps its recovery journal" do
+    import_failing_at_second_track(:cp_noreplace)
+    claimed = claim_track!
+    journal = @download.reload.library_replacement_state
+    lock = LibraryReplacement.share_reused_destination!(@track)
+    begin
+      assert_equal false, LibraryReplacement.prepare_cancellation!(@download.reload)
+    ensure
+      LibraryReplacement.release_destination_lock(lock)
+    end
+
+    assert_equal journal, @download.reload.library_replacement_state
+    assert_equal "track one", File.binread(claimed)
+  end
+
+  test "the cleanup read budget restores a claim and preserves unverified bytes" do
+    File.binwrite(File.join(@source, "01.mp3"), "a" * (FileCopyService::BUFFER_SIZE * 2))
+    import_failing_at_second_track(:cp_noreplace)
+    reads = 0
+    real_hash = FileCopyService.method(:io_content_identity)
+    FileCopyService.stub(:publication_verification_time, -> { reads.positive? ? 1.0 : 0.0 }) do
+      FileCopyService.stub(:io_content_identity, lambda { |io, **options|
+        original_read = io.method(:read)
+        io.define_singleton_method(:read) do |*args|
+          result = original_read.call(*args)
+          reads += 1 if result
+          result
+        end
+        real_hash.call(io, **options)
+      }) do
+        assert_equal true, LibraryReplacement.prepare_cancellation!(@download.reload)
+      end
+    end
+
+    assert_equal 1, reads, "the deadline must be checked between chunks"
+    assert_equal "a" * (FileCopyService::BUFFER_SIZE * 2), File.binread(@track)
+    assert_equal [ "01.mp3" ], Dir.children(@folder)
+    assert_nil @download.reload.library_replacement_state
+  end
+
   private
+
+  def claim_track!
+    stat = File.stat(@track)
+    claimed = File.join(@folder, ".shelfarr-delete-#{@book.id}-#{stat.dev}-#{stat.ino}")
+    File.rename(@track, claimed)
+    claimed
+  end
 
   def import_failing_at_second_track(operation, publish_first: true)
     real_operation = FileCopyService.method(operation)
@@ -499,6 +659,7 @@ class LibraryReplacementOwnershipTest < ActiveSupport::TestCase
     parent = File.stat(File.dirname(path))
     {
       "kind" => "file",
+      "exclusive_inode" => true,
       "device" => stat.dev,
       "inode" => stat.ino,
       "size" => stat.size,

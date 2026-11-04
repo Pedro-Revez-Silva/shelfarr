@@ -596,6 +596,7 @@ class AdminAcquisitionRemovalTest < ActionDispatch::IntegrationTest
         {
           "path" => path,
           "kind" => "file",
+          "exclusive_inode" => true,
           "device" => stat.dev,
           "inode" => stat.ino,
           "size" => stat.size,

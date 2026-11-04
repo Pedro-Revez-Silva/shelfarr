@@ -221,18 +221,30 @@ class FileCopyService
     # content keep such a reuse from passing as the published file.
     def publication_identity_matches?(proof, stat)
       return false unless stat.file?
+      return false unless proof["exclusive_inode"] == true && stat.nlink == 1
       return false unless file_identity(stat) == [ proof["device"], proof["inode"] ]
       return false unless stat.size == proof["size"]
 
       proof["mtime_ns"].nil? || publication_mtime(stat) == proof["mtime_ns"]
     end
 
-    def publication_content_matches?(proof, io)
+    def publication_content_matches?(proof, io, deadline: nil)
       stat = io.stat
       return false unless publication_identity_matches?(proof, stat)
       return true if proof["digest"].nil?
 
-      pinned_content_matches?(io, proof["digest"], stat.size)
+      snapshot = file_manifest_entry(stat)
+      catch(:publication_verification_expired) do
+        check_budget = lambda do
+          throw :publication_verification_expired, false if deadline && publication_verification_time >= deadline
+        end
+        check_budget.call
+        pinned_content_matches?(io, proof["digest"], stat.size, heartbeat: check_budget) && file_manifest_entry(io.stat) == snapshot
+      end
+    end
+
+    def publication_verification_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def publication_parent_matches?(proof, parent_stat)
@@ -282,8 +294,9 @@ class FileCopyService
             raise Errno::EEXIST, destination_path.to_s
           end
 
-          # symlinkat is already a no-replace publication, so there is no
-          # private inode to bind. The exact target is the entry's identity.
+          # The target records intent, not ownership: another writer can
+          # create an identical link after this attempt fails. Cancellation
+          # retains these entries because there is no private inode proof.
           before_publish&.call(publication_symlink_proof(target, parent))
           begin
             native_symlinkat(target, parent.fileno, basename)
@@ -479,7 +492,7 @@ class FileCopyService
 
           with_pinned_destination_parent(destination_path, root: root) do |destination_parent, basename, parent_path|
             if before_publish && !hardlink_identity_unreliable?(destination_parent)
-              before_publish.call(directory_publication_proofs(source_root, destination_parent))
+              before_publish.call(directory_publication_proofs(source_root, source_directory, destination_parent))
             end
 
             published = begin
@@ -3284,6 +3297,7 @@ class FileCopyService
         "device" => stat.dev,
         "inode" => stat.ino,
         "size" => stat.size,
+        "exclusive_inode" => stat.nlink == 1,
         "parent_device" => parent_stat.dev,
         "parent_inode" => parent_stat.ino
       }
@@ -3305,7 +3319,7 @@ class FileCopyService
     # Every regular file keeps its inode when the staged tree is renamed, so
     # each one is proven individually. A file added to the tree after
     # publication has no proof and survives cancellation.
-    def directory_publication_proofs(source_root, destination_parent)
+    def directory_publication_proofs(source_root, source_directory, destination_parent)
       entries = source_root.entries
       unstable = unstable_file_timestamps?(destination_parent) == true
       entries.each_with_object({}) do |(relative, manifest), proofs|
@@ -3322,6 +3336,20 @@ class FileCopyService
           "parent_inode" => parent_identity.last,
           "digest" => file_manifest_digest(manifest)
         }.compact
+        with_pinned_relative_directory(source_directory, Pathname(parent), create: false) do |directory|
+          file = File.for_fd(
+            native_openat(directory.fileno, File.basename(relative), File::RDONLY | File::NOFOLLOW | File::NONBLOCK, 0),
+            "rb", autoclose: true
+          )
+          begin
+            stat = file.stat
+            raise Errno::ESTALE, "publication file identity changed" unless file_identity(stat) == manifest.first(2)
+
+            proof["exclusive_inode"] = stat.nlink == 1
+          ensure
+            file.close
+          end
+        end
         proof["mtime_ns"] = publication_time(manifest.fetch(4)) unless proof["digest"] && unstable
         proofs[relative] = proof
       end

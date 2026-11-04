@@ -10,6 +10,10 @@ require "pathname"
 class LibraryReplacement
   # Parent walks stop at the library root. The bound rejects a cycle those checks miss.
   MAX_ANCESTOR_DEPTH = 1_000
+  # Cancellation can run under SQLite's global writer lock. Bound the added
+  # content-read work across the whole batch; keep files whose proof cannot
+  # finish in time rather than weakening verification or extending that lock.
+  PUBLICATION_VERIFICATION_SECONDS = 0.5
   PROOF_PARENT_FIELDS = %w[parent_device parent_inode].freeze
   PROOF_FILE_FIELDS = %w[device inode size].freeze
 
@@ -572,8 +576,9 @@ class LibraryReplacement
     def remove_published_files!(book, paths, proofs, protected_path:)
       files = Array(paths).map(&:to_s).uniq
       proofs_by_path = Array(proofs).group_by { |proof| proof["path"] }
+      deadline = FileCopyService.publication_verification_time + PUBLICATION_VERIFICATION_SECONDS
       files.each do |path|
-        deleted = delete_published_file!(book, path, proofs_by_path.fetch(path, []), protected_path)
+        deleted = delete_published_file!(book, path, proofs_by_path.fetch(path, []), protected_path, deadline: deadline)
         return deleted unless deleted == true
       end
       files.each do |path|
@@ -583,38 +588,43 @@ class LibraryReplacement
       true
     end
 
-    def delete_published_file!(book, path, proofs, protected_path)
+    def delete_published_file!(book, path, proofs, protected_path, deadline: nil)
       decision = published_file_decision(book, path, protected_path)
       return decision if RemoteResult.failed?(decision) || decision == false
       return true if decision == :directory || decision == :retained
 
       if decision == :absent
-        # A crash can stop a removal after the name was claimed. Nothing else
-        # is left at this path, so that retry cannot hold up cancellation.
-        delete_proven_path!(book, path, proofs) if proofs.any?
-        return true
+        # The missing name can still have an interrupted quarantine. Keep its
+        # recovery record until every recorded claim has been reconciled.
+        deleted = delete_proven_path!(book, path, proofs, deadline: deadline) if proofs.any?
+        return false if deleted == :busy
+      else
+        deleted = delete_proven_path!(book, path, proofs, deadline: deadline)
       end
-
-      deleted = delete_proven_path!(book, path, proofs)
       return deleted if RemoteResult.failed?(deleted) || deleted == false
       return true unless deleted == :retained
 
       Rails.logger.warn(
-        "[LibraryReplacement] Kept a library entry for book ##{book.id} that this import cannot prove it published"
+        "[LibraryReplacement] Kept #{path.inspect} for book ##{book.id}: publication ownership or content could not be verified within the cleanup budget"
       )
       true
     end
 
-    def delete_proven_path!(book, path, proofs)
+    def delete_proven_path!(book, path, proofs, deadline: nil)
       with_destination_claim(path) do
         record = book.class.find_by(id: book.id)
         next false unless record
 
         record.file_path = path
         service = SafeLibraryDeletionService.new(record)
-        outcome = proofs.lazy.map { |proof| service.delete_proven_publication!(proof) }
-          .find { |result| result != :retained }
-        outcome || :retained
+        outcome = :retained
+        proofs.each do |proof|
+          result = service.delete_proven_publication!(proof, deadline: deadline)
+          return result if RemoteResult.failed?(result) || result == false
+
+          outcome = result if result == :removed || (result == :absent && outcome != :removed)
+        end
+        outcome
       end
     end
 
