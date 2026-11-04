@@ -337,6 +337,18 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert field < batch
   end
 
+  test "overflowing file size input is rejected without changing saved settings" do
+    SettingsService.set(:ebook_max_file_size, "2 GB")
+
+    [ "9" * 400 + " B", "9" * 300 + " GB" ].each do |value|
+      patch bulk_update_admin_settings_url, params: { settings: { ebook_max_file_size: value } }
+
+      assert_redirected_to admin_settings_path
+      assert_match(/file size/, flash[:alert])
+      assert_equal "2 GB", SettingsService.get(:ebook_max_file_size)
+    end
+  end
+
   test "index shows ordered download type preferences" do
     get admin_settings_url
 

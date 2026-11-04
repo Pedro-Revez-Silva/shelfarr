@@ -816,7 +816,10 @@ class SettingsService
 
       amount = match[1].to_f
       unit = (match[2] || "MB").upcase
-      bytes = (amount * FILE_SIZE_UNITS.fetch(unit)).round
+      bytes = amount * FILE_SIZE_UNITS.fetch(unit)
+      return nil unless bytes.finite?
+
+      bytes = bytes.round
       bytes.positive? ? bytes : nil
     end
 
