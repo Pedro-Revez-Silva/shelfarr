@@ -26,6 +26,27 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@root)
   end
 
+  test "an unrelated non-UTF8 sibling does not block deletion" do
+    sibling = File.join(@root.b, "unrelated-\xFF.txt".b)
+    File.binwrite(sibling, "unrelated bytes")
+
+    assert SafeLibraryDeletionService.new(@book).delete!
+    assert_not File.exist?(@path)
+    assert_equal "unrelated bytes", File.binread(sibling)
+  end
+
+  test "invalid names inside the target tree report a library deletion error" do
+    FileUtils.rm_f(@path)
+    FileUtils.mkdir_p(@path)
+    File.binwrite(File.join(@path.b, "invalid-\xFF.epub".b), "book bytes")
+
+    error = assert_raises(SafeLibraryDeletionService::Error) do
+      SafeLibraryDeletionService.new(@book).delete!
+    end
+
+    assert_match(/UTF-8/, error.message)
+  end
+
   test "unlinks a reference-mode library symlink without touching the target" do
     source = File.join(@root, "download-source.epub")
     File.binwrite(source, "download bytes")

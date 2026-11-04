@@ -47,6 +47,8 @@ class SafeLibraryDeletionService
     raise Error, "Shelfarr could not safely remove the library path: #{error.message}"
   rescue SystemCallError => error
     raise Error, "Shelfarr could not safely remove the library path: #{error.message}"
+  rescue EncodingError => error
+    raise Error, "Shelfarr could not safely remove the library path: #{error.message}"
   end
 
   private
@@ -369,9 +371,9 @@ class SafeLibraryDeletionService
   end
 
   def quarantined_entries(parent)
-    children_for(parent).filter_map do |entry|
+    raw_children_for(parent).filter_map do |entry|
       identity = quarantined_identity(entry)
-      [ entry, identity ] if identity
+      [ FilenameBytes.utf8(entry), identity ] if identity
     end
   end
 
@@ -386,10 +388,14 @@ class SafeLibraryDeletionService
   end
 
   def children_for(directory)
+    raw_children_for(directory).map { |entry| FilenameBytes.utf8(entry) }
+  end
+
+  def raw_children_for(directory)
     duplicate = directory.dup
     listing = Dir.for_fd(duplicate.fileno)
     duplicate.autoclose = false
-    listing.each_child.map { |entry| FilenameBytes.utf8(entry) }
+    listing.each_child.to_a
   ensure
     listing&.close
     duplicate&.close unless duplicate&.closed?
