@@ -216,7 +216,11 @@ module DownloadClients
       end
 
       name = info["name"]
-      unless valid_torrent_path_component?(name) && name.bytesize <= MAX_TORRENT_NAME_BYTES
+      begin
+        unless valid_torrent_path_component?(name) && name.bytesize <= MAX_TORRENT_NAME_BYTES
+          raise Error, "Torrent source did not return valid name metadata"
+        end
+      rescue EncodingError
         raise Error, "Torrent source did not return valid name metadata"
       end
 
@@ -239,8 +243,12 @@ module DownloadClients
           end
 
           path = file["path"]
-          unless path.is_a?(Array) && path.any? && path.size <= MAX_TORRENT_PATH_DEPTH &&
-              path.all? { |component| valid_torrent_path_component?(component) }
+          begin
+            unless path.is_a?(Array) && path.any? && path.size <= MAX_TORRENT_PATH_DEPTH &&
+                path.all? { |component| valid_torrent_path_component?(component) }
+              raise Error, "Torrent source did not return valid file paths"
+            end
+          rescue EncodingError
             raise Error, "Torrent source did not return valid file paths"
           end
           effective_path = path.join("/")
@@ -283,8 +291,7 @@ module DownloadClients
     def valid_torrent_path_component?(component)
       return false unless component.is_a?(String)
 
-      value = component.dup
-      value.force_encoding(Encoding::UTF_8) if value.encoding == Encoding::ASCII_8BIT
+      value = component.encoding == Encoding::ASCII_8BIT ? FilenameBytes.utf8(component) : component
       value.valid_encoding? && value.present? && value.bytesize <= 255 &&
         !value.in?([ ".", ".." ]) && !value.match?(/[\\\/\0[:cntrl:]]/)
     end

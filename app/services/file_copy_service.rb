@@ -4662,11 +4662,9 @@ class FileCopyService
 
     def utf8_directory_entry(entry)
       # Dir.for_fd has no path or encoding argument, so Ruby returns raw
-      # filename bytes as ASCII-8BIT. Shelfarr paths and metadata are UTF-8;
-      # retag valid bytes without transcoding or changing syscall identity.
-      name = entry.dup.force_encoding(Encoding::UTF_8)
-      return name if name.valid_encoding?
-
+      # filename bytes as ASCII-8BIT.
+      FilenameBytes.utf8(entry)
+    rescue EncodingError
       raise UnsafePathError, "source tree contains a filename that is not valid UTF-8"
     end
 

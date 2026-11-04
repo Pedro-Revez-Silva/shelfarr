@@ -392,10 +392,18 @@ class PostProcessingJob < ApplicationJob
     "[unavailable error detail]"
   end
 
+  def tagged_diagnostic_text(raw)
+    return raw unless raw.encoding == Encoding::BINARY
+
+    FilenameBytes.utf8(raw)
+  rescue EncodingError
+    raw.encode(Encoding::UTF_8, Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "\uFFFD")
+  end
+
   def bounded_diagnostic_text(value)
     raw = value.to_s.dup
     raw = raw.byteslice(0, ERROR_DETAIL_INPUT_BYTE_LIMIT).to_s
-    raw.force_encoding(Encoding::UTF_8) if raw.encoding == Encoding::BINARY
+    raw = tagged_diagnostic_text(raw)
     raw.encode(
       Encoding::UTF_8,
       invalid: :replace,
