@@ -751,6 +751,7 @@
             <tbody>
               <tr><td class="key"><code>immediate_search_enabled</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Search immediately when a request is created, instead of waiting for the queue cycle.</td></tr>
               <tr><td class="key"><code>auto_approve_requests</code></td><td><span class="badge t-boolean">boolean</span></td><td class="default"><code>false</code></td><td class="desc">Automatically enqueue searches for requests created by non-admin users.</td></tr>
+              <tr><td class="key"><code>default_request_format</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>ask</code></td><td class="desc">Format pre-selected on the request form: <code>ask</code>, <code>audiobook</code>, <code>ebook</code>, or <code>both</code>. Ask leaves the choice to the requester. Both selects the ebook and the audiobook.</td></tr>
               <tr><td class="key"><code>queue_batch_size</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>5</code></td><td class="desc">Requests processed per queue run.</td></tr>
               <tr><td class="key"><code>rate_limit_delay</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>2</code></td><td class="desc">Seconds between API calls.</td></tr>
               <tr><td class="key"><code>max_retries</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>10</code></td><td class="desc">Retry attempts before a request is flagged for attention.</td></tr>
@@ -805,6 +806,7 @@
 
         <h2 id="notifications">Notifications <a class="anchor" href="#notifications" aria-label="Link to Notifications">#</a></h2>
         <p class="section-desc">In-app notifications are always on. The events below are comma-separated: <code>request_created</code>, <code>request_completed</code>, <code>request_failed</code>, <code>request_attention</code>.</p>
+        <p>A generic webhook posts JSON for each enabled event. Request events include <code>event</code>, <code>title</code>, <code>message</code>, <code>occurred_at</code>, an optional <code>topic</code>, and <code>request</code>, <code>book</code>, and <code>user</code>. <code>book.cover_url</code> is an absolute cover image URL the receiver can fetch, or <code>null</code> when the book has no cover.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>

@@ -104,10 +104,17 @@ class RequestCreationService
   end
 
   def normalize_book_types(value)
-    Array(value).flatten.filter_map do |book_type|
+    Array(value).flatten.flat_map { |book_type| expand_requested_book_type(book_type) }.filter_map do |book_type|
       normalized = book_type.to_s.strip
       normalized if Book.book_types.key?(normalized)
     end.uniq
+  end
+
+  # "both" is an ebook request and an audiobook request, not a third format.
+  def expand_requested_book_type(book_type)
+    return %w[audiobook ebook] if book_type.to_s.strip == "both"
+
+    book_type
   end
 
   def normalize_metadata_attrs(attrs, fallback_content_kind: nil, source_ids: source_work_ids)

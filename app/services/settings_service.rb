@@ -82,6 +82,13 @@ class SettingsService
     comicbook: [ 7030 ],
     all_books: [ 3030, 7020, 7000, 7030 ]
   }.freeze
+  DEFAULT_REQUEST_FORMATS = %w[ask audiobook ebook both].freeze
+  DEFAULT_REQUEST_FORMAT_OPTIONS = [
+    [ "Ask each time", "ask" ],
+    [ "Audiobook", "audiobook" ],
+    [ "Ebook", "ebook" ],
+    [ "Both", "both" ]
+  ].freeze
   DOWNLOAD_TYPE_OPTIONS = {
     "torrent" => {
       label: "Torrent",
@@ -157,12 +164,13 @@ class SettingsService
       default: false,
       category: "paths",
       env_overridable: true,
-      description: "Allow directory imports and source cleanup on NFS filesystems that reject atomic no-replace renames. Enable only when Shelfarr is the sole writer: a concurrently created empty destination or quarantine name could otherwise be replaced."
+      description: "Allow directory imports, source cleanup, and library deletion on NFS filesystems that reject atomic no-replace renames. Enable only when Shelfarr is the sole writer: a concurrently created empty destination or quarantine name could otherwise be replaced."
     },
 
     setup_wizard_completed: { type: "boolean", default: false, category: "setup", description: "The first-run setup wizard has been finished or skipped" },
     immediate_search_enabled: { type: "boolean", default: true, category: "queue", description: "Start searching immediately when a request is created (instead of waiting for queue cycle)" },
     auto_approve_requests: { type: "boolean", default: false, category: "queue", description: "Automatically enqueue search immediately for requests created by non-admin users" },
+    default_request_format: { type: "string", default: "ask", category: "queue", description: "Format pre-selected on the request form. Ask leaves the choice to the requester. Both selects the ebook and the audiobook." },
     queue_batch_size: { type: "integer", default: 5, category: "queue", description: "Number of requests to process per queue run" },
     rate_limit_delay: { type: "integer", default: 2, category: "queue", description: "Seconds between API calls" },
     max_retries: { type: "integer", default: 10, category: "queue", description: "Maximum retry attempts before flagging for attention" },
@@ -416,6 +424,11 @@ class SettingsService
       end
       return normalize_library_import_mode(key, value) if LIBRARY_IMPORT_PERMISSION_KEYS.include?(key)
 
+      if key == :default_request_format
+        normalized = value.to_s
+        return DEFAULT_REQUEST_FORMATS.include?(normalized) ? normalized : "ask"
+      end
+
       return [ value.to_i, MIN_HEALTH_CHECK_INTERVAL ].max if key == :health_check_interval && !value.nil?
       return value unless value.nil?
 
@@ -437,6 +450,13 @@ class SettingsService
       end
 
       value = library_import_mode_for_write!(key, value) if LIBRARY_IMPORT_PERMISSION_KEYS.include?(key)
+
+      if key == :default_request_format
+        value = value.to_s
+        unless DEFAULT_REQUEST_FORMATS.include?(value)
+          raise ArgumentError, "#{label_for(key)} must be one of: #{DEFAULT_REQUEST_FORMATS.join(', ')}"
+        end
+      end
 
       if key == :health_check_interval
         value = Integer(value, exception: false)
@@ -706,6 +726,18 @@ class SettingsService
 
     def auto_approve_requests?
       get(:auto_approve_requests, default: false)
+    end
+
+    def default_request_formats
+      format = get(:default_request_format)
+      case format
+      when "audiobook", "ebook"
+        [ format ]
+      when "both"
+        %w[audiobook ebook]
+      else
+        []
+      end
     end
 
     def preferred_download_types

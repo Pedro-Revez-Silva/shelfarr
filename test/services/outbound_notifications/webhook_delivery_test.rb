@@ -108,6 +108,41 @@ class OutboundNotifications::WebhookDeliveryTest < ActiveSupport::TestCase
     assert_requested(stub)
   end
 
+  test "deliver! includes the book's absolute cover URL" do
+    @request.book.update!(cover_url: "https://covers.openlibrary.org/b/id/12345-L.jpg")
+
+    payload = deliver_payload
+
+    assert_equal "https://covers.openlibrary.org/b/id/12345-L.jpg", payload.dig("book", "cover_url")
+  end
+
+  test "deliver! keeps an absolute http cover URL unchanged" do
+    @request.book.update!(cover_url: "  http://books.google.com/books/content?id=abc&printsec=frontcover  ")
+
+    payload = deliver_payload
+
+    assert_equal "http://books.google.com/books/content?id=abc&printsec=frontcover", payload.dig("book", "cover_url")
+  end
+
+  test "deliver! turns a protocol-relative cover URL into an absolute https URL" do
+    @request.book.update!(cover_url: "//covers.openlibrary.org/b/id/12345-L.jpg")
+
+    payload = deliver_payload
+
+    assert_equal "https://covers.openlibrary.org/b/id/12345-L.jpg", payload.dig("book", "cover_url")
+  end
+
+  test "deliver! sends null cover_url when the book has no fetchable cover" do
+    [ nil, "", "   ", "/images/cover.jpg", "javascript:alert(1)", "https://covers.example.test/a b.jpg" ].each do |cover_url|
+      @request.book.update!(cover_url: cover_url)
+
+      payload = deliver_payload
+
+      assert payload["book"].key?("cover_url"), "expected cover_url for #{cover_url.inspect}"
+      assert_nil payload.dig("book", "cover_url"), "expected null cover_url for #{cover_url.inspect}"
+    end
+  end
+
   test "deliver! raises a delivery error for invalid webhook URLs" do
     SettingsService.set(:webhook_url, "ht!tp://bad")
 
@@ -121,5 +156,24 @@ class OutboundNotifications::WebhookDeliveryTest < ActiveSupport::TestCase
     end
 
     assert_includes error.message.downcase, "invalid"
+  end
+
+  private
+
+  def deliver_payload
+    payload = nil
+    stub_request(:post, "http://localhost:4567/webhook").with do |request|
+      payload = JSON.parse(request.body)
+      true
+    end.to_return(status: 200, body: "{\"ok\":true}", headers: { "Content-Type" => "application/json" })
+
+    OutboundNotifications::WebhookDelivery.deliver!(
+      event: "request_completed",
+      title: "Book Ready",
+      message: "ready",
+      request: @request
+    )
+
+    payload
   end
 end

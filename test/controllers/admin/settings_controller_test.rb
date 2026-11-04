@@ -236,6 +236,28 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "p", text: /Automatically enqueue search immediately for requests created by non-admin users/
   end
 
+  test "index shows the default request format beside other request settings" do
+    get admin_settings_url
+
+    assert_response :success
+    assert_select "label[for='settings_default_request_format']", text: "Default Request Format"
+    assert_select "select[name='settings[default_request_format]']" do
+      assert_select "option[value='ask'][selected='selected']", text: "Ask each time"
+      assert_select "option[value='audiobook']", text: "Audiobook"
+      assert_select "option[value='ebook']", text: "Ebook"
+      assert_select "option[value='both']", text: "Both"
+    end
+    assert_select "p", text: /Format pre-selected on the request form/
+
+    queue = response.body.index("Queue Settings")
+    approve = response.body.index("Auto Approve Requests")
+    field = response.body.index("Default Request Format")
+    batch = response.body.index("Queue Batch Size")
+    assert queue < approve
+    assert approve < field
+    assert field < batch
+  end
+
   test "index shows ordered download type preferences" do
     get admin_settings_url
 
@@ -636,6 +658,23 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to admin_settings_path
     assert_equal true, SettingsService.auto_approve_requests?
+  end
+
+  test "bulk_update saves the default request format and rejects an unknown choice" do
+    patch bulk_update_admin_settings_url, params: {
+      settings: { default_request_format: "both" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_equal "both", SettingsService.get(:default_request_format)
+
+    patch bulk_update_admin_settings_url, params: {
+      settings: { default_request_format: "everything" }
+    }
+
+    assert_redirected_to admin_settings_path
+    assert_match(/must be one of: ask, audiobook, ebook, both/, flash[:alert])
+    assert_equal "both", SettingsService.get(:default_request_format)
   end
 
   test "bulk_update preserves existing secret settings when left blank" do
