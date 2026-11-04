@@ -143,6 +143,10 @@ class AudiobookshelfClient
       @connection_settings_key = nil
     end
 
+    def release_unconfigured_connection!
+      reset_connection! unless configured?
+    end
+
     def display_name
       "Audiobookshelf"
     end
@@ -150,7 +154,10 @@ class AudiobookshelfClient
     private
 
     def ensure_configured!
-      raise NotConfiguredError, "#{display_name} is not configured" unless configured?
+      return if configured?
+
+      reset_connection!
+      raise NotConfiguredError, "#{display_name} is not configured"
     end
 
     def request
@@ -162,6 +169,7 @@ class AudiobookshelfClient
     # Faraday keeps the URL and API key it was built with. A job process does
     # not see reset_connection! from the web process, so rebuild when they change.
     def connection
+      ensure_configured!
       settings_key = connection_settings_key
       return @connection if @connection && @connection_settings_key == settings_key
 
