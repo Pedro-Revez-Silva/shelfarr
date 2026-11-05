@@ -1,6 +1,6 @@
 source "https://rubygems.org"
 
-gem "rails", "~> 8.1.3", ">= 8.1.3.1"
+gem "rails", "~> 8.1.4", ">= 8.1.4.1"
 # Rack 3.2.7 and older return an invalid Host verbatim and retain multipart scan data.
 gem "rack", ">= 3.2.8"
 # Loofah CSS tokenizer. 1.0.7 leaves a bad URL open after an escaped backslash.
