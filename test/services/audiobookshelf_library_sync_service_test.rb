@@ -487,6 +487,40 @@ class AudiobookshelfLibrarySyncServiceTest < ActiveSupport::TestCase
     LibraryPlatformClient.reset_connections!
   end
 
+  test "prunes cached Grimmory items after a successful empty inventory" do
+    SettingsService.set(:library_platform, "grimmory")
+    SettingsService.set(:grimmory_url, "http://localhost:5173")
+    SettingsService.set(:grimmory_username, "admin")
+    SettingsService.set(:grimmory_password, "secret")
+    SettingsService.set(:audiobookshelf_audiobook_library_id, "grim-lib")
+    SettingsService.set(:audiobookshelf_ebook_library_id, "")
+    LibraryPlatformClient.reset_connections!
+    existing = LibraryItem.create!(
+      library_platform: "grimmory",
+      library_id: "grim-lib",
+      audiobookshelf_id: "grim-removed",
+      title: "Removed Book",
+      synced_at: 1.day.ago
+    )
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:5173/api/v1/auth/login")
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" },
+          body: { accessToken: "grimmory-token" }.to_json)
+      stub_request(:get, "http://localhost:5173/api/v1/libraries/grim-lib/book")
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: "[]")
+
+      result = AudiobookshelfLibrarySyncService.new.sync!
+
+      assert result.success?, result.errors.inspect
+      assert_equal 1, result.libraries_synced
+      assert_empty result.errors
+      assert_not LibraryItem.exists?(existing.id)
+    end
+  ensure
+    LibraryPlatformClient.reset_connections!
+  end
+
   test "syncs items from additional scan library ids alongside delivery libraries" do
     SettingsService.set(:audiobookshelf_audiobook_library_id, "lib-audio")
     SettingsService.set(:audiobookshelf_ebook_library_id, "")

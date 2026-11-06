@@ -305,6 +305,7 @@ class SafeLibraryDeletionService
     rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP => error
       RemoteResult::Failed.new(error)
     end
+      .reject { |result| RemoteResult.failed?(result) }
       .flatten(1)
   end
 
