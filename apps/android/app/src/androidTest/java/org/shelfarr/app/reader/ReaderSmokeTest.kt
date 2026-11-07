@@ -99,8 +99,8 @@ class ReaderSmokeTest {
                     navigator.lifecycleScope.launch { navigator.go(state.publication.readingOrder[1], animated = false) }
                 }
                 awaitText(scenario, "Second chapter is rendered")
-                screenshot(scenario, "chapter-two.png")
                 await("chapter two progress reached the server") { saved.get()?.locator?.get("href").toString().contains("c2.xhtml") }
+                screenshot(scenario, "chapter-two.png")
             }
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
                 awaitText(scenario, "Second chapter is rendered")
