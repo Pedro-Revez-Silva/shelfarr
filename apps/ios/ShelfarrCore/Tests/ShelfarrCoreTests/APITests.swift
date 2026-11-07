@@ -152,6 +152,16 @@ final class APITests: XCTestCase {
         }
     }
 
+    func testByteRangesAreAuthenticatedHeadersNotQueryParameters() async throws {
+        transport.enqueue(206, "abc", headers: ["Content-Range": "bytes 0-2/10"])
+        let (data, _) = try await api.bytes(at: server.api("assets/1/content"), range: 0 ... 2)
+        XCTAssertEqual(data.count, 3)
+        let request = try XCTUnwrap(transport.requests.first)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=0-2")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token")
+        XCTAssertNil(request.url?.query)
+    }
+
     func testLocatorRoundTripsThroughJSONValue() throws {
         let json = #"{"href":"c.xhtml","locations":{"position":3,"progression":0.25,"totalProgression":0.5},"title":"One","type":"application/xhtml+xml"}"#
         let value = try XCTUnwrap(JSONValue.parse(jsonString: json))
