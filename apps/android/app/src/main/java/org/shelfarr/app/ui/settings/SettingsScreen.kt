@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
@@ -33,6 +34,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import org.shelfarr.app.core.Session
+import org.shelfarr.app.ui.components.ShelfarrIcons
 import org.shelfarr.app.ui.theme.AppearanceMode
 import org.shelfarr.app.ui.theme.ShelfarrTheme
 
@@ -44,6 +46,8 @@ fun SettingsScreen(
     disconnecting: Boolean,
     onAppearance: (AppearanceMode) -> Unit,
     onDisconnect: () -> Unit,
+    downloadsSummary: String = "Nothing downloaded",
+    onDownloads: () -> Unit = {},
 ) {
     var confirming by remember { mutableStateOf(false) }
 
@@ -93,9 +97,24 @@ fun SettingsScreen(
         }
 
         Section("On this device") {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .clickable(role = Role.Button, onClick = onDownloads),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Downloads", style = MaterialTheme.typography.bodyMedium)
+                    Text(downloadsSummary, style = MaterialTheme.typography.bodySmall, color = ShelfarrTheme.extended.inkMuted)
+                }
+                Icon(ShelfarrIcons.ChevronRight, null, tint = ShelfarrTheme.extended.inkMuted)
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
-                "Books open from a temporary copy that Android may clear, and audio streams from your server. " +
-                    "Downloads for offline use aren't available yet. Your reading place is kept here and syncs when you're connected.",
+                "Downloads stay until you remove them, and transfer while Shelfarr is open. " +
+                    "Other books open from a temporary copy that Android may clear, and other audio streams from your server. " +
+                    "Your reading place is kept here and syncs when you're connected.",
                 style = MaterialTheme.typography.bodySmall,
                 color = ShelfarrTheme.extended.inkMuted,
             )
@@ -125,7 +144,7 @@ fun SettingsScreen(
             onDismissRequest = { confirming = false },
             title = { Text("Disconnect this device?") },
             text = {
-                Text("This signs out, stops playback and removes book copies and saved places from this device. Your library stays on your server.")
+                Text("This signs out, stops playback and downloads, and removes downloads, book copies and saved places from this device. Your library stays on your server.")
             },
             confirmButton = {
                 TextButton(onClick = {

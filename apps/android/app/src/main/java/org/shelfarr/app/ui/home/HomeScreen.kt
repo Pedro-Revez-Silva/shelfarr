@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +52,7 @@ fun HomeScreen(
     onOpen: (Publication) -> Unit,
     onContinue: (Publication) -> Unit,
     onRetry: () -> Unit,
+    onDownloads: () -> Unit = {},
 ) {
     when (state) {
         HomeState.Loading -> LoadingState()
@@ -58,7 +60,16 @@ fun HomeScreen(
             val copy = errorCopy(state.error, host)
             MessageState(copy.title, copy.message, icon = ShelfarrIcons.Offline, action = "Try again", onAction = onRetry)
         }
-        is HomeState.Loaded -> if (state.isEmpty) {
+        is HomeState.Loaded -> if (state.offline != null && state.downloads.isEmpty()) {
+            val copy = errorCopy(state.offline, host)
+            MessageState(
+                copy.title,
+                copy.message + if (state.hasDownloadRecords) "" else " Downloaded books and audiobooks open here without a connection.",
+                icon = ShelfarrIcons.Offline,
+                action = "Try again",
+                onAction = onRetry,
+            )
+        } else if (state.isEmpty) {
             Column(Modifier.fillMaxSize().statusBarsPadding()) {
                 Wordmark()
                 MessageState(
@@ -67,7 +78,7 @@ fun HomeScreen(
                 )
             }
         } else {
-            HomeContent(state, onOpen, onContinue)
+            HomeContent(state, onOpen, onContinue, onRetry, onDownloads)
         }
     }
 }
@@ -83,12 +94,21 @@ private fun Wordmark() {
 }
 
 @Composable
-private fun HomeContent(state: HomeState.Loaded, onOpen: (Publication) -> Unit, onContinue: (Publication) -> Unit) {
+private fun HomeContent(
+    state: HomeState.Loaded,
+    onOpen: (Publication) -> Unit,
+    onContinue: (Publication) -> Unit,
+    onRetry: () -> Unit,
+    onDownloads: () -> Unit,
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding(),
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
         item { Wordmark() }
+        if (state.offline != null) {
+            item { OfflineBanner(onRetry, Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp)) }
+        }
 
         state.inProgress.firstOrNull()?.let { current ->
             item {
@@ -102,8 +122,37 @@ private fun HomeContent(state: HomeState.Loaded, onOpen: (Publication) -> Unit, 
         if (state.inProgress.size > 1) {
             item { Shelf("Also in progress", state.inProgress.drop(1), onOpen) }
         }
+        if (state.downloads.isNotEmpty()) {
+            item { Shelf("On this device", state.downloads, onOpen, action = "Manage" to onDownloads) }
+        } else if (state.hasDownloadRecords) {
+            item {
+                TextButton(onClick = onDownloads, modifier = Modifier.padding(start = 8.dp, top = 12.dp)) {
+                    Icon(ShelfarrIcons.Download, null, modifier = Modifier.size(18.dp))
+                    Text("Downloads in progress", modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+        }
         if (state.books.isNotEmpty()) item { Shelf("Books", state.books, onOpen) }
         if (state.audiobooks.isNotEmpty()) item { Shelf("Audiobooks", state.audiobooks, onOpen) }
+    }
+}
+
+@Composable
+private fun OfflineBanner(onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        color = ShelfarrTheme.extended.sunken,
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(ShelfarrIcons.Offline, null, tint = ShelfarrTheme.extended.inkMuted, modifier = Modifier.size(18.dp))
+            Text(
+                "Offline. Showing downloads on this device.",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f).padding(start = 10.dp, top = 12.dp, bottom = 12.dp),
+            )
+            TextButton(onClick = onRetry) { Text("Retry") }
+        }
     }
 }
 
@@ -156,14 +205,22 @@ fun ContinueCard(publication: Publication, onClick: () -> Unit, modifier: Modifi
 }
 
 @Composable
-private fun Shelf(title: String, items: List<Publication>, onOpen: (Publication) -> Unit) {
+private fun Shelf(
+    title: String,
+    items: List<Publication>,
+    onOpen: (Publication) -> Unit,
+    action: Pair<String, () -> Unit>? = null,
+) {
     val scale = shelfScale()
     Column(Modifier.padding(top = 20.dp)) {
-        Text(
-            title,
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(horizontal = 20.dp).semantics { heading() },
-        )
+        Row(Modifier.padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            action?.let { (label, onClick) -> TextButton(onClick = onClick) { Text(label) } }
+        }
         Spacer(Modifier.height(12.dp))
         LazyRow(
             contentPadding = PaddingValues(horizontal = 20.dp),

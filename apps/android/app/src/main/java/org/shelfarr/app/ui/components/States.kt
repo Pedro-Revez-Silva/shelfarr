@@ -125,8 +125,7 @@ fun errorCopy(error: Throwable, host: String?): ErrorCopy {
     val server = host ?: "your server"
     return when (error) {
         is ApiException.Offline -> {
-            val certificate = generateSequence(error.cause) { it.cause }.any { it is javax.net.ssl.SSLException }
-            if (certificate) {
+            if (error.certificate) {
                 ErrorCopy("Can't verify this server", "The security certificate for $server couldn't be trusted.")
             } else {
                 ErrorCopy("Can't reach $server", "Check your connection, or whether the server is up, and try again.")

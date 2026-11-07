@@ -65,7 +65,9 @@ class EpubCache(
                 }.build()
                 val response = try {
                     call(check)
-                } catch (_: ApiException.Offline) {
+                } catch (error: ApiException.Offline) {
+                    // An untrusted certificate is not "offline": surface it.
+                    if (error.certificate) throw error
                     onProgress(1f)
                     return@withContext CachedEpub(book, unverified = true)
                 }

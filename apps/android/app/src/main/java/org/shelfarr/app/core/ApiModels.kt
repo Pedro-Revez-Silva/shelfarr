@@ -58,6 +58,17 @@ enum class BookType {
     @SerialName("audiobook") AUDIOBOOK,
 }
 
+/** Where the reader is with a publication. Set explicitly, or derived when an older server omits it. */
+@Serializable
+enum class ReadingStatus(val query: String) {
+    @SerialName("unread") UNREAD("unread"),
+    @SerialName("in_progress") IN_PROGRESS("in_progress"),
+    @SerialName("finished") FINISHED("finished"),
+}
+
+@Serializable
+data class ReadingStatusUpdate(val status: ReadingStatus)
+
 @Serializable
 data class Asset(
     val id: String,
@@ -88,7 +99,13 @@ data class Publication(
     @SerialName("cover_url") val coverUrl: String? = null,
     val assets: List<Asset> = emptyList(),
     val progress: Progress? = null,
+    /** Absent from older servers; read [status] instead. Unknown values decode as absent. */
+    @SerialName("reading_status") val readingStatus: ReadingStatus? = null,
 ) {
+    /** The explicit status, or one derived from the saved place when the server sends none. */
+    val status: ReadingStatus
+        get() = readingStatus ?: if (progress?.isUsable == true) ReadingStatus.IN_PROGRESS else ReadingStatus.UNREAD
+
     val orderedAssets: List<Asset> get() = assets.sortedBy { it.position }
     val epubAsset: Asset? get() = orderedAssets.firstOrNull { it.isEpub }
     val audioAssets: List<Asset> get() = orderedAssets.filter { it.isAudio }
@@ -125,6 +142,9 @@ data class LibraryPage(
     val items: List<Publication> = emptyList(),
     @SerialName("next_cursor") val nextCursor: String? = null,
 )
+
+@Serializable
+data class ContinueList(val items: List<Publication> = emptyList())
 
 @Serializable
 data class ProgressUpdate(

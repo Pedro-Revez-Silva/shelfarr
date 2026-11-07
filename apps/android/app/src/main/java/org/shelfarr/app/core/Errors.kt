@@ -3,7 +3,11 @@ package org.shelfarr.app.core
 /** Every way a server call can fail, in terms the UI can act on. */
 sealed class ApiException(message: String, cause: Throwable? = null) : Exception(message, cause) {
     /** No usable connection. Safe to retry. */
-    class Offline(cause: Throwable? = null) : ApiException("Server could not be reached", cause)
+    class Offline(cause: Throwable? = null) : ApiException("Server could not be reached", cause) {
+        /** TLS failed: the server answered but could not be trusted. Never treat this as plain offline. */
+        val certificate: Boolean
+            get() = generateSequence(cause) { it.cause }.any { it is javax.net.ssl.SSLException }
+    }
 
     /** The token is missing, expired or revoked. */
     class Unauthorized : ApiException("Sign-in is no longer valid")
@@ -30,4 +34,7 @@ sealed class ApiException(message: String, cause: Throwable? = null) : Exception
     class Authorization(val code: String) : ApiException("Authorization: $code")
 
     val isRetryable: Boolean get() = this is Offline || this is Server
+
+    /** No connection at all, as opposed to an untrusted certificate. Only this may fall back to local copies. */
+    val isPlainOffline: Boolean get() = this is Offline && !certificate
 }

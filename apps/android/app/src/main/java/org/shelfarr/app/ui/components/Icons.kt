@@ -97,4 +97,7 @@ object ShelfarrIcons {
     val SkipForward by lazy { stroke("skipForward", "M15 3.5L18.5 7 15 10.5", "M18.5 7H11a7 7 0 1 0 7 7") }
     val PreviousTrack by lazy { stroke("previousTrack", "M6 5v14", "M19 5.5v13L9 12l10-6.5Z") }
     val NextTrack by lazy { stroke("nextTrack", "M18 5v14", "M5 5.5v13L15 12 5 5.5Z") }
+    val Download by lazy { stroke("download", "M12 4v11", "M7.5 10.5L12 15l4.5-4.5", "M5 19.5h14") }
+    val Downloaded by lazy { stroke("downloaded", "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z", "M8 12.5l2.8 2.8L16.2 9.6") }
+    val Sort by lazy { stroke("sort", "M7 5v14M4 16l3 3 3-3", "M13 7h7M13 12h5M13 17h3") }
 }

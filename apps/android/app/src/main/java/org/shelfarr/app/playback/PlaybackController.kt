@@ -3,6 +3,7 @@ package org.shelfarr.app.playback
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import java.io.File
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -50,6 +51,8 @@ data class PlaybackSnapshot(
     val chapters: List<AudioChapter> = emptyList(),
     val sleepTimerEndsAtMs: Long? = null,
     val problem: PlaybackProblem? = null,
+    /** Every track plays from a verified download on this device. */
+    val fromDevice: Boolean = false,
 ) {
     val isLoaded: Boolean get() = publication != null
     val currentAsset: Asset? get() = tracks.getOrNull(trackIndex)
@@ -95,9 +98,17 @@ class PlaybackController(
     }
 
     /** Queues a publication and starts it from [start], or the beginning. */
-    suspend fun load(publication: Publication, server: ServerAddress, sync: ProgressSync, start: SavedPosition?) {
+    suspend fun load(
+        publication: Publication,
+        server: ServerAddress,
+        sync: ProgressSync,
+        start: SavedPosition?,
+        localFiles: Map<String, File>? = null,
+    ) {
         val tracks = publication.audioAssets
-        val items = tracks.mapNotNull { asset -> mediaItem(publication, asset, server) }
+        // Downloaded files are used only when every track is on the device.
+        val local = localFiles?.takeIf { files -> tracks.all { files[it.id] != null } }
+        val items = tracks.mapNotNull { asset -> mediaItem(publication, asset, server, local?.get(asset.id)) }
         check(items.size == tracks.size && items.isNotEmpty()) { "Audio asset outside the configured server" }
 
         val player = connected()
@@ -106,17 +117,21 @@ class PlaybackController(
         val index = tracks.indexOfFirst { it.id == start?.assetId }.coerceAtLeast(0)
         val positionMs = ((start?.positionSeconds ?: 0.0) * 1_000).toLong().coerceAtLeast(0)
         state.update {
-            PlaybackSnapshot(publication = publication, tracks = tracks, trackIndex = index, speed = it.speed)
+            PlaybackSnapshot(publication = publication, tracks = tracks, trackIndex = index, speed = it.speed, fromDevice = local != null)
         }
         player.setMediaItems(items, index, positionMs)
         player.prepare()
         player.play()
     }
 
-    private fun mediaItem(publication: Publication, asset: Asset, server: ServerAddress): MediaItem? {
-        val url = server.resolve(asset.contentUrl)?.takeIf(server::contains) ?: return null
+    private fun mediaItem(publication: Publication, asset: Asset, server: ServerAddress, file: File?): MediaItem? {
+        val uri = if (file != null) {
+            Uri.fromFile(file)
+        } else {
+            val url = server.resolve(asset.contentUrl)?.takeIf(server::contains) ?: return null
+            Uri.parse(url.toString())
+        }
         val cover = publication.coverUrl?.let(server::resolve)?.takeIf(server::contains)
-        val uri = Uri.parse(url.toString())
         return MediaItem.Builder()
             .setMediaId(asset.id)
             .setUri(uri)
