@@ -9,6 +9,7 @@ export default class extends Controller {
     if (!this.publication.assets.length) return
     this.active = true
     this.fontSize = 105
+    this.playbackRate = 1
     this.sync = new ConsumerProgressSync(this.publication.progress_url, this.publication.progress?.version,
       (message, retry) => { if (this.active) { this.syncStatusTarget.textContent = message; this.retryTarget.hidden = !retry } },
       () => { if (this.active) this.conflictTarget.hidden = false })
@@ -64,7 +65,7 @@ export default class extends Controller {
       const buffer = await response.arrayBuffer()
       if (!this.active) return
       this.book = ePub(undefined, { replacements: "blobUrl" })
-      const sanitize = html => {
+      const sanitize = (html, section) => {
         const clean = DOMPurify.sanitize(html, {
           WHOLE_DOCUMENT: true, SANITIZE_NAMED_PROPS: true,
           FORBID_TAGS: ["script", "iframe", "frame", "form", "input", "button", "object", "embed", "base", "meta", "audio", "video", "source"],
@@ -77,7 +78,12 @@ export default class extends Controller {
         }
         const policy = document.createElement("meta")
         policy.httpEquiv = "Content-Security-Policy"
-        policy.content = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' blob:; img-src data: blob:; font-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+        policy.content = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' blob:; img-src data: blob:; font-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'self'"
+        // EPUB.js resolves internal anchors from the section's base URI. Source
+        // bases are stripped; only this derived same-origin archive path is used.
+        const base = document.createElement("base")
+        base.href = new URL(`/${this.book.resolve(section.href).replace(/^\/+/, "")}`, window.location.origin).href
+        document.head.prepend(base)
         document.head.prepend(policy)
         return document.documentElement.outerHTML
       }
@@ -87,7 +93,7 @@ export default class extends Controller {
       for (const section of this.book.spine.spineItems) {
         const render = section.render.bind(section)
         section.render = async (...args) => {
-          section.output = sanitize(await render(...args))
+          section.output = sanitize(await render(...args), section)
           return section.output
         }
       }
@@ -166,6 +172,8 @@ export default class extends Controller {
     this.trackTitleTarget.textContent = this.currentAsset.filename
     this.tracksTarget.value = this.assetIndex
     this.audioTarget.src = this.assetURL()
+    this.audioTarget.defaultPlaybackRate = this.playbackRate
+    this.audioTarget.playbackRate = this.playbackRate
     this.audioTarget.load()
     this.playWhenReady = autoplay
     if ("mediaSession" in navigator) {
@@ -214,7 +222,11 @@ export default class extends Controller {
   seekAudio() { if (Number.isFinite(this.audioTarget.duration)) { this.audioTarget.currentTime = this.audioTarget.duration * Number(this.seekTarget.value) / 100; this.hasPlayed = true; this.audioPosition() } }
   backwardAudio() { this.audioTarget.currentTime = Math.max(0, this.audioTarget.currentTime - 15); this.audioPosition() }
   forwardAudio() { if (Number.isFinite(this.audioTarget.duration)) this.audioTarget.currentTime = Math.min(this.audioTarget.duration, this.audioTarget.currentTime + 30); this.audioPosition() }
-  changeSpeed(event) { this.audioTarget.playbackRate = Number(event.target.value) }
+  changeSpeed(event) {
+    this.playbackRate = Number(event.target.value)
+    this.audioTarget.defaultPlaybackRate = this.playbackRate
+    this.audioTarget.playbackRate = this.playbackRate
+  }
   chooseTrack() { this.chooseAudioTrack(Number(this.tracksTarget.value)) }
   chooseAudioTrack(index) {
     this.audioPosition()

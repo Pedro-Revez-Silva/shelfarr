@@ -121,8 +121,8 @@ actual codec playback depends on the platform. No conversion or transcoding runs
 Range responses support one `bytes=start-end`, open-ended or suffix range. Invalid,
 multiple, or unsatisfiable ranges receive 416 and `Content-Range: bytes */size`.
 A non-matching If-Range returns the complete file. HEAD reports full-file headers
-without streaming or changing progress. If-None-Match is not currently a shortcut:
-clients may receive a full 200 and must handle that safely.
+without streaming or changing progress. A matching If-None-Match returns 304 so
+native clients can revalidate cached ebooks without downloading them again.
 
 ## Saved progress
 

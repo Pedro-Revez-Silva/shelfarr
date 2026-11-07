@@ -79,6 +79,9 @@ class API::Consumer::V1::LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_equal original, response.body
     assert_equal "audio/mpeg", response.media_type
     etag = response.headers.fetch("ETag")
+    get url, headers: @headers.merge("If-None-Match" => etag)
+    assert_response :not_modified
+    assert_equal "", response.body
     head url, headers: @headers.merge("Range" => "bytes=0-4")
     assert_response :ok
     assert_equal original.size.to_s, response.headers["Content-Length"]
