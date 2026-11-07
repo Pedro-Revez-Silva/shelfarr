@@ -65,6 +65,8 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     visit consumer_publication_path(@ebook)
     assert_selector ".consumer-ebook iframe", wait: 20
     within_frame(find(".consumer-ebook iframe")) { click_link "Keep reading" }
+    # The next section replaces the book frame; enter the new one.
+    assert_selector "[data-consumer-reader-target=location]", text: "chapter 2", visible: :all, wait: 10
     within_frame(find(".consumer-ebook iframe")) { assert_text "The next part of the story." }
     version = wait_for_progress(@ebook).version
     reveal_reading_controls
@@ -262,6 +264,46 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     assert_no_selector "[data-consumer-reader-target=conflict]"
   end
 
+  test "a place deep in a long chapter reopens with its paragraph on screen, from the outbox and from the account" do
+    File.unlink(@epub_path)
+    coast = (1..60).map { |n| "Coastal note #{n}. The second chapter follows the tide past lantern #{n}. Each numbered observation identifies a different place along the shore." }
+    write_consumer_epub(@epub_path, chapter: "Garden note 1. A short way in.", second_chapter: coast.join("</p><p>"))
+    page.current_window.resize_to(1280, 800)
+    page.execute_script("localStorage.setItem('shelfarr.reader.preferences.v1', JSON.stringify({ fontSize: 115 }))")
+    visit consumer_publication_path(@ebook)
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A1 / \d+ · chapter 1}, visible: :all, wait: 20
+    turn_page_until { |page, total, chapter| chapter == 2 && page == total - 2 }
+    total = location_text[%r{/ (\d+)}, 1].to_i
+    assert_operator total, :>=, 6, "the chapter must span enough pages to expose a restored offset"
+    earlier = reader_place[:start]
+    wait_until("the earlier page is acknowledged") { saved_cfi == earlier && outbox_size.zero? }
+
+    # The next page stays only in this browser's outbox.
+    go_offline
+    find("[data-consumer-reader-target=viewport]").send_keys(:arrow_right)
+    assert_selector "[data-consumer-reader-target=notice]", text: "Saved on this device. It will sync when you're back online.", wait: 12
+    turned = Time.current
+    target = reader_place[:start]
+    marker = reader_place(target)[:marker]
+    assert_match(/\ACoastal note \d+\z/, marker)
+    assert_equal earlier, saved_cfi
+
+    visit consumer_publication_path(@ebook)
+    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2")
+    wait_until("the outbox place is acknowledged") { saved_cfi == target && outbox_size.zero? }
+    saved = users(:one).consumer_progresses.find_by!(book: @ebook)
+    assert_in_delta turned.to_f, saved.observed_at.to_f, 15
+    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2")
+
+    # Reopening an acknowledged place is not a new checkpoint.
+    visit consumer_publication_path(@ebook)
+    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2")
+    after = users(:one).consumer_progresses.find_by!(book: @ebook)
+    assert_equal saved.attributes.slice("version", "observed_at", "updated_at", "client_mutation_id", "locator"),
+      after.attributes.slice("version", "observed_at", "updated_at", "client_mutation_id", "locator")
+    assert_equal 0, outbox_size
+  end
+
   test "resuming a saved listening place rewinds five seconds without replacing the saved place" do
     observed = 2.minutes.ago.utc.floor(3)
     users(:one).consumer_progresses.create!(book: @audiobook, asset_id: consumer_asset(@audiobook).id, position_seconds: 7,
@@ -293,6 +335,64 @@ class ConsumerReaderTest < ApplicationSystemTestCase
       flunk "No saved progress (version #{version}) for #{book.title}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       sleep 0.2
     end
+  end
+
+  def wait_until(what, timeout: 15, detail: nil)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    until yield
+      flunk "Timed out waiting until #{what}#{detail&.call}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      sleep 0.1
+    end
+  end
+
+  def turn_page_until(limit: 40)
+    limit.times do
+      page_number, total, chapter = location_text.scan(/\d+/).map(&:to_i)
+      return if yield(page_number, total, chapter)
+
+      before = location_text
+      find("[data-consumer-reader-target=viewport]").send_keys(:arrow_right)
+      wait_until("the page turns") { location_text != before }
+    end
+    flunk "Never reached the requested page (at #{location_text})"
+  end
+
+  # Where a CFI's actual Range is drawn, not just which CFI the reader reports.
+  def reader_place(cfi = nil)
+    page.evaluate_script(<<~JS, cfi)&.symbolize_keys
+      (() => {
+        const element = document.querySelector("[data-controller~='consumer-reader']")
+        const reader = window.Stimulus.getControllerForElementAndIdentifier(element, "consumer-reader")
+        if (!reader?.readerReady) return null
+        const start = reader.rendition.currentLocation()?.start?.cfi
+        const range = reader.rendition.getRange(arguments[0] || start)
+        if (!range) return null
+        const frame = document.querySelector(".consumer-ebook iframe").getBoundingClientRect()
+        const view = document.querySelector("[data-consumer-reader-target=viewport]").getBoundingClientRect()
+        const within = rect => frame.left + rect.left >= view.left && frame.left + rect.right <= view.right &&
+          frame.top + rect.top >= view.top && frame.top + rect.top < view.bottom
+        // A page that starts with a paragraph shows that paragraph's first line.
+        const paragraph = range.startContainer.parentElement.closest("p")
+        return { start, marker: paragraph?.textContent.match(/Coastal note \\d+/)?.[0], offset: range.startOffset,
+          inside: within(range.getBoundingClientRect()), paragraphInside: !!paragraph && within(paragraph.getClientRects()[0]) }
+      })()
+    JS
+  end
+
+  def assert_place_on_screen(cfi, marker, label)
+    place = nil
+    wait_until("#{marker} is on screen at #{label}", timeout: 20, detail: -> { "; the reader shows #{location_text.inspect} with #{place.inspect}" }) do
+      (place = reader_place(cfi)) && place[:inside] && location_text == label
+    end
+    assert_equal({ marker: marker, offset: 0, inside: true, paragraphInside: true }, place.slice(:marker, :offset, :inside, :paragraphInside))
+  end
+
+  def saved_cfi
+    users(:one).consumer_progresses.find_by(book: @ebook)&.locator&.dig("locations", "cfi")
+  end
+
+  def outbox_size
+    page.evaluate_script("Object.keys(localStorage).filter(key => key.startsWith('shelfarr.progress.v1')).length")
   end
 
   def reveal_reading_controls

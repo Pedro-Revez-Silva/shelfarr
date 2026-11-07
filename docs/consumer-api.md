@@ -292,6 +292,15 @@ the text; hidden controls cannot be focused. Selecting text never turns a page.
 Problems stay visible without the overlay: a small notice when a place is only
 on this device, and alerts for conflicts and errors.
 
+A restored EPUB place (from the account, this browser's outbox, or another
+device's place the reader chooses) opens on the page that contains its saved
+CFI, at the current viewport and text size. EPUB.js 0.3.93 positions a newly
+rendered section before the frame grows to fit the themed text, which clamped
+deep places to an earlier page. The reader therefore positions once more after
+the frame fits the laid-out text and fonts have loaded, and does so again after a
+window or orientation change. Restoring a place is not activity: it never
+creates a checkpoint or changes `observed_at`, the version or the mutation ID.
+
 ### Browser progress outbox
 
 The web reader keeps a durable outbox in `localStorage`, keyed by account,

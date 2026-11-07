@@ -156,7 +156,7 @@ export default class extends Controller {
       this.userMoved = false
       const locator = progress.locator
       const target = locator?.locations?.cfi || (locator?.href ? this.book.path.relative(`/${locator.href.replace(/^\/+/, "")}`) : undefined)
-      if (target) this.rendition.display(target).catch(() => this.showError("Couldn't open the other device's place."))
+      if (target) this.showPlace(target).catch(() => this.showError("Couldn't open the other device's place."))
       return
     }
     const index = this.publication.assets.findIndex(asset => asset.id === progress.asset_id)
@@ -228,6 +228,7 @@ export default class extends Controller {
       this.rendition.themes.default({ body: { color: `${colors.getPropertyValue("--ink")} !important`, background: `${colors.getPropertyValue("--surface")} !important`, "font-family": "Georgia, serif !important", "line-height": "1.7 !important" }, "a": { color: "inherit" } })
       this.rendition.themes.fontSize(`${this.fontSize}%`)
       this.rendition.on("relocated", location => this.ebookPosition(location))
+      this.rendition.on("resized", () => this.reflowed())
       this.rendition.hooks.content.register(contents => this.bookInput(contents))
       this.chaptersTarget.replaceChildren()
       const addChapters = (items, depth = 0) => {
@@ -242,7 +243,7 @@ export default class extends Controller {
       addChapters((await this.book.loaded.navigation).toc)
       const locator = this.initialProgress?.locator
       const relativeHref = locator?.href ? this.book.path.relative(`/${locator.href.replace(/^\/+/, "")}`) : undefined
-      await this.rendition.display(locator?.locations?.cfi || relativeHref)
+      await this.showPlace(locator?.locations?.cfi || relativeHref)
       if (locator && !locator.locations?.cfi && locator.locations?.progression > 0) {
         const contents = this.rendition.getContents()[0]
         if (contents) {
@@ -255,7 +256,7 @@ export default class extends Controller {
               const range = contents.document.createRange()
               range.setStart(node, offset)
               range.collapse(true)
-              await this.rendition.display(contents.cfiFromRange(range))
+              await this.showPlace(contents.cfiFromRange(range))
               break
             }
             offset -= node.textContent.length
@@ -270,6 +271,40 @@ export default class extends Controller {
         this.showError(error.message || "This EPUB couldn't be opened.")
         if (this.hasControlsTarget) this.showControls()
       }
+    }
+  }
+
+  // EPUB.js 0.3.93 measures a target after the theme and text size reach a
+  // newly rendered section, but clamps the page offset to the frame width it
+  // measured before they did. The frame grows a moment later and nothing moves
+  // back, so a place deep in a long chapter opened pages early. Size the frame
+  // to its laid-out text once fonts settle, then position again within the
+  // section, which is now shown at its final width.
+  async showPlace(target) {
+    await this.rendition.display(target)
+    if (!target || !this.active) return
+    await this.settleFrames()
+    if (this.active) await this.rendition.display(target)
+  }
+
+  // A window or orientation change re-renders the section the same way. EPUB.js
+  // queues its own display of the place right after this event; settle after
+  // it. The first place is kept through a burst of resizes.
+  reflowed() {
+    if (!this.readerReady) return
+    const cfi = this.reflowAnchor || this.rendition.location?.start?.cfi
+    if (!cfi) return
+    this.reflowAnchor = cfi
+    queueMicrotask(() => this.showPlace(cfi)
+      .catch(() => {})
+      .finally(() => { if (this.reflowAnchor === cfi) this.reflowAnchor = null }))
+  }
+
+  async settleFrames() {
+    for (const view of this.rendition.views().all?.() || []) {
+      view.expand?.()
+      await view.contents?.document?.fonts?.ready
+      view.expand?.()
     }
   }
 
@@ -397,7 +432,7 @@ export default class extends Controller {
 
   previousPage() { this.userMoved = true; this.rendition?.prev().catch(() => this.showError("Couldn't open the previous page.")) }
   nextPage() { this.userMoved = true; this.rendition?.next().catch(() => this.showError("Couldn't open the next page.")) }
-  chooseChapter() { this.userMoved = true; this.rendition?.display(this.chaptersTarget.value).catch(() => this.showError("This chapter couldn't be opened.")) }
+  chooseChapter() { this.userMoved = true; this.rendition && this.showPlace(this.chaptersTarget.value).catch(() => this.showError("This chapter couldn't be opened.")) }
   smallerText() { this.resizeText(-10) }
   largerText() { this.resizeText(10) }
   resizeText(delta) {
@@ -407,7 +442,7 @@ export default class extends Controller {
       this.fontSize = Math.max(80, Math.min(180, this.fontSize + delta))
       this.savePreferences()
       this.rendition.themes.fontSize(`${this.fontSize}%`)
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      await this.settleFrames()
       if (!this.active) return
       if (cfi) await this.rendition.display(cfi)
       await this.rendition.reportLocation()
