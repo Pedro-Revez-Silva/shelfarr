@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""A development stand-in for the Shelfarr consumer API.
+
+It follows the contract in docs/native-consumer.md closely enough to exercise a
+native client end to end: device authorization, a tiny library, byte ranges,
+ETags and versioned progress. It keeps everything in memory, has no real
+security and must never be exposed beyond a development machine.
+
+    python3 apps/scripts/mock_consumer_server.py --port 8099 --base /shelfarr
+
+Approve a pending device by opening its verification URL, or start with
+--auto-approve. Use --conflict-after N to answer the Nth progress write with a
+conflict, to see how a client handles another device moving on.
+"""
+
+import argparse
+import hashlib
+import io
+import json
+import math
+import re
+import struct
+import threading
+import time
+import uuid
+import wave
+import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+PREFIX = "/api/consumer/v1"
+
+
+def build_epub():
+    chapters = [
+        ("Winter", "The rain had stopped by the time she reached the harbour. " * 90),
+        ("The Long Road", "Nothing in the valley was quite where the old maps put it. " * 120),
+        ("Home", "By the third evening the house had begun to feel familiar. " * 100),
+    ]
+    manifest = "".join(
+        f'<item id="c{n}" href="c{n}.xhtml" media-type="application/xhtml+xml"/>'
+        for n in range(len(chapters))
+    )
+    spine = "".join(f'<itemref idref="c{n}"/>' for n in range(len(chapters)))
+    toc = "".join(
+        f'<li><a href="c{n}.xhtml">{title}</a></li>' for n, (title, _) in enumerate(chapters)
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as book:
+        book.writestr(
+            zipfile.ZipInfo("mimetype"), "application/epub+zip", compress_type=zipfile.ZIP_STORED
+        )
+        book.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?><container version="1.0" '
+            'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+            '<rootfile full-path="OEBPS/content.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        book.writestr(
+            "OEBPS/content.opf",
+            '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" '
+            'unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            '<dc:identifier id="id">urn:shelfarr:mock</dc:identifier>'
+            "<dc:title>A Test Book</dc:title><dc:language>en</dc:language></metadata><manifest>"
+            '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+            f"{manifest}</manifest><spine>{spine}</spine></package>",
+        )
+        book.writestr(
+            "OEBPS/nav.xhtml",
+            '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" '
+            'xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head>'
+            '<body><nav epub:type="toc"><ol>'
+            f"{toc}</ol></nav></body></html>",
+        )
+        for n, (title, text) in enumerate(chapters):
+            book.writestr(
+                f"OEBPS/c{n}.xhtml",
+                '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">'
+                f"<head><title>{title}</title></head><body><h1>{title}</h1><p>{text}</p></body></html>",
+            )
+    return buffer.getvalue()
+
+
+def build_tone(seconds, hertz):
+    rate = 16000
+    frames = bytearray()
+    for n in range(rate * seconds):
+        frames += struct.pack("<h", int(6000 * math.sin(2 * math.pi * hertz * n / rate)))
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(bytes(frames))
+    return buffer.getvalue()
+
+
+class State:
+    def __init__(self, auto_approve, conflict_after, slow_down):
+        self.lock = threading.Lock()
+        self.auto_approve = auto_approve
+        self.conflict_after = conflict_after
+        self.slow_down = slow_down
+        self.devices = {}
+        self.tokens = set()
+        self.progress = {}
+        self.writes = 0
+        self.files = {
+            "epub-1": ("a-test-book.epub", "application/epub+zip", "epub", build_epub()),
+            "track-1": ("Part 1.wav", "audio/wav", "wav", build_tone(45, 330)),
+            "track-2": ("Part 2.wav", "audio/wav", "wav", build_tone(45, 440)),
+        }
+
+    def asset(self, base, asset_id, position):
+        name, media_type, fmt, data = self.files[asset_id]
+        return {
+            "id": asset_id,
+            "filename": name,
+            "media_type": media_type,
+            "format": fmt,
+            "size_bytes": len(data),
+            "content_url": f"{base}{PREFIX}/assets/{asset_id}/content",
+            "position": position,
+        }
+
+    def publication(self, base, publication_id):
+        books = {
+            "book-1": ("A Test Book", "Mock Author", "ebook", ["epub-1"]),
+            "audio-1": ("A Test Audiobook", "Mock Narrator", "audiobook", ["track-1", "track-2"]),
+        }
+        title, author, kind, assets = books[publication_id]
+        return {
+            "id": publication_id,
+            "title": title,
+            "author": author,
+            "description": "Development fixture served by mock_consumer_server.py.",
+            "book_type": kind,
+            "cover_url": None,
+            "assets": [self.asset(base, a, n) for n, a in enumerate(assets)],
+            "progress": self.progress.get(publication_id),
+        }
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    state = None
+    base = ""
+
+    def log_message(self, fmt, *args):
+        print(f"{self.command} {self.path.split('?')[0]} -> {args[1] if len(args) > 1 else ''}", flush=True)
+
+    def body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(length) or b"{}")
+
+    def respond(self, code, payload=None):
+        data = b"" if payload is None else json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def route(self):
+        path = urlparse(self.path).path
+        if self.base and path.startswith(self.base + "/"):
+            path = path[len(self.base):]
+        return path
+
+    def authorized(self):
+        header = self.headers.get("Authorization", "")
+        if header.startswith("Bearer ") and header[7:] in self.state.tokens:
+            return True
+        self.respond(401, {"error": "invalid_token"})
+        return False
+
+    def do_POST(self):
+        path = self.route()
+        if path == f"{PREFIX}/auth/device":
+            self.body()
+            device_code = uuid.uuid4().hex
+            user_code = uuid.uuid4().hex[:8].upper()
+            user_code = f"{user_code[:4]}-{user_code[4:]}"
+            host = f"http://{self.headers['Host']}{self.base}"
+            with self.state.lock:
+                self.state.devices[device_code] = {
+                    "user_code": user_code,
+                    "approved": self.state.auto_approve,
+                    "polls": 0,
+                    "expires": time.time() + 600,
+                }
+            self.respond(200, {
+                "device_code": device_code,
+                "user_code": user_code,
+                "verification_uri": f"{host}/device",
+                "verification_uri_complete": f"{host}/device?user_code={user_code}",
+                "expires_in": 600,
+                "interval": 5,
+            })
+        elif path == f"{PREFIX}/auth/token":
+            with self.state.lock:
+                device = self.state.devices.get(self.body().get("device_code"))
+                if device is None or device["expires"] < time.time():
+                    return self.respond(400, {"error": "expired_token"})
+                device["polls"] += 1
+                if self.state.slow_down and device["polls"] == 1:
+                    return self.respond(400, {"error": "slow_down"})
+                if not device["approved"]:
+                    return self.respond(400, {"error": "authorization_pending"})
+                token = uuid.uuid4().hex
+                self.state.tokens.add(token)
+            self.respond(200, {
+                "access_token": token,
+                "token_type": "Bearer",
+                "scope": "library:read progress:write",
+                "expires_in": 2592000,
+            })
+        elif path == f"{PREFIX}/auth/revoke":
+            if self.authorized():
+                self.state.tokens.discard(self.headers["Authorization"][7:])
+                self.respond(204)
+        else:
+            self.respond(404, {"error": "not_found"})
+
+    def do_GET(self):
+        path = self.route()
+        if path == "/device":
+            return self.approve()
+        if not self.authorized():
+            return
+        with self.state.lock:
+            if path == f"{PREFIX}/me":
+                return self.respond(200, {"id": "user-1", "name": "Mock Reader", "username": "mock"})
+            if path == f"{PREFIX}/library":
+                query = parse_qs(urlparse(self.path).query)
+                kind = query.get("type", [None])[0]
+                items = [self.state.publication(self.base, p) for p in ("book-1", "audio-1")]
+                items = [i for i in items if kind in (None, i["book_type"])]
+                return self.respond(200, {"items": items, "next_cursor": None})
+            match = re.fullmatch(PREFIX + r"/library/([^/]+)(/progress)?", path)
+            if match and match[1] in ("book-1", "audio-1"):
+                publication = self.state.publication(self.base, match[1])
+                if match[2]:
+                    return self.respond(200, {"progress": publication["progress"]})
+                return self.respond(200, publication)
+        match = re.fullmatch(PREFIX + r"/assets/([^/]+)/content", path)
+        if match and match[1] in self.state.files:
+            return self.serve(self.state.files[match[1]])
+        self.respond(404, {"error": "not_found"})
+
+    do_HEAD = do_GET
+
+    def do_PUT(self):
+        match = re.fullmatch(PREFIX + r"/library/([^/]+)/progress", self.route())
+        if not match or not self.authorized():
+            return None if match else self.respond(404, {"error": "not_found"})
+        update = self.body()
+        with self.state.lock:
+            current = self.state.progress.get(match[1])
+            version = current["version"] if current else 0
+            if current and current["client_mutation_id"] == update.get("client_mutation_id"):
+                return self.respond(200, {"progress": current})
+            self.state.writes += 1
+            if self.state.conflict_after and self.state.writes == self.state.conflict_after:
+                version += 1
+                current = dict(current or update, version=version, client_mutation_id=str(uuid.uuid4()))
+                current["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                self.state.progress[match[1]] = current
+            if update.get("expected_version") != version:
+                return self.respond(409, {"error": "progress_conflict", "progress": current})
+            saved = {
+                "asset_id": update["asset_id"],
+                "locator": update.get("locator"),
+                "position_seconds": update.get("position_seconds"),
+                "version": version + 1,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "client_mutation_id": update["client_mutation_id"],
+            }
+            self.state.progress[match[1]] = saved
+            self.respond(200, {"progress": saved})
+
+    def approve(self):
+        code = parse_qs(urlparse(self.path).query).get("user_code", [""])[0]
+        with self.state.lock:
+            for device in self.state.devices.values():
+                if device["user_code"] == code:
+                    device["approved"] = True
+        data = f"<h1>Device {code} approved</h1>".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def serve(self, item):
+        _, media_type, _, data = item
+        etag = '"' + hashlib.sha256(data).hexdigest()[:16] + '"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        start, end, status = 0, len(data) - 1, 200
+        requested = re.fullmatch(r"bytes=(\d+)-(\d*)", self.headers.get("Range", ""))
+        if_range = self.headers.get("If-Range")
+        if requested and (if_range is None or if_range == etag):
+            start = int(requested[1])
+            end = min(int(requested[2]) if requested[2] else end, end)
+            status = 206
+        self.send_response(status)
+        self.send_header("Content-Type", media_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("ETag", etag)
+        self.send_header("Content-Length", str(end - start + 1))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data[start:end + 1])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8099)
+    parser.add_argument("--base", default="", help="Serve under this subpath, e.g. /shelfarr")
+    parser.add_argument("--auto-approve", action="store_true")
+    parser.add_argument("--slow-down", action="store_true", help="Answer the first poll with slow_down")
+    parser.add_argument("--conflict-after", type=int, default=0, metavar="N")
+    args = parser.parse_args()
+
+    Handler.state = State(args.auto_approve, args.conflict_after, args.slow_down)
+    Handler.base = args.base.rstrip("/")
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f"Mock Shelfarr consumer API on http://{args.host}:{args.port}{Handler.base}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

@@ -13,6 +13,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // The tab bar carries its own background, so no system scrim is wanted.
+        window.isNavigationBarContrastEnforced = false
         val container = (application as ShelfarrApplication).container
         setContent {
             val appearance by container.appearance.collectAsState()

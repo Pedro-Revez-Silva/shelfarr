@@ -66,6 +66,7 @@ class ReaderActivity : FragmentActivity() {
         // No fragment restore: see the class comment.
         super.onCreate(null)
         enableEdgeToEdge()
+        window.isNavigationBarContrastEnforced = false
 
         navigatorHost = FragmentContainerView(this).apply { id = R.id.reader_navigator }
         val chrome = ComposeView(this).apply {

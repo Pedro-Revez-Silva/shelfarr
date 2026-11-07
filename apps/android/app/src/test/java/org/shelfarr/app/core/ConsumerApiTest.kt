@@ -1,5 +1,6 @@
 package org.shelfarr.app.core
 
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -121,6 +122,27 @@ class ConsumerApiTest {
     fun `a dropped connection is reported as offline`() = runTest {
         web.close()
         assertTrue(failure { api.me(server) } is ApiException.Offline)
+    }
+
+    @Test
+    fun `response bodies are read on the io dispatcher, never the caller's thread`() = runTest {
+        // Android's StrictMode kills the app if a body is read on the main thread.
+        val readers = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val listening = buildHttpClient({ null }).newBuilder()
+            .eventListener(object : okhttp3.EventListener() {
+                override fun responseBodyEnd(call: okhttp3.Call, byteCount: Long) {
+                    readers += Thread.currentThread().name
+                }
+            })
+            .build()
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "api-io") }
+        val client = ConsumerApi(listening, pool.asCoroutineDispatcher())
+        respond(200, """{"id":"u"}""")
+
+        client.me(server)
+
+        pool.shutdown()
+        assertEquals(listOf("api-io"), readers)
     }
 
     @Test

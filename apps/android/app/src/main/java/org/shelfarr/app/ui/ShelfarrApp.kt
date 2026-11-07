@@ -23,7 +23,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -39,7 +38,6 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import kotlinx.coroutines.launch
 import org.shelfarr.app.AppContainer
 import org.shelfarr.app.BuildConfig
 import org.shelfarr.app.core.BookType
@@ -196,7 +194,6 @@ private fun MainShell(container: AppContainer, session: Session) {
             }
             composable(SETTINGS) {
                 val appearance by container.appearance.collectAsState()
-                val scope = rememberCoroutineScope()
                 var disconnecting by remember { mutableStateOf(false) }
                 SettingsScreen(
                     session = session,
@@ -206,7 +203,7 @@ private fun MainShell(container: AppContainer, session: Session) {
                     onAppearance = container::setAppearance,
                     onDisconnect = {
                         disconnecting = true
-                        scope.launch { container.disconnect() }
+                        container.disconnect()
                     },
                 )
             }

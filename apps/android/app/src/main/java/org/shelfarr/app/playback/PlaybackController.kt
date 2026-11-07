@@ -15,6 +15,7 @@ import androidx.media3.session.SessionToken
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.shelfarr.app.core.Asset
 import org.shelfarr.app.core.ProgressSync
 import org.shelfarr.app.core.Publication
@@ -223,17 +225,22 @@ class PlaybackController(
         player.seekTo(index, ((position.positionSeconds ?: 0.0) * 1_000).toLong())
     }
 
-    /** Stops and forgets the queue, flushing the final position first. */
-    fun stop() {
-        saveAndFlush()
+    /** Saves the final position, then stops and forgets the queue. */
+    suspend fun stop() = withContext(Dispatchers.Main.immediate) {
+        val position = currentPosition()
+        val target = sync
+        sync = null
         sleepTimer?.cancel()
         ticker?.cancel()
         controller?.run {
             stop()
             clearMediaItems()
         }
-        sync = null
         state.value = PlaybackSnapshot()
+        if (target != null) {
+            position?.let { target.update(it) }
+            target.flush()
+        }
     }
 
     fun onChaptersFound(assetId: String, found: List<AudioChapter>) {

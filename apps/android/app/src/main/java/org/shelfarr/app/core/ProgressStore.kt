@@ -61,10 +61,15 @@ interface ProgressStore {
 class FileProgressStore(private val file: File) : ProgressStore {
     private val mutex = Mutex()
     private var records: MutableMap<String, LocalProgress>? = null
+    private var closed = false
+
+    /** Stops all further writes, so nothing can recreate the file after a wipe. */
+    suspend fun close() = mutex.withLock { closed = true }
 
     override suspend fun get(publicationId: String): LocalProgress? = mutex.withLock { loaded()[publicationId] }
 
-    override suspend fun put(record: LocalProgress) = mutex.withLock {
+    override suspend fun put(record: LocalProgress): Unit = mutex.withLock {
+        if (closed) return@withLock
         val all = loaded()
         all[record.publicationId] = record
         withContext(Dispatchers.IO) {

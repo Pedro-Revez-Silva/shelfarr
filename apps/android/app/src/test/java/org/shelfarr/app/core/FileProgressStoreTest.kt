@@ -24,6 +24,19 @@ class FileProgressStoreTest {
     }
 
     @Test
+    fun `a closed store cannot recreate its file after a wipe`() = runTest {
+        val file = File(folder.root, "account/progress.json")
+        val store = FileProgressStore(file)
+        store.put(LocalProgress("p"))
+        store.close()
+        file.parentFile!!.deleteRecursively()
+
+        store.put(LocalProgress("late"))
+
+        assertEquals(false, file.exists())
+    }
+
+    @Test
     fun `a damaged file reads as empty`() = runTest {
         val file = folder.newFile("progress.json").apply { writeText("{nope") }
         assertNull(FileProgressStore(file).get("p"))
