@@ -25,7 +25,6 @@ import org.readium.r2.shared.util.mediatype.MediaType
 import org.readium.r2.streamer.PublicationOpener
 import org.readium.r2.streamer.parser.DefaultPublicationParser
 import org.shelfarr.app.ShelfarrApplication
-import org.shelfarr.app.core.AccountPublications
 import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.Asset
 import org.shelfarr.app.core.Progress
@@ -109,10 +108,9 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         viewModelScope.launch {
             try {
                 val session = services.session
-                val books = AccountPublications(services.directory)
                 var offline = false
                 val online = try {
-                    services.api.publication(session.server, publicationId).also { books.remember(it) }
+                    services.publication(publicationId)
                 } catch (error: ApiException.Offline) {
                     // Only a lost connection falls back. An untrusted certificate is surfaced.
                     if (error.certificate) throw error
@@ -125,7 +123,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
                 val publication = when {
                     online != null -> online
                     download != null -> download.publication
-                    else -> books.recall(publicationId) ?: throw ApiException.Offline()
+                    else -> services.recall(publicationId) ?: throw ApiException.Offline()
                 }
                 val epub = publication.epubAsset ?: run {
                     mutableState.value = ReaderState.Unreadable

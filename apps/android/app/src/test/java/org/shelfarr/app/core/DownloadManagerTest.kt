@@ -115,6 +115,7 @@ class DownloadManagerTest {
         client: OkHttpClient = buildHttpClient({ Credential(server, token) }),
         maxConcurrent: Int = 2,
         space: Long = Long.MAX_VALUE,
+        onQueued: suspend () -> Unit = {},
     ): DownloadManager {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scopes += it }
         return DownloadManager(
@@ -125,7 +126,25 @@ class DownloadManagerTest {
             scope = scope,
             maxConcurrent = maxConcurrent,
             usableSpace = { space },
+            onQueued = onQueued,
         )
+    }
+
+    private fun slow(bytes: ByteArray, etag: String, started: CountDownLatch? = null): (RecordedRequest) -> MockResponse = { request ->
+        started?.countDown()
+        val range = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toIntOrNull()
+        if (range != null && request.headers["If-Range"] == etag) {
+            ranged(request, bytes, etag)
+        } else {
+            MockResponse.Builder().code(200).addHeader("ETag", etag).body(Buffer().write(bytes))
+                .throttleBody(500, 300, TimeUnit.MILLISECONDS).build()
+        }
+    }
+
+    /** Waits until some of the body has been written. Sizes in memory only update at checkpoints. */
+    private suspend fun DownloadManager.awaitSomeBytes(id: String) {
+        withTimeout(15_000) { records.first { it[id]?.state == DownloadState.DOWNLOADING } }
+        delay(900)
     }
 
     private fun DownloadManager.awaitState(id: String, vararg states: DownloadState): DownloadRecord = runBlocking {
@@ -433,5 +452,187 @@ class DownloadManagerTest {
         downloads.awaitState("book", DownloadState.READY)
         downloads.awaitState("audio", DownloadState.READY)
         assertEquals(1, peak.get())
+    }
+
+    @Test
+    fun `the queue is on disk before a host is asked to run it`() = runBlocking {
+        val root = File(folder.root, "acct/downloads")
+        val seenOnDisk = mutableListOf<String>()
+        val downloads = manager(root, onQueued = { seenOnDisk += File(root, "manifest.json").readText() })
+        downloads.start()
+        downloads.enqueue(book)
+        downloads.awaitState("book", DownloadState.READY)
+        assertEquals(1, seenOnDisk.size)
+        val stored = ApiJson.decodeFromString<Map<String, DownloadRecord>>(seenOnDisk.single())
+        assertEquals(DownloadState.QUEUED, stored.getValue("book").state)
+        // Asking again for an active download asks for a host again, without a second record.
+        downloads.close()
+    }
+
+    @Test
+    fun `pausing for the OS keeps partial bytes and the next host resumes with a range`() = runBlocking {
+        routes["/files/t1"] = slow(track1, "\"t1\"")
+        val downloads = manager()
+        downloads.start()
+        downloads.enqueue(audiobook)
+        downloads.awaitSomeBytes("audio")
+        downloads.pause()
+
+        val paused = downloads.record("audio")!!
+        assertEquals(DownloadState.QUEUED, paused.state)
+        assertTrue("Kept bytes survive a pause", paused.bytesDone > 0)
+        assertNull(downloads.ready("audio"))
+        val before = requests.count { it.target == "/files/t1" }
+
+        routes["/files/t1"] = { ranged(it, track1, "\"t1\"") }
+        downloads.resumeQueued()
+        val ready = downloads.awaitState("audio", DownloadState.READY)
+        val resumed = requests.filter { it.target == "/files/t1" }.drop(before).first()
+        assertTrue(resumed.headers["Range"]!!.startsWith("bytes="))
+        assertEquals("\"t1\"", resumed.headers["If-Range"])
+        assertTrue(downloads.filesFor(ready)!!.getValue("t1").readBytes().contentEquals(track1))
+        downloads.close()
+    }
+
+    @Test
+    fun `an earlier process's downloads are interrupted when nothing will continue them`() = runBlocking {
+        val root = File(folder.root, "acct/downloads")
+        routes["/files/epub-1"] = slow(epubBytes.toByteArray(), "\"e1\"")
+        val first = manager(root)
+        first.start()
+        first.enqueue(book)
+        first.awaitSomeBytes("book")
+        // The process dies mid-transfer: the manifest still says downloading.
+        first.close()
+
+        requests.clear()
+        val reopened = manager(root)
+        reopened.start()
+        assertEquals(DownloadState.QUEUED, reopened.record("book")!!.state)
+        reopened.interruptInherited()
+        val interrupted = reopened.record("book")!!
+        assertEquals(DownloadState.FAILED, interrupted.state)
+        assertEquals(DownloadProblem.INTERRUPTED, interrupted.problem)
+        assertTrue("Nothing restarts on its own", requests.none { it.target.startsWith("/files/") })
+        assertTrue(interrupted.bytesDone > 0)
+
+        // The person resumes it: the kept bytes are used.
+        routes["/files/epub-1"] = { ranged(it, epubBytes.toByteArray(), "\"e1\"") }
+        reopened.retry("book")
+        val ready = reopened.awaitState("book", DownloadState.READY)
+        assertTrue(requests.first { it.target == "/files/epub-1" }.headers["Range"]!!.startsWith("bytes="))
+        assertEquals(epubBytes, reopened.fileFor(ready, "epub-1")!!.readText())
+        // Persisted, so a third process agrees.
+        reopened.close()
+        assertNotNull(manager(root).also { it.start() }.ready("book"))
+    }
+
+    @Test
+    fun `with a host scheduled, an earlier process's downloads stay queued for it`() = runBlocking {
+        val root = File(folder.root, "acct/downloads")
+        routes["/files/epub-1"] = slow(epubBytes.toByteArray(), "\"e1\"")
+        val first = manager(root)
+        first.start()
+        first.enqueue(book)
+        first.awaitSomeBytes("book")
+        first.close()
+
+        routes["/files/epub-1"] = { ranged(it, epubBytes.toByteArray(), "\"e1\"") }
+        val reopened = manager(root)
+        reopened.start()
+        assertTrue(reopened.hasActiveWork)
+        assertTrue(reopened.remainingBytes in 1 until epubBytes.length.toLong())
+        reopened.resumeQueued()
+        reopened.awaitState("book", DownloadState.READY)
+        assertFalse(reopened.hasActiveWork)
+        assertEquals(0L, reopened.remainingBytes)
+    }
+
+    @Test
+    fun `a user stop marks downloads interrupted instead of queued`() = runBlocking {
+        routes["/files/t1"] = slow(track1, "\"t1\"")
+        val downloads = manager()
+        downloads.start()
+        downloads.enqueue(audiobook)
+        downloads.awaitSomeBytes("audio")
+        downloads.pause(interrupted = true)
+        assertEquals(DownloadProblem.INTERRUPTED, downloads.record("audio")!!.problem)
+        assertFalse(downloads.hasActiveWork)
+        assertFalse("Interrupted needs the person, not a retry loop", downloads.hasTransientFailures)
+    }
+
+    @Test
+    fun `an expired sign-in records stopped downloads, which resume with the new token only`() = runBlocking {
+        val root = File(folder.root, "acct/downloads")
+        routes["/files/t1"] = slow(track1, "\"t1\"")
+        val expired = manager(root, token = "old-token")
+        expired.start()
+        expired.enqueue(audiobook)
+        expired.awaitSomeBytes("audio")
+        expired.close(signedOut = true)
+        assertEquals(DownloadProblem.SIGN_IN, expired.record("audio")!!.problem)
+
+        requests.clear()
+        routes["/files/t1"] = { ranged(it, track1, "\"t1\"") }
+        val signedIn = manager(root, token = "new-token")
+        signedIn.start()
+        assertEquals(DownloadProblem.SIGN_IN, signedIn.record("audio")!!.problem)
+        signedIn.resumeAfterSignIn()
+        signedIn.awaitState("audio", DownloadState.READY)
+        val tokens = requests.filter { it.target.startsWith("/files/") }.map { it.headers["Authorization"] }.toSet()
+        assertEquals(setOf("Bearer new-token"), tokens)
+    }
+
+    @Test
+    fun `a host retries connection failures itself`() = runBlocking {
+        val offline = AtomicInteger(1)
+        routes["/files/epub-1"] = { request ->
+            if (offline.getAndDecrement() > 0) truncated(epubBytes.toByteArray(), "\"e1\"", 500) else ranged(request, epubBytes.toByteArray(), "\"e1\"")
+        }
+        val downloads = manager()
+        downloads.start()
+        downloads.enqueue(book)
+        downloads.awaitState("book", DownloadState.FAILED)
+        assertTrue(downloads.hasTransientFailures)
+        downloads.resumeTransient()
+        downloads.awaitState("book", DownloadState.READY)
+        assertFalse(downloads.hasTransientFailures)
+    }
+
+    @Test
+    fun `an unreadable manifest is kept aside and the files are left alone`() = runBlocking {
+        val root = File(folder.root, "acct/downloads")
+        val downloads = manager(root)
+        downloads.start()
+        downloads.enqueue(book)
+        downloads.awaitState("book", DownloadState.READY)
+        downloads.close()
+        val folders = root.listFiles().orEmpty().filter { it.isDirectory }.map { it.name }
+        File(root, "manifest.json").writeText("{ not json")
+
+        val reopened = manager(root)
+        reopened.start()
+        assertTrue(reopened.records.value.isEmpty())
+        assertEquals(1, root.listFiles().orEmpty().count { it.name.startsWith("manifest.unreadable-") })
+        assertEquals("Downloaded files aren't deleted", folders, root.listFiles().orEmpty().filter { it.isDirectory }.map { it.name })
+    }
+
+    @Test
+    fun `a manifest written by the previous version still loads`() = runBlocking {
+        val root = File(folder.root, "acct/downloads").apply { mkdirs() }
+        val folderName = java.security.MessageDigest.getInstance("SHA-256").digest("book".toByteArray()).take(16).joinToString("") { "%02x".format(it) }
+        val fileName = "000-" + java.security.MessageDigest.getInstance("SHA-256").digest("epub-1".toByteArray()).take(16).joinToString("") { "%02x".format(it) } + ".epub"
+        File(root, folderName).mkdirs()
+        File(File(root, folderName), fileName).writeText(epubBytes)
+        File(root, "manifest.json").writeText(
+            """{"book":{"publicationId":"book","publication":{"id":"book","title":"Downloaded book","book_type":"ebook",""" +
+                """"assets":[{"id":"epub-1","filename":"b.epub","media_type":"application/epub+zip","format":"epub","size_bytes":${epubBytes.length},"content_url":"/files/epub-1","position":0}]},""" +
+                """"files":[{"assetId":"epub-1","name":"$fileName","sizeBytes":${epubBytes.length},"etag":"\"e1\"","complete":true,"bytesDone":${epubBytes.length}}],""" +
+                """"state":"READY","updatedAtEpochMs":1}}""",
+        )
+        val downloads = manager(root)
+        downloads.start()
+        val ready = requireNotNull(downloads.ready("book"))
+        assertEquals(epubBytes, downloads.fileFor(ready, "epub-1")!!.readText())
     }
 }

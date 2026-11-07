@@ -51,6 +51,13 @@ import org.shelfarr.app.ui.theme.ShelfarrTheme
 /** What a download is doing, in words. Partial downloads never read as ready. */
 data class DownloadCopy(val title: String, val detail: String, val canRetry: Boolean = false)
 
+/** The words on a stopped download's retry button. */
+fun retryLabel(record: DownloadRecord): String = when {
+    record.state == DownloadState.CANCELLED -> "Download again"
+    record.problem == DownloadProblem.INTERRUPTED || record.problem == DownloadProblem.OFFLINE -> "Resume"
+    else -> "Try again"
+}
+
 fun downloadCopy(record: DownloadRecord): DownloadCopy {
     val total = record.bytesTotal
     val amount = if (total != null) "${formatBytes(record.bytesDone)} of ${formatBytes(total)}" else "${formatBytes(record.bytesDone)} so far"
@@ -67,17 +74,18 @@ fun downloadCopy(record: DownloadRecord): DownloadCopy {
         )
         DownloadState.CANCELLED -> DownloadCopy("Download cancelled", "Nothing is kept on this device.", canRetry = true)
         DownloadState.FAILED -> when (record.problem) {
-            DownloadProblem.OFFLINE -> DownloadCopy("Paused: no connection", "Continues when Shelfarr is open and online.$kept", true)
+            DownloadProblem.OFFLINE -> DownloadCopy("Paused: no connection", "Continues when you're back online.$kept", true)
             DownloadProblem.CERTIFICATE -> DownloadCopy("Stopped: can't verify your server", "Its security certificate couldn't be trusted.", true)
             DownloadProblem.SIGN_IN -> DownloadCopy("Stopped: signed out", "Sign in to this account again to continue.$kept")
             DownloadProblem.FORBIDDEN -> DownloadCopy("Not allowed", "This account can't download that file.", true)
             DownloadProblem.NOT_FOUND -> DownloadCopy("No longer on your server", "The file couldn't be found.", true)
-            DownloadProblem.SERVER -> DownloadCopy("Your server had a problem", "Tries again when you come back to Shelfarr.$kept", true)
+            DownloadProblem.SERVER -> DownloadCopy("Your server had a problem", "Tries again shortly, and when you come back to Shelfarr.$kept", true)
             DownloadProblem.REDIRECT -> DownloadCopy("Server moved", "Your server redirected elsewhere, so Shelfarr stopped.", true)
             DownloadProblem.CHANGED -> DownloadCopy("Changed on your server", "The file was replaced while downloading. Download again for the new edition.", true)
             DownloadProblem.STORAGE -> DownloadCopy("Not enough space", "Free some space on this device, then try again.$kept", true)
             DownloadProblem.MISSING -> DownloadCopy("Files missing", "Some downloaded files are no longer on this device.", true)
             DownloadProblem.UNSUPPORTED -> DownloadCopy("Can't be downloaded", "There's no file here the app can open.")
+            DownloadProblem.INTERRUPTED -> DownloadCopy("Stopped before it finished", "Shelfarr was stopped while downloading. Resume to carry on.$kept", true)
             DownloadProblem.INVALID, null -> DownloadCopy("Download failed", "Your server sent an unexpected file.", true)
         }
     }
@@ -141,7 +149,7 @@ fun DownloadPanel(
                     TextButton(onClick = onDownload) { Text("Update download") }
                 } else if (copy.canRetry && !offline) {
                     TextButton(onClick = if (record.state == DownloadState.CANCELLED) onDownload else onRetry) {
-                        Text(if (record.state == DownloadState.CANCELLED) "Download again" else "Try again")
+                        Text(retryLabel(record))
                     }
                 }
             }
@@ -182,6 +190,9 @@ fun DownloadsScreen(
     onCancel: (String) -> Unit,
     onRemove: (String) -> Unit,
     onRetry: (String) -> Unit,
+    /** Notifications are off, so progress is only visible here and in the system's Task Manager. */
+    notificationsOff: Boolean = false,
+    onTurnOnNotifications: () -> Unit = {},
 ) {
     var removing by remember { mutableStateOf<DownloadRecord?>(null) }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -198,16 +209,36 @@ fun DownloadsScreen(
             return@Column
         }
         val used = records.sumOf { it.bytesDone }
-        Text(
-            "${formatBytes(used)} used on this device. Downloads continue while Shelfarr is open, and pick up where they stopped next time.",
-            style = MaterialTheme.typography.bodySmall,
-            color = ShelfarrTheme.extended.inkMuted,
-            modifier = Modifier.padding(horizontal = 20.dp),
-        )
+        // Explanations scroll with the list, so large text never pins them over the downloads.
         LazyColumn(
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            item(key = "about") {
+                Text(
+                    "${formatBytes(used)} used on this device. Downloads keep going after you leave Shelfarr, as far as Android allows, " +
+                        "and pick up where they stopped. Force stopping the app pauses them until you resume.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ShelfarrTheme.extended.inkMuted,
+                )
+            }
+            if (notificationsOff && records.any { it.isActive }) {
+                item(key = "notifications") {
+                    Surface(
+                        color = ShelfarrTheme.extended.sunken,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 4.dp)) {
+                            Text(
+                                "Notifications are off, so progress shows only here. Downloads still continue.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            TextButton(onClick = onTurnOnNotifications) { Text("Turn on notifications") }
+                        }
+                    }
+                }
+            }
             items(records, key = { it.publicationId }) { record ->
                 DownloadRow(
                     record = record,
@@ -267,7 +298,7 @@ private fun DownloadRow(
                     if (record.isActive) {
                         TextButton(onClick = onCancel) { Text("Cancel") }
                     } else {
-                        if (copy.canRetry) TextButton(onClick = onRetry) { Text(if (record.state == DownloadState.CANCELLED) "Download again" else "Try again") }
+                        if (copy.canRetry) TextButton(onClick = onRetry) { Text(retryLabel(record)) }
                         TextButton(onClick = onRemove) { Text("Remove") }
                     }
                 }

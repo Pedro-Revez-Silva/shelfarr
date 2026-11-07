@@ -81,3 +81,16 @@ val ReadingStatus.label: String
         ReadingStatus.IN_PROGRESS -> "In progress"
         ReadingStatus.FINISHED -> "Finished"
     }
+
+/** "just now", "12 min ago", "3 h ago", "yesterday", "4 days ago", or a date, for freshness notes. */
+fun formatAgo(epochMs: Long, nowMs: Long = System.currentTimeMillis()): String {
+    val minutes = ((nowMs - epochMs).coerceAtLeast(0)) / 60_000
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 24 * 60 -> "${minutes / 60} h ago"
+        minutes < 48 * 60 -> "yesterday"
+        minutes < 7 * 24 * 60 -> "${minutes / (24 * 60)} days ago"
+        else -> java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(epochMs))
+    }
+}

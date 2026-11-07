@@ -49,7 +49,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.shelfarr.app.AppContainer
-import org.shelfarr.app.core.AccountPublications
 import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.DownloadRecord
 import org.shelfarr.app.core.ReadingStatus
@@ -109,14 +108,13 @@ class DetailsViewModel(private val container: AppContainer, private val id: Stri
         val services = account ?: return
         viewModelScope.launch {
             try {
-                val publication = services.api.publication(services.session.server, id)
-                AccountPublications(services.directory).remember(publication)
+                val publication = services.publication(id)
                 mutableState.value = DetailsState.Loaded(publication)
             } catch (error: ApiException) {
                 if (mutableState.value is DetailsState.Loaded) return@launch
                 // Offline, show what this device knows. Sign-in and certificate errors stay visible.
                 val local = if (error.isPlainOffline) {
-                    services.downloads.find(id)?.publication ?: AccountPublications(services.directory).recall(id)
+                    services.downloads.find(id)?.publication ?: services.recall(id)
                 } else {
                     null
                 }
@@ -159,8 +157,7 @@ class DetailsViewModel(private val container: AppContainer, private val id: Stri
         mutableStatus.value = StatusEdit(saving = status)
         viewModelScope.launch {
             try {
-                val updated = services.api.setReadingStatus(services.session.server, id, status)
-                AccountPublications(services.directory).remember(updated)
+                val updated = services.setReadingStatus(id, status)
                 mutableState.value = DetailsState.Loaded(updated)
                 mutableStatus.value = StatusEdit()
             } catch (error: ApiException) {

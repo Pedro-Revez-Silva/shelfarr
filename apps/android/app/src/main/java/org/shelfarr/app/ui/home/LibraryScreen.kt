@@ -5,6 +5,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -50,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import org.shelfarr.app.core.LibraryFilter
 import org.shelfarr.app.core.LibrarySort
 import org.shelfarr.app.core.ReadingStatus
+import org.shelfarr.app.ui.formatAgo
 import org.shelfarr.app.ui.label
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.ui.components.LoadingState
@@ -70,6 +74,7 @@ fun LibraryScreen(
     onRetry: () -> Unit,
     onStatus: (ReadingStatus?) -> Unit = {},
     onSort: (LibrarySort) -> Unit = {},
+    nowMs: Long = System.currentTimeMillis(),
 ) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Text(
@@ -82,6 +87,23 @@ fun LibraryScreen(
         StatusAndSort(state.status, state.sort, onStatus, onSort, Modifier.padding(horizontal = 20.dp))
 
         when {
+            state.offline != null && state.items.isEmpty() -> {
+                OfflineNote(state.offline, state.loading, host, nowMs, onRetry, Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp))
+                MessageState(
+                    "No saved matches",
+                    "Nothing saved on this device matches. Connect to ${host ?: "your server"} to search your whole library.",
+                    action = if (state.isFiltered || state.filter != LibraryFilter.ALL) "Clear filters" else null,
+                    onAction = {
+                        onQuery("")
+                        onStatus(null)
+                        onFilter(LibraryFilter.ALL)
+                    },
+                )
+            }
+            // The note scrolls with the titles, so large text never leaves it covering the screen.
+            state.offline != null -> Grid(state, onOpen, onLoadMore) {
+                OfflineNote(state.offline, state.loading, host, nowMs, onRetry)
+            }
             state.loading && state.items.isEmpty() -> LoadingState()
             state.error != null -> {
                 val copy = errorCopy(state.error, host)
@@ -111,7 +133,12 @@ fun LibraryScreen(
 }
 
 @Composable
-private fun Grid(state: LibraryState, onOpen: (Publication) -> Unit, onLoadMore: () -> Unit) {
+private fun Grid(
+    state: LibraryState,
+    onOpen: (Publication) -> Unit,
+    onLoadMore: () -> Unit,
+    header: (@Composable () -> Unit)? = null,
+) {
     val grid = rememberLazyGridState()
     val nearEnd by remember {
         derivedStateOf {
@@ -135,6 +162,7 @@ private fun Grid(state: LibraryState, onOpen: (Publication) -> Unit, onLoadMore:
         modifier = Modifier.fillMaxSize(),
     ) {
         val square = state.filter == LibraryFilter.AUDIOBOOK
+        if (header != null) item(key = "header", span = { GridItemSpan(maxLineSpan) }) { header() }
         items(state.items, key = { it.id }) { publication ->
             ShelfItem(publication, square = square) { onOpen(publication) }
         }
@@ -152,6 +180,50 @@ private fun Grid(state: LibraryState, onOpen: (Publication) -> Unit, onLoadMore:
         }
     }
 }
+
+/**
+ * Says plainly that this is the device's copy, how much of the library it covers and
+ * how old it is. It never claims to be the whole library unless every page was seen.
+ */
+@Composable
+private fun OfflineNote(
+    offline: OfflineLibrary,
+    retrying: Boolean,
+    host: String?,
+    nowMs: Long,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val coverage = offline.coverage
+    val server = host ?: "your server"
+    val detail = when {
+        coverage.completeAsOfEpochMs != null ->
+            "Your whole library as of ${formatAgo(coverage.completeAsOfEpochMs, nowMs)}, ${titles(coverage.titles)}. Changes since then appear when you reconnect."
+        coverage.lastOnlineAtEpochMs != null ->
+            "${titles(coverage.titles).replaceFirstChar(Char::uppercase)} this device has seen, last updated ${formatAgo(coverage.lastOnlineAtEpochMs, nowMs)}. Your library on $server may have more."
+        else -> "Only your downloads are on this device. Your library on $server has more."
+    }
+    Surface(
+        color = ShelfarrTheme.extended.sunken,
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(start = 14.dp, end = 6.dp, top = 12.dp)) {
+            Row(Modifier.semantics(mergeDescendants = true) {}, verticalAlignment = Alignment.Top) {
+                Icon(ShelfarrIcons.Offline, null, tint = ShelfarrTheme.extended.inkMuted, modifier = Modifier.padding(top = 2.dp).size(18.dp))
+                Column(Modifier.weight(1f).padding(start = 10.dp, end = 8.dp)) {
+                    Text("Offline · saved on this device", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onBackground)
+                    Text(detail, style = MaterialTheme.typography.bodySmall, color = ShelfarrTheme.extended.inkMuted, modifier = Modifier.padding(top = 2.dp))
+                }
+            }
+            TextButton(onClick = onRetry, enabled = !retrying, modifier = Modifier.padding(start = 18.dp)) {
+                Text(if (retrying) "Checking…" else "Try again")
+            }
+        }
+    }
+}
+
+private fun titles(count: Int) = if (count == 1) "1 title" else "$count titles"
 
 @Composable
 private fun SearchField(query: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
@@ -218,6 +290,7 @@ private fun FilterTabs(selected: LibraryFilter, onSelect: (LibraryFilter) -> Uni
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StatusAndSort(
     status: ReadingStatus?,
@@ -227,7 +300,11 @@ private fun StatusAndSort(
     modifier: Modifier = Modifier,
 ) {
     // Two menus rather than a scrolling chip row, so the active choice is always on screen.
-    Row(modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(
+        modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         MenuButton(
             label = "Status: ${status?.label ?: "Any"}",
             active = status != null,
@@ -262,9 +339,9 @@ private fun <T> MenuButton(
             color = if (active) ShelfarrTheme.extended.accentSoft else MaterialTheme.colorScheme.background,
             shape = MaterialTheme.shapes.small,
             border = androidx.compose.foundation.BorderStroke(1.dp, ShelfarrTheme.extended.hairline),
-            modifier = Modifier.height(40.dp).semantics { contentDescription = "$label. Change" },
+            modifier = Modifier.heightIn(min = 40.dp).semantics { contentDescription = "$label. Change" },
         ) {
-            Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 icon?.let { Icon(it, null, modifier = Modifier.size(16.dp).padding(end = 2.dp)) }
                 Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = if (icon != null) 6.dp else 0.dp))
             }

@@ -13,6 +13,12 @@ import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.shelfarr.app.core.ApiException
+import org.shelfarr.app.core.LibraryCoverage
+import org.shelfarr.app.core.OfflineLibraryResult
 import org.junit.Before
 import org.junit.Test
 import org.shelfarr.app.core.BookType
@@ -102,5 +108,108 @@ class LibraryViewModelTest {
         assertEquals(LibraryQuery(status = ReadingStatus.FINISHED, sort = LibrarySort.TITLE) to null, calls.last())
         assertEquals(listOf("FINISHED-1"), model.state.value.items.map { it.id })
         assertFalse(model.state.value.loadingMore)
+    }
+
+    private val server = (ServerAddress.parse("https://example.org") as ServerAddress.ParseResult.Valid).address
+    private val session = Session(server, Me("1"), "token")
+    private fun book(id: String, title: String = id, type: BookType = BookType.EBOOK) = Publication(id, title, bookType = type)
+    private val coverage = LibraryCoverage(titles = 2, lastOnlineAtEpochMs = 1_000)
+
+    /** Answers like the device cache: filters by type and title text. */
+    private val local: suspend (LibraryQuery) -> OfflineLibraryResult = { query ->
+        val all = listOf(book("a", "Anathem"), book("b", "Beloved", BookType.AUDIOBOOK))
+        OfflineLibraryResult(
+            all.filter { (query.filter != LibraryFilter.AUDIOBOOK || it.bookType == BookType.AUDIOBOOK) && it.title.contains(query.text, true) },
+            coverage,
+        )
+    }
+
+    @Test
+    fun `a lost connection shows the device's titles with their coverage, and no more pages`() = runTest(dispatcher) {
+        val model = LibraryViewModel({ session }, local) { _, _, _ -> throw ApiException.Offline(java.net.ConnectException()) }
+        runCurrent()
+        val state = model.state.value
+        assertEquals(listOf("a", "b"), state.items.map { it.id })
+        assertEquals(coverage, state.offline!!.coverage)
+        assertNull(state.error)
+        assertNull(state.nextCursor)
+        assertFalse(state.loading)
+    }
+
+    @Test
+    fun `certificate, sign-in and server errors are never hidden behind the cache`() = runTest(dispatcher) {
+        val failures = listOf(
+            ApiException.Offline(javax.net.ssl.SSLHandshakeException("untrusted")),
+            ApiException.Unauthorized(),
+            ApiException.Server(500),
+        )
+        for (failure in failures) {
+            val model = LibraryViewModel({ session }, local) { _, _, _ -> throw failure }
+            runCurrent()
+            assertEquals(failure, model.state.value.error)
+            assertNull(model.state.value.offline)
+            assertTrue(model.state.value.items.isEmpty())
+        }
+    }
+
+    @Test
+    fun `with nothing saved, the plain connection error is shown`() = runTest(dispatcher) {
+        val model = LibraryViewModel({ session }, { OfflineLibraryResult(emptyList(), LibraryCoverage()) }) { _, _, _ ->
+            throw ApiException.Offline(java.net.ConnectException())
+        }
+        runCurrent()
+        assertTrue(model.state.value.error is ApiException.Offline)
+        assertNull(model.state.value.offline)
+    }
+
+    @Test
+    fun `offline filters answer at once, and a late server page can't overwrite a newer query`() = runTest(dispatcher) {
+        var online = false
+        val late = CompletableDeferred<LibraryPage>()
+        val audio = CompletableDeferred<LibraryPage>()
+        val model = LibraryViewModel({ session }, local) { _, query, _ ->
+            when {
+                !online -> throw ApiException.Offline(java.net.ConnectException())
+                query.filter == LibraryFilter.ALL -> withContext(NonCancellable) { late.await() }
+                else -> audio.await()
+            }
+        }
+        runCurrent()
+        online = true
+        model.reload()
+        runCurrent()
+        model.setFilter(LibraryFilter.AUDIOBOOK)
+        runCurrent()
+        // Before the server answers, the device's audiobooks are already showing.
+        assertEquals(listOf("b"), model.state.value.items.map { it.id })
+        assertTrue(model.state.value.loading)
+        audio.complete(LibraryPage(listOf(book("server-audio", type = BookType.AUDIOBOOK))))
+        runCurrent()
+        assertEquals(listOf("server-audio"), model.state.value.items.map { it.id })
+        assertNull(model.state.value.offline)
+        late.complete(LibraryPage(listOf(book("stale"))))
+        runCurrent()
+        assertEquals(listOf("server-audio"), model.state.value.items.map { it.id })
+    }
+
+    @Test
+    fun `coming back online refreshes from the server`() = runTest(dispatcher) {
+        val network = MutableStateFlow(false)
+        var reachable = false
+        val model = LibraryViewModel({ session }, local, network) { _, _, _ ->
+            if (!reachable) throw ApiException.Offline(java.net.ConnectException())
+            LibraryPage(listOf(book("fresh")), nextCursor = "next")
+        }
+        runCurrent()
+        assertTrue(model.state.value.offline != null)
+        model.loadMore()
+        runCurrent()
+        assertFalse("No paging through the device copy", model.state.value.loadingMore)
+        reachable = true
+        network.value = true
+        runCurrent()
+        assertNull(model.state.value.offline)
+        assertEquals(listOf("fresh"), model.state.value.items.map { it.id })
+        assertEquals("next", model.state.value.nextCursor)
     }
 }

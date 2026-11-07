@@ -6,6 +6,13 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Downloads the person starts: a user-initiated data transfer job on Android 14+,
+         a dataSync foreground service before that. Persisted jobs need boot permission
+         so Android may restore them after a restart. -->
+    <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".ShelfarrApplication"
@@ -38,6 +45,20 @@
             android:exported="false"
             android:parentActivityName=".ui.MainActivity"
             android:theme="@style/Theme.Shelfarr.Reader" />
+
+        <service
+            android:name=".transfer.DownloadJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <service
+            android:name=".transfer.DownloadForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".transfer.DownloadActionReceiver"
+            android:exported="false" />
 
         <service
             android:name=".playback.PlaybackService"

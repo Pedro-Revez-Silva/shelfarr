@@ -1,5 +1,6 @@
 package org.shelfarr.app.core
 
+import android.util.Log
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
@@ -60,6 +61,12 @@ enum class DownloadProblem {
 
     /** The publication has no file this app can download and open. */
     UNSUPPORTED,
+
+    /**
+     * The app stopped before it finished and nothing was scheduled to continue it, for
+     * example after a force stop or a Task Manager stop. Kept bytes resume on request.
+     */
+    INTERRUPTED,
 }
 
 /** One pinned asset of a managed download. */
@@ -116,9 +123,12 @@ private class Unsupported : Exception("Nothing to download")
 
 /**
  * Managed downloads for one account: durable files in app storage, never the
- * evictable cache. The queue is durable too: unfinished work resumes when the
- * account's services start again. Transfers only run while the app process is
- * alive; this is not an OS background transfer.
+ * evictable cache. This is the only code that writes download files; OS hosts
+ * (a user-initiated job, or a foreground service on older Android) only keep the
+ * process alive and tell it when to [pause] and [resumeQueued].
+ *
+ * The queue is persisted before [onQueued] asks for a host, so a host that starts
+ * in a fresh process always finds the work it was scheduled for.
  *
  * Every request goes through [client], which carries only this account's
  * credential. Closing stops every transfer before the caller deletes [root].
@@ -132,6 +142,8 @@ class DownloadManager(
     maxConcurrent: Int = 2,
     private val clock: () -> Long = System::currentTimeMillis,
     private val usableSpace: () -> Long = { root.apply { mkdirs() }.usableSpace },
+    /** Called after a queued download is on disk, to ask the OS to keep transferring it. */
+    private val onQueued: suspend () -> Unit = {},
 ) {
     private val manifestFile = File(root, "manifest.json")
     private val manifestMutex = Mutex()
@@ -147,13 +159,91 @@ class DownloadManager(
 
     private var loaded = false
 
-    /** Loads the manifest, checks finished files are still there, and resumes unfinished work. */
+    /** Set when the manifest exists but couldn't be read, so it must not be replaced. */
+    @Volatile
+    private var manifestUnreadable = false
+
+    /** Downloads that were unfinished when the manifest was loaded, from an earlier process. */
+    private val inherited = HashSet<String>()
+
+    /** Loads the manifest and checks finished files are still there. Nothing transfers yet. */
     suspend fun start() {
         load()
-        val resumable = mutableRecords.value.values.filter {
-            it.isActive || (it.state == DownloadState.FAILED && it.problem == DownloadProblem.SIGN_IN)
+    }
+
+    /** True once any download is queued or transferring. */
+    val hasActiveWork: Boolean get() = mutableRecords.value.values.any { it.isActive }
+
+    /** Bytes still to fetch for queued and running downloads, for the OS's transfer estimate. */
+    val remainingBytes: Long
+        get() = mutableRecords.value.values.filter { it.isActive }.sumOf { record ->
+            record.files.filterNot { it.complete }.sumOf { (it.sizeBytes - it.bytesDone).coerceAtLeast(0) }
         }
-        resumable.forEach { launch(it.publicationId) }
+
+    /**
+     * Starts every queued download, for a host that may now transfer. Downloads that
+     * stopped for a sign-in resume too: this account's services only exist while it is
+     * signed in. Already running transfers are left alone.
+     */
+    suspend fun resumeQueued() {
+        load()
+        mutableRecords.value.values
+            .filter { it.isActive || (it.state == DownloadState.FAILED && it.problem == DownloadProblem.SIGN_IN) }
+            .forEach { launch(it.publicationId) }
+    }
+
+    /** Re-queues downloads that stopped because the account was signed out, now that it is back. */
+    suspend fun resumeAfterSignIn() {
+        load()
+        mutableRecords.value.values
+            .filter { it.state == DownloadState.FAILED && it.problem == DownloadProblem.SIGN_IN }
+            .forEach { retry(it.publicationId) }
+    }
+
+    /**
+     * Marks downloads left unfinished by an earlier process as interrupted, for when no
+     * OS host is scheduled to continue them. Without a host, starting them silently
+     * would undo a user's force stop; with one, the host resumes them instead.
+     */
+    suspend fun interruptInherited() {
+        load()
+        manifestMutex.withLock {
+            val running = synchronized(jobsLock) { jobs.keys.toSet() }
+            val stale = inherited.filter { id -> id !in running && mutableRecords.value[id]?.isActive == true }
+            inherited.clear()
+            if (stale.isEmpty()) return@withLock
+            mutableRecords.update { records ->
+                records + stale.associateWith { id ->
+                    records.getValue(id).copy(state = DownloadState.FAILED, problem = DownloadProblem.INTERRUPTED, updatedAtEpochMs = clock())
+                }
+            }
+            if (!persistLocked()) Log.w(TAG, "Could not record interrupted downloads")
+        }
+    }
+
+    /**
+     * Stops every transfer without discarding anything: partial files and their
+     * validators stay, and each download goes back to the queue for the next host.
+     * With [interrupted], nothing will come back for them, so they are marked
+     * [DownloadProblem.INTERRUPTED] for the person to resume.
+     */
+    suspend fun pause(interrupted: Boolean = false) {
+        val running = synchronized(jobsLock) { jobs.values.toList().also { jobs.clear() } }
+        running.forEach { it.cancel() }
+        running.forEach { it.join() }
+        manifestMutex.withLock {
+            if (closed) return@withLock
+            mutableRecords.update { records ->
+                records.mapValues { (_, record) ->
+                    when {
+                        !record.isActive -> record
+                        interrupted -> record.copy(state = DownloadState.FAILED, problem = DownloadProblem.INTERRUPTED, updatedAtEpochMs = clock())
+                        else -> record.copy(state = DownloadState.QUEUED)
+                    }
+                }
+            }
+            if (!persistLocked()) Log.w(TAG, "Could not record paused downloads")
+        }
     }
 
     private suspend fun load() = manifestMutex.withLock {
@@ -161,6 +251,7 @@ class DownloadManager(
         loaded = true
         val stored = withContext(Dispatchers.IO) { readManifest() }
         val checked = stored.mapValues { (_, record) -> withContext(Dispatchers.IO) { reconcile(record) } }
+        inherited += checked.values.filter { it.isActive }.map { it.publicationId }
         mutableRecords.value = checked
         if (checked != stored && !persistLocked()) {
             mutableRecords.update { records -> records.mapValues { (_, record) ->
@@ -227,14 +318,20 @@ class DownloadManager(
         load()
         val assets = downloadableAssets(publication)
         val existing = record(publication.id)
-        if (existing != null && existing.isActive) return
+        if (existing != null && existing.isActive) {
+            // Already queued; make sure something will run it.
+            onQueued()
+            return
+        }
         val record = if (existing != null && existing.matches(publication) && existing.state != DownloadState.CANCELLED) {
             existing.copy(state = DownloadState.QUEUED, problem = null, publication = publication, updatedAtEpochMs = clock())
         } else {
             if (existing != null) withContext(Dispatchers.IO) { folder(publication.id).deleteRecursively() }
             DownloadRecord(publication.id, publication, pin(assets), DownloadState.QUEUED, updatedAtEpochMs = clock())
         }
-        if (save(record)) launch(publication.id)
+        if (!save(record)) return
+        onQueued()
+        launch(publication.id)
     }
 
     /** Retries a failed or cancelled download with the details it already has. */
@@ -243,12 +340,27 @@ class DownloadManager(
         enqueue(record.publication)
     }
 
-    /** Resumes downloads that stopped for a reason that may have passed, such as the connection. */
+    /** Resumes downloads that stopped for a reason that may have passed, such as the connection or the app stopping. */
     suspend fun retryInterrupted() {
         load()
         mutableRecords.value.values
             .filter { it.state == DownloadState.FAILED && it.problem in TRANSIENT }
             .forEach { retry(it.publicationId) }
+    }
+
+    /** Downloads that stopped for a reason that may pass by itself, so a host may retry them later. */
+    val hasTransientFailures: Boolean
+        get() = mutableRecords.value.values.any { it.state == DownloadState.FAILED && it.problem in TRANSIENT }
+
+    /** Re-queues and starts downloads that stopped for a transient reason. For a running host only. */
+    suspend fun resumeTransient() {
+        load()
+        mutableRecords.value.values
+            .filter { it.state == DownloadState.FAILED && it.problem in TRANSIENT }
+            .forEach { failed ->
+                val queued = failed.copy(state = DownloadState.QUEUED, problem = null, updatedAtEpochMs = clock())
+                if (save(queued)) launch(failed.publicationId)
+            }
     }
 
     /** Stops a transfer and deletes what it wrote. The entry stays, marked cancelled. */
@@ -282,8 +394,24 @@ class DownloadManager(
         }
     }
 
-    /** Stops every transfer and all further writes. The caller may then delete [root]. */
-    suspend fun close() {
+    /**
+     * Stops every transfer and all further writes. The caller may then delete [root].
+     * With [signedOut], unfinished downloads are first recorded as stopped by the
+     * sign-in, so they resume when this same account signs in again.
+     */
+    suspend fun close(signedOut: Boolean = false) {
+        if (signedOut) {
+            pause()
+            manifestMutex.withLock {
+                if (closed) return@withLock
+                mutableRecords.update { records ->
+                    records.mapValues { (_, record) ->
+                        if (record.isActive) record.copy(state = DownloadState.FAILED, problem = DownloadProblem.SIGN_IN) else record
+                    }
+                }
+                if (!persistLocked()) Log.w(TAG, "Could not record downloads stopped by sign-in")
+            }
+        }
         closed = true
         val running = synchronized(jobsLock) { jobs.values.toList().also { jobs.clear() } }
         running.forEach { it.cancel() }
@@ -539,6 +667,10 @@ class DownloadManager(
 
     private suspend fun persistLocked(): Boolean {
         if (closed) return false
+        if (manifestUnreadable) {
+            Log.w(TAG, "Not saving downloads over a manifest that couldn't be read")
+            return false
+        }
         val snapshot = mutableRecords.value
         return withContext(Dispatchers.IO + NonCancellable) {
             try {
@@ -547,30 +679,55 @@ class DownloadManager(
                 temporary.writeText(ApiJson.encodeToString(snapshot))
                 if (!temporary.renameTo(manifestFile)) throw IOException("Could not save downloads")
                 true
-            } catch (_: IOException) {
+            } catch (error: IOException) {
+                Log.w(TAG, "Could not save the download manifest", error)
                 false
-            } catch (_: SecurityException) {
+            } catch (error: SecurityException) {
+                Log.w(TAG, "Could not save the download manifest", error)
                 false
             }
         }
     }
 
-    private fun readManifest(): Map<String, DownloadRecord> = try {
-        if (manifestFile.isFile) ApiJson.decodeFromString(manifestFile.readText()) else emptyMap()
-    } catch (_: SerializationException) {
-        emptyMap()
-    } catch (_: IllegalArgumentException) {
-        emptyMap()
-    } catch (_: IOException) {
-        emptyMap()
-    } catch (_: SecurityException) {
-        emptyMap()
+    private fun readManifest(): Map<String, DownloadRecord> {
+        if (!manifestFile.isFile) return emptyMap()
+        val text = try {
+            manifestFile.readText()
+        } catch (error: IOException) {
+            // Unreadable right now: start empty, and never overwrite the file this session.
+            Log.w(TAG, "Could not read the download manifest", error)
+            manifestUnreadable = true
+            return emptyMap()
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Could not read the download manifest", error)
+            manifestUnreadable = true
+            return emptyMap()
+        }
+        return try {
+            ApiJson.decodeFromString(text)
+        } catch (error: SerializationException) {
+            quarantine(error)
+        } catch (error: IllegalArgumentException) {
+            quarantine(error)
+        }
+    }
+
+    /**
+     * Keeps an unreadable manifest aside instead of overwriting it with an empty one,
+     * so nothing that could explain or recover it is lost. Folders stay on disk.
+     */
+    private fun quarantine(error: Exception): Map<String, DownloadRecord> {
+        Log.e(TAG, "The download manifest is unreadable; keeping a copy", error)
+        val aside = File(root, "manifest.unreadable-${clock()}.json")
+        if (!manifestFile.renameTo(aside)) Log.e(TAG, "Could not keep the unreadable download manifest")
+        return emptyMap()
     }
 
     private fun hash(value: String): String =
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).take(16).joinToString("") { "%02x".format(it) }
 
     private companion object {
+        const val TAG = "ShelfarrDownloads"
         const val PART = ".part"
         const val REPORT_EVERY_BYTES = 256L * 1024
         const val SPACE_MARGIN_BYTES = 64L * 1024 * 1024

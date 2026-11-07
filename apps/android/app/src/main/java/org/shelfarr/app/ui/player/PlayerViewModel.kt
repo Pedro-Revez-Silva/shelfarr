@@ -43,13 +43,12 @@ class PlayerViewModel(private val container: AppContainer, private val publicati
             return
         }
         val services = account ?: return
-        val session = services.session
         mutableState.value = PlayerState.Loading
         viewModelScope.launch {
             try {
                 var offline = false
                 val online = try {
-                    services.api.publication(session.server, publicationId)
+                    services.publication(publicationId)
                 } catch (error: ApiException.Offline) {
                     // Only a lost connection may fall back to the download. Certificates are surfaced.
                     if (error.certificate) throw error

@@ -53,6 +53,8 @@ import org.shelfarr.app.ui.home.HomeScreen
 import org.shelfarr.app.ui.home.HomeState
 import org.shelfarr.app.ui.home.LibraryScreen
 import org.shelfarr.app.ui.home.LibraryState
+import org.shelfarr.app.ui.home.OfflineLibrary
+import org.shelfarr.app.core.LibraryCoverage
 import org.shelfarr.app.ui.player.MiniPlayer
 import org.shelfarr.app.ui.player.PlayerControls
 import org.shelfarr.app.ui.player.PlayerRoute
@@ -348,5 +350,85 @@ class ScreenshotTest {
     @Test
     fun library_status_empty_dark() = shot("12-library-status-empty-dark", dark = true) {
         LibraryScreen(LibraryState(items = emptyList(), loading = false, status = ReadingStatus.IN_PROGRESS), "books.example.org", {}, {}, {}, {}, {})
+    }
+
+    private val now = 1_800_000_000_000L
+    private val partialCoverage = LibraryCoverage(titles = 34, lastOnlineAtEpochMs = now - 2 * 3_600_000)
+    private val offlineReason = ApiException.Offline(java.net.ConnectException())
+    private val interrupted = DownloadRecord("p7", shelf[6], files(shelf[6], 0.55), DownloadState.FAILED, DownloadProblem.INTERRUPTED)
+    private val queued = DownloadRecord("p8", shelf[7], files(shelf[7], 0.1), DownloadState.QUEUED)
+
+    @Test
+    fun library_offline() = shot("13-library-offline") {
+        LibraryScreen(
+            LibraryState(items = shelf, loading = false, offline = OfflineLibrary(offlineReason, partialCoverage)),
+            "books.example.org", {}, {}, {}, {}, {}, nowMs = now,
+        )
+    }
+
+    @Test
+    fun library_offline_complete_dark() = shot("13-library-offline-complete-dark", dark = true) {
+        LibraryScreen(
+            LibraryState(
+                items = shelf.filter { it.bookType == BookType.AUDIOBOOK },
+                loading = false,
+                filter = LibraryFilter.AUDIOBOOK,
+                sort = LibrarySort.TITLE,
+                offline = OfflineLibrary(offlineReason, LibraryCoverage(9, now - 26 * 3_600_000, now - 26 * 3_600_000)),
+            ),
+            "books.example.org", {}, {}, {}, {}, {}, nowMs = now,
+        )
+    }
+
+    @Test
+    fun library_offline_no_matches() = shot("13-library-offline-no-matches") {
+        LibraryScreen(
+            LibraryState(items = emptyList(), query = "dune", loading = true, offline = OfflineLibrary(offlineReason, partialCoverage)),
+            "books.example.org", {}, {}, {}, {}, {}, nowMs = now,
+        )
+    }
+
+    @Test
+    fun library_offline_downloads_only() = shot("13-library-offline-downloads-only") {
+        LibraryScreen(
+            LibraryState(items = listOf(book, audiobook), loading = false, offline = OfflineLibrary(offlineReason, LibraryCoverage(2))),
+            "books.example.org", {}, {}, {}, {}, {}, nowMs = now,
+        )
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h568dp-xhdpi")
+    fun small_large_text_library_offline() {
+        RuntimeEnvironment.setFontScale(1.6f)
+        shot("13-small-large-text-library-offline") {
+            LibraryScreen(
+                LibraryState(items = shelf, loading = false, status = ReadingStatus.UNREAD, offline = OfflineLibrary(offlineReason, partialCoverage)),
+                "books.example.org", {}, {}, {}, {}, {}, nowMs = now,
+            )
+        }
+    }
+
+    @Test
+    fun downloads_background() = shot("14-downloads-background") {
+        DownloadsScreen(listOf(downloading, queued, interrupted, offlinePaused, downloaded), {}, {}, {}, {}, {}, notificationsOff = true)
+    }
+
+    @Test
+    fun downloads_background_dark() = shot("14-downloads-background-dark", dark = true) {
+        DownloadsScreen(listOf(interrupted, downloaded), {}, {}, {}, {}, {})
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h568dp-xhdpi")
+    fun small_large_text_downloads() {
+        RuntimeEnvironment.setFontScale(1.6f)
+        shot("14-small-large-text-downloads") {
+            DownloadsScreen(listOf(downloading, interrupted), {}, {}, {}, {}, {}, notificationsOff = true)
+        }
+    }
+
+    @Test
+    fun details_interrupted() = shot("14-details-interrupted") {
+        DetailsScreen(DetailsState.Loaded(shelf[6]), "books.example.org", {}, {}, {}, download = interrupted)
     }
 }

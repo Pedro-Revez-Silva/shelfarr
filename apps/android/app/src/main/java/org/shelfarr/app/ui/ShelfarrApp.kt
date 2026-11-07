@@ -1,9 +1,14 @@
 package org.shelfarr.app.ui
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -51,6 +56,7 @@ import org.shelfarr.app.playback.AudioChapter
 import org.shelfarr.app.playback.PlaybackController
 import org.shelfarr.app.reader.ReaderActivity
 import org.shelfarr.app.ui.components.ShelfarrIcons
+import org.shelfarr.app.ui.details.DetailsActions
 import org.shelfarr.app.ui.details.DetailsScreen
 import org.shelfarr.app.ui.details.DetailsViewModel
 import org.shelfarr.app.ui.downloads.DownloadsScreen
@@ -78,15 +84,49 @@ private const val PLAYER = "player/{id}"
 private const val DOWNLOADS = "downloads"
 
 @Composable
-fun ShelfarrApp(container: AppContainer) {
+fun ShelfarrApp(container: AppContainer, requestedScreen: MutableStateFlow<AppScreen?> = remember { MutableStateFlow(null) }) {
     val sessionState by container.sessions.session.collectAsStateWithLifecycle()
     Surface(Modifier.fillMaxSize()) {
         when (val state = sessionState) {
             is SessionState.SignedIn -> CompositionLocalProvider(LocalServer provides state.session.server) {
-                MainShell(container, state.session)
+                MainShell(container, state.session, requestedScreen)
             }
-            else -> SetupFlow(container)
+            else -> {
+                // A notification can't open another account's downloads through the sign-in screen.
+                LaunchedEffect(Unit) { requestedScreen.value = null }
+                SetupFlow(container)
+            }
         }
+    }
+}
+
+/**
+ * Asks once, on the first download, whether progress may be shown as a notification.
+ * The download starts either way; declining only hides the notification.
+ */
+@Composable
+private fun rememberDownloadStarter(container: AppContainer, start: () -> Unit): () -> Unit {
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { start() }
+    return remember(container, launcher) {
+        {
+            val needsAsking = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !container.transferNotifications.canPost && !container.askedForNotifications
+            if (needsAsking) {
+                container.askedForNotifications = true
+                launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                start()
+            }
+        }
+    }
+}
+
+private fun Context.openNotificationSettings() {
+    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+    try {
+        startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
     }
 }
 
@@ -138,8 +178,15 @@ private val TABS = listOf(
 )
 
 @Composable
-private fun MainShell(container: AppContainer, session: Session) {
+private fun MainShell(container: AppContainer, session: Session, requestedScreen: MutableStateFlow<AppScreen?>) {
     val navController = rememberNavController()
+    val requested by requestedScreen.collectAsStateWithLifecycle()
+    LaunchedEffect(requested) {
+        if (requested == AppScreen.DOWNLOADS) {
+            navController.navigate(DOWNLOADS) { launchSingleTop = true }
+            requestedScreen.value = null
+        }
+    }
     val backStack by navController.currentBackStackEntryAsState()
     val route = backStack?.destination?.route
     val playback by container.playback.snapshot.collectAsStateWithLifecycle()
@@ -234,6 +281,12 @@ private fun MainShell(container: AppContainer, session: Session) {
                 }
                 val download by viewModel.download.collectAsStateWithLifecycle()
                 val statusEdit by viewModel.statusEdit.collectAsStateWithLifecycle()
+                val startDownload = rememberDownloadStarter(container) { viewModel.download() }
+                val actions = remember(viewModel, startDownload) {
+                    object : DetailsActions by viewModel {
+                        override fun download() = startDownload()
+                    }
+                }
                 DetailsScreen(
                     state = state,
                     host = session.server.host,
@@ -242,12 +295,17 @@ private fun MainShell(container: AppContainer, session: Session) {
                     onRetry = viewModel::retry,
                     download = download,
                     statusEdit = statusEdit,
-                    actions = viewModel,
+                    actions = actions,
                 )
             }
             composable(DOWNLOADS) {
                 val downloads = container.currentAccount()?.downloads
                 val records by (downloads?.records ?: remember { MutableStateFlow(emptyMap()) }).collectAsStateWithLifecycle()
+                var notificationsOff by remember { mutableStateOf(!container.transferNotifications.canPost) }
+                LifecycleResumeEffect(Unit) {
+                    notificationsOff = !container.transferNotifications.canPost
+                    onPauseOrDispose {}
+                }
                 DownloadsScreen(
                     records = records.values.sortedByDescending { it.updatedAtEpochMs },
                     onBack = navController::popBackStack,
@@ -255,6 +313,8 @@ private fun MainShell(container: AppContainer, session: Session) {
                     onCancel = { id -> container.scope.launch { downloads?.cancel(id) } },
                     onRemove = { id -> container.scope.launch { downloads?.remove(id) } },
                     onRetry = { id -> container.scope.launch { downloads?.retry(id) } },
+                    notificationsOff = notificationsOff,
+                    onTurnOnNotifications = { context.openNotificationSettings() },
                 )
             }
             composable(PLAYER, listOf(navArgument("id") { type = NavType.StringType })) { entry ->
