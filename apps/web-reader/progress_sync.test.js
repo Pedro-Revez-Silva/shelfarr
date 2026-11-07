@@ -48,6 +48,31 @@ function open(options = {}) {
 }
 const at = (seconds, minutes) => { clock = Date.parse(T(minutes)); return { asset_id: ASSET, position_seconds: seconds } }
 
+test("every upload stays bound to the account that rendered the reader", async () => {
+  const sync = open({ account: "original-account" })
+  let headers
+  globalThis.fetch = async (_url, options) => { headers = options.headers; return saved(1) }
+  sync.record(at(42, 1))
+  await sync.flush()
+  expect(headers["X-Shelfarr-Account"]).toBe("original-account")
+})
+
+test("repeated resumes during pre-roll preserve the original saved checkpoint", () => {
+  const places = []
+  let now = 0
+  const checkpoints = new ListeningCheckpoints({ record: place => places.push(place.position_seconds), now: () => now })
+  checkpoints.restored(100, ASSET)
+  expect(checkpoints.resume(100)).toBe(95)
+  expect(checkpoints.settle(96, ASSET)).toBe(false)
+  expect(checkpoints.resume(96)).toBe(91)
+  now = 10000
+  expect(checkpoints.tick(97, ASSET)).toBe(false)
+  expect(checkpoints.settle(99, ASSET)).toBe(false)
+  expect(places).toEqual([])
+  expect(checkpoints.tick(101, ASSET)).toBe(true)
+  expect(places).toEqual([101])
+})
+
 test("a checkpoint is stored before any request and survives closing the page offline", async () => {
   const first = open()
   expect(first.record(at(42, 1))).toBe(true)

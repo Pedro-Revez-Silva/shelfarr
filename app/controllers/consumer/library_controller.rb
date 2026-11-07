@@ -4,6 +4,7 @@ class Consumer::LibraryController < ApplicationController
   include ConsumerMediaResponse
   layout "consumer"
   before_action :private_response
+  before_action :verify_progress_account, only: :progress
 
   def index
     @query = params[:q] || ""
@@ -59,6 +60,14 @@ class Consumer::LibraryController < ApplicationController
   end
 
   private
+
+  # A reader tab may outlive its cookie session after another tab switches users.
+  # Its durable outbox belongs to the account that rendered that reader.
+  def verify_progress_account
+    return if request.headers["X-Shelfarr-Account"] == Current.user.id.to_s
+
+    render json: { error: "account_changed" }, status: :unauthorized
+  end
 
   def find_book
     id = params[:id]

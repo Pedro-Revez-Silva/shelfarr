@@ -190,7 +190,7 @@ export default class ConsumerProgressSync {
     try {
       response = await fetch(this.url, {
         method: "PUT", credentials: "same-origin", redirect: "manual", keepalive: true,
-        headers: { "Content-Type": "application/json", "Accept": "application/json", "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || "" },
+        headers: { "Content-Type": "application/json", "Accept": "application/json", "X-Shelfarr-Account": this.identity.account, "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || "" },
         body: JSON.stringify(body)
       })
       try { result = await response.json() } catch (_) { result = null }
@@ -339,7 +339,8 @@ export class ListeningCheckpoints {
     this.active = true
     if (this.skipRewind) { this.skipRewind = false; return position }
     const rewound = Math.max(0, position - ListeningCheckpoints.REWIND)
-    this.floor = rewound < position ? position : null
+    // Pausing again during pre-roll must not lower the original saved floor.
+    this.floor = rewound < position ? Math.max(this.floor ?? position, position) : this.floor
     return rewound
   }
 

@@ -44,12 +44,29 @@ class Consumer::LibraryControllerTest < ActionDispatch::IntegrationTest
     get consumer_asset_path(@audiobook, asset.id), headers: { "Range" => "bytes=0-2" }
     assert_response :partial_content
     assert_equal "an ", response.body
-    put consumer_progress_path(@audiobook), params: audio_progress(asset_id: asset.id), as: :json
+    put consumer_progress_path(@audiobook), params: audio_progress(asset_id: asset.id), headers: { "X-Shelfarr-Account" => users(:one).id.to_s }, as: :json
     assert_response :success
     assert_equal 1, response.parsed_body.fetch("progress").fetch("version")
     get consumer_library_path
     assert_select "#continue-heading", text: "Keep going"
     assert_select "body", text: /Resume at 0:17/
+  end
+
+  test "an old reader tab cannot upload its account's place after the cookie account changes" do
+    asset = consumer_asset(@audiobook)
+    original_account = users(:one).id.to_s
+    sign_out
+    sign_in_as(users(:two))
+    assert_no_difference "ConsumerProgress.count" do
+      put consumer_progress_path(@audiobook), params: audio_progress(asset_id: asset.id), headers: { "X-Shelfarr-Account" => original_account }, as: :json
+      assert_response :unauthorized
+      assert_equal "account_changed", response.parsed_body.fetch("error")
+      put consumer_progress_path(@audiobook), params: audio_progress(asset_id: asset.id), as: :json
+      assert_response :unauthorized
+    end
+    put consumer_progress_path(@audiobook), params: audio_progress(asset_id: asset.id), headers: { "X-Shelfarr-Account" => users(:two).id.to_s }, as: :json
+    assert_response :success
+    assert_equal users(:two).id, ConsumerProgress.find_by!(book: @audiobook).user_id
   end
 
   test "empty filtered shelves explain the filter and offer a reset" do
