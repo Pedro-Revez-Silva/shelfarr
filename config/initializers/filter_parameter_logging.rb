@@ -5,5 +5,8 @@ Rails.application.config.filter_parameters += [
   :locator, :position_seconds,
   # OAuth callback and device sign-in values. Matched exactly so unrelated
   # keys that merely contain "code" (an ISBN code, a language code) still log.
-  /\A(?:code|device_code|user_code|code_verifier)\z/i
+  /\A(?:code|device_code|user_code|code_verifier)\z/i,
+  # Consumer transfer grants travel in the query string. Exact, so OAuth
+  # `grant_type` and other keys that merely contain "grant" still log.
+  /\Agrant\z/i
 ]
