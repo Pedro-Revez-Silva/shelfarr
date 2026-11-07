@@ -253,17 +253,19 @@ cannot advance audio reports that test as skipped, not verified.
 
 ## Verification status and limits
 
-- **Verified on Linux.** The `ShelfarrCore` tests pass on Linux (Swift 6.4.2): 110
+- **Core verified.** The `ShelfarrCore` tests pass on Linux (Swift 6.4.2) and macOS: 176
   tests, repeated runs stable. They cover tickets persisted before submission,
   adoption after relaunch without duplicates, lost tasks planned again, orphan and
   old-token cancellation, out-of-order ranges and staged ranges across a relaunch,
   short or misplaced ranges, redirect discard, force-quit, storage failures, grant
   minting, refusal and fallback, the account boundary after sign-out, cancel-before-
   delete, version 1 manifest migration, and every offline-library rule above.
-- **Simulator runtime verified.** [CI run 42393424465](https://github.com/Pedro-Revez-Silva/shelfarr/actions/runs/42393424465)
-  passed on `ea6943b`, using an iPhone 16 Pro simulator with iOS 18.5 and Xcode 16.4.
+- **Simulator runtime verified.** [CI run 42410339450](https://github.com/Pedro-Revez-Silva/shelfarr/actions/runs/42410339450)
+  passed on `94b74f4`, using iPhone 16 Pro and iPad Pro 11-inch (M4) simulators with
+  iOS 18.5 and Xcode 16.4. All three runtime tests passed on each, without skips.
   It covered library/search, rendered EPUB pages and saved place, background downloads,
-  local audio, and offline relaunch/reopening. The fixture recorded three grant
+  local audio and its resume rewind, and offline relaunch/reopening inside a chapter
+  without recording restoration as new activity. Each fixture recorded three grant
   requests and none carrying a bearer. Physical-device and real-library validation
   remain outstanding.
 - **Grants.** The consumer API implements the grant endpoint. Older servers without

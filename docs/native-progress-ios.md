@@ -216,17 +216,18 @@ it finishes; one already booted is left running. Ad-hoc signing
 | `apps/ios/test-results/runtime-smoke/<family>/summary.json` | `xcresulttool get test-results summary` |
 
 `<family>` is `iphone` or `ipad`. These replace the previous single
-`apps/ios/build/runtime-smoke/` files and `apps/ios/test-results/runtime-smoke-summary.json`;
-the artifact table in [native-offline-ios.md](native-offline-ios.md#artifacts) still
-shows the old paths. The fixture ports differ per family (iPhone 8765/8766, iPad
+`apps/ios/build/runtime-smoke/` files and `apps/ios/test-results/runtime-smoke-summary.json`.
+The fixture ports differ per family (iPhone 8765/8766, iPad
 8775/8776); running both at once also needs distinct `SHELFARR_SMOKE_DERIVED_DATA`.
 
 ## Limits
 
-- Verified here on Linux only: the `ShelfarrCore` package (Swift 6.4.2). The app
-  target, UI tests and smoke script were not compiled or run, because that needs
-  macOS, Xcode and a simulator. The script's simulator selection, boot ownership and
-  output layout were checked with stand-in `xcrun`/`xcodebuild` commands only.
+- **Verified in CI:** [run 42410339450](https://github.com/Pedro-Revez-Silva/shelfarr/actions/runs/42410339450)
+  on `94b74f4` passed 176 core tests and compiled the app and UI tests with Xcode
+  16.4. The iPhone 16 Pro and iPad Pro 11-inch (M4), both iOS 18.5, each passed all
+  three runtime tests with no failures or skips. These cover audio rewind, cold
+  offline in-chapter restore, silent reopen and reconnect without a fake checkpoint.
+  The core tests also pass on Linux (Swift 6.4.2).
 - No physical iPhone or iPad was used. Lock-screen and Bluetooth controls, process
   death between checkpoints, real background suspension and two physical devices
   offline remain in the acceptance flow.
