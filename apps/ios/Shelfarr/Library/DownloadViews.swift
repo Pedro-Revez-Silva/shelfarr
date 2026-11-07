@@ -169,7 +169,7 @@ struct DownloadsView: View {
                             row(record)
                         }
                     } footer: {
-                        let used = records.filter(\.isReady).reduce(Int64(0)) { $0 + $1.bytesDone }
+                        let used = records.reduce(Int64(0)) { $0 + $1.bytesDone }
                         Text("\(bytes(used)) used on this device. Downloads continue while Shelfarr is open, and pick up where they stopped next time.")
                     }
                 }
