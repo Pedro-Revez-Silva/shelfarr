@@ -2,14 +2,21 @@ import { Controller } from "@hotwired/stimulus"
 import ConsumerProgressSync from "consumer_progress_sync"
 
 export default class extends Controller {
-  static targets = ["publication", "syncStatus", "retry", "conflict", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play"]
+  static targets = ["publication", "syncStatus", "retry", "conflict", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play", "speed"]
 
   connect() {
     this.publication = JSON.parse(this.publicationTarget.textContent)
-    if (!this.publication.assets.length) return
     this.active = true
-    this.fontSize = 105
-    this.playbackRate = 1
+    if (!this.publication.assets.length) return
+    let preferences = {}
+    try { preferences = JSON.parse(localStorage.getItem("shelfarr.reader.preferences.v1") || "{}") || {} } catch (_) { /* storage unavailable */ }
+    this.fontSize = Number.isFinite(preferences.fontSize) && preferences.fontSize >= 80 && preferences.fontSize <= 180 ? preferences.fontSize : 105
+    this.playbackRate = Number.isFinite(preferences.playbackRate) && preferences.playbackRate >= 0.5 && preferences.playbackRate <= 3 ? preferences.playbackRate : 1
+    this.fontReflow = Promise.resolve()
+    if (this.hasSpeedTarget) {
+      if (![...this.speedTarget.options].some(option => Number(option.value) === this.playbackRate)) this.playbackRate = 1
+      this.speedTarget.value = String(this.playbackRate)
+    }
     this.sync = new ConsumerProgressSync(this.publication.progress_url, this.publication.progress?.version,
       (message, retry) => { if (this.active) { this.syncStatusTarget.textContent = message; this.retryTarget.hidden = !retry } },
       () => { if (this.active) this.conflictTarget.hidden = false })
@@ -30,6 +37,7 @@ export default class extends Controller {
     this.active = false
     this.sync?.close()
     this.abort?.abort()
+    this.statusAbort?.abort()
     this.book?.destroy()
     if (this.hasAudioTarget) {
       this.audioTarget.pause()
@@ -161,11 +169,55 @@ export default class extends Controller {
     if (this.readerReady && this.userMoved) this.sync.save({ asset_id: this.currentAsset.id, locator: { href: this.book.resolve(start.href).replace(/^\/+/, ""), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi: start.cfi } } })
   }
 
+  async saveReadingStatus(event) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const select = form.querySelector("select[name=status]")
+    const submit = form.querySelector("input[type=submit]")
+    const feedback = form.querySelector("[role=status]")
+    const status = select.value
+    select.disabled = submit.disabled = true
+    feedback.textContent = "Saving status…"
+    this.statusAbort = new AbortController()
+    try {
+      const response = await fetch(form.action, { method: "PUT", credentials: "same-origin", signal: this.statusAbort.signal,
+        headers: { "Content-Type": "application/json", "Accept": "application/json", "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || "" },
+        body: JSON.stringify({ status }) })
+      if (!response.ok || response.redirected) throw new Error("Status couldn't be saved. Check your connection or sign in again.")
+      const publication = await response.json()
+      if (!this.active) return
+      this.publication.reading_status = publication.reading_status
+      select.value = publication.reading_status
+      feedback.textContent = "Reading status saved. Your saved place is kept."
+    } catch (error) {
+      if (error.name !== "AbortError" && this.active) feedback.textContent = error.message || "Status couldn't be saved. Try again."
+    } finally {
+      if (this.active) select.disabled = submit.disabled = false
+    }
+  }
+
   previousPage() { this.userMoved = true; this.rendition?.prev().catch(() => this.showError("Couldn't open the previous page.")) }
   nextPage() { this.userMoved = true; this.rendition?.next().catch(() => this.showError("Couldn't open the next page.")) }
   chooseChapter() { this.userMoved = true; this.rendition?.display(this.chaptersTarget.value).catch(() => this.showError("This chapter couldn't be opened.")) }
-  smallerText() { this.userMoved = true; this.fontSize = Math.max(80, this.fontSize - 10); this.rendition?.themes.fontSize(`${this.fontSize}%`) }
-  largerText() { this.userMoved = true; this.fontSize = Math.min(180, this.fontSize + 10); this.rendition?.themes.fontSize(`${this.fontSize}%`) }
+  smallerText() { this.resizeText(-10) }
+  largerText() { this.resizeText(10) }
+  resizeText(delta) {
+    this.fontReflow = this.fontReflow.then(async () => {
+      if (!this.active || !this.rendition || !this.readerReady) return
+      const cfi = this.rendition.currentLocation()?.start?.cfi
+      this.userMoved = true
+      this.fontSize = Math.max(80, Math.min(180, this.fontSize + delta))
+      this.savePreferences()
+      this.rendition.themes.fontSize(`${this.fontSize}%`)
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      if (!this.active) return
+      if (cfi) await this.rendition.display(cfi)
+      await this.rendition.reportLocation()
+    }).catch(() => { if (this.active) this.showError("Text size couldn't be changed. Try again.") })
+  }
+  savePreferences() {
+    try { localStorage.setItem("shelfarr.reader.preferences.v1", JSON.stringify({ fontSize: this.fontSize, playbackRate: this.playbackRate })) } catch (_) { /* keep preferences for this visit */ }
+  }
 
   openAudio(autoplay) {
     this.audioReady = false
@@ -226,17 +278,18 @@ export default class extends Controller {
     this.playbackRate = Number(event.target.value)
     this.audioTarget.defaultPlaybackRate = this.playbackRate
     this.audioTarget.playbackRate = this.playbackRate
+    this.savePreferences()
   }
   chooseTrack() { this.chooseAudioTrack(Number(this.tracksTarget.value)) }
-  chooseAudioTrack(index) {
+  chooseAudioTrack(index, autoplay = !this.audioTarget.paused) {
     this.audioPosition()
     this.sync.flush()
     this.assetIndex = index
     this.initialProgress = null
-    this.openAudio(this.hasPlayed)
+    this.openAudio(autoplay)
   }
   nextTrack() {
-    if (this.assetIndex + 1 < this.publication.assets.length) this.chooseAudioTrack(this.assetIndex + 1)
+    if (this.assetIndex + 1 < this.publication.assets.length) this.chooseAudioTrack(this.assetIndex + 1, this.audioTarget.ended || !this.audioTarget.paused)
     else this.audioPaused()
   }
   audioError() { if (this.active) this.showError("This track couldn't be loaded. Check the connection, file format, or sign in again.") }

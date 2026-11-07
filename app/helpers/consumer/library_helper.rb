@@ -4,6 +4,8 @@ module Consumer::LibraryHelper
   def consumer_progress_label(publication)
     progress = publication[:progress]
     return "Files unavailable" if publication[:assets].empty?
+    return "Finished" if publication[:reading_status] == "finished"
+    return "Unread · saved place kept" if publication[:reading_status] == "unread" && progress
     return publication[:book_type] == "ebook" ? "Start reading" : "Start listening" unless progress
     return "New edition · start afresh" unless publication[:assets].any? { |asset| asset[:id] == progress[:asset_id] }
     return "Resume at #{consumer_time(progress[:position_seconds])}" if progress[:position_seconds]

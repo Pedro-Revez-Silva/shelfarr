@@ -1,10 +1,20 @@
 # frozen_string_literal: true
 
 class Consumer::Publication
-  def initialize(book, user:, routes:, progress: user.consumer_progresses.find_by(book: book))
+  def self.many(books, user:, routes:)
+    ids = books.map(&:id)
+    progress = user.consumer_progresses.where(book_id: ids).index_by(&:book_id)
+    states = user.consumer_reading_states.where(book_id: ids).index_by(&:book_id)
+    books.index_with do |book|
+      new(book, user: user, routes: routes, progress: progress[book.id], reading_state: states[book.id]).representation
+    end
+  end
+
+  def initialize(book, user:, routes:, progress: user.consumer_progresses.find_by(book: book), reading_state: user.consumer_reading_states.find_by(book: book))
     @book = book
     @routes = routes
     @progress = progress
+    @reading_state = reading_state
   end
 
   def representation
@@ -23,7 +33,7 @@ class Consumer::Publication
       assets: assets.map { |asset| { id: asset.id, filename: asset.filename,
         format: asset.format, media_type: asset.media_type, size_bytes: asset.size_bytes,
         position: asset.position, content_url: @routes.api_consumer_v1_asset_path(@book, asset.id) } },
-      progress: @progress&.representation }
+      progress: @progress&.representation, reading_status: @reading_state&.status || (@progress ? "in_progress" : "unread") }
   end
 
   def safe_cover
