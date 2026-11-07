@@ -108,15 +108,14 @@ final class EpubCacheTests: XCTestCase {
                 self.partial = partial
             }
             func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) { try await inner.send(request) }
-            func download(_ request: URLRequest, to file: URL, onProgress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse {
+            func download(_ request: URLRequest, to file: URL, onResponse: @escaping @Sendable (HTTPURLResponse) -> Void, onProgress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse {
                 if !dropped {
                     dropped = true
+                    onResponse(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["ETag": "\"v1\""])!)
                     try Data(partial.utf8).write(to: file)
-                    let folder = file.deletingLastPathComponent()
-                    try Data(#"{"etag":"\"v1\"","sizeBytes":28}"#.utf8).write(to: folder.appendingPathComponent("part.json"))
                     throw APIError.offline(certificate: false)
                 }
-                return try await inner.download(request, to: file, onProgress: onProgress)
+                return try await inner.download(request, to: file, onResponse: onResponse, onProgress: onProgress)
             }
         }
         let dropping = Dropping(transport, String(bytes.prefix(half)))

@@ -21,7 +21,7 @@ final class AppModel: ObservableObject {
     let readerSettings = ReaderSettingsStore()
 
     private var registry: ProgressRegistry?
-    private var registryKey: String?
+    private var registrySession: Session?
 
     private static let appearanceKey = "appearance"
 
@@ -46,21 +46,27 @@ final class AppModel: ObservableObject {
             authorize: { api.authorized($0) }
         )
 
-        sessions.onChange = { [weak self] state in
-            Task { @MainActor in self?.apply(state) }
+        sessions.onChange = { [weak self] _ in
+            Task { @MainActor in self?.apply() }
         }
     }
 
-    private func apply(_ newState: SessionState) {
+    private func apply() {
+        let newState = sessions.state
+        let changed = state != newState
         state = newState
-        if case .signedIn = newState { return }
-        // Streams can't continue without a session, so don't leave a dead player behind.
-        Task { await playback.stop() }
+        guard changed else { return }
+        let previous = registry
+        registry = nil
+        registrySession = nil
+        Task {
+            await playback.stop()
+            await previous?.stopAll()
+        }
     }
 
     var session: Session? {
-        if case let .signedIn(session) = state { return session }
-        return nil
+        sessions.signedIn
     }
 
     private func accountDirectory(_ session: Session) -> URL {
@@ -68,24 +74,32 @@ final class AppModel: ObservableObject {
             .appendingPathComponent("accounts/\(session.accountKey)", isDirectory: true)
     }
 
+    func api(for session: Session) -> ConsumerAPI {
+        let credential = Credential(server: session.server, accessToken: session.accessToken)
+        return ConsumerAPI(transport: transport, credential: { credential }, onRejected: { [sessions] in sessions.markExpired($0) })
+    }
+
+    func publications(for session: Session) -> AccountPublications {
+        AccountPublications(directory: accountDirectory(session).appendingPathComponent("publications", isDirectory: true))
+    }
+
     /// Live progress sync for the signed-in account. Accounts never share a store.
     func progressRegistry() -> ProgressRegistry? {
         guard let session else { return nil }
-        if registryKey == session.accountKey, let registry { return registry }
+        if registrySession == session, let registry { return registry }
+        if let previous = registry { Task { await previous.stopAll() } }
         let store = FileProgressStore(file: accountDirectory(session).appendingPathComponent("progress.json"))
-        let api = self.api
-        let server = session.server
-        let created = ProgressRegistry(store: store) { id, update in
-            try await api.saveProgress(server: server, publicationId: id, update: update)
-        }
+        let created = ProgressRegistry(store: store, remote: SessionProgressRemote.bind(
+            session: session, sessions: sessions, transport: transport
+        ))
         registry = created
-        registryKey = session.accountKey
+        registrySession = session
         return created
     }
 
     func onForeground() {
         guard let session, let registry = progressRegistry() else { return }
-        let api = self.api
+        let api = self.api(for: session)
         Task {
             await registry.flushAll()
             // Validates the token; a 401 flows through `onRejected`.
@@ -107,7 +121,7 @@ final class AppModel: ObservableObject {
         }
         await playback.stop()
         let registry = progressRegistry()
-        let api = self.api
+        let api = self.api(for: session)
         let network = Task {
             await registry?.flushAll()
             try? await api.revoke(server: session.server)
@@ -119,8 +133,9 @@ final class AppModel: ObservableObject {
         await network.value
         timeout.cancel()
 
+        await registry?.stopAll()
         self.registry = nil
-        registryKey = nil
+        registrySession = nil
         sessions.clear()
         await epubCache.clear(accountKey: session.accountKey)
         try? FileManager.default.removeItem(at: accountDirectory(session))

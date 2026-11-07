@@ -13,9 +13,11 @@ final class HomeModel: ObservableObject {
 
     /// Reloads quietly, keeping what's on screen if the refresh fails.
     func refresh(_ app: AppModel) async {
-        guard let server = app.session?.server else { return }
+        guard let session = app.session else { return }
+        let server = session.server, api = app.api(for: session)
         do {
-            let items = try await app.api.library(server: server).items
+            let items = try await api.library(server: server).items
+            guard app.session == session else { return }
             state = .loaded(
                 inProgress: items
                     .filter { $0.progress?.isUsable == true }
@@ -26,6 +28,7 @@ final class HomeModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
+            guard app.session == session else { return }
             if case .loaded = state { return }
             state = .failed(error)
         }

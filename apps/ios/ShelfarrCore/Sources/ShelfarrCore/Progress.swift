@@ -99,14 +99,14 @@ public enum ResumeDecision: Equatable, Sendable {
     /// The saved place belongs to a file this publication no longer has.
     case editionChanged(staleVersion: Int)
 
-    public static func decide(publication: Publication, server: ReadingProgress?, local: LocalProgress?) -> ResumeDecision {
+    public static func decide(publication: Publication, server: ReadingProgress?, local: LocalProgress?, offline: Bool = false) -> ResumeDecision {
         let assets = Set(publication.playableAssets.map(\.id))
         let serverVersion = server?.version ?? 0
         let usableServer = server.flatMap { $0.version > 0 && $0.isUsable && assets.contains($0.assetId) ? $0 : nil }
 
-        if let local, local.hasUnsyncedChanges,
+        if let local, (local.hasUnsyncedChanges || offline),
            let position = local.position, assets.contains(position.assetId) {
-            guard let usableServer, serverVersion > local.baseVersion else {
+            guard !offline, let usableServer, serverVersion > local.baseVersion else {
                 return .resume(position, baseVersion: max(local.baseVersion, serverVersion))
             }
             if position == SavedPosition(usableServer) {
@@ -165,6 +165,8 @@ public actor ProgressSync {
     private var retries = 0
     private var sending = false
     private var sendAgain = false
+    private var stopped = false
+    private var requestTask: Task<ReadingProgress, Error>?
     private var observers: [UUID: @Sendable (SyncStatus) -> Void] = [:]
 
     public private(set) var status: SyncStatus = .idle {
@@ -176,7 +178,8 @@ public actor ProgressSync {
         store: ProgressStore,
         remote: @escaping Remote,
         timing: SyncTiming = SyncTiming(),
-        newMutationId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+        newMutationId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
+        initiallyStopped: Bool = false
     ) {
         self.publicationId = publicationId
         self.store = store
@@ -184,6 +187,7 @@ public actor ProgressSync {
         self.timing = timing
         clock = ContinuousClock()
         self.newMutationId = newMutationId
+        stopped = initiallyStopped
     }
 
     @discardableResult
@@ -206,6 +210,7 @@ public actor ProgressSync {
     }
 
     private func save(_ updated: LocalProgress) async {
+        guard !stopped else { return }
         record = updated
         await store.put(updated)
     }
@@ -214,6 +219,7 @@ public actor ProgressSync {
 
     /// Anchors this session after a `ResumeDecision`, before the first `update`.
     public func begin(position: SavedPosition?, baseVersion: Int) async {
+        guard !stopped else { return }
         var existing = await current()
         if existing.position == position, existing.baseVersion == baseVersion { return }
         existing.dirty = existing.dirty && existing.position == position
@@ -228,6 +234,7 @@ public actor ProgressSync {
 
     /// Records the latest place. Cheap enough to call on every page turn or tick.
     public func update(_ position: SavedPosition) async {
+        guard !stopped else { return }
         var existing = await current()
         if existing.position == position { return }
         existing.position = position
@@ -246,9 +253,22 @@ public actor ProgressSync {
 
     /// Sends everything outstanding now. Call on pause, stop and background.
     public func flush() async {
+        guard !stopped else { return }
         timer?.cancel()
         timer = nil
         await send()
+    }
+
+    /// Ends account work without discarding its durable unsent position.
+    public func stop() async {
+        stopped = true
+        timer?.cancel()
+        timer = nil
+        requestTask?.cancel()
+        sendAgain = false
+        observers.removeAll()
+        // Drain writes already queued before sign-out removes the directory.
+        _ = await store.get(publicationId)
     }
 
     /// Keeps this device's place, replacing what the other device saved.
@@ -292,6 +312,7 @@ public actor ProgressSync {
     }
 
     private func schedule(after delay: Duration) {
+        guard !stopped else { return }
         timer?.cancel()
         timer = Task { [weak self] in
             try? await Task.sleep(for: delay)
@@ -301,17 +322,19 @@ public actor ProgressSync {
     }
 
     private func send() async {
+        guard !stopped else { return }
         // Actor reentrancy: an in-flight send picks up any later request itself.
         if sending {
             sendAgain = true
             return
         }
         sending = true
-        defer { sending = false }
+        defer { sending = false; requestTask = nil }
 
         repeat {
             sendAgain = false
             while let mutation = await nextMutation() {
+                guard !stopped else { return }
                 do {
                     let update = ProgressUpdate(
                         assetId: mutation.position.assetId,
@@ -320,8 +343,14 @@ public actor ProgressSync {
                         expectedVersion: mutation.expectedVersion,
                         clientMutationId: mutation.mutationId
                     )
-                    await accept(try await remote(publicationId, update))
+                    let remote = self.remote, id = publicationId
+                    let task = Task { try await remote(id, update) }
+                    requestTask = task
+                    let result = try await task.value
+                    guard !stopped else { return }
+                    await accept(result)
                 } catch let APIError.progressConflict(server) {
+                    guard !stopped else { return }
                     if let server, server.clientMutationId == mutation.mutationId {
                         // Our earlier attempt landed and only the response was lost.
                         await accept(server)
@@ -333,15 +362,18 @@ public actor ProgressSync {
                         return
                     }
                 } catch APIError.unauthorized {
+                    guard !stopped else { return }
                     status = .needsSignIn
                     return
                 } catch let error as APIError where error.isRetryable {
+                    guard !stopped else { return }
                     status = .waitingForServer
                     scheduleRetry()
                     return
                 } catch is CancellationError {
                     return
                 } catch {
+                    guard !stopped else { return }
                     await discard()
                     return
                 }
@@ -351,6 +383,7 @@ public actor ProgressSync {
 
     private func nextMutation() async -> PendingMutation? {
         var existing = await current()
+        guard !stopped else { return nil }
         if existing.conflict != nil { return nil }
         if let queued = existing.pending { return queued }
         guard existing.dirty, let position = existing.position else {
@@ -406,6 +439,7 @@ public final class ProgressRegistry: @unchecked Sendable {
     private let remote: ProgressSync.Remote
     private let lock = NSLock()
     private var syncs: [String: ProgressSync] = [:]
+    private var stopped = false
 
     public init(store: ProgressStore, remote: @escaping ProgressSync.Remote) {
         self.store = store
@@ -415,7 +449,7 @@ public final class ProgressRegistry: @unchecked Sendable {
     public func sync(for publicationId: String) -> ProgressSync {
         lock.withLock {
             if let existing = syncs[publicationId] { return existing }
-            let created = ProgressSync(publicationId: publicationId, store: store, remote: remote)
+            let created = ProgressSync(publicationId: publicationId, store: store, remote: remote, initiallyStopped: stopped)
             syncs[publicationId] = created
             return created
         }
@@ -423,8 +457,19 @@ public final class ProgressRegistry: @unchecked Sendable {
 
     /// Retries whatever earlier sessions could not deliver.
     public func flushAll() async {
+        guard !lock.withLock({ stopped }) else { return }
         for record in await store.unsynced() {
             await sync(for: record.publicationId).flush()
         }
+    }
+
+    public func stopAll() async {
+        let pending = lock.withLock { () -> [ProgressSync] in
+            stopped = true
+            let values = Array(syncs.values)
+            syncs.removeAll()
+            return values
+        }
+        for sync in pending { await sync.stop() }
     }
 }

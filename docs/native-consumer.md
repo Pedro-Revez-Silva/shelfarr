@@ -81,7 +81,7 @@ exercises polling backoff.
 - **Redirects.** Automatic redirect handling is off. A redirect is followed only if both
   ends are inside the boundary. Anything else fails, and nothing is sent to the new host.
 - **One HTTP path.** API calls, EPUB downloads, covers and audio all use the same
-  credential logic. Android uses one OkHttp stack. iOS streams audio through an
+  credential logic. Android uses the same scoped interceptor for shared and account-bound clients. iOS streams audio through an
   `AVAssetResourceLoader` that fetches byte ranges with the API client, because
   AVPlayer has no supported way to set a bearer header. Tokens never appear in URLs.
 - **Storage.** Android encrypts the session with a non-exportable AES-256-GCM Android
@@ -98,7 +98,8 @@ exercises polling backoff.
   progress, EPUB copies and cached covers, whether or not the server was reachable. A
   401 clears the token but keeps the address, and any unsent progress, for signing in again.
 - **Separation.** Local files live under a hash of the server and user id, so accounts
-  never share progress or book copies.
+  never share progress or book copies. Path case is preserved. Progress retries use
+  the account's captured credential, and session transitions stop its sync work.
 
 ## Progress
 
@@ -128,6 +129,8 @@ seconds within the named asset.
   otherwise the subpath is added. Both `/api/...` and `/shelfarr/api/...` work.
 - Covers from another origin are fetched without credentials. Redirects from them are
   not followed, and any failure shows the generated cover.
+- Last known publication metadata is stored per account so an existing EPUB can
+  reopen when the network is unavailable. Authentication and TLS errors are surfaced.
 - EPUB copies are revalidated with `If-None-Match` on every open and resumed with
   `Range` and `If-Range`, so `content_url` needs a stable strong `ETag`.
 - iOS audio relies on single byte ranges and `Content-Range` with a known total length.

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import ShelfarrCore
 import UIKit
@@ -22,6 +23,7 @@ final class ReaderModel: ObservableObject {
 
     private(set) var book: ReadiumBook?
     private let app: AppModel
+    private let owner: Session?
     private let publicationId: String
     private let sync: ProgressSync?
     private var asset: ShelfarrCore.Asset?
@@ -30,12 +32,13 @@ final class ReaderModel: ObservableObject {
 
     init(app: AppModel, publicationId: String) {
         self.app = app
+        owner = app.session
         self.publicationId = publicationId
         sync = app.progressRegistry()?.sync(for: publicationId)
     }
 
     func open() async {
-        guard let session = app.session, let sync else {
+        guard let session = owner, app.session == session, let sync else {
             state = .failed(APIError.unauthorized)
             return
         }
@@ -44,7 +47,12 @@ final class ReaderModel: ObservableObject {
             Task { @MainActor in self?.syncStatus = status }
         }
         do {
-            let publication = try await app.api.publication(server: session.server, id: publicationId)
+            let api = app.api(for: session)
+            let metadata = try await app.publications(for: session).load(
+                id: publicationId, server: session.server, api: api
+            )
+            guard app.session == session else { throw CancellationError() }
+            let publication = metadata.publication
             guard let epub = publication.epubAsset else {
                 state = .unreadable
                 return
@@ -52,10 +60,11 @@ final class ReaderModel: ObservableObject {
             asset = epub
             title = publication.title
 
-            let cached = try await app.epubCache.obtain(accountKey: session.accountKey, server: session.server, asset: epub) { [weak self] fraction in
+            let cached = try await app.epubCache.obtain(accountKey: session.accountKey, server: session.server, asset: epub, authorize: { api.authorized($0) }) { [weak self] fraction in
                 Task { @MainActor in self?.state = .preparing(fraction) }
             }
-            if cached.unverified {
+            guard app.session == session else { throw CancellationError() }
+            if cached.unverified || metadata.unverified {
                 notice = "Reading the copy on this device. Your place will sync when you're back online."
             }
             guard let opened = await ReadiumBook.open(file: cached.file) else {
@@ -65,7 +74,7 @@ final class ReaderModel: ObservableObject {
             book = opened
 
             let local = await sync.snapshot()
-            switch ResumeDecision.decide(publication: publication, server: publication.progress, local: local) {
+            switch ResumeDecision.decide(publication: publication, server: publication.progress, local: local, offline: metadata.unverified) {
             case .beginning:
                 await start(nil, baseVersion: 0)
             case let .resume(position, baseVersion):
@@ -91,7 +100,7 @@ final class ReaderModel: ObservableObject {
     }
 
     private func start(_ position: SavedPosition?, baseVersion: Int) async {
-        guard let book else { return }
+        guard let book, app.session == owner else { return }
         await sync?.begin(position: position, baseVersion: baseVersion)
         do {
             let navigator = try book.makeNavigator(

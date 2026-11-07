@@ -21,7 +21,7 @@ public protocol HTTPTransport: Sendable {
 
     /// Streams the response body into `file`, truncating unless the server sends
     /// a partial response. Non-success bodies are not written.
-    func download(_ request: URLRequest, to file: URL, onProgress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse
+    func download(_ request: URLRequest, to file: URL, onResponse: @escaping @Sendable (HTTPURLResponse) -> Void, onProgress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse
 }
 
 /// The default transport. It re-checks every redirect, so a token can never follow
@@ -34,6 +34,7 @@ public final class URLSessionTransport: NSObject, HTTPTransport, URLSessionDataD
         var blockedLocation: String?
         var written: Int64 = 0
         var onProgress: (@Sendable (Int64) -> Void)?
+        var onResponse: (@Sendable (HTTPURLResponse) -> Void)?
         var continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>?
         var destination: URL?
     }
@@ -57,9 +58,10 @@ public final class URLSessionTransport: NSObject, HTTPTransport, URLSessionDataD
         try await run(request, Transfer())
     }
 
-    public func download(_ request: URLRequest, to file: URL, onProgress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse {
+    public func download(_ request: URLRequest, to file: URL, onResponse: @escaping @Sendable (HTTPURLResponse) -> Void, onProgress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse {
         let transfer = Transfer()
         transfer.destination = file
+        transfer.onResponse = onResponse
         transfer.onProgress = onProgress
         return try await run(request, transfer).1
     }
@@ -106,10 +108,11 @@ public final class URLSessionTransport: NSObject, HTTPTransport, URLSessionDataD
     ) {
         if let transfer = transfer(for: dataTask), let http = response as? HTTPURLResponse {
             transfer.response = http
+            transfer.onResponse?(http)
             if let destination = transfer.destination, (200 ..< 300).contains(http.statusCode) {
                 let manager = FileManager.default
                 if http.statusCode == 200 || !manager.fileExists(atPath: destination.path) {
-                    manager.createFile(atPath: destination.path, contents: nil)
+                    _ = manager.createFile(atPath: destination.path, contents: nil)
                 }
                 transfer.file = try? FileHandle(forWritingTo: destination)
                 if let handle = transfer.file { _ = try? handle.seekToEnd() }

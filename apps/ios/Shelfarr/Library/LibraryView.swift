@@ -13,10 +13,19 @@ final class LibraryModel: ObservableObject {
 
     private var nextCursor: String?
     private var request: Task<Void, Never>?
+    private var pageRequest: Task<Void, Never>?
+    private var generation = 0
 
     func reload(_ app: AppModel, debounce: Bool = false) {
-        guard let server = app.session?.server else { return }
+        guard let session = app.session else { return }
+        let server = session.server, api = app.api(for: session)
         request?.cancel()
+        pageRequest?.cancel()
+        generation += 1
+        let generation = self.generation, filter = self.filter, query = self.query
+        loading = true
+        loadingMore = false
+        nextCursor = nil
         request = Task {
             if debounce { try? await Task.sleep(nanoseconds: 350_000_000) }
             if Task.isCancelled { return }
@@ -24,13 +33,14 @@ final class LibraryModel: ObservableObject {
             error = nil
             pageFailed = false
             do {
-                let page = try await app.api.library(server: server, filter: filter, query: query)
-                if Task.isCancelled { return }
+                let page = try await api.library(server: server, filter: filter, query: query)
+                guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
                 items = page.items
                 nextCursor = page.nextCursor
             } catch is CancellationError {
                 return
             } catch {
+                guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
                 self.error = error
                 items = []
                 nextCursor = nil
@@ -40,17 +50,21 @@ final class LibraryModel: ObservableObject {
     }
 
     func loadMoreIfNeeded(_ app: AppModel, after publication: ShelfarrCore.Publication) {
-        guard let server = app.session?.server, let cursor = nextCursor, !loading, !loadingMore,
+        guard let session = app.session, let cursor = nextCursor, !loading, !loadingMore,
               items.suffix(6).contains(where: { $0.id == publication.id })
         else { return }
+        let generation = self.generation, filter = self.filter, query = self.query
+        let server = session.server, api = app.api(for: session)
         loadingMore = true
         pageFailed = false
-        Task {
+        pageRequest = Task {
             do {
-                let page = try await app.api.library(server: server, filter: filter, query: query, cursor: cursor)
+                let page = try await api.library(server: server, filter: filter, query: query, cursor: cursor)
+                guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
                 items += page.items
                 nextCursor = page.nextCursor
             } catch {
+                guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
                 pageFailed = true
             }
             loadingMore = false

@@ -90,6 +90,15 @@ class ServerAddressTest {
     }
 
     @Test
+    fun `account identity preserves case sensitive base paths`() {
+        val upper = valid("https://EXAMPLE.org/Shelfarr")
+        val lower = valid("https://example.org/shelfarr")
+        assertFalse(upper == lower)
+        assertFalse(accountKey(upper, "1") == accountKey(lower, "1"))
+        assertEquals(lower, valid("https://EXAMPLE.org/shelfarr/"))
+    }
+
+    @Test
     fun `restoring keeps the same identity`() {
         val server = valid("https://Example.org/Shelfarr/")
         assertEquals(server, ServerAddress.restore(server.display))

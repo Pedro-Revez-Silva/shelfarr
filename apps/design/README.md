@@ -74,8 +74,8 @@ silently, and never apply a place from a replaced file.
   by 22px, with `align-items: end` on the cover box to keep the shelf baseline.
 - Bottom tab bar below about 768px, moving to a slim left rail above it. Respect
   `env(safe-area-inset-bottom)`.
-- Load Newsreader from Google Fonts with `opsz`. Use `font-optical-sizing: auto`, or
-  `opsz` 72 for display sizes. Use `system-ui` for interface text.
+- Serve the checked-in Newsreader fonts from Shelfarr's own assets. The static
+  display face uses optical size 72. Use `system-ui` for interface text.
 - Map tokens to CSS custom properties under `prefers-color-scheme`. Keep the reader
   theme separate from the page theme.
 - 48px minimum touch targets and a visible focus ring in the accent colour.

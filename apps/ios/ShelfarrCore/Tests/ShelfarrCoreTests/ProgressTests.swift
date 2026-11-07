@@ -64,6 +64,19 @@ final class ProgressTests: XCTestCase {
         XCTAssertEqual(remote.calls.count, 1)
     }
 
+    func testStoppedSyncRetainsItsPlaceWithoutSendingOrWritingAgain() async throws {
+        let store = MemoryStore(), remote = Remote()
+        let sync = makeSync(store, remote, debounce: .milliseconds(20))
+        await sync.update(at(8))
+        await sync.stop()
+        await sync.update(at(9))
+        await sync.flush()
+        try await Task.sleep(for: .milliseconds(80))
+        let local = await store.get("p")
+        XCTAssertEqual(local?.position, at(8))
+        XCTAssertEqual(remote.calls.count, 0)
+    }
+
     func testRepeatingTheSamePlaceSendsNothing() async {
         let store = MemoryStore(), remote = Remote()
         let sync = makeSync(store, remote)
@@ -206,6 +219,13 @@ final class ResumeDecisionTests: XCTestCase {
 
     private func local(dirty: Bool, base: Int, asset: String = "a1", total: Double = 0.2) -> LocalProgress {
         LocalProgress(publicationId: "p", position: SavedPosition(assetId: asset, locator: locator(total)), baseVersion: base, dirty: dirty)
+    }
+
+    func testOfflineUsesTheLatestLocalPlaceEvenAfterItWasSynced() {
+        XCTAssertEqual(
+            ResumeDecision.decide(publication: book, server: server(2), local: local(dirty: false, base: 3), offline: true),
+            .resume(SavedPosition(assetId: "a1", locator: locator(0.2)), baseVersion: 3)
+        )
     }
 
     func testNothingSaved() {

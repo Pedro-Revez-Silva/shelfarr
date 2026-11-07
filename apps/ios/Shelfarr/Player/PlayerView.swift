@@ -15,17 +15,19 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var syncStatus = SyncStatus.idle
 
     private let app: AppModel
+    private let owner: Session?
     private let publicationId: String
     private let sync: ProgressSync?
 
     init(app: AppModel, publicationId: String) {
         self.app = app
+        owner = app.session
         self.publicationId = publicationId
         sync = app.progressRegistry()?.sync(for: publicationId)
     }
 
     func start() async {
-        guard let sync, let session = app.session else {
+        guard let sync, let session = owner, app.session == session else {
             state = .failed(APIError.unauthorized)
             return
         }
@@ -38,7 +40,8 @@ final class PlayerModel: ObservableObject {
         }
         state = .loading
         do {
-            let publication = try await app.api.publication(server: session.server, id: publicationId)
+            let publication = try await app.api(for: session).publication(server: session.server, id: publicationId)
+            guard app.session == session else { throw CancellationError() }
             if publication.audioAssets.isEmpty {
                 state = .noAudio
                 return
@@ -74,9 +77,9 @@ final class PlayerModel: ObservableObject {
     }
 
     private func play(_ publication: ShelfarrCore.Publication, _ start: SavedPosition?, baseVersion: Int, notice: String? = nil) async {
-        guard let session = app.session, let sync else { return }
+        guard let session = owner, app.session == session, let sync else { return }
         await sync.begin(position: start, baseVersion: baseVersion)
-        app.playback.load(publication, server: session.server, api: app.api, sync: sync, start: start)
+        app.playback.load(publication, server: session.server, api: app.api(for: session), sync: sync, start: start)
         state = .active(notice: notice)
     }
 

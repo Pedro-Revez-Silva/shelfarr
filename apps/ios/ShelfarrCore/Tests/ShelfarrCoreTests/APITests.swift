@@ -14,6 +14,7 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
 
     var replies: [Result<Reply, Error>] = []
     var requests: [URLRequest] = []
+    var beforeResponse: (@Sendable () -> Void)?
 
     func enqueue(_ status: Int, _ body: String = "", headers: [String: String] = [:]) {
         replies.append(.success(Reply(status: status, body: body, headers: headers)))
@@ -30,11 +31,13 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let reply = try next(request)
+        beforeResponse?()
         return (Data(reply.body.utf8), http(request, reply))
     }
 
-    func download(_ request: URLRequest, to file: URL, onProgress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse {
+    func download(_ request: URLRequest, to file: URL, onResponse: @escaping @Sendable (HTTPURLResponse) -> Void, onProgress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse {
         let reply = try next(request)
+        onResponse(http(request, reply))
         if reply.status == 200 {
             try Data(reply.body.utf8).write(to: file)
         } else if reply.status == 206 {
@@ -124,6 +127,17 @@ final class APITests: XCTestCase {
         transport.enqueue(401)
         _ = try? await client.me(server: server)
         XCTAssertEqual(box.count, 1)
+    }
+
+    func testLate401CannotExpireTheReplacementCredential() async {
+        final class Box: @unchecked Sendable { var token = "old"; var rejected = 0 }
+        let box = Box(), server = self.server
+        let client = ConsumerAPI(transport: transport, credential: { Credential(server: server, accessToken: box.token) }) { _ in box.rejected += 1 }
+        transport.beforeResponse = { box.token = "new" }
+        transport.enqueue(401)
+        _ = try? await client.me(server: server)
+        XCTAssertEqual(transport.requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer old")
+        XCTAssertEqual(box.rejected, 0)
     }
 
     func testConflictCarriesCurrentProgress() async {
