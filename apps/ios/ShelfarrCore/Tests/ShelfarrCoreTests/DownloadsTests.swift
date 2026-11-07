@@ -104,7 +104,7 @@ final class DownloadsTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    private func manager(_ folder: String = "acct", token: String = "secret", space: Int64? = nil, max: Int = 2) -> DownloadManager {
+    private func manager(_ folder: String = "acct", token: String = "secret", space: Int64? = nil, max: Int = 2, onUnauthorized: @escaping @Sendable () -> Void = {}) -> DownloadManager {
         let server = self.server
         let api = ConsumerAPI(transport: transport, credential: { Credential(server: server, accessToken: token) })
         let known = publications
@@ -118,7 +118,8 @@ final class DownloadsTests: XCTestCase {
                 return found
             },
             maxConcurrent: max,
-            usableSpace: { space }
+            usableSpace: { space },
+            onUnauthorized: onUnauthorized
         )
     }
 
@@ -129,6 +130,39 @@ final class DownloadsTests: XCTestCase {
         }
         XCTFail("Timed out waiting for \(states)")
         throw CancellationError()
+    }
+
+    func testManifestFailureIsVisibleAndRetryableWithoutTransferring() async throws {
+        let blocked = root.appendingPathComponent("acct/downloads/manifest.json")
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        let downloads = manager()
+        await downloads.start()
+        await downloads.enqueue(book)
+        let failed = try await wait(downloads, "book", [.failed])
+        XCTAssertEqual(failed.problem, .storage)
+        XCTAssertTrue(transport.contentRequests.isEmpty)
+        try FileManager.default.removeItem(at: blocked)
+        await downloads.retry("book")
+        _ = try await wait(downloads, "book", [.ready])
+        await downloads.close()
+    }
+
+    func testCancelAndRemoveReportManifestWriteFailures() async throws {
+        let downloads = manager()
+        await downloads.enqueue(book)
+        _ = try await wait(downloads, "book", [.ready])
+        let blocked = root.appendingPathComponent("acct/downloads/manifest.json")
+        try FileManager.default.removeItem(at: blocked)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        await downloads.cancel("book")
+        let cancelled = await downloads.record("book")
+        XCTAssertEqual(cancelled?.state, .failed)
+        XCTAssertEqual(cancelled?.problem, .storage)
+        await downloads.remove("book")
+        let removed = await downloads.record("book")
+        XCTAssertEqual(removed?.state, .failed)
+        XCTAssertEqual(removed?.problem, .storage)
+        await downloads.close()
     }
 
     func testAnEpubDownloadsWithItsAccountTokenAndSurvivesARestart() async throws {
@@ -236,10 +270,18 @@ final class DownloadsTests: XCTestCase {
 
     func testFailuresStayDistinct() async throws {
         transport["/files/e1"]?.status = 401
-        let signedOut = manager("a")
+        final class Rejections: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+            func note() { lock.withLock { count += 1 } }
+            var value: Int { lock.withLock { count } }
+        }
+        let rejected = Rejections()
+        let signedOut = manager("a", onUnauthorized: { rejected.note() })
         await signedOut.enqueue(book)
         let signIn = try await wait(signedOut, "book", [.failed])
         XCTAssertEqual(signIn.problem, .signIn)
+        XCTAssertEqual(rejected.value, 1)
 
         transport["/files/e1"] = .init(data: epub, etag: "\"e1\"", failure: .offline(certificate: true))
         let untrusted = manager("b")

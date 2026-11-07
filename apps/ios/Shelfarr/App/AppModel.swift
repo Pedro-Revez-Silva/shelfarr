@@ -10,7 +10,7 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: Self.appearanceKey) }
     }
 
-    /// Bumped when a reader or player closes, so progress on screen stays current.
+    /// Bumped after reading, listening or status changes, so the library stays current.
     @Published var libraryGeneration = 0
 
     let sessions: SessionManager
@@ -134,7 +134,8 @@ final class AppModel: ObservableObject {
             usableSpace: {
                 let values = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
                 return values?.volumeAvailableCapacityForImportantUsage
-            }
+            },
+            onUnauthorized: { sessions.markExpired(Credential(server: session.server, accessToken: session.accessToken)) }
         )
         downloadManager = manager
         downloadSession = session
