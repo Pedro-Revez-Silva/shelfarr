@@ -836,8 +836,13 @@ public actor DownloadManager: TransferSink {
             try assemble(ticket.publicationId, ticket.assetId)
         case 401:
             if ticket.background == true {
-                // A grant expired or was refused: that never signs the account out.
-                persist()
+                // Retire this whole in-flight window before retrying. Its ranges
+                // share one grant; their late 401s are one rejection, not several.
+                // Valid staged bytes remain available for ordered assembly.
+                epochs[ticket.publicationId, default: 0] += 1
+                preparing.removeValue(forKey: ticket.publicationId)?.cancel()
+                cancelLater(discardTickets(ticket.publicationId, keepStaged: true))
+                guard persist() else { throw StorageFailure() }
                 grantRejections[ticket.publicationId, default: 0] += 1
                 if grantRejections[ticket.publicationId, default: 0] > 2 { throw GrantRejected() }
                 return replan(ticket.publicationId)

@@ -8,10 +8,6 @@ public struct PublicationMetadata: Sendable {
 /// Last known metadata for books opened by this account. An offline reader needs
 /// both this record and its EPUB; authentication and TLS errors never use it.
 public actor AccountPublications {
-    private static func modified(_ url: URL) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-    }
-
     private let directory: URL
     private let cache: LibraryCache?
 
@@ -39,13 +35,9 @@ public actor AccountPublications {
         } catch let APIError.offline(certificate) where !certificate {
             let saved = (try? Data(contentsOf: file(id))).flatMap { try? JSONDecoder().decode(Publication.self, from: $0) }
             let listed = await cache?.title(id)
-            // The newer of the two copies this account saw.
-            let newest: Publication?
-            if let listed, let saved {
-                newest = listed.seenAt > (Self.modified(file(id)) ?? .distantPast) ? listed.publication : saved
-            } else {
-                newest = saved ?? listed?.publication
-            }
+            // The canonical cache orders observations by request start time. A
+            // legacy file's completion mtime cannot make an older reply newer.
+            let newest = listed?.publication ?? saved
             guard let newest else { throw APIError.offline(certificate: false) }
             return PublicationMetadata(publication: newest, unverified: true)
         }

@@ -380,4 +380,26 @@ final class BackgroundTransferTests: DownloadTestCase {
         XCTAssertNil(TransferTag("other/1/a/b"))
         XCTAssertNil(TransferTag(nil))
     }
+    func testAnExpiredGrantSharedBySeveralRangesIsRefreshedOnce() async throws {
+        let downloads = manager(chunk: 1_500)
+        await downloads.enqueue(book)
+        try await submissions(3)
+        let expired = system.live
+        XCTAssertEqual(Set(expired.map { $0.request.url!.query! }).count, 1)
+        for job in expired { system.respond(job, status: 401, body: nil) }
+        await idle(router)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let record = await downloads.record("book")
+        XCTAssertNotEqual(record?.state, .failed, "one expired grant must not be counted as three successive fresh-grant failures")
+        try await until("a replacement grant") { grants.count > 1 && !system.live.isEmpty }
+        for _ in 0 ..< 20 {
+            for job in system.live { await serve(job) }
+            await idle(router)
+            if await downloads.record("book")?.state == .ready { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        _ = try await wait(downloads, "book", [.ready])
+        await downloads.close()
+    }
+
 }
