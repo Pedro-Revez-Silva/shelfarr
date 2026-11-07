@@ -4,6 +4,7 @@
     <title><%= content_for(:title) || "Your library · Shelfarr" %></title>
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
     <meta name="color-scheme" content="light dark">
+    <meta name="turbo-cache-control" content="no-cache">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
     <%= stylesheet_link_tag "consumer", "data-turbo-track": "reload" %>

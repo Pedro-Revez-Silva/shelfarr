@@ -57,6 +57,37 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     capture("consumer-audio-mobile.png")
   end
 
+  test "relative internal EPUB links use the publication path instead of the app route" do
+    File.unlink(@epub_path)
+    write_consumer_epub(@epub_path, chapter: 'A first chapter. <a href="two.xhtml">Keep reading</a>', second_chapter: "The next part of the story.")
+    visit consumer_publication_path(@ebook)
+    assert_selector ".consumer-ebook iframe", wait: 20
+    within_frame(find(".consumer-ebook iframe")) { click_link "Keep reading" }
+    within_frame(find(".consumer-ebook iframe")) { assert_text "The next part of the story." }
+    assert_text "Your place is saved", wait: 12
+    version = users(:one).consumer_progresses.find_by!(book: @ebook).version
+    click_link "← Your library"
+    assert_current_path consumer_library_path
+    assert_text "Your library."
+    page.go_back
+    assert_selector ".consumer-ebook iframe", wait: 20
+    within_frame(find(".consumer-ebook iframe")) { assert_text "The next part of the story." }
+    assert_equal version, users(:one).consumer_progresses.find_by!(book: @ebook).version
+  end
+
+  test "selected playback speed survives changing tracks" do
+    directory = File.join(@root, "Audio tracks")
+    FileUtils.mkdir_p(directory)
+    %w[Chapter1.mp3 Chapter2.mp3].each { |name| FileUtils.cp(@audio_path, File.join(directory, name)) }
+    @audiobook.update!(file_path: directory)
+    visit consumer_publication_path(@audiobook)
+    assert_selector "[data-consumer-reader-target=duration]", text: /0:0[89]/, wait: 15
+    find("select[data-action='change->consumer-reader#changeSpeed']").select("1.5×")
+    find("select[data-consumer-reader-target=tracks]").select("Chapter2.mp3")
+    assert_selector "[data-consumer-reader-target=trackTitle]", text: "Chapter2.mp3"
+    assert page.evaluate_script("document.querySelector('audio').playbackRate === 1.5 && document.querySelector('audio').defaultPlaybackRate === 1.5")
+  end
+
   private
 
   def assert_no_horizontal_overflow

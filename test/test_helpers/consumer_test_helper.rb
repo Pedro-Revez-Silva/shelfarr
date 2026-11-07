@@ -17,7 +17,7 @@ module ConsumerTestHelper
     @headers = { "Authorization" => "Bearer #{raw}" }
   end
 
-  def write_consumer_epub(path, chapter: "A quiet place to begin reading.")
+  def write_consumer_epub(path, chapter: "A quiet place to begin reading.", second_chapter: nil)
     entries = {
       "mimetype" => "application/epub+zip",
       "META-INF/container.xml" => '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
@@ -25,6 +25,11 @@ module ConsumerTestHelper
       "OEBPS/nav.xhtml" => '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="chapter.xhtml">A beginning</a></li></ol></nav></body></html>',
       "OEBPS/chapter.xhtml" => %(<html xmlns="http://www.w3.org/1999/xhtml"><head><title>A beginning</title></head><body><h1>A beginning</h1><p>#{chapter}</p></body></html>)
     }
+    if second_chapter
+      entries["OEBPS/content.opf"] = entries["OEBPS/content.opf"].sub("</manifest>", '<item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest>')
+      entries["OEBPS/content.opf"] = entries["OEBPS/content.opf"].sub("</spine>", '<itemref idref="two"/></spine>')
+      entries["OEBPS/two.xhtml"] = %(<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Another chapter</title></head><body><h1>Another chapter</h1><p>#{second_chapter}</p></body></html>)
+    end
     Zip::File.open(path, create: true) { |zip| entries.each { |name, content| zip.get_output_stream(name) { |out| out.write(content) } } }
   end
 

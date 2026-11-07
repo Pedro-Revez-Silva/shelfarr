@@ -11,6 +11,9 @@ module ConsumerMediaResponse
     headers["ETag"] = etag
     headers["X-Content-Type-Options"] = "nosniff"
     send_file_headers!(filename: asset.filename, type: asset.media_type, disposition: "inline")
+    matches = request.headers["If-None-Match"].to_s.split(",").map(&:strip)
+    return head :not_modified if matches.any? { |value| value == etag || value == "W/#{etag}" || value == "*" }
+
     range_header = request.headers["Range"]
     range_header = nil if request.headers["If-Range"].present? && request.headers["If-Range"] != etag
     range = consumer_byte_range(range_header, asset.size_bytes) unless request.head? || range_header.blank?
