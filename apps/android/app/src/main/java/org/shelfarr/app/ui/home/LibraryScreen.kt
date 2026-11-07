@@ -238,7 +238,7 @@ private fun StatusAndSort(
         MenuButton(
             label = "Sort: ${if (sort == LibrarySort.TITLE) "Title" else "Recent"}",
             active = false,
-            options = listOf(LibrarySort.RECENT to "Recent activity", LibrarySort.TITLE to "Title A–Z"),
+            options = listOf(LibrarySort.RECENT to "Recently added", LibrarySort.TITLE to "Title A–Z"),
             selected = sort,
             onSelect = onSort,
             icon = ShelfarrIcons.Sort,

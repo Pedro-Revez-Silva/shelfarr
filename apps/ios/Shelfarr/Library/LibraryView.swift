@@ -107,7 +107,7 @@ struct LibraryView: View {
                 }
                 Menu {
                     Picker("Sort", selection: $model.sort) {
-                        Text("Recent activity").tag(LibrarySort.recent)
+                        Text("Recently added").tag(LibrarySort.recent)
                         Text("Title A–Z").tag(LibrarySort.title)
                     }
                 } label: {
@@ -127,7 +127,7 @@ struct LibraryView: View {
         .onChange(of: model.status) { _ in model.reload(app) }
         .onChange(of: model.sort) { _ in model.reload(app) }
         .onChange(of: model.query) { _ in model.reload(app, debounce: true) }
-        .task { if model.items.isEmpty { model.reload(app) } }
+        .task(id: app.libraryGeneration) { model.reload(app) }
     }
 
     private func menuLabel(_ text: String, active: Bool, systemImage: String? = nil) -> some View {

@@ -189,6 +189,10 @@ private fun MainShell(container: AppContainer, session: Session) {
             composable(LIBRARY) {
                 val viewModel: LibraryViewModel = viewModel { LibraryViewModel(container) }
                 val state by viewModel.state.collectAsStateWithLifecycle()
+                LifecycleResumeEffect(viewModel) {
+                    viewModel.reload()
+                    onPauseOrDispose {}
+                }
                 LibraryScreen(
                     state = state,
                     host = session.server.host,
