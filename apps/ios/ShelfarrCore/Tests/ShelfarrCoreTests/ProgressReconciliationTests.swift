@@ -9,6 +9,42 @@ final class ProgressReconciliationTests: XCTestCase {
 
     private func status(_ sync: ProgressSync) async -> SyncStatus { await sync.status }
 
+    func testMatchingPlacesStillPublishTheLaterActivityBeforeAThirdDeviceReconnects() async throws {
+        let server = ContractServer(clock: baseTime + 60000)
+        let a = Device("A", server: server, clock: baseTime + 10000)
+        let b = Device("B", server: server, clock: baseTime + 10000)
+        let c = Device("C", server: server, clock: baseTime + 10000)
+        let sa = a.sync(), sb = b.sync(), sc = c.sync()
+        await sb.update(seconds(120), observedAt: baseTime + 1000)
+        await sc.update(seconds(30), observedAt: baseTime + 2000)
+        await sa.update(seconds(120), observedAt: baseTime + 3000)
+        await sb.flush()
+        await sa.flush()
+        XCTAssertEqual(server.stored?.observedAtMillis, baseTime + 3000)
+        await sc.flush()
+        XCTAssertEqual(server.stored?.positionSeconds, 120)
+        let localC = try await c.store.get("p")
+        XCTAssertEqual(localC?.observedAt, baseTime + 3000)
+        XCTAssertTrue(server.received.allSatisfy { $0.resolveConflict == nil })
+        await sa.stop(); await sb.stop(); await sc.stop()
+    }
+
+    func testMatchingPlacesAdoptTheCanonicalLaterTimestamp() async throws {
+        let server = ContractServer(clock: baseTime + 60000)
+        let a = Device("A", server: server, clock: baseTime + 10000)
+        let b = Device("B", server: server, clock: baseTime + 10000)
+        let sa = a.sync(), sb = b.sync()
+        await sa.update(seconds(120), observedAt: baseTime + 1000)
+        await sb.update(seconds(120), observedAt: baseTime + 3000)
+        await sb.flush()
+        await sa.flush()
+        let local = try await a.store.get("p")
+        XCTAssertEqual(local?.observedAt, baseTime + 3000)
+        XCTAssertEqual(local?.hasUnsyncedChanges, false)
+        XCTAssertEqual(server.received.count, 2)
+        await sa.stop(); await sb.stop()
+    }
+
     /// Device A listens far into the book first; device B, later, deliberately seeks back.
     private func offlineUse(restart: Bool) async -> (ContractServer, Device, Device, ProgressSync, ProgressSync) {
         let server = ContractServer(clock: later + 600_000)

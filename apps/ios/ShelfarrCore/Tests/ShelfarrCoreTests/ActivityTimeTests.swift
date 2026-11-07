@@ -157,7 +157,7 @@ final class ReadingRestorationTests: XCTestCase {
     func testTheRestoredPageIsNotReading() {
         var restoring = ReadingRestoration(opening: place("ch3.xhtml", 0.42))
         XCTAssertFalse(restoring.isReading(place("/ch3.xhtml", 0.41)), "Readium lands on the start of the page")
-        XCTAssertFalse(restoring.isReading(place("ch3.xhtml", 0.42)))
+        XCTAssertFalse(restoring.isReading(place("ch3.xhtml", 0.41)))
         XCTAssertTrue(restoring.isReading(place("ch3.xhtml", 0.45)), "a forward page turn is reading")
         XCTAssertTrue(restoring.isReading(place("ch3.xhtml", 0.42)), "after moving, coming back is reading too")
     }
@@ -167,6 +167,21 @@ final class ReadingRestorationTests: XCTestCase {
         XCTAssertTrue(chapter.isReading(place("ch4.xhtml", 0)))
         var back = ReadingRestoration(opening: place("ch3.xhtml", 0.42))
         XCTAssertTrue(back.isReading(place("ch3.xhtml", 0.3)))
+    }
+
+    func testFirstRestoredPageAllowsAnImmediateShortBackwardTurn() {
+        var restoring = ReadingRestoration(opening: place("ch.xhtml", 0.5))
+        XCTAssertFalse(restoring.isReading(place("ch.xhtml", 0.5)))
+        XCTAssertFalse(restoring.isReading(place("/ch.xhtml", 0.5)))
+        XCTAssertTrue(restoring.isReading(place("ch.xhtml", 0.49)))
+        XCTAssertTrue(restoring.isReading(place("ch.xhtml", 0.5)))
+    }
+
+    func testPageStartToleranceEndsAtTheActualRestoredPage() {
+        var restoring = ReadingRestoration(opening: place("ch.xhtml", 0.507))
+        XCTAssertFalse(restoring.isReading(place("ch.xhtml", 0.5)))
+        XCTAssertFalse(restoring.isReading(place("ch.xhtml", 0.5)))
+        XCTAssertTrue(restoring.isReading(place("ch.xhtml", 0.4999)))
     }
 
     func testOpeningAtTheBeginningIgnoresTheFirstReport() {

@@ -19,6 +19,31 @@ class RestoredPlaceTest {
     }
 
     @Test
+    fun `first restored page allows an immediate short backward turn`() {
+        val restoration = ReadingRestoration(locator("ch.xhtml", 0.5))
+        assertFalse(restoration.isReading(locator("ch.xhtml", 0.5)))
+        assertFalse(restoration.isReading(locator("/ch.xhtml", 0.5)))
+        assertTrue(restoration.isReading(locator("ch.xhtml", 0.49)))
+        assertTrue(restoration.isReading(locator("ch.xhtml", 0.5)))
+    }
+
+    @Test
+    fun `page-start tolerance ends at the actual restored page`() {
+        val restoration = ReadingRestoration(locator("ch.xhtml", 0.507))
+        assertFalse(restoration.isReading(locator("ch.xhtml", 0.5)))
+        assertFalse(restoration.isReading(locator("ch.xhtml", 0.5)))
+        assertTrue(restoration.isReading(locator("ch.xhtml", 0.4999)))
+    }
+
+    @Test
+    fun `new book ignores only the initial page and repeats`() {
+        val restoration = ReadingRestoration(null)
+        assertFalse(restoration.isReading(locator("ch.xhtml", 0.0)))
+        assertFalse(restoration.isReading(locator("ch.xhtml", 0.0)))
+        assertTrue(restoration.isReading(locator("ch.xhtml", 0.001)))
+    }
+
+    @Test
     fun `Readium reporting the opened place is not reading`() {
         assertTrue(isRestoredPlace(locator("OEBPS/c2.xhtml", 0.43), locator("OEBPS/c2.xhtml", 0.43, extra = "x")))
         // It may land at the start of the page holding the saved progression.

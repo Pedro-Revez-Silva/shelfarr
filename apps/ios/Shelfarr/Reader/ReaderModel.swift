@@ -158,7 +158,7 @@ final class ReaderModel: ObservableObject {
 
     func flush() {
         guard let sync else { return }
-        enqueue { await sync.flush() }
+        enqueue { await sync.requestFlush() }
     }
 
     private func enqueue(_ work: @escaping @Sendable () async -> Void) {

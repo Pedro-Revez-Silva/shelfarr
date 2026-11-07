@@ -117,6 +117,8 @@ public struct ReadingRestoration: Sendable {
         /// Opened at the beginning: the first report says where that is.
         case beginning
         case place(JSONValue)
+        /// The actual page reported after restoration; subsequent movement is reading.
+        case restored(JSONValue)
     }
 
     private var anchor: Anchor
@@ -139,10 +141,17 @@ public struct ReadingRestoration: Sendable {
         case .none:
             return true
         case .beginning:
-            anchor = .place(current)
+            anchor = .restored(current)
             return false
         case let .place(start):
-            if Self.isRestored(start: start, current: current) { return false }
+            if Self.isRestored(start: start, current: current) {
+                anchor = .restored(current)
+                return false
+            }
+            anchor = .none
+            return true
+        case let .restored(start):
+            if Self.samePage(start, current) { return false }
             anchor = .none
             return true
         }
@@ -160,6 +169,12 @@ public struct ReadingRestoration: Sendable {
 
     private static func trimmed(_ href: String) -> Substring {
         href.drop { $0 == "/" }
+    }
+
+    private static func samePage(_ start: JSONValue, _ current: JSONValue) -> Bool {
+        guard let href = current["href"]?.stringValue, let opened = start["href"]?.stringValue,
+              trimmed(href) == trimmed(opened) else { return false }
+        return current["locations"]?["progression"]?.doubleValue == start["locations"]?["progression"]?.doubleValue
     }
 }
 

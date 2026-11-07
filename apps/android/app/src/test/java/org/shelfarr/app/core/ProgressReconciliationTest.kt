@@ -85,6 +85,39 @@ class ProgressReconciliationTest {
     }
 
     @Test
+    fun `matching places still publish the later activity before a third device reconnects`() = runTest {
+        val world = World(this)
+        val a = Device("A", this, world.server)
+        val b = Device("B", this, world.server)
+        val c = Device("C", this, world.server)
+        shared(world, a, b, c)
+        b.live.update(at(120.0), TEST_EPOCH + 1000)
+        c.live.update(at(30.0), TEST_EPOCH + 2000)
+        a.live.update(at(120.0), TEST_EPOCH + 3000)
+        b.live.flush()
+        a.live.flush()
+        assertEquals(ActivityTime.format(TEST_EPOCH + 3000), world.server.stored!!.observedAt)
+        c.live.flush()
+        assertEquals(120.0, world.server.stored!!.positionSeconds)
+        assertEquals(TEST_EPOCH + 3000, c.record.observedAtEpochMs)
+        assertFalse(a.record.hasUnsyncedChanges)
+        assertTrue(a.sent().none { it.resolveConflict == true })
+    }
+
+    @Test
+    fun `matching places adopt the canonical later timestamp`() = runTest {
+        val (world, a, b) = both()
+        shared(world, a, b)
+        a.live.update(at(120.0), TEST_EPOCH + 1000)
+        b.live.update(at(120.0), TEST_EPOCH + 3000)
+        b.live.flush()
+        a.live.flush()
+        assertEquals(TEST_EPOCH + 3000, a.record.observedAtEpochMs)
+        assertFalse(a.record.hasUnsyncedChanges)
+        assertEquals(1, a.sent().size)
+    }
+
+    @Test
     fun `later activity wins when the earlier device syncs first, even after seeking backward`() = runTest {
         val (world, a, b) = both()
         shared(world, a, b)

@@ -50,7 +50,7 @@ observation, including places queued behind the rejected write:
 | Situation | Result |
 | --- | --- |
 | The 409 names our own mutation id | Treated as saved (the answer was lost). |
-| Same place | Marked synced at the server's version. |
+| Same place | Later known local activity is still published; a later server timestamp is adopted. Legacy unknown times retain the version flow. |
 | No server place (`null` or unusable) | Local place rebased onto that version. |
 | Local reached later | Rebased: new mutation id, original `observed_at`, no resolve flag. |
 | Server reached later | Adopted into the record; the stale local writes are dropped. |
@@ -72,9 +72,11 @@ again first, it is rebased like any other place, without the flag. **Use other
 device** adopts the server place and its time.
 
 Nothing creates activity by itself: opening a book, restoring the saved place
-(Readium's first report, or a report up to a page before the saved progression and
-never after it), choosing the other device's place, acknowledgements and the resume
+(Readium's first restored report, which can land at the start of the page holding the
+saved progression), choosing the other device's place, acknowledgements and the resume
 rewind do not write a new checkpoint.
+Once the actual restored page is established, even a short backward page turn counts
+as reading; repeated reports of that same page remain silent.
 
 Errors keep the last local place:
 
@@ -144,9 +146,8 @@ Instrumentation (`apps/scripts/android-reader-smoke.sh`, run by CI's emulator):
   physical devices offline remain in the acceptance flow.
 - Without an audio device the CI emulator cannot advance playback, so audio cadence and
   rewind are verified with the scripted player rather than ExoPlayer decoding.
-- Restoration detection relies on Readium reporting the page holding the saved
-  progression. A backward page turn within 2% of a chapter right after opening is
-  treated as restoration and not saved until the reader moves again.
+- Restoration detection relies on Readium's first restored report identifying the
+  actual page. The initial page-start tolerance does not apply to subsequent turns.
 - A device whose clock is wrong by more than five minutes asks on most conflicts; the
   server refuses its future times (kept locally) until the clock is fixed.
 - An adopted later place is not shown in an open session; it is used on the next open.

@@ -49,15 +49,16 @@ can't reorder one device's own reading.
 
 ## Reconciliation
 
-Sends are debounced (5 s, at most 20 s while moving), serial and idempotent. A flush
-(pause, stop, close, background) waits for a send already under way. On a definite
+Sends are debounced (5 s, at most 20 s while moving), serial and idempotent. Lifecycle
+checkpoints request an immediate upload without blocking subsequent local writes;
+teardown can await the outstanding attempt after those writes drain. On a definite
 409 the canonical server checkpoint is compared with the **newest** local
 observation, including places queued behind the rejected write:
 
 | Situation | Result |
 | --- | --- |
 | The 409 names our own mutation id | Treated as saved (the answer was lost). |
-| Same place | Marked synced at the server's version. |
+| Same place | Later known local activity is still published; a later server timestamp is adopted. Legacy unknown times retain the version flow. |
 | No server place (`null` or unusable) | Local place rebased onto that version. |
 | Local reached later | Rebased: new mutation id, original `observed_at`, no resolve flag. |
 | Server reached later | Adopted into the record; the stale local writes are dropped. |
@@ -80,8 +81,8 @@ device** adopts the server place and its time, and going there in the reader or
 player is not new activity.
 
 Nothing creates activity by itself. Opening a book, Readium's report of the restored
-page (`ReadingRestoration`: the same resource, up to 2% before the saved progression
-and never after it; for a book opened at the beginning, its first report), choosing
+page (`ReadingRestoration`: the first report can land at the start of the page
+holding the saved progression; later movement in either direction counts), choosing
 the other device's place, acknowledgements, metadata refreshes and the resume rewind
 do not write a new checkpoint.
 
@@ -196,9 +197,8 @@ shows the old paths. The fixture ports differ per family (iPhone 8765/8766, iPad
   offline remain in the acceptance flow.
 - The simulator's audio may not advance on CI hosts; the rewind UI test then skips.
   The cadence and rewind rules are covered by the core tests either way.
-- Restoration detection relies on Readium reporting the page holding the saved
-  progression. A backward page turn within 2% of a resource right after opening is
-  treated as restoration and not saved until the reader moves again.
+- Restoration detection relies on Readium's first restored report identifying the
+  actual page. The initial page-start tolerance does not apply to subsequent turns.
 - A device whose clock is wrong by more than five minutes asks on most conflicts; the
   server refuses its future times (kept locally) until the clock is fixed. A clock
   wrong by less than that can still order two devices' activity incorrectly.

@@ -6,8 +6,28 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-/** Marks a session that opened at the beginning, before Readium has said where that is. */
-internal val NO_PLACE = JsonObject(emptyMap())
+/** Initial page-start tolerance applies only until the first restored report. */
+internal class ReadingRestoration(opening: JsonObject?) {
+    private var anchor = opening
+    private var established = false
+    private var reading = false
+
+    fun isReading(current: JsonObject): Boolean {
+        if (reading) return true
+        val start = anchor
+        if (!established && (start == null || isRestoredPlace(start, current))) {
+            anchor = current
+            established = true
+            return false
+        }
+        if (established && start != null &&
+            current.string("href")?.trimStart('/') == start.string("href")?.trimStart('/') &&
+            current.progression() == start.progression()
+        ) return false
+        reading = true
+        return true
+    }
+}
 
 /**
  * Readium lands on the start of the page holding a saved progression, so a restored

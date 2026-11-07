@@ -190,7 +190,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     private suspend fun ready(start: SavedPosition?, baseVersion: Int, observedAtEpochMs: Long? = null) {
         val publication = opened ?: return
         sync?.begin(start, baseVersion, observedAtEpochMs, details?.playableAssets?.map { it.id })
-        restoring = start?.locator ?: NO_PLACE
+        restoration = ReadingRestoration(start?.locator)
         val locator = start?.locator?.let { json ->
             Locator.fromJSON(JSONObject(json.toString()))
         }
@@ -215,7 +215,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
      * The place this session opened at, until the reader moves away from it. Readium
      * reports the restored locator after opening; that is not new reading.
      */
-    private var restoring: JsonObject? = null
+    private var restoration = ReadingRestoration(null)
 
     fun onLocatorChanged(locator: Locator) {
         // Captured before anything waits: this is when the page was reached.
@@ -230,15 +230,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         }
         val id = asset?.id ?: return
         val json = Json.parseToJsonElement(locator.toJSON().toString()) as JsonObject
-        restoring?.let { start ->
-            // A book opened at the beginning: its first report says where that is.
-            if (start === NO_PLACE) {
-                restoring = json
-                return
-            }
-            if (isRestoredPlace(start, json)) return
-            restoring = null
-        }
+        if (!restoration.isReading(json)) return
         viewModelScope.launch { sync?.update(SavedPosition(id, json), observedAt) }
     }
 
@@ -258,7 +250,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     suspend fun useOtherPlace(): Locator? {
         val position = sync?.useServer() ?: return null
         // Going there is the reader's choice of a saved place, not new reading.
-        restoring = position.locator
+        restoration = ReadingRestoration(position.locator)
         return position.locator?.let { Locator.fromJSON(JSONObject(it.toString())) }
     }
 

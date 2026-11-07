@@ -310,7 +310,18 @@ class ProgressSync(
                 true
             }
             local.samePlaceAs(server) -> {
-                save(existing.copy(baseVersion = serverVersion, pending = null, dirty = false))
+                val clock = now()
+                val mine = existing.observedAtEpochMs?.takeIf { ActivityTime.isPlausible(it, clock) }
+                val theirs = server.observedAtEpochMs?.takeIf { ActivityTime.isPlausible(it, clock) }
+                // Reaching the same place later still matters: another offline device
+                // may hold a different place reached between these two observations.
+                if (mine != null && theirs != null && mine > theirs) {
+                    rebase(existing, local, serverVersion)
+                } else if (theirs != null && (mine == null || theirs >= mine)) {
+                    save(adopted(existing, server))
+                } else {
+                    save(existing.copy(baseVersion = serverVersion, pending = null, dirty = false))
+                }
                 true
             }
             else -> {

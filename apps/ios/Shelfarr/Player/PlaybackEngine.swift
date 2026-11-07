@@ -381,7 +381,7 @@ final class PlaybackEngine: ObservableObject {
         let saved = currentPosition().flatMap { checkpoints.isActivity($0) ? $0 : nil }
         enqueue {
             if let saved { await sync.update(saved, observedAt: observedAt) }
-            await sync.flush()
+            await sync.requestFlush()
         }
     }
 

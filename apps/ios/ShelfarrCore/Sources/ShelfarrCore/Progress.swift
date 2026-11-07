@@ -445,6 +445,14 @@ public actor ProgressSync {
         await send()
     }
 
+    /// Starts an immediate send without making a producer's local-write queue wait
+    /// for the network. Use after a lifecycle checkpoint; teardown can still await
+    /// `flush()` once all local writes have drained.
+    public func requestFlush() {
+        guard !stopped else { return }
+        schedule(after: .zero)
+    }
+
     /// Ends account work without discarding its durable unsent position.
     public func stop() async {
         stopped = true
@@ -632,10 +640,21 @@ public actor ProgressSync {
             return true
         }
         if local == SavedPosition(server) {
-            existing.baseVersion = server.version
-            existing.pending = nil
-            existing.dirty = false
-            await save(existing)
+            let clock = now()
+            let mine = existing.observedAt.flatMap { ActivityTime.isPlausible($0, now: clock) ? $0 : nil }
+            let theirs = server.observedAtMillis.flatMap { ActivityTime.isPlausible($0, now: clock) ? $0 : nil }
+            // The same position can have newer activity. Keep that observation on
+            // the server so an intermediate offline device cannot displace it.
+            if let mine, let theirs, mine > theirs {
+                await rebase(existing, local, server.version)
+            } else if let theirs, mine == nil || theirs >= mine! {
+                await save(adopted(existing, server))
+            } else {
+                existing.baseVersion = server.version
+                existing.pending = nil
+                existing.dirty = false
+                await save(existing)
+            }
             return true
         }
         let clock = now()
