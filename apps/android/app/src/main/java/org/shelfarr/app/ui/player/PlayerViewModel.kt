@@ -67,7 +67,7 @@ class PlayerViewModel(private val container: AppContainer, private val publicati
                 localFiles = download?.let(services.downloads::filesFor)
                 if (offline && localFiles == null) throw ApiException.Offline()
                 val offlineNotice = if (offline) "Playing the download on this device. Your place will sync when you're back online." else null
-                when (val decision = ResumeDecision.decide(publication, publication.progress, sync?.snapshot())) {
+                when (val decision = ResumeDecision.decide(publication, publication.progress, sync?.snapshot(), offline = offline)) {
                     ResumeDecision.Beginning -> play(publication, null, 0, offlineNotice)
                     is ResumeDecision.Continue -> play(publication, decision.position, decision.baseVersion, offlineNotice)
                     is ResumeDecision.Choose ->

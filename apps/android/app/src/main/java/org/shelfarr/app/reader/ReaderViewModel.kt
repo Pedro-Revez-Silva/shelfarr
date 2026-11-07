@@ -155,7 +155,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
                 opened = readium
 
                 val local = sync?.snapshot()
-                when (val decision = ResumeDecision.decide(publication, publication.progress, local)) {
+                when (val decision = ResumeDecision.decide(publication, publication.progress, local, offline = offline)) {
                     ResumeDecision.Beginning -> ready(null, baseVersion = 0)
                     is ResumeDecision.Continue -> ready(decision.position, decision.baseVersion)
                     is ResumeDecision.Choose -> mutableState.value = ReaderState.ChooseResume(decision.local, decision.server)

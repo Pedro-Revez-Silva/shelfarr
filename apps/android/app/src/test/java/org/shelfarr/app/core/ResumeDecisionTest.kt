@@ -38,6 +38,30 @@ class ResumeDecisionTest {
     }
 
     @Test
+    fun `offline EPUB resumes clean local progress newer than the download snapshot`() {
+        val decision = ResumeDecision.decide(book, server(1), local(dirty = false, base = 4), offline = true)
+        assertEquals(ResumeDecision.Continue(SavedPosition("a1", locator(0.2)), 4), decision)
+        assertEquals(ResumeDecision.Continue(SavedPosition("a1", locator(0.2)), 4),
+            ResumeDecision.decide(book, null, local(dirty = false, base = 4), offline = true))
+    }
+
+    @Test
+    fun `offline audio resumes the latest synced local track and time`() {
+        val tracks = listOf(Asset("t1", format = "mp3", contentUrl = "/1"), Asset("t2", format = "mp3", contentUrl = "/2", position = 1))
+        val audio = Publication("p", "T", bookType = BookType.AUDIOBOOK, assets = tracks)
+        val position = SavedPosition("t2", positionSeconds = 42.0)
+        val saved = LocalProgress("p", position = position, baseVersion = 5)
+        assertEquals(ResumeDecision.Continue(position, 5), ResumeDecision.decide(audio,
+            Progress("t1", positionSeconds = 10.0, version = 1), saved, offline = true))
+    }
+
+    @Test
+    fun `offline local progress on a different generation is still refused`() {
+        assertEquals(ResumeDecision.EditionChanged(4), ResumeDecision.decide(book,
+            server(4, assetId = "old"), local(dirty = false, base = 4, assetId = "old"), offline = true))
+    }
+
+    @Test
     fun `unsent local reading continues when the server has not moved`() {
         val decision = ResumeDecision.decide(book, server(3), local(dirty = true, base = 3))
         assertEquals(ResumeDecision.Continue(SavedPosition("a1", locator(0.2)), 3), decision)
