@@ -1,0 +1,5 @@
+<div class="mx-auto max-w-lg rounded-xl border border-gray-800 bg-gray-900 p-8">
+  <h1 class="text-2xl font-semibold text-white"><%= @allowed ? "App connected" : "Connection denied" %></h1>
+  <p class="mt-4 text-gray-400"><%= @allowed ? "Return to the Shelfarr app to open your library." : "The app was not granted access to your account." %></p>
+  <%= link_to "My Profile", profile_path, class: "mt-6 inline-block text-blue-400 hover:text-blue-300" %>
+</div>

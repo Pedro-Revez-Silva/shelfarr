@@ -8,6 +8,7 @@ class Book < ApplicationRecord
   has_many :requests, dependent: :restrict_with_error
   has_many :uploads, dependent: :nullify
   has_many :owned_library_items, dependent: :nullify
+  has_many :consumer_progresses, dependent: :destroy
 
   before_destroy :prevent_destroy_during_active_acquisition, prepend: true
 

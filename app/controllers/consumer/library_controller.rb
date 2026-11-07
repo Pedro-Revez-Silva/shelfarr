@@ -1,0 +1,57 @@
+# frozen_string_literal: true
+
+class Consumer::LibraryController < ApplicationController
+  include ConsumerMediaResponse
+  layout "consumer"
+  before_action :private_response
+
+  def index
+    @query = params[:q] || ""
+    @type = params[:type]
+    result = Consumer::Catalog.new(user: Current.user).call(query: @query, type: @type, cursor: params[:cursor], limit: "30")
+    @next_cursor = result.next_cursor
+    books = result.books
+    progress_scope = Current.user.consumer_progresses.joins(:book).merge(Book.acquired.where(book_type: @type.presence || %w[ebook audiobook]))
+    @continue_progress = @query.blank? && params[:cursor].blank? ? progress_scope.includes(:book).order(updated_at: :desc).limit(3).to_a : []
+    all_books = (books + @continue_progress.map(&:book)).uniq(&:id)
+    progress = Current.user.consumer_progresses.where(book_id: all_books.map(&:id)).index_by(&:book_id)
+    @publications = all_books.index_with { |book| Consumer::Publication.new(book, user: Current.user, routes: self, progress: progress[book.id]).representation }
+    @books = books
+  rescue Consumer::Catalog::Invalid => error
+    redirect_to consumer_library_path, alert: error.message
+  end
+
+  def show
+    @book = find_book
+    @publication = Consumer::Publication.new(@book, user: Current.user, routes: self).representation
+    @publication[:assets].each { |asset| asset[:content_url] = consumer_asset_path(@book, asset[:id]) }
+    @publication[:progress_url] = consumer_progress_path(@book)
+  end
+
+  def asset
+    serve_consumer_asset(find_book, params[:asset_id])
+  end
+
+  def progress
+    result = Consumer::ProgressWriter.new(user: Current.user, book: find_book).call(
+      params.permit(:asset_id, :expected_version, :client_mutation_id, :position_seconds, locator: {}).to_h)
+    render json: { progress: result.representation }
+  rescue Consumer::ProgressWriter::Invalid, Consumer::LibraryAssets::Unavailable => error
+    render json: { error: "invalid_progress", message: error.message }, status: :unprocessable_entity
+  rescue Consumer::ProgressWriter::Conflict => error
+    render json: { error: "progress_conflict", progress: error.progress&.representation }, status: :conflict
+  end
+
+  private
+
+  def find_book
+    id = params[:id]
+    raise ActiveRecord::RecordNotFound unless id.is_a?(String) && id.match?(/\A[1-9]\d{0,18}\z/)
+
+    Book.acquired.where(book_type: %w[ebook audiobook]).find(id)
+  end
+
+  def private_response
+    headers["Cache-Control"] = "private, no-store"
+  end
+end

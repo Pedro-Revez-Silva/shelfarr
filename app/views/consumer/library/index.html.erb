@@ -1,0 +1,52 @@
+<section class="consumer-heading">
+  <p class="consumer-eyebrow">A little time for a good story</p>
+  <h1>Your library.</h1>
+  <p>Pick up where you left off, or find your next chapter.</p>
+</section>
+
+<% if @continue_progress.any? %>
+  <section class="consumer-continue" aria-labelledby="continue-heading">
+    <div class="consumer-section-heading"><h2 id="continue-heading">Keep going</h2><span>Just for you</span></div>
+    <div class="consumer-continue-grid">
+      <% @continue_progress.each do |progress| %>
+        <% book = progress.book; publication = @publications.fetch(book) %>
+        <%= link_to consumer_publication_path(book), class: "consumer-resume-card" do %>
+          <%= render "cover", book: book, publication: publication %>
+          <div class="consumer-resume-copy"><span class="consumer-format"><%= book.ebook? ? "Reading" : "Listening" %></span><h3><%= book.title %></h3><p><%= book.author %></p><strong><%= consumer_progress_label(publication) %> <span aria-hidden="true">↗</span></strong></div>
+        <% end %>
+      <% end %>
+    </div>
+  </section>
+<% end %>
+
+<section aria-labelledby="shelf-heading">
+  <div class="consumer-section-heading consumer-shelf-heading">
+    <h2 id="shelf-heading"><%= @query.present? ? "Search results" : "On your shelf" %></h2>
+    <%= form_with url: consumer_library_path, method: :get, role: "search", class: "consumer-search" do |form| %>
+      <%= form.hidden_field :type, value: @type if @type.present? %>
+      <%= form.label :q, "Search your library", class: "consumer-sr-only" %>
+      <%= form.search_field :q, value: @query, placeholder: "Search your library", maxlength: 200 %>
+      <button type="submit" aria-label="Search">⌕</button>
+    <% end %>
+  </div>
+  <nav class="consumer-filters" aria-label="Publication type">
+    <% [[nil, "Everything"], ["ebook", "Ebooks"], ["audiobook", "Audiobooks"]].each do |type, label| %>
+      <%= link_to label, consumer_library_path(type: type, q: @query.presence), class: @type.presence == type ? "is-active" : nil, aria: { current: @type.presence == type ? "page" : nil } %>
+    <% end %>
+  </nav>
+  <% if @books.empty? %>
+    <div class="consumer-empty"><span aria-hidden="true">✦</span><h3><%= @query.present? ? "No stories found" : "Your next story belongs here" %></h3><p><%= @query.present? ? "Try a different title or author." : "Acquired ebooks and audiobooks appear here, ready to read or listen." %></p><%= link_to "Find a book", search_path, class: "consumer-button" %></div>
+  <% else %>
+    <div class="consumer-book-grid">
+      <% @books.each do |book| %>
+        <% publication = @publications.fetch(book) %>
+        <%= link_to consumer_publication_path(book), class: "consumer-book-card" do %>
+          <%= render "cover", book: book, publication: publication %>
+          <span class="consumer-format"><%= book.ebook? ? "Ebook" : "Audiobook" %></span>
+          <h3><%= book.title %></h3><p><%= book.author %></p><span class="consumer-book-state"><%= consumer_progress_label(publication) %></span>
+        <% end %>
+      <% end %>
+    </div>
+    <% if @next_cursor %><div class="consumer-pagination"><%= link_to "More on your shelf", consumer_library_path(type: @type, q: @query.presence, cursor: @next_cursor), class: "consumer-button consumer-button--subtle" %></div><% end %>
+  <% end %>
+</section>
