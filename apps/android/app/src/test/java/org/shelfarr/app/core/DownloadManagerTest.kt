@@ -6,11 +6,13 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import mockwebserver3.Dispatcher
@@ -282,6 +284,51 @@ class DownloadManagerTest {
         val ready = reopened.awaitState("book", DownloadState.READY)
         assertEquals("bytes=1000-", requests.last().headers["Range"])
         assertEquals(epubBytes, reopened.fileFor(ready, "epub-1")!!.readText())
+    }
+
+    @Test
+    fun `a published ready state survives an immediate close by its observer`() = runBlocking {
+        val downloads = manager()
+        downloads.start()
+        // Run the observer inline to force close at publication, before the writer
+        // gets another turn. A caller must not observe Ready before it is durable.
+        val closed = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+            downloads.records.first { it["book"]?.state == DownloadState.READY }
+            downloads.close()
+        }
+        downloads.enqueue(book)
+        withTimeout(15_000) { closed.join() }
+
+        val reopened = manager()
+        reopened.start()
+        val ready = reopened.ready("book")
+        assertNotNull("Published Ready must survive reopening", ready)
+        assertEquals(epubBytes, reopened.fileFor(ready!!, "epub-1")!!.readText())
+    }
+
+    @Test
+    fun `a published failure survives an immediate close and can resume after reopening`() = runBlocking {
+        routes["/files/epub-1"] = { truncated(epubBytes.toByteArray(), "\"e1\"", 1_000) }
+        val downloads = manager()
+        downloads.start()
+        val closed = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+            downloads.records.first { it["book"]?.state == DownloadState.FAILED }
+            downloads.close()
+        }
+        downloads.enqueue(book)
+        withTimeout(15_000) { closed.join() }
+
+        routes["/files/epub-1"] = { ranged(it, epubBytes.toByteArray(), "\"e1\"") }
+        val reopened = manager()
+        reopened.start()
+        val failed = reopened.record("book")!!
+        assertEquals(DownloadState.FAILED, failed.state)
+        assertEquals(DownloadProblem.OFFLINE, failed.problem)
+        assertEquals(1_000L, failed.bytesDone)
+        reopened.retryInterrupted()
+        val ready = reopened.awaitState("book", DownloadState.READY)
+        assertEquals(epubBytes, reopened.fileFor(ready, "epub-1")!!.readText())
+        reopened.close()
     }
 
     @Test

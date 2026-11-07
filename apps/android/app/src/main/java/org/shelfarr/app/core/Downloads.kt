@@ -658,20 +658,24 @@ class DownloadManager(
 
     private suspend fun save(record: DownloadRecord): Boolean = manifestMutex.withLock {
         if (closed) return@withLock false
-        mutableRecords.update { it + (record.publicationId to record) }
-        if (persistLocked()) return@withLock true
+        val snapshot = mutableRecords.value + (record.publicationId to record)
+        // An observer may close this manager as soon as it sees Ready or Failed.
+        // Publish only after that state is durable, so closing cannot discard it.
+        if (persistLocked(snapshot)) {
+            mutableRecords.value = snapshot
+            return@withLock true
+        }
         // Keep the error visible even when the disk cannot persist the failure itself.
         mutableRecords.update { it + (record.publicationId to record.copy(state = DownloadState.FAILED, problem = DownloadProblem.STORAGE)) }
         false
     }
 
-    private suspend fun persistLocked(): Boolean {
+    private suspend fun persistLocked(snapshot: Map<String, DownloadRecord> = mutableRecords.value): Boolean {
         if (closed) return false
         if (manifestUnreadable) {
             Log.w(TAG, "Not saving downloads over a manifest that couldn't be read")
             return false
         }
-        val snapshot = mutableRecords.value
         return withContext(Dispatchers.IO + NonCancellable) {
             try {
                 root.mkdirs()
