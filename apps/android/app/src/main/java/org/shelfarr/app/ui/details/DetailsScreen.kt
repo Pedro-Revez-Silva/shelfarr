@@ -114,7 +114,7 @@ class DetailsViewModel(private val container: AppContainer, private val id: Stri
                 if (mutableState.value is DetailsState.Loaded) return@launch
                 // Offline, show what this device knows. Sign-in and certificate errors stay visible.
                 val local = if (error.isPlainOffline) {
-                    services.downloads.find(id)?.publication ?: services.recall(id)
+                    services.recall(id)
                 } else {
                     null
                 }

@@ -24,8 +24,8 @@ starts in a fresh process always finds its work.
 
 | Android | Host | Notes |
 | --- | --- | --- |
-| 14 and later (API 34+) | User-initiated data transfer job (`JobInfo.Builder.setUserInitiated(true)`, `RUN_USER_INITIATED_JOBS`) | Scheduled only while the app is visible, as Android requires. It needs a network, is persisted, and gives the remaining bytes as its estimate. It calls `setNotification` straight away, so it is listed in the system Task Manager, and it updates the estimate as the queue changes. If Android refuses it (for example the request came from the background), a regular job is scheduled instead, and it is upgraded the next time the app is visible. |
-| 8 to 13 (API 26–33) | A `dataSync` foreground service, plus a regular persisted job that needs a network | The service is started only while the app is visible and stops itself when the queue is empty. The job is the path that survives process death and network loss. Android stops ordinary jobs after about 10 minutes, so very long downloads continue in resumable slices. |
+| 14 and later (API 34+) | User-initiated data transfer job (`JobInfo.Builder.setUserInitiated(true)`, `RUN_USER_INITIATED_JOBS`) | Scheduled only while the app is visible, as Android requires. It accepts LAN/VPN networks without requiring validated public Internet, is persisted, and gives the remaining bytes as its estimate. It calls `setNotification` straight away, so it is listed in the system Task Manager, and it updates the estimate as the queue changes. If Android refuses it (for example the request came from the background), a regular job is scheduled instead, and it is upgraded the next time the app is visible. |
+| 8 to 13 (API 26–33) | A `dataSync` foreground service, plus a regular persisted job | The service is started only while the app is visible and stops itself when the queue is empty. The job is the path that survives process death and network loss. Android stops ordinary jobs after about 10 minutes, so very long downloads continue in resumable slices. |
 
 `DownloadJobService.onStopJob` handles the system's stop callbacks:
 
@@ -42,6 +42,12 @@ When a job finds the queue empty but a download stopped for a passing reason (no
 connection, server error), it asks Android to retry with exponential backoff from 30
 seconds. After 6 attempts (about half an hour) it waits for the person to come back to
 the app. Opening the app resets that budget.
+
+On API 28+, jobs use an explicit network request that permits LAN and VPN access
+without public Internet validation. API 26–27 cannot express that request: the
+persisted job runs after a short delay and uses bounded retries if the connection
+is unavailable. Cold job/service starts restore the account before starting the
+driver, and jobs register their completion handler before execution can finish.
 
 ### What isn't promised
 

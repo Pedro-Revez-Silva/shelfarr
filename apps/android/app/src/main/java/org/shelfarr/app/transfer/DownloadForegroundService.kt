@@ -28,6 +28,7 @@ class DownloadForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (job?.isActive == true) return START_NOT_STICKY
         val container = (application as ShelfarrApplication).container
+        container.currentAccount()
         val notifications = container.transferNotifications
         try {
             ServiceCompat.startForeground(

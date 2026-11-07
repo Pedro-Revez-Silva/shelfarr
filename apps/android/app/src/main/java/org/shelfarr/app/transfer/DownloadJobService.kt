@@ -6,6 +6,7 @@ import android.os.Build
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.shelfarr.app.ShelfarrApplication
@@ -20,6 +21,9 @@ class DownloadJobService : JobService() {
 
     override fun onStartJob(params: JobParameters): Boolean {
         val container = (application as ShelfarrApplication).container
+        // Restore the persisted session synchronously before the driver observes
+        // the account flow; its collector may not have run in a cold process yet.
+        container.currentAccount()
         val notifications = container.transferNotifications
         val userInitiated = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && params.isUserInitiatedJob
         if (userInitiated) {
@@ -27,7 +31,8 @@ class DownloadJobService : JobService() {
             setNotification(params, TransferNotifications.PROGRESS_ID, notifications.preparing(), JOB_END_NOTIFICATION_POLICY_REMOVE)
         }
         var lastEstimate = -1L
-        val job = container.scope.launch {
+        lateinit var job: Job
+        job = container.scope.launch(start = CoroutineStart.LAZY) {
             var reschedule = false
             try {
                 reschedule = TransferDriver(container.transferAccounts, container.transfers).drive(
@@ -56,10 +61,11 @@ class DownloadJobService : JobService() {
             } finally {
                 if (!userInitiated && !DownloadForegroundService.isRunning) notifications.cancelProgress()
                 // After onStopJob the system has already let go of this job.
-                if (running.remove(params.jobId) != null) jobFinished(params, reschedule)
+                if (running.remove(params.jobId, job)) jobFinished(params, reschedule)
             }
         }
-        running[params.jobId] = job
+        running.put(params.jobId, job)?.cancel()
+        job.start()
         return true
     }
 

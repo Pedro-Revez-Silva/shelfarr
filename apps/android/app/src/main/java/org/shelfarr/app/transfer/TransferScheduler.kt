@@ -6,6 +6,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.util.Log
 import androidx.annotation.ChecksSdkIntAtLeast
@@ -70,9 +72,21 @@ class TransferScheduler(
 
     private fun schedule(userInitiated: Boolean, estimatedBytes: Long): Boolean {
         val builder = JobInfo.Builder(JOB_ID, ComponentName(context, DownloadJobService::class.java))
-            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
             .setPersisted(true)
             .setBackoffCriteria(BACKOFF_MS, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
+        if (atLeast(Build.VERSION_CODES.P)) {
+            // NETWORK_TYPE_ANY also requires validated Internet. A reachable Shelfarr
+            // server may instead be on a LAN or VPN without public connectivity.
+            builder.setRequiredNetwork(NetworkRequest.Builder()
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build())
+        } else {
+            // Older APIs cannot express that network request. A delayed regular job
+            // attempts the transfer and uses the same bounded retry budget if offline.
+            builder.setMinimumLatency(1_000)
+        }
         if (estimatedBytes > 0 && atLeast(Build.VERSION_CODES.P)) {
             builder.setEstimatedNetworkBytes(estimatedBytes, 0)
         }

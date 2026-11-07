@@ -3,6 +3,8 @@ package org.shelfarr.app.transfer
 import android.app.Application
 import android.app.job.JobScheduler
 import android.content.Context
+import android.app.job.JobInfo
+import android.net.NetworkCapabilities
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -71,6 +73,26 @@ class TransferSchedulerTest {
         assertTrue(scheduler.hasScheduledWork())
         scheduler.cancel()
         assertFalse(scheduler.hasScheduledWork())
+    }
+
+    @Test
+    fun `LAN and VPN jobs do not require validated public Internet`() {
+        val scheduler = scheduler(34)
+        scheduler.request(100)
+        val request = jobs.getPendingJob(TransferScheduler.JOB_ID)!!.requiredNetwork!!
+        assertFalse(request.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
+        assertFalse(request.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
+        assertFalse(request.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN))
+    }
+
+    @Test
+    @Suppress("DEPRECATION")
+    fun `old Android retries LAN transfers without an Internet-only constraint`() {
+        visible = false
+        scheduler(26).request(100)
+        val job = jobs.getPendingJob(TransferScheduler.JOB_ID)!!
+        assertEquals(JobInfo.NETWORK_TYPE_NONE, job.networkType)
+        assertTrue(job.minLatencyMillis > 0)
     }
 
     @Test
