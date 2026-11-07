@@ -98,4 +98,20 @@ class API::Consumer::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     post "/api/consumer/v1/auth/device", params: "x" * 65_537, headers: { "Content-Type" => "application/json" }
     assert_response :content_too_large
   end
+
+  test "device grants and progress coordinates are filtered from request logs" do
+    output = StringIO.new
+    previous = Rails.logger
+    Rails.logger = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new(output))
+    grant, device_code, user_code = ConsumerDeviceGrant.issue!(client_name: "Phone")
+    sign_in_as(users(:one))
+    get consumer_connect_path(user_code: user_code)
+    post "/api/consumer/v1/auth/token", params: { device_code: device_code }, as: :json
+    assert_not_includes output.string, device_code
+    assert_not_includes output.string, user_code
+    assert_includes output.string, "[FILTERED]"
+    assert grant.reload.last_polled_at
+  ensure
+    Rails.logger = previous
+  end
 end

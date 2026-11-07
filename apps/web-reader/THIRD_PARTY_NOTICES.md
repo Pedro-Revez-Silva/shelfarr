@@ -35,3 +35,10 @@ Rebuild with `bun install --frozen-lockfile && bun run build` from this director
 - string_decoder@1.1.1 — MIT ([license](licenses/string_decoder1.1.1.txt))
 - type@2.7.3 — ISC ([license](licenses/type2.7.3.txt))
 - util-deprecate@1.0.2 — MIT ([license](licenses/util-deprecate1.0.2.txt))
+
+Additional package license declarations and retained attribution:
+
+- path-webpack 0.0.3 — MIT ([terms and attribution](licenses/path-webpack0.0.3.txt))
+- marks-pane 1.0.9 — MIT ([terms and attribution](licenses/marks-pane1.0.9.txt))
+- isarray 1.0.0 — MIT ([upstream README license](licenses/isarray1.0.0.txt))
+- @types/localforage 0.0.34 — localForage MIT declaration ([upstream license](licenses/types__localforage0.0.34.txt)); type declarations are not part of the browser bundle.
