@@ -17,11 +17,17 @@ module ConsumerGrantLogFilter
     key, value = part.split("=", 2)
     return part if value.nil?
 
+    grant_key?(key) ? "#{key}=[FILTERED]" : part
+  end
+
+  def self.grant_key?(key)
+    key = key.to_s
     decoded = begin
       URI.decode_www_form_component(key)
     rescue ArgumentError
       key
     end
-    decoded.scan(/[^\[\]]+/).any? { |name| name.strip.casecmp?("grant") } ? "#{key}=[FILTERED]" : part
+    decoded = decoded.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+    decoded.scan(/[^\[\]]+/).any? { |name| name.strip.casecmp?("grant") }
   end
 end

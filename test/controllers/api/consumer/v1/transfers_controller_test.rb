@@ -213,16 +213,38 @@ class API::Consumer::V1::TransfersControllerTest < ActionDispatch::IntegrationTe
       head url
       get url.sub("/transfer?", "/elsewhere?")
       get "/api/consumer/v1/nowhere?grant=#{grant}"
-      get "/nowhere?gr%61nt=#{grant}&x[grant]=#{grant}&grant[]=#{grant}&Grant=#{grant};grant=#{grant}"
+      get "/nowhere?gr%61nt=#{grant}&x[grant]=#{grant}&Grant=#{grant}"
+      get "/nowhere?grant[]=#{grant};grant=#{grant}"
     end
     # Short messages: a failure must not print the captured log and its grants.
     assert log.include?("/api/consumer/v1/nowhere?grant=[FILTERED]"), "unknown route query is filtered"
-    assert log.include?("gr%61nt=[FILTERED]&x[grant]=[FILTERED]&grant[]=[FILTERED]"), "encoded and nested keys are filtered"
+    assert log.include?("gr%61nt=[FILTERED]&x[grant]=[FILTERED]"), "encoded and nested keys are filtered"
+    assert log.include?("grant[]=[FILTERED]"), "array keys are filtered"
     assert_not log.include?(grant), "no grant value is logged"
     assert_operator log.scan("[FILTERED]").size, :>=, 9
   end
 
+  test "malformed grant queries never reach credential-bearing parser exception logs" do
+    url = grant_url
+    grant = url[/grant=(.+)\z/, 1]
+    path = url.split("?").first
+    queries = [ "grant=#{grant}%", "grant=#{grant}%FF", "x%FF=1&grant=#{grant}", "gr%61nt=#{grant}%", "x[grant]=#{grant}%" ]
+    log = capture_log do
+      queries.each do |query|
+        get path, env: { "QUERY_STRING" => query }
+        assert_invalid_grant
+      end
+      head path, env: { "QUERY_STRING" => "grant=#{grant}%" }
+      assert_response :unauthorized
+      assert_empty response.body
+      get "/nowhere", env: { "QUERY_STRING" => "grant=#{grant}%FF" }
+      assert_response :bad_request
+    end
+    assert_not log.include?(grant), "malformed capabilities must not appear in exception logs"
+  end
+
   private
+
 
   def grant_endpoint
     "/api/consumer/v1/library/#{@audiobook.id}/assets/#{@asset.id}/transfer_grant"

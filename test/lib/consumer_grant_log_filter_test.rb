@@ -21,6 +21,10 @@ class ConsumerGrantLogFilterTest < ActiveSupport::TestCase
     assert_equal "/p", request("").filtered_path
   end
 
+  test "non UTF-8 keys cannot crash request logging" do
+    assert_equal "/p?x%FF=1&grant=[FILTERED]", request("x%FF=1&grant=synthetic").filtered_path
+  end
+
   private
 
   def request(query)
