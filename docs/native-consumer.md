@@ -73,9 +73,11 @@ In a debug build, enter `http://10.0.2.2:8099/shelfarr` on the Android emulator 
 `--conflict-after N` answers the Nth progress write with a conflict, and `--slow-down`
 exercises polling backoff.
 
-The Android emulator needs hardware acceleration for the reader. Without KVM the
-WebView renderer has crashed on opening a book, so test EPUB rendering on an
-accelerated emulator or a device.
+EPUB page rendering is not yet verified on a working Android runtime. The
+WebView renderer crashed on the software-only API 33 and API 35 emulators used
+here. API 33 also crashed outside the app; API 35 only recorded the app crash, so
+an app or Readium cause remains possible. Verify this on an accelerated emulator
+or a device before treating the reader as ready.
 
 ## Security model
 
