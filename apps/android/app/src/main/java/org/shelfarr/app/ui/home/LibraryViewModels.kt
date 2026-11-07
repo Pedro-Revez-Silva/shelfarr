@@ -13,6 +13,9 @@ import org.shelfarr.app.AppContainer
 import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.LibraryFilter
+import org.shelfarr.app.core.LibraryPage
+import org.shelfarr.app.core.ServerAddress
+import org.shelfarr.app.core.Session
 import org.shelfarr.app.core.Publication
 
 sealed interface HomeState {
@@ -68,11 +71,19 @@ data class LibraryState(
     val pageFailed: Boolean = false,
 )
 
-class LibraryViewModel(private val container: AppContainer) : ViewModel() {
+class LibraryViewModel(
+    private val signedIn: () -> Session?,
+    private val loadPage: suspend (ServerAddress, LibraryFilter, String, String?) -> LibraryPage,
+) : ViewModel() {
+    constructor(container: AppContainer) : this(
+        { container.sessions.signedIn },
+        { server, filter, query, cursor -> container.api.library(server, filter, query, cursor) },
+    )
     private val mutableState = MutableStateFlow(LibraryState())
     val state: StateFlow<LibraryState> = mutableState.asStateFlow()
 
     private var request: Job? = null
+    private var generation = 0
 
     init {
         reload()
@@ -90,36 +101,43 @@ class LibraryViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     fun reload(debounceMs: Long = 0) {
-        val server = container.sessions.signedIn?.server ?: return
+        val server = signedIn()?.server ?: return
         request?.cancel()
+        val generation = ++this.generation
+        val current = mutableState.value
+        mutableState.update { it.copy(loading = true, loadingMore = false, nextCursor = null, error = null, pageFailed = false) }
         request = viewModelScope.launch {
             if (debounceMs > 0) delay(debounceMs)
             mutableState.update { it.copy(loading = true, error = null, pageFailed = false) }
             try {
-                val current = mutableState.value
-                val page = container.api.library(server, current.filter, current.query)
+                val page = loadPage(server, current.filter, current.query, null)
+                if (generation != this@LibraryViewModel.generation) return@launch
                 mutableState.update {
                     it.copy(items = page.items, nextCursor = page.nextCursor, loading = false)
                 }
             } catch (error: ApiException) {
+                if (generation != this@LibraryViewModel.generation) return@launch
                 mutableState.update { it.copy(loading = false, error = error, items = emptyList(), nextCursor = null) }
             }
         }
     }
 
     fun loadMore() {
-        val server = container.sessions.signedIn?.server ?: return
+        val server = signedIn()?.server ?: return
         val current = mutableState.value
         val cursor = current.nextCursor ?: return
         if (current.loading || current.loadingMore) return
+        val generation = this.generation
         mutableState.update { it.copy(loadingMore = true, pageFailed = false) }
         request = viewModelScope.launch {
             try {
-                val page = container.api.library(server, current.filter, current.query, cursor)
+                val page = loadPage(server, current.filter, current.query, cursor)
+                if (generation != this@LibraryViewModel.generation) return@launch
                 mutableState.update {
                     it.copy(items = it.items + page.items, nextCursor = page.nextCursor, loadingMore = false)
                 }
             } catch (_: ApiException) {
+                if (generation != this@LibraryViewModel.generation) return@launch
                 mutableState.update { it.copy(loadingMore = false, pageFailed = true) }
             }
         }

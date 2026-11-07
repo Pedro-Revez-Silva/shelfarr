@@ -89,7 +89,7 @@ class SessionManager(private val store: SecureStore) : CredentialSource {
     /** The server refused the token. Forget it, keep the address for re-authorizing. */
     fun markExpired(rejected: Credential) {
         val current = signedIn ?: return
-        if (current.accessToken != rejected.accessToken) return
+        if (current.server != rejected.server || current.accessToken != rejected.accessToken) return
         store.write(SESSION, ApiJson.encodeToString(StoredSession(current.server.display, "", current.user)))
         state.value = SessionState.Expired(current.server, current.user.displayName)
     }

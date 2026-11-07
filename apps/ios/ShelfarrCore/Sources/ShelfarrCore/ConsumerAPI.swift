@@ -126,7 +126,8 @@ public final class ConsumerAPI: Sendable {
 
     private func noteRejection(_ response: HTTPURLResponse, _ request: URLRequest) {
         guard response.statusCode == 401, let credential = credential(),
-              request.value(forHTTPHeaderField: "Authorization") != nil
+              request.value(forHTTPHeaderField: "Authorization") == "Bearer \(credential.accessToken)",
+              request.url.map(credential.server.contains) == true
         else { return }
         onRejected(credential)
     }

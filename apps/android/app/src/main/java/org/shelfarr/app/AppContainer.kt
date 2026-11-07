@@ -20,6 +20,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.ConsumerApi
+import org.shelfarr.app.core.Credential
 import org.shelfarr.app.core.DeviceAuthorizer
 import org.shelfarr.app.core.EpubCache
 import org.shelfarr.app.core.FileProgressStore
@@ -88,7 +89,12 @@ class AppContainer(context: Context) {
         // Streams can't continue without a session, so don't leave a dead player behind.
         scope.launch {
             sessions.session.collect { state ->
-                if (state !is SessionState.SignedIn) playback.stop()
+                val live = (state as? SessionState.SignedIn)?.session
+                val previous = synchronized(this@AppContainer) {
+                    account?.takeIf { it.session != live }?.also { account = null }
+                }
+                if (previous != null) previous.close()
+                if (live == null || previous != null) playback.stop()
             }
         }
     }
@@ -96,14 +102,18 @@ class AppContainer(context: Context) {
     /** The services for the live session, built on first use. */
     @Synchronized
     fun account(session: Session): AccountServices {
-        account?.takeIf { it.session.accountKey == session.accountKey }?.let { return it }
+        account?.takeIf { it.session == session }?.let { return it }
         account?.let { previous -> scope.launch { previous.close() } }
         val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val directory = File(appContext.filesDir, "accounts/${session.accountKey}")
         val store = FileProgressStore(File(directory, "progress.json"))
+        val accountApi = ConsumerApi(buildHttpClient({ Credential(session.server, session.accessToken) }) { sessions.markExpired(it) })
         val registry = ProgressRegistry(
             store = store,
-            remote = { id, update -> api.saveProgress(session.server, id, update) },
+            remote = { id, update ->
+                if (sessions.signedIn != session) throw ApiException.Unauthorized()
+                accountApi.saveProgress(session.server, id, update)
+            },
             scope = accountScope,
         )
         return AccountServices(session, registry, directory, store, accountScope).also { account = it }

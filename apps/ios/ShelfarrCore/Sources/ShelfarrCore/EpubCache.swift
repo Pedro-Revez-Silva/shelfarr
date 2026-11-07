@@ -15,7 +15,7 @@ public struct CachedEpub: Equatable, Sendable {
 /// Files are scoped by account and asset id, the server's ETag decides when a copy
 /// is stale, and the token only ever travels as a request header.
 public actor EpubCache {
-    private struct Info: Codable {
+    private struct Info: Codable, Sendable {
         var etag: String?
         var sizeBytes: Int64
     }
@@ -42,8 +42,10 @@ public actor EpubCache {
         accountKey: String,
         server: ServerAddress,
         asset: Asset,
+        authorize: (@Sendable (URL) -> URLRequest)? = nil,
         onProgress: @escaping @Sendable (Double?) -> Void = { _ in }
     ) async throws -> CachedEpub {
+        let authorize = authorize ?? self.authorize
         guard let url = server.resolve(asset.contentUrl), server.contains(url) else { throw APIError.protocolError }
 
         let folder = directory(accountKey, asset.id)
@@ -60,7 +62,7 @@ public actor EpubCache {
             try? files.removeItem(at: partial)
             let response: HTTPURLResponse
             do {
-                response = try await transport.download(check, to: partial, onProgress: progress(asset, onProgress))
+                response = try await transport.download(check, to: partial, onResponse: responseInfo(partialInfoFile, asset), onProgress: progress(asset, onProgress))
             } catch let APIError.offline(certificate) where !certificate {
                 onProgress(1)
                 return CachedEpub(file: book, unverified: true)
@@ -72,16 +74,16 @@ public actor EpubCache {
                 return CachedEpub(file: book, unverified: false)
             }
             try require(response)
-            writeInfo(partialInfoFile, Info(etag: response.value(forHTTPHeaderField: "ETag"), sizeBytes: asset.sizeBytes))
+            Self.writeInfo(partialInfoFile, Info(etag: response.value(forHTTPHeaderField: "ETag"), sizeBytes: asset.sizeBytes))
         } else {
-            try await download(url, asset, partial, partialInfoFile, onProgress)
+            try await download(url, asset, partial, partialInfoFile, authorize, onProgress)
         }
 
         try verify(partial, asset)
         let finished = readInfo(partialInfoFile) ?? Info(etag: nil, sizeBytes: asset.sizeBytes)
         try? files.removeItem(at: book)
         try files.moveItem(at: partial, to: book)
-        writeInfo(infoFile, finished)
+        Self.writeInfo(infoFile, finished)
         try? files.removeItem(at: partialInfoFile)
         trim(keeping: folder)
         return CachedEpub(file: book, unverified: false)
@@ -92,6 +94,7 @@ public actor EpubCache {
         _ asset: Asset,
         _ partial: URL,
         _ partialInfoFile: URL,
+        _ authorize: @escaping @Sendable (URL) -> URLRequest,
         _ onProgress: @escaping @Sendable (Double?) -> Void
     ) async throws {
         var request = authorize(url)
@@ -104,7 +107,7 @@ public actor EpubCache {
             try? files.removeItem(at: partial)
         }
 
-        let response = try await transport.download(request, to: partial, onProgress: progress(asset, onProgress))
+        let response = try await transport.download(request, to: partial, onResponse: responseInfo(partialInfoFile, asset), onProgress: progress(asset, onProgress))
         if response.statusCode == 416 {
             try? files.removeItem(at: partial)
             try? files.removeItem(at: partialInfoFile)
@@ -112,7 +115,16 @@ public actor EpubCache {
         }
         try require(response)
         if response.statusCode == 200 {
-            writeInfo(partialInfoFile, Info(etag: response.value(forHTTPHeaderField: "ETag"), sizeBytes: asset.sizeBytes))
+            Self.writeInfo(partialInfoFile, Info(etag: response.value(forHTTPHeaderField: "ETag"), sizeBytes: asset.sizeBytes))
+        }
+    }
+
+    /// Save the validator before any body arrives, so interrupted transfers resume.
+    private func responseInfo(_ file: URL, _ asset: Asset) -> @Sendable (HTTPURLResponse) -> Void {
+        { response in
+            if response.statusCode == 200 {
+                Self.writeInfo(file, Info(etag: response.value(forHTTPHeaderField: "ETag"), sizeBytes: asset.sizeBytes))
+            }
         }
     }
 
@@ -175,7 +187,7 @@ public actor EpubCache {
         (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(Info.self, from: $0) }
     }
 
-    private func writeInfo(_ file: URL, _ info: Info) {
+    private nonisolated static func writeInfo(_ file: URL, _ info: Info) {
         if let data = try? JSONEncoder().encode(info) { try? data.write(to: file, options: .atomic) }
     }
 }

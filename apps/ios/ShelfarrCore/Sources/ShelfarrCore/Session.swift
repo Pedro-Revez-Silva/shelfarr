@@ -22,7 +22,7 @@ public struct Session: Equatable, Sendable, CustomStringConvertible {
     public var accountKey: String { Self.accountKey(server: server, userId: user.id) }
 
     public static func accountKey(server: ServerAddress, userId: String) -> String {
-        String(SHA256.hexDigest(Data("\(server.display.lowercased())\n\(userId)".utf8)).prefix(32))
+        String(SHA256.hexDigest(Data("\(server.display)\n\(userId)".utf8)).prefix(32))
     }
 
     public var description: String { "Session(server: \(server.display), user: \(user.id))" }
@@ -109,7 +109,7 @@ public final class SessionManager: @unchecked Sendable {
 
     /// The server refused the token. Forget it, keep the address for re-authorizing.
     public func markExpired(_ rejected: Credential) {
-        guard let session = signedIn, session.accessToken == rejected.accessToken else { return }
+        guard let session = signedIn, session.server == rejected.server, session.accessToken == rejected.accessToken else { return }
         persist(Stored(server: session.server, accessToken: "", user: session.user))
         update(.expired(session.server, session.user.displayName))
     }

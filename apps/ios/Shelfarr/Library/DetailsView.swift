@@ -12,12 +12,16 @@ final class DetailsModel: ObservableObject {
     @Published private(set) var state = State.loading
 
     func load(_ app: AppModel, id: String) async {
-        guard let server = app.session?.server else { return }
+        guard let session = app.session else { return }
+        let server = session.server, api = app.api(for: session)
         do {
-            state = .loaded(try await app.api.publication(server: server, id: id))
+            let publication = try await api.publication(server: server, id: id)
+            guard app.session == session else { return }
+            state = .loaded(publication)
         } catch is CancellationError {
             return
         } catch {
+            guard app.session == session else { return }
             if case .loaded = state { return }
             state = .failed(error)
         }

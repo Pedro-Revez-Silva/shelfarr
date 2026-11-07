@@ -78,6 +78,26 @@ final class SessionTests: XCTestCase {
         XCTAssertNotEqual(Session.accountKey(server: server, userId: "1"), Session.accountKey(server: other, userId: "1"))
     }
 
+    func testAccountKeysKeepCaseSensitiveSubpathsSeparate() {
+        guard case let .valid(lower) = ServerAddress.parse("https://example.org/shelfarr"),
+              case let .valid(upper) = ServerAddress.parse("https://EXAMPLE.org/Shelfarr") else { return XCTFail() }
+        XCTAssertNotEqual(Session.accountKey(server: lower, userId: "1"), Session.accountKey(server: upper, userId: "1"))
+    }
+
+    func testProgressRemoteCannotBorrowTheNextAccountsCredential() async throws {
+        let sessions = SessionManager(store: MemorySecrets()), transport = FakeTransport()
+        sessions.signIn(account)
+        let remote = SessionProgressRemote.bind(session: account, sessions: sessions, transport: transport)
+        let update = ProgressUpdate(assetId: "a", locator: nil, positionSeconds: 2, expectedVersion: 0, clientMutationId: "m")
+        transport.enqueue(503)
+        _ = try? await remote("p", update)
+        sessions.signIn(Session(server: server, user: Me(id: "bob"), accessToken: "bob-token"))
+        do { _ = try await remote("p", update); XCTFail("old account must stop") }
+        catch { XCTAssertEqual(error as? APIError, .unauthorized) }
+        XCTAssertEqual(transport.requests.count, 1)
+        XCTAssertEqual(transport.requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer token")
+    }
+
     func testSecretsStayOutOfDescriptions() {
         let grant = DeviceGrant(deviceCode: "secret", userCode: "ABCD", verificationUri: "u", verificationUriComplete: "c", expiresIn: 600)
         XCTAssertFalse(grant.description.contains("secret"))

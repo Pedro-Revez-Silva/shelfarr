@@ -21,7 +21,7 @@ class ServerAddress private constructor(val baseUrl: HttpUrl) {
     val isCleartext: Boolean get() = !baseUrl.isHttps
 
     /** Unique key for this server, independent of how the address was typed. */
-    val identity: String get() = display.lowercase()
+    val identity: String get() = display
 
     fun api(path: String): HttpUrl = baseUrl.newBuilder()
         .encodedPath("$basePath/api/consumer/v1/${path.trimStart('/')}")
