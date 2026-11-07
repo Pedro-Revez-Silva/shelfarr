@@ -26,6 +26,12 @@ import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.Asset
 import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.DeviceGrant
+import org.shelfarr.app.core.DownloadProblem
+import org.shelfarr.app.core.DownloadRecord
+import org.shelfarr.app.core.DownloadState
+import org.shelfarr.app.core.DownloadedFile
+import org.shelfarr.app.core.LibrarySort
+import org.shelfarr.app.core.ReadingStatus
 import org.shelfarr.app.core.LibraryFilter
 import org.shelfarr.app.core.Me
 import org.shelfarr.app.core.Progress
@@ -42,6 +48,7 @@ import org.shelfarr.app.reader.ReadingPlace
 import org.shelfarr.app.reader.SettingsSheet
 import org.shelfarr.app.ui.details.DetailsScreen
 import org.shelfarr.app.ui.details.DetailsState
+import org.shelfarr.app.ui.downloads.DownloadsScreen
 import org.shelfarr.app.ui.home.HomeScreen
 import org.shelfarr.app.ui.home.HomeState
 import org.shelfarr.app.ui.home.LibraryScreen
@@ -276,5 +283,70 @@ class ScreenshotTest {
     @Test
     fun settings() = shot("08-settings") {
         SettingsScreen(session, AppearanceMode.SYSTEM, "0.1.0", false, {}, {})
+    }
+
+    private fun files(publication: Publication, doneFraction: Double) = publication.playableAssets.mapIndexed { index, asset ->
+        val share = (doneFraction * publication.playableAssets.size - index).coerceIn(0.0, 1.0)
+        DownloadedFile(asset.id, "$index.bin", asset.sizeBytes, "\"e\"", complete = share >= 1.0, bytesDone = (asset.sizeBytes * share).toLong())
+    }
+
+    private val downloading = DownloadRecord("p2", audiobook, files(audiobook, 0.42), DownloadState.DOWNLOADING)
+    private val downloaded = DownloadRecord("p1", book, files(book, 1.0), DownloadState.READY)
+    private val offlinePaused = DownloadRecord("p5", shelf[4], files(shelf[4], 0.3), DownloadState.FAILED, DownloadProblem.OFFLINE)
+
+    @Test
+    fun details_downloading() = shot("10-details-downloading") {
+        DetailsScreen(DetailsState.Loaded(audiobook), "books.example.org", {}, {}, {}, download = downloading)
+    }
+
+    @Test
+    fun details_downloaded_finished_dark() = shot("10-details-downloaded-dark", dark = true) {
+        DetailsScreen(
+            DetailsState.Loaded(book.copy(readingStatus = ReadingStatus.FINISHED)),
+            "books.example.org",
+            {},
+            {},
+            {},
+            download = downloaded,
+        )
+    }
+
+    @Test
+    fun details_offline() = shot("10-details-offline") {
+        DetailsScreen(DetailsState.Loaded(book, offline = true), "books.example.org", {}, {}, {}, download = downloaded)
+    }
+
+    @Test
+    fun downloads() = shot("11-downloads") {
+        DownloadsScreen(listOf(downloading, downloaded, offlinePaused), {}, {}, {}, {}, {})
+    }
+
+    @Test
+    fun home_offline_with_downloads() = shot("11-home-offline-downloads") {
+        HomeScreen(
+            HomeState.Loaded(emptyList(), emptyList(), emptyList(), downloads = listOf(book, audiobook), hasDownloadRecords = true, offline = ApiException.Offline()),
+            "books.example.org",
+            {},
+            {},
+            {},
+        )
+    }
+
+    @Test
+    fun library_finished_by_title() = shot("12-library-finished-title") {
+        LibraryScreen(
+            LibraryState(items = shelf.take(4), loading = false, status = ReadingStatus.FINISHED, sort = LibrarySort.TITLE),
+            "books.example.org",
+            {},
+            {},
+            {},
+            {},
+            {},
+        )
+    }
+
+    @Test
+    fun library_status_empty_dark() = shot("12-library-status-empty-dark", dark = true) {
+        LibraryScreen(LibraryState(items = emptyList(), loading = false, status = ReadingStatus.IN_PROGRESS), "books.example.org", {}, {}, {}, {}, {})
     }
 }

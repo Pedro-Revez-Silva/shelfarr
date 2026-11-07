@@ -40,7 +40,10 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.shelfarr.app.AppContainer
 import org.shelfarr.app.BuildConfig
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import org.shelfarr.app.core.BookType
+import org.shelfarr.app.core.DownloadRecord
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.Session
 import org.shelfarr.app.core.SessionState
@@ -50,6 +53,7 @@ import org.shelfarr.app.reader.ReaderActivity
 import org.shelfarr.app.ui.components.ShelfarrIcons
 import org.shelfarr.app.ui.details.DetailsScreen
 import org.shelfarr.app.ui.details.DetailsViewModel
+import org.shelfarr.app.ui.downloads.DownloadsScreen
 import org.shelfarr.app.ui.home.HomeScreen
 import org.shelfarr.app.ui.home.HomeViewModel
 import org.shelfarr.app.ui.home.LibraryScreen
@@ -71,6 +75,7 @@ private const val LIBRARY = "library"
 private const val SETTINGS = "settings"
 private const val DETAILS = "details/{id}"
 private const val PLAYER = "player/{id}"
+private const val DOWNLOADS = "downloads"
 
 @Composable
 fun ShelfarrApp(container: AppContainer) {
@@ -142,7 +147,9 @@ private fun MainShell(container: AppContainer, session: Session) {
 
     fun open(publication: Publication) = navController.navigate("details/${Uri.encode(publication.id)}")
 
-    fun start(publication: Publication) {
+    fun start(publication: Publication, explicit: Boolean = true) {
+        // An explicit Read or Listen may mark an unread book in progress; it never blocks opening.
+        if (explicit) container.currentAccount()?.markStarted(publication)
         if (publication.bookType == BookType.EBOOK) {
             context.startActivity(ReaderActivity.intent(context, publication.id))
         } else {
@@ -157,7 +164,7 @@ private fun MainShell(container: AppContainer, session: Session) {
                 if (playback.isLoaded && route != PLAYER) {
                     MiniPlayer(
                         snapshot = playback,
-                        onOpen = { playback.publication?.let(::start) },
+                        onOpen = { playback.publication?.let { start(it, explicit = false) } },
                         onToggle = container.playback::togglePlay,
                     )
                 }
@@ -177,7 +184,7 @@ private fun MainShell(container: AppContainer, session: Session) {
                     viewModel.refresh()
                     onPauseOrDispose {}
                 }
-                HomeScreen(state, session.server.host, ::open, ::start, viewModel::retry)
+                HomeScreen(state, session.server.host, ::open, { start(it) }, viewModel::retry, onDownloads = { navController.navigate(DOWNLOADS) })
             }
             composable(LIBRARY) {
                 val viewModel: LibraryViewModel = viewModel { LibraryViewModel(container) }
@@ -190,11 +197,15 @@ private fun MainShell(container: AppContainer, session: Session) {
                     onOpen = ::open,
                     onLoadMore = viewModel::loadMore,
                     onRetry = viewModel::reload,
+                    onStatus = viewModel::setStatus,
+                    onSort = viewModel::setSort,
                 )
             }
             composable(SETTINGS) {
                 val appearance by container.appearance.collectAsState()
                 var disconnecting by remember { mutableStateOf(false) }
+                val records by (container.currentAccount()?.downloads?.records ?: remember { MutableStateFlow(emptyMap()) })
+                    .collectAsStateWithLifecycle()
                 SettingsScreen(
                     session = session,
                     appearance = appearance,
@@ -205,6 +216,8 @@ private fun MainShell(container: AppContainer, session: Session) {
                         disconnecting = true
                         container.disconnect()
                     },
+                    downloadsSummary = downloadsSummary(records.values),
+                    onDownloads = { navController.navigate(DOWNLOADS) },
                 )
             }
             composable(DETAILS, listOf(navArgument("id") { type = NavType.StringType })) { entry ->
@@ -215,7 +228,30 @@ private fun MainShell(container: AppContainer, session: Session) {
                     viewModel.load()
                     onPauseOrDispose {}
                 }
-                DetailsScreen(state, session.server.host, navController::popBackStack, ::start, viewModel::retry)
+                val download by viewModel.download.collectAsStateWithLifecycle()
+                val statusEdit by viewModel.statusEdit.collectAsStateWithLifecycle()
+                DetailsScreen(
+                    state = state,
+                    host = session.server.host,
+                    onBack = navController::popBackStack,
+                    onPrimary = { start(it) },
+                    onRetry = viewModel::retry,
+                    download = download,
+                    statusEdit = statusEdit,
+                    actions = viewModel,
+                )
+            }
+            composable(DOWNLOADS) {
+                val downloads = container.currentAccount()?.downloads
+                val records by (downloads?.records ?: remember { MutableStateFlow(emptyMap()) }).collectAsStateWithLifecycle()
+                DownloadsScreen(
+                    records = records.values.sortedByDescending { it.updatedAtEpochMs },
+                    onBack = navController::popBackStack,
+                    onOpen = ::open,
+                    onCancel = { id -> container.scope.launch { downloads?.cancel(id) } },
+                    onRemove = { id -> container.scope.launch { downloads?.remove(id) } },
+                    onRetry = { id -> container.scope.launch { downloads?.retry(id) } },
+                )
             }
             composable(PLAYER, listOf(navArgument("id") { type = NavType.StringType })) { entry ->
                 val id = requireNotNull(entry.arguments?.getString("id"))
@@ -238,6 +274,18 @@ private fun MainShell(container: AppContainer, session: Session) {
             }
         }
     }
+}
+
+private fun downloadsSummary(records: Collection<DownloadRecord>): String {
+    if (records.isEmpty()) return "Nothing downloaded"
+    val ready = records.filter { it.isReady }
+    val active = records.count { it.isActive }
+    val parts = buildList {
+        if (ready.isNotEmpty()) add("${ready.size} on this device · ${formatBytes(ready.sumOf { it.bytesDone })}")
+        if (active > 0) add("$active downloading")
+        if (ready.isEmpty() && active == 0) add("${records.size} stopped")
+    }
+    return parts.joinToString(" · ")
 }
 
 private class ControllerControls(private val playback: PlaybackController) : PlayerControls {

@@ -152,4 +152,69 @@ class ConsumerApiTest {
         val token = TokenResponse("secret-token")
         assertFalse(token.toString().contains("secret-token"))
     }
+
+    @Test
+    fun `reading status is read when present and derived when absent or unknown`() = runTest {
+        respond(
+            200,
+            """
+            {"items":[
+              {"id":"a","title":"A","book_type":"ebook","reading_status":"finished","progress":{"asset_id":"x","position_seconds":1,"version":1}},
+              {"id":"b","title":"B","book_type":"ebook","progress":{"asset_id":"x","position_seconds":1,"version":1}},
+              {"id":"c","title":"C","book_type":"ebook"},
+              {"id":"d","title":"D","book_type":"ebook","reading_status":"abandoned"},
+              {"id":"e","title":"E","book_type":"ebook","reading_status":"unread","progress":{"asset_id":"x","position_seconds":1,"version":1}}
+            ]}
+            """,
+        )
+        val items = api.library(server).items.associateBy { it.id }
+        assertEquals(ReadingStatus.FINISHED, items.getValue("a").status)
+        assertEquals(ReadingStatus.IN_PROGRESS, items.getValue("b").status)
+        assertEquals(ReadingStatus.UNREAD, items.getValue("c").status)
+        assertEquals(ReadingStatus.UNREAD, items.getValue("d").status)
+        // An explicit status wins over a saved place, which is kept.
+        assertEquals(ReadingStatus.UNREAD, items.getValue("e").status)
+        assertEquals(1.0, items.getValue("e").progress?.positionSeconds)
+    }
+
+    @Test
+    fun `library sends status and sort, and continue asks for recent activity`() = runTest {
+        respond(200, """{"items":[],"next_cursor":null}""")
+        api.library(server, LibraryQuery(LibraryFilter.EBOOK, "dune", ReadingStatus.IN_PROGRESS, LibrarySort.TITLE), cursor = "c2")
+        val url = web.takeRequest().url
+        assertEquals("ebook", url.queryParameter("type"))
+        assertEquals("dune", url.queryParameter("q"))
+        assertEquals("in_progress", url.queryParameter("status"))
+        assertEquals("title", url.queryParameter("sort"))
+        assertEquals("c2", url.queryParameter("cursor"))
+
+        respond(200, """{"items":[],"next_cursor":null}""")
+        api.library(server, LibraryQuery())
+        val defaults = web.takeRequest().url
+        assertNull("All statuses omit the parameter", defaults.queryParameter("status"))
+        assertNull("Recent is the server default", defaults.queryParameter("sort"))
+
+        respond(200, """{"items":[{"id":"deep","title":"Page nine","book_type":"audiobook","reading_status":"in_progress"}]}""")
+        val recent = api.continueReading(server, limit = 10)
+        assertEquals(listOf("deep"), recent.map { it.id })
+        val request = web.takeRequest()
+        assertEquals("/api/consumer/v1/continue", request.url.encodedPath)
+        assertEquals("10", request.url.queryParameter("limit"))
+        assertNull(request.url.queryParameter("cursor"))
+    }
+
+    @Test
+    fun `setting a status puts it and returns the updated publication`() = runTest {
+        respond(200, """{"id":"p/1","title":"T","book_type":"ebook","reading_status":"finished"}""")
+        val updated = api.setReadingStatus(server, "p/1", ReadingStatus.FINISHED)
+        assertEquals(ReadingStatus.FINISHED, updated.status)
+        val request = web.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/api/consumer/v1/library/p%2F1/reading_status", request.url.encodedPath)
+        assertEquals("""{"status":"finished"}""", request.body!!.utf8())
+        assertEquals("Bearer token", request.headers["Authorization"])
+
+        respond(403, """{"error":"insufficient_scope"}""")
+        assertTrue(failure { api.setReadingStatus(server, "p", ReadingStatus.UNREAD) } is ApiException.Forbidden)
+    }
 }

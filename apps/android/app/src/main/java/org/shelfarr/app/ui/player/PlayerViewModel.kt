@@ -42,18 +42,34 @@ class PlayerViewModel(private val container: AppContainer, private val publicati
             mutableState.value = PlayerState.Active()
             return
         }
-        val session = account?.session ?: return
+        val services = account ?: return
+        val session = services.session
         mutableState.value = PlayerState.Loading
         viewModelScope.launch {
             try {
-                val publication = container.api.publication(session.server, publicationId)
+                var offline = false
+                val online = try {
+                    services.api.publication(session.server, publicationId)
+                } catch (error: ApiException.Offline) {
+                    // Only a lost connection may fall back to the download. Certificates are surfaced.
+                    if (error.certificate) throw error
+                    offline = true
+                    null
+                }
+                val download = services.downloads.find(publicationId)?.takeIf { it.isReady }
+                    ?.takeIf { online == null || it.matches(online) }
+                val publication = online ?: download?.publication ?: throw ApiException.Offline()
                 if (publication.audioAssets.isEmpty()) {
                     mutableState.value = PlayerState.NoAudio
                     return@launch
                 }
+                // All of the files, or none: a partial download never stands in for the book.
+                localFiles = download?.let(services.downloads::filesFor)
+                if (offline && localFiles == null) throw ApiException.Offline()
+                val offlineNotice = if (offline) "Playing the download on this device. Your place will sync when you're back online." else null
                 when (val decision = ResumeDecision.decide(publication, publication.progress, sync?.snapshot())) {
-                    ResumeDecision.Beginning -> play(publication, null, 0)
-                    is ResumeDecision.Continue -> play(publication, decision.position, decision.baseVersion)
+                    ResumeDecision.Beginning -> play(publication, null, 0, offlineNotice)
+                    is ResumeDecision.Continue -> play(publication, decision.position, decision.baseVersion, offlineNotice)
                     is ResumeDecision.Choose ->
                         mutableState.value = PlayerState.ChooseResume(publication, decision.local, decision.server)
                     is ResumeDecision.EditionChanged -> play(
@@ -69,6 +85,8 @@ class PlayerViewModel(private val container: AppContainer, private val publicati
         }
     }
 
+    private var localFiles: Map<String, java.io.File>? = null
+
     fun chooseResume(keepLocal: Boolean) {
         val choice = mutableState.value as? PlayerState.ChooseResume ?: return
         viewModelScope.launch {
@@ -82,7 +100,7 @@ class PlayerViewModel(private val container: AppContainer, private val publicati
         val session = account?.session ?: return
         val target = sync ?: return
         target.begin(start, baseVersion)
-        container.playback.load(publication, session.server, target, start)
+        container.playback.load(publication, session.server, target, start, localFiles)
         mutableState.value = PlayerState.Active(notice)
     }
 

@@ -184,6 +184,17 @@ fun PlayerContent(snapshot: PlaybackSnapshot, notice: String?, controls: PlayerC
                 )
             }
 
+            if (snapshot.fromDevice && notice == null) {
+                Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(ShelfarrIcons.Downloaded, null, tint = ShelfarrTheme.extended.inkMuted, modifier = Modifier.size(14.dp))
+                    Text(
+                        "Playing the download on this device",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ShelfarrTheme.extended.inkMuted,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+            }
             notice?.let {
                 Text(
                     it,

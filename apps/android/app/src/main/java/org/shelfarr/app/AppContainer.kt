@@ -22,6 +22,9 @@ import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.ConsumerApi
 import org.shelfarr.app.core.Credential
 import org.shelfarr.app.core.DeviceAuthorizer
+import org.shelfarr.app.core.DownloadManager
+import org.shelfarr.app.core.Publication
+import org.shelfarr.app.core.ReadingStatus
 import org.shelfarr.app.core.EpubCache
 import org.shelfarr.app.core.FileProgressStore
 import org.shelfarr.app.core.KeystoreSecureStore
@@ -38,14 +41,31 @@ class AccountServices(
     val session: Session,
     val api: ConsumerApi,
     val progress: ProgressRegistry,
+    val downloads: DownloadManager,
     val directory: File,
     private val store: FileProgressStore,
     private val scope: CoroutineScope,
 ) {
-    /** Stops timers and writes; the caller may then delete [directory]. */
+    /** Stops transfers, timers and writes; the caller may then delete [directory]. */
     suspend fun close() {
+        downloads.close()
         scope.cancel()
         store.close()
+    }
+
+    /**
+     * Best effort: an explicit Read or Listen marks an unread publication in progress.
+     * It never blocks opening, and never changes a finished status.
+     */
+    fun markStarted(publication: Publication) {
+        if (publication.status != ReadingStatus.UNREAD) return
+        scope.launch {
+            try {
+                api.setReadingStatus(session.server, publication.id, ReadingStatus.IN_PROGRESS)
+            } catch (_: ApiException) {
+                // Offline or refused: the saved place still records the reading.
+            }
+        }
     }
 }
 
@@ -95,6 +115,8 @@ class AppContainer(context: Context) {
                 }
                 if (previous != null) previous.close()
                 if (live == null || previous != null) playback.stop()
+                // Resume this account's unfinished downloads as soon as it is signed in.
+                if (live != null) account(live)
             }
         }
     }
@@ -103,11 +125,14 @@ class AppContainer(context: Context) {
     @Synchronized
     fun account(session: Session): AccountServices {
         account?.takeIf { it.session.hasSameAccountAndToken(session) }?.let { return it }
-        account?.let { previous -> scope.launch { previous.close() } }
+        // The next account's downloads wait until the previous transfers have stopped.
+        val closing = account?.let { previous -> scope.launch { previous.close() } }
         val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val directory = File(appContext.filesDir, "accounts/${session.accountKey}")
         val store = FileProgressStore(File(directory, "progress.json"))
-        val accountApi = ConsumerApi(buildHttpClient({ Credential(session.server, session.accessToken) }) { sessions.markExpired(it) })
+        // Bound to this account's credential, so its retries and downloads can't borrow another token.
+        val accountClient = buildHttpClient({ Credential(session.server, session.accessToken) }) { sessions.markExpired(it) }
+        val accountApi = ConsumerApi(accountClient)
         val registry = ProgressRegistry(
             store = store,
             remote = { id, update ->
@@ -116,7 +141,21 @@ class AppContainer(context: Context) {
             },
             scope = accountScope,
         )
-        return AccountServices(session, accountApi, registry, directory, store, accountScope).also { account = it }
+        val downloads = DownloadManager(
+            root = File(directory, "downloads"),
+            client = accountClient,
+            server = session.server,
+            fetchPublication = { id ->
+                if (!session.hasSameAccountAndToken(sessions.signedIn)) throw ApiException.Unauthorized()
+                accountApi.publication(session.server, id)
+            },
+            scope = accountScope,
+        )
+        accountScope.launch {
+            closing?.join()
+            downloads.start()
+        }
+        return AccountServices(session, accountApi, registry, downloads, directory, store, accountScope).also { account = it }
     }
 
     fun currentAccount(): AccountServices? = sessions.signedIn?.let(::account)
@@ -130,6 +169,7 @@ class AppContainer(context: Context) {
         val current = currentAccount() ?: return
         scope.launch {
             current.progress.flushAll()
+            current.downloads.retryInterrupted()
             try {
                 sessions.refreshUser(current.api.me(current.session.server), current.session)
             } catch (_: ApiException) {

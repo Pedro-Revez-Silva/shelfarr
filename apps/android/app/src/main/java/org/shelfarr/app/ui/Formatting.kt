@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.Progress
 import org.shelfarr.app.core.Publication
+import org.shelfarr.app.core.ReadingStatus
 import org.shelfarr.app.core.ServerAddress
 
 /** The signed-in server, for resolving cover URLs without threading it everywhere. */
@@ -65,8 +66,18 @@ fun Publication.progressFraction(): Float? {
 
 val Publication.primaryActionLabel: String
     get() = when {
+        // Finished stays finished: opening it again doesn't promise a restart.
+        status == ReadingStatus.FINISHED && bookType == BookType.EBOOK -> "Open book"
+        status == ReadingStatus.FINISHED -> "Play audiobook"
         progress?.isUsable == true && bookType == BookType.EBOOK -> "Continue reading"
         progress?.isUsable == true -> "Continue listening"
         bookType == BookType.EBOOK -> "Start reading"
         else -> "Start listening"
+    }
+
+val ReadingStatus.label: String
+    get() = when (this) {
+        ReadingStatus.UNREAD -> "Unread"
+        ReadingStatus.IN_PROGRESS -> "In progress"
+        ReadingStatus.FINISHED -> "Finished"
     }

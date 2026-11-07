@@ -10,6 +10,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -35,7 +36,9 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val container = (application as ShelfarrApplication).container
-        val dataSource = OkHttpDataSource.Factory(container.httpClient)
+        val network = OkHttpDataSource.Factory(container.httpClient)
+        // file:// for downloaded tracks, the scoped HTTP stack for everything else.
+        val dataSource = DefaultDataSource.Factory(this, network)
 
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(dataSource))

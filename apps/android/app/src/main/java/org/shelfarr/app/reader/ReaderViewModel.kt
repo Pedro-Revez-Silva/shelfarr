@@ -60,6 +60,9 @@ sealed interface ReaderState {
     data object Unreadable : ReaderState
 }
 
+/** Where the open EPUB came from, for tests and diagnostics. */
+enum class ReaderSource { DOWNLOAD, CACHE }
+
 data class ReadingPlace(
     val fraction: Float = 0f,
     val position: Int? = null,
@@ -88,6 +91,11 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     private var opened: ReadiumPublication? = null
     private var notice: String? = null
 
+    /** Which copy is open: a managed download or the evictable cache. */
+    @Volatile
+    var fileSource: ReaderSource? = null
+        private set
+
     init {
         open()
     }
@@ -102,11 +110,22 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
             try {
                 val session = services.session
                 val books = AccountPublications(services.directory)
-                val publication = try {
-                    container.api.publication(session.server, publicationId).also { books.remember(it) }
+                var offline = false
+                val online = try {
+                    services.api.publication(session.server, publicationId).also { books.remember(it) }
                 } catch (error: ApiException.Offline) {
-                    // A working copy may still be on disk from an earlier read.
-                    books.recall(publicationId) ?: throw error
+                    // Only a lost connection falls back. An untrusted certificate is surfaced.
+                    if (error.certificate) throw error
+                    offline = true
+                    null
+                }
+                val download = services.downloads.find(publicationId)?.takeIf { it.isReady }
+                // A download pins one edition. Online, it is used only while it is still the server's edition.
+                val useDownload = download != null && (online == null || download.matches(online))
+                val publication = when {
+                    online != null -> online
+                    download != null -> download.publication
+                    else -> books.recall(publicationId) ?: throw ApiException.Offline()
                 }
                 val epub = publication.epubAsset ?: run {
                     mutableState.value = ReaderState.Unreadable
@@ -115,12 +134,21 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
                 asset = epub
                 details = publication
 
-                val cached = container.epubCache.obtain(session.accountKey, session.server, epub) { fraction ->
-                    mutableState.value = ReaderState.Preparing(fraction)
+                val downloaded = if (useDownload) download?.let { services.downloads.fileFor(it, epub.id) } else null
+                val file = if (downloaded != null) {
+                    mutableState.value = ReaderState.Preparing(1f)
+                    if (offline) notice = "Reading the download on this device. Your place will sync when you're back online."
+                    downloaded
+                } else {
+                    val cached = container.epubCache.obtain(session.accountKey, session.server, epub) { fraction ->
+                        mutableState.value = ReaderState.Preparing(fraction)
+                    }
+                    if (cached.unverified) notice = "Reading the copy on this device. Your place will sync when you're back online."
+                    cached.file
                 }
-                if (cached.unverified) notice = "Reading the copy on this device. Your place will sync when you're back online."
+                fileSource = if (downloaded != null) ReaderSource.DOWNLOAD else ReaderSource.CACHE
 
-                val readium = openWithReadium(cached.file) ?: run {
+                val readium = openWithReadium(file) ?: run {
                     mutableState.value = ReaderState.Unreadable
                     return@launch
                 }

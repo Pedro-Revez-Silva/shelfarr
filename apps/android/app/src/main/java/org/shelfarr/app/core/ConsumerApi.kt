@@ -24,6 +24,20 @@ enum class LibraryFilter(val query: String?) {
     AUDIOBOOK("audiobook"),
 }
 
+enum class LibrarySort(val query: String?) {
+    /** Recent activity first, the server default. */
+    RECENT(null),
+    TITLE("title"),
+}
+
+/** Everything that selects one library listing. A cursor is only valid for the query that produced it. */
+data class LibraryQuery(
+    val filter: LibraryFilter = LibraryFilter.ALL,
+    val text: String = "",
+    val status: ReadingStatus? = null,
+    val sort: LibrarySort = LibrarySort.RECENT,
+)
+
 /** A fully read response. Reading happens off the main thread, inside [ConsumerApi.execute]. */
 private class Reply(val code: Int, val body: String) {
     val isSuccessful: Boolean get() = code in 200..299
@@ -60,14 +74,33 @@ class ConsumerApi(
         query: String? = null,
         cursor: String? = null,
         limit: Int = 30,
-    ): LibraryPage {
+    ): LibraryPage = library(server, LibraryQuery(filter, query.orEmpty()), cursor, limit)
+
+    suspend fun library(server: ServerAddress, query: LibraryQuery, cursor: String? = null, limit: Int = 30): LibraryPage {
         val url = server.api("library").newBuilder().apply {
-            filter.query?.let { addQueryParameter("type", it) }
-            query?.takeIf(String::isNotBlank)?.let { addQueryParameter("q", it) }
+            query.filter.query?.let { addQueryParameter("type", it) }
+            query.text.takeIf(String::isNotBlank)?.let { addQueryParameter("q", it) }
+            query.status?.let { addQueryParameter("status", it.query) }
+            query.sort.query?.let { addQueryParameter("sort", it) }
             cursor?.let { addQueryParameter("cursor", it) }
             addQueryParameter("limit", limit.toString())
         }.build()
         return get(url).parse()
+    }
+
+    /** Library-wide recent activity across every acquired publication. */
+    suspend fun continueReading(server: ServerAddress, limit: Int = 10): List<Publication> {
+        val url = server.api("continue").newBuilder().addQueryParameter("limit", limit.toString()).build()
+        return get(url).parse<ContinueList>().items
+    }
+
+    /** Sets the explicit status. The saved place is kept by the server. */
+    suspend fun setReadingStatus(server: ServerAddress, publicationId: String, status: ReadingStatus): Publication {
+        val request = Request.Builder()
+            .url(server.api("library/${encodePath(publicationId)}/reading_status"))
+            .put(ApiJson.encodeToString(ReadingStatusUpdate(status)).toRequestBody(JSON))
+            .build()
+        return execute(request).parse()
     }
 
     suspend fun publication(server: ServerAddress, id: String): Publication =
