@@ -42,6 +42,7 @@ import org.junit.runner.RunWith
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.shelfarr.app.R
 import org.shelfarr.app.ShelfarrApplication
+import org.shelfarr.app.core.ActivityTime
 import org.shelfarr.app.core.ApiJson
 import org.shelfarr.app.core.Asset
 import org.shelfarr.app.core.BookType
@@ -63,6 +64,7 @@ class ReaderSmokeTest {
         val app = ApplicationProvider.getApplicationContext<ShelfarrApplication>()
         val epub = epub()
         val saved = AtomicReference<Progress?>(null)
+        val writes = java.util.concurrent.CopyOnWriteArrayList<ProgressUpdate>()
         val web = MockWebServer()
         web.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -84,7 +86,11 @@ class ReaderSmokeTest {
                     }
                     "/api/consumer/v1/library/book/progress" -> {
                         val update = ApiJson.decodeFromString<ProgressUpdate>(request.body!!.utf8())
-                        val progress = Progress(update.assetId, update.locator, update.positionSeconds, (saved.get()?.version ?: 0) + 1, clientMutationId = update.clientMutationId)
+                        writes += update
+                        val progress = Progress(
+                            update.assetId, update.locator, update.positionSeconds, (saved.get()?.version ?: 0) + 1,
+                            clientMutationId = update.clientMutationId, observedAt = update.observedAt,
+                        )
                         saved.set(progress)
                         json("{\"progress\":${ApiJson.encodeToString(progress)}}")
                     }
@@ -95,6 +101,7 @@ class ReaderSmokeTest {
         web.start()
         val server = (ServerAddress.parse(web.url("/").toString(), true) as ServerAddress.ParseResult.Valid).address
         app.container.sessions.signIn(Session(server, Me("reader-smoke"), "reader-smoke"))
+        val openedAt = System.currentTimeMillis()
         try {
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
                 awaitText(scenario, "First chapter is rendered")
@@ -108,10 +115,20 @@ class ReaderSmokeTest {
                 await("chapter two progress reached the server") { saved.get()?.locator?.get("href").toString().contains("c2.xhtml") }
                 screenshot(scenario, "chapter-two.png")
             }
+            // Each write says when the page was reached, on this device's clock.
+            val reached = requireNotNull(ActivityTime.parse(saved.get()?.observedAt)) { "observed_at missing: ${writes.last()}" }
+            assertTrue("observed at $reached, opened at $openedAt", reached in openedAt..System.currentTimeMillis())
+            assertTrue(writes.none { it.resolveConflict == true })
+            val beforeReopen = writes.size
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
                 awaitText(scenario, "Second chapter is rendered")
                 screenshot(scenario, "chapter-two-resumed.png")
+                // Restoring the saved page is not reading: give the debounce time, then expect silence.
+                SystemClock.sleep(6_000)
             }
+            // Closing flushes in the background; anything it had to send would have gone by now.
+            SystemClock.sleep(1_000)
+            assertEquals("reopening sent ${writes.drop(beforeReopen)}", beforeReopen, writes.size)
         } finally {
             runBlocking {
                 app.container.currentAccount()?.close()
