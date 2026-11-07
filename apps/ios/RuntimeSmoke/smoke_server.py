@@ -8,7 +8,10 @@ It serves apps/scripts/mock_consumer_server.py unchanged and adds, for the smoke
 * a control port that takes the API offline (listener closed and live connections
   dropped) and back online, so the app can be relaunched without a connection;
 * counters that let the test prove downloads used grants and never sent the bearer
-  with them.
+  with them;
+* a record of progress writes per publication (count, and the latest body's
+  `observed_at`, `resolve_conflict` and place), so the test can check activity times
+  and that reopening a saved place writes nothing.
 
 Development only: no real security, in memory, bound to 127.0.0.1.
 
@@ -53,7 +56,38 @@ class Stats:
             return dict(self.values)
 
 
+class ProgressLog:
+    """Progress PUT bodies as the app sent them, before the mock applies them."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.writes = {}
+
+    def record(self, publication_id, body):
+        entry = {
+            "observed_at": body.get("observed_at"),
+            "resolve_conflict": body.get("resolve_conflict"),
+            "position_seconds": body.get("position_seconds"),
+            "has_locator": body.get("locator") is not None,
+            "client_mutation_id": body.get("client_mutation_id"),
+        }
+        with self.lock:
+            log = self.writes.setdefault(publication_id, {"count": 0, "last": None, "resolving": 0, "without_observed_at": 0})
+            log["count"] += 1
+            log["last"] = entry
+            if entry["resolve_conflict"] is True:
+                log["resolving"] += 1
+            if not entry["observed_at"]:
+                log["without_observed_at"] += 1
+
+    def snapshot(self):
+        with self.lock:
+            return json.loads(json.dumps(self.writes))
+
+
 STATS = Stats()
+PROGRESS_LOG = ProgressLog()
+PROGRESS = re.compile(mock.PREFIX + r"/library/([^/]+)/progress")
 GRANTS = {}
 GRANTS_LOCK = threading.Lock()
 CONTENT = re.compile(mock.PREFIX + r"/assets/([^/]+)/content")
@@ -123,6 +157,13 @@ class SmokeHandler(mock.Handler):
                 pass
             return False
         return super().parse_request()
+
+    def body(self):
+        data = super().body()
+        match = PROGRESS.fullmatch(self.route()) if self.command == "PUT" else None
+        if match and isinstance(data, dict):
+            PROGRESS_LOG.record(match[1], data)
+        return data
 
     def authorized(self):
         grant = parse_qs(urlparse(self.path).query).get("grant", [None])[0]
@@ -196,7 +237,7 @@ class ControlHandler(BaseHTTPRequestHandler):
         if self.path != "/stats":
             self.send_error(404)
             return
-        self.reply(dict(STATS.snapshot(), offline=SWITCH.offline))
+        self.reply(dict(STATS.snapshot(), offline=SWITCH.offline, progress_writes=PROGRESS_LOG.snapshot()))
 
 
 def main():

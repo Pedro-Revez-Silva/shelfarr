@@ -3,7 +3,9 @@ import XCTest
 
 /// Drives the real app on a simulator against `RuntimeSmoke/smoke_server.py`: library
 /// and search, details, a rendered EPUB, downloads through the background session, a
-/// local audiobook, and reopening everything with the server unreachable.
+/// local audiobook, reopening everything with the server unreachable, the activity time
+/// sent with reading progress, a silent reopen, and the audiobook resume rewind. It runs
+/// on iPhone and iPad simulators alike.
 ///
 /// It needs `SHELFARR_SMOKE_PORT` and `SHELFARR_SMOKE_CONTROL_PORT` in the test runner's
 /// environment (`TEST_RUNNER_` prefixed for xcodebuild); `apps/scripts/ios-runtime-smoke.sh`
@@ -43,9 +45,9 @@ final class RuntimeSmokeTests: XCTestCase {
         let app = launch(reset: true)
 
         try step("Home and library") {
-            XCTAssertTrue(app.tabBars.buttons["Library"].waitForExistence(timeout: wait), "the signed-in app shows its tabs")
+            XCTAssertTrue(tab(app, "Library").waitForExistence(timeout: wait), "the signed-in app shows its tabs")
             screenshot(app, "01-home")
-            app.tabBars.buttons["Library"].tap()
+            tab(app, "Library").tap()
             XCTAssertTrue(item(app, "book-1").waitForExistence(timeout: wait), "the library lists the fixture book")
             XCTAssertTrue(item(app, "audio-1").exists)
             screenshot(app, "02-library")
@@ -102,7 +104,7 @@ final class RuntimeSmokeTests: XCTestCase {
             XCTAssertTrue(position.waitForExistence(timeout: wait))
             XCTAssertTrue(waitFor { (position.value as? String)?.hasSuffix("of 0:45") == true }, "the local track's duration loaded: \(position.value ?? "")")
             screenshot(app, "08-player")
-            app.buttons["Close player"].tap()
+            press(app, "Close player")
         }
 
         try step("Offline relaunch") {
@@ -112,7 +114,7 @@ final class RuntimeSmokeTests: XCTestCase {
             XCTAssertTrue(offline.staticTexts["Offline. Showing downloads on this device."].waitForExistence(timeout: wait))
             screenshot(offline, "09-home-offline")
 
-            offline.tabBars.buttons["Library"].tap()
+            tab(offline, "Library").tap()
             XCTAssertTrue(offline.otherElements["library-offline-banner"].waitForExistence(timeout: wait), "the library says it shows saved titles")
             XCTAssertTrue(item(offline, "book-1").waitForExistence(timeout: wait))
             XCTAssertTrue(item(offline, "audio-1").exists)
@@ -136,6 +138,110 @@ final class RuntimeSmokeTests: XCTestCase {
         }
     }
 
+    /// Reading sends the time each page was reached; reopening at the saved page and
+    /// closing again is not reading, so nothing more is written.
+    func testReaderSendsActivityTimeAndReopensSilently() throws {
+        let app = launch(reset: true)
+        let book = "book-x1"
+        var place = ""
+        var written = 0
+
+        try step("Reading records when the page was reached") {
+            XCTAssertTrue(tab(app, "Library").waitForExistence(timeout: wait))
+            tab(app, "Library").tap()
+            XCTAssertTrue(item(app, book).waitForExistence(timeout: wait))
+            item(app, book).tap()
+            button(app, startingWith: ["Start reading", "Continue reading", "Open book"]).tap()
+            XCTAssertTrue(bookText(app).waitForExistence(timeout: 60), "Readium rendered the chapter text")
+            let page = app.webViews.firstMatch
+            let before = Date()
+            page.swipeLeft()
+            page.swipeLeft()
+            sleep(2)
+            place = progress(app)
+            closeReader(app)
+            XCTAssertTrue(waitFor { (try? self.progressWrites(book))?.count ?? 0 > 0 }, "closing the reader sent its place")
+            let log = try progressWrites(book)
+            written = log.count
+            XCTAssertEqual(log.withoutObservedAt, 0, "every write carries observed_at")
+            XCTAssertEqual(log.resolving, 0, "only an explicit choice sends resolve_conflict")
+            let observed = try XCTUnwrap(log.lastObservedAt.flatMap(parseTime), "observed_at is a zoned ISO-8601 time: \(log.lastObservedAt ?? "-")")
+            XCTAssertGreaterThan(observed, before.addingTimeInterval(-5), "stamped when the page was reached")
+            XCTAssertLessThan(observed, Date().addingTimeInterval(5), "and never in the future")
+            screenshot(app, "13-reader-activity-time")
+        }
+
+        try step("Reopening the saved page writes nothing") {
+            button(app, startingWith: ["Continue reading", "Start reading", "Open book"]).tap()
+            XCTAssertTrue(bookText(app).waitForExistence(timeout: 60))
+            sleep(3)
+            let restored = progress(app)
+            XCTAssertTrue(close(restored, place), "the reading place was restored: \(restored) vs \(place)")
+            closeReader(app)
+            sleep(3)
+            XCTAssertEqual(try progressWrites(book).count, written, "restoring a place is not new reading")
+            screenshot(app, "14-reader-reopened")
+        }
+    }
+
+    /// A paused restart replays five seconds once and keeps the paused place saved; a
+    /// deliberate move plays from exactly where it was put.
+    func testAudiobookResumeRewindsOnceAndKeepsTheSavedPlace() throws {
+        let app = launch(reset: true)
+        let book = "audio-1"
+        XCTAssertTrue(tab(app, "Library").waitForExistence(timeout: wait))
+        tab(app, "Library").tap()
+        XCTAssertTrue(item(app, book).waitForExistence(timeout: wait))
+        item(app, book).tap()
+        button(app, startingWith: ["Start listening", "Continue listening", "Play audiobook"]).tap()
+        let slider = app.sliders["Position"]
+        XCTAssertTrue(slider.waitForExistence(timeout: wait))
+        XCTAssertTrue(waitFor { (slider.value as? String)?.hasSuffix("of 0:45") == true }, "the streamed track's duration loaded")
+        guard toggle(app, "Pause").waitForExistence(timeout: 15) else {
+            screenshot(app, "15-player-not-playing")
+            throw XCTSkip("The simulator did not start audio playback, so the rewind cannot be observed here")
+        }
+
+        var paused = 0.0
+        try step("Pausing after a deliberate move saves that place at once") {
+            press(app, "Forward 30 seconds")
+            toggle(app, "Pause").tap()
+            XCTAssertTrue(toggle(app, "Play").waitForExistence(timeout: wait))
+            paused = try XCTUnwrap(elapsed(slider))
+            XCTAssertGreaterThanOrEqual(paused, 29, "skipping forward is not rewound")
+            XCTAssertTrue(waitFor {
+                guard let saved = try? self.savedSeconds(book) else { return false }
+                return abs(saved - paused) <= 1.5
+            }, "the pause checkpoint reached the server")
+            let log = try progressWrites(book)
+            XCTAssertEqual(log.withoutObservedAt, 0)
+            XCTAssertEqual(log.resolving, 0)
+            screenshot(app, "15-player-paused")
+        }
+
+        try step("Playing again replays five seconds, once") {
+            toggle(app, "Play").tap()
+            let restarted = try XCTUnwrap(elapsed(slider))
+            XCTAssertTrue((paused - 6.5 ... paused - 2.5).contains(restarted), "resumed at \(restarted) after pausing at \(paused)")
+            toggle(app, "Pause").tap()
+            XCTAssertTrue(toggle(app, "Play").waitForExistence(timeout: wait))
+            sleep(2)
+            let saved = try savedSeconds(book)
+            XCTAssertLessThanOrEqual(abs(saved - paused), 1.5, "pausing in the replayed seconds keeps the original place: \(saved) vs \(paused)")
+            screenshot(app, "16-player-rewound")
+        }
+
+        try step("A deliberate move while paused is not rewound") {
+            press(app, "Back 15 seconds")
+            let chosen = try XCTUnwrap(elapsed(slider))
+            toggle(app, "Play").tap()
+            let playing = try XCTUnwrap(elapsed(slider))
+            XCTAssertGreaterThanOrEqual(playing, chosen - 1, "played from the chosen place: \(playing) vs \(chosen)")
+            toggle(app, "Pause").tap()
+            press(app, "Close player")
+        }
+    }
+
     // MARK: App
 
     private func launch(reset: Bool) -> XCUIApplication {
@@ -150,6 +256,12 @@ final class RuntimeSmokeTests: XCTestCase {
         ]
         app.launch()
         return app
+    }
+
+    /// A tab: in the bottom bar on iPhone, and in the top bar or sidebar on iPad.
+    private func tab(_ app: XCUIApplication, _ name: String) -> XCUIElement {
+        let bar = app.tabBars.buttons[name]
+        return bar.exists ? bar : app.buttons.matching(identifier: name).firstMatch
     }
 
     private func item(_ app: XCUIApplication, _ id: String) -> XCUIElement {
@@ -209,6 +321,33 @@ final class RuntimeSmokeTests: XCTestCase {
         if cancel.exists { cancel.tap() }
     }
 
+    /// The full player's play/pause button, when it reads `label`. The mini player has its own.
+    private func toggle(_ app: XCUIApplication, _ label: String) -> XCUIElement {
+        let found = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label == %@", "player-toggle", label)).firstMatch
+        _ = found.waitForExistence(timeout: wait)
+        return found
+    }
+
+    private func press(_ app: XCUIApplication, _ label: String) {
+        let found = app.buttons[label]
+        XCTAssertTrue(found.waitForExistence(timeout: wait), "a button labelled \(label)")
+        found.tap()
+    }
+
+    /// Seconds into the track, from the scrubber's "m:ss of m:ss".
+    private func elapsed(_ slider: XCUIElement) -> Double? {
+        guard let value = slider.value as? String, let shown = value.components(separatedBy: " of ").first else { return nil }
+        let parts = shown.split(separator: ":").compactMap { Double($0) }
+        guard parts.count >= 2 else { return nil }
+        return parts.reduce(0) { $0 * 60 + $1 }
+    }
+
+    private func parseTime(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value)
+    }
+
     private func scroll(_ app: XCUIApplication, to element: XCUIElement) -> Bool {
         for _ in 0 ..< 12 {
             if element.exists { return true }
@@ -244,6 +383,32 @@ final class RuntimeSmokeTests: XCTestCase {
     // MARK: Fixture server
 
     private enum SmokeError: Error { case unconfigured, timeout, http(Int), malformed }
+
+    private struct ProgressWrites {
+        let count: Int
+        let resolving: Int
+        let withoutObservedAt: Int
+        let lastObservedAt: String?
+    }
+
+    /// What the app has sent for one publication, as the fixture server recorded it.
+    private func progressWrites(_ publication: String) throws -> ProgressWrites {
+        let stats = try json(request(controlPort, "GET", "/stats"))
+        let log = (stats["progress_writes"] as? [String: Any])?[publication] as? [String: Any]
+        let last = log?["last"] as? [String: Any]
+        return ProgressWrites(
+            count: log?["count"] as? Int ?? 0,
+            resolving: log?["resolving"] as? Int ?? 0,
+            withoutObservedAt: log?["without_observed_at"] as? Int ?? 0,
+            lastObservedAt: last?["observed_at"] as? String
+        )
+    }
+
+    /// The server's saved audio place for one publication.
+    private func savedSeconds(_ publication: String) throws -> Double {
+        let body = try json(request(port, "GET", "/api/consumer/v1/library/\(publication)/progress", bearer: token))
+        return try XCTUnwrap((body["progress"] as? [String: Any])?["position_seconds"] as? Double)
+    }
 
     private func setOnline(_ online: Bool) throws {
         _ = try request(controlPort, "POST", online ? "/online" : "/offline")
