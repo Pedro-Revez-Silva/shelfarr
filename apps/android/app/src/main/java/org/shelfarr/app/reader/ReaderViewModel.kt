@@ -155,7 +155,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
                 val local = sync?.snapshot()
                 when (val decision = ResumeDecision.decide(publication, publication.progress, local, offline = offline)) {
                     ResumeDecision.Beginning -> ready(null, baseVersion = 0)
-                    is ResumeDecision.Continue -> ready(decision.position, decision.baseVersion)
+                    is ResumeDecision.Continue -> ready(decision.position, decision.baseVersion, decision.observedAtEpochMs)
                     is ResumeDecision.Choose -> mutableState.value = ReaderState.ChooseResume(decision.local, decision.server)
                     is ResumeDecision.EditionChanged -> {
                         notice = "This book's file was replaced, so your old place doesn't apply. Starting from the beginning."
@@ -172,7 +172,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         val choice = mutableState.value as? ReaderState.ChooseResume ?: return
         viewModelScope.launch {
             val position = if (keepLocal) choice.local else SavedPosition.from(choice.server)
-            sync?.chooseAtOpen(position, choice.server.version, keepLocal)
+            sync?.chooseAtOpen(position, choice.server, keepLocal)
             ready(position, choice.server.version)
         }
     }
@@ -187,9 +187,10 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         return opener.open(readiumAsset, allowUserInteraction = false).getOrElse { return null }
     }
 
-    private suspend fun ready(start: SavedPosition?, baseVersion: Int) {
+    private suspend fun ready(start: SavedPosition?, baseVersion: Int, observedAtEpochMs: Long? = null) {
         val publication = opened ?: return
-        sync?.begin(start, baseVersion)
+        sync?.begin(start, baseVersion, observedAtEpochMs, details?.playableAssets?.map { it.id })
+        restoring = start?.locator ?: NO_PLACE
         val locator = start?.locator?.let { json ->
             Locator.fromJSON(JSONObject(json.toString()))
         }
@@ -210,7 +211,15 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
             flatten(link.children, depth + 1)
     }
 
+    /**
+     * The place this session opened at, until the reader moves away from it. Readium
+     * reports the restored locator after opening; that is not new reading.
+     */
+    private var restoring: JsonObject? = null
+
     fun onLocatorChanged(locator: Locator) {
+        // Captured before anything waits: this is when the page was reached.
+        val observedAt = System.currentTimeMillis()
         val total = locator.locations.totalProgression ?: locator.locations.progression ?: 0.0
         mutablePlace.update {
             ReadingPlace(
@@ -221,7 +230,16 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         }
         val id = asset?.id ?: return
         val json = Json.parseToJsonElement(locator.toJSON().toString()) as JsonObject
-        viewModelScope.launch { sync?.update(SavedPosition(id, json)) }
+        restoring?.let { start ->
+            // A book opened at the beginning: its first report says where that is.
+            if (start === NO_PLACE) {
+                restoring = json
+                return
+            }
+            if (isRestoredPlace(start, json)) return
+            restoring = null
+        }
+        viewModelScope.launch { sync?.update(SavedPosition(id, json), observedAt) }
     }
 
     suspend fun locatorFor(fraction: Float): Locator? = opened?.locateProgression(fraction.toDouble())
@@ -239,6 +257,8 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     /** Adopts the other device's place and hands back where to go. */
     suspend fun useOtherPlace(): Locator? {
         val position = sync?.useServer() ?: return null
+        // Going there is the reader's choice of a saved place, not new reading.
+        restoring = position.locator
         return position.locator?.let { Locator.fromJSON(JSONObject(it.toString())) }
     }
 

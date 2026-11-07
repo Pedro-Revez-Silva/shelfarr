@@ -3,6 +3,7 @@ package org.shelfarr.app.playback
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import java.io.File
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
@@ -64,16 +65,31 @@ data class PlaybackSnapshot(
 /**
  * App-lifetime bridge to [PlaybackService]. It holds no UI, so the position keeps
  * being saved while the app is in the background or the screen is locked.
+ *
+ * While playing, a local checkpoint is written at most every
+ * [ListeningCheckpoints.CHECKPOINT_INTERVAL_MS] (under five seconds); pause, stop,
+ * seeks, natural track changes, errors and backgrounding write one at once. Each
+ * checkpoint carries the wall-clock time it was taken, captured before any waiting.
  */
 class PlaybackController(
     private val context: Context,
     private val scope: CoroutineScope,
+    /** Supplies the player; by default a controller connected to [PlaybackService]. Tests pass their own. */
+    private val connect: (suspend () -> Player)? = null,
+    private val wallClock: () -> Long = System::currentTimeMillis,
+    private val elapsed: () -> Long = SystemClock::elapsedRealtime,
 ) {
-    private var controller: MediaController? = null
+    private var controller: Player? = null
     private var sync: ProgressSync? = null
     private var ticker: Job? = null
     private var sleepTimer: Job? = null
     private val chapters = HashMap<String, List<AudioChapter>>()
+    private val checkpoints = ListeningCheckpoints()
+
+    /** Our own resume rewind, so its seek isn't mistaken for the listener's. */
+    private var rewinding: Rewind? = null
+
+    private data class Rewind(val index: Int, val positionMs: Long, val atElapsedMs: Long)
 
     private val state = MutableStateFlow(PlaybackSnapshot())
     val snapshot: StateFlow<PlaybackSnapshot> = state.asStateFlow()
@@ -84,20 +100,65 @@ class PlaybackController(
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            if (isPlaying) startTicker() else saveAndFlush()
+            if (isPlaying) {
+                startTicker()
+            } else {
+                ticker?.cancel()
+                checkpoint(flush = true)
+            }
         }
 
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            recordPosition()
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (!playWhenReady) {
+                checkpoints.paused()
+                return
+            }
+            // Only someone pressing play resumes: not audio focus coming back, nor a new queue.
+            if (reason != Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) return
+            val player = controller ?: return
+            val here = currentPosition() ?: return
+            val target = checkpoints.resumed(here) ?: return
+            rewinding = Rewind(player.currentMediaItemIndex, target, elapsed())
+            player.seekTo(player.currentMediaItemIndex, target)
+        }
+
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            when (reason) {
+                Player.DISCONTINUITY_REASON_SEEK -> {
+                    if (isOwnRewind(newPosition)) return
+                    // Lock screen, headset, notification or in-app: the listener chose this place.
+                    checkpoints.movedDeliberately()
+                    checkpoint(flush = false)
+                }
+                // A natural move into the next track.
+                Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> checkpoint(flush = false)
+                // Queue changes, seek adjustments and skipped items are not the listener moving.
+                else -> Unit
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
             state.update { it.copy(problem = classify(error), isPlaying = false, isBuffering = false) }
-            saveAndFlush()
+            ticker?.cancel()
+            checkpoint(flush = true)
         }
     }
 
-    /** Queues a publication and starts it from [start], or the beginning. */
+    private fun isOwnRewind(position: Player.PositionInfo): Boolean {
+        val rewind = rewinding ?: return false
+        if (elapsed() - rewind.atElapsedMs > REWIND_ECHO_MS) {
+            rewinding = null
+            return false
+        }
+        val matches = position.mediaItemIndex == rewind.index && kotlin.math.abs(position.positionMs - rewind.positionMs) < 1_000
+        if (!matches) rewinding = null
+        return matches
+    }
+
+    /**
+     * Queues a publication and starts it a little before [start] (see [ListeningCheckpoints]),
+     * or at the beginning. The saved place itself is left as it was.
+     */
     suspend fun load(
         publication: Publication,
         server: ServerAddress,
@@ -112,10 +173,13 @@ class PlaybackController(
         check(items.size == tracks.size && items.isNotEmpty()) { "Audio asset outside the configured server" }
 
         val player = connected()
+        // Switching books: the one being left gets its last place first.
+        if (this.sync != null && this.sync !== sync) checkpoint(flush = true)
         this.sync = sync
         chapters.clear()
         val index = tracks.indexOfFirst { it.id == start?.assetId }.coerceAtLeast(0)
-        val positionMs = ((start?.positionSeconds ?: 0.0) * 1_000).toLong().coerceAtLeast(0)
+        rewinding = null
+        val positionMs = checkpoints.open(start?.takeIf { tracks[index].id == it.assetId }, tracks[index].id)
         state.update {
             PlaybackSnapshot(publication = publication, tracks = tracks, trackIndex = index, speed = it.speed, fromDevice = local != null)
         }
@@ -147,8 +211,15 @@ class PlaybackController(
             .build()
     }
 
-    private suspend fun connected(): MediaController {
-        controller?.takeIf { it.isConnected }?.let { return it }
+    private suspend fun connected(): Player {
+        controller?.takeIf { (it as? MediaController)?.isConnected ?: true }?.let { return it }
+        val player = connect?.invoke() ?: connectToService()
+        player.addListener(listener)
+        controller = player
+        return player
+    }
+
+    private suspend fun connectToService(): MediaController {
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val future = MediaController.Builder(context, token).buildAsync()
         val connected = suspendCancellableCoroutine { continuation ->
@@ -164,8 +235,6 @@ class PlaybackController(
             )
             continuation.invokeOnCancellation { future.cancel(true) }
         }
-        connected.addListener(listener)
-        controller = connected
         return connected
     }
 
@@ -186,29 +255,28 @@ class PlaybackController(
         }
     }
 
-    fun seekTo(positionMs: Long) {
-        controller?.seekTo(positionMs)
-        recordPosition()
+    fun seekTo(positionMs: Long) = deliberately { seekTo(positionMs) }
+
+    fun skipBack() = deliberately { seekBack() }
+
+    fun skipForward() = deliberately { seekForward() }
+
+    fun playTrack(index: Int) = deliberately {
+        seekTo(index, 0)
+        play()
     }
 
-    fun skipBack() {
-        controller?.seekBack()
+    fun playChapter(chapter: AudioChapter) = deliberately {
+        seekTo(chapter.startMs)
+        play()
     }
 
-    fun skipForward() {
-        controller?.seekForward()
-    }
-
-    fun playTrack(index: Int) {
+    /** A place the listener picked: never rewound, and saved at once. */
+    private inline fun deliberately(action: Player.() -> Unit) {
         val player = controller ?: return
-        player.seekTo(index, 0)
-        player.play()
-    }
-
-    fun playChapter(chapter: AudioChapter) {
-        val player = controller ?: return
-        player.seekTo(chapter.startMs)
-        player.play()
+        checkpoints.movedDeliberately()
+        player.action()
+        checkpoint(flush = false)
     }
 
     fun setSpeed(speed: Float) {
@@ -234,15 +302,21 @@ class PlaybackController(
 
     /** Moves to a place chosen after a conflict. */
     fun jumpTo(position: SavedPosition) {
-        val player = controller ?: return
         val index = state.value.tracks.indexOfFirst { it.id == position.assetId }
         if (index < 0) return
-        player.seekTo(index, ((position.positionSeconds ?: 0.0) * 1_000).toLong())
+        deliberately { seekTo(index, ((position.positionSeconds ?: 0.0) * 1_000).toLong()) }
     }
+
+    /**
+     * Writes the current place now, without waiting for the next periodic checkpoint.
+     * Call from the main thread, e.g. as the app goes to the background.
+     */
+    fun checkpointNow(): Job? = checkpoint(flush = false)
 
     /** Saves the final position, then stops and forgets the queue. */
     suspend fun stop() = withContext(Dispatchers.Main.immediate) {
-        val position = currentPosition()
+        val observedAt = wallClock()
+        val position = currentPosition()?.takeIf(checkpoints::isActivity)
         val target = sync
         sync = null
         sleepTimer?.cancel()
@@ -253,7 +327,7 @@ class PlaybackController(
         }
         state.value = PlaybackSnapshot()
         if (target != null) {
-            position?.let { target.update(it) }
+            position?.let { target.update(it, observedAt) }
             target.flush()
         }
     }
@@ -288,27 +362,25 @@ class PlaybackController(
         ticker = scope.launch {
             while (isActive) {
                 controller?.let(::refresh)
-                if (++ticks % TICKS_PER_SAVE == 0) recordPosition()
+                if (checkpoints.due(elapsed())) checkpoint(flush = false)
                 delay(TICK_MS)
             }
         }
     }
 
-    private var ticks = 0
-
-    private fun recordPosition() {
-        val position = currentPosition() ?: return
-        val target = sync ?: return
-        scope.launch { target.update(position) }
-    }
-
-    private fun saveAndFlush() {
-        ticker?.cancel()
-        val position = currentPosition()
-        val target = sync ?: return
-        scope.launch {
-            position?.let { target.update(it) }
-            target.flush()
+    /**
+     * Records the place reached now, unless it is only the replayed pre-roll, and
+     * optionally sends what is outstanding. The time is taken before anything waits.
+     */
+    private fun checkpoint(flush: Boolean): Job? {
+        val observedAt = wallClock()
+        val target = sync ?: return null
+        val position = currentPosition()?.takeIf(checkpoints::isActivity)
+        if (position != null) checkpoints.checkpointed(elapsed())
+        if (position == null && !flush) return null
+        return scope.launch {
+            position?.let { target.update(it, observedAt) }
+            if (flush) target.flush()
         }
     }
 
@@ -335,7 +407,9 @@ class PlaybackController(
 
     private companion object {
         const val TICK_MS = 500L
-        const val TICKS_PER_SAVE = 10
+
+        /** How long our own rewind seek may take to be reported back. */
+        const val REWIND_ECHO_MS = 3_000L
     }
 }
 

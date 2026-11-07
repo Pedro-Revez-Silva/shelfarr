@@ -12,15 +12,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-private class MemoryStore : ProgressStore {
-    val records = HashMap<String, LocalProgress>()
-    override suspend fun get(publicationId: String) = records[publicationId]
-    override suspend fun put(record: LocalProgress) {
-        records[record.publicationId] = record
-    }
-    override suspend fun unsynced() = records.values.filter { it.hasUnsyncedChanges && it.conflict == null }
-}
-
 private class FakeRemote : ProgressRemote {
     val calls = mutableListOf<ProgressUpdate>()
     var version = 0
@@ -47,14 +38,16 @@ class ProgressSyncTest {
     private var ids = 0
 
     private fun TestScope.sync(): ProgressSync =
-        ProgressSync("p", store, remote, backgroundScope, now = { currentTime }, newMutationId = { "m${++ids}" })
+        ProgressSync("p", store, remote, backgroundScope, now = { clock() }, newMutationId = { "m${++ids}" })
+
+    private fun TestScope.clock() = TEST_EPOCH + currentTime
 
     private fun at(seconds: Double) = SavedPosition("a", positionSeconds = seconds)
 
     @Test
     fun `saves locally at once and sends after the debounce`() = runTest {
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         assertEquals(at(1.0), store.records["p"]?.position)
         assertEquals(0, remote.calls.size)
 
@@ -70,7 +63,7 @@ class ProgressSyncTest {
     fun `constant movement is still sent within the maximum wait`() = runTest {
         val sync = sync()
         repeat(30) { tick ->
-            sync.update(at(tick.toDouble()))
+            sync.update(at(tick.toDouble()), clock())
             advanceTimeBy(1_000)
             runCurrent()
         }
@@ -81,7 +74,7 @@ class ProgressSyncTest {
     fun `repeating the same place sends nothing`() = runTest {
         val sync = sync()
         sync.begin(at(4.0), 2)
-        sync.update(at(4.0))
+        sync.update(at(4.0), clock())
         advanceTimeBy(60_000)
         runCurrent()
         assertEquals(0, remote.calls.size)
@@ -90,9 +83,9 @@ class ProgressSyncTest {
     @Test
     fun `flush sends immediately and uses the latest version`() = runTest {
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
-        sync.update(at(2.0))
+        sync.update(at(2.0), clock())
         sync.flush()
         assertEquals(listOf(0, 1), remote.calls.map { it.expectedVersion })
         assertEquals(listOf("m1", "m2"), remote.calls.map { it.clientMutationId })
@@ -102,7 +95,7 @@ class ProgressSyncTest {
     fun `a failed send retries with the same mutation id and body`() = runTest {
         remote.failures += ApiException.Offline()
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
         assertEquals(SyncStatus.WaitingForServer, sync.status.value)
 
@@ -117,9 +110,9 @@ class ProgressSyncTest {
     fun `newer places wait behind an unanswered write, then go as a new mutation`() = runTest {
         remote.failures += ApiException.Server(503)
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
-        sync.update(at(2.0))
+        sync.update(at(2.0), clock())
         sync.flush()
 
         assertEquals(listOf("m1", "m1", "m2"), remote.calls.map { it.clientMutationId })
@@ -132,7 +125,7 @@ class ProgressSyncTest {
     fun `an unanswered write survives a restart with its id`() = runTest {
         remote.failures += ApiException.Offline()
         val first = sync()
-        first.update(at(1.0))
+        first.update(at(1.0), clock())
         first.flush()
 
         val restored = sync()
@@ -145,7 +138,7 @@ class ProgressSyncTest {
         val echo = Progress("a", positionSeconds = 1.0, version = 8, clientMutationId = "m1")
         remote.failures += ApiException.ProgressConflict(echo)
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
 
         assertEquals(SyncStatus.Saved, sync.status.value)
@@ -158,11 +151,11 @@ class ProgressSyncTest {
         val theirs = Progress("a", positionSeconds = 90.0, version = 8, clientMutationId = "other")
         remote.failures += ApiException.ProgressConflict(theirs)
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
 
         assertEquals(SyncStatus.Conflict(at(1.0), theirs), sync.status.value)
-        sync.update(at(2.0))
+        sync.update(at(2.0), clock())
         sync.flush()
         assertEquals(1, remote.calls.size)
         assertEquals(at(2.0), store.records["p"]?.position)
@@ -173,7 +166,7 @@ class ProgressSyncTest {
         remote.failures += ApiException.ProgressConflict(Progress("a", positionSeconds = 90.0, version = 8, clientMutationId = "o"))
         remote.version = 8
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
         sync.keepLocal()
 
@@ -186,7 +179,7 @@ class ProgressSyncTest {
     fun `using the other device adopts its place and sends nothing`() = runTest {
         remote.failures += ApiException.ProgressConflict(Progress("a", positionSeconds = 90.0, version = 8, clientMutationId = "o"))
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
 
         assertEquals(at(90.0), sync.useServer())
@@ -196,22 +189,46 @@ class ProgressSyncTest {
     }
 
     @Test
-    fun `an invalid position is dropped rather than retried forever`() = runTest {
+    fun `a refused position is kept on the device but not retried forever`() = runTest {
         remote.failures += ApiException.Rejected("invalid")
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
+        sync.update(at(2.0), clock())
         advanceTimeBy(600_000)
         runCurrent()
         assertEquals(1, remote.calls.size)
         assertEquals(SyncStatus.Rejected, sync.status.value)
+        val kept = store.records.getValue("p")
+        assertEquals(at(2.0), kept.position)
+        assertTrue("still unsynced, so opening offers a choice", kept.hasUnsyncedChanges)
+        assertTrue(store.unsynced().isEmpty())
+
+        // Opening the book again tries once more.
+        sync.begin(at(2.0), 0)
+        runCurrent()
+        assertEquals(2, remote.calls.size)
+        assertEquals(2.0, remote.calls.last().positionSeconds)
+    }
+
+    @Test
+    fun `an unreadable answer is retried as the same write`() = runTest {
+        remote.failures += ApiException.Protocol()
+        val sync = sync()
+        sync.update(at(1.0), clock())
+        sync.flush()
+        assertEquals(SyncStatus.WaitingForServer, sync.status.value)
+        advanceTimeBy(5_001)
+        runCurrent()
+        assertEquals(remote.calls[0], remote.calls[1])
+        assertEquals(SyncStatus.Saved, sync.status.value)
     }
 
     @Test
     fun `a lost session keeps the write for after sign-in`() = runTest {
         remote.failures += ApiException.Unauthorized()
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
         assertEquals(SyncStatus.NeedsSignIn, sync.status.value)
         assertTrue(store.records["p"]!!.hasUnsyncedChanges)
@@ -221,7 +238,7 @@ class ProgressSyncTest {
     fun `retries stop eventually instead of looping in the background`() = runTest {
         repeat(50) { remote.failures += ApiException.Offline() }
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
         advanceTimeBy(3_600_000)
         runCurrent()
@@ -233,7 +250,7 @@ class ProgressSyncTest {
     fun `begin drops a write built on an older version`() = runTest {
         remote.failures += ApiException.Offline()
         val sync = sync()
-        sync.update(at(1.0))
+        sync.update(at(1.0), clock())
         sync.flush()
         sync.begin(at(9.0), 5)
         assertNull(store.records["p"]?.pending)

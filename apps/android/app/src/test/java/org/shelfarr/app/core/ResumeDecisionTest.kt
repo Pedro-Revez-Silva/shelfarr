@@ -107,6 +107,61 @@ class ResumeDecisionTest {
         assertEquals(ResumeDecision.EditionChanged(2), gone)
     }
 
+    private val now = 1_794_042_000_000L
+    private fun time(offsetMs: Long) = ActivityTime.format(now + offsetMs)
+
+    private fun timedServer(version: Int, offsetMs: Long?, total: Double = 0.5, mutation: String? = "other") =
+        Progress("a1", locator(total), version = version, clientMutationId = mutation, observedAt = offsetMs?.let(::time))
+
+    private fun timedLocal(offsetMs: Long?, base: Int = 3, total: Double = 0.2, pending: PendingMutation? = null, dirty: Boolean = true) =
+        local(dirty = dirty, base = base, total = total).copy(observedAtEpochMs = offsetMs?.let { now + it }, pending = pending)
+
+    @Test
+    fun `later local reading wins over an older server place without asking`() {
+        val decision = ResumeDecision.decide(book, timedServer(5, -60_000), timedLocal(-1_000), now = now)
+        assertEquals(ResumeDecision.Continue(SavedPosition("a1", locator(0.2)), 5, now - 1_000), decision)
+    }
+
+    @Test
+    fun `later reading elsewhere wins over unsent local reading, even further back in the book`() {
+        val decision = ResumeDecision.decide(book, timedServer(5, -1_000, total = 0.1), timedLocal(-60_000, total = 0.9), now = now)
+        assertEquals(ResumeDecision.Continue(SavedPosition("a1", locator(0.1)), 5, now - 1_000), decision)
+    }
+
+    @Test
+    fun `unknown, equal or implausible times still ask`() {
+        val cases = listOf(
+            timedServer(5, null) to timedLocal(-1_000),
+            timedServer(5, -1_000) to timedLocal(null),
+            timedServer(5, -1_000) to timedLocal(-1_000),
+            timedServer(5, 10 * 60_000) to timedLocal(-1_000),
+            timedServer(5, -1_000) to timedLocal(-now + 1_000),
+        )
+        for ((server, local) in cases) {
+            assertTrue("$server vs $local", ResumeDecision.decide(book, server, local, now = now) is ResumeDecision.Choose)
+        }
+    }
+
+    @Test
+    fun `a place the server refused is never settled automatically`() {
+        val decision = ResumeDecision.decide(book, timedServer(5, -60_000), timedLocal(-1_000).copy(rejected = true), now = now)
+        assertTrue(decision is ResumeDecision.Choose)
+    }
+
+    @Test
+    fun `a pending write the server already holds is not a conflict`() {
+        val pending = PendingMutation(SavedPosition("a1", locator(0.2)), 3, "mine", now - 5_000)
+        val server = timedServer(4, -5_000, total = 0.2, mutation = "mine")
+        val decision = ResumeDecision.decide(book, server, timedLocal(-5_000, pending = pending, dirty = false), now = now)
+        assertEquals(ResumeDecision.Continue(SavedPosition("a1", locator(0.2)), 4, now - 5_000), decision)
+    }
+
+    @Test
+    fun `a clean device resumes the server place with its activity time`() {
+        val decision = ResumeDecision.decide(book, timedServer(5, -1_000), timedLocal(-60_000, dirty = false), now = now)
+        assertEquals(ResumeDecision.Continue(SavedPosition("a1", locator(0.5)), 5, now - 1_000), decision)
+    }
+
     @Test
     fun `version zero means no saved state`() {
         assertEquals(ResumeDecision.Beginning, ResumeDecision.decide(book, Progress("a1", version = 0), null))

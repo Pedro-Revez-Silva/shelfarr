@@ -125,6 +125,15 @@ fun ReaderScreen(
                     )
                 }
             }
+            syncProblemCopy(sync)?.let { problem ->
+                Box(Modifier.fillMaxSize()) {
+                    Snackbar(
+                        containerColor = theme.barColor,
+                        contentColor = theme.textColor,
+                        modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp),
+                    ) { Text(problem) }
+                }
+            }
         }
     }
 }
@@ -519,6 +528,13 @@ private fun ToggleRow(title: String, checked: Boolean, theme: ReaderTheme, onCha
 }
 
 /** Shown when two devices disagree. Neither place is thrown away without a choice. */
+/** What a reader or listener must know about their saved place, if anything. */
+fun syncProblemCopy(status: SyncStatus): String? = when (status) {
+    SyncStatus.StorageFailed -> "Couldn't save your place on this device. It will still be sent to the server when possible."
+    SyncStatus.Rejected -> "The server didn't accept this place. It's still saved on this device."
+    else -> null
+}
+
 @Composable
 fun ResumeChoiceDialog(
     local: SavedPosition,
@@ -531,7 +547,7 @@ fun ResumeChoiceDialog(
         title = { Text("Where would you like to continue?") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("You've read further on another device, or this device has an unsaved place.")
+                Text("This device and another one saved different places, and it isn't clear which was more recent.")
                 Text("This device: ${describePlace(local.locator, local.positionSeconds)}", style = MaterialTheme.typography.bodySmall)
                 Text("Other device: ${describePlace(server.locator, server.positionSeconds)}", style = MaterialTheme.typography.bodySmall)
             }

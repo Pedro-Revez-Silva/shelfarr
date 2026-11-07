@@ -125,7 +125,12 @@ data class Progress(
     val version: Int = 0,
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("client_mutation_id") val clientMutationId: String? = null,
+    /** When the place was actually reached. Null from older servers and rows: unknown, never the upload time. */
+    @SerialName("observed_at") val observedAt: String? = null,
 ) {
+    /** [observedAt] as epoch milliseconds, when it is well formed. Check plausibility before ordering by it. */
+    val observedAtEpochMs: Long? get() = ActivityTime.parse(observedAt)
+
     /** 0.0–1.0 through the whole publication, when the locator states it. */
     val totalProgression: Double?
         get() = locator?.get("locations")?.jsonObject?.get("totalProgression")?.jsonPrimitive?.doubleOrNull
@@ -153,4 +158,8 @@ data class ProgressUpdate(
     @SerialName("position_seconds") val positionSeconds: Double? = null,
     @SerialName("expected_version") val expectedVersion: Int,
     @SerialName("client_mutation_id") val clientMutationId: String,
+    /** Omitted when this device does not know when the place was reached. */
+    @SerialName("observed_at") val observedAt: String? = null,
+    /** Only ever true for an explicit "Keep this device" choice; omitted otherwise. */
+    @SerialName("resolve_conflict") val resolveConflict: Boolean? = null,
 )

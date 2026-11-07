@@ -53,6 +53,7 @@ import org.shelfarr.app.playback.AudioChapter
 import org.shelfarr.app.playback.PlaybackProblem
 import org.shelfarr.app.playback.PlaybackSnapshot
 import org.shelfarr.app.reader.ResumeChoiceDialog
+import org.shelfarr.app.reader.syncProblemCopy
 import org.shelfarr.app.ui.components.BookCover
 import org.shelfarr.app.ui.components.LoadingState
 import org.shelfarr.app.ui.components.MessageState
@@ -115,7 +116,7 @@ fun PlayerRoute(
                     "This publication has no audio file the app can play.",
                 )
                 is PlayerState.Active -> if (snapshot.isLoaded) {
-                    PlayerContent(snapshot, state.notice, controls)
+                    PlayerContent(snapshot, syncProblemCopy(syncStatus) ?: state.notice, controls)
                 } else {
                     MessageState(
                         "Playback stopped",

@@ -68,7 +68,8 @@ class PlayerViewModel(private val container: AppContainer, private val publicati
                 val offlineNotice = if (offline) "Playing the download on this device. Your place will sync when you're back online." else null
                 when (val decision = ResumeDecision.decide(publication, publication.progress, sync?.snapshot(), offline = offline)) {
                     ResumeDecision.Beginning -> play(publication, null, 0, offlineNotice)
-                    is ResumeDecision.Continue -> play(publication, decision.position, decision.baseVersion, offlineNotice)
+                    is ResumeDecision.Continue ->
+                        play(publication, decision.position, decision.baseVersion, offlineNotice, decision.observedAtEpochMs)
                     is ResumeDecision.Choose ->
                         mutableState.value = PlayerState.ChooseResume(publication, decision.local, decision.server)
                     is ResumeDecision.EditionChanged -> play(
@@ -90,15 +91,21 @@ class PlayerViewModel(private val container: AppContainer, private val publicati
         val choice = mutableState.value as? PlayerState.ChooseResume ?: return
         viewModelScope.launch {
             val position = if (keepLocal) choice.local else SavedPosition.from(choice.server)
-            sync?.chooseAtOpen(position, choice.server.version, keepLocal)
+            sync?.chooseAtOpen(position, choice.server, keepLocal)
             play(choice.publication, position, choice.server.version)
         }
     }
 
-    private suspend fun play(publication: Publication, start: SavedPosition?, baseVersion: Int, notice: String? = null) {
+    private suspend fun play(
+        publication: Publication,
+        start: SavedPosition?,
+        baseVersion: Int,
+        notice: String? = null,
+        observedAtEpochMs: Long? = null,
+    ) {
         val session = account?.session ?: return
         val target = sync ?: return
-        target.begin(start, baseVersion)
+        target.begin(start, baseVersion, observedAtEpochMs, publication.playableAssets.map { it.id })
         container.playback.load(publication, session.server, target, start, localFiles)
         mutableState.value = PlayerState.Active(notice)
     }

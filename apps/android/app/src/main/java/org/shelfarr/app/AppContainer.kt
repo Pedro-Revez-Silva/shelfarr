@@ -292,8 +292,13 @@ class AppContainer(context: Context) {
 
     fun onBackground() {
         isVisible = false
+        // Taken on the main thread as the app leaves, so the place is the one just heard.
+        val listening = playback.checkpointNow()
         val current = currentAccount() ?: return
-        scope.launch { current.progress.flushAll() }
+        scope.launch {
+            listening?.join()
+            current.progress.flushAll()
+        }
     }
 
     /**
