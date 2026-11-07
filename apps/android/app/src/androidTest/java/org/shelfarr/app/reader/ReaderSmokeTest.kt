@@ -33,6 +33,7 @@ import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
 import okhttp3.Headers
 import okio.Buffer
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -48,6 +49,8 @@ import org.shelfarr.app.core.ProgressUpdate
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.ServerAddress
 import org.shelfarr.app.core.Session
+import org.shelfarr.app.ui.player.PlayerState
+import org.shelfarr.app.ui.player.PlayerViewModel
 
 /** Exercises the real Activity, HTTP/cache path and WebView, beyond ZIP parsing. */
 @RunWith(AndroidJUnit4::class)
@@ -114,6 +117,98 @@ class ReaderSmokeTest {
             app.container.sessions.clear()
             web.close()
         }
+    }
+
+    @Test
+    fun downloadsABookAndAudiobookThenOpensBothOffline() {
+        val app = ApplicationProvider.getApplicationContext<ShelfarrApplication>()
+        val epub = epub()
+        val tracks = listOf(wav(seconds = 3, hertz = 330), wav(seconds = 3, hertz = 440))
+        val book = Publication(
+            id = "offline-book", title = "Offline smoke", bookType = BookType.EBOOK,
+            assets = listOf(Asset("offline-epub", "smoke.epub", "application/epub+zip", "epub", epub.size.toLong(), "/files/epub")),
+        )
+        val audiobook = Publication(
+            id = "offline-audio", title = "Offline audio smoke", bookType = BookType.AUDIOBOOK,
+            assets = tracks.mapIndexed { index, bytes -> Asset("track-$index", "$index.wav", "audio/wav", "wav", bytes.size.toLong(), "/files/track-$index", index) },
+        )
+        val web = MockWebServer()
+        web.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.headers["Authorization"] != "Bearer offline-smoke") return MockResponse.Builder().code(401).build()
+                val path = request.target.substringBefore('?')
+                return when {
+                    path == "/api/consumer/v1/me" -> json(ApiJson.encodeToString(Me("offline-smoke")))
+                    path == "/api/consumer/v1/library/offline-book" -> json(ApiJson.encodeToString(book))
+                    path == "/api/consumer/v1/library/offline-audio" -> json(ApiJson.encodeToString(audiobook))
+                    path == "/files/epub" -> file(epub, "\"epub\"", "application/epub+zip")
+                    path.startsWith("/files/track-") -> file(tracks[path.removePrefix("/files/track-").toInt()], "\"$path\"", "audio/wav")
+                    else -> MockResponse.Builder().code(404).build()
+                }
+            }
+        }
+        web.start()
+        val server = (ServerAddress.parse(web.url("/").toString(), true) as ServerAddress.ParseResult.Valid).address
+        val session = Session(server, Me("offline-smoke"), "offline-smoke")
+        app.container.sessions.signIn(session)
+        try {
+            val downloads = requireNotNull(app.container.currentAccount()).downloads
+            runBlocking {
+                downloads.enqueue(book)
+                downloads.enqueue(audiobook)
+            }
+            await("both downloads are complete") { downloads.ready("offline-book") != null && downloads.ready("offline-audio") != null }
+
+            // No server from here on: anything that still opens came from the device.
+            web.close()
+
+            ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "offline-book")).use { scenario ->
+                awaitText(scenario, "First chapter is rendered")
+                scenario.onActivity { activity ->
+                    val model = ViewModelProvider(activity)[ReaderViewModel::class.java]
+                    assertEquals(ReaderSource.DOWNLOAD, model.fileSource)
+                }
+                screenshot(scenario, "offline-download.png")
+            }
+
+            val player = AtomicReference<PlayerViewModel>()
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { player.set(PlayerViewModel(app.container, "offline-audio")) }
+            await("the player opens the downloaded audiobook") { player.get().state.value is PlayerState.Active }
+            val notice = (player.get().state.value as PlayerState.Active).notice.orEmpty()
+            assertTrue(notice, notice.contains("download"))
+            // CI's emulator has no audio device, so assert the honest part: local files, prepared, no failure.
+            await("downloaded tracks are prepared") {
+                val snapshot = app.container.playback.snapshot.value
+                snapshot.fromDevice && snapshot.durationMs > 0 && snapshot.problem == null
+            }
+            assertEquals(listOf("track-0", "track-1"), app.container.playback.snapshot.value.tracks.map { it.id })
+        } finally {
+            runBlocking {
+                app.container.playback.stop()
+                app.container.currentAccount()?.let { account ->
+                    account.close()
+                    account.directory.deleteRecursively()
+                }
+                app.container.epubCache.clear(session.accountKey)
+            }
+            app.container.sessions.clear()
+            runCatching { web.close() }
+        }
+    }
+
+    private fun file(bytes: ByteArray, etag: String, type: String) =
+        MockResponse.Builder().code(200).headers(Headers.headersOf("ETag", etag, "Content-Type", type)).body(Buffer().write(bytes)).build()
+
+    /** A short mono 16-bit PCM tone, written by hand so the fixture is original. */
+    private fun wav(seconds: Int, hertz: Int): ByteArray {
+        val rate = 8_000
+        val samples = rate * seconds
+        val data = java.nio.ByteBuffer.allocate(44 + samples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        data.put("RIFF".toByteArray()).putInt(36 + samples * 2).put("WAVE".toByteArray())
+        data.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+        data.put("data".toByteArray()).putInt(samples * 2)
+        for (n in 0 until samples) data.putShort((6_000 * kotlin.math.sin(2 * Math.PI * hertz * n / rate)).toInt().toShort())
+        return data.array()
     }
 
     private fun json(body: String) = MockResponse.Builder().code(200).addHeader("Content-Type", "application/json").body(body).build()
