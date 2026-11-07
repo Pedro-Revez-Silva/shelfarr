@@ -49,6 +49,7 @@ import org.shelfarr.app.ui.components.LoadingState
 import org.shelfarr.app.ui.components.MessageState
 import org.shelfarr.app.ui.components.ShelfarrIcons
 import org.shelfarr.app.ui.components.errorCopy
+import org.shelfarr.app.ui.components.shelfScale
 import org.shelfarr.app.ui.theme.ShelfarrTheme
 
 @Composable
@@ -105,7 +106,7 @@ private fun Grid(state: LibraryState, onOpen: (Publication) -> Unit, onLoadMore:
 
     LazyVerticalGrid(
         state = grid,
-        columns = GridCells.Adaptive(minSize = 104.dp),
+        columns = GridCells.Adaptive(minSize = 104.dp * shelfScale()),
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(22.dp),

@@ -19,6 +19,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.shelfarr.app.core.ApiException
@@ -244,6 +245,32 @@ class ScreenshotTest {
     @Test
     fun reader_settings() = shot("07-reader-settings") {
         Column(Modifier.background(ReaderTheme.PAPER.barColor)) { SettingsSheet(ReaderSettings()) {} }
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h568dp-xhdpi")
+    fun small_phone_player() = shot("09-small-phone-player") {
+        PlayerRoute(PlayerState.Active(), playing, SyncStatus.Saved, "books.example.org", NoControls, {}, {}, {}, {}, {})
+    }
+
+    @Test
+    fun large_text_home() {
+        RuntimeEnvironment.setFontScale(1.6f)
+        shot("09-large-text-home") { HomeScreen(home, "books.example.org", {}, {}, {}) }
+    }
+
+    @Test
+    fun large_text_player() {
+        RuntimeEnvironment.setFontScale(1.6f)
+        shot("09-large-text-player") {
+            PlayerRoute(PlayerState.Active(), playing, SyncStatus.Saved, "books.example.org", NoControls, {}, {}, {}, {}, {})
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w834dp-h1194dp-xhdpi")
+    fun tablet_library() = shot("09-tablet-library") {
+        LibraryScreen(LibraryState(items = shelf, loading = false), "books.example.org", {}, {}, {}, {}, {})
     }
 
     @Test
