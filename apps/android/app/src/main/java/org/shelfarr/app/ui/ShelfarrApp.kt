@@ -46,6 +46,7 @@ import androidx.navigation.navArgument
 import org.shelfarr.app.AppContainer
 import org.shelfarr.app.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.DownloadRecord
@@ -178,15 +179,23 @@ private val TABS = listOf(
 )
 
 @Composable
-private fun MainShell(container: AppContainer, session: Session, requestedScreen: MutableStateFlow<AppScreen?>) {
-    val navController = rememberNavController()
+internal fun RequestedScreenNavigation(navController: NavHostController, requestedScreen: MutableStateFlow<AppScreen?>) {
     val requested by requestedScreen.collectAsStateWithLifecycle()
-    LaunchedEffect(requested) {
+    LaunchedEffect(navController, requested) {
         if (requested == AppScreen.DOWNLOADS) {
+            // Scaffold composes NavHost during layout. A cold notification can
+            // arrive before its graph exists; wait for the first installed entry.
+            navController.currentBackStackEntryFlow.first()
             navController.navigate(DOWNLOADS) { launchSingleTop = true }
             requestedScreen.value = null
         }
     }
+}
+
+@Composable
+private fun MainShell(container: AppContainer, session: Session, requestedScreen: MutableStateFlow<AppScreen?>) {
+    val navController = rememberNavController()
+    RequestedScreenNavigation(navController, requestedScreen)
     val backStack by navController.currentBackStackEntryAsState()
     val route = backStack?.destination?.route
     val playback by container.playback.snapshot.collectAsStateWithLifecycle()
