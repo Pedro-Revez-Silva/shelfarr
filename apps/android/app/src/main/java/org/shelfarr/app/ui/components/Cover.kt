@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,7 +27,9 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,6 +43,10 @@ import org.shelfarr.app.ui.theme.CoverSwatches
 import org.shelfarr.app.ui.theme.coverSwatchIndex
 
 const val BOOK_ASPECT = 2f / 3f
+
+/** Widens shelf cells with the text-size setting, so titles wrap between words. */
+@Composable
+fun shelfScale(): Float = LocalDensity.current.fontScale.coerceIn(1f, 1.6f)
 
 /**
  * A publication's jacket. Audiobooks are square and every cover sits on the same
@@ -84,6 +91,15 @@ fun BookCover(
 @Composable
 fun GeneratedCover(publication: Publication, modifier: Modifier = Modifier) {
     val swatch = CoverSwatches[coverSwatchIndex(publication.id)]
+    // A jacket is artwork, so its type follows the jacket, not the text-size setting.
+    val density = LocalDensity.current
+    CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = 1f)) {
+        CoverArtwork(publication, swatch, modifier)
+    }
+}
+
+@Composable
+private fun CoverArtwork(publication: Publication, swatch: Color, modifier: Modifier) {
     BoxWithConstraints(modifier.background(swatch)) {
         val width = maxWidth.value
         val unit = maxWidth / 12

@@ -39,6 +39,7 @@ import org.shelfarr.app.ui.components.ProgressRule
 import org.shelfarr.app.ui.components.ShelfCover
 import org.shelfarr.app.ui.components.ShelfarrIcons
 import org.shelfarr.app.ui.components.errorCopy
+import org.shelfarr.app.ui.components.shelfScale
 import org.shelfarr.app.ui.progressFraction
 import org.shelfarr.app.ui.progressLabel
 import org.shelfarr.app.ui.theme.ShelfarrTheme
@@ -156,6 +157,7 @@ fun ContinueCard(publication: Publication, onClick: () -> Unit, modifier: Modifi
 
 @Composable
 private fun Shelf(title: String, items: List<Publication>, onOpen: (Publication) -> Unit) {
+    val scale = shelfScale()
     Column(Modifier.padding(top = 20.dp)) {
         Text(
             title,
@@ -168,8 +170,9 @@ private fun Shelf(title: String, items: List<Publication>, onOpen: (Publication)
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             val square = items.all { it.bookType == BookType.AUDIOBOOK }
+            val width = (if (square) 128.dp else 112.dp) * scale
             items(items, key = { it.id }) { publication ->
-                ShelfItem(publication, Modifier.width(if (square) 128.dp else 112.dp), square) { onOpen(publication) }
+                ShelfItem(publication, Modifier.width(width), square) { onOpen(publication) }
             }
         }
     }
