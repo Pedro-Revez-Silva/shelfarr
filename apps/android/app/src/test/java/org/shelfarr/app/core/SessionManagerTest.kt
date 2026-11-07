@@ -50,6 +50,25 @@ class SessionManagerTest {
     }
 
     @Test
+    fun `profile refresh preserves the account and token`() {
+        val sessions = SessionManager(store).apply { signIn(account) }
+        sessions.refreshUser(account.user.copy(name = "Updated name"), account)
+        assertEquals("Updated name", sessions.signedIn?.user?.name)
+        assertTrue(account.hasSameAccountAndToken(sessions.signedIn))
+    }
+
+    @Test
+    fun `a late profile response cannot replace the next accounts user`() {
+        val sessions = SessionManager(store).apply { signIn(account) }
+        val next = Session(server, Me("u2", "Bob"), "bob-token")
+        sessions.signIn(next)
+        sessions.refreshUser(account.user, account)
+        assertEquals(next, sessions.signedIn)
+        sessions.refreshUser(account.user, next)
+        assertEquals(next, sessions.signedIn)
+    }
+
+    @Test
     fun `clearing removes every stored secret`() {
         val sessions = SessionManager(store).apply { signIn(account) }
         sessions.savePendingAuthorization(PendingAuthorization(server, DeviceGrant("d", "c", "/v", "/v", 600), Long.MAX_VALUE))

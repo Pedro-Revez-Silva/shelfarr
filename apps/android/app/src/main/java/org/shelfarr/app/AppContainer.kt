@@ -28,7 +28,6 @@ import org.shelfarr.app.core.KeystoreSecureStore
 import org.shelfarr.app.core.ProgressRegistry
 import org.shelfarr.app.core.Session
 import org.shelfarr.app.core.SessionManager
-import org.shelfarr.app.core.SessionState
 import org.shelfarr.app.core.buildHttpClient
 import org.shelfarr.app.playback.PlaybackController
 import org.shelfarr.app.reader.ReaderSettingsStore
@@ -37,6 +36,7 @@ import org.shelfarr.app.ui.theme.AppearanceMode
 /** Everything tied to one signed-in account. Replaced wholesale when the account changes. */
 class AccountServices(
     val session: Session,
+    val api: ConsumerApi,
     val progress: ProgressRegistry,
     val directory: File,
     private val store: FileProgressStore,
@@ -88,10 +88,10 @@ class AppContainer(context: Context) {
     init {
         // Streams can't continue without a session, so don't leave a dead player behind.
         scope.launch {
-            sessions.session.collect { state ->
-                val live = (state as? SessionState.SignedIn)?.session
+            sessions.session.collect {
+                val live = sessions.signedIn
                 val previous = synchronized(this@AppContainer) {
-                    account?.takeIf { it.session != live }?.also { account = null }
+                    account?.takeIf { !it.session.hasSameAccountAndToken(live) }?.also { account = null }
                 }
                 if (previous != null) previous.close()
                 if (live == null || previous != null) playback.stop()
@@ -102,7 +102,7 @@ class AppContainer(context: Context) {
     /** The services for the live session, built on first use. */
     @Synchronized
     fun account(session: Session): AccountServices {
-        account?.takeIf { it.session == session }?.let { return it }
+        account?.takeIf { it.session.hasSameAccountAndToken(session) }?.let { return it }
         account?.let { previous -> scope.launch { previous.close() } }
         val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val directory = File(appContext.filesDir, "accounts/${session.accountKey}")
@@ -111,12 +111,12 @@ class AppContainer(context: Context) {
         val registry = ProgressRegistry(
             store = store,
             remote = { id, update ->
-                if (sessions.signedIn != session) throw ApiException.Unauthorized()
+                if (!session.hasSameAccountAndToken(sessions.signedIn)) throw ApiException.Unauthorized()
                 accountApi.saveProgress(session.server, id, update)
             },
             scope = accountScope,
         )
-        return AccountServices(session, registry, directory, store, accountScope).also { account = it }
+        return AccountServices(session, accountApi, registry, directory, store, accountScope).also { account = it }
     }
 
     fun currentAccount(): AccountServices? = sessions.signedIn?.let(::account)
@@ -131,7 +131,7 @@ class AppContainer(context: Context) {
         scope.launch {
             current.progress.flushAll()
             try {
-                sessions.refreshUser(api.me(current.session.server))
+                sessions.refreshUser(current.api.me(current.session.server), current.session)
             } catch (_: ApiException) {
                 // Offline is fine and a 401 was already handled by the HTTP stack.
             }
