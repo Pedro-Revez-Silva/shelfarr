@@ -166,12 +166,13 @@ class API::Consumer::V1::ProgressActivityTest < ActionDispatch::IntegrationTest
   test "web session writes follow the same activity rules" do
     sign_in_as(users(:one))
     web_url = "/read/#{@audiobook.id}/progress"
-    put web_url, params: audio_progress(seconds: 5).merge(observed_at: @later), as: :json
+    headers = { "X-Shelfarr-Account" => users(:one).id.to_s }
+    put web_url, params: audio_progress(seconds: 5).merge(observed_at: @later), headers: headers, as: :json
     assert_response :success
-    put web_url, params: audio_progress(version: 1, seconds: 900).merge(observed_at: @earlier), as: :json
+    put web_url, params: audio_progress(version: 1, seconds: 900).merge(observed_at: @earlier), headers: headers, as: :json
     assert_response :conflict
     assert_equal @later, response.parsed_body.dig("progress", "observed_at")
-    put web_url, params: audio_progress(version: 1, seconds: 900).merge(observed_at: "not a time"), as: :json
+    put web_url, params: audio_progress(version: 1, seconds: 900).merge(observed_at: "not a time"), headers: headers, as: :json
     assert_response :unprocessable_entity
   end
 
