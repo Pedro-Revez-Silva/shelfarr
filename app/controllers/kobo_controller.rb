@@ -51,7 +51,7 @@ class KoboController < ActionController::API
     return head :not_found unless selected.revision_id == params[:revision_id]
 
     file = selected.open_file
-    selected.update_columns(last_download_at: Time.current) if request.get?
+    selected.update_columns(last_download_at: Time.current) unless request.head?
     send_pinned_range(file, filename: selected.publication.fetch("filename"), etag: %Q("#{selected.revision_id}"))
   rescue KoboPublication::Unavailable
     head :gone
@@ -74,7 +74,7 @@ class KoboController < ActionController::API
   # Kobo's format-specific locations are not interchangeable with app locators.
   def state
     selected = delivery
-    if request.get?
+    unless request.put?
       render json: selected.reading_state ? [ selected.reading_state ] : []
     else
       body = bounded_json

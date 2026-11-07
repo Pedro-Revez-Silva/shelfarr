@@ -149,12 +149,19 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "reader state is retained for this reader without putting it on another reader" do
+    head "#{@base}/v1/library/#{@delivery.entitlement_id}/state"
+    assert_response :success
+    assert_nil @delivery.reload.reading_state
     body = { ReadingStates: [ { EntitlementId: @delivery.entitlement_id, CurrentBookmark: { ProgressPercent: 37, Location: { Value: "chapter3" } }, StatusInfo: { Status: "Reading" } } ] }
     put "#{@base}/v1/library/#{@delivery.entitlement_id}/state", params: body, as: :json
     assert_response :success
     assert_equal "Success", response.parsed_body.fetch("RequestResult")
     get "#{@base}/v1/library/#{@delivery.entitlement_id}/state"
     assert_equal 37, response.parsed_body.sole.fetch("CurrentBookmark").fetch("ProgressPercent")
+    assert_no_changes -> { @delivery.reload.reading_state } do
+      head "#{@base}/v1/library/#{@delivery.entitlement_id}/state", params: { ReadingStates: [ { CurrentBookmark: { ProgressPercent: 99 } } ] }, as: :json
+      assert_response :success
+    end
     assert_equal 1, @device.reload.sync_revision
     get "#{@base}/v1/library/sync"
     assert_equal "chapter3", response.parsed_body.sole.fetch("NewEntitlement").fetch("ReadingState").fetch("CurrentBookmark").fetch("Location").fetch("Value")
