@@ -63,6 +63,24 @@ Rails.application.routes.draw do
     post :regenerate_backup_codes, on: :member
   end
 
+  resources :kobo_devices, only: [ :index, :create, :show, :destroy ] do
+    post :rotate, on: :member
+    post :send_book, on: :member
+  end
+
+  scope "kobo/:kobo_token", controller: :kobo, defaults: { format: :json } do
+    get "v1/initialization", action: :initialization
+    post "v1/auth/device", action: :auth
+    post "v1/auth/refresh", action: :auth
+    get "v1/library/sync", action: :sync
+    get "v1/library/tags", action: :tags
+    get "v1/library/:entitlement_id/metadata", action: :metadata
+    match "v1/library/:entitlement_id/state", action: :state, via: [ :get, :put ]
+    get "download/:entitlement_id/:revision_id", action: :download
+    get ":entitlement_id/:width/:height/:greyscale/image.jpg", action: :cover
+    get ":entitlement_id/:width/:height/:quality/:greyscale/image.jpg", action: :cover
+  end
+
   resources :notifications, only: [ :index ] do
     member do
       post :mark_read

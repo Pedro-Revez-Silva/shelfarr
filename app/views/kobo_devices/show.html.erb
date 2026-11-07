@@ -1,0 +1,37 @@
+<div class="mx-auto max-w-3xl space-y-6">
+  <%= link_to "← Kobo readers", kobo_devices_path, class: "text-blue-400 hover:text-blue-300" %>
+  <div>
+    <h1 class="text-3xl font-bold text-white"><%= @device.name %></h1>
+    <p class="mt-2 text-gray-400"><%= @device.last_sync_at ? "Last sync request #{time_ago_in_words(@device.last_sync_at)} ago" : "Waiting for first sync from this reader" %></p>
+  </div>
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6">
+    <h2 class="text-xl font-semibold text-white">Selected books</h2>
+    <p class="mt-2 mb-4 text-sm text-gray-400">Sync this Kobo over Wi-Fi to receive queued books. A download request does not confirm that the reader finished saving the book.</p>
+    <% if @deliveries.empty? %>
+      <p class="text-gray-400">Open an acquired ebook in your <%= link_to "library", library_index_path, class: "text-blue-400 hover:text-blue-300" %> and choose Send to Kobo.</p>
+    <% end %>
+    <% @deliveries.each do |delivery| %>
+      <div class="border-t border-gray-800 py-4 flex flex-wrap justify-between gap-3">
+        <div class="min-w-0">
+          <% if delivery.book&.acquired? %>
+            <%= link_to delivery.publication["title"], library_path(delivery.book), class: "text-gray-200 hover:text-blue-400" %>
+          <% else %>
+            <p class="text-gray-200"><%= delivery.publication["title"] %></p>
+          <% end %>
+          <p class="text-sm text-gray-400 mt-1"><%= delivery.book&.acquired? ? (delivery.last_download_at ? "Download requested #{time_ago_in_words(delivery.last_download_at)} ago" : "Queued · waiting for download") : "Source removed from library · copy on reader kept" %></p>
+        </div>
+        <% if delivery.book&.acquired? %>
+          <%= button_to "Send again", send_book_kobo_device_path(@device), params: { book_id: delivery.book_id }, class: "rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700" %>
+        <% end %>
+      </div>
+    <% end %>
+  </section>
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4">
+    <h2 class="text-xl font-semibold text-white">Connection</h2>
+    <p class="text-sm text-gray-400">Regenerating the address disables the previous one. Update the reader's configuration afterward. Revoking this connection keeps books already on the reader.</p>
+    <div class="flex flex-wrap gap-3">
+      <%= button_to "Regenerate connection address", rotate_kobo_device_path(@device), form: { data: { turbo: false } }, class: "rounded-lg bg-gray-800 px-4 py-2 text-gray-200 hover:bg-gray-700" %>
+      <%= button_to "Revoke connection", kobo_device_path(@device), method: :delete, data: { turbo_confirm: "Revoke this Kobo connection? The reader will stop syncing with Shelfarr." }, class: "rounded-lg bg-red-900 px-4 py-2 text-red-100 hover:bg-red-800" %>
+    </div>
+  </section>
+</div>

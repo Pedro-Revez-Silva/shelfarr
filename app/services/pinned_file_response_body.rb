@@ -6,10 +6,13 @@
 class PinnedFileResponseBody
   CHUNK_SIZE = 64 * 1024
 
-  def initialize(file)
+  def initialize(file, offset: 0, length: nil)
     raise ArgumentError, "response body requires an open regular file" if file.closed? || !file.stat.file?
+    raise ArgumentError, "invalid response range" if offset.negative? || (length && length.negative?)
 
     @file = file
+    @offset = offset
+    @length = length
   end
 
   def each
@@ -19,9 +22,15 @@ class PinnedFileResponseBody
       file = @file
       raise IOError, "closed response body" unless file && !file.closed?
 
-      file.rewind
+      file.seek(@offset)
       buffer = +""
-      yield buffer.dup while file.read(CHUNK_SIZE, buffer)
+      remaining = @length
+      while remaining.nil? || remaining.positive?
+        break unless file.read(remaining ? [ CHUNK_SIZE, remaining ].min : CHUNK_SIZE, buffer)
+
+        remaining -= buffer.bytesize if remaining
+        yield buffer.dup
+      end
     ensure
       close
     end

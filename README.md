@@ -49,6 +49,7 @@ Think Jellyseerr, but for books. Your users request ebooks and audiobooks; Shelf
 - **Notifications** — In-app, Discord, Telegram and webhook notifications for request events
 - **Download Routing** — Route specific indexers to specific clients, with priority ordering
 - **REST API** — Scoped, per-user API tokens under `/api/v1`
+- **Send to Kobo (preview)** — Select acquired EPUBs for individual stock Kobo readers and download them on Wi-Fi sync. Replaces Store sync; physical-device compatibility testing is pending. See the [setup and testing guide](docs/kobo.md)
 - **Custom Acquisition Providers** — Trusted HTTP providers can contribute search results and resolve selected items into direct, torrent or usenet artifacts
 - **Third-Party Store Offers (Beta)** — Surface legitimate DRM-free editions from supported sellers without handling checkout or payment data
 - **Audible Backup (Beta)** — Sync purchased Audible titles, explicitly queue a one-time backup of eligible existing purchases, optionally back up future purchases automatically, and import them through the separately packaged Libation companion
