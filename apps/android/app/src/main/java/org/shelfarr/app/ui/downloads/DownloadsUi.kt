@@ -197,7 +197,7 @@ fun DownloadsScreen(
             )
             return@Column
         }
-        val used = records.filter { it.isReady }.sumOf { it.bytesDone }
+        val used = records.sumOf { it.bytesDone }
         Text(
             "${formatBytes(used)} used on this device. Downloads continue while Shelfarr is open, and pick up where they stopped next time.",
             style = MaterialTheme.typography.bodySmall,
