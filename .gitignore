@@ -48,3 +48,6 @@
 
 # Agent instructions (local development reference only)
 /AGENTS.md
+
+# Reproducible native/web consumer dependency and build trees.
+**/node_modules/

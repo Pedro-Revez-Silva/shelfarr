@@ -1,0 +1,25 @@
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+<% end %>
+<div class="mx-auto max-w-lg rounded-xl border border-gray-800 bg-gray-900 p-6 sm:p-8">
+  <h1 class="text-2xl font-semibold text-white">Connect your Shelfarr app</h1>
+  <% if @grant&.pending? %>
+    <p class="mt-4 text-gray-300"><strong><%= @grant.client_name %></strong> is asking to connect as <strong><%= Current.user.name %></strong>.</p>
+    <p class="mt-3 text-gray-400">Check that this code matches the one shown in the app you just opened:</p>
+    <p class="my-6 text-center text-3xl tracking-widest font-mono text-blue-300"><%= @user_code.upcase %></p>
+    <p class="text-sm text-gray-400">The app can browse and download your library and save your reading/listening progress. It cannot request books or manage your server. You can revoke it from My Profile.</p>
+    <p class="mt-3 text-sm text-amber-300">Only approve a connection you started yourself. Do not approve a code someone sent you.</p>
+    <%= form_with url: consumer_connect_path, data: { turbo: false }, class: "mt-6 flex flex-wrap gap-3" do |form| %>
+      <%= form.hidden_field :user_code, value: @user_code %>
+      <button name="decision" value="allow" class="rounded-lg bg-blue-600 px-5 py-3 font-medium text-white hover:bg-blue-500">Connect app</button>
+      <button name="decision" value="deny" class="rounded-lg bg-gray-800 px-5 py-3 text-gray-200 hover:bg-gray-700">Deny</button>
+    <% end %>
+  <% else %>
+    <p class="mt-4 text-gray-400">Enter the code displayed in your Shelfarr app. Codes expire after ten minutes.</p>
+    <%= form_with url: consumer_connect_path, method: :get, class: "mt-6 space-y-3" do |form| %>
+      <%= form.label :user_code, "Connection code", class: "block text-sm text-gray-300" %>
+      <%= form.text_field :user_code, value: @user_code, required: true, maxlength: 32, autocomplete: "off", class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-3 font-mono text-lg text-white" %>
+      <%= form.submit "Check code", class: "rounded-lg bg-blue-600 px-5 py-3 text-white hover:bg-blue-500 cursor-pointer" %>
+    <% end %>
+  <% end %>
+</div>

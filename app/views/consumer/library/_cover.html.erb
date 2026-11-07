@@ -1,0 +1,8 @@
+<div class="consumer-cover consumer-cover--<%= consumer_cover_style(book) %>" aria-hidden="true">
+  <% if publication[:cover_url] %>
+    <img src="<%= publication[:cover_url] %>" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">
+  <% end %>
+  <span class="consumer-cover-title"><%= book.title %></span>
+  <span class="consumer-cover-author"><%= book.author %></span>
+  <span class="consumer-cover-mark">S</span>
+</div>

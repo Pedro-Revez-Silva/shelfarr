@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_130000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -94,6 +94,40 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
     t.index ["open_library_edition_id"], name: "index_books_on_open_library_edition_id"
     t.index ["open_library_work_id"], name: "index_books_on_open_library_work_id"
     t.index ["series_position"], name: "index_books_on_series_position"
+  end
+
+  create_table "consumer_device_grants", force: :cascade do |t|
+    t.integer "user_id"
+    t.string "client_name", null: false
+    t.string "device_code_digest", null: false
+    t.string "user_code_digest", null: false
+    t.datetime "expires_at", null: false
+    t.datetime "approved_at"
+    t.datetime "denied_at"
+    t.datetime "consumed_at"
+    t.datetime "last_polled_at"
+    t.integer "poll_interval", default: 5, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["device_code_digest"], name: "index_consumer_device_grants_on_device_code_digest", unique: true
+    t.index ["expires_at"], name: "index_consumer_device_grants_on_expires_at"
+    t.index ["user_code_digest"], name: "index_consumer_device_grants_on_user_code_digest", unique: true
+    t.index ["user_id"], name: "index_consumer_device_grants_on_user_id"
+  end
+
+  create_table "consumer_progresses", force: :cascade do |t|
+    t.integer "user_id", null: false
+    t.integer "book_id", null: false
+    t.string "asset_id", null: false
+    t.json "locator"
+    t.float "position_seconds"
+    t.integer "version", default: 1, null: false
+    t.string "client_mutation_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["book_id"], name: "index_consumer_progresses_on_book_id"
+    t.index ["user_id", "book_id"], name: "index_consumer_progresses_on_user_id_and_book_id", unique: true
+    t.index ["user_id"], name: "index_consumer_progresses_on_user_id"
   end
 
   create_table "download_clients", force: :cascade do |t|
@@ -715,6 +749,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
 
   add_foreign_key "activity_logs", "users"
   add_foreign_key "api_tokens", "users"
+  add_foreign_key "consumer_device_grants", "users"
+  add_foreign_key "consumer_progresses", "books"
+  add_foreign_key "consumer_progresses", "users"
   add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
   add_foreign_key "downloads", "search_results", on_delete: :nullify

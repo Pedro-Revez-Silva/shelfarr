@@ -107,6 +107,19 @@ Rails.application.routes.draw do
   resources :uploads, only: [ :index, :new, :create, :show ]
 
   namespace :api, defaults: { format: :json } do
+    namespace :consumer do
+      namespace :v1 do
+        post "auth/device", to: "auth#device"
+        post "auth/token", to: "auth#token"
+        post "auth/revoke", to: "accounts#revoke"
+        get "me", to: "accounts#show"
+        get "library/:id/assets/:asset_id", to: "library#asset", as: :asset
+        resources :library, only: [ :index, :show ] do
+          get :progress, to: "progress#show", on: :member
+          put :progress, to: "progress#update", on: :member
+        end
+      end
+    end
     namespace :v1 do
       get "search", to: "search#index"
       resources :requests, only: [ :index, :create, :show, :destroy ] do
@@ -120,6 +133,13 @@ Rails.application.routes.draw do
       resources :users, only: [ :create ]
     end
   end
+
+  get "consumer/connect", to: "consumer/connections#show", as: :consumer_connect
+  post "consumer/connect", to: "consumer/connections#create"
+  get "read", to: "consumer/library#index", as: :consumer_library
+  get "read/:id", to: "consumer/library#show", as: :consumer_publication
+  get "read/:id/assets/:asset_id", to: "consumer/library#asset", as: :consumer_asset
+  put "read/:id/progress", to: "consumer/library#progress", as: :consumer_progress
 
   namespace :integrations, defaults: { format: :json } do
     post "telegram/webhook", to: "telegram_webhooks#create"

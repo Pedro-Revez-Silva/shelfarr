@@ -1,0 +1,37 @@
+<% content_for :title, "#{@book.title} · Shelfarr" %>
+<% content_for :main_class, "consumer-publication" %>
+<% content_for :hide_navigation, "true" %>
+<%= link_to "← Your library", consumer_library_path, class: "consumer-back" %>
+<div data-controller="consumer-reader" class="consumer-reading-session">
+  <script type="application/json" data-consumer-reader-target="publication"><%= raw json_escape(@publication.to_json) %></script>
+  <section class="consumer-publication-heading">
+    <%= render "cover", book: @book, publication: @publication %>
+    <div><p class="consumer-eyebrow"><%= @book.ebook? ? "Make room for a chapter" : "A story for your day" %></p><span class="consumer-format"><%= @book.ebook? ? "Ebook" : "Audiobook" %></span><h1><%= @book.title %></h1><p class="consumer-author"><%= @book.author %></p><p class="consumer-description"><%= truncate(strip_tags(@book.description.to_s), length: 380) %></p></div>
+  </section>
+  <% if @publication[:assets].empty? %>
+    <div class="consumer-empty"><h2>These files aren't ready to open</h2><p>The source may be missing, use an unsupported format, or share the whole library folder. Open the library item to check it.</p><%= link_to "Library item details", library_path(@book), class: "consumer-button" %></div>
+  <% else %>
+    <div class="consumer-sync" role="status"><span data-consumer-reader-target="syncStatus">Your place will be saved to your account</span><button type="button" data-action="consumer-reader#retrySync" data-consumer-reader-target="retry" hidden>Retry</button></div>
+    <div class="consumer-conflict" data-consumer-reader-target="conflict" hidden role="alert"><p>Another device saved a newer position. Which place would you like to keep?</p><button type="button" data-action="consumer-reader#useServerProgress">Use other device's place</button><button type="button" data-action="consumer-reader#keepLocalProgress">Keep this place</button></div>
+    <p class="consumer-reader-error" data-consumer-reader-target="error" hidden role="alert"></p>
+    <% if @book.ebook? %>
+      <section class="consumer-reader-panel" aria-label="Ebook reader">
+        <div class="consumer-reader-toolbar">
+          <label class="consumer-chapters">Chapter<select data-consumer-reader-target="chapters" data-action="change->consumer-reader#chooseChapter"><option>Opening book…</option></select></label>
+          <div class="consumer-type-controls" aria-label="Text size"><button type="button" data-action="consumer-reader#smallerText" aria-label="Smaller text">A−</button><button type="button" data-action="consumer-reader#largerText" aria-label="Larger text">A+</button></div>
+        </div>
+        <div class="consumer-ebook" data-consumer-reader-target="viewport"><p class="consumer-opening">Opening your book…</p></div>
+        <div class="consumer-page-controls"><button type="button" data-action="consumer-reader#previousPage">← Previous</button><span data-consumer-reader-target="location">Your place</span><button type="button" data-action="consumer-reader#nextPage">Next →</button></div>
+      </section>
+    <% else %>
+      <section class="consumer-audio-panel" aria-label="Audiobook player">
+        <div class="consumer-audio-identity"><span class="consumer-now-playing">Now playing</span><h2 data-consumer-reader-target="trackTitle"><%= @publication[:assets].first[:filename] %></h2></div>
+        <audio data-consumer-reader-target="audio" preload="metadata" data-action="loadedmetadata->consumer-reader#audioLoaded timeupdate->consumer-reader#audioPosition pause->consumer-reader#audioPaused ended->consumer-reader#nextTrack error->consumer-reader#audioError"></audio>
+        <div class="consumer-audio-timeline"><label for="consumer-seek" class="consumer-sr-only">Listening position</label><input id="consumer-seek" type="range" min="0" max="100" value="0" step="0.1" data-consumer-reader-target="seek" data-action="input->consumer-reader#seekAudio"><div><span data-consumer-reader-target="elapsed">0:00</span><span data-consumer-reader-target="duration">—</span></div></div>
+        <div class="consumer-audio-controls"><button type="button" data-action="consumer-reader#backwardAudio" aria-label="Rewind 15 seconds">↶<small>15</small></button><button type="button" class="consumer-play" data-action="consumer-reader#toggleAudio" data-consumer-reader-target="play" aria-label="Play audiobook">▶</button><button type="button" data-action="consumer-reader#forwardAudio" aria-label="Forward 30 seconds">↷<small>30</small></button></div>
+        <div class="consumer-audio-options"><label>Speed<select data-action="change->consumer-reader#changeSpeed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label><label>Track<select data-consumer-reader-target="tracks" data-action="change->consumer-reader#chooseTrack"><% @publication[:assets].each_with_index do |asset, index| %><option value="<%= index %>"><%= asset[:filename] %></option><% end %></select></label></div>
+        <p class="consumer-player-note">Your browser controls background playback. For long listening sessions, the native apps will provide platform audio controls.</p>
+      </section>
+    <% end %>
+  <% end %>
+</div>
