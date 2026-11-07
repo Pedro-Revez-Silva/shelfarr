@@ -10,6 +10,9 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: Self.appearanceKey) }
     }
 
+    /// Bumped when a reader or player closes, so progress on screen stays current.
+    @Published var libraryGeneration = 0
+
     let sessions: SessionManager
     let transport: URLSessionTransport
     let api: ConsumerAPI

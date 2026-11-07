@@ -34,7 +34,7 @@ struct DetailsView: View {
         content
             .background(Palette.background.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
-            .task { await model.load(app, id: publicationId) }
+            .task(id: app.libraryGeneration) { await model.load(app, id: publicationId) }
     }
 
     @ViewBuilder

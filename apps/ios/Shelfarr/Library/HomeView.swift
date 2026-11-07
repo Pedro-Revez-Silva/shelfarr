@@ -47,7 +47,7 @@ struct HomeView: View {
             .background(Palette.background.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: PublicationRoute.self) { DetailsView(publicationId: $0.id, open: open) }
-            .task { await model.refresh(app) }
+            .task(id: app.libraryGeneration) { await model.refresh(app) }
     }
 
     @ViewBuilder

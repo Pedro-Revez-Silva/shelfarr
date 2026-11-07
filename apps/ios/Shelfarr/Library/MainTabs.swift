@@ -23,13 +23,17 @@ struct MainTabs: View {
                 MiniPlayer { showPlayer = true }.padding(.bottom, 49)
             }
         }
-        .fullScreenCover(item: $reading) { ReaderView(publicationId: $0.id, app: model) }
-        .fullScreenCover(item: $listening) { PlayerView(publicationId: $0.id, app: model) }
-        .fullScreenCover(isPresented: $showPlayer) {
+        .fullScreenCover(item: $reading, onDismiss: refresh) { ReaderView(publicationId: $0.id, app: model) }
+        .fullScreenCover(item: $listening, onDismiss: refresh) { PlayerView(publicationId: $0.id, app: model) }
+        .fullScreenCover(isPresented: $showPlayer, onDismiss: refresh) {
             if let publication = playback.publication {
                 PlayerView(publicationId: publication.id, app: model)
             }
         }
+    }
+
+    private func refresh() {
+        model.libraryGeneration += 1
     }
 
     private func start(_ publication: ShelfarrCore.Publication) {
