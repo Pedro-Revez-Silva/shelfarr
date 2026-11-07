@@ -11,6 +11,29 @@ public enum LibraryFilter: String, CaseIterable, Sendable {
     var query: String? { self == .all ? nil : rawValue }
 }
 
+public enum LibrarySort: String, CaseIterable, Sendable {
+    /// Recent activity first, the server default.
+    case recent
+    case title
+
+    var query: String? { self == .recent ? nil : rawValue }
+}
+
+/// Everything that selects one library listing. A cursor is only valid for the query that produced it.
+public struct LibraryQuery: Equatable, Sendable {
+    public var filter: LibraryFilter
+    public var text: String
+    public var status: ReadingStatus?
+    public var sort: LibrarySort
+
+    public init(filter: LibraryFilter = .all, text: String = "", status: ReadingStatus? = nil, sort: LibrarySort = .recent) {
+        self.filter = filter
+        self.text = text
+        self.status = status
+        self.sort = sort
+    }
+}
+
 /// Typed client for `/api/consumer/v1`.
 public final class ConsumerAPI: Sendable {
     private let transport: HTTPTransport
@@ -83,12 +106,31 @@ public final class ConsumerAPI: Sendable {
         cursor: String? = nil,
         limit: Int = 30
     ) async throws -> LibraryPage {
+        try await library(server: server, query: LibraryQuery(filter: filter, text: query ?? ""), cursor: cursor, limit: limit)
+    }
+
+    public func library(server: ServerAddress, query: LibraryQuery, cursor: String? = nil, limit: Int = 30) async throws -> LibraryPage {
         var items: [(String, String)] = []
-        if let type = filter.query { items.append(("type", type)) }
-        if let query, !query.isEmpty { items.append(("q", query)) }
+        if let type = query.filter.query { items.append(("type", type)) }
+        if !query.text.isEmpty { items.append(("q", query.text)) }
+        if let status = query.status { items.append(("status", status.rawValue)) }
+        if let sort = query.sort.query { items.append(("sort", sort)) }
         if let cursor { items.append(("cursor", cursor)) }
         items.append(("limit", String(limit)))
         return try await decode(perform(authorized(server.api("library", query: items))))
+    }
+
+    /// Library-wide recent activity across every acquired publication.
+    public func continueReading(server: ServerAddress, limit: Int = 10) async throws -> [Publication] {
+        let list: ContinueList = try await decode(perform(authorized(server.api("continue", query: [("limit", String(limit))]))))
+        return list.items
+    }
+
+    /// Sets the explicit status. The server keeps the saved place.
+    public func setReadingStatus(server: ServerAddress, publicationId: String, status: ReadingStatus) async throws -> Publication {
+        let url = server.api("library/\(ServerAddress.pathSegment(publicationId))/reading_status")
+        let body = try JSONEncoder().encode(["status": status.rawValue])
+        return try await decode(perform(authorized(url, method: "PUT", body: body)))
     }
 
     public func publication(server: ServerAddress, id: String) async throws -> Publication {
