@@ -475,10 +475,17 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
   end
 
   test "collection request enqueues background expansion instead of expanding inline" do
-    expansion_job = nil
+    CollectionRequestExpansionJob.perform_later(
+      user_id: @user.id,
+      work_id: "comic_vine:foreign",
+      book_types: [ "comicbook" ],
+      metadata_attrs: { title: "Foreign" }
+    )
+
+    expansion_jobs = nil
     ComicVineClient.stub(:configured?, true) do
       assert_no_difference [ "Book.count", "Request.count" ] do
-        expansion_job = assert_enqueued_with(job: CollectionRequestExpansionJob) do
+        expansion_jobs = jobs_enqueued_during(CollectionRequestExpansionJob) do
           result = RequestCreationService.call(
             user: @user,
             work_id: "comic_vine:4050-99",
@@ -502,7 +509,8 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
       end
     end
 
-    job_args = expansion_job.arguments.first.with_indifferent_access
+    assert_equal 1, expansion_jobs.size
+    job_args = expansion_jobs.first[:args].first.with_indifferent_access
     assert_equal [ "comic_vine:4000-101", "comic_vine:4000-102" ], job_args["collection_item_ids"]
     assert_equal "graphic", job_args.dig("metadata_attrs", "content_kind")
   end
@@ -612,6 +620,12 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  def jobs_enqueued_during(job_class)
+    seen = enqueued_jobs.map { |job| job["job_id"] }
+    yield
+    enqueued_jobs.select { |job| job[:job] == job_class && !seen.include?(job["job_id"]) }
+  end
 
   def request_both_formats(work_id, title:)
     MetadataService.stub(:book_details, nil) do
