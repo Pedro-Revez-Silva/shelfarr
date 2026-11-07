@@ -10,7 +10,9 @@ security and must never be exposed beyond a development machine.
 
 Approve a pending device by opening its verification URL, or start with
 --auto-approve. Use --conflict-after N to answer the Nth progress write with a
-conflict, to see how a client handles another device moving on.
+conflict, to see how a client handles another device moving on. Use
+--extra-books N to add N more small mock books, enough to page the library and
+to see Continue find a book beyond the first page.
 """
 
 import argparse
@@ -97,7 +99,7 @@ def build_tone(seconds, hertz):
 
 
 class State:
-    def __init__(self, auto_approve, conflict_after, slow_down):
+    def __init__(self, auto_approve, conflict_after, slow_down, extra_books=0):
         self.lock = threading.Lock()
         self.auto_approve = auto_approve
         self.conflict_after = conflict_after
@@ -105,12 +107,30 @@ class State:
         self.devices = {}
         self.tokens = set()
         self.progress = {}
+        self.statuses = {}
+        self.activity = {}
         self.writes = 0
         self.files = {
             "epub-1": ("a-test-book.epub", "application/epub+zip", "epub", build_epub()),
             "track-1": ("Part 1.wav", "audio/wav", "wav", build_tone(45, 330)),
             "track-2": ("Part 2.wav", "audio/wav", "wav", build_tone(45, 440)),
         }
+        self.books = {
+            "book-1": ("A Test Book", "Mock Author", "ebook", ["epub-1"]),
+            "audio-1": ("A Test Audiobook", "Mock Narrator", "audiobook", ["track-1", "track-2"]),
+        }
+        epub = self.files["epub-1"]
+        for n in range(1, extra_books + 1):
+            self.files[f"epub-x{n}"] = (f"mock-{n}.epub",) + epub[1:]
+            self.books[f"book-x{n}"] = (f"Mock Book {n:03d}", "Mock Author", "ebook", [f"epub-x{n}"])
+
+    def touch(self, publication_id):
+        self.activity[publication_id] = time.time()
+
+    def status(self, publication_id):
+        if publication_id in self.statuses:
+            return self.statuses[publication_id]
+        return "in_progress" if self.progress.get(publication_id) else "unread"
 
     def asset(self, base, asset_id, position):
         name, media_type, fmt, data = self.files[asset_id]
@@ -125,11 +145,7 @@ class State:
         }
 
     def publication(self, base, publication_id):
-        books = {
-            "book-1": ("A Test Book", "Mock Author", "ebook", ["epub-1"]),
-            "audio-1": ("A Test Audiobook", "Mock Narrator", "audiobook", ["track-1", "track-2"]),
-        }
-        title, author, kind, assets = books[publication_id]
+        title, author, kind, assets = self.books[publication_id]
         return {
             "id": publication_id,
             "title": title,
@@ -139,7 +155,22 @@ class State:
             "cover_url": None,
             "assets": [self.asset(base, a, n) for n, a in enumerate(assets)],
             "progress": self.progress.get(publication_id),
+            "reading_status": self.status(publication_id),
         }
+
+    def listing(self, base, query):
+        kind = query.get("type", [None])[0]
+        status = query.get("status", [None])[0]
+        text = (query.get("q", [""])[0] or "").lower()
+        items = [self.publication(base, p) for p in self.books]
+        items = [i for i in items if kind in (None, i["book_type"])]
+        items = [i for i in items if status in (None, i["reading_status"])]
+        items = [i for i in items if text in i["title"].lower() or text in (i["author"] or "").lower()]
+        if query.get("sort", ["recent"])[0] == "title":
+            items.sort(key=lambda i: i["title"].lower())
+        else:
+            items.sort(key=lambda i: (-self.activity.get(i["id"], 0), i["title"].lower()))
+        return items
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -233,14 +264,30 @@ class Handler(BaseHTTPRequestHandler):
         with self.state.lock:
             if path == f"{PREFIX}/me":
                 return self.respond(200, {"id": "user-1", "name": "Mock Reader", "username": "mock"})
+            query = parse_qs(urlparse(self.path).query)
             if path == f"{PREFIX}/library":
-                query = parse_qs(urlparse(self.path).query)
-                kind = query.get("type", [None])[0]
-                items = [self.state.publication(self.base, p) for p in ("book-1", "audio-1")]
-                items = [i for i in items if kind in (None, i["book_type"])]
-                return self.respond(200, {"items": items, "next_cursor": None})
+                # The cursor binds every filter and the sort, as the real API's does.
+                bound = json.dumps({k: query.get(k) for k in ("type", "status", "sort", "q")}, sort_keys=True)
+                start = 0
+                if "cursor" in query:
+                    offset, _, key = query["cursor"][0].partition(":")
+                    if key != hashlib.sha256(bound.encode()).hexdigest()[:12]:
+                        return self.respond(400, {"error": "invalid_cursor"})
+                    start = int(offset)
+                limit = max(1, min(int(query.get("limit", ["30"])[0]), 100))
+                items = self.state.listing(self.base, query)
+                page = items[start:start + limit]
+                more = start + limit < len(items)
+                cursor = f"{start + limit}:{hashlib.sha256(bound.encode()).hexdigest()[:12]}" if more else None
+                return self.respond(200, {"items": page, "next_cursor": cursor})
+            if path == f"{PREFIX}/continue":
+                limit = max(1, min(int(query.get("limit", ["10"])[0]), 50))
+                items = [self.state.publication(self.base, p) for p in self.state.books]
+                items = [i for i in items if i["id"] in self.state.activity]
+                items.sort(key=lambda i: -self.state.activity[i["id"]])
+                return self.respond(200, {"items": items[:limit]})
             match = re.fullmatch(PREFIX + r"/library/([^/]+)(/progress)?", path)
-            if match and match[1] in ("book-1", "audio-1"):
+            if match and match[1] in self.state.books:
                 publication = self.state.publication(self.base, match[1])
                 if match[2]:
                     return self.respond(200, {"progress": publication["progress"]})
@@ -253,11 +300,26 @@ class Handler(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     def do_PUT(self):
+        status_match = re.fullmatch(PREFIX + r"/library/([^/]+)/reading_status", self.route())
+        if status_match:
+            if not self.authorized():
+                return None
+            status = self.body().get("status")
+            with self.state.lock:
+                if status_match[1] not in self.state.books:
+                    return self.respond(404, {"error": "not_found"})
+                if status not in ("unread", "in_progress", "finished"):
+                    return self.respond(422, {"error": "invalid_status"})
+                # Explicit status wins over progress and keeps the saved place.
+                self.state.statuses[status_match[1]] = status
+                self.state.touch(status_match[1])
+                return self.respond(200, self.state.publication(self.base, status_match[1]))
         match = re.fullmatch(PREFIX + r"/library/([^/]+)/progress", self.route())
         if not match or not self.authorized():
             return None if match else self.respond(404, {"error": "not_found"})
         update = self.body()
         with self.state.lock:
+            self.state.touch(match[1])
             current = self.state.progress.get(match[1])
             version = current["version"] if current else 0
             if current and current["client_mutation_id"] == update.get("client_mutation_id"):
@@ -330,9 +392,10 @@ def main():
     parser.add_argument("--auto-approve", action="store_true")
     parser.add_argument("--slow-down", action="store_true", help="Answer the first poll with slow_down")
     parser.add_argument("--conflict-after", type=int, default=0, metavar="N")
+    parser.add_argument("--extra-books", type=int, default=0, metavar="N", help="Add N more mock books to exercise paging")
     args = parser.parse_args()
 
-    Handler.state = State(args.auto_approve, args.conflict_after, args.slow_down)
+    Handler.state = State(args.auto_approve, args.conflict_after, args.slow_down, args.extra_books)
     Handler.base = args.base.rstrip("/")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Mock Shelfarr consumer API on http://{args.host}:{args.port}{Handler.base}", flush=True)
