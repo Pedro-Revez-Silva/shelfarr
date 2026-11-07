@@ -147,11 +147,14 @@ public actor EpubCache {
     }
 
     private func verify(_ file: URL, _ asset: Asset) throws {
-        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { $0 } ?? 0
-        let handle = try? FileHandle(forReadingFrom: file)
-        let head = try? handle?.read(upToCount: 2)
-        try? handle?.close()
-        if (asset.sizeBytes > 0 && Int64(size) != asset.sizeBytes) || head != Data("PK".utf8) {
+        // Foundation URLs can cache resource values. A resumed download grew
+        // since the offset lookup, so verify the open file rather than that cache.
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let size = try handle.seekToEnd()
+        try handle.seek(toOffset: 0)
+        let head = try handle.read(upToCount: 2)
+        if (asset.sizeBytes > 0 && size != UInt64(asset.sizeBytes)) || head != Data("PK".utf8) {
             try? files.removeItem(at: file)
             throw APIError.protocolError
         }
