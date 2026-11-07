@@ -73,15 +73,7 @@ jobs:
           profile: pixel_7
           disable-linux-hw-accel: false
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
-          script: |
-            adb logcat -c
-            cd apps/android
-            smoke_status=0
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest || smoke_status=$?
-            mkdir -p app/build/reports/reader-smoke
-            adb logcat -d > app/build/reports/reader-smoke/logcat.txt
-            adb pull /sdcard/Android/data/org.shelfarr.app.debug/files/reader-smoke app/build/reports/reader-smoke/screens || true
-            exit "$smoke_status"
+          script: apps/scripts/android-reader-smoke.sh
 
       - name: Upload debug build and rendered screens
         if: always()
