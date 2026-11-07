@@ -1,0 +1,11 @@
+# Build output and local machine state
+/.gradle/
+/.kotlin/
+/build/
+/app/build/
+/local.properties
+/captures/
+*.apk
+*.aab
+*.keystore
+*.jks
