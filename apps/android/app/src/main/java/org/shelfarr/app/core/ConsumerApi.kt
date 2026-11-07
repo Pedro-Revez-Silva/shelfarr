@@ -3,7 +3,10 @@ package org.shelfarr.app.core
 import java.io.IOException
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import okhttp3.Call
@@ -21,30 +24,34 @@ enum class LibraryFilter(val query: String?) {
     AUDIOBOOK("audiobook"),
 }
 
+/** A fully read response. Reading happens off the main thread, inside [ConsumerApi.execute]. */
+private class Reply(val code: Int, val body: String) {
+    val isSuccessful: Boolean get() = code in 200..299
+}
+
 /** Typed client for `/api/consumer/v1`. Credentials are applied by the HTTP stack. */
-class ConsumerApi(private val client: OkHttpClient) {
+class ConsumerApi(
+    private val client: OkHttpClient,
+    private val io: CoroutineDispatcher = Dispatchers.IO,
+) {
 
     suspend fun startDeviceAuthorization(server: ServerAddress, clientName: String): DeviceGrant =
-        post(server.api("auth/device"), ApiJson.encodeToString(DeviceRequest(clientName)))
-            .parse()
+        post(server.api("auth/device"), ApiJson.encodeToString(DeviceRequest(clientName))).parse()
 
     /** Polls once. Pending and terminal states arrive as [ApiException.Authorization]. */
     suspend fun exchangeDeviceCode(server: ServerAddress, deviceCode: String): TokenResponse {
-        val response = post(server.api("auth/token"), ApiJson.encodeToString(TokenRequest(deviceCode)))
-        return response.use {
-            if (it.code == 400) {
-                val body = it.body.string()
-                val code = runCatching { ApiJson.decodeFromString<ErrorBody>(body).error }.getOrNull()
-                throw ApiException.Authorization(code ?: "invalid_request")
-            }
-            it.parse()
+        val reply = post(server.api("auth/token"), ApiJson.encodeToString(TokenRequest(deviceCode)))
+        if (reply.code == 400) {
+            val code = runCatching { ApiJson.decodeFromString<ErrorBody>(reply.body).error }.getOrNull()
+            throw ApiException.Authorization(code ?: "invalid_request")
         }
+        return reply.parse()
     }
 
     suspend fun me(server: ServerAddress): Me = get(server.api("me")).parse()
 
     suspend fun revoke(server: ServerAddress) {
-        post(server.api("auth/revoke"), "{}").use { it.requireSuccess() }
+        post(server.api("auth/revoke"), "{}").requireSuccess()
     }
 
     suspend fun library(
@@ -81,15 +88,15 @@ class ConsumerApi(private val client: OkHttpClient) {
         return envelope.progress ?: throw ApiException.Protocol()
     }
 
-    private suspend fun get(url: HttpUrl): Response = execute(Request.Builder().url(url).get().build())
+    private suspend fun get(url: HttpUrl): Reply = execute(Request.Builder().url(url).get().build())
 
-    private suspend fun post(url: HttpUrl, body: String): Response =
+    private suspend fun post(url: HttpUrl, body: String): Reply =
         execute(Request.Builder().url(url).post(body.toRequestBody(JSON)).build())
 
-    private suspend fun execute(request: Request): Response {
+    private suspend fun execute(request: Request): Reply = withContext(io) {
         val call = client.newCall(request.newBuilder().header("Accept", "application/json").build())
-        return try {
-            call.await()
+        try {
+            call.await().use { Reply(it.code, it.body.string()) }
         } catch (error: BlockedRedirectIOException) {
             throw ApiException.RedirectBlocked(error.location)
         } catch (error: IOException) {
@@ -97,31 +104,29 @@ class ConsumerApi(private val client: OkHttpClient) {
         }
     }
 
-    private inline fun <reified T> Response.parse(): T = use {
+    private inline fun <reified T> Reply.parse(): T {
         requireSuccess()
         try {
-            ApiJson.decodeFromString<T>(body.string())
+            return ApiJson.decodeFromString<T>(body)
         } catch (error: SerializationException) {
             throw ApiException.Protocol(error)
         } catch (error: IllegalArgumentException) {
             throw ApiException.Protocol(error)
-        } catch (error: IOException) {
-            throw ApiException.Offline(error)
         }
     }
 
-    private fun Response.requireSuccess() {
+    private fun Reply.requireSuccess() {
         if (isSuccessful) return
         when (code) {
             401 -> throw ApiException.Unauthorized()
             403 -> throw ApiException.Forbidden()
             404 -> throw ApiException.NotFound()
             409 -> {
-                val current = runCatching { ApiJson.decodeFromString<ErrorBody>(body.string()).progress }.getOrNull()
+                val current = runCatching { ApiJson.decodeFromString<ErrorBody>(body).progress }.getOrNull()
                 throw ApiException.ProgressConflict(current)
             }
             400, 422 -> {
-                val error = runCatching { ApiJson.decodeFromString<ErrorBody>(body.string()).error }.getOrNull()
+                val error = runCatching { ApiJson.decodeFromString<ErrorBody>(body).error }.getOrNull()
                 throw ApiException.Rejected(error)
             }
             in 500..599 -> throw ApiException.Server(code)

@@ -27,6 +27,7 @@ import org.shelfarr.app.core.KeystoreSecureStore
 import org.shelfarr.app.core.ProgressRegistry
 import org.shelfarr.app.core.Session
 import org.shelfarr.app.core.SessionManager
+import org.shelfarr.app.core.SessionState
 import org.shelfarr.app.core.buildHttpClient
 import org.shelfarr.app.playback.PlaybackController
 import org.shelfarr.app.reader.ReaderSettingsStore
@@ -37,9 +38,14 @@ class AccountServices(
     val session: Session,
     val progress: ProgressRegistry,
     val directory: File,
+    private val store: FileProgressStore,
     private val scope: CoroutineScope,
 ) {
-    fun close() = scope.cancel()
+    /** Stops timers and writes; the caller may then delete [directory]. */
+    suspend fun close() {
+        scope.cancel()
+        store.close()
+    }
 }
 
 /** Hand-rolled dependency graph; the app is small enough not to need a framework. */
@@ -78,19 +84,29 @@ class AppContainer(context: Context) {
 
     private var account: AccountServices? = null
 
+    init {
+        // Streams can't continue without a session, so don't leave a dead player behind.
+        scope.launch {
+            sessions.session.collect { state ->
+                if (state !is SessionState.SignedIn) playback.stop()
+            }
+        }
+    }
+
     /** The services for the live session, built on first use. */
     @Synchronized
     fun account(session: Session): AccountServices {
         account?.takeIf { it.session.accountKey == session.accountKey }?.let { return it }
-        account?.close()
+        account?.let { previous -> scope.launch { previous.close() } }
         val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val directory = File(appContext.filesDir, "accounts/${session.accountKey}")
+        val store = FileProgressStore(File(directory, "progress.json"))
         val registry = ProgressRegistry(
-            store = FileProgressStore(File(directory, "progress.json")),
+            store = store,
             remote = { id, update -> api.saveProgress(session.server, id, update) },
             scope = accountScope,
         )
-        return AccountServices(session, registry, directory, accountScope).also { account = it }
+        return AccountServices(session, registry, directory, store, accountScope).also { account = it }
     }
 
     fun currentAccount(): AccountServices? = sessions.signedIn?.let(::account)
@@ -119,24 +135,27 @@ class AppContainer(context: Context) {
 
     /**
      * Disconnects this device: last sync, server-side revoke, then every local trace.
-     * Local cleanup happens whether or not the server could be reached.
+     * Local cleanup happens whether or not the server could be reached. This runs on
+     * the app scope because signing out tears down the screen that asked for it.
      */
-    suspend fun disconnect() {
+    fun disconnect() {
+        scope.launch { forgetAccount() }
+    }
+
+    private suspend fun forgetAccount() {
         val session = sessions.signedIn
-        playback.stop()
         val current = session?.let(::account)
-        if (session != null) {
-            withTimeoutOrNull(NETWORK_GRACE_MS) {
-                try {
-                    current?.progress?.flushAll()
-                    api.revoke(session.server)
-                } catch (_: ApiException) {
-                    // The token is deleted below regardless; expiry covers the rest.
-                }
+        withTimeoutOrNull(NETWORK_GRACE_MS) {
+            playback.stop()
+            try {
+                current?.progress?.flushAll()
+                session?.let { api.revoke(it.server) }
+            } catch (_: ApiException) {
+                // The token is deleted below regardless; expiry covers the rest.
             }
         }
-        sessions.clear()
         current?.close()
+        sessions.clear()
         if (session != null) {
             epubCache.clear(session.accountKey)
             current?.directory?.deleteRecursively()
