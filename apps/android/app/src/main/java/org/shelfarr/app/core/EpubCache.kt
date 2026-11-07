@@ -70,7 +70,10 @@ class EpubCache(
                     return@withContext CachedEpub(book, unverified = true)
                 }
                 response.use {
-                    if (it.code == 304 || (it.isSuccessful && info.etag == null && info.sizeBytes == asset.sizeBytes)) {
+                    // Servers may ignore If-None-Match, so a 200 with the same tag is unchanged too.
+                    val sameTag = info.etag != null && it.header("ETag") == info.etag
+                    val sameSize = info.etag == null && info.sizeBytes == asset.sizeBytes
+                    if (it.code == 304 || (it.isSuccessful && (sameTag || sameSize))) {
                         book.setLastModified(System.currentTimeMillis())
                         onProgress(1f)
                         return@withContext CachedEpub(book, unverified = false)

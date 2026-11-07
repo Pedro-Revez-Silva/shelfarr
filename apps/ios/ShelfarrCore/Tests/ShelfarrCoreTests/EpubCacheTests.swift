@@ -48,6 +48,15 @@ final class EpubCacheTests: XCTestCase {
         XCTAssertFalse(again.unverified)
     }
 
+    func testA200RepeatingTheSameETagKeepsTheCopy() async throws {
+        transport.enqueue(200, bytes, headers: ["ETag": "\"v1\""])
+        _ = try await cache.obtain(accountKey: "acct", server: server, asset: asset())
+        transport.enqueue(200, "PK-a-body-that-must-not-be-used!", headers: ["ETag": "\"v1\""])
+        let again = try await cache.obtain(accountKey: "acct", server: server, asset: asset())
+        XCTAssertEqual(try String(contentsOf: again.file, encoding: .utf8), bytes)
+        XCTAssertFalse(again.unverified)
+    }
+
     func testAChangedETagReplacesTheCopy() async throws {
         transport.enqueue(200, bytes, headers: ["ETag": "\"v1\""])
         _ = try await cache.obtain(accountKey: "acct", server: server, asset: asset())

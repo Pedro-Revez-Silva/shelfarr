@@ -73,6 +73,10 @@ In a debug build, enter `http://10.0.2.2:8099/shelfarr` on the Android emulator 
 `--conflict-after N` answers the Nth progress write with a conflict, and `--slow-down`
 exercises polling backoff.
 
+The Android emulator needs hardware acceleration for the reader. Without KVM the
+WebView renderer has crashed on opening a book, so test EPUB rendering on an
+accelerated emulator or a device.
+
 ## Security model
 
 - **Credential boundary.** The configured address is an origin plus an optional
@@ -132,7 +136,9 @@ seconds within the named asset.
 - Last known publication metadata is stored per account so an existing EPUB can
   reopen when the network is unavailable. Authentication and TLS errors are surfaced.
 - EPUB copies are revalidated with `If-None-Match` on every open and resumed with
-  `Range` and `If-Range`, so `content_url` needs a stable strong `ETag`.
+  `Range` and `If-Range`, so `content_url` needs a stable strong `ETag`. A 304 and a
+  200 repeating the stored `ETag` both keep the copy. Android stops reading such a
+  response at once; iOS discards the body, so a 304 saves iOS the transfer.
 - iOS audio relies on single byte ranges and `Content-Range` with a known total length.
 - Home builds "Continue" from the first page of `/library`. A publication in progress
   that falls beyond page one won't appear there until a recent-progress sort or
