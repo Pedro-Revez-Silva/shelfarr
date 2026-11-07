@@ -12,7 +12,8 @@ native iOS app, both talking to the consumer API. Neither wraps the web UI.
 
 The flow on both platforms is: server address, device authorization in the system
 browser, library and continue, publication details, EPUB reader or audio player,
-resume from the saved place.
+resume from the saved place. Books and audiobooks can be downloaded for offline use,
+and each has a reading status.
 
 ## Build
 
@@ -33,8 +34,12 @@ the app contains no demo content.
 
 CI also runs `:app:connectedDebugAndroidTest` on an accelerated API 35 emulator.
 This opens a fixture EPUB in the real Activity/WebView, navigates to chapter two,
-saves through HTTP and reopens at that chapter. Its screenshots and logcat are
-uploaded alongside the APK; a renderer crash fails the check. To run it locally,
+saves through HTTP and reopens at that chapter. A second test downloads a fixture
+book and a two-track audiobook, stops the fixture server, then reopens the book from
+its download in the real reader (`offline-download.png`) and checks that the player
+selected and prepared both downloaded tracks. CI's emulator runs without audio
+output, so audible playback is not asserted. Screenshots and logcat are uploaded
+alongside the APK; a renderer crash fails the check. To run it locally,
 start an accelerated emulator or connect a test device, then run
 `apps/scripts/android-reader-smoke.sh`. The smoke test uses an in-process fixture API and a synthetic
 account, so a connected personal library is not needed.
@@ -78,8 +83,11 @@ python3 apps/scripts/mock_consumer_server.py --base /shelfarr --auto-approve
 
 In a debug build, enter `http://10.0.2.2:8099/shelfarr` on the Android emulator or
 `http://localhost:8099/shelfarr` on the iOS simulator, and turn on **Allow local HTTP**.
-`--conflict-after N` answers the Nth progress write with a conflict, and `--slow-down`
-exercises polling backoff.
+`--conflict-after N` answers the Nth progress write with a conflict, `--slow-down`
+exercises polling backoff, and `--extra-books N` adds N small mock books so the
+library pages and Continue can find a book beyond the first page. The mock also
+serves `reading_status`, `/continue`, status changes and the `status` and `sort`
+library parameters.
 
 The actual Android reader passes rendering, chapter navigation, HTTP progress and
 reopening tests on an accelerated API 35 emulator. Earlier software-only API 33
@@ -107,12 +115,15 @@ validation; physical-device compatibility is still unverified.
   per named host through a generated network security config; add one for a physical
   device with `-PshelfarrDevHttpHosts=192.168.1.10`. iOS debug builds use
   `NSAllowsLocalNetworking`.
-- **Sign-out.** Disconnect flushes progress, calls revoke, then removes the token, stored
-  progress, EPUB copies and cached covers, whether or not the server was reachable. A
-  401 clears the token but keeps the address, and any unsent progress, for signing in again.
+- **Sign-out.** Disconnect flushes progress, calls revoke, stops every download, then
+  removes the token, stored progress, downloads, EPUB copies and cached covers, whether
+  or not the server was reachable. A 401 clears the token but keeps the address, any
+  unsent progress and the downloads, for signing in to the same account again;
+  downloads stopped by it resume after that.
 - **Separation.** Local files live under a hash of the server and user id, so accounts
-  never share progress or book copies. Path case is preserved. Progress retries use
-  the account's captured credential, and session transitions stop its sync work.
+  never share progress, downloads or book copies. Path case is preserved. Progress
+  retries and downloads use the account's captured credential, and session
+  transitions stop its sync and transfers before another account's start.
 
 ## Progress
 
@@ -149,15 +160,54 @@ seconds within the named asset.
   200 repeating the stored `ETag` both keep the copy. Android stops reading such a
   response at once; iOS discards the body, so a 304 saves iOS the transfer.
 - iOS audio relies on single byte ranges and `Content-Range` with a known total length.
-- Home builds "Continue" from the first page of `/library`. A publication in progress
-  that falls beyond page one won't appear there until a recent-progress sort or
-  endpoint exists.
+- Home builds "Continue" from `GET /continue?limit=10`, across the whole library, and
+  shows only items whose status is `in_progress`. A server without that endpoint
+  (404) falls back to the first page of `/library`.
+- `reading_status` may be absent on older servers; clients then derive `in_progress`
+  from a usable saved place, else `unread`. Unknown values are treated as absent.
+- Status changes use `PUT /library/:id/reading_status` and need a connection; nothing
+  changes on screen until the server accepts it. The saved place is kept. Opening an
+  unread publication with an explicit Read or Listen sets `in_progress` best effort,
+  without waiting; nothing else sends a status, so progress never undoes "finished".
+- Library `status` and `sort` (`recent` default, or `title`) are sent with `type` and
+  `q`. Any change starts again from the first page and ignores pages still loading
+  for the old query, since a cursor belongs to the query that produced it.
+
+## Downloads
+
+A download is the user's choice and lives in app storage (Android `filesDir`, iOS
+Application Support, excluded from backup), separate from the EPUB working copy in
+the cache directory, which the OS may still clear.
+
+- It pins one edition: the exact asset ids of the EPUB, or of every audio file in
+  `position` order. Before transferring, it fetches the publication again and re-pins
+  if the ids changed. Online, the reader and player use a download only while its ids
+  still match the server's; otherwise they use the server's current edition and the
+  page offers to update the download. Offline, they use the download.
+- Files download one at a time, with at most two publications at once. A transfer
+  resumes with `Range` and `If-Range` only against a strong `ETag` recorded before
+  the body; a full 200 with a different tag, a 412 or a 416 is a changed file, and the
+  partial bytes are discarded rather than stitched together.
+- It is ready only when every file is complete, its size matches `size_bytes` and an
+  EPUB starts with `PK`. Missing or short files found at launch mark it failed, never
+  ready. Audio plays from local files only when every track is on the device.
+- States are queued, downloading, ready, failed and cancelled, with sizes. Failures
+  keep their kind: no connection, untrusted certificate, signed out, not allowed, not
+  found, server error, redirect, changed on the server, unexpected file, not enough
+  space, files missing. No connection and server errors retry when the app returns to
+  the foreground; the rest wait for the user.
+- Cancel stops the transfer and deletes its bytes. Remove deletes the files and the
+  entry; the saved place and status stay.
+- The queue is stored with the account and resumes when the app starts. Transfers run
+  while the app process is alive: there is no OS background transfer, so a download
+  pauses when the system stops the app and continues next time it opens.
 
 ## Current limits
 
-- Offline: audio always streams. A book that was opened before can reopen offline from
-  its cached copy, which the OS may clear, and the app says so. There are no downloads.
-  The library itself needs a connection.
+- Offline: downloaded books and audiobooks open, and Home shows them. Other books that
+  were opened before can reopen from their cached copy, which the OS may clear, and
+  other audio needs a connection. The library and status changes need a connection.
+- Downloads transfer only while the app runs; they don't complete in the background.
 - EPUB only for reading. Other ebook formats show "can't be opened in the app yet", and
   DRM-protected files can't be opened.
 - Chapters come from the audio file's own metadata (ID3 `CHAP`, MP4 chapter tracks) as
