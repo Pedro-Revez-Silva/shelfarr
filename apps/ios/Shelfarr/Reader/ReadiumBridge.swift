@@ -12,12 +12,21 @@ struct ContentsEntry: Identifiable {
     fileprivate let link: ReadiumShared.Link
 }
 
+/// A reading order resource on screen, and the part of its progression (0–1) visible.
+struct VisibleResource {
+    let href: String
+    let from: Double
+    let to: Double
+}
+
 /// A place reported by the navigator, in plain values.
 struct ReadingLocation {
     let locatorJSON: String
     let fraction: Double
     let position: Int?
     let chapter: String?
+    /// What the navigator measured on screen with this report; nil when it had not.
+    let visible: [VisibleResource]?
 }
 
 extension FontFamily {
@@ -138,9 +147,17 @@ final class ReadiumBook: NSObject {
         }
     }
 
-    func go(toLocatorJSON json: String) {
-        guard let locator = Self.locator(json: json) else { return }
-        Task { _ = await navigator?.go(to: locator) }
+    /// Sends the navigator to a saved place. True when the jump was accepted; that is not
+    /// proof it settled there, which only a later location report shows.
+    func go(toLocatorJSON json: String) async -> Bool {
+        guard let navigator, let locator = Self.locator(json: json) else { return false }
+        return await navigator.go(to: locator, options: .none)
+    }
+
+    /// Page turns, taps and selection on the book, off while it is being sent back to the
+    /// saved place.
+    func setInputEnabled(_ enabled: Bool) {
+        navigator?.view.isUserInteractionEnabled = enabled
     }
 
     private static func locator(json: String) -> ReadiumShared.Locator? {
@@ -182,11 +199,20 @@ final class ReadiumBook: NSObject {
 extension ReadiumBook: EPUBNavigatorDelegate {
     func navigator(_ navigator: Navigator, locationDidChange locator: ReadiumShared.Locator) {
         guard let json = try? locator.jsonString() else { return }
+        // Readium 3.11 assigns the viewport in the same step, just before this callback,
+        // so it measures the page this locator reports. The locator alone carries no
+        // proof of where the page settled.
+        let viewport = (navigator as? ViewportObservingNavigator)?.viewport
         onLocation?(ReadingLocation(
             locatorJSON: json,
             fraction: locator.locations.totalProgression ?? locator.locations.progression ?? 0,
             position: locator.locations.position,
-            chapter: locator.title
+            chapter: locator.title,
+            visible: viewport.map { viewport in
+                viewport.resources.map {
+                    VisibleResource(href: $0.href.string, from: $0.progression.lowerBound, to: $0.progression.upperBound)
+                }
+            }
         ))
     }
 

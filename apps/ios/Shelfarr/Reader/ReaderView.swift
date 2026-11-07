@@ -39,6 +39,17 @@ struct ReaderView: View {
         ZStack {
             theme.page.ignoresSafeArea()
             content
+            if let trace = model.restoreTrace {
+                // Simulator smoke only: see RestoreTrace.
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityIdentifier("reader-restore-trace")
+                    .accessibilityLabel(trace)
+                    .allowsHitTesting(false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .allowsHitTesting(false)
+            }
         }
         .statusBarHidden(isReady && !model.chromeVisible)
         .task { await model.open() }

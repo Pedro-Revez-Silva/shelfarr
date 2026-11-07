@@ -20,6 +20,8 @@ final class ReaderModel: ObservableObject {
     @Published private(set) var syncStatus = SyncStatus.idle
     @Published private(set) var notice: String?
     @Published var chromeVisible = false
+    /// How the place was restored, for the simulator smoke only (synthetic fixture places).
+    @Published private(set) var restoreTrace: String?
 
     private(set) var book: ReadiumBook?
     private let app: AppModel
@@ -32,6 +34,9 @@ final class ReaderModel: ObservableObject {
     private var observer: UUID?
     /// Tells Readium reporting the opened place apart from the reader moving on.
     private var restoration = ReadingRestoration(opening: nil)
+    /// Bounds one attempt to bring the saved place back on screen.
+    private var correctionTimer: Task<Void, Never>?
+    private let trace = RestoreTrace.make()
     /// Local writes run in the order the pages were reached.
     private var lastWrite: Task<Void, Never>?
 
@@ -94,6 +99,7 @@ final class ReaderModel: ObservableObject {
                 }
                 file = cached.file
             }
+            note("source \(useDownload ? "download" : "cache") offline=\(offline)")
             guard let opened = await ReadiumBook.open(file: file) else {
                 state = .unreadable
                 return
@@ -130,7 +136,9 @@ final class ReaderModel: ObservableObject {
         guard let book, app.session == owner else { return }
         // Opening at the saved place is not reading: it keeps the time it was reached.
         await sync?.begin(position: position, baseVersion: baseVersion, observedAt: observedAt, assets: assetIds)
+        correctionTimer?.cancel()
         restoration = ReadingRestoration(opening: position?.locator)
+        note("open \(RestoreTrace.describe(position?.locator))")
         do {
             let navigator = try book.makeNavigator(
                 locatorJSON: position?.locator?.jsonString(),
@@ -151,9 +159,63 @@ final class ReaderModel: ObservableObject {
         position = location.position
         if let chapter = location.chapter { self.chapter = chapter }
         guard let asset, let sync, let locator = JSONValue.parse(jsonString: location.locatorJSON) else { return }
-        guard restoration.isReading(locator) else { return }
+        let viewport = location.visible.map { visible in
+            ReadingViewport(resources: visible
+                .filter { $0.from.isFinite && $0.to.isFinite }
+                .map { ReadingViewport.Resource(href: $0.href, progression: $0.from ... max($0.from, $0.to)) })
+        }
+        let action = restoration.observe(ReadingObservation(locator: locator, viewport: viewport))
+        note("report \(RestoreTrace.describe(locator)) viewport \(RestoreTrace.describe(viewport)) -> \(RestoreTrace.describe(action))")
+        guard action == .record else {
+            // Restoring is not reading: the saved place and its time stay as they were.
+            apply(action)
+            return
+        }
         let saved = SavedPosition(assetId: asset.id, locator: locator)
         enqueue { await sync.update(saved, observedAt: observedAt) }
+    }
+
+    private static let restoreFailed = "Couldn't show your saved page. It stays your saved place until you turn a page."
+
+    private func apply(_ action: ReadingRestoration.Action) {
+        switch action {
+        case .none, .record:
+            return
+        case let .correct(target, attempt):
+            correct(to: target, attempt: attempt)
+        case .settled:
+            correctionTimer?.cancel()
+            book?.setInputEnabled(true)
+            if notice == Self.restoreFailed { notice = nil }
+        case .gaveUp:
+            correctionTimer?.cancel()
+            book?.setInputEnabled(true)
+            notice = Self.restoreFailed
+        }
+    }
+
+    /// Sends the reader back to the saved place and waits for a report showing it. The
+    /// jump finishing proves nothing; the timeout only bounds a failure.
+    private func correct(to target: JSONValue, attempt: Int) {
+        book?.setInputEnabled(false)
+        correctionTimer?.cancel()
+        correctionTimer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(ReadingRestoration.attemptTimeout * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            let next = self.restoration.timedOut(attempt: attempt)
+            self.note("timeout #\(attempt) -> \(RestoreTrace.describe(next))")
+            self.apply(next)
+        }
+        guard let book, let json = target.jsonString() else { return }
+        Task { [weak self] in
+            let accepted = await book.go(toLocatorJSON: json)
+            self?.note("go #\(attempt) accepted=\(accepted)")
+        }
+    }
+
+    private func note(_ line: String) {
+        guard let trace else { return }
+        restoreTrace = trace.note(line)
     }
 
     func flush() {
@@ -179,10 +241,8 @@ final class ReaderModel: ObservableObject {
         Task {
             guard let position = await sync.useServer() else { return }
             // Going to the chosen saved place is not new reading.
-            restoration.reopen(at: position.locator)
-            if let json = position.locator?.jsonString() {
-                book?.go(toLocatorJSON: json)
-            }
+            note("reopen \(RestoreTrace.describe(position.locator))")
+            apply(restoration.reopen(at: position.locator))
         }
     }
 
