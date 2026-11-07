@@ -24,7 +24,7 @@ export default class extends Controller {
     try { preferences = JSON.parse(localStorage.getItem("shelfarr.reader.preferences.v1") || "{}") || {} } catch (_) { /* storage unavailable */ }
     this.fontSize = Number.isFinite(preferences.fontSize) && preferences.fontSize >= 80 && preferences.fontSize <= 180 ? preferences.fontSize : 105
     this.playbackRate = Number.isFinite(preferences.playbackRate) && preferences.playbackRate >= 0.5 && preferences.playbackRate <= 3 ? preferences.playbackRate : 1
-    this.fontReflow = Promise.resolve()
+    this.readerReflow = Promise.resolve()
     if (this.hasSpeedTarget) {
       if (![...this.speedTarget.options].some(option => Number(option.value) === this.playbackRate)) this.playbackRate = 1
       this.speedTarget.value = String(this.playbackRate)
@@ -295,9 +295,11 @@ export default class extends Controller {
     const cfi = this.reflowAnchor || this.rendition.location?.start?.cfi
     if (!cfi) return
     this.reflowAnchor = cfi
-    queueMicrotask(() => this.showPlace(cfi)
+    this.userMoved = false
+    const reflow = this.readerReflow.then(() => this.active && this.showPlace(cfi))
       .catch(() => {})
-      .finally(() => { if (this.reflowAnchor === cfi) this.reflowAnchor = null }))
+      .finally(() => { if (this.readerReflow === reflow) this.reflowAnchor = null })
+    this.readerReflow = reflow
   }
 
   async settleFrames() {
@@ -314,8 +316,18 @@ export default class extends Controller {
     const doc = contents.document
     const frame = contents.window.frameElement
     doc.addEventListener("keydown", event => this.readerKey(event))
+    // EPUB.js installs onclick handlers for internal links. Keep its URL
+    // resolution, but wait for any layout correction before following one.
+    for (const link of doc.querySelectorAll("a[href]")) {
+      const follow = link.onclick
+      if (!follow) continue
+      link.onclick = event => {
+        this.moveEbook(() => follow.call(link, event), "This link couldn't be opened.")
+        return false
+      }
+    }
     doc.addEventListener("click", event => {
-      if (event.target.closest?.("a[href]")) { this.userMoved = true; return }
+      if (event.target.closest?.("a[href]")) return
       if (this.swiped) { this.swiped = false; return }
       const selection = contents.window.getSelection?.()
       if (selection && !selection.isCollapsed) return
@@ -398,7 +410,9 @@ export default class extends Controller {
     const option = [...this.chaptersTarget.options].find(option => option.value.split("#")[0] === start.href)
     if (option) this.chaptersTarget.value = option.value
     // Only the reader's own moves are activity; restoring or reflowing is not.
-    if (!this.readerReady || !this.userMoved || start.cfi === this.lastEbookCfi) return
+    if (!this.readerReady) return
+    if (!this.userMoved) { this.lastEbookCfi = start.cfi; return }
+    if (start.cfi === this.lastEbookCfi) return
     this.lastEbookCfi = start.cfi
     this.recordPlace({ asset_id: this.currentAsset.id, locator: { href: this.book.resolve(start.href).replace(/^\/+/, ""), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi: start.cfi } } })
   }
@@ -430,15 +444,33 @@ export default class extends Controller {
     }
   }
 
-  previousPage() { this.userMoved = true; this.rendition?.prev().catch(() => this.showError("Couldn't open the previous page.")) }
-  nextPage() { this.userMoved = true; this.rendition?.next().catch(() => this.showError("Couldn't open the next page.")) }
-  chooseChapter() { this.userMoved = true; this.rendition && this.showPlace(this.chaptersTarget.value).catch(() => this.showError("This chapter couldn't be opened.")) }
+  // Automatic reflows stay silent until the next deliberate navigation. The
+  // engine's reportLocation promise resolves before its animation-frame report;
+  // take a fresh baseline so a trailing report cannot become reading activity.
+  async moveEbook(move, message) {
+    try {
+      let reflow
+      do { reflow = this.readerReflow; await reflow } while (reflow !== this.readerReflow)
+      if (!this.active || !this.readerReady) return
+      this.lastEbookCfi = this.rendition.currentLocation()?.start?.cfi
+      this.userMoved = true
+      await move()
+    } catch (_) { if (this.active) this.showError(message) }
+  }
+
+  previousPage() { this.moveEbook(() => this.rendition.prev(), "Couldn't open the previous page.") }
+  nextPage() { this.moveEbook(() => this.rendition.next(), "Couldn't open the next page.") }
+  chooseChapter() {
+    const chapter = this.chaptersTarget.value
+    this.moveEbook(() => this.showPlace(chapter), "This chapter couldn't be opened.")
+  }
   smallerText() { this.resizeText(-10) }
   largerText() { this.resizeText(10) }
   resizeText(delta) {
-    this.fontReflow = this.fontReflow.then(async () => {
+    const reflow = this.readerReflow.then(async () => {
       if (!this.active || !this.rendition || !this.readerReady) return
-      const cfi = this.rendition.currentLocation()?.start?.cfi
+      this.userMoved = false
+      const cfi = this.reflowAnchor || this.rendition.currentLocation()?.start?.cfi
       this.fontSize = Math.max(80, Math.min(180, this.fontSize + delta))
       this.savePreferences()
       this.rendition.themes.fontSize(`${this.fontSize}%`)
@@ -447,6 +479,8 @@ export default class extends Controller {
       if (cfi) await this.rendition.display(cfi)
       await this.rendition.reportLocation()
     }).catch(() => { if (this.active) this.showError("Text size couldn't be changed. Try again.") })
+      .finally(() => { if (this.readerReflow === reflow) this.reflowAnchor = null })
+    this.readerReflow = reflow
   }
   savePreferences() {
     try { localStorage.setItem("shelfarr.reader.preferences.v1", JSON.stringify({ fontSize: this.fontSize, playbackRate: this.playbackRate })) } catch (_) { /* keep preferences for this visit */ }

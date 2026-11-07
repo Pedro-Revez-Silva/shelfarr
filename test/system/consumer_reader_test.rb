@@ -302,6 +302,43 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     assert_equal saved.attributes.slice("version", "observed_at", "updated_at", "client_mutation_id", "locator"),
       after.attributes.slice("version", "observed_at", "updated_at", "client_mutation_id", "locator")
     assert_equal 0, outbox_size
+
+    # After genuine reading, layout changes must not be mistaken for another
+    # page turn, including the engine's intermediate, incorrectly clamped page.
+    find("[data-consumer-reader-target=viewport]").send_keys(:arrow_left)
+    wait_until("the backward turn is saved") { saved_cfi != target && outbox_size.zero? }
+    target = saved_cfi
+    assert reader_place(target)[:inside]
+    saved = users(:one).consumer_progresses.find_by!(book: @ebook)
+    page.execute_script(<<~JS)
+      window.layoutProgressWrites = []
+      const layoutFetch = window.fetch
+      window.fetch = (url, options) => {
+        if (String(url).includes("/progress") && options?.method === "PUT") window.layoutProgressWrites.push(options.body)
+        return layoutFetch(url, options)
+      }
+    JS
+    before_resize = location_text
+    page.current_window.resize_to(900, 700)
+    wait_until("the resized page contains the saved text") { location_text != before_resize && reader_place(target)&.dig(:inside) }
+    wait_for_reader_layout
+    assert reader_place(target)[:inside]
+    assert_silent_layout(saved)
+
+    reveal_reading_controls
+    find("button[aria-label='Larger text']").click
+    wait_for_reader_layout
+    assert reader_place(target)[:inside], "the saved text stays visible at the new text size"
+    assert_silent_layout(saved)
+    find("button[aria-label='Smaller text']").click
+    wait_for_reader_layout
+    assert reader_place(target)[:inside]
+    assert_silent_layout(saved)
+
+    # Suppression ends with the next deliberate turn.
+    find("[data-consumer-reader-target=hide]").click
+    find("[data-consumer-reader-target=viewport]").send_keys(:arrow_right)
+    assert_operator wait_for_progress(@ebook, version: saved.version + 1).version, :>, saved.version
   end
 
   test "resuming a saved listening place rewinds five seconds without replacing the saved place" do
@@ -385,6 +422,26 @@ class ConsumerReaderTest < ApplicationSystemTestCase
       (place = reader_place(cfi)) && place[:inside] && location_text == label
     end
     assert_equal({ marker: marker, offset: 0, inside: true, paragraphInside: true }, place.slice(:marker, :offset, :inside, :paragraphInside))
+  end
+
+  def wait_for_reader_layout
+    # EPUB.js queues reportLocation's RAF without awaiting it. Drain its queue
+    # and that report before inspecting saved state; no fixed layout delay.
+    page.evaluate_async_script(<<~JS)
+      const done = arguments[arguments.length - 1]
+      const element = document.querySelector("[data-controller~='consumer-reader']")
+      const reader = window.Stimulus.getControllerForElementAndIdentifier(element, "consumer-reader")
+      Promise.resolve(reader.readerReflow || reader.fontReflow).then(() => reader.rendition.q.run())
+        .then(() => requestAnimationFrame(() => done(true)))
+        .catch(error => done(String(error)))
+    JS
+  end
+
+  def assert_silent_layout(saved)
+    assert_equal [], page.evaluate_script("window.layoutProgressWrites"), "layout must not upload a reading checkpoint"
+    assert_equal 0, outbox_size
+    assert_equal saved.attributes.slice("version", "observed_at", "updated_at", "client_mutation_id", "locator"),
+      users(:one).consumer_progresses.find_by!(book: @ebook).attributes.slice("version", "observed_at", "updated_at", "client_mutation_id", "locator")
   end
 
   def saved_cfi

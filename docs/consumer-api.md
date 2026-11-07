@@ -298,8 +298,10 @@ CFI, at the current viewport and text size. EPUB.js 0.3.93 positions a newly
 rendered section before the frame grows to fit the themed text, which clamped
 deep places to an earlier page. The reader therefore positions once more after
 the frame fits the laid-out text and fonts have loaded, and does so again after a
-window or orientation change. Restoring a place is not activity: it never
-creates a checkpoint or changes `observed_at`, the version or the mutation ID.
+window or orientation change. Restoring a place, resizing the window and
+changing text size are not activity: they never create a checkpoint or change
+`observed_at`, the version or the mutation ID. Deliberate page turns, links and
+chapter choices wait for a layout correction to finish before navigating.
 
 ### Browser progress outbox
 
