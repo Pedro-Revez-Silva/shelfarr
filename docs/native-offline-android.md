@@ -153,7 +153,8 @@ progress keeps its disk-first, compare-and-swap sync and conflict choices.
     bytes and resumes with a range; downloads left by an earlier process are
     interrupted, or kept for a scheduled host; an expired sign-in resumes with only
     the new token; an unreadable manifest is set aside without deleting files; a
-    manifest from the previous version still loads.
+    manifest from the previous version still loads. Ready and Failed states are
+    durable before observers can close the manager; reopening retains them.
   - `TransferDriverTest`: following an account switch with no old token afterwards,
     sign-out mid-transfer, and the retry budget.
   - `LibraryCacheTest`: merging, filters, ordering, coverage, bounds, persistence,
@@ -163,6 +164,8 @@ progress keeps its disk-first, compare-and-swap sync and conflict choices.
 - **Robolectric**:
   - `TransferSchedulerTest` covers the host chosen for API 26, 33 and 34, visible and
     not visible.
+  - `RequestedScreenNavigationTest` covers a cold notification before the navigation
+    graph exists, and repeated warm notification/back navigation.
   - `ScreenshotTest` renders `13-*` (offline Library: partial, complete, no matches,
     downloads only, and 320 dp at 1.6× text) and `14-*` (Downloads with stopped,
     queued and offline downloads and notifications off; dark; 320 dp at 1.6× text;
@@ -185,3 +188,7 @@ progress keeps its disk-first, compare-and-swap sync and conflict choices.
   the app's own process, so it can't show that a killed process survives; the JVM
   tests cover reloading from disk instead. CI has no audio output, so nothing audible
   is asserted.
+
+  [CI run 42393424465](https://github.com/Pedro-Revez-Silva/shelfarr/actions/runs/42393424465)
+  passed all four emulator tests and 197 JVM/render tests on `ea6943b`. Physical-device
+  and real-library validation remain outstanding.

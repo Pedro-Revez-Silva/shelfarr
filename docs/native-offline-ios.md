@@ -256,10 +256,12 @@ about 15 minutes more than `ios-check.sh`.
   short or misplaced ranges, redirect discard, force-quit, storage failures, grant
   minting, refusal and fallback, the account boundary after sign-out, cancel-before-
   delete, version 1 manifest migration, and every offline-library rule above.
-- **Simulator build verified.** macOS CI compiled the app and UI test and reached
-  the download flow. Its first runtime run found an unsigned simulator build rejected
-  by the system download daemon. The corrected smoke configuration still needs a
-  passing run before background transfers and the full offline flow are verified.
+- **Simulator runtime verified.** [CI run 42393424465](https://github.com/Pedro-Revez-Silva/shelfarr/actions/runs/42393424465)
+  passed on `ea6943b`, using an iPhone 16 Pro simulator with iOS 18.5 and Xcode 16.4.
+  It covered library/search, rendered EPUB pages and saved place, background downloads,
+  local audio, and offline relaunch/reopening. The fixture recorded three grant
+  requests and none carrying a bearer. Physical-device and real-library validation
+  remain outstanding.
 - **Grants.** The consumer API implements the grant endpoint. Older servers without
   it keep using foreground transfers; the smoke fixture exercises the background path.
 - **Scheduling.** Background transfers are at iOS's discretion. A force-quit stops
