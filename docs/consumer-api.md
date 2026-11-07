@@ -60,6 +60,8 @@ Personal responses use `Cache-Control: private, no-store`.
 | `GET /library/:id` | One publication |
 | `PUT /library/:id/reading_status` with `{status}` | Updated publication; requires `progress:write` |
 | `GET /library/:id/assets/:asset_id` | Original media bytes; GET, HEAD, single byte ranges, strong ETag, If-Range |
+| `POST /library/:id/assets/:asset_id/transfer_grant` with `{}` | 201 `{url,expires_at}`: a bearer-free URL for that asset, described below |
+| `GET /library/:id/assets/:asset_id/transfer?grant=...` | The same media bytes, authorized only by the grant in the URL |
 | `GET /library/:id/progress` | `{progress:null\|progress}` |
 | `PUT /library/:id/progress` | Compare-and-set progress, described below |
 
@@ -131,6 +133,41 @@ multiple, or unsatisfiable ranges receive 416 and `Content-Range: bytes */size`.
 A non-matching If-Range returns the complete file. HEAD reports full-file headers
 without streaming or changing progress. A matching If-None-Match returns 304 so
 native clients can revalidate cached ebooks without downloading them again.
+
+## Background transfer grants
+
+System background downloads (an iOS background `URLSession`) persist their
+requests and follow redirects without asking the app, so they must not carry the
+account bearer. Instead the app asks for a grant with the bearer (`library:read`):
+
+```
+POST /api/consumer/v1/library/:id/assets/:asset_id/transfer_grant
+201 {"url": "/api/consumer/v1/library/:id/assets/:asset_id/transfer?grant=<opaque>",
+     "expires_at": "2026-11-08T14:20:00Z"}
+```
+
+- `url` is a path under the deployment subpath, like `content_url`. It fetches only
+  that publication's exact asset generation, with GET or HEAD, and the same ETag,
+  If-Range, single Range, If-None-Match/304, 416 and 410 behaviour as the bearer
+  asset URL. Other methods get 404. The bearer asset URL is unchanged.
+- The transfer route reads only one literal `grant` query parameter. It ignores the
+  `Authorization` header and cookies, and no other endpoint accepts a grant.
+  Encoded, repeated or nested spellings, or extra parameters, are refused.
+- A grant is opaque: AES-256-GCM encrypted and authenticated, with a purpose and a
+  key derived from `secret_key_base`, so nothing is stored and no bearer is ever
+  stored or embedded. It names the issuing token, its user, the publication and the
+  asset generation.
+- It lasts 24 hours, or until the issuing token expires if that's sooner. Every
+  request re-checks that the token is live (not revoked, expired or deleted), still
+  has `library:read`, and belongs to the same non-deleted user.
+- An invalid, expired or refused grant gets 401 `{"error":"invalid_grant"}`; the
+  client mints another one with the bearer. A replaced file gets 410 and a removed
+  publication 404, as on the bearer asset URL. Minting for a changed asset gets 410
+  `asset_unavailable`, an unknown publication 404, and a server without this
+  feature 404, which clients treat as "no grants".
+- Responses are `Cache-Control: private, no-store` and never redirect. Request logs
+  filter `grant`, including encoded or nested keys and unknown routes. Rotating
+  `secret_key_base` invalidates outstanding grants.
 
 ## Reading status and Continue
 

@@ -115,6 +115,8 @@ Rails.application.routes.draw do
         get "me", to: "accounts#show"
         get "continue", to: "library#continue"
         get "library/:id/assets/:asset_id", to: "library#asset", as: :asset
+        post "library/:id/assets/:asset_id/transfer_grant", to: "library#transfer_grant", as: :asset_transfer_grant
+        get "library/:id/assets/:asset_id/transfer", to: "transfers#show", as: :asset_transfer
         resources :library, only: [ :index, :show ] do
           get :progress, to: "progress#show", on: :member
           put :progress, to: "progress#update", on: :member

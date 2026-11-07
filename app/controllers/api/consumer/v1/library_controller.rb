@@ -24,4 +24,16 @@ class API::Consumer::V1::LibraryController < API::Consumer::V1::BaseController
   def asset
     serve_consumer_asset(consumer_book, params[:asset_id])
   end
+
+  # Mints a grant that fetches only this asset generation, with GET or HEAD,
+  # from a transfer that must not hold the bearer.
+  def transfer_grant
+    book = consumer_book
+    asset, file = Consumer::LibraryAssets.new(book).open(params[:asset_id])
+    file.close
+    grant, expires_at = Consumer::TransferGrant.issue(api_token: Current.api_token, book: book, asset_id: asset.id)
+    render json: { url: api_consumer_v1_asset_transfer_path(book, asset.id, grant: grant), expires_at: expires_at.utc.iso8601 }, status: :created
+  rescue Consumer::LibraryAssets::Unavailable
+    render json: { error: "asset_unavailable" }, status: :gone
+  end
 end
