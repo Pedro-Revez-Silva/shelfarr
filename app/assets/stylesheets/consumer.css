@@ -84,7 +84,7 @@
 .consumer-reader-panel { border:1px solid var(--line); border-radius:14px; background:var(--surface); overflow:hidden; }
 .consumer-reader-toolbar { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:12px 16px; border-bottom:1px solid var(--line); }
 .consumer-chapters { display:flex; align-items:center; gap:10px; font-size:11px; color:var(--muted); min-width:0; }
-.consumer-chapters select { max-width:300px; width:100%; color:var(--ink); font-size:12px; border:0; background:transparent; padding:4px; }
+.consumer-chapters select { min-height:48px; max-width:300px; width:100%; color:var(--ink); font-size:12px; border:0; background:transparent; padding:4px; }
 .consumer-type-controls { display:flex; flex-shrink:0; }
 .consumer-type-controls button { border:0; background:transparent; padding:7px 10px; font-family:Newsreader,Georgia,serif; font-size:16px; }
 .consumer-ebook { height:580px; min-width:0; }
@@ -104,7 +104,7 @@
 .consumer-audio-controls .consumer-play { border-radius:50%; width:72px; height:72px; background:var(--accent); color:var(--paper); font-size:24px; padding-left:8px; }
 .consumer-audio-options { display:flex; gap:28px; justify-content:center; text-align:left; }
 .consumer-audio-options label { min-width:0; color:var(--muted); font-size:10px; }
-.consumer-audio-options select { display:block; background:transparent; color:var(--ink); border:0; font-size:13px; padding:8px 0; max-width:240px; width:100%; }
+.consumer-audio-options select { min-height:48px; display:block; background:transparent; color:var(--ink); border:0; font-size:13px; padding:8px 0; max-width:240px; width:100%; }
 .consumer-player-note { font-size:10px; color:var(--muted); margin:26px auto 0!important; max-width:330px; }
 @media (max-width:900px) { .consumer-book-grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:30px 20px; } .consumer-continue-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .consumer-resume-card:last-child:nth-child(3) { display:none; } }
 @media (max-width:600px) {
