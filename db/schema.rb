@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -279,6 +279,37 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
     t.index ["status", "next_sync_at"], name: "index_hardcover_subscriptions_on_status_and_next_sync_at"
     t.index ["user_id", "target_key"], name: "index_hardcover_subscriptions_on_user_id_and_target_key", unique: true
     t.index ["user_id"], name: "index_hardcover_subscriptions_on_user_id"
+  end
+
+  create_table "kobo_deliveries", force: :cascade do |t|
+    t.integer "kobo_device_id", null: false
+    t.integer "book_id"
+    t.string "entitlement_id", null: false
+    t.string "revision_id", null: false
+    t.integer "sync_revision", null: false
+    t.json "publication", null: false
+    t.json "reading_state"
+    t.datetime "last_download_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["book_id"], name: "index_kobo_deliveries_on_book_id"
+    t.index ["entitlement_id"], name: "index_kobo_deliveries_on_entitlement_id", unique: true
+    t.index ["kobo_device_id", "book_id"], name: "index_kobo_deliveries_on_kobo_device_id_and_book_id", unique: true
+    t.index ["kobo_device_id", "sync_revision"], name: "index_kobo_deliveries_on_kobo_device_id_and_sync_revision"
+    t.index ["kobo_device_id"], name: "index_kobo_deliveries_on_kobo_device_id"
+  end
+
+  create_table "kobo_devices", force: :cascade do |t|
+    t.integer "user_id", null: false
+    t.string "name", null: false
+    t.string "base_url", null: false
+    t.string "token_digest", null: false
+    t.integer "sync_revision", default: 0, null: false
+    t.datetime "last_sync_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["token_digest"], name: "index_kobo_devices_on_token_digest", unique: true
+    t.index ["user_id"], name: "index_kobo_devices_on_user_id"
   end
 
   create_table "library_items", force: :cascade do |t|
@@ -691,6 +722,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
   add_foreign_key "hardcover_request_budgets", "users"
   add_foreign_key "hardcover_subscription_items", "hardcover_subscriptions"
   add_foreign_key "hardcover_subscriptions", "users"
+  add_foreign_key "kobo_deliveries", "books"
+  add_foreign_key "kobo_deliveries", "kobo_devices"
+  add_foreign_key "kobo_devices", "users"
   add_foreign_key "notifications", "users"
   add_foreign_key "owned_library_connections", "users", column: "automatic_backup_user_id", on_delete: :nullify
   add_foreign_key "owned_library_items", "books", on_delete: :nullify

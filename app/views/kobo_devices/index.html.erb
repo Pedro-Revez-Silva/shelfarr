@@ -1,0 +1,41 @@
+<div class="mx-auto max-w-3xl space-y-6">
+  <%= link_to "← My profile", profile_path, class: "text-blue-400 hover:text-blue-300" %>
+  <div>
+    <h1 class="text-3xl font-bold text-white">Kobo readers</h1>
+    <p class="mt-2 text-gray-400">Send library ebooks to each reader, then sync it over Wi-Fi. Works with stock Kobo software; no alternative reader app needed.</p>
+  </div>
+
+  <div class="rounded-lg border border-amber-800 bg-amber-950/30 p-5 text-sm text-amber-200">
+    <p class="font-semibold">Preview · physical-device testing in progress</p>
+    <p class="mt-2">Connecting Shelfarr replaces the reader's Kobo Store sync endpoint. Store purchases already downloaded stay on the reader. Restore the original endpoint to sync new Store purchases. EPUB and KEPUB only; no PDF, DRM, or shared reading progress in this preview.</p>
+  </div>
+
+  <% @devices.each do |device| %>
+    <div class="rounded-lg border border-gray-800 bg-gray-900 p-5 flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <%= link_to device.name, kobo_device_path(device), class: "text-lg font-semibold text-white hover:text-blue-400" %>
+        <p class="mt-1 text-sm text-gray-400"><%= device.last_sync_at ? "Last sync request #{time_ago_in_words(device.last_sync_at)} ago" : "Waiting for first sync" %></p>
+      </div>
+      <%= link_to "Manage reader", kobo_device_path(device), class: "rounded-lg bg-gray-800 px-4 py-2 text-gray-200 hover:bg-gray-700" %>
+    </div>
+  <% end %>
+
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6">
+    <h2 class="text-xl font-semibold text-white mb-4">Connect a reader</h2>
+    <% if @device.errors.any? %>
+      <p role="alert" class="mb-4 text-red-400"><%= @device.errors.full_messages.to_sentence %></p>
+    <% end %>
+    <%= form_with model: @device, data: { turbo: false }, class: "space-y-4" do |form| %>
+      <div>
+        <%= form.label :name, "Reader name", class: "block text-sm text-gray-300 mb-2" %>
+        <%= form.text_field :name, required: true, maxlength: 80, placeholder: "My Kobo", class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white" %>
+      </div>
+      <div>
+        <%= form.label :base_url, "Shelfarr address reachable from this reader", class: "block text-sm text-gray-300 mb-2" %>
+        <%= form.url_field :base_url, required: true, class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white", aria: { describedby: "kobo-address-help" } %>
+        <p id="kobo-address-help" class="mt-2 text-sm text-gray-400">Use HTTPS where possible. Include any server subpath. A browser login or Cloudflare Access page will block the Kobo.</p>
+      </div>
+      <%= form.submit "Create connection", class: "rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 cursor-pointer" %>
+    <% end %>
+  </section>
+</div>
