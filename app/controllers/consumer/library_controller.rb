@@ -32,8 +32,7 @@ class Consumer::LibraryController < ApplicationController
   end
 
   def progress
-    result = Consumer::ProgressWriter.new(user: Current.user, book: find_book).call(
-      params.permit(:asset_id, :expected_version, :client_mutation_id, :position_seconds, locator: {}).to_h)
+    result = Consumer::ProgressWriter.new(user: Current.user, book: find_book).call(Consumer::ProgressWriter.attributes(params))
     render json: { progress: result.representation }
   rescue Consumer::ProgressWriter::Invalid, Consumer::LibraryAssets::Unavailable => error
     render json: { error: "invalid_progress", message: error.message }, status: :unprocessable_entity

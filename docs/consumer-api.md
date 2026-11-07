@@ -208,13 +208,66 @@ within that renderer. Read-along and alignment remain separate future work.
 
 For audio, send `position_seconds` instead of `locator`. Version 0 means no saved
 position. A successful write returns `{progress:{asset_id,locator,position_seconds,
-version,updated_at,client_mutation_id}}`. Retry the exact same mutation after a
-lost response; a matching current mutation is idempotent. Reusing its UUID with
-different data or writing an old expected_version returns 409 with
-`error: progress_conflict` and the current position. The client must ask which
-place to keep. Invalid, out-of-bounds, or no-longer-available assets return 422.
-Never apply an old locator to a replaced file. Native apps keep unsent state
-locally; the web preview needs a connection and reports failed syncs explicitly.
+version,observed_at,updated_at,client_mutation_id}}`. Invalid, out-of-bounds, or
+no-longer-available assets return 422. Never apply an old locator to a replaced file.
+
+### Activity time and conflicts
+
+Two optional fields make offline and multi-device reconciliation follow when the
+reading or listening actually happened, not when it reached the server:
+
+- `observed_at` is when the device reached this place: ISO-8601 with an explicit
+  time zone, such as `2026-11-07T09:15:30.123Z`. The server stores it as UTC
+  milliseconds and returns it, or `null` when the time is unknown. `updated_at`
+  stays the server's acceptance time. Times more than five minutes ahead of the
+  server, local times without a zone, impossible dates, and non-strings return
+  422. Rows saved before this field, and writes from clients that omit it, have
+  an unknown activity time; the server never fills it from the upload time.
+- `resolve_conflict` is `true` only when the user explicitly chose to keep this
+  device's place over the one shown. It defaults to `false`; strings, numbers and
+  other values return 422. It still requires the exact current
+  `expected_version`, a current asset and a UUID. Automatic rebasing never sets it.
+
+The server applies a write when, in order:
+
+1. The stored mutation has the same UUID and identical asset, place and
+   `observed_at`: the retry is idempotent and returns the stored progress
+   unchanged. The same UUID with any different value is a 409.
+2. `expected_version` matches the stored version (0 when nothing is stored);
+   otherwise 409.
+3. Unless `resolve_conflict` is true, the write is not older than the stored
+   activity. When both times are known, an earlier `observed_at` is a 409 even
+   with a matching version, and an equal time is accepted only for the same
+   place. When either time is unknown, the version check alone decides, as before.
+   A later time wins wherever it is in the book, so seeking backward is a valid
+   new observation.
+
+A 409 has `error: progress_conflict` and the canonical `progress` (or `null`).
+Clients reconcile it like this:
+
+- Retry an uncertain request (lost response, timeout, 5xx) with exactly the same
+  body: position, `observed_at`, UUID and `resolve_conflict`.
+- After a definite 409, compare the canonical `observed_at` with the newest local
+  observation, including places queued behind the rejected write. If local is
+  later, send it again with the returned version, a **new** UUID and its original
+  `observed_at`. If the server copy is later, adopt it and drop the older local
+  writes. Do not move an actively playing or reading session for that; apply it
+  at the next safe resume point.
+- Ask the user when the times are equal with different places, either time is
+  unknown, or the server copy names an asset this client can't map. Keeping this
+  device's place is a new choice: record a fresh `observed_at` and
+  `resolve_conflict: true`, persist that before sending, and use the returned
+  version and a new UUID. Choosing the other device's place discards the local
+  writes.
+- Opening a book, restoring a saved place, an automatic resume rewind, metadata
+  refreshes and sync acknowledgements are not new activity and must not create a
+  checkpoint or a new `observed_at`.
+- A 422 keeps the local saved place; it is never silently discarded.
+
+Continue orders saved places by `observed_at` when known and otherwise by the
+server time, so a late upload of older offline activity does not jump ahead of
+titles read since. A server without these fields ignores them and leaves
+`observed_at` absent; clients then keep the explicit-choice flow for every 409.
 
 ## Web reader build and validation
 

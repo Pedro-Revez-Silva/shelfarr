@@ -9,8 +9,7 @@ class API::Consumer::V1::ProgressController < API::Consumer::V1::BaseController
   end
 
   def update
-    values = params.permit(:asset_id, :expected_version, :client_mutation_id, :position_seconds, locator: {}).to_h
-    result = Consumer::ProgressWriter.new(user: Current.user, book: consumer_book).call(values)
+    result = Consumer::ProgressWriter.new(user: Current.user, book: consumer_book).call(Consumer::ProgressWriter.attributes(params))
     render json: { progress: result.representation }
   rescue Consumer::ProgressWriter::Invalid, Consumer::LibraryAssets::Unavailable => error
     render json: { error: "invalid_progress", message: error.message }, status: :unprocessable_entity

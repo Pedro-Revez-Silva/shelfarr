@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_141000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_150000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -126,6 +126,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_141000) do
     t.string "client_mutation_id", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.datetime "observed_at"
     t.index ["book_id"], name: "index_consumer_progresses_on_book_id"
     t.index ["user_id", "book_id"], name: "index_consumer_progresses_on_user_id_and_book_id", unique: true
     t.index ["user_id"], name: "index_consumer_progresses_on_user_id"
