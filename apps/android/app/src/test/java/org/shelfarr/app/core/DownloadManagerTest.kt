@@ -130,21 +130,30 @@ class DownloadManagerTest {
         )
     }
 
-    private fun slow(bytes: ByteArray, etag: String, started: CountDownLatch? = null): (RecordedRequest) -> MockResponse = { request ->
+    private fun slow(bytes: ByteArray, etag: String, started: CountDownLatch? = null, headersDelayMillis: Long = 0): (RecordedRequest) -> MockResponse = { request ->
         started?.countDown()
         val range = request.headers["Range"]?.removePrefix("bytes=")?.substringBefore('-')?.toIntOrNull()
         if (range != null && request.headers["If-Range"] == etag) {
             ranged(request, bytes, etag)
         } else {
             MockResponse.Builder().code(200).addHeader("ETag", etag).body(Buffer().write(bytes))
+                .headersDelay(headersDelayMillis, TimeUnit.MILLISECONDS)
                 .throttleBody(500, 300, TimeUnit.MILLISECONDS).build()
         }
     }
 
-    /** Waits until some of the body has been written. Sizes in memory only update at checkpoints. */
+    /** Waits for actual partial bytes, even when a busy runner delays the HTTP response. */
     private suspend fun DownloadManager.awaitSomeBytes(id: String) {
-        withTimeout(15_000) { records.first { it[id]?.state == DownloadState.DOWNLOADING } }
-        delay(900)
+        withTimeout(15_000) {
+            records.first { it[id]?.state == DownloadState.DOWNLOADING }
+            // The fixtures are smaller than a progress checkpoint, so inspect the
+            // partial file instead of the record's bytesDone or an elapsed delay.
+            val names = record(id)!!.files.filterNot { it.complete }.map { it.name + ".part" }.toSet()
+            while (folder.root.walkTopDown().none { it.name in names && it.length() > 0 }) {
+                delay(10)
+            }
+            assertEquals(DownloadState.DOWNLOADING, record(id)!!.state)
+        }
     }
 
     private fun DownloadManager.awaitState(id: String, vararg states: DownloadState): DownloadRecord = runBlocking {
@@ -497,7 +506,7 @@ class DownloadManagerTest {
     @Test
     fun `an earlier process's downloads are interrupted when nothing will continue them`() = runBlocking {
         val root = File(folder.root, "acct/downloads")
-        routes["/files/epub-1"] = slow(epubBytes.toByteArray(), "\"e1\"")
+        routes["/files/epub-1"] = slow(epubBytes.toByteArray(), "\"e1\"", headersDelayMillis = 1_500)
         val first = manager(root)
         first.start()
         first.enqueue(book)

@@ -199,14 +199,16 @@ apps/scripts/ios-runtime-smoke.sh -only-testing:ShelfarrUITests/RuntimeSmokeTest
 It needs macOS, Xcode 16.4, XcodeGen and `python3`. The script works like this:
 
 1. Regenerates the project (`ShelfarrUITests` target, `ShelfarrRuntimeSmoke` scheme).
-2. Picks the newest available iPhone simulator. Set `IOS_SIMULATOR_UDID` to override.
+2. Picks the newest available iPhone simulator at or below the selected Xcode's
+   simulator SDK version. Set `IOS_SIMULATOR_UDID` to override.
 3. Starts `apps/ios/RuntimeSmoke/smoke_server.py` on `127.0.0.1:8765`, with control on
    `8766`. Set `SHELFARR_SMOKE_PORT` and `SHELFARR_SMOKE_CONTROL_PORT` to change them.
    The fixture server runs `mock_consumer_server.py` unchanged and adds transfer grants,
    an offline switch that also drops kept-alive connections, and counters.
-4. Runs `xcodebuild test` with `CODE_SIGNING_ALLOWED=NO`. Set
-   `SHELFARR_SMOKE_CODE_SIGNING_ALLOWED` to change it. The ports reach the test runner
-   as `TEST_RUNNER_*` variables.
+4. Runs `xcodebuild test` with local ad-hoc signing (`CODE_SIGN_IDENTITY=-`), which
+   needs no developer account. The system download daemon rejects an unsigned
+   simulator app as having no bundle ID. The ports reach the test runner as
+   `TEST_RUNNER_*` variables.
 5. Fails unless at least one test ran and every test passed.
 
 The test gets a real device-flow token from the fixture; there are no real credentials.
@@ -247,20 +249,19 @@ about 15 minutes more than `ios-check.sh`.
 
 ## Verification status and limits
 
-- **Verified on Linux.** The `ShelfarrCore` tests pass on Linux (Swift 6.4.2): 108
+- **Verified on Linux.** The `ShelfarrCore` tests pass on Linux (Swift 6.4.2): 110
   tests, repeated runs stable. They cover tickets persisted before submission,
   adoption after relaunch without duplicates, lost tasks planned again, orphan and
   old-token cancellation, out-of-order ranges and staged ranges across a relaunch,
   short or misplaced ranges, redirect discard, force-quit, storage failures, grant
   minting, refusal and fallback, the account boundary after sign-out, cancel-before-
   delete, version 1 manifest migration, and every offline-library rule above.
-- **Not verified yet.** The app target, `BackgroundDownloadSession`, the app delegate
-  and the UI test were only syntax-checked (`swiftc -parse`). They haven't been compiled
-  or run, because no Mac was available. Nothing here has run on a simulator or device
-  until macOS CI does.
-- **Grants.** Background transfers depend on the server implementing the grant
-  endpoint. Until it does, real servers get foreground transfers, as before, while
-  the smoke fixture exercises the background path.
+- **Simulator build verified.** macOS CI compiled the app and UI test and reached
+  the download flow. Its first runtime run found an unsigned simulator build rejected
+  by the system download daemon. The corrected smoke configuration still needs a
+  passing run before background transfers and the full offline flow are verified.
+- **Grants.** The consumer API implements the grant endpoint. Older servers without
+  it keep using foreground transfers; the smoke fixture exercises the background path.
 - **Scheduling.** Background transfers are at iOS's discretion. A force-quit stops
   them until the app is opened again. A relaunch after the system ended the app, and
   delays set by the rate limiter, can't be forced in CI. The smoke test covers

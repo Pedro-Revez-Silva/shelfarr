@@ -4,7 +4,8 @@
 # background session, a local audiobook, and reopening everything offline.
 #
 # Needs macOS, Xcode 16.4+, XcodeGen and python3. Picks the newest available iPhone
-# simulator unless IOS_SIMULATOR_UDID is set. Extra arguments go to xcodebuild, e.g.
+# simulator supported by the selected SDK unless IOS_SIMULATOR_UDID is set. Extra
+# arguments go to xcodebuild, e.g.
 #   apps/scripts/ios-runtime-smoke.sh -only-testing:ShelfarrUITests/RuntimeSmokeTests
 #
 # Results: apps/ios/build/runtime-smoke/ (RuntimeSmoke.xcresult, screenshots in
@@ -25,16 +26,18 @@ xcodegen generate
 
 udid="${IOS_SIMULATOR_UDID:-}"
 if [ -z "$udid" ]; then
+  sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
   udid="$(xcrun simctl list devices available --json | python3 -c '
 import json, re, sys
 runtimes = json.load(sys.stdin)["devices"]
+sdk = tuple((list(map(int, sys.argv[1].split("."))) + [0, 0])[:3])
 def version(key):
     found = re.search(r"iOS-(\d+)-(\d+)(?:-(\d+))?$", key)
     return tuple(int(part or 0) for part in found.groups()) if found else None
 best = None
 for key, devices in runtimes.items():
     v = version(key)
-    if v is None:
+    if v is None or v > sdk:
         continue
     for device in devices:
         if device.get("isAvailable") and device["name"].startswith("iPhone"):
@@ -42,10 +45,10 @@ for key, devices in runtimes.items():
             if best is None or rank > best[0]:
                 best = (rank, device["udid"], device["name"], key)
 if best is None:
-    sys.exit("No available iPhone simulator")
+    sys.exit(f"No available iPhone simulator supported by iOS SDK {sys.argv[1]}")
 print(best[1])
 print(f"Using {best[2]} ({best[3]})", file=sys.stderr)
-')"
+' "$sdk_version")"
 fi
 xcrun simctl boot "$udid" 2>/dev/null || true
 xcrun simctl bootstatus "$udid" -b
@@ -60,6 +63,9 @@ done
 curl -fsS "http://127.0.0.1:$control_port/stats" > /dev/null
 
 status=0
+# The download daemon identifies its client through the code signature. Ad-hoc
+# signing works on the simulator without a developer account; an unsigned build
+# launches, but nsurlsessiond rejects it as having no bundle ID.
 TEST_RUNNER_SHELFARR_SMOKE_PORT="$port" \
 TEST_RUNNER_SHELFARR_SMOKE_CONTROL_PORT="$control_port" \
 xcodebuild test \
@@ -69,7 +75,9 @@ xcodebuild test \
   -destination "id=$udid" \
   -derivedDataPath build \
   -resultBundlePath "$out/RuntimeSmoke.xcresult" \
-  CODE_SIGNING_ALLOWED="${SHELFARR_SMOKE_CODE_SIGNING_ALLOWED:-NO}" \
+  CODE_SIGNING_ALLOWED=YES \
+  CODE_SIGN_IDENTITY=- \
+  CODE_SIGN_STYLE=Manual \
   "$@" 2>&1 | tee "$out/xcodebuild.log" || status=$?
 
 # Diagnostics are kept whether or not the tests passed.

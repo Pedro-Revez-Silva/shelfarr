@@ -85,6 +85,8 @@ jobs:
             apps/android/app/build/outputs/apk/debug/app-debug.apk
             apps/android/app/build/screenshots
             apps/android/app/build/reports/lint-results-debug.html
+            apps/android/app/build/reports/tests
+            apps/android/app/build/test-results/testDebugUnitTest
             apps/android/app/build/reports/androidTests
             apps/android/app/build/reports/reader-smoke
             apps/android/app/build/outputs/connected_android_test_additional_output
