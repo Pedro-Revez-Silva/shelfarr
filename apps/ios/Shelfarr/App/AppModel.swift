@@ -37,7 +37,12 @@ final class AppModel: ObservableObject {
     private static let appearanceKey = "appearance"
 
     private init() {
-        let sessions = SessionManager(store: KeychainStore())
+        #if DEBUG
+        let store: SecretStore = UITestFixture.secretStore() ?? KeychainStore()
+        #else
+        let store: SecretStore = KeychainStore()
+        #endif
+        let sessions = SessionManager(store: store)
         let transport = URLSessionTransport(credential: { sessions.credential() })
         let api = ConsumerAPI(
             transport: transport,

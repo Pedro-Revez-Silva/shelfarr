@@ -1,0 +1,305 @@
+import Network
+import XCTest
+
+/// Drives the real app on a simulator against `RuntimeSmoke/smoke_server.py`: library
+/// and search, details, a rendered EPUB, downloads through the background session, a
+/// local audiobook, and reopening everything with the server unreachable.
+///
+/// It needs `SHELFARR_SMOKE_PORT` and `SHELFARR_SMOKE_CONTROL_PORT` in the test runner's
+/// environment (`TEST_RUNNER_` prefixed for xcodebuild); `apps/scripts/ios-runtime-smoke.sh`
+/// sets them. Without them it fails rather than passing vacuously.
+final class RuntimeSmokeTests: XCTestCase {
+    private var port: UInt16 = 0
+    private var controlPort: UInt16 = 0
+    private var token = ""
+    private var userId = ""
+    private let wait: TimeInterval = 30
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        let environment = ProcessInfo.processInfo.environment
+        guard let port = environment["SHELFARR_SMOKE_PORT"].flatMap(UInt16.init),
+              let controlPort = environment["SHELFARR_SMOKE_CONTROL_PORT"].flatMap(UInt16.init)
+        else {
+            XCTFail("SHELFARR_SMOKE_PORT and SHELFARR_SMOKE_CONTROL_PORT must be set; run apps/scripts/ios-runtime-smoke.sh")
+            throw SmokeError.unconfigured
+        }
+        self.port = port
+        self.controlPort = controlPort
+        try setOnline(true)
+        // A real device-flow token from the fixture server; nothing here is a real credential.
+        let grant = try json(request(port, "POST", "/api/consumer/v1/auth/device", body: ["client_name": "Shelfarr iOS smoke"]))
+        let issued = try json(request(port, "POST", "/api/consumer/v1/auth/token", body: ["device_code": grant["device_code"] as? String ?? ""]))
+        token = try XCTUnwrap(issued["access_token"] as? String)
+        let me = try json(request(port, "GET", "/api/consumer/v1/me", bearer: token))
+        userId = try XCTUnwrap(me["id"] as? String)
+    }
+
+    override func tearDownWithError() throws {
+        if controlPort != 0 { try? setOnline(true) }
+    }
+
+    func testLibraryReaderDownloadsAndOfflineReopening() throws {
+        let app = launch(reset: true)
+
+        try step("Home and library") {
+            XCTAssertTrue(app.tabBars.buttons["Library"].waitForExistence(timeout: wait), "the signed-in app shows its tabs")
+            screenshot(app, "01-home")
+            app.tabBars.buttons["Library"].tap()
+            XCTAssertTrue(item(app, "book-1").waitForExistence(timeout: wait), "the library lists the fixture book")
+            XCTAssertTrue(item(app, "audio-1").exists)
+            screenshot(app, "02-library")
+            // Load the second page online, so offline browsing has more than one page saved.
+            XCTAssertTrue(scroll(app, to: item(app, "book-x34")), "the second library page loads")
+            app.swipeDown(velocity: .fast)
+            app.swipeDown(velocity: .fast)
+            search(app, "Audiobook")
+            XCTAssertTrue(item(app, "audio-1").waitForExistence(timeout: wait))
+            XCTAssertTrue(waitForAbsence(item(app, "book-1")), "search narrows the server listing")
+            clearSearch(app)
+        }
+
+        var place = ""
+        try step("Details, download and EPUB rendering") {
+            XCTAssertTrue(item(app, "book-1").waitForExistence(timeout: wait))
+            item(app, "book-1").tap()
+            XCTAssertTrue(app.staticTexts["A Test Book"].waitForExistence(timeout: wait))
+            screenshot(app, "03-details")
+            tapDownload(app)
+            XCTAssertTrue(app.staticTexts["Downloaded"].waitForExistence(timeout: 90), "the EPUB download completes")
+            let stats = try json(request(controlPort, "GET", "/stats"))
+            XCTAssertGreaterThan(stats["grant_requests"] as? Int ?? 0, 0, "the download ran on an asset grant in the background session")
+            XCTAssertEqual(stats["grant_requests_with_bearer"] as? Int, 0, "no background request carried the bearer")
+            screenshot(app, "04-downloaded")
+
+            button(app, startingWith: ["Start reading", "Continue reading", "Open book"]).tap()
+            XCTAssertTrue(bookText(app).waitForExistence(timeout: 60), "Readium rendered the chapter text")
+            screenshot(app, "05-reader")
+            let page = app.webViews.firstMatch
+            page.swipeLeft()
+            page.swipeLeft()
+            sleep(2)
+            place = progress(app)
+            XCTAssertNotEqual(place, "0%", "turning pages moved the reading position")
+            screenshot(app, "06-reader-turned")
+            closeReader(app)
+        }
+
+        try step("Audiobook downloads while the app is in the background") {
+            app.navigationBars.buttons.firstMatch.tap()
+            XCTAssertTrue(item(app, "audio-1").waitForExistence(timeout: wait))
+            item(app, "audio-1").tap()
+            XCTAssertTrue(app.staticTexts["A Test Audiobook"].waitForExistence(timeout: wait))
+            tapDownload(app)
+            XCUIDevice.shared.press(.home)
+            sleep(5)
+            app.activate()
+            XCTAssertTrue(app.staticTexts["Downloaded"].waitForExistence(timeout: 120), "every track is on the device")
+            screenshot(app, "07-audiobook-downloaded")
+            button(app, startingWith: ["Start listening", "Continue listening", "Play audiobook"]).tap()
+            XCTAssertTrue(app.staticTexts["Playing the download on this device"].waitForExistence(timeout: wait), "audio uses the local files")
+            let position = app.sliders["Position"]
+            XCTAssertTrue(position.waitForExistence(timeout: wait))
+            XCTAssertTrue(waitFor { (position.value as? String)?.hasSuffix("of 0:45") == true }, "the local track's duration loaded: \(position.value ?? "")")
+            screenshot(app, "08-player")
+            app.buttons["Close player"].tap()
+        }
+
+        try step("Offline relaunch") {
+            try setOnline(false)
+            app.terminate()
+            let offline = launch(reset: false)
+            XCTAssertTrue(offline.staticTexts["Offline. Showing downloads on this device."].waitForExistence(timeout: wait))
+            screenshot(offline, "09-home-offline")
+
+            offline.tabBars.buttons["Library"].tap()
+            XCTAssertTrue(offline.otherElements["library-offline-banner"].waitForExistence(timeout: wait), "the library says it shows saved titles")
+            XCTAssertTrue(item(offline, "book-1").waitForExistence(timeout: wait))
+            XCTAssertTrue(item(offline, "audio-1").exists)
+            screenshot(offline, "10-library-offline")
+            search(offline, "Mock Book 034")
+            XCTAssertTrue(item(offline, "book-x34").waitForExistence(timeout: wait), "offline search finds a title saved from the second page")
+            XCTAssertTrue(waitForAbsence(item(offline, "book-1")))
+            clearSearch(offline)
+
+            XCTAssertTrue(item(offline, "book-1").waitForExistence(timeout: wait))
+            item(offline, "book-1").tap()
+            XCTAssertTrue(offline.staticTexts["Offline. Opening the download on this device."].waitForExistence(timeout: wait))
+            XCTAssertTrue(offline.staticTexts["Connect to your server to change the status."].exists, "status changes still need the server")
+            screenshot(offline, "11-details-offline")
+            button(offline, startingWith: ["Continue reading", "Start reading", "Open book"]).tap()
+            XCTAssertTrue(bookText(offline).waitForExistence(timeout: 60), "the downloaded EPUB renders offline")
+            sleep(2)
+            let restored = progress(offline)
+            XCTAssertTrue(close(restored, place), "the reading place was restored: \(restored) vs \(place)")
+            screenshot(offline, "12-reader-offline")
+        }
+    }
+
+    // MARK: App
+
+    private func launch(reset: Bool) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-shelfarr-ui-test"] + (reset ? ["-shelfarr-ui-test-reset"] : [])
+        app.launchEnvironment = [
+            // localhost: the Debug build's local-networking exception covers it.
+            "SHELFARR_UITEST_SERVER": "http://localhost:\(port)",
+            "SHELFARR_UITEST_TOKEN": token,
+            "SHELFARR_UITEST_USER_ID": userId,
+            "SHELFARR_UITEST_USER_NAME": "Mock Reader",
+        ]
+        app.launch()
+        return app
+    }
+
+    private func item(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        app.descendants(matching: .any)["library-item-\(id)"].firstMatch
+    }
+
+    private func button(_ app: XCUIApplication, startingWith labels: [String]) -> XCUIElement {
+        let predicate = NSCompoundPredicate(orPredicateWithSubpredicates: labels.map { NSPredicate(format: "label BEGINSWITH %@", $0) })
+        let found = app.buttons.matching(predicate).firstMatch
+        XCTAssertTrue(found.waitForExistence(timeout: wait), "a button labelled \(labels)")
+        return found
+    }
+
+    private func tapDownload(_ app: XCUIApplication) {
+        let download = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Download")).firstMatch
+        if !download.waitForExistence(timeout: wait) { app.swipeUp() }
+        XCTAssertTrue(download.waitForExistence(timeout: wait), "the Download button")
+        if !download.isHittable { app.swipeUp() }
+        download.tap()
+    }
+
+    private func bookText(_ app: XCUIApplication) -> XCUIElement {
+        app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "rain had stopped")).firstMatch
+    }
+
+    private func progress(_ app: XCUIApplication) -> String {
+        let label = app.staticTexts["reader-progress"]
+        XCTAssertTrue(label.waitForExistence(timeout: wait), "the reader shows its position")
+        return label.label
+    }
+
+    private func close(_ a: String, _ b: String) -> Bool {
+        guard let x = Int(a.dropLast()), let y = Int(b.dropLast()) else { return false }
+        return abs(x - y) <= 1
+    }
+
+    private func closeReader(_ app: XCUIApplication) {
+        let close = app.buttons["Close book"]
+        for _ in 0 ..< 3 where !close.exists {
+            app.webViews.firstMatch.tap()
+            _ = close.waitForExistence(timeout: 3)
+        }
+        XCTAssertTrue(close.exists, "the reader's chrome opens")
+        close.tap()
+    }
+
+    private func search(_ app: XCUIApplication, _ text: String) {
+        let field = app.searchFields.firstMatch
+        if !field.waitForExistence(timeout: 5) { app.swipeDown() }
+        XCTAssertTrue(field.waitForExistence(timeout: wait), "the library search field")
+        field.tap()
+        field.typeText(text)
+    }
+
+    private func clearSearch(_ app: XCUIApplication) {
+        let cancel = app.buttons["Cancel"]
+        if cancel.exists { cancel.tap() }
+    }
+
+    private func scroll(_ app: XCUIApplication, to element: XCUIElement) -> Bool {
+        for _ in 0 ..< 12 {
+            if element.exists { return true }
+            app.swipeUp(velocity: .fast)
+        }
+        return element.waitForExistence(timeout: 5)
+    }
+
+    private func waitForAbsence(_ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+        waitFor(timeout: timeout) { !element.exists }
+    }
+
+    private func waitFor(timeout: TimeInterval = 30, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        return condition()
+    }
+
+    private func screenshot(_ app: XCUIApplication, _ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func step(_ name: String, _ body: () throws -> Void) throws {
+        try XCTContext.runActivity(named: name) { _ in try body() }
+    }
+
+    // MARK: Fixture server
+
+    private enum SmokeError: Error { case unconfigured, timeout, http(Int), malformed }
+
+    private func setOnline(_ online: Bool) throws {
+        _ = try request(controlPort, "POST", online ? "/online" : "/offline")
+    }
+
+    /// Plain HTTP/1.1 over a TCP connection. The runner's generated Info.plist has no ATS
+    /// exception, and ATS doesn't govern Network framework connections.
+    private func request(_ port: UInt16, _ method: String, _ path: String, body: [String: String]? = nil, bearer: String? = nil) throws -> Data {
+        let payload = try body.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data()
+        var head = "\(method) \(path) HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nConnection: close\r\nContent-Length: \(payload.count)\r\n"
+        if body != nil { head += "Content-Type: application/json\r\n" }
+        if let bearer { head += "Authorization: Bearer \(bearer)\r\n" }
+        let message = Data((head + "\r\n").utf8) + payload
+
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        let queue = DispatchQueue(label: "org.shelfarr.smoke.http")
+        let done = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var received = Data()
+        var failure: Error?
+        func finish(_ error: Error?) {
+            lock.withLock { if failure == nil { failure = error } }
+            done.signal()
+        }
+        func receive() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, complete, error in
+                if let data { lock.withLock { received.append(data) } }
+                if let error { finish(error) } else if complete { finish(nil) } else { receive() }
+            }
+        }
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.send(content: message, completion: .contentProcessed { error in
+                    if let error { finish(error) } else { receive() }
+                })
+            case let .failed(error), let .waiting(error):
+                finish(error)
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+        defer { connection.cancel() }
+        guard done.wait(timeout: .now() + 15) == .success else { throw SmokeError.timeout }
+        if let failure = lock.withLock({ failure }) { throw failure }
+        let response = lock.withLock { received }
+        guard let split = response.range(of: Data("\r\n\r\n".utf8)),
+              let status = String(data: response[..<split.lowerBound], encoding: .utf8)?
+              .split(separator: " ").dropFirst().first.flatMap({ Int($0) })
+        else { throw SmokeError.malformed }
+        guard (200 ..< 300).contains(status) else { throw SmokeError.http(status) }
+        return response[split.upperBound...]
+    }
+
+    private func json(_ data: Data) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(data)) as? [String: Any])
+    }
+}

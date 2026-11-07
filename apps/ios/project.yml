@@ -49,7 +49,30 @@ targets:
         product: ReadiumStreamer
       - package: Readium
         product: ReadiumNavigator
+  # Simulator runtime smoke test; see apps/scripts/ios-runtime-smoke.sh.
+  ShelfarrUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ShelfarrUITests
+    dependencies:
+      - target: Shelfarr
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.shelfarr.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Shelfarr
 schemes:
+  ShelfarrRuntimeSmoke:
+    build:
+      targets:
+        Shelfarr: all
+        ShelfarrUITests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - name: ShelfarrUITests
   Shelfarr:
     build:
       targets:

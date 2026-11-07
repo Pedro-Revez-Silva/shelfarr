@@ -152,6 +152,7 @@ struct ReaderView: View {
                     .foregroundStyle(theme.muted)
                     .padding(.bottom, 6)
                     .allowsHitTesting(false)
+                    .accessibilityIdentifier("reader-progress")
             }
             if let notice = model.notice {
                 Text(notice)

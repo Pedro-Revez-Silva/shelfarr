@@ -5,3 +5,5 @@
 .build/
 .swiftpm/
 xcuserdata/
+/test-results/
+__pycache__/
