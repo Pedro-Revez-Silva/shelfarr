@@ -67,7 +67,7 @@ class API::Consumer::V1::ReadingStatusControllerTest < ActionDispatch::Integrati
   end
 
   test "title pages handle duplicate titles unicode and cursor binding to sort status and account" do
-    %w[Alpha alpha Beta Éclair éclair].each { |title| Book.create!(title: title, book_type: :ebook, file_path: @epub_path) }
+    %w[Alpha alpha ALPHA Beta Éclair éclair].each { |title| Book.create!(title: title, book_type: :ebook, file_path: @epub_path) }
     seen = []
     cursor = nil
     first_cursor = nil
@@ -80,7 +80,7 @@ class API::Consumer::V1::ReadingStatusControllerTest < ActionDispatch::Integrati
       first_cursor ||= cursor
       break unless cursor
     end
-    assert_equal 6, seen.size
+    assert_equal 7, seen.size
     assert_equal seen.uniq, seen
     [ { sort: "recent" }, { sort: "title", status: "unread" } ].each do |options|
       get "/api/consumer/v1/library", params: options.merge(cursor: first_cursor, type: "ebook"), headers: @headers

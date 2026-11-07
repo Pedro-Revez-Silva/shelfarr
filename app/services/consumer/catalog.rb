@@ -28,7 +28,11 @@ class Consumer::Catalog
     end
     if sort == "title"
       relation = relation.select("#{TITLE_SORT} AS consumer_title_sort")
-      relation = relation.where("#{TITLE_SORT} > ? OR (#{TITLE_SORT} = ? AND books.id > ?)", before[0], before[0], before[1]) if before
+      if before
+        # The leading range lets SQLite seek the expression index; the ID keeps equal titles stable.
+        relation = relation.where("#{TITLE_SORT} >= ?", before[0])
+          .where("#{TITLE_SORT} > ? OR (#{TITLE_SORT} = ? AND books.id > ?)", before[0], before[0], before[1])
+      end
       relation = relation.order(Arel.sql("#{TITLE_SORT} ASC"), id: :asc)
     else
       relation = relation.where("books.id < ?", before) if before

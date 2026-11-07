@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_140000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_141000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -83,6 +83,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_140000) do
     t.string "title", null: false
     t.datetime "updated_at", null: false
     t.integer "year"
+    t.index "LOWER(COALESCE(title, '')), id", name: "index_books_on_consumer_title", where: "file_path IS NOT NULL AND TRIM(file_path) <> ''"
     t.index ["acquisition_reservation_token"], name: "index_books_on_acquisition_reservation_token", unique: true, where: "acquisition_reservation_token IS NOT NULL"
     t.index ["book_type"], name: "index_books_on_book_type"
     t.index ["comic_vine_id"], name: "index_books_on_comic_vine_id"

@@ -73,7 +73,9 @@ scope receives 403 with `error: insufficient_scope`.
 Library pages default to 30 items and cap at 50. Signed keyset cursors are bound
 to the account, query, type, reading status and sort. Changing any of them starts a new page chain.
 `sort=recent` (default) orders by acquisition record ID descending; `sort=title`
-orders by SQLite lowercase title then ID, with stable keyset pagination. Omit
+orders by SQLite lowercase title then ID, with stable keyset pagination. An
+acquired-book expression index and cursor range avoid sorting or walking the
+preceding catalog on each title page. Omit
 `status` for all titles or choose `unread`, `in_progress`, or `finished`.
 Only acquired ebook/audiobook Book records are projected. Remote-only owned
 inventory and pending requests are not fabricated as playable media. A missing
