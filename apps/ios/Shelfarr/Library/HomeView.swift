@@ -16,12 +16,16 @@ final class HomeModel: ObservableObject {
     func refresh(_ app: AppModel) async {
         guard let session = app.session else { return }
         let server = session.server, api = app.api(for: session)
+        let started = Date()
+        let cache = app.libraryCache(for: session)
         do {
             async let recent = Self.recent(api, server)
             async let page = api.library(server: server)
             let items = try await page.items
+            await cache.record(items, seenAt: started, recentOffset: 0)
             // Library-wide recent activity; older servers without /continue fall back to the first page.
             let fetched = try await recent
+            if let fetched { await cache.record(fetched, seenAt: started) }
             let continuing = fetched ?? items
                 .filter { $0.progress?.isUsable == true }
                 .sorted { ($0.progress?.updatedAt ?? "") > ($1.progress?.updatedAt ?? "") }

@@ -32,6 +32,7 @@ final class AppModel: ObservableObject {
     private var registrySession: Session?
     private var downloadManager: DownloadManager?
     private var downloadSession: Session?
+    private var libraryCaches: [String: LibraryCache] = [:]
 
     private static let appearanceKey = "appearance"
 
@@ -109,7 +110,27 @@ final class AppModel: ObservableObject {
     }
 
     func publications(for session: Session) -> AccountPublications {
-        AccountPublications(directory: accountDirectory(session).appendingPathComponent("publications", isDirectory: true))
+        AccountPublications(
+            directory: accountDirectory(session).appendingPathComponent("publications", isDirectory: true),
+            cache: libraryCache(for: session)
+        )
+    }
+
+    /// Titles this account has seen, for browsing offline. One per account, never shared.
+    func libraryCache(for session: Session) -> LibraryCache {
+        if let cache = libraryCaches[session.accountKey] { return cache }
+        let directory = accountDirectory(session)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let cache = LibraryCache(file: directory.appendingPathComponent("library-cache.json"))
+        libraryCaches[session.accountKey] = cache
+        return cache
+    }
+
+    /// Keeps a status change or other fresh copy for offline browsing.
+    func remember(_ publication: ShelfarrCore.Publication, for session: Session) {
+        let cache = libraryCache(for: session)
+        let seen = Date()
+        Task { await cache.record([publication], seenAt: seen) }
     }
 
     /// Live progress sync for the signed-in account. Accounts never share a store.
@@ -235,6 +256,8 @@ final class AppModel: ObservableObject {
         await downloads.attach(nil)
         sessions.clear()
         await epubCache.clear(accountKey: session.accountKey)
+        // No late write may recreate the account folder.
+        await libraryCaches.removeValue(forKey: session.accountKey)?.close()
         try? FileManager.default.removeItem(at: accountDirectory(session))
         CoverLoader.clearCache()
     }
