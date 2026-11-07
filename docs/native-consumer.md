@@ -81,11 +81,10 @@ In a debug build, enter `http://10.0.2.2:8099/shelfarr` on the Android emulator 
 `--conflict-after N` answers the Nth progress write with a conflict, and `--slow-down`
 exercises polling backoff.
 
-EPUB page rendering is not yet verified on a working Android runtime. The
-WebView renderer crashed on the software-only API 33 and API 35 emulators used
-here. API 33 also crashed outside the app; API 35 only recorded the app crash, so
-an app or Readium cause remains possible. Verify this on an accelerated emulator
-or a device before treating the reader as ready.
+The actual Android reader passes rendering, chapter navigation, HTTP progress and
+reopening tests on an accelerated API 35 emulator. Earlier software-only API 33
+and API 35 runs crashed the WebView renderer. Use an accelerated emulator for
+validation; physical-device compatibility is still unverified.
 
 ## Security model
 

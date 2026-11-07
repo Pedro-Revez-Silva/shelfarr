@@ -1,6 +1,7 @@
 package org.shelfarr.app.reader
 
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
@@ -87,19 +88,19 @@ class ReaderSmokeTest {
         try {
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
                 awaitText(scenario, "First chapter is rendered")
-                screenshot(app, "chapter-one.png")
+                screenshot("chapter-one.png")
                 scenario.onActivity { activity ->
                     val navigator = activity.supportFragmentManager.findFragmentById(R.id.reader_navigator) as EpubNavigatorFragment
                     val state = ViewModelProvider(activity)[ReaderViewModel::class.java].state.value as ReaderState.Ready
                     navigator.lifecycleScope.launch { navigator.go(state.publication.readingOrder[1], animated = false) }
                 }
                 awaitText(scenario, "Second chapter is rendered")
-                screenshot(app, "chapter-two.png")
+                screenshot("chapter-two.png")
                 await("chapter two progress reached the server") { saved.get()?.locator?.get("href").toString().contains("c2.xhtml") }
             }
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
                 awaitText(scenario, "Second chapter is rendered")
-                screenshot(app, "chapter-two-resumed.png")
+                screenshot("chapter-two-resumed.png")
             }
         } finally {
             runBlocking {
@@ -127,7 +128,7 @@ class ReaderSmokeTest {
     }
 
     private fun collectWebViews(view: View, found: MutableList<WebView>) {
-        if (view is WebView && view.isShown && view.width > 0 && view.height > 0) found += view
+        if (view is WebView && view.isShown && view.alpha > 0 && view.getGlobalVisibleRect(Rect())) found += view
         if (view is ViewGroup) for (index in 0 until view.childCount) collectWebViews(view.getChildAt(index), found)
     }
 
@@ -140,10 +141,17 @@ class ReaderSmokeTest {
         assertTrue("Timed out waiting for $description", condition())
     }
 
-    private fun screenshot(app: ShelfarrApplication, name: String) {
-        val folder = File(app.getExternalFilesDir(null), "reader-smoke").apply { mkdirs() }
-        InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()?.let { bitmap ->
-            File(folder, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    private fun screenshot(name: String) {
+        // Gradle pulls this before uninstalling the app and clearing its files.
+        val output = requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir"))
+        val folder = File(output)
+        check(folder.isDirectory || folder.mkdirs()) { "Cannot create test output directory" }
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.waitForIdleSync()
+        val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot()) { "Screenshot capture failed" }
+        try {
+            File(folder, name).outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        } finally {
             bitmap.recycle()
         }
     }
