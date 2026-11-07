@@ -64,6 +64,38 @@ final class APITests: XCTestCase {
         return ConsumerAPI(transport: transport, credential: { Credential(server: server, accessToken: "token") }) { _ in }
     }
 
+    func testLibrarySendsStatusAndSortAndContinueAsksForRecentActivity() async throws {
+        transport.enqueue(200, #"{"items":[],"next_cursor":null}"#)
+        _ = try await api.library(server: server, query: LibraryQuery(filter: .ebook, text: "dune", status: .inProgress, sort: .title), cursor: "c2")
+        let query = try XCTUnwrap(transport.requests.last?.url?.query)
+        for part in ["type=ebook", "q=dune", "status=in_progress", "sort=title", "cursor=c2"] {
+            XCTAssertTrue(query.contains(part), part)
+        }
+        transport.enqueue(200, #"{"items":[],"next_cursor":null}"#)
+        _ = try await api.library(server: server, query: LibraryQuery())
+        let defaults = try XCTUnwrap(transport.requests.last?.url?.query)
+        XCTAssertFalse(defaults.contains("status="))
+        XCTAssertFalse(defaults.contains("sort="))
+
+        transport.enqueue(200, #"{"items":[{"id":"deep","title":"Page nine","book_type":"audiobook","reading_status":"in_progress"}]}"#)
+        let recent = try await api.continueReading(server: server, limit: 10)
+        XCTAssertEqual(recent.map(\.id), ["deep"])
+        let url = try XCTUnwrap(transport.requests.last?.url)
+        XCTAssertEqual(url.path, "/s/api/consumer/v1/continue")
+        XCTAssertEqual(url.query, "limit=10")
+    }
+
+    func testSettingAStatusPutsItAndReturnsThePublication() async throws {
+        transport.enqueue(200, #"{"id":"p/1","title":"T","book_type":"ebook","reading_status":"finished"}"#)
+        let updated = try await api.setReadingStatus(server: server, publicationId: "p/1", status: .finished)
+        XCTAssertEqual(updated.status, .finished)
+        let request = try XCTUnwrap(transport.requests.last)
+        XCTAssertEqual(request.httpMethod, "PUT")
+        XCTAssertTrue(request.url!.absoluteString.hasSuffix("/library/p%2F1/reading_status"))
+        XCTAssertEqual(request.httpBody, Data(#"{"status":"finished"}"#.utf8))
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token")
+    }
+
     func testDecodesThePublicationContractAndIgnoresUnknownFields() async throws {
         transport.enqueue(200, """
         {"items":[{"id":"p1","title":"T","author":"A","description":null,"book_type":"audiobook","cover_url":null,"future":{"a":1},

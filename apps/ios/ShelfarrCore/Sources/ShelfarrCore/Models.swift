@@ -128,6 +128,13 @@ public enum BookType: String, Codable, Sendable {
     case audiobook
 }
 
+/// Where the reader is with a publication. Set explicitly, or derived when an older server omits it.
+public enum ReadingStatus: String, Codable, CaseIterable, Sendable {
+    case unread
+    case inProgress = "in_progress"
+    case finished
+}
+
 public struct Asset: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let filename: String
@@ -227,8 +234,10 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
     public let coverUrl: String?
     public let assets: [Asset]
     public let progress: ReadingProgress?
+    /// Absent from older servers; read `status` instead. Unknown values decode as absent.
+    public let readingStatus: ReadingStatus?
 
-    public init(id: String, title: String, author: String? = nil, description: String? = nil, bookType: BookType, coverUrl: String? = nil, assets: [Asset] = [], progress: ReadingProgress? = nil) {
+    public init(id: String, title: String, author: String? = nil, description: String? = nil, bookType: BookType, coverUrl: String? = nil, assets: [Asset] = [], progress: ReadingProgress? = nil, readingStatus: ReadingStatus? = nil) {
         self.id = id
         self.title = title
         self.author = author
@@ -237,12 +246,14 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
         self.coverUrl = coverUrl
         self.assets = assets
         self.progress = progress
+        self.readingStatus = readingStatus
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, author, description, assets, progress
         case bookType = "book_type"
         case coverUrl = "cover_url"
+        case readingStatus = "reading_status"
     }
 
     public init(from decoder: Decoder) throws {
@@ -255,6 +266,16 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
         coverUrl = try container.decodeIfPresent(String.self, forKey: .coverUrl)
         assets = try container.decodeIfPresent([Asset].self, forKey: .assets) ?? []
         progress = try container.decodeIfPresent(ReadingProgress.self, forKey: .progress)
+        readingStatus = (try? container.decodeIfPresent(ReadingStatus.self, forKey: .readingStatus)) ?? nil
+    }
+
+    /// The explicit status, or one derived from the saved place when the server sends none.
+    public var status: ReadingStatus {
+        readingStatus ?? (progress?.isUsable == true ? .inProgress : .unread)
+    }
+
+    public func with(readingStatus: ReadingStatus?) -> Publication {
+        Publication(id: id, title: title, author: author, description: description, bookType: bookType, coverUrl: coverUrl, assets: assets, progress: progress, readingStatus: readingStatus)
     }
 
     public var orderedAssets: [Asset] { assets.sorted { $0.position < $1.position } }
@@ -267,6 +288,10 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
     }
 
     public var isReadableHere: Bool { !playableAssets.isEmpty }
+}
+
+public struct ContinueList: Codable, Equatable, Sendable {
+    public let items: [Publication]
 }
 
 public struct LibraryPage: Codable, Equatable, Sendable {
