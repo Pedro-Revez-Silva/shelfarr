@@ -87,6 +87,7 @@ jobs:
             apps/android/app/build/reports/lint-results-debug.html
             apps/android/app/build/reports/androidTests
             apps/android/app/build/reports/reader-smoke
+            apps/android/app/build/outputs/connected_android_test_additional_output
 
   ios:
     runs-on: macos-15
