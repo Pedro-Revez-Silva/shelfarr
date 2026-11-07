@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Shelfarr" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/shelfarr_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">@bool/shelfarr_light_bars</item>
+        <item name="android:colorAccent">@color/shelfarr_accent</item>
+    </style>
+    <style name="Theme.Shelfarr.Reader" parent="Theme.Shelfarr" />
+</resources>

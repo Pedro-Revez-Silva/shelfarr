@@ -1,0 +1,217 @@
+# Native consumer apps
+
+Shelfarr's reading and listening clients: a native Android app and a companion
+native iOS app, both talking to the consumer API. Neither wraps the web UI.
+
+| Path | Contents |
+| --- | --- |
+| `apps/android` | Kotlin and Jetpack Compose, Readium, Media3 |
+| `apps/ios` | SwiftUI app (`Shelfarr`), Foundation-only `ShelfarrCore` package, XcodeGen project |
+| `apps/design` | Brand tokens, design direction and shared fonts |
+| `apps/scripts` | Build checks, token check and a development mock API |
+
+The flow on both platforms is: server address, device authorization in the system
+browser, library and continue, publication details, EPUB reader or audio player,
+resume from the saved place. Books and audiobooks can be downloaded for offline use,
+and each has a reading status.
+
+## Build
+
+### Android
+
+Needs JDK 17 or later (CI uses Temurin 21) and an Android SDK with platform 37.
+Gradle arrives through the wrapper, whose distribution is pinned by SHA-256.
+
+```sh
+export ANDROID_HOME=/path/to/android-sdk
+apps/scripts/android-check.sh
+```
+
+That runs the unit and screen-rendering tests, Android lint and the debug build. The
+APK lands at `apps/android/app/build/outputs/apk/debug/app-debug.apk` and rendered
+screens at `apps/android/app/build/screenshots`. Those renders use test fixtures only;
+the app contains no demo content.
+
+CI also runs `:app:connectedDebugAndroidTest` on an accelerated API 35 emulator.
+This opens a fixture EPUB in the real Activity/WebView, navigates to chapter two,
+saves through HTTP and reopens at that chapter. A second test downloads a fixture
+book and a two-track audiobook, stops the fixture server, then reopens the book from
+its download in the real reader (`offline-download.png`) and checks that the player
+selected and prepared both downloaded tracks. CI's emulator runs without audio
+output, so audible playback is not asserted. Screenshots and logcat are uploaded
+alongside the APK; a renderer crash fails the check. To run it locally,
+start an accelerated emulator or connect a test device, then run
+`apps/scripts/android-reader-smoke.sh`. The smoke test uses an in-process fixture API and a synthetic
+account, so a connected personal library is not needed.
+
+Versions live in `apps/android/gradle/libs.versions.toml`, pinned to the Kotlin, AGP
+and compile SDK combination that Readium 3.4.0 builds with. Bump them together.
+
+No release signing is configured.
+
+### iOS
+
+Needs macOS, Xcode 16.4 or later and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+
+```sh
+apps/scripts/ios-check.sh                  # core tests and a simulator build
+cd apps/ios && xcodegen generate && open Shelfarr.xcodeproj
+```
+
+The Xcode project is generated from `apps/ios/project.yml` and is not committed. Set a
+development team in Xcode to run on a device.
+
+`ShelfarrCore` has no Apple-only dependencies, so it also tests on Linux:
+
+```sh
+cd apps/ios/ShelfarrCore && swift test --build-system native
+```
+
+### Design tokens
+
+`python3 apps/scripts/check-design-tokens.py` fails if a platform drifts from
+`apps/design/tokens.json` or a text pairing falls below WCAG AA.
+
+## Try it without a server
+
+`apps/scripts/mock_consumer_server.py` is a development stand-in for the API with
+in-memory state and no real security. Keep it on your own machine.
+
+```sh
+python3 apps/scripts/mock_consumer_server.py --base /shelfarr --auto-approve
+```
+
+In a debug build, enter `http://10.0.2.2:8099/shelfarr` on the Android emulator or
+`http://localhost:8099/shelfarr` on the iOS simulator, and turn on **Allow local HTTP**.
+`--conflict-after N` answers the Nth progress write with a conflict, `--slow-down`
+exercises polling backoff, and `--extra-books N` adds N small mock books so the
+library pages and Continue can find a book beyond the first page. The mock also
+serves `reading_status`, `/continue`, status changes and the `status` and `sort`
+library parameters.
+
+The actual Android reader passes rendering, chapter navigation, HTTP progress and
+reopening tests on an accelerated API 35 emulator. Earlier software-only API 33
+and API 35 runs crashed the WebView renderer. Use an accelerated emulator for
+validation; physical-device compatibility is still unverified.
+
+## Security model
+
+- **Credential boundary.** The configured address is an origin plus an optional
+  subpath. A bearer token is attached only to URLs inside it, compared on scheme, host,
+  port and path after dot segments are resolved. `/shelfarr-evil` is not inside `/shelfarr`.
+- **Redirects.** Automatic redirect handling is off. A redirect is followed only if both
+  ends are inside the boundary. Anything else fails, and nothing is sent to the new host.
+- **One HTTP path.** API calls, EPUB downloads, covers and audio all use the same
+  credential logic. Android uses the same scoped interceptor for shared and account-bound clients. iOS streams audio through an
+  `AVAssetResourceLoader` that fetches byte ranges with the API client, because
+  AVPlayer has no supported way to set a bearer header. Tokens never appear in URLs.
+- **Storage.** Android encrypts the session with a non-exportable AES-256-GCM Android
+  Keystore key, in `noBackupFilesDir`, with backups disabled. iOS uses the Keychain with
+  `AfterFirstUnlockThisDeviceOnly`. Unfinished device grants are stored the same way, so
+  the app can be killed while the browser is open. Plain preferences hold display
+  settings only.
+- **Local HTTP.** Release builds are HTTPS only. Debug builds show an **Allow local HTTP**
+  switch that accepts loopback, private and `.local` hosts. Android permits cleartext
+  per named host through a generated network security config; add one for a physical
+  device with `-PshelfarrDevHttpHosts=192.168.1.10`. iOS debug builds use
+  `NSAllowsLocalNetworking`.
+- **Sign-out.** Disconnect flushes progress, calls revoke, stops every download, then
+  removes the token, stored progress, downloads, EPUB copies and cached covers, whether
+  or not the server was reachable. A 401 clears the token but keeps the address, any
+  unsent progress and the downloads, for signing in to the same account again;
+  downloads stopped by it resume after that.
+- **Separation.** Local files live under a hash of the server and user id, so accounts
+  never share progress, downloads or book copies. Path case is preserved. Progress
+  retries and downloads use the account's captured credential, and session
+  transitions stop its sync and transfers before another account's start.
+
+## Progress
+
+Each position is written to disk first. Sends are debounced by 5 seconds and never
+wait longer than 20. They also flush on pause, stop, backgrounding and foregrounding.
+
+A write keeps its `client_mutation_id` until the server gives a definite answer, and
+newer positions wait behind it. Retries back off from 5 seconds to 5 minutes and stop
+after 8 attempts until the next trigger, so nothing loops in the background. A 409
+naming our own mutation id counts as success, because only the response was lost. Any
+other 409 stops sending and asks the reader to choose. A 422 drops that write.
+
+On opening, `ResumeDecision` compares the server position with this device's:
+
+- Unsent local reading continues if the server hasn't moved past the version it was
+  based on. If it has, and the places differ, the reader chooses.
+- A position whose `asset_id` is not in the publication is treated as an earlier
+  edition: the reader is told and starts at the beginning.
+
+Ebook positions are Readium locators, passed through unchanged. Audio positions are
+seconds within the named asset.
+
+## Implementation notes for the API
+
+- A server-relative `content_url` or `cover_url` is resolved against the configured
+  address. A path that already starts with the configured subpath is used as is;
+  otherwise the subpath is added. Both `/api/...` and `/shelfarr/api/...` work.
+- Covers from another origin are fetched without credentials. Redirects from them are
+  not followed, and any failure shows the generated cover.
+- Last known publication metadata is stored per account so an existing EPUB can
+  reopen when the network is unavailable. Authentication and TLS errors are surfaced.
+- EPUB copies are revalidated with `If-None-Match` on every open and resumed with
+  `Range` and `If-Range`, so `content_url` needs a stable strong `ETag`. A 304 and a
+  200 repeating the stored `ETag` both keep the copy. Android stops reading such a
+  response at once; iOS discards the body, so a 304 saves iOS the transfer.
+- iOS audio relies on single byte ranges and `Content-Range` with a known total length.
+- Home builds "Continue" from `GET /continue?limit=10`, across the whole library, and
+  shows only items whose status is `in_progress`. A server without that endpoint
+  (404) falls back to the first page of `/library`.
+- `reading_status` may be absent on older servers; clients then derive `in_progress`
+  from a usable saved place, else `unread`. Unknown values are treated as absent.
+- Status changes use `PUT /library/:id/reading_status` and need a connection; nothing
+  changes on screen until the server accepts it. The saved place is kept. Opening an
+  unread publication with an explicit Read or Listen sets `in_progress` best effort,
+  without waiting; nothing else sends a status, so progress never undoes "finished".
+- Library `status` and `sort` (`recent` default, or `title`) are sent with `type` and
+  `q`. Any change starts again from the first page and ignores pages still loading
+  for the old query, since a cursor belongs to the query that produced it.
+
+## Downloads
+
+A download is the user's choice and lives in app storage (Android `filesDir`, iOS
+Application Support, excluded from backup), separate from the EPUB working copy in
+the cache directory, which the OS may still clear.
+
+- It pins one edition: the exact asset ids of the EPUB, or of every audio file in
+  `position` order. Before transferring, it fetches the publication again and re-pins
+  if the ids changed. Online, the reader and player use a download only while its ids
+  still match the server's; otherwise they use the server's current edition and the
+  page offers to update the download. Offline, they use the download.
+- Files download one at a time, with at most two publications at once. A transfer
+  resumes with `Range` and `If-Range` only against a strong `ETag` recorded before
+  the body; a full 200 with a different tag, a 412 or a 416 is a changed file, and the
+  partial bytes are discarded rather than stitched together.
+- It is ready only when every file is complete, its size matches `size_bytes` and an
+  EPUB starts with `PK`. Missing or short files found at launch mark it failed, never
+  ready. Audio plays from local files only when every track is on the device.
+- States are queued, downloading, ready, failed and cancelled, with sizes. Failures
+  keep their kind: no connection, untrusted certificate, signed out, not allowed, not
+  found, server error, redirect, changed on the server, unexpected file, not enough
+  space, files missing. No connection and server errors retry when the app returns to
+  the foreground; the rest wait for the user.
+- Cancel stops the transfer and deletes its bytes. Remove deletes the files and the
+  entry; the saved place and status stay.
+- The queue is stored with the account and resumes when the app starts. Transfers run
+  while the app process is alive: there is no OS background transfer, so a download
+  pauses when the system stops the app and continues next time it opens.
+
+## Current limits
+
+- Offline: downloaded books and audiobooks open, and Home shows them. Other books that
+  were opened before can reopen from their cached copy, which the OS may clear, and
+  other audio needs a connection. The library and status changes need a connection.
+- Downloads transfer only while the app runs; they don't complete in the background.
+- EPUB only for reading. Other ebook formats show "can't be opened in the app yet", and
+  DRM-protected files can't be opened.
+- Chapters come from the audio file's own metadata (ID3 `CHAP`, MP4 chapter tracks) as
+  each file loads; otherwise navigation is by file.
+- Readium does not handle a WebView renderer crash, so on Android such a crash ends the
+  app process. The last saved position survives.
+- No release signing, store metadata or crash reporting yet.
