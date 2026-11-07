@@ -134,7 +134,13 @@ class BackgroundDownloadsTest {
 
     @Test
     fun downloadsFromTheLibraryKeepGoingInTheBackgroundAndBrowseOffline() {
-        ActivityScenario.launch<MainActivity>(Intent(app, MainActivity::class.java)).use { scenario ->
+        // ActivityScenario matches lifecycle events to the launch intent. MainActivity
+        // adopts the notification intent in onNewIntent, so use its action from the
+        // start; otherwise the later STOPPED/RESUMED events are silently ignored.
+        val launch = Intent(app, MainActivity::class.java).setAction(MainActivity.ACTION_OPEN_DOWNLOADS)
+        ActivityScenario.launch<MainActivity>(launch).use { scenario ->
+            waitForText("Nothing downloaded")
+            scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
             // Library → details → Download.
             compose.waitUntil(15_000) { compose.onAllNodes(hasText("Library") and hasClickAction()).exists() }
             compose.onAllNodes(hasText("Library") and hasClickAction())[0].performClick()
@@ -168,6 +174,7 @@ class BackgroundDownloadsTest {
             compose.onAllNodesWithText("Download again")[0].performClick()
             awaitState("bg-audio", DownloadState.DOWNLOADING)
             awaitProgressNotification()
+            await("partial audio bytes before interrupting the job") { record("bg-audio").bytesDone > 0 }
             scenario.moveToState(Lifecycle.State.CREATED)
             await("the app is no longer visible") { !container.isVisible }
 
