@@ -13,9 +13,9 @@ native iOS app, both talking to the consumer API. Neither wraps the web UI.
 The flow on both platforms is: server address, device authorization in the system
 browser, library and continue, publication details, EPUB reader or audio player,
 resume from the saved place. Books and audiobooks can be downloaded for offline use,
-and each has a reading status. Android also browses cached library titles offline and
-uses Android's transfer hosts to continue downloads after leaving the app; see
-[Android background downloads and offline coverage](native-offline-android.md).
+and each has a reading status. Both clients browse downloaded and previously seen
+titles offline, with saved coverage and freshness shown. See the platform details for
+[Android](native-offline-android.md) and [iOS](native-offline-ios.md).
 
 ## Build
 
@@ -107,8 +107,9 @@ validation; physical-device compatibility is still unverified.
   port and path after dot segments are resolved. `/shelfarr-evil` is not inside `/shelfarr`.
 - **Redirects.** Automatic redirect handling is off. A redirect is followed only if both
   ends are inside the boundary. Anything else fails, and nothing is sent to the new host.
-- **One HTTP path.** API calls, EPUB downloads, covers and audio all use the same
-  credential logic. Android uses the same scoped interceptor for shared and account-bound clients. iOS streams audio through an
+- **Credential boundary.** Interactive API calls, EPUB copies, covers and audio use
+  the scoped credential logic. iOS system background tasks instead use short-lived,
+  asset-scoped grant URLs and never receive the account bearer. Android uses the same scoped interceptor for shared and account-bound clients. iOS streams audio through an
   `AVAssetResourceLoader` that fetches byte ranges with the API client, because
   AVPlayer has no supported way to set a bearer header. Tokens never appear in URLs.
 - **Storage.** Android encrypts the session with a non-exportable AES-256-GCM Android
@@ -207,19 +208,21 @@ the cache directory, which the OS may still clear.
 - The queue is stored with the account. Android runs it through user-initiated jobs
   on Android 14+, and foreground services/network jobs on older versions. Android
   controls interruptions and retries; an explicit user stop requires Resume. See the
-  [platform limits](native-offline-android.md). iOS currently transfers while its app
-  process is alive and resumes the queue when reopened.
+  [platform limits](native-offline-android.md). iOS hands persisted range tasks to a
+  background URLSession and reconciles them after relaunch. It requires the server's
+  asset-scoped transfer-grant endpoint; older servers retain foreground transfers.
+  See [iOS behavior and the grant contract](native-offline-ios.md).
 
 ## Current limits
 
 - Offline: downloaded books and audiobooks open, and Home shows them. Other books that
   were opened before can reopen from their cached copy, which the OS may clear, and
   other audio needs a connection. Android's Library searches and filters downloaded
-  and previously loaded titles, with coverage/freshness shown. iOS Library browsing
-  and status edits on both platforms currently need a connection.
-- Android background execution is controlled by the OS and cannot bypass force stop,
-  battery or network limits. iOS downloads currently need the app process to remain
-  alive.
+  and previously loaded titles, with coverage/freshness shown; iOS offers the same
+  saved-title browsing. Status edits on both platforms need a connection.
+- Background execution is controlled by the OS and cannot bypass force stop,
+  battery or network limits. iOS background transfers need transfer grants from the
+  server and stop after an explicit force-quit until the app is reopened.
 - EPUB only for reading. Other ebook formats show "can't be opened in the app yet", and
   DRM-protected files can't be opened.
 - Chapters come from the audio file's own metadata (ID3 `CHAP`, MP4 chapter tracks) as

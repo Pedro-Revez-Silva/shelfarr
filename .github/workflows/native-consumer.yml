@@ -91,7 +91,7 @@ jobs:
 
   ios:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
@@ -112,3 +112,17 @@ jobs:
 
       - name: Test the core and build for the simulator
         run: apps/scripts/ios-check.sh
+
+      - name: Exercise the iOS reader and offline library
+        run: apps/scripts/ios-runtime-smoke.sh
+
+      - name: Upload iOS runtime results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-runtime
+          if-no-files-found: ignore
+          path: |
+            apps/ios/build/**/*.xcresult
+            apps/ios/build/runtime-smoke
+            apps/ios/test-results
