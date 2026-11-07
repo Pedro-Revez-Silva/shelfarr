@@ -26,6 +26,19 @@ class Consumer::LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_not_includes response.body, @root
   end
 
+  test "the reading page is a text surface and binds the browser outbox to this account" do
+    get consumer_publication_path(@ebook)
+    assert_select ".consumer-header", count: 0
+    assert_select "body.consumer-app--reading"
+    assert_select "[data-consumer-reader-target=controls][hidden]"
+    assert_select "[data-consumer-reader-target=reveal][aria-expanded=false][aria-controls=consumer-reader-controls]"
+    publication = JSON.parse(css_select("script[data-consumer-reader-target=publication]").sole.text)
+    assert_equal({ "account" => users(:one).id.to_s, "base" => "" }, publication.fetch("progress_scope"))
+    get consumer_publication_path(@audiobook)
+    assert_select ".consumer-header"
+    assert_select ".consumer-audio-panel"
+  end
+
   test "web media and progress use the current cookie session with the same asset and version rules" do
     asset = consumer_asset(@audiobook)
     get consumer_asset_path(@audiobook, asset.id), headers: { "Range" => "bytes=0-2" }

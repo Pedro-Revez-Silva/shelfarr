@@ -1,8 +1,20 @@
 import { Controller } from "@hotwired/stimulus"
-import ConsumerProgressSync from "consumer_progress_sync"
+import ConsumerProgressSync, { ListeningCheckpoints } from "consumer_progress_sync"
+
+const STATUS = {
+  saved: ["Your place is saved to your account", false, false],
+  local: ["Saved on this device. Syncing to your account…", false, false],
+  syncing: ["Saving to your account…", false, false],
+  offline: ["Saved on this device. It will sync when you're back online.", true, true],
+  signin: ["Saved on this device. Sign in again to sync it to your account.", true, true],
+  reload: ["Saved on this device. Reload the page to sync it to your account.", true, true],
+  rejected: ["Your account didn't accept this place. It is kept on this device.", true, true],
+  storage: ["This browser isn't keeping your place. Keep this page open until it says saved.", true, true],
+  conflict: ["Choose which place to keep.", false, true]
+}
 
 export default class extends Controller {
-  static targets = ["publication", "syncStatus", "retry", "conflict", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play", "speed"]
+  static targets = ["publication", "syncStatus", "retry", "conflict", "conflictMessage", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play", "speed", "controls", "reveal", "hide", "notice", "remote"]
 
   connect() {
     this.publication = JSON.parse(this.publicationTarget.textContent)
@@ -17,27 +29,42 @@ export default class extends Controller {
       if (![...this.speedTarget.options].some(option => Number(option.value) === this.playbackRate)) this.playbackRate = 1
       this.speedTarget.value = String(this.playbackRate)
     }
-    this.sync = new ConsumerProgressSync(this.publication.progress_url, this.publication.progress?.version,
-      (message, retry) => { if (this.active) { this.syncStatusTarget.textContent = message; this.retryTarget.hidden = !retry } },
-      () => { if (this.active) this.conflictTarget.hidden = false })
-    this.visibilityHandler = () => { if (document.hidden) this.flush() }
-    this.pageHandler = () => this.flush()
+    const server = this.publication.progress
+    const scope = this.publication.progress_scope || {}
+    this.sync = new ConsumerProgressSync({
+      url: this.publication.progress_url, account: scope.account, base: scope.base || "", publication: this.publication.id,
+      version: server?.version, assets: this.publication.assets.map(asset => asset.id),
+      onStatus: (kind, detail) => this.showSyncStatus(kind, detail),
+      onConflict: remote => this.showConflict(remote),
+      onRemote: remote => this.remoteArrived(remote)
+    })
+    this.checkpoints = new ListeningCheckpoints({ record: place => this.recordPlace(place) })
+    this.visibilityHandler = () => { if (document.hidden) this.leave(); else if (this.sync.waiting) this.sync.flush() }
+    this.pageHandler = () => this.leave()
     document.addEventListener("visibilitychange", this.visibilityHandler)
     window.addEventListener("pagehide", this.pageHandler)
-    const progress = this.publication.progress
-    this.assetIndex = Math.max(0, this.publication.assets.findIndex(asset => asset.id === progress?.asset_id))
-    this.initialProgress = progress?.asset_id === this.currentAsset.id ? progress : null
-    if (progress && !this.initialProgress) this.syncStatusTarget.textContent = "The file changed. This edition starts afresh."
+
+    // A checkpoint still waiting in this browser can be newer than the server.
+    const restored = this.sync.restorePlace(server)
+    const place = restored?.progress
+    this.assetIndex = Math.max(0, this.publication.assets.findIndex(asset => asset.id === place?.asset_id))
+    this.initialProgress = place?.asset_id === this.currentAsset.id ? place : null
+    if (server && !this.initialProgress && !this.publication.assets.some(asset => asset.id === server.asset_id)) this.showSyncStatus("message", "The file changed. This edition starts afresh.")
+    else if (restored?.source === "local") this.showSyncStatus("local")
+    if (!this.sync.durable) this.showSyncStatus("storage")
+    if (this.sync.conflict) this.showConflict(this.sync.conflict.remote)
+    else if (this.sync.waiting) this.sync.flush()
     if (this.publication.book_type === "ebook") this.openEbook()
     else this.openAudio(false)
   }
 
   disconnect() {
-    this.flush()
+    this.leave()
     this.active = false
     this.sync?.close()
     this.abort?.abort()
     this.statusAbort?.abort()
+    clearTimeout(this.tapTimer)
     this.book?.destroy()
     if (this.hasAudioTarget) {
       this.audioTarget.pause()
@@ -61,6 +88,95 @@ export default class extends Controller {
     if (url.origin !== window.location.origin) throw new Error("Invalid media origin")
     return url.href
   }
+
+  // Progress -----------------------------------------------------------------
+
+  // Every genuine checkpoint goes to this browser's outbox first.
+  recordPlace(place) {
+    this.sessionMoved = true
+    this.remotePending = null
+    if (this.hasRemoteTarget) this.remoteTarget.hidden = true
+    this.sync.record(place)
+  }
+
+  // Leaving or hiding the page saves the current place at once.
+  leave() {
+    if (!this.sync) return
+    if (this.hasAudioTarget && this.audioReady) this.checkpoints.settle(this.audioTarget.currentTime, this.currentAsset.id)
+    this.sync.flush()
+  }
+
+  showSyncStatus(kind, detail) {
+    if (!this.active) return
+    const [message, retry, notice] = kind === "message" ? [detail, false, true] : STATUS[kind] || STATUS.offline
+    const text = kind === "rejected" && detail ? `${message} ${detail}` : message
+    if (this.hasSyncStatusTarget) this.syncStatusTarget.textContent = text
+    if (this.hasRetryTarget) this.retryTarget.hidden = !retry
+    if (this.hasNoticeTarget && kind !== "syncing") {
+      this.noticeTarget.hidden = !notice || kind === "conflict"
+      this.noticeTarget.textContent = notice ? text : ""
+    }
+  }
+
+  showConflict(remote) {
+    if (!this.active) return
+    const describe = progress => {
+      if (!progress) return "no saved place"
+      if (Number.isFinite(progress.position_seconds)) return this.time(progress.position_seconds)
+      const total = progress.locator?.locations?.totalProgression
+      return Number.isFinite(total) ? `${Math.round(total * 100)}% through` : "a different place"
+    }
+    const local = this.sync.restorePlace(null)?.progress
+    this.conflictMessageTarget.textContent = `Another device saved a different place (${describe(remote)}; this device: ${describe(local)}). Which place would you like to keep?`
+    this.conflictTarget.hidden = false
+  }
+
+  // A later place from another device. Move there only at a safe point: now
+  // if this visit has not moved yet, otherwise when the reader asks or the
+  // listener resumes playback.
+  remoteArrived(remote) {
+    if (!this.active || !remote || !this.publication.assets.some(asset => asset.id === remote.asset_id)) return
+    const playing = this.hasAudioTarget && !this.audioTarget.paused
+    if (!this.sessionMoved && !playing) return this.applyPlace(remote)
+    if (playing) { this.remotePending = remote; return }
+    this.remotePending = remote
+    if (this.hasRemoteTarget) this.remoteTarget.hidden = false
+  }
+
+  goToRemote() {
+    const remote = this.remotePending
+    this.remotePending = null
+    if (this.hasRemoteTarget) this.remoteTarget.hidden = true
+    if (remote) this.applyPlace(remote)
+  }
+
+  applyPlace(progress) {
+    if (this.publication.book_type === "ebook") {
+      if (!this.readerReady) { this.deferredPlace = progress; return }
+      this.userMoved = false
+      const locator = progress.locator
+      const target = locator?.locations?.cfi || (locator?.href ? this.book.path.relative(`/${locator.href.replace(/^\/+/, "")}`) : undefined)
+      if (target) this.rendition.display(target).catch(() => this.showError("Couldn't open the other device's place."))
+      return
+    }
+    const index = this.publication.assets.findIndex(asset => asset.id === progress.asset_id)
+    if (index < 0) return
+    if (index !== this.assetIndex) {
+      this.assetIndex = index
+      this.initialProgress = progress
+      this.openAudio(false)
+    } else if (this.audioReady) {
+      this.audioTarget.currentTime = Math.min(progress.position_seconds || 0, this.audioTarget.duration || 0)
+      this.checkpoints.restored(this.audioTarget.currentTime, this.currentAsset.id)
+      this.renderAudioPosition()
+    } else this.initialProgress = progress
+  }
+
+  retrySync() { this.sync?.retry() }
+  useServerProgress() { this.sync.useRemote(); window.location.reload() }
+  keepLocalProgress() { this.conflictTarget.hidden = true; this.sync.keepLocal() }
+
+  // Ebook --------------------------------------------------------------------
 
   async openEbook() {
     try {
@@ -112,13 +228,7 @@ export default class extends Controller {
       this.rendition.themes.default({ body: { color: `${colors.getPropertyValue("--ink")} !important`, background: `${colors.getPropertyValue("--surface")} !important`, "font-family": "Georgia, serif !important", "line-height": "1.7 !important" }, "a": { color: "inherit" } })
       this.rendition.themes.fontSize(`${this.fontSize}%`)
       this.rendition.on("relocated", location => this.ebookPosition(location))
-      this.rendition.hooks.content.register(contents => {
-        contents.document.addEventListener("click", event => { if (event.target.closest?.("a[href]")) this.userMoved = true })
-        contents.document.addEventListener("keydown", event => {
-          if (event.key === "ArrowRight") { event.preventDefault(); this.nextPage() }
-          if (event.key === "ArrowLeft") { event.preventDefault(); this.previousPage() }
-        })
-      })
+      this.rendition.hooks.content.register(contents => this.bookInput(contents))
       this.chaptersTarget.replaceChildren()
       const addChapters = (items, depth = 0) => {
         for (const item of items) {
@@ -152,10 +262,96 @@ export default class extends Controller {
           }
         }
       }
+      this.lastEbookCfi = this.rendition.currentLocation()?.start?.cfi
       this.readerReady = true
+      if (this.deferredPlace) { const place = this.deferredPlace; this.deferredPlace = null; this.applyPlace(place) }
     } catch (error) {
-      if (error.name !== "AbortError" && this.active) this.showError(error.message || "This EPUB couldn't be opened.")
+      if (error.name !== "AbortError" && this.active) {
+        this.showError(error.message || "This EPUB couldn't be opened.")
+        if (this.hasControlsTarget) this.showControls()
+      }
     }
+  }
+
+  // Keyboard, tap and swipe inside the sandboxed book frame. Side taps turn
+  // pages, the middle reveals controls, and selecting text does neither.
+  bookInput(contents) {
+    const doc = contents.document
+    const frame = contents.window.frameElement
+    doc.addEventListener("keydown", event => this.readerKey(event))
+    doc.addEventListener("click", event => {
+      if (event.target.closest?.("a[href]")) { this.userMoved = true; return }
+      if (this.swiped) { this.swiped = false; return }
+      const selection = contents.window.getSelection?.()
+      if (selection && !selection.isCollapsed) return
+      if (!this.controlsTarget.hidden) return this.hideControls()
+      const bounds = this.viewportTarget.getBoundingClientRect()
+      const x = (frame?.getBoundingClientRect().left || 0) + event.clientX - bounds.left
+      const zone = x / Math.max(1, bounds.width)
+      if (zone < 0.3) return this.previousPage()
+      if (zone > 0.7) return this.nextPage()
+      clearTimeout(this.tapTimer)
+      this.tapTimer = setTimeout(() => {
+        const current = contents.window.getSelection?.()
+        if (this.active && (!current || current.isCollapsed)) this.showControls()
+      }, 250)
+    })
+    doc.addEventListener("dblclick", () => clearTimeout(this.tapTimer))
+    doc.addEventListener("touchstart", event => {
+      const touch = event.changedTouches[0]
+      this.touchStart = touch ? { x: touch.clientX, y: touch.clientY } : null
+    }, { passive: true })
+    doc.addEventListener("touchend", event => {
+      const touch = event.changedTouches[0]
+      const start = this.touchStart
+      this.touchStart = null
+      if (!touch || !start) return
+      const dx = touch.clientX - start.x, dy = touch.clientY - start.y
+      const selection = contents.window.getSelection?.()
+      if (Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.5 || (selection && !selection.isCollapsed)) return
+      this.swiped = true
+      setTimeout(() => { this.swiped = false }, 400)
+      dx < 0 ? this.nextPage() : this.previousPage()
+    }, { passive: true })
+  }
+
+  // Taps in the page margins, outside the text column.
+  marginTap(event) {
+    if (this.viewportTarget.contains(event.target)) return
+    if (!this.controlsTarget.hidden) return this.hideControls()
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const zone = (event.clientX - bounds.left) / Math.max(1, bounds.width)
+    if (zone < 0.3) this.previousPage()
+    else if (zone > 0.7) this.nextPage()
+    else this.showControls()
+  }
+
+  readerKey(event) {
+    if (!this.hasControlsTarget) return
+    if (event.key === "Escape") {
+      event.preventDefault()
+      this.controlsTarget.hidden ? this.showControls() : this.hideControls()
+      return
+    }
+    if (event.target.closest?.("select, input, textarea")) return
+    if (event.key === "ArrowRight" || event.key === "PageDown") { event.preventDefault(); this.nextPage() }
+    if (event.key === "ArrowLeft" || event.key === "PageUp") { event.preventDefault(); this.previousPage() }
+  }
+
+  // Controls overlay the text, so revealing them never reflows the book.
+  showControls() {
+    if (!this.hasControlsTarget || !this.controlsTarget.hidden) return
+    this.controlsTarget.hidden = false
+    this.revealTarget.setAttribute("aria-expanded", "true")
+    this.hideTarget.focus()
+  }
+
+  hideControls() {
+    if (!this.hasControlsTarget || this.controlsTarget.hidden) return
+    const hadFocus = this.controlsTarget.contains(document.activeElement)
+    this.controlsTarget.hidden = true
+    this.revealTarget.setAttribute("aria-expanded", "false")
+    if (hadFocus || document.activeElement === document.body) this.viewportTarget.focus({ preventScroll: true })
   }
 
   ebookPosition(location) {
@@ -166,7 +362,10 @@ export default class extends Controller {
     this.locationTarget.textContent = `${start.displayed.page} / ${start.displayed.total} · chapter ${start.index + 1}`
     const option = [...this.chaptersTarget.options].find(option => option.value.split("#")[0] === start.href)
     if (option) this.chaptersTarget.value = option.value
-    if (this.readerReady && this.userMoved) this.sync.save({ asset_id: this.currentAsset.id, locator: { href: this.book.resolve(start.href).replace(/^\/+/, ""), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi: start.cfi } } })
+    // Only the reader's own moves are activity; restoring or reflowing is not.
+    if (!this.readerReady || !this.userMoved || start.cfi === this.lastEbookCfi) return
+    this.lastEbookCfi = start.cfi
+    this.recordPlace({ asset_id: this.currentAsset.id, locator: { href: this.book.resolve(start.href).replace(/^\/+/, ""), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi: start.cfi } } })
   }
 
   async saveReadingStatus(event) {
@@ -205,7 +404,6 @@ export default class extends Controller {
     this.fontReflow = this.fontReflow.then(async () => {
       if (!this.active || !this.rendition || !this.readerReady) return
       const cfi = this.rendition.currentLocation()?.start?.cfi
-      this.userMoved = true
       this.fontSize = Math.max(80, Math.min(180, this.fontSize + delta))
       this.savePreferences()
       this.rendition.themes.fontSize(`${this.fontSize}%`)
@@ -219,8 +417,11 @@ export default class extends Controller {
     try { localStorage.setItem("shelfarr.reader.preferences.v1", JSON.stringify({ fontSize: this.fontSize, playbackRate: this.playbackRate })) } catch (_) { /* keep preferences for this visit */ }
   }
 
+  // Audio --------------------------------------------------------------------
+
   openAudio(autoplay) {
     this.audioReady = false
+    this.switching = true
     this.trackTitleTarget.textContent = this.currentAsset.filename
     this.tracksTarget.value = this.assetIndex
     this.audioTarget.src = this.assetURL()
@@ -230,7 +431,7 @@ export default class extends Controller {
     this.playWhenReady = autoplay
     if ("mediaSession" in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({ title: this.publication.title, artist: this.publication.author || "", album: this.currentAsset.filename })
-      for (const [action, handler] of Object.entries({ play: () => this.playAudio(), pause: () => this.audioTarget.pause(), seekbackward: () => this.backwardAudio(), seekforward: () => this.forwardAudio(), previoustrack: () => this.chooseAudioTrack(Math.max(0, this.assetIndex - 1)), nexttrack: () => this.nextTrack() })) {
+      for (const [action, handler] of Object.entries({ play: () => this.playAudio(), pause: () => this.audioTarget.pause(), seekbackward: () => this.backwardAudio(), seekforward: () => this.forwardAudio(), previoustrack: () => this.chooseAudioTrack(Math.max(0, this.assetIndex - 1)), nexttrack: () => this.skipTrack() })) {
         try { navigator.mediaSession.setActionHandler(action, handler) } catch (_) { /* unsupported browser action */ }
       }
     }
@@ -241,39 +442,65 @@ export default class extends Controller {
       this.audioTarget.currentTime = Math.min(this.initialProgress.position_seconds || 0, this.audioTarget.duration || 0)
       this.initialProgress = null
     }
+    this.checkpoints.restored(this.audioTarget.currentTime, this.currentAsset.id)
     this.audioReady = true
+    this.switching = false
     this.durationTarget.textContent = this.time(this.audioTarget.duration)
-    this.audioPosition()
-    if (this.playWhenReady) this.playAudio()
+    this.renderAudioPosition()
+    if (this.playWhenReady) this.playAudio({ resume: false })
   }
 
+  // timeupdate: the display follows every update; storage only every few seconds.
   audioPosition() {
     if (!this.active || !this.audioReady) return
+    this.renderAudioPosition()
+    if (!this.audioTarget.paused) this.checkpoints.tick(this.audioTarget.currentTime, this.currentAsset.id)
+  }
+
+  renderAudioPosition() {
     const audio = this.audioTarget
     this.elapsedTarget.textContent = this.time(audio.currentTime)
     this.seekTarget.value = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.currentTime / audio.duration * 100 : 0
-    if (!audio.paused || this.hasPlayed) this.sync.save({ asset_id: this.currentAsset.id, position_seconds: audio.currentTime })
   }
 
   audioPaused() {
     if (!this.active) return
     this.playTarget.textContent = "▶"
     this.playTarget.setAttribute("aria-label", "Play audiobook")
-    this.flush()
+    if (this.switching || !this.audioReady) return
+    this.checkpoints.settle(this.audioTarget.currentTime, this.currentAsset.id)
+    this.sync.flush()
   }
 
-  async playAudio() {
+  // A genuine resume (Play after a pause or after opening a saved place)
+  // rewinds five seconds once; choosing a track or a natural transition does not.
+  async playAudio({ resume = true } = {}) {
+    const audio = this.audioTarget
     try {
-      await this.audioTarget.play()
-      this.hasPlayed = true
+      if (resume && audio.paused && !audio.ended && this.audioReady) {
+        if (this.remotePending) { const remote = this.remotePending; this.remotePending = null; this.applyPlace(remote) }
+        const from = this.checkpoints.resume(audio.currentTime)
+        if (from !== audio.currentTime) audio.currentTime = from
+      } else this.checkpoints.active = true
+      await audio.play()
       this.playTarget.textContent = "Ⅱ"
       this.playTarget.setAttribute("aria-label", "Pause audiobook")
     } catch (_) { this.showError("Playback couldn't start. Check your connection and try Play again.") }
   }
   toggleAudio() { this.audioTarget.paused ? this.playAudio() : this.audioTarget.pause() }
-  seekAudio() { if (Number.isFinite(this.audioTarget.duration)) { this.audioTarget.currentTime = this.audioTarget.duration * Number(this.seekTarget.value) / 100; this.hasPlayed = true; this.audioPosition() } }
-  backwardAudio() { this.audioTarget.currentTime = Math.max(0, this.audioTarget.currentTime - 15); this.audioPosition() }
-  forwardAudio() { if (Number.isFinite(this.audioTarget.duration)) this.audioTarget.currentTime = Math.min(this.audioTarget.duration, this.audioTarget.currentTime + 30); this.audioPosition() }
+  seekAudio() {
+    if (!Number.isFinite(this.audioTarget.duration)) return
+    this.audioTarget.currentTime = this.audioTarget.duration * Number(this.seekTarget.value) / 100
+    this.renderAudioPosition()
+  }
+  seekCommitted() { this.seekAudio(); this.deliberateMove() }
+  backwardAudio() { this.audioTarget.currentTime = Math.max(0, this.audioTarget.currentTime - 15); this.renderAudioPosition(); this.deliberateMove() }
+  forwardAudio() { if (Number.isFinite(this.audioTarget.duration)) { this.audioTarget.currentTime = Math.min(this.audioTarget.duration, this.audioTarget.currentTime + 30); this.renderAudioPosition(); this.deliberateMove() } }
+  deliberateMove() {
+    if (!this.audioReady) return
+    this.checkpoints.deliberate(this.audioTarget.currentTime, this.currentAsset.id, this.audioTarget.paused)
+    this.sync.flush()
+  }
   changeSpeed(event) {
     this.playbackRate = Number(event.target.value)
     this.audioTarget.defaultPlaybackRate = this.playbackRate
@@ -282,21 +509,25 @@ export default class extends Controller {
   }
   chooseTrack() { this.chooseAudioTrack(Number(this.tracksTarget.value)) }
   chooseAudioTrack(index, autoplay = !this.audioTarget.paused) {
-    this.audioPosition()
-    this.sync.flush()
+    if (this.audioReady) this.checkpoints.settle(this.audioTarget.currentTime, this.currentAsset.id)
     this.assetIndex = index
     this.initialProgress = null
+    this.remotePending = null
+    this.checkpoints.deliberate(0, this.currentAsset.id, !autoplay)
+    this.sync.flush()
     this.openAudio(autoplay)
   }
+  skipTrack() { if (this.assetIndex + 1 < this.publication.assets.length) this.chooseAudioTrack(this.assetIndex + 1) }
   nextTrack() {
-    if (this.assetIndex + 1 < this.publication.assets.length) this.chooseAudioTrack(this.assetIndex + 1, this.audioTarget.ended || !this.audioTarget.paused)
-    else this.audioPaused()
+    if (this.assetIndex + 1 >= this.publication.assets.length) return this.audioPaused()
+    // A natural transition keeps playing from the start of the next track.
+    this.assetIndex += 1
+    this.initialProgress = null
+    this.checkpoints.continued(this.currentAsset.id)
+    this.sync.flush()
+    this.openAudio(true)
   }
   audioError() { if (this.active) this.showError("This track couldn't be loaded. Check the connection, file format, or sign in again.") }
   showError(message) { if (this.hasErrorTarget) { this.errorTarget.textContent = message; this.errorTarget.hidden = false } }
-  flush() { if (this.hasAudioTarget) this.audioPosition(); this.sync?.flush() }
-  retrySync() { this.sync?.flush() }
-  useServerProgress() { window.location.reload() }
-  keepLocalProgress() { this.conflictTarget.hidden = true; this.sync.keepLocal() }
   time(seconds) { if (!Number.isFinite(seconds)) return "—"; const value = Math.max(0, Math.floor(seconds)); return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}` }
 }

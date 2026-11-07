@@ -11,7 +11,8 @@
     <%= javascript_importmap_tags %>
     <%= yield :head %>
   </head>
-  <body class="consumer-app">
+  <body class="consumer-app<%= " consumer-app--reading" if content_for?(:reading_mode) %>">
+    <% unless content_for?(:reading_mode) %>
     <a class="consumer-skip" href="#consumer-main">Skip to content</a>
     <header class="consumer-header">
       <%= link_to consumer_library_path, class: "consumer-wordmark", aria: { label: "Shelfarr library" } do %>
@@ -20,6 +21,7 @@
       <% end %>
       <%= link_to profile_path, class: "consumer-avatar", aria: { label: "My profile" } do %><%= Current.user.name.first.upcase %><% end %>
     </header>
+    <% end %>
     <main id="consumer-main" class="consumer-main <%= content_for(:main_class) %>">
       <% flash.each do |kind, text| %><p role="status" class="consumer-notice"><%= text %></p><% end %>
       <%= yield %>

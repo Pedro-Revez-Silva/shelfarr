@@ -25,6 +25,8 @@ class Consumer::LibraryController < ApplicationController
     @publication = Consumer::Publication.new(@book, user: Current.user, routes: self).representation
     @publication[:assets].each { |asset| asset[:content_url] = consumer_asset_path(@book, asset[:id]) }
     @publication[:progress_url] = consumer_progress_path(@book)
+    # Bind this browser's progress outbox to the account and deployment subpath.
+    @publication[:progress_scope] = { account: Current.user.id.to_s, base: request.script_name.to_s }
   end
 
   def asset

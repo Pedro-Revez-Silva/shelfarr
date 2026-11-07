@@ -277,7 +277,45 @@ form, or top-navigation permission. The web player uses normal HTML audio and
 optional Media Session controls; background behavior remains browser-dependent.
 Text size and listening speed persist on this browser. Changing tracks while
 paused keeps playback paused; reaching a track end continues automatically.
-The web reader needs a connection and does not offer offline downloads.
+The web reader needs a connection to open a book and does not offer offline
+downloads.
+
+Reading an EPUB shows only the book text across the whole viewport: no header,
+cover, description, status form, chapter or font toolbar, or page buttons.
+Arrow and Page keys, swipes, and taps on the left or right third turn pages.
+Escape, a tap in the middle, or the **Show reading controls** button (the first
+keyboard stop, visible when focused) reveals an overlay with the library link,
+title, page buttons, chapters, text size, sync state and reading status. The
+overlay floats above the text, so opening it never resizes the pages or moves
+the saved place. **Done**, Escape or another tap hides it and returns focus to
+the text; hidden controls cannot be focused. Selecting text never turns a page.
+Problems stay visible without the overlay: a small notice when a place is only
+on this device, and alerts for conflicts and errors.
+
+### Browser progress outbox
+
+The web reader keeps a durable outbox in `localStorage`, keyed by account,
+origin, deployment subpath and publication, so accounts and servers never share
+it. Each genuine checkpoint (a page turn, followed link or chapter choice; while
+listening, at most five seconds apart, and immediately on pause, seek, track
+change, hiding or leaving the page) is stored with its `observed_at` before any
+request. Sync then follows the rules above: identical retries after uncertain
+failures, retry on reconnect, page focus and reload, automatic rebasing or
+adoption when both activity times are known, and an explicit choice otherwise.
+A persisted choice survives a reload. Rejected writes and expired sessions keep
+the local place and say so. Opening a book shows the newer of the waiting local
+checkpoint and the server copy. A later place from another device moves the page
+only when this visit has not moved yet; otherwise **Go there** offers it, and a
+paused audiobook takes it on the next Play.
+
+Pressing Play to resume a paused or reopened audiobook rewinds five seconds within
+the track, clamped to zero, once per resume. Choosing a track, seeking while
+paused, and a natural move to the next track do not rewind. Restoring a place,
+the rewind itself and sync acknowledgements are not activity: the saved place is
+kept until playback passes it again. If the browser refuses storage, the page
+says so and syncs only while it stays open. Browsers may suspend background tabs;
+reliable background progress needs the native apps. Unsent places for an account
+remain in that browser's storage after sign-out until that account syncs them.
 
 The browser engine is checked in at `vendor/javascript/consumer_reader_engine.js`.
 Production does not install JavaScript packages or fetch reader code from a CDN.
@@ -286,7 +324,7 @@ To reproduce it with Bun 1.4.4:
 ```sh
 cd apps/web-reader
 bun install --frozen-lockfile
-bun test
+bun test   # includes the progress outbox and listening checkpoint rules
 bun audit
 bun run build
 git diff --exit-code -- ../../vendor/javascript/consumer_reader_engine.js
@@ -296,6 +334,7 @@ The web-reader CI job repeats these checks, including bundle drift. Package
 versions, patched XML-parser override, third-party notices and licenses are kept
 beside the build source. Shared fonts and design colors live under `apps/design`.
 The Ruby quality gate includes actual browser tests for EPUB rendering/safety,
-page navigation, real audio playback, progress and mobile overflow, plus API
+text-only reading with overlay controls, page navigation, real audio playback,
+the resume rewind, offline reload recovery, cross-device progress and mobile overflow, plus API
 authorization, generation-bound media, byte ranges and competing SQLite writes.
 Native build and physical-device validation are documented with the native apps.
