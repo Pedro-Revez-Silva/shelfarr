@@ -1,0 +1,136 @@
+package org.shelfarr.app.core
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
+val ApiJson = Json {
+    ignoreUnknownKeys = true
+    explicitNulls = false
+    encodeDefaults = true
+    coerceInputValues = true
+}
+
+@Serializable
+data class DeviceRequest(@SerialName("client_name") val clientName: String)
+
+@Serializable
+data class DeviceGrant(
+    @SerialName("device_code") val deviceCode: String,
+    @SerialName("user_code") val userCode: String,
+    @SerialName("verification_uri") val verificationUri: String,
+    @SerialName("verification_uri_complete") val verificationUriComplete: String,
+    @SerialName("expires_in") val expiresIn: Long,
+    val interval: Long = 5,
+) {
+    // A grant is a live secret: keep it out of logs and crash reports.
+    override fun toString(): String = "DeviceGrant(userCode=$userCode, expiresIn=$expiresIn)"
+}
+
+@Serializable
+data class TokenRequest(@SerialName("device_code") val deviceCode: String)
+
+@Serializable
+data class TokenResponse(
+    @SerialName("access_token") val accessToken: String,
+    @SerialName("token_type") val tokenType: String = "Bearer",
+    val scope: String = "",
+    @SerialName("expires_in") val expiresIn: Long = 0,
+) {
+    override fun toString(): String = "TokenResponse(scope=$scope, expiresIn=$expiresIn)"
+}
+
+@Serializable
+data class ErrorBody(val error: String? = null, val progress: Progress? = null)
+
+@Serializable
+data class Me(val id: String, val name: String? = null, val username: String? = null) {
+    val displayName: String get() = name?.takeIf(String::isNotBlank) ?: username ?: "Reader"
+}
+
+@Serializable
+enum class BookType {
+    @SerialName("ebook") EBOOK,
+    @SerialName("audiobook") AUDIOBOOK,
+}
+
+@Serializable
+data class Asset(
+    val id: String,
+    val filename: String = "",
+    @SerialName("media_type") val mediaType: String = "",
+    val format: String = "",
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
+    @SerialName("content_url") val contentUrl: String,
+    val position: Int = 0,
+) {
+    val isEpub: Boolean get() = format.equals("epub", ignoreCase = true) || mediaType == "application/epub+zip"
+
+    val isAudio: Boolean
+        get() = mediaType.startsWith("audio/") || format.lowercase() in AUDIO_FORMATS
+
+    private companion object {
+        val AUDIO_FORMATS = setOf("mp3", "m4b", "m4a", "aac", "ogg", "oga", "opus", "flac", "wav")
+    }
+}
+
+@Serializable
+data class Publication(
+    val id: String,
+    val title: String,
+    val author: String? = null,
+    val description: String? = null,
+    @SerialName("book_type") val bookType: BookType,
+    @SerialName("cover_url") val coverUrl: String? = null,
+    val assets: List<Asset> = emptyList(),
+    val progress: Progress? = null,
+) {
+    val orderedAssets: List<Asset> get() = assets.sortedBy { it.position }
+    val epubAsset: Asset? get() = orderedAssets.firstOrNull { it.isEpub }
+    val audioAssets: List<Asset> get() = orderedAssets.filter { it.isAudio }
+
+    /** The assets a saved position may legitimately refer to in this edition. */
+    val playableAssets: List<Asset>
+        get() = if (bookType == BookType.EBOOK) listOfNotNull(epubAsset) else audioAssets
+
+    val isReadableHere: Boolean get() = playableAssets.isNotEmpty()
+}
+
+@Serializable
+data class Progress(
+    @SerialName("asset_id") val assetId: String,
+    val locator: JsonObject? = null,
+    @SerialName("position_seconds") val positionSeconds: Double? = null,
+    val version: Int = 0,
+    @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("client_mutation_id") val clientMutationId: String? = null,
+) {
+    /** 0.0–1.0 through the whole publication, when the locator states it. */
+    val totalProgression: Double?
+        get() = locator?.get("locations")?.jsonObject?.get("totalProgression")?.jsonPrimitive?.doubleOrNull
+            ?.coerceIn(0.0, 1.0)
+
+    val isUsable: Boolean get() = locator != null || positionSeconds != null
+}
+
+@Serializable
+data class ProgressEnvelope(val progress: Progress? = null)
+
+@Serializable
+data class LibraryPage(
+    val items: List<Publication> = emptyList(),
+    @SerialName("next_cursor") val nextCursor: String? = null,
+)
+
+@Serializable
+data class ProgressUpdate(
+    @SerialName("asset_id") val assetId: String,
+    val locator: JsonObject? = null,
+    @SerialName("position_seconds") val positionSeconds: Double? = null,
+    @SerialName("expected_version") val expectedVersion: Int,
+    @SerialName("client_mutation_id") val clientMutationId: String,
+)
