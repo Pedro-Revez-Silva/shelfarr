@@ -154,6 +154,15 @@ struct ReaderView: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("reader-progress")
             }
+            if model.syncStatus == .storageFailed {
+                Text(storageFailedMessage)
+                    .font(.footnote)
+                    .foregroundStyle(theme.text)
+                    .padding(12)
+                    .background(theme.bar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .padding(.horizontal, 16)
+                    .accessibilityIdentifier("progress-storage-failed")
+            }
             if let notice = model.notice {
                 Text(notice)
                     .font(.footnote)

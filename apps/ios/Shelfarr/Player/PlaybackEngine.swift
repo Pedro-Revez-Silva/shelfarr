@@ -23,6 +23,11 @@ enum PlaybackProblem {
 
 /// Plays a publication's ordered files with background audio and lock-screen controls.
 /// It holds no UI, so the position keeps saving while the app is in the background.
+///
+/// Listening is checkpointed locally at most every four seconds while playing, and at
+/// once on pause, stop, seeks, track changes, errors, switching books and backgrounding.
+/// A genuine resume (a saved place opened, or paused playback restarted) replays five
+/// seconds of the current track once; `ListeningCheckpoints` holds those rules.
 @MainActor
 final class PlaybackEngine: ObservableObject {
     @Published private(set) var publication: ShelfarrCore.Publication?
@@ -49,8 +54,13 @@ final class PlaybackEngine: ObservableObject {
     private var observations: [NSKeyValueObservation] = []
     private var notifications: [NSObjectProtocol] = []
     private var sleepTask: Task<Void, Never>?
-    private var ticks = 0
     private var remoteConfigured = false
+    private var checkpoints = ListeningCheckpoints()
+    /// Local writes run in the order they were made, each with the time it happened.
+    private var lastWrite: Task<Void, Never>?
+    /// While a seek is under way the player may still report the old time; it is not playback.
+    private var seeking = false
+    private var seekGeneration = 0
 
     static let skipBack = 15.0
     static let skipForward = 30.0
@@ -93,6 +103,8 @@ final class PlaybackEngine: ObservableObject {
         start: SavedPosition?,
         localFiles: [String: URL]? = nil
     ) {
+        // Switching books: the one playing until now keeps its last place.
+        if self.publication != nil { recordAndFlush() }
         self.api = api
         self.server = server
         self.sync = sync
@@ -106,8 +118,12 @@ final class PlaybackEngine: ObservableObject {
         problem = nil
         configureSession()
         configureRemoteCommands()
-        let index = tracks.firstIndex { $0.id == start?.assetId } ?? 0
-        open(track: index, at: start?.positionSeconds ?? 0, play: true)
+        let found = tracks.firstIndex { $0.id == start?.assetId }
+        let saved = found == nil ? nil : start
+        // Opening a saved place is a resume: it starts a little earlier, and the saved
+        // place stays the checkpoint until playback passes it.
+        let at = checkpoints.open(saved, firstTrack: tracks.first?.id ?? "")
+        open(track: found ?? 0, at: at, play: true)
     }
 
     private func configureSession() {
@@ -149,9 +165,7 @@ final class PlaybackEngine: ObservableObject {
         duration = 0
         chapters = []
         player.replaceCurrentItem(with: item)
-        if seconds > 0 {
-            player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-        }
+        if seconds > 0 { exactSeek(to: seconds) }
         if play {
             player.playImmediately(atRate: speed)
         }
@@ -174,11 +188,27 @@ final class PlaybackEngine: ObservableObject {
         if trackIndex == track { chapters = found }
     }
 
+    /// Seeks precisely, ignoring the player's reported time until it has arrived.
+    private func exactSeek(to seconds: Double) {
+        seeking = true
+        seekGeneration += 1
+        let generation = seekGeneration
+        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.seekGeneration == generation else { return }
+                self.seeking = false
+            }
+        }
+    }
+
     private func tick(_ time: CMTime) {
-        guard publication != nil, time.isNumeric else { return }
+        guard publication != nil, time.isNumeric, !seeking else { return }
         position = time.seconds
-        ticks += 1
-        if isPlaying, ticks % 10 == 0 { record() }
+        let elapsed = ProcessInfo.processInfo.systemUptime
+        if isPlaying, checkpoints.due(at: elapsed) {
+            checkpoints.checkpointed(at: elapsed)
+            record()
+        }
     }
 
     private func statusChanged(_ status: AVPlayer.TimeControlStatus) {
@@ -186,13 +216,20 @@ final class PlaybackEngine: ObservableObject {
         isPlaying = status == .playing
         isBuffering = status == .waitingToPlayAtSpecifiedRate
         updateNowPlaying()
-        if wasPlaying, status == .paused { recordAndFlush() }
+        if wasPlaying, status == .paused {
+            // Paused by anyone (the app, lock screen, headset, sleep timer): the next play is a resume.
+            checkpoints.paused()
+            recordAndFlush()
+        }
     }
 
     private func itemEnded(_ item: AVPlayerItem?) {
         guard item === player.currentItem else { return }
         if tracks.indices.contains(trackIndex + 1) {
+            // A natural move into the next track: no rewind, and a checkpoint at once.
+            checkpoints.carriedOn()
             open(track: trackIndex + 1, at: 0, play: true)
+            record()
         } else {
             recordAndFlush()
         }
@@ -201,6 +238,8 @@ final class PlaybackEngine: ObservableObject {
     private func interrupted(type: UInt?, options: UInt) {
         guard type == AVAudioSession.InterruptionType.ended.rawValue else { return }
         if AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume) {
+            // The system handing audio back is not the listener resuming.
+            checkpoints.carriedOn()
             player.playImmediately(atRate: speed)
         }
     }
@@ -214,19 +253,33 @@ final class PlaybackEngine: ObservableObject {
     func togglePlay() {
         if problem != nil {
             problem = nil
-            open(track: trackIndex, at: position, play: true)
+            let at = currentPosition().flatMap { checkpoints.resumed(at: $0) } ?? position
+            open(track: trackIndex, at: at, play: true)
         } else if isPlaying {
             player.pause()
         } else {
-            configureSession()
-            player.playImmediately(atRate: speed)
+            resume()
         }
     }
 
+    /// Plays again after a pause, a little earlier than where it stopped, once.
+    private func resume() {
+        guard !isPlaying, publication != nil else { return }
+        configureSession()
+        if let current = currentPosition(), let target = checkpoints.resumed(at: current) {
+            position = target
+            exactSeek(to: target)
+            updateNowPlaying()
+        }
+        player.playImmediately(atRate: speed)
+    }
+
+    /// A deliberate move: no rewind, and a checkpoint at once.
     func seek(to seconds: Double) {
         let target = max(0, duration > 0 ? min(seconds, duration) : seconds)
+        checkpoints.movedDeliberately()
         position = target
-        player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+        exactSeek(to: target)
         record()
         updateNowPlaying()
     }
@@ -237,7 +290,9 @@ final class PlaybackEngine: ObservableObject {
 
     func playTrack(_ index: Int) {
         record()
+        checkpoints.movedDeliberately()
         open(track: index, at: 0, play: true)
+        record()
     }
 
     func playChapter(_ chapter: AudioChapter) {
@@ -268,15 +323,24 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
-    /// Moves to a place chosen after a conflict.
+    /// Moves to a place chosen after a conflict. It is already saved, so arriving there is
+    /// not new activity, and it plays from exactly there.
     func jump(to saved: SavedPosition) {
         guard let index = tracks.firstIndex(where: { $0.id == saved.assetId }) else { return }
+        checkpoints.hold(saved)
         open(track: index, at: saved.positionSeconds ?? 0, play: isPlaying)
+    }
+
+    /// Saves the current place now, e.g. when the app goes to the background.
+    func checkpointNow() {
+        recordAndFlush()
     }
 
     /// Saves the final position, then stops and forgets the queue.
     func stop() async {
-        let last = currentPosition()
+        let observedAt = ActivityTime.now()
+        let last = currentPosition().flatMap { checkpoints.isActivity($0) ? $0 : nil }
+        let previousWrite = lastWrite
         let target = sync
         sync = nil
         player.pause()
@@ -291,8 +355,9 @@ final class PlaybackEngine: ObservableObject {
         problem = nil
         setSleepTimer(minutes: nil)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        await previousWrite?.value
         if let target {
-            if let last { await target.update(last) }
+            if let last { await target.update(last, observedAt: observedAt) }
             await target.flush()
         }
     }
@@ -302,17 +367,29 @@ final class PlaybackEngine: ObservableObject {
         return SavedPosition(assetId: tracks[trackIndex].id, positionSeconds: position)
     }
 
+    /// Writes the current place locally, stamped now. The opened place and the replayed
+    /// pre-roll before it are not new listening and are skipped.
     private func record() {
-        guard let saved = currentPosition(), let sync else { return }
-        Task { await sync.update(saved) }
+        let observedAt = ActivityTime.now()
+        guard let saved = currentPosition(), let sync, checkpoints.isActivity(saved) else { return }
+        enqueue { await sync.update(saved, observedAt: observedAt) }
     }
 
     private func recordAndFlush() {
+        let observedAt = ActivityTime.now()
         guard let sync else { return }
-        let saved = currentPosition()
-        Task {
-            if let saved { await sync.update(saved) }
+        let saved = currentPosition().flatMap { checkpoints.isActivity($0) ? $0 : nil }
+        enqueue {
+            if let saved { await sync.update(saved, observedAt: observedAt) }
             await sync.flush()
+        }
+    }
+
+    private func enqueue(_ work: @escaping @Sendable () async -> Void) {
+        let previous = lastWrite
+        lastWrite = Task {
+            await previous?.value
+            await work()
         }
     }
 
@@ -338,7 +415,7 @@ final class PlaybackEngine: ObservableObject {
         remoteConfigured = true
         let commands = MPRemoteCommandCenter.shared()
         commands.playCommand.addTarget { [weak self] _ in
-            self?.player.playImmediately(atRate: self?.speed ?? 1)
+            self?.resume()
             return .success
         }
         commands.pauseCommand.addTarget { [weak self] _ in

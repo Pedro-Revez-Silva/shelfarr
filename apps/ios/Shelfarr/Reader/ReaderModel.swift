@@ -27,8 +27,13 @@ final class ReaderModel: ObservableObject {
     private let publicationId: String
     private let sync: ProgressSync?
     private var asset: ShelfarrCore.Asset?
+    private var assetIds: [String] = []
     private var title = ""
     private var observer: UUID?
+    /// Tells Readium reporting the opened place apart from the reader moving on.
+    private var restoration = ReadingRestoration(opening: nil)
+    /// Local writes run in the order the pages were reached.
+    private var lastWrite: Task<Void, Never>?
 
     init(app: AppModel, publicationId: String) {
         self.app = app
@@ -72,6 +77,7 @@ final class ReaderModel: ObservableObject {
                 return
             }
             asset = epub
+            assetIds = publication.playableAssets.map(\.id)
             title = publication.title
 
             let file: URL
@@ -98,8 +104,8 @@ final class ReaderModel: ObservableObject {
             switch ResumeDecision.decide(publication: publication, server: publication.progress, local: local, offline: offline) {
             case .beginning:
                 await start(nil, baseVersion: 0)
-            case let .resume(position, baseVersion):
-                await start(position, baseVersion: baseVersion)
+            case let .resume(position, baseVersion, observedAt):
+                await start(position, baseVersion: baseVersion, observedAt: observedAt)
             case let .choose(local, server):
                 state = .chooseResume(local: local, server: server)
             case let .editionChanged(staleVersion):
@@ -116,13 +122,15 @@ final class ReaderModel: ObservableObject {
     func chooseResume(keepLocal: Bool) async {
         guard case let .chooseResume(local, server) = state else { return }
         let position = keepLocal ? local : SavedPosition(server)
-        await sync?.chooseAtOpen(position: position, serverVersion: server.version, keepLocal: keepLocal)
+        await sync?.chooseAtOpen(position: position, server: server, keepLocal: keepLocal)
         await start(position, baseVersion: server.version)
     }
 
-    private func start(_ position: SavedPosition?, baseVersion: Int) async {
+    private func start(_ position: SavedPosition?, baseVersion: Int, observedAt: Int64? = nil) async {
         guard let book, app.session == owner else { return }
-        await sync?.begin(position: position, baseVersion: baseVersion)
+        // Opening at the saved place is not reading: it keeps the time it was reached.
+        await sync?.begin(position: position, baseVersion: baseVersion, observedAt: observedAt, assets: assetIds)
+        restoration = ReadingRestoration(opening: position?.locator)
         do {
             let navigator = try book.makeNavigator(
                 locatorJSON: position?.locator?.jsonString(),
@@ -137,17 +145,28 @@ final class ReaderModel: ObservableObject {
     }
 
     private func record(_ location: ReadingLocation) {
+        // Captured before anything waits: this is when the page was reached.
+        let observedAt = ActivityTime.now()
         fraction = location.fraction
         position = location.position
         if let chapter = location.chapter { self.chapter = chapter }
         guard let asset, let sync, let locator = JSONValue.parse(jsonString: location.locatorJSON) else { return }
+        guard restoration.isReading(locator) else { return }
         let saved = SavedPosition(assetId: asset.id, locator: locator)
-        Task { await sync.update(saved) }
+        enqueue { await sync.update(saved, observedAt: observedAt) }
     }
 
     func flush() {
         guard let sync else { return }
-        Task { await sync.flush() }
+        enqueue { await sync.flush() }
+    }
+
+    private func enqueue(_ work: @escaping @Sendable () async -> Void) {
+        let previous = lastWrite
+        lastWrite = Task {
+            await previous?.value
+            await work()
+        }
     }
 
     func keepThisPlace() {
@@ -158,7 +177,10 @@ final class ReaderModel: ObservableObject {
     func useOtherPlace() {
         guard let sync else { return }
         Task {
-            if let json = await sync.useServer()?.locator?.jsonString() {
+            guard let position = await sync.useServer() else { return }
+            // Going to the chosen saved place is not new reading.
+            restoration.reopen(at: position.locator)
+            if let json = position.locator?.jsonString() {
                 book?.go(toLocatorJSON: json)
             }
         }

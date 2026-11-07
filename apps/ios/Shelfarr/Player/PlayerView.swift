@@ -66,8 +66,8 @@ final class PlayerModel: ObservableObject {
             switch ResumeDecision.decide(publication: publication, server: publication.progress, local: local, offline: offline) {
             case .beginning:
                 await play(publication, nil, baseVersion: 0, notice: notice)
-            case let .resume(position, baseVersion):
-                await play(publication, position, baseVersion: baseVersion, notice: notice)
+            case let .resume(position, baseVersion, observedAt):
+                await play(publication, position, baseVersion: baseVersion, observedAt: observedAt, notice: notice)
             case let .choose(local, server):
                 state = .chooseResume(publication, local: local, server: server)
             case let .editionChanged(staleVersion):
@@ -88,13 +88,14 @@ final class PlayerModel: ObservableObject {
     func chooseResume(keepLocal: Bool) async {
         guard case let .chooseResume(publication, local, server) = state else { return }
         let position = keepLocal ? local : SavedPosition(server)
-        await sync?.chooseAtOpen(position: position, serverVersion: server.version, keepLocal: keepLocal)
+        await sync?.chooseAtOpen(position: position, server: server, keepLocal: keepLocal)
         await play(publication, position, baseVersion: server.version)
     }
 
-    private func play(_ publication: ShelfarrCore.Publication, _ start: SavedPosition?, baseVersion: Int, notice: String? = nil) async {
+    private func play(_ publication: ShelfarrCore.Publication, _ start: SavedPosition?, baseVersion: Int, observedAt: Int64? = nil, notice: String? = nil) async {
         guard let session = owner, app.session == session, let sync else { return }
-        await sync.begin(position: start, baseVersion: baseVersion)
+        // Restoring the saved place is not listening: it keeps the time it was reached.
+        await sync.begin(position: start, baseVersion: baseVersion, observedAt: observedAt, assets: publication.audioAssets.map(\.id))
         app.playback.load(publication, server: session.server, api: app.api(for: session), sync: sync, start: start, localFiles: localFiles)
         state = .active(notice: notice)
     }
@@ -217,6 +218,14 @@ struct PlayerView: View {
                     if let problem = playback.problem {
                         Text(problem.message).font(.footnote).foregroundStyle(Palette.danger).multilineTextAlignment(.center).padding(.top, 10)
                     }
+                    if model.syncStatus == .storageFailed {
+                        Text(storageFailedMessage)
+                            .font(.footnote)
+                            .foregroundStyle(Palette.danger)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 10)
+                            .accessibilityIdentifier("progress-storage-failed")
+                    }
                     Scrubber(playback: playback).padding(.top, 16)
                     Transport(playback: playback).padding(.top, 8)
                     HStack {
@@ -252,6 +261,9 @@ struct PlayerView: View {
         return nil
     }
 }
+
+/// Shown while this device can't write its saved place. It is still sent to the server.
+let storageFailedMessage = "Couldn't save your place on this device. It will still sync to your server."
 
 func speedLabel(_ speed: Float) -> String {
     let text = String(format: "%.2f", speed)
@@ -322,6 +334,7 @@ private struct Transport: View {
                 .frame(width: 76, height: 76)
             }
             .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
+            .accessibilityIdentifier("player-toggle")
             Spacer()
             Button { playback.skip(by: PlaybackEngine.skipForward) } label: {
                 Image(systemName: "goforward.30").font(.title).frame(width: 56, height: 56)

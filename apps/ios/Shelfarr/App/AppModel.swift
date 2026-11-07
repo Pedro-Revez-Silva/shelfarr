@@ -226,6 +226,8 @@ final class AppModel: ObservableObject {
     }
 
     func onBackground() {
+        // The place being listened to is saved at once, not at the next checkpoint.
+        playback.checkpointNow()
         guard let registry = progressRegistry() else { return }
         Task { await registry.flushAll() }
     }

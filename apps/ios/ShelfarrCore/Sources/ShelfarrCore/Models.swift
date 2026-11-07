@@ -185,16 +185,21 @@ public struct ReadingProgress: Codable, Equatable, Sendable {
     public let locator: JSONValue?
     public let positionSeconds: Double?
     public let version: Int
+    /// When the server accepted the write. Never activity time.
     public let updatedAt: String?
     public let clientMutationId: String?
+    /// When the place was actually reached, as sent by the device that reached it.
+    /// Nil from older servers and rows: unknown, never the upload time.
+    public let observedAt: String?
 
-    public init(assetId: String, locator: JSONValue? = nil, positionSeconds: Double? = nil, version: Int = 0, updatedAt: String? = nil, clientMutationId: String? = nil) {
+    public init(assetId: String, locator: JSONValue? = nil, positionSeconds: Double? = nil, version: Int = 0, updatedAt: String? = nil, clientMutationId: String? = nil, observedAt: String? = nil) {
         self.assetId = assetId
         self.locator = locator
         self.positionSeconds = positionSeconds
         self.version = version
         self.updatedAt = updatedAt
         self.clientMutationId = clientMutationId
+        self.observedAt = observedAt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -204,6 +209,7 @@ public struct ReadingProgress: Codable, Equatable, Sendable {
         case version
         case updatedAt = "updated_at"
         case clientMutationId = "client_mutation_id"
+        case observedAt = "observed_at"
     }
 
     public init(from decoder: Decoder) throws {
@@ -215,7 +221,12 @@ public struct ReadingProgress: Codable, Equatable, Sendable {
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 0
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         clientMutationId = try container.decodeIfPresent(String.self, forKey: .clientMutationId)
+        // A malformed or non-string value is an unknown time, not a reason to drop the place.
+        observedAt = (try? container.decodeIfPresent(String.self, forKey: .observedAt)) ?? nil
     }
+
+    /// `observedAt` as epoch milliseconds when well formed. Check plausibility before ordering by it.
+    public var observedAtMillis: Int64? { ActivityTime.parse(observedAt) }
 
     /// 0–1 through the whole publication, when the locator states it.
     public var totalProgression: Double? {
@@ -331,13 +342,19 @@ public struct ProgressUpdate: Codable, Equatable, Sendable {
     public let positionSeconds: Double?
     public let expectedVersion: Int
     public let clientMutationId: String
+    /// Omitted when this device does not know when the place was reached.
+    public let observedAt: String?
+    /// Only ever true for an explicit "Keep this device" choice; omitted otherwise.
+    public let resolveConflict: Bool?
 
-    public init(assetId: String, locator: JSONValue?, positionSeconds: Double?, expectedVersion: Int, clientMutationId: String) {
+    public init(assetId: String, locator: JSONValue?, positionSeconds: Double?, expectedVersion: Int, clientMutationId: String, observedAt: String? = nil, resolveConflict: Bool? = nil) {
         self.assetId = assetId
         self.locator = locator
         self.positionSeconds = positionSeconds
         self.expectedVersion = expectedVersion
         self.clientMutationId = clientMutationId
+        self.observedAt = observedAt
+        self.resolveConflict = resolveConflict == true ? true : nil
     }
 
     enum CodingKeys: String, CodingKey {
@@ -346,6 +363,8 @@ public struct ProgressUpdate: Codable, Equatable, Sendable {
         case positionSeconds = "position_seconds"
         case expectedVersion = "expected_version"
         case clientMutationId = "client_mutation_id"
+        case observedAt = "observed_at"
+        case resolveConflict = "resolve_conflict"
     }
 }
 
