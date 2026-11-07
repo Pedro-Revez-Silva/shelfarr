@@ -3,6 +3,9 @@ package org.shelfarr.app.reader
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
+import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -17,6 +20,7 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -88,19 +92,19 @@ class ReaderSmokeTest {
         try {
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
                 awaitText(scenario, "First chapter is rendered")
-                screenshot("chapter-one.png")
+                screenshot(scenario, "chapter-one.png")
                 scenario.onActivity { activity ->
                     val navigator = activity.supportFragmentManager.findFragmentById(R.id.reader_navigator) as EpubNavigatorFragment
                     val state = ViewModelProvider(activity)[ReaderViewModel::class.java].state.value as ReaderState.Ready
                     navigator.lifecycleScope.launch { navigator.go(state.publication.readingOrder[1], animated = false) }
                 }
                 awaitText(scenario, "Second chapter is rendered")
-                screenshot("chapter-two.png")
+                screenshot(scenario, "chapter-two.png")
                 await("chapter two progress reached the server") { saved.get()?.locator?.get("href").toString().contains("c2.xhtml") }
             }
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
                 awaitText(scenario, "Second chapter is rendered")
-                screenshot("chapter-two-resumed.png")
+                screenshot(scenario, "chapter-two-resumed.png")
             }
         } finally {
             runBlocking {
@@ -141,19 +145,57 @@ class ReaderSmokeTest {
         assertTrue("Timed out waiting for $description", condition())
     }
 
-    private fun screenshot(name: String) {
-        // Gradle pulls this before uninstalling the app and clearing its files.
-        val output = requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir"))
-        val folder = File(output)
-        check(folder.isDirectory || folder.mkdirs()) { "Cannot create test output directory" }
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        instrumentation.waitForIdleSync()
-        val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot()) { "Screenshot capture failed" }
+    private fun screenshot(scenario: ActivityScenario<ReaderActivity>, name: String) {
+        // PixelCopy reads the submitted window buffer, rather than racing the
+        // compositor. Require actual text pixels as well as the DOM assertion.
+        var rendered: Bitmap? = null
+        await("a painted EPUB page for $name") {
+            val image = captureWindow(scenario) ?: return@await false
+            val hasText = hasTextPixels(image)
+            if (hasText) rendered = image else image.recycle()
+            hasText
+        }
+        val bitmap = requireNotNull(rendered)
         try {
+            // Gradle pulls this before uninstalling the app and clearing its files.
+            val output = requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir"))
+            val folder = File(output)
+            check(folder.isDirectory || folder.mkdirs()) { "Cannot create test output directory" }
             File(folder, name).outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         } finally {
             bitmap.recycle()
         }
+    }
+
+    private fun captureWindow(scenario: ActivityScenario<ReaderActivity>): Bitmap? {
+        var bitmap: Bitmap? = null
+        val result = AtomicInteger(-1)
+        val copied = CountDownLatch(1)
+        scenario.onActivity { activity ->
+            val view = activity.window.decorView
+            val image = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            bitmap = image
+            PixelCopy.request(activity.window, image, { code -> result.set(code); copied.countDown() }, Handler(Looper.getMainLooper()))
+        }
+        if (copied.await(3, TimeUnit.SECONDS) && result.get() == PixelCopy.SUCCESS) return bitmap
+        bitmap?.recycle()
+        return null
+    }
+
+    private fun hasTextPixels(image: Bitmap): Boolean {
+        // The fixture opens with the paper theme and hidden chrome. This region
+        // excludes the system bars and progress label, so a blank page fails.
+        var ink = 0
+        for (y in image.height / 10 until image.height * 3 / 5 step 2) {
+            for (x in image.width / 10 until image.width * 9 / 10 step 2) {
+                val pixel = image.getPixel(x, y)
+                val red = (pixel shr 16) and 255
+                val green = (pixel shr 8) and 255
+                val blue = pixel and 255
+                if (red < 160 && green < 160 && blue < 160 && ++ink > 50) return true
+            }
+        }
+        return false
     }
 
     private fun epub(): ByteArray {
