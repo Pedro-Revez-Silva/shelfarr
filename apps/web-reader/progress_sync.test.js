@@ -80,6 +80,57 @@ test("every upload stays bound to the account that rendered the reader", async (
   expect(headers["X-Shelfarr-Account"]).toBe("original-account")
 })
 
+for (const [name, corrected] of [["ten-minute correction", T(0)], ["reset clock", "1999-01-01T00:00:00.000Z"]]) {
+  test(`an ACK cannot erase a newer checkpoint after a ${name}`, async () => {
+    const sync = open()
+    sync.record(at(100, 10))
+    let release
+    responses.push(() => new Promise(resolve => { release = resolve }))
+    const sending = sync.flush()
+    clock = Date.parse(corrected)
+    expect(sync.record({ asset_id: ASSET, position_seconds: 200 })).toBe(true)
+    expect(sync.restorePlace(null).progress.position_seconds).toBe(200)
+    const remote = { asset_id: ASSET, position_seconds: 100, observed_at: T(10), version: 1, client_mutation_id: bodies[0].client_mutation_id }
+    responses.push(conflict(remote))
+    release(json(200, { progress: remote }))
+    await sending
+    await sync.inflight
+    expect(bodies.map(body => body.position_seconds)).toEqual([100, 200])
+    expect(bodies[1].observed_at).toBe(corrected)
+    expect(sync.blocked).toBe(true)
+    const reopened = open({ version: 1 })
+    expect(reopened.restorePlace(remote).progress.position_seconds).toBe(200)
+    expect(reopened.blocked).toBe(true)
+  })
+}
+
+test("a delayed predecessor conflict cannot block an immutable keep-local choice", async () => {
+  const a = open(), b = open()
+  a.record(at(30, 10))
+  let release
+  responses.push(() => new Promise(resolve => { release = resolve }))
+  const first = a.flush()
+  const remote = { asset_id: ASSET, position_seconds: 31, observed_at: null, version: 2, client_mutation_id: "remote" }
+  responses.push(conflict(remote))
+  await b.flush()
+  expect(b.blocked).toBe(true)
+  clock = Date.parse(T(12))
+  responses.push(lost)
+  await b.keepLocal()
+  const choice = bodies.at(-1)
+  expect(choice.resolve_conflict).toBe(true)
+  responses.push(lost)
+  release(conflict(remote))
+  await first
+  await a.inflight
+  expect(a.blocked).toBe(false)
+  const reopened = open({ version: 2 })
+  responses.push(saved(3, { ...choice, version: 3 }))
+  await reopened.flush()
+  expect(bodies.at(-1)).toEqual(choice)
+  expect(reopened.blocked || reopened.waiting).toBe(false)
+})
+
 test("repeated resumes during pre-roll preserve the original saved checkpoint", () => {
   const places = []
   let now = 0

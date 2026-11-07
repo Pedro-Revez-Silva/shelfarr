@@ -312,7 +312,11 @@ failures, retry on reconnect, page focus and reload, automatic rebasing or
 adoption when both activity times are plausible (not before 2000 and at most
 five minutes ahead of this browser), and an explicit choice otherwise.
 A persisted choice survives a reload. Rejected writes and expired sessions keep
-the local place and its activity time and say so. Opening a book shows the newer of the waiting local
+the local place and its activity time and say so. Observations retain which local
+entries preceded them, so a large clock correction cannot make an older upload
+erase a later checkpoint; uncertain times still require a choice. Responses to
+requests already superseded by a persisted choice do not reopen the conflict.
+Opening a book shows the newer of the waiting local
 checkpoint and the server copy. A later place from another device moves the page
 only when this visit has not moved yet; otherwise **Go there** offers it, and a
 paused audiobook takes it on the next Play.

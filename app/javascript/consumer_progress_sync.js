@@ -64,16 +64,30 @@ const isObject = value => Boolean(value) && typeof value === "object" && !Array.
 const timeOf = entry => entry.t === "o" ? entry.observedAt : entry.body.observed_at
 const placeOfEntry = entry => entry.t === "o" ? placeOf(entry.place) : placeOf(entry.body)
 const byId = (left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0
-function byTime(left, right) {
-  const a = parseObservedAt(timeOf(left)) ?? -Infinity, b = parseObservedAt(timeOf(right)) ?? -Infinity
-  return a === b ? byId(left, right) : a < b ? -1 : 1
+function follows(left, right) {
+  return predecessors(left).includes(right.id)
+}
+const predecessors = entry => {
+  const ids = entry.t === "o" ? entry.after : entry.from
+  return Array.isArray(ids) ? ids : []
+}
+function byTime(left, right, now) {
+  const a = plausibleObservedAt(timeOf(left), now), b = plausibleObservedAt(timeOf(right), now)
+  if (a !== null && b !== null) return a === b ? byId(left, right) : a < b ? -1 : 1
+  // A clock correction must not make an observation reached after a known
+  // checkpoint disappear behind it. Keep that local succession independently
+  // of the wall clock; uncertain remote chronology still requires a choice.
+  if (follows(left, right)) return 1
+  if (follows(right, left)) return -1
+  return byId(left, right)
 }
 const localOf = entry => entry.t === "o"
   ? { place: placeOf(entry.place), observedAt: entry.observedAt, base: entry.base }
   : { place: placeOf(entry.body), observedAt: entry.body.observed_at, base: Number.isInteger(entry.body.expected_version) ? entry.body.expected_version : 0 }
 
 // Entry kinds, each written once under `<scope>|<kind>.<time>.<uuid>`:
-//   o  an observation: { place, observedAt, base }, base being the server
+//   o  an observation: { place, observedAt, base, after }, after naming the
+//      local entries already known when it was reached, base being the server
 //      version this browser had incorporated when the place was observed
 //   q  an immutable request: { body, from }, from naming the entries it
 //      supersedes (older places, an earlier request it rebases, a conflict it
@@ -91,7 +105,7 @@ class Outbox {
     this.facts = all.filter(entry => entry.t === "f").sort(byId)
     const dropped = new Set(this.facts.flatMap(fact => fact.drops))
     const places = all.filter(entry => (entry.t === "o" || entry.t === "q") && !dropped.has(entry.id) &&
-      !this.facts.some(fact => this.covers(fact, entry))).sort(byTime)
+      !this.facts.some(fact => this.covers(fact, entry))).sort((a, b) => byTime(a, b, now))
     this.obs = places.filter(entry => entry.t === "o")
     this.requests = places.filter(entry => entry.t === "q")
     const requestIds = new Set(this.requests.map(request => request.id))
@@ -107,7 +121,7 @@ class Outbox {
     this.rejection = this.rejections.at(-1) || null
     const newestObservation = this.obs.at(-1), newestRequest = this.requests.at(-1)
     this.unsent = newestObservation && (!newestRequest ||
-      (parseObservedAt(newestObservation.observedAt) ?? -Infinity) > (parseObservedAt(timeOf(newestRequest)) ?? -Infinity))
+      byTime(newestObservation, newestRequest, now) > 0)
       ? newestObservation : null
     this.newestLocal = places.length ? localOf(places.at(-1)) : null
     this.maxFact = this.facts.reduce((max, fact) => !max || fact.version > max.version || (fact.version === max.version && fact.id > max.id) ? fact : max, null)
@@ -116,14 +130,14 @@ class Outbox {
 
   plausible(value) { return plausibleObservedAt(value, this.now) }
 
-  // Own facts compare this browser's own clock with itself; facts about other
-  // devices' places order only plausible activity times.
+  // Even this browser's wall clock can change between observations.
   times(fact, value) {
-    const read = fact.own === true ? parseObservedAt : value => this.plausible(value)
+    const read = value => this.plausible(value)
     return [read(value), read(fact.observedAt)]
   }
 
   covers(fact, entry) {
+    if (predecessors(entry).some(id => fact.drops.includes(id))) return false
     const [local, settled] = this.times(fact, timeOf(entry))
     if (local === null || settled === null) return false
     return local < settled || (local === settled && samePlace(placeOfEntry(entry), fact.place))
@@ -217,7 +231,7 @@ export default class ConsumerProgressSync {
     if (this.closed) return false
     const box = this.read()
     observedAt ??= this.stamp(box)
-    const { stored } = this.write("o", { place: placeOf(place), observedAt, base: Math.max(this.serverVersion, box.maxVersion) })
+    const { stored } = this.write("o", { place: placeOf(place), observedAt, after: box.placeIds, base: Math.max(this.serverVersion, box.maxVersion) })
     // A later place makes this browser's older waiting places redundant, but
     // only a stored one may replace a stored one.
     const time = parseObservedAt(observedAt)
@@ -330,7 +344,7 @@ export default class ConsumerProgressSync {
     }
     box = this.read()
     // Another tab may have finished or replaced this write meanwhile.
-    if (!box.liveIds.has(request.id)) {
+    if (box.pending?.id !== request.id) {
       if (box.pending || box.unsent) this.again = true
       else if (!box.conflict) this.status("saved")
       return
@@ -370,8 +384,8 @@ export default class ConsumerProgressSync {
     const local = box.newestLocal
     const ownTime = remote ? box.ownTime(remote.client_mutation_id) : null
     const own = ownTime !== null
-    const localTime = own ? parseObservedAt(local.observedAt) : box.plausible(local.observedAt)
-    const remoteTime = !remote ? null : own ? parseObservedAt(ownTime) : box.plausible(remote.observed_at)
+    const localTime = box.plausible(local.observedAt)
+    const remoteTime = !remote ? null : box.plausible(own ? ownTime : remote.observed_at)
     const mappable = !remote || this.assets.has(remote.asset_id)
     if (this.rebases < MAX_AUTOMATIC_REBASES && mappable && localTime !== null) {
       if (!remote || (remoteTime !== null && localTime > remoteTime)) {
