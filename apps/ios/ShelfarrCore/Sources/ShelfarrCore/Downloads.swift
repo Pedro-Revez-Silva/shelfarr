@@ -120,6 +120,7 @@ public actor DownloadManager {
     private let fetchPublication: @Sendable (String) async throws -> Publication
     private let maxConcurrent: Int
     private let usableSpace: @Sendable () -> Int64?
+    private let onUnauthorized: @Sendable () -> Void
     private let files = FileManager.default
 
     private var records: [String: DownloadRecord] = [:] {
@@ -142,7 +143,8 @@ public actor DownloadManager {
         authorize: @escaping @Sendable (URL) -> URLRequest,
         fetchPublication: @escaping @Sendable (String) async throws -> Publication,
         maxConcurrent: Int = 2,
-        usableSpace: @escaping @Sendable () -> Int64? = { nil }
+        usableSpace: @escaping @Sendable () -> Int64? = { nil },
+        onUnauthorized: @escaping @Sendable () -> Void = {}
     ) {
         self.root = root
         self.transport = transport
@@ -151,6 +153,7 @@ public actor DownloadManager {
         self.fetchPublication = fetchPublication
         self.maxConcurrent = max(1, maxConcurrent)
         self.usableSpace = usableSpace
+        self.onUnauthorized = onUnauthorized
     }
 
     private var manifest: URL { root.appendingPathComponent("manifest.json") }
@@ -222,10 +225,10 @@ public actor DownloadManager {
             record.problem = nil
             record.publication = publication
             record.updatedAt = Date()
-            save(record)
+            guard save(record) else { return }
         } else {
             if existing != nil { try? files.removeItem(at: folder(publication.id)) }
-            save(DownloadRecord(publicationId: publication.id, publication: publication, files: pin(publication.playableAssets), state: .queued))
+            guard save(DownloadRecord(publicationId: publication.id, publication: publication, files: pin(publication.playableAssets), state: .queued)) else { return }
         }
         schedule(publication.id)
     }
@@ -260,8 +263,13 @@ public actor DownloadManager {
     public func remove(_ publicationId: String) async {
         await stop(publicationId)
         try? files.removeItem(at: folder(publicationId))
-        records[publicationId] = nil
-        persist()
+        let removed = records.removeValue(forKey: publicationId)
+        if !persist(), var record = removed {
+            record.state = .failed
+            record.problem = .storage
+            record.files = record.files.map { DownloadedFile(assetId: $0.assetId, name: $0.name, sizeBytes: $0.sizeBytes) }
+            records[publicationId] = record
+        }
     }
 
     /// Stops every transfer and all further writes. The caller may then delete `root`.
@@ -324,7 +332,7 @@ public actor DownloadManager {
             record.state = .downloading
             record.problem = nil
             record.updatedAt = Date()
-            save(record)
+            guard save(record) else { return }
 
             let remaining = record.files.filter { !$0.complete }.reduce(Int64(0)) { $0 + max(0, $1.sizeBytes - $1.bytesDone) }
             if let space = usableSpace(), space < remaining + Self.spaceMargin { throw StorageFailure() }
@@ -427,6 +435,7 @@ public actor DownloadManager {
             throw EditionChanged()
         default:
             try? files.removeItem(at: partial)
+            if response.statusCode == 401 { onUnauthorized() }
             throw Self.failure(response.statusCode)
         }
         try finish(publicationId, asset, partial: partial, final: final, sidecar: sidecar)
@@ -456,7 +465,7 @@ public actor DownloadManager {
             $0.complete = true
             $0.bytesDone = length
         }
-        persist()
+        if !persist() { throw StorageFailure() }
     }
 
     private func progress(_ publicationId: String, _ assetId: String, _ written: Int64) {
@@ -478,7 +487,15 @@ public actor DownloadManager {
         else { return }
         let checked = stored.mapValues(reconcile)
         records = checked
-        if checked != stored { persist() }
+        if checked != stored, !persist() {
+            records = records.mapValues { record in
+                guard record.isActive else { return record }
+                var failed = record
+                failed.state = .failed
+                failed.problem = .storage
+                return failed
+            }
+        }
     }
 
     /// Recomputes sizes from disk and refuses to call missing or short files ready.
@@ -510,9 +527,19 @@ public actor DownloadManager {
         return record
     }
 
-    private func save(_ record: DownloadRecord) {
+    @discardableResult
+    private func save(_ record: DownloadRecord) -> Bool {
+        guard !closed else { return false }
         records[record.publicationId] = record
-        persist()
+        guard persist() else {
+            // Keep the error visible even when the disk cannot persist the failure itself.
+            var failed = record
+            failed.state = .failed
+            failed.problem = .storage
+            records[record.publicationId] = failed
+            return false
+        }
+        return true
     }
 
     private func updateFile(_ publicationId: String, _ assetId: String, _ change: (inout DownloadedFile) -> Void) {
@@ -521,10 +548,15 @@ public actor DownloadManager {
         records[publicationId] = record
     }
 
-    private func persist() {
-        guard !closed else { return }
-        try? files.createDirectory(at: root, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(records) { try? data.write(to: manifest, options: .atomic) }
+    private func persist() -> Bool {
+        guard !closed else { return false }
+        do {
+            try files.createDirectory(at: root, withIntermediateDirectories: true)
+            try JSONEncoder().encode(records).write(to: manifest, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func pin(_ assets: [Asset]) -> [DownloadedFile] {

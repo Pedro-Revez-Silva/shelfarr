@@ -133,6 +133,42 @@ class DownloadManagerTest {
     }
 
     @Test
+    fun `manifest write failure is visible and retryable without crashing or transferring`() = runBlocking {
+        val root = File(folder.root, "acct/downloads")
+        val blocked = File(root, "manifest.json.tmp").apply { mkdirs() }
+        val downloads = manager(root)
+        downloads.start()
+        downloads.enqueue(book)
+        assertEquals(DownloadProblem.STORAGE, downloads.awaitState("book", DownloadState.FAILED).problem)
+        assertTrue(requests.isEmpty())
+        blocked.delete()
+        downloads.retry("book")
+        downloads.awaitState("book", DownloadState.READY)
+        downloads.close()
+    }
+
+    @Test
+    fun `manifest failure while persisting a validator is reported without crashing the worker`() = runBlocking {
+        val root = File(folder.root, "acct/downloads")
+        val blocked = File(root, "manifest.json.tmp")
+        routes["/files/epub-1"] = {
+            blocked.mkdirs()
+            ranged(it, epubBytes.toByteArray(), "\"e1\"")
+        }
+        val downloads = manager(root)
+        downloads.start()
+        downloads.enqueue(book)
+        val failed = downloads.awaitState("book", DownloadState.FAILED)
+        assertEquals(DownloadProblem.STORAGE, failed.problem)
+        assertNull(downloads.ready("book"))
+        downloads.cancel("book")
+        assertEquals(DownloadProblem.STORAGE, downloads.record("book")?.problem)
+        downloads.remove("book")
+        assertEquals(DownloadProblem.STORAGE, downloads.record("book")?.problem)
+        downloads.close()
+    }
+
+    @Test
     fun `an EPUB downloads with the account header and survives a restart`() = runBlocking {
         val downloads = manager()
         downloads.start()

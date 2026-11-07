@@ -162,7 +162,11 @@ class DownloadManager(
         val stored = withContext(Dispatchers.IO) { readManifest() }
         val checked = stored.mapValues { (_, record) -> withContext(Dispatchers.IO) { reconcile(record) } }
         mutableRecords.value = checked
-        if (checked != stored) persistLocked()
+        if (checked != stored && !persistLocked()) {
+            mutableRecords.update { records -> records.mapValues { (_, record) ->
+                if (record.isActive) record.copy(state = DownloadState.FAILED, problem = DownloadProblem.STORAGE) else record
+            } }
+        }
     }
 
     /** Recomputes sizes from disk and refuses to call missing or short files ready. */
@@ -230,8 +234,7 @@ class DownloadManager(
             if (existing != null) withContext(Dispatchers.IO) { folder(publication.id).deleteRecursively() }
             DownloadRecord(publication.id, publication, pin(assets), DownloadState.QUEUED, updatedAtEpochMs = clock())
         }
-        save(record)
-        launch(publication.id)
+        if (save(record)) launch(publication.id)
     }
 
     /** Retries a failed or cancelled download with the details it already has. */
@@ -268,8 +271,14 @@ class DownloadManager(
         stopJob(publicationId)
         withContext(Dispatchers.IO) { folder(publicationId).deleteRecursively() }
         manifestMutex.withLock {
+            val removed = mutableRecords.value[publicationId]
             mutableRecords.update { it - publicationId }
-            persistLocked()
+            if (!persistLocked() && removed != null) {
+                mutableRecords.update { it + (publicationId to removed.copy(
+                    state = DownloadState.FAILED, problem = DownloadProblem.STORAGE,
+                    files = removed.files.map { file -> file.copy(complete = false, bytesDone = 0, etag = null) },
+                )) }
+            }
         }
     }
 
@@ -313,7 +322,7 @@ class DownloadManager(
             }
             if (record.files.isEmpty()) throw Unsupported()
             record = record.copy(publication = current, state = DownloadState.DOWNLOADING, problem = null, updatedAtEpochMs = clock())
-            save(record)
+            if (!save(record)) return
 
             val remaining = record.files.filterNot { it.complete }.sumOf { (it.sizeBytes - it.bytesDone).coerceAtLeast(0) }
             if (usableSpace() < remaining + SPACE_MARGIN_BYTES) throw StorageFailure(IOException("Not enough space"))
@@ -516,22 +525,33 @@ class DownloadManager(
         mutableRecords.update { it + (publicationId to updated) }
         // Validators must be on disk before the body, so an interrupted transfer can resume.
         val validatorChanged = updated.files.zip(record.files).any { (after, before) -> after.etag != before.etag }
-        if (persist || validatorChanged) persistLocked()
+        if ((persist || validatorChanged) && !persistLocked()) throw StorageFailure(IOException("Could not save downloads"))
     }
 
-    private suspend fun save(record: DownloadRecord) = manifestMutex.withLock {
+    private suspend fun save(record: DownloadRecord): Boolean = manifestMutex.withLock {
+        if (closed) return@withLock false
         mutableRecords.update { it + (record.publicationId to record) }
-        persistLocked()
+        if (persistLocked()) return@withLock true
+        // Keep the error visible even when the disk cannot persist the failure itself.
+        mutableRecords.update { it + (record.publicationId to record.copy(state = DownloadState.FAILED, problem = DownloadProblem.STORAGE)) }
+        false
     }
 
-    private suspend fun persistLocked() {
-        if (closed) return
+    private suspend fun persistLocked(): Boolean {
+        if (closed) return false
         val snapshot = mutableRecords.value
-        withContext(Dispatchers.IO + NonCancellable) {
-            root.mkdirs()
-            val temporary = File(manifestFile.path + ".tmp")
-            temporary.writeText(ApiJson.encodeToString(snapshot))
-            if (!temporary.renameTo(manifestFile)) throw IOException("Could not save downloads")
+        return withContext(Dispatchers.IO + NonCancellable) {
+            try {
+                root.mkdirs()
+                val temporary = File(manifestFile.path + ".tmp")
+                temporary.writeText(ApiJson.encodeToString(snapshot))
+                if (!temporary.renameTo(manifestFile)) throw IOException("Could not save downloads")
+                true
+            } catch (_: IOException) {
+                false
+            } catch (_: SecurityException) {
+                false
+            }
         }
     }
 
@@ -540,6 +560,10 @@ class DownloadManager(
     } catch (_: SerializationException) {
         emptyMap()
     } catch (_: IllegalArgumentException) {
+        emptyMap()
+    } catch (_: IOException) {
+        emptyMap()
+    } catch (_: SecurityException) {
         emptyMap()
     }
 
