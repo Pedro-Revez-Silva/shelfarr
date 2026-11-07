@@ -299,11 +299,20 @@ origin, deployment subpath and publication, so accounts and servers never share
 it. Each genuine checkpoint (a page turn, followed link or chapter choice; while
 listening, at most five seconds apart, and immediately on pause, seek, track
 change, hiding or leaving the page) is stored with its `observed_at` before any
-request. Sync then follows the rules above: identical retries after uncertain
+request. Tabs share the outbox without a lock: `localStorage` makes only single
+operations atomic, so every observation, request, server answer, conflict and
+rejection is its own entry, written once under a new key and never rewritten.
+The outbox state is derived from all entries, and an entry is removed only after
+a stored entry that supersedes it exists, so a place another tab saves while
+this tab handles a response is always kept. A version 1 single-record outbox is
+converted into entries, keeping its pending request, queued place, rejection
+and open conflict, before the old record is removed.
+Sync then follows the rules above: identical retries after uncertain
 failures, retry on reconnect, page focus and reload, automatic rebasing or
-adoption when both activity times are known, and an explicit choice otherwise.
+adoption when both activity times are plausible (not before 2000 and at most
+five minutes ahead of this browser), and an explicit choice otherwise.
 A persisted choice survives a reload. Rejected writes and expired sessions keep
-the local place and say so. Opening a book shows the newer of the waiting local
+the local place and its activity time and say so. Opening a book shows the newer of the waiting local
 checkpoint and the server copy. A later place from another device moves the page
 only when this visit has not moved yet; otherwise **Go there** offers it, and a
 paused audiobook takes it on the next Play.

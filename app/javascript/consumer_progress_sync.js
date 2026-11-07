@@ -1,18 +1,29 @@
 // Durable progress outbox for the browser reader and player.
 //
-// Each checkpoint is persisted in this browser, under a key bound to the
-// account, origin, deployment subpath and publication, before any network
-// work. A write leaves as an immutable request: an uncertain retry repeats the
-// same place, observed_at, mutation UUID and resolution flag. After a definite
-// conflict, the later observation wins automatically when both activity times
-// are known; equal, unknown or unmappable cases wait for an explicit choice.
-// Rejected writes keep the local place. A reload, reconnect or new tab resumes
-// whatever is still waiting.
+// Every checkpoint is stored in this browser before any network work, under
+// keys bound to the account, origin, deployment subpath and publication. Tabs
+// share the outbox without a lock: localStorage only makes single operations
+// atomic, so nothing here reads, changes and rewrites a shared value. Each
+// observation, request, server fact, conflict or rejection is its own
+// immutable entry, written once under a new key. State is folded from all
+// entries, and an entry is removed only after a durable entry that supersedes
+// it exists, so a place another tab stores at any moment always survives.
+//
+// A write leaves as an immutable request: an uncertain retry repeats the same
+// place, observed_at, mutation UUID and resolution flag, also after a reload.
+// After a definite conflict the later observation wins automatically when both
+// activity times are plausible; equal, unknown, implausible or unmappable cases
+// wait for an explicit choice. Rejected writes keep the local place.
 
 const STORAGE_PREFIX = "shelfarr.progress.v1"
+const PROBE_KEY = "shelfarr.progress.probe"
 const RETRY_DELAYS = [2000, 5000, 15000, 30000, 60000]
 const MAX_AUTOMATIC_REBASES = 5
 const PLACE_KEYS = ["asset_id", "locator", "position_seconds"]
+// Matches the server and native apps: earlier times come from a clock that was
+// never set, and later ones are more than five minutes ahead of this device.
+const EARLIEST_ACTIVITY = Date.UTC(2000, 0, 1)
+const FUTURE_TOLERANCE = 5 * 60_000
 
 export function parseObservedAt(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null
@@ -20,8 +31,15 @@ export function parseObservedAt(value) {
   return Number.isFinite(time) ? time : null
 }
 
+// An activity time that may order places on this device, or null.
+export function plausibleObservedAt(value, now) {
+  const time = parseObservedAt(value)
+  return time !== null && time >= EARLIEST_ACTIVITY && time <= now + FUTURE_TOLERANCE ? time : null
+}
+
 function placeOf(source) {
   const place = {}
+  if (!source || typeof source !== "object") return place
   for (const key of PLACE_KEYS) if (source[key] !== undefined && source[key] !== null) place[key] = source[key]
   return place
 }
@@ -36,6 +54,110 @@ export function samePlace(left, right) {
   return JSON.stringify(canonical(placeOf(left))) === JSON.stringify(canonical(placeOf(right)))
 }
 
+function fingerprint(text) {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index++) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 0x01000193) >>> 0 }
+  return hash.toString(36)
+}
+
+const isObject = value => Boolean(value) && typeof value === "object" && !Array.isArray(value)
+const timeOf = entry => entry.t === "o" ? entry.observedAt : entry.body.observed_at
+const placeOfEntry = entry => entry.t === "o" ? placeOf(entry.place) : placeOf(entry.body)
+const byId = (left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+function byTime(left, right) {
+  const a = parseObservedAt(timeOf(left)) ?? -Infinity, b = parseObservedAt(timeOf(right)) ?? -Infinity
+  return a === b ? byId(left, right) : a < b ? -1 : 1
+}
+const localOf = entry => entry.t === "o"
+  ? { place: placeOf(entry.place), observedAt: entry.observedAt, base: entry.base }
+  : { place: placeOf(entry.body), observedAt: entry.body.observed_at, base: Number.isInteger(entry.body.expected_version) ? entry.body.expected_version : 0 }
+
+// Entry kinds, each written once under `<scope>|<kind>.<time>.<uuid>`:
+//   o  an observation: { place, observedAt, base }, base being the server
+//      version this browser had incorporated when the place was observed
+//   q  an immutable request: { body, from }, from naming the entries it
+//      supersedes (older places, an earlier request it rebases, a conflict it
+//      resolves by choice)
+//   f  a server fact: { version, mutation, observedAt, place, own, drops }, an
+//      accepted request (own) or an adopted server place, dropping the entries
+//      it settles
+//   c  a conflict waiting for a choice: { remote }
+//   r  a rejection of a request: { request, error }
+class Outbox {
+  constructor(entries, now) {
+    this.entries = entries
+    this.now = now
+    const all = [...entries.values()]
+    this.facts = all.filter(entry => entry.t === "f").sort(byId)
+    const dropped = new Set(this.facts.flatMap(fact => fact.drops))
+    const places = all.filter(entry => (entry.t === "o" || entry.t === "q") && !dropped.has(entry.id) &&
+      !this.facts.some(fact => this.covers(fact, entry))).sort(byTime)
+    this.obs = places.filter(entry => entry.t === "o")
+    this.requests = places.filter(entry => entry.t === "q")
+    const requestIds = new Set(this.requests.map(request => request.id))
+    this.rejections = all.filter(entry => entry.t === "r" && !dropped.has(entry.id) && requestIds.has(entry.request)).sort(byId)
+    // A conflict is settled by a choice, or once this browser holds a later version.
+    this.conflicts = all.filter(entry => entry.t === "c" && !dropped.has(entry.id) &&
+      !this.facts.some(fact => fact.version > (entry.remote?.version || 0))).sort(byId)
+    this.liveIds = new Set([...places, ...this.rejections, ...this.conflicts].map(entry => entry.id))
+    const superseded = new Set(this.requests.flatMap(request => request.from))
+    const rejected = new Set(this.rejections.map(rejection => rejection.request))
+    this.conflict = this.conflicts.filter(entry => !superseded.has(entry.id)).at(-1) || null
+    this.pending = this.requests.filter(request => !superseded.has(request.id) && !rejected.has(request.id)).at(-1) || null
+    this.rejection = this.rejections.at(-1) || null
+    const newestObservation = this.obs.at(-1), newestRequest = this.requests.at(-1)
+    this.unsent = newestObservation && (!newestRequest ||
+      (parseObservedAt(newestObservation.observedAt) ?? -Infinity) > (parseObservedAt(timeOf(newestRequest)) ?? -Infinity))
+      ? newestObservation : null
+    this.newestLocal = places.length ? localOf(places.at(-1)) : null
+    this.maxFact = this.facts.reduce((max, fact) => !max || fact.version > max.version || (fact.version === max.version && fact.id > max.id) ? fact : max, null)
+    this.maxVersion = this.maxFact?.version || 0
+  }
+
+  plausible(value) { return plausibleObservedAt(value, this.now) }
+
+  // Own facts compare this browser's own clock with itself; facts about other
+  // devices' places order only plausible activity times.
+  times(fact, value) {
+    const read = fact.own === true ? parseObservedAt : value => this.plausible(value)
+    return [read(value), read(fact.observedAt)]
+  }
+
+  covers(fact, entry) {
+    const [local, settled] = this.times(fact, timeOf(entry))
+    if (local === null || settled === null) return false
+    return local < settled || (local === settled && samePlace(placeOfEntry(entry), fact.place))
+  }
+
+  // The server version a request for this local place may expect.
+  baseFor(local) {
+    let base = Number.isInteger(local.base) ? local.base : 0
+    for (const fact of this.facts) {
+      const [observed, settled] = this.times(fact, local.observedAt)
+      if (observed !== null && settled !== null && (fact.own === true ? observed >= settled : observed > settled)) base = Math.max(base, fact.version)
+    }
+    return base
+  }
+
+  // Whether this server mutation is one this browser sent or already adopted.
+  incorporated(mutation) {
+    if (typeof mutation !== "string") return false
+    return [...this.entries.values()].some(entry => (entry.t === "q" && entry.body.client_mutation_id === mutation) || (entry.t === "f" && entry.mutation === mutation))
+  }
+
+  // The local activity time of one of this browser's own mutations, or null.
+  ownTime(mutation) {
+    if (typeof mutation !== "string") return null
+    for (const entry of this.entries.values()) {
+      if (entry.t === "q" && entry.body.client_mutation_id === mutation) return entry.body.observed_at ?? null
+      if (entry.t === "f" && entry.own === true && entry.mutation === mutation) return entry.observedAt ?? null
+    }
+    return null
+  }
+
+  get placeIds() { return [...this.obs, ...this.requests, ...this.conflicts].map(entry => entry.id) }
+}
+
 export default class ConsumerProgressSync {
   constructor({ url, account, base = "", publication, version = 0, assets = [], storage, now = () => Date.now(),
     onStatus = () => {}, onConflict = () => {}, onRemote = () => {}, syncDelay = 5000, retryDelays = RETRY_DELAYS }) {
@@ -43,9 +165,11 @@ export default class ConsumerProgressSync {
     if (endpoint.origin !== window.location.origin) throw new Error("Invalid progress endpoint")
     if (!account || !publication) throw new Error("Progress needs an account and publication")
     this.url = endpoint.href
+    // The version-1 single-record key: still read once to migrate it.
     this.key = [STORAGE_PREFIX, window.location.origin + base, account, publication].map(encodeURIComponent).join("|")
+    this.prefix = `${this.key}|`
     this.identity = { account: String(account), origin: window.location.origin, base, publication: String(publication) }
-    this.serverVersion = version || 0
+    this.serverVersion = Number.isInteger(version) && version > 0 ? version : 0
     this.assets = new Set(assets)
     this.now = now
     this.onStatus = onStatus
@@ -55,45 +179,52 @@ export default class ConsumerProgressSync {
     this.retryDelays = retryDelays
     this.failures = 0
     this.rebases = 0
+    // Entries this visit could not store yet; they are retried on every write.
+    this.unsaved = new Map()
     try { this.storage = storage === undefined ? window.localStorage : storage } catch (_) { this.storage = null }
-    this.memory = null
     try {
-      this.storage?.setItem(`${this.key}|probe`, "1")
-      this.storage?.removeItem(`${this.key}|probe`)
+      if (typeof this.storage?.key !== "function") throw new Error("Storage cannot list its keys")
+      this.storage.setItem(PROBE_KEY, "1")
+      this.storage.removeItem(PROBE_KEY)
+      this.storageFailed = false
     } catch (_) { this.storageFailed = true }
+    if (typeof this.storage?.key !== "function") this.storage = null
     if (!this.storage) this.storageFailed = true
     this.onlineHandler = () => this.flush()
     window.addEventListener?.("online", this.onlineHandler)
   }
 
   // The place to show when opening: a waiting local checkpoint unless the
-  // server holds a later observation of the same edition.
+  // server holds a plausibly later observation of the same edition.
   restorePlace(server) {
-    const record = this.load()
-    const local = this.newestLocal(record)
+    const box = this.read()
+    const local = box.newestLocal
     if (!local || !this.assets.has(local.place.asset_id)) return server ? { source: "server", progress: server } : null
-    const pendingId = record.pending?.body.client_mutation_id
-    if (!server || server.version <= record.base || (pendingId && server.client_mutation_id === pendingId)) return { source: "local", progress: local.place, observedAt: local.observedAt }
-    const remoteTime = parseObservedAt(server.observed_at)
-    const localTime = parseObservedAt(local.observedAt)
-    if (remoteTime !== null && localTime !== null && remoteTime > localTime) return { source: "server", progress: server }
-    return { source: "local", progress: local.place, observedAt: local.observedAt }
+    const kept = { source: "local", progress: local.place, observedAt: local.observedAt }
+    if (!server || server.version <= box.baseFor(local) || box.incorporated(server.client_mutation_id)) return kept
+    const remoteTime = box.plausible(server.observed_at), localTime = box.plausible(local.observedAt)
+    return remoteTime !== null && localTime !== null && remoteTime > localTime ? { source: "server", progress: server } : kept
   }
 
   // False when this browser refuses to keep the outbox across a reload.
   get durable() { return !this.storageFailed }
-  get blocked() { return Boolean(this.load().conflict) }
-  get conflict() { return this.load().conflict }
-  get waiting() { const record = this.load(); return Boolean(record.latest || (record.pending && record.pending.state !== "rejected")) }
+  get blocked() { return Boolean(this.read().conflict) }
+  get conflict() { const conflict = this.read().conflict; return conflict ? { remote: conflict.remote } : null }
+  get waiting() { const box = this.read(); return Boolean(box.unsent || box.pending) }
 
-  // Persist a genuine new observation. Network work happens later.
-  record(place, observedAt = new Date(this.now()).toISOString()) {
+  // Persist a genuine new observation as its own entry. Network work happens later.
+  record(place, observedAt) {
     if (this.closed) return false
-    const record = this.load()
-    if (record.pending?.state === "rejected") record.pending = null
-    record.latest = { place: placeOf(place), observedAt }
-    const stored = this.persist(record)
-    if (record.conflict) this.status("conflict")
+    const box = this.read()
+    observedAt ??= this.stamp(box)
+    const { stored } = this.write("o", { place: placeOf(place), observedAt, base: Math.max(this.serverVersion, box.maxVersion) })
+    // A later place makes this browser's older waiting places redundant, but
+    // only a stored one may replace a stored one.
+    const time = parseObservedAt(observedAt)
+    if (time !== null) for (const older of box.obs) {
+      if ((parseObservedAt(older.observedAt) ?? Infinity) < time && (stored || this.unsaved.has(older.id))) this.remove(older.id)
+    }
+    if (box.conflict) this.status("conflict")
     else {
       this.status(stored ? "local" : "storage")
       this.schedule(this.syncDelay)
@@ -114,9 +245,9 @@ export default class ConsumerProgressSync {
     return this.inflight
   }
 
+  // Send a rejected request again, unchanged.
   retry() {
-    const record = this.load()
-    if (record.pending?.state === "rejected") { record.pending.state = "sending"; this.persist(record) }
+    for (const rejection of this.read().rejections) this.remove(rejection.id)
     this.failures = 0
     return this.flush()
   }
@@ -124,24 +255,21 @@ export default class ConsumerProgressSync {
   // Explicit "keep this device": a new choice with its own time and intent,
   // persisted before it is sent.
   keepLocal() {
-    const record = this.load()
-    const local = this.newestLocal(record)
-    if (!record.conflict || !local) return Promise.resolve()
-    record.pending = { state: "sending", body: { ...local.place, observed_at: new Date(this.now()).toISOString(),
-      resolve_conflict: true, expected_version: record.conflict.remote?.version || 0, client_mutation_id: crypto.randomUUID() } }
-    record.base = record.conflict.remote?.version || 0
-    record.latest = null
-    record.conflict = null
+    const box = this.read()
+    const local = box.newestLocal
+    if (!box.conflict || !local) return Promise.resolve()
+    this.write("q", { choice: true, from: box.placeIds, body: { ...local.place, observed_at: new Date(this.now()).toISOString(),
+      resolve_conflict: true, expected_version: box.conflict.remote?.version || 0, client_mutation_id: crypto.randomUUID() } })
     this.rebases = 0
-    this.persist(record)
     return this.flush()
   }
 
-  // Explicit "use the other device's place": local writes are discarded.
+  // Explicit "use the other device's place": the local places it answered are dropped.
   useRemote() {
-    const record = this.load()
-    const remote = record.conflict?.remote || null
-    this.persist({ base: remote?.version || 0, pending: null, latest: null, conflict: null })
+    const box = this.read()
+    const remote = box.conflict?.remote || null
+    this.adopt(box, remote, false, remote?.observed_at ?? null)
+    this.collect()
     return remote
   }
 
@@ -151,10 +279,10 @@ export default class ConsumerProgressSync {
     this.closing = true
     window.removeEventListener?.("online", this.onlineHandler)
     if (this.inflight) return this.inflight
-    const record = this.load()
+    const box = this.read()
     // One last keepalive attempt, unless this visit is already known offline;
     // anything unsent stays in the outbox for the next visit.
-    if (!record.conflict && !this.failures && (record.latest || record.pending?.state === "sending")) return this.flush().then(() => this.finishClose())
+    if (!box.conflict && !this.failures && (box.unsent || box.pending)) return this.flush().then(() => this.finishClose())
     this.finishClose()
     return Promise.resolve()
   }
@@ -163,10 +291,12 @@ export default class ConsumerProgressSync {
 
   // Internal ------------------------------------------------------------------
 
-  newestLocal(record) {
-    if (record.latest) return record.latest
-    if (record.pending) return { place: placeOf(record.pending.body), observedAt: record.pending.body.observed_at }
-    return null
+  // Activity on one browser happens in order: a clock that stepped back a
+  // little must not make the newer place look older.
+  stamp(box) {
+    const now = this.now()
+    const previous = box.newestLocal ? parseObservedAt(box.newestLocal.observedAt) : null
+    return new Date(previous !== null && previous >= now && previous <= now + FUTURE_TOLERANCE ? previous + 1 : now).toISOString()
   }
 
   schedule(delay) {
@@ -175,16 +305,17 @@ export default class ConsumerProgressSync {
   }
 
   async send() {
-    let record = this.load()
-    if (record.conflict) return this.status("conflict")
-    if (!record.pending || record.pending.state === "rejected") {
-      if (!record.latest) return record.pending ? this.status("rejected", record.pending.error) : undefined
-      record.pending = { state: "sending", body: { ...record.latest.place, observed_at: record.latest.observedAt,
-        expected_version: record.base, client_mutation_id: crypto.randomUUID() } }
-      record.latest = null
-      this.persist(record)
+    let box = this.read()
+    if (box.conflict) return this.status("conflict")
+    let request = box.pending
+    if (!request) {
+      const next = box.unsent
+      if (!next) return box.rejection ? this.status("rejected", box.rejection.error) : undefined
+      const local = localOf(next)
+      request = this.write("q", { from: box.placeIds, body: { ...local.place, observed_at: local.observedAt,
+        expected_version: box.baseFor(local), client_mutation_id: crypto.randomUUID() } }).entry
     }
-    const body = record.pending.body
+    const body = request.body
     this.status("syncing")
     let response, result = null
     try {
@@ -197,35 +328,32 @@ export default class ConsumerProgressSync {
     } catch (_) {
       return this.uncertain("offline")
     }
-    record = this.load()
+    box = this.read()
     // Another tab may have finished or replaced this write meanwhile.
-    if (!record.pending || record.pending.body.client_mutation_id !== body.client_mutation_id) return
-    if (response.type === "opaqueredirect" || response.status === 401) return this.notApplied(record, "signin")
-    if (response.ok && result?.progress) return this.accepted(record, result.progress)
-    if (response.status === 409 && result?.error === "progress_conflict") return this.reconcile(record, result.progress || null)
+    if (!box.liveIds.has(request.id)) {
+      if (box.pending || box.unsent) this.again = true
+      else if (!box.conflict) this.status("saved")
+      return
+    }
+    if (response.type === "opaqueredirect" || response.status === 401) return this.status("signin")
+    if (response.ok && Number.isInteger(result?.progress?.version)) return this.accepted(request, result.progress)
+    if (response.status === 409 && result?.error === "progress_conflict" && (!result.progress || Number.isInteger(result.progress.version))) return this.reconcile(box, result.progress || null)
     if ((response.status === 422 && result?.error === "invalid_progress") || response.status === 404) {
-      record.pending.state = "rejected"
-      record.pending.error = typeof result?.message === "string" ? result.message : null
-      this.persist(record)
-      return this.status("rejected", record.pending.error)
+      // The local place and its activity time stay as they were.
+      const error = typeof result?.message === "string" ? result.message : null
+      this.write("r", { request: request.id, error })
+      return this.status("rejected", error)
     }
     return this.uncertain(response.status === 403 || response.status === 422 ? "reload" : "offline")
   }
 
-  accepted(record, progress) {
+  accepted(request, progress) {
     this.failures = 0
     this.rebases = 0
-    this.serverVersion = progress.version
-    record.base = progress.version
-    record.pending = null
-    this.persist(record)
-    if (record.latest) { this.status("local"); this.again = true } else this.status("saved")
-  }
-
-  notApplied(record, kind) {
-    record.pending.state = "sending"
-    this.persist(record)
-    this.status(kind)
+    this.serverVersion = Math.max(this.serverVersion, progress.version)
+    this.write("f", { version: progress.version, mutation: request.body.client_mutation_id, observedAt: request.body.observed_at ?? null,
+      place: placeOf(request.body), own: true, drops: [request.id, ...request.from] })
+    this.settled()
   }
 
   uncertain(kind) {
@@ -235,73 +363,157 @@ export default class ConsumerProgressSync {
     if (!this.closing) this.schedule(delay)
   }
 
-  reconcile(record, remote) {
+  // A definite conflict: compare the server copy with the newest local place,
+  // including places other tabs queued behind this request.
+  reconcile(box, remote) {
     this.failures = 0
-    const local = this.newestLocal(record)
-    const localTime = parseObservedAt(local.observedAt)
-    const remoteTime = remote ? parseObservedAt(remote.observed_at) : null
+    const local = box.newestLocal
+    const ownTime = remote ? box.ownTime(remote.client_mutation_id) : null
+    const own = ownTime !== null
+    const localTime = own ? parseObservedAt(local.observedAt) : box.plausible(local.observedAt)
+    const remoteTime = !remote ? null : own ? parseObservedAt(ownTime) : box.plausible(remote.observed_at)
     const mappable = !remote || this.assets.has(remote.asset_id)
-    const rebase = version => {
-      this.rebases += 1
-      record.pending = { state: "sending", body: { ...local.place, observed_at: local.observedAt, expected_version: version, client_mutation_id: crypto.randomUUID() } }
-      record.base = version
-      record.latest = null
-      this.persist(record)
-      this.again = true
-    }
     if (this.rebases < MAX_AUTOMATIC_REBASES && mappable && localTime !== null) {
-      if (!remote) return rebase(0)
-      if (remoteTime !== null && localTime > remoteTime) return rebase(remote.version)
+      if (!remote || (remoteTime !== null && localTime > remoteTime)) {
+        this.rebases += 1
+        this.write("q", { from: box.placeIds, body: { ...local.place, observed_at: local.observedAt,
+          expected_version: remote?.version || 0, client_mutation_id: crypto.randomUUID() } })
+        this.again = true
+        return
+      }
       if (remoteTime !== null && (remoteTime > localTime || samePlace(local.place, remote))) {
         this.rebases = 0
-        this.serverVersion = remote.version
-        this.persist({ base: remote.version, pending: null, latest: null, conflict: null })
-        this.status("saved")
-        return this.onRemote(remote)
+        this.adopt(box, remote, own, own ? ownTime : (remote.observed_at ?? null))
+        this.settled()
+        if (!own) this.onRemote(remote)
+        return
       }
     }
     this.rebases = 0
-    record.conflict = { remote }
-    this.persist(record)
+    this.write("c", { remote })
     this.status("conflict")
     this.onConflict(remote)
   }
 
-  load() {
-    // Storage is the source of truth so tabs share one outbox. This visit's
-    // copy is used only while the browser refuses to store it.
-    let record = this.memory
-    if (this.storage && !this.storageFailed) {
-      try {
-        const raw = this.storage.getItem(this.key)
-        const parsed = raw ? JSON.parse(raw) : null
-        const identity = parsed?.identity
-        record = identity && identity.account === this.identity.account && identity.publication === this.identity.publication &&
-          identity.origin === this.identity.origin && identity.base === this.identity.base ? parsed : null
-      } catch (_) { /* unreadable: keep this visit's copy */ }
-    }
-    record = record ? structuredClone(record) : {}
-    record.base = Number.isInteger(record.base) ? Math.max(record.base, 0) : this.serverVersion
-    record.pending ||= null
-    record.latest ||= null
-    record.conflict ||= null
-    return record
+  adopt(box, remote, own, observedAt) {
+    const version = remote?.version || 0
+    this.serverVersion = Math.max(this.serverVersion, version)
+    this.write("f", { version, mutation: remote?.client_mutation_id ?? null, observedAt, place: placeOf(remote), own, drops: box.placeIds })
   }
 
-  persist(record) {
-    const empty = !record.pending && !record.latest && !record.conflict
-    const value = { identity: this.identity, base: record.base, pending: record.pending, latest: record.latest, conflict: record.conflict, savedAt: new Date(this.now()).toISOString() }
-    this.memory = empty ? null : structuredClone(value)
-    if (!this.storage) { this.storageFailed = true; return false }
-    try {
-      if (empty) this.storage.removeItem(this.key)
-      else this.storage.setItem(this.key, JSON.stringify(value))
-      this.storageFailed = false
-      return true
-    } catch (_) {
-      this.storageFailed = true
-      return false
+  settled() {
+    this.collect()
+    const box = this.read()
+    if (box.pending || box.unsent) { this.status("local"); this.again = true } else this.status("saved")
+  }
+
+  // Remove entries a durable fact already settles, then facts nothing needs.
+  collect() {
+    const box = this.read()
+    for (const entry of box.entries.values()) if (entry.t !== "f" && !box.liveIds.has(entry.id)) this.remove(entry.id)
+    const after = this.read()
+    const others = [...after.entries.values()].some(entry => entry.t !== "f")
+    for (const fact of after.facts) {
+      if (fact === after.maxFact && others) continue
+      if (fact.drops.some(id => this.present(id))) continue
+      this.remove(fact.id)
     }
+  }
+
+  read() {
+    const entries = new Map()
+    if (this.storage) {
+      try {
+        this.migrate()
+        const keys = []
+        for (let index = 0, length = this.storage.length; index < length; index++) {
+          const key = this.storage.key(index)
+          if (typeof key === "string" && key.startsWith(this.prefix)) keys.push(key)
+        }
+        for (const key of keys) {
+          const entry = this.decode(key.slice(this.prefix.length), this.storage.getItem(key))
+          if (entry) entries.set(entry.id, entry)
+        }
+      } catch (_) { this.storageFailed = true }
+    }
+    for (const [id, entry] of this.unsaved) entries.set(id, structuredClone(entry))
+    return new Outbox(entries, this.now())
+  }
+
+  decode(id, raw) {
+    if (typeof raw !== "string") return null
+    let entry
+    try { entry = JSON.parse(raw) } catch (_) { return null }
+    if (!isObject(entry) || !this.sameIdentity(entry.identity) || entry.t !== id.split(".")[0]) return null
+    entry.id = id
+    const valid = {
+      o: () => isObject(entry.place) && typeof entry.observedAt === "string" && Number.isInteger(entry.base),
+      q: () => isObject(entry.body) && typeof entry.body.client_mutation_id === "string" && Array.isArray(entry.from),
+      f: () => Number.isInteger(entry.version) && Array.isArray(entry.drops),
+      c: () => entry.remote === null || isObject(entry.remote),
+      r: () => typeof entry.request === "string"
+    }[entry.t]
+    return valid?.() ? entry : null
+  }
+
+  sameIdentity(identity) {
+    return isObject(identity) && identity.account === this.identity.account && identity.publication === this.identity.publication &&
+      identity.origin === this.identity.origin && identity.base === this.identity.base
+  }
+
+  // Version 1 kept the whole outbox in one record. Its contents become entries
+  // with ids derived from the record, so tabs migrating at once write the same
+  // entries; the record is removed only after they are stored.
+  migrate() {
+    const raw = this.storage.getItem(this.key)
+    if (!raw) return
+    let legacy
+    try { legacy = JSON.parse(raw) } catch (_) { return }
+    if (!isObject(legacy) || !this.sameIdentity(legacy.identity)) return
+    const tag = `legacy-${fingerprint(raw)}`
+    const base = Number.isInteger(legacy.base) && legacy.base > 0 ? legacy.base : 0
+    const ids = []
+    const put = (id, fields) => { ids.push(id); this.put(id, fields) }
+    const pending = legacy.pending
+    if (isObject(pending?.body) && typeof pending.body.client_mutation_id === "string") {
+      put(`q.${tag}`, { t: "q", from: [], body: pending.body })
+      if (pending.state === "rejected") put(`r.${tag}`, { t: "r", request: `q.${tag}`, error: typeof pending.error === "string" ? pending.error : null })
+    }
+    if (isObject(legacy.latest?.place) && typeof legacy.latest.observedAt === "string") {
+      put(`o.${tag}`, { t: "o", place: placeOf(legacy.latest.place), observedAt: legacy.latest.observedAt, base })
+    }
+    if (isObject(legacy.conflict)) put(`c.${tag}`, { t: "c", remote: isObject(legacy.conflict.remote) ? legacy.conflict.remote : null })
+    if (ids.some(id => this.unsaved.has(id))) return
+    if (this.storage.getItem(this.key) === raw) this.storage.removeItem(this.key)
+  }
+
+  write(kind, fields) {
+    const id = `${kind}.${Math.max(0, Math.floor(this.now())).toString(36).padStart(9, "0")}.${crypto.randomUUID()}`
+    return this.put(id, { t: kind, ...fields })
+  }
+
+  // Store a new entry under its own key; it is never rewritten.
+  put(id, fields) {
+    const entry = { ...fields, id, identity: this.identity, savedAt: new Date(this.now()).toISOString() }
+    this.unsaved.set(id, entry)
+    if (this.storage) {
+      for (const [waiting, value] of this.unsaved) {
+        try { this.storage.setItem(this.prefix + waiting, JSON.stringify(value)); this.unsaved.delete(waiting) } catch (_) { break }
+      }
+    }
+    this.storageFailed = !this.storage || this.unsaved.size > 0
+    return { id, stored: !this.unsaved.has(id), entry: structuredClone(entry) }
+  }
+
+  remove(id) {
+    this.unsaved.delete(id)
+    try { this.storage?.removeItem(this.prefix + id) } catch (_) { /* a settled entry stays hidden by its fact */ }
+  }
+
+  present(id) {
+    if (this.unsaved.has(id)) return true
+    if (!this.storage) return false
+    try { return this.storage.getItem(this.prefix + id) !== null } catch (_) { return true }
   }
 
   status(kind, detail = null) {
