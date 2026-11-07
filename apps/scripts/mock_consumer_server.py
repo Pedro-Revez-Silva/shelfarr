@@ -10,7 +10,10 @@ security and must never be exposed beyond a development machine.
 
 Approve a pending device by opening its verification URL, or start with
 --auto-approve. Use --conflict-after N to answer the Nth progress write with a
-conflict, to see how a client handles another device moving on. Use
+conflict, to see how a client handles another device moving on; that place's
+activity time is unknown unless --conflict-observed older|newer sets it a minute
+either side of the conflicting write's observed_at. Progress follows the
+observed_at/resolve_conflict rules in docs/consumer-api.md. Use
 --extra-books N to add N more small mock books, enough to page the library and
 to see Continue find a book beyond the first page.
 """
@@ -27,10 +30,54 @@ import time
 import uuid
 import wave
 import zipfile
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 PREFIX = "/api/consumer/v1"
+OBSERVED_AT = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(\.\d{1,9})?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)")
+
+
+def parse_observed_at(value):
+    """Return epoch seconds (millisecond precision) or None when unknown."""
+    if value is None:
+        return None
+    match = OBSERVED_AT.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError("observed_at must be an ISO-8601 time with a time zone")
+    fraction = (match[7] or ".0")[:4].ljust(4, "0")
+    zone = "+00:00" if match[8] == "Z" else match[8]
+    try:
+        parsed = datetime.fromisoformat(f"{match[1]}-{match[2]}-{match[3]}T{match[4]}:{match[5]}:{match[6]}{fraction}{zone}")
+    except ValueError as error:
+        raise ValueError("observed_at must be an ISO-8601 time with a time zone") from error
+    seconds = math.floor(parsed.timestamp() * 1000) / 1000
+    if seconds > time.time() + 300:
+        raise ValueError("observed_at is too far in the future; check this device's clock")
+    return seconds
+
+
+def format_time(seconds):
+    if seconds is None:
+        return None
+    moment = datetime.fromtimestamp(seconds, timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def chronological(current, place, observed):
+    """A known later stored activity cannot be replaced by an earlier one."""
+    stored = parse_stored(current.get("observed_at"))
+    if stored is None or observed is None or observed > stored:
+        return True
+    same_place = all(current.get(key) == place[key] for key in ("asset_id", "locator", "position_seconds"))
+    return observed == stored and same_place
+
+
+def parse_stored(value):
+    if value is None:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
 def build_epub():
@@ -99,10 +146,11 @@ def build_tone(seconds, hertz):
 
 
 class State:
-    def __init__(self, auto_approve, conflict_after, slow_down, extra_books=0):
+    def __init__(self, auto_approve, conflict_after, slow_down, extra_books=0, conflict_observed="unknown"):
         self.lock = threading.Lock()
         self.auto_approve = auto_approve
         self.conflict_after = conflict_after
+        self.conflict_observed = conflict_observed
         self.slow_down = slow_down
         self.devices = {}
         self.tokens = set()
@@ -124,8 +172,8 @@ class State:
             self.files[f"epub-x{n}"] = (f"mock-{n}.epub",) + epub[1:]
             self.books[f"book-x{n}"] = (f"Mock Book {n:03d}", "Mock Author", "ebook", [f"epub-x{n}"])
 
-    def touch(self, publication_id):
-        self.activity[publication_id] = time.time()
+    def touch(self, publication_id, at=None):
+        self.activity[publication_id] = time.time() if at is None else at
 
     def status(self, publication_id):
         if publication_id in self.statuses:
@@ -318,29 +366,42 @@ class Handler(BaseHTTPRequestHandler):
         if not match or not self.authorized():
             return None if match else self.respond(404, {"error": "not_found"})
         update = self.body()
+        try:
+            observed = parse_observed_at(update.get("observed_at"))
+        except ValueError as error:
+            return self.respond(422, {"error": "invalid_progress", "message": str(error)})
+        resolve = update.get("resolve_conflict")
+        if resolve is not None and type(resolve) is not bool:
+            return self.respond(422, {"error": "invalid_progress", "message": "resolve_conflict must be true or false"})
+        place = {"asset_id": update.get("asset_id"), "locator": update.get("locator"),
+                 "position_seconds": update.get("position_seconds"), "observed_at": format_time(observed)}
         with self.state.lock:
-            self.state.touch(match[1])
             current = self.state.progress.get(match[1])
             version = current["version"] if current else 0
             if current and current["client_mutation_id"] == update.get("client_mutation_id"):
-                return self.respond(200, {"progress": current})
+                same = all(current[key] == value for key, value in place.items())
+                return self.respond(200 if same else 409, {"progress": current} if same else {"error": "progress_conflict", "progress": current})
             self.state.writes += 1
             if self.state.conflict_after and self.state.writes == self.state.conflict_after:
+                # Simulate another device. Its activity time is unknown unless
+                # --conflict-observed asks for one older or newer than this write.
                 version += 1
                 current = dict(current or update, version=version, client_mutation_id=str(uuid.uuid4()))
-                current["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                current.pop("expected_version", None)
+                current.pop("resolve_conflict", None)
+                shift = {"older": -60, "newer": 60}.get(self.state.conflict_observed)
+                current["observed_at"] = format_time(observed + shift) if shift and observed is not None else None
+                current["updated_at"] = format_time(time.time())
                 self.state.progress[match[1]] = current
             if update.get("expected_version") != version:
                 return self.respond(409, {"error": "progress_conflict", "progress": current})
-            saved = {
-                "asset_id": update["asset_id"],
-                "locator": update.get("locator"),
-                "position_seconds": update.get("position_seconds"),
-                "version": version + 1,
-                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "client_mutation_id": update["client_mutation_id"],
-            }
+            if current and not resolve and not chronological(current, place, observed):
+                return self.respond(409, {"error": "progress_conflict", "progress": current})
+            saved = dict(place, version=version + 1, updated_at=format_time(time.time()),
+                         client_mutation_id=update["client_mutation_id"])
             self.state.progress[match[1]] = saved
+            # Recent order follows the observed activity, never the upload time.
+            self.state.touch(match[1], observed)
             self.respond(200, {"progress": saved})
 
     def approve(self):
@@ -392,10 +453,12 @@ def main():
     parser.add_argument("--auto-approve", action="store_true")
     parser.add_argument("--slow-down", action="store_true", help="Answer the first poll with slow_down")
     parser.add_argument("--conflict-after", type=int, default=0, metavar="N")
+    parser.add_argument("--conflict-observed", choices=("unknown", "older", "newer"), default="unknown",
+                        help="Activity time of the simulated other device's place, relative to the conflicting write")
     parser.add_argument("--extra-books", type=int, default=0, metavar="N", help="Add N more mock books to exercise paging")
     args = parser.parse_args()
 
-    Handler.state = State(args.auto_approve, args.conflict_after, args.slow_down, args.extra_books)
+    Handler.state = State(args.auto_approve, args.conflict_after, args.slow_down, args.extra_books, args.conflict_observed)
     Handler.base = args.base.rstrip("/")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Mock Shelfarr consumer API on http://{args.host}:{args.port}{Handler.base}", flush=True)
