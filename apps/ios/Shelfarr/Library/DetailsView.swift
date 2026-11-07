@@ -46,6 +46,7 @@ final class DetailsModel: ObservableObject {
             let updated = try await app.api(for: session).setReadingStatus(server: session.server, publicationId: publication.id, status: status)
             guard app.session == session else { return }
             state = .loaded(updated, offline: false)
+            app.libraryGeneration += 1
         } catch {
             statusError = error
         }

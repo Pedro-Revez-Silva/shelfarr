@@ -25,7 +25,7 @@ enum class LibraryFilter(val query: String?) {
 }
 
 enum class LibrarySort(val query: String?) {
-    /** Recent activity first, the server default. */
+    /** Recently acquired first, the server default. */
     RECENT(null),
     TITLE("title"),
 }

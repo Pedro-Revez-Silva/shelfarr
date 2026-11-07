@@ -12,7 +12,7 @@ public enum LibraryFilter: String, CaseIterable, Sendable {
 }
 
 public enum LibrarySort: String, CaseIterable, Sendable {
-    /// Recent activity first, the server default.
+    /// Recently acquired first, the server default.
     case recent
     case title
 
