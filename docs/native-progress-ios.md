@@ -80,11 +80,31 @@ again first, it is rebased like any other place, without the flag. **Use other
 device** adopts the server place and its time, and going there in the reader or
 player is not new activity.
 
-Nothing creates activity by itself. Opening a book, Readium's report of the restored
-page (`ReadingRestoration`: the first report can land at the start of the page
-holding the saved progression; later movement in either direction counts), choosing
-the other device's place, acknowledgements, metadata refreshes and the resume rewind
-do not write a new checkpoint.
+Nothing creates activity by itself. Opening a book, restoring its saved page,
+choosing the other device's place, acknowledgements, metadata refreshes and the resume
+rewind do not write a new checkpoint.
+
+Restoring an EPUB place (`ReadingRestoration` in `ShelfarrCore`, driven by
+`ReaderModel`) does not trust Readium's first location report. On a cold or offline
+open that report can name the chapter start before the page is laid out, and its
+locator carries no proof of where the page settled. Each report is checked against
+the viewport Readium measured with it (`ViewportObservingNavigator.viewport`: each
+visible reading order resource and the progression range on screen):
+
+- The saved place is restored when its resource is on screen and its progression lies
+  in the visible range (half-open at a page end, with float slack only). That page is
+  the anchor even if it starts well before the saved progression, as a large page or a
+  different layout can.
+- A report that misses it is not saved. Input on the book is disabled and the reader
+  is sent to the saved place again with `go(to:options: .none)`. The jump finishing is
+  not proof, because Readium reports the settled page later; the restore waits for a
+  report whose viewport shows the place.
+- Each attempt waits at most five seconds; after one retry the reader gives up,
+  enables input, says the saved page couldn't be shown, and keeps the saved place
+  unchanged. The page left on screen becomes the anchor, so the reader's own first
+  turn from it is saved; the saved place arriving late is still not reading.
+- Once anchored, any report of another page, forward or back, is reading and is saved
+  at once.
 
 Errors keep the last local place:
 
@@ -147,14 +167,29 @@ backwards.
   acknowledged queued writes, refused places, replaced editions.
 - `ActivityTimeTests`, `ListeningCheckpointsTests` (cadence over ten minutes of
   jittered ticks, rewind once, clamping, pre-roll hold, no rewind for deliberate or
-  natural moves) and `ReadingRestorationTests`.
+  natural moves) and `ReadingRestorationTests` (a wrong first report corrected and
+  never saved, a page starting well before the saved progression, page boundaries,
+  immediate forward and backward turns, timeout, retry, giving up and a late arrival,
+  stale timers, a chosen place, and scripted restores that never save).
 
 Simulator UI tests (`apps/scripts/ios-runtime-smoke.sh`), in addition to the existing
 library, download and offline flow:
 
+- `testLibraryReaderDownloadsAndOfflineReopening`: the saved place is inside a chapter
+  (the test turns on past a chapter start if needed). A cold relaunch with the server
+  unreachable restores it from the download without recording any reading, and
+  reconnecting (a foreground retry of every unsynced place) sends nothing: the
+  server's saved version, mutation id and `observed_at` are unchanged.
 - `testReaderSendsActivityTimeAndReopensSilently`: page turns send a plausible
-  `observed_at` and no resolve flag; reopening at the saved page and closing again
-  writes nothing (the fixture server records every progress body).
+  `observed_at` and no resolve flag; reopening at the saved page inside a chapter and
+  closing again writes nothing (the fixture server records every progress body).
+- Book text is recognised by prose from any of the fixture's three chapters, since a
+  restored place can be in any of them.
+- Debug builds launched by the UI test keep a restore trace (`RestoreTrace`): the
+  opened place, each report's locator and measured viewport, the decision, jumps and
+  timeouts. It holds only reading order file names and progressions of the synthetic
+  fixture book. The tests attach it to the result bundle, and it is in `device.log`
+  (subsystem `org.shelfarr.app`, category `reader-restore`). Release builds have none.
 - `testAudiobookResumeRewindsOnceAndKeepsTheSavedPlace`: a skip then pause saves that
   place to the server at once; play restarts about five seconds earlier; pausing in
   the pre-roll keeps the original saved place; a deliberate skip while paused plays
@@ -197,8 +232,10 @@ shows the old paths. The fixture ports differ per family (iPhone 8765/8766, iPad
   offline remain in the acceptance flow.
 - The simulator's audio may not advance on CI hosts; the rewind UI test then skips.
   The cadence and rewind rules are covered by the core tests either way.
-- Restoration detection relies on Readium's first restored report identifying the
-  actual page. The initial page-start tolerance does not apply to subsequent turns.
+- Restoration relies on Readium 3.11's viewport being measured in the same step as
+  the location report. The cause of the wrong first report on a cold offline open was
+  not isolated (CI did not record the locators); the restore trace now does. A restore
+  that fails twice leaves the reader on the page shown, with the saved place kept.
 - A device whose clock is wrong by more than five minutes asks on most conflicts; the
   server refuses its future times (kept locally) until the clock is fixed. A clock
   wrong by less than that can still order two devices' activity incorrectly.
