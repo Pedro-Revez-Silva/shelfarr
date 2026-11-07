@@ -258,15 +258,15 @@ module Hardcover
       else
         Credentials.with_catalog(user: Current.user) { |credential| yield credential, false }
       end
-    rescue HardcoverClient::NotFoundError
+    rescue HardcoverClient::NotFoundError => error
       redirect_to hardcover_subscriptions_path, alert: "Hardcover could not find that #{kind}, or it is private."
-      nil
-    rescue HardcoverClient::RateLimitError
+      RemoteResult::Failed.new(error)
+    rescue HardcoverClient::RateLimitError => error
       redirect_to hardcover_subscriptions_path, alert: "Hardcover's rate limit was reached. Try again in a few minutes."
-      nil
-    rescue HardcoverClient::Error, Credentials::Unavailable => e
-      redirect_to hardcover_subscriptions_path, alert: "Could not load that #{kind} from Hardcover: #{e.message}"
-      nil
+      RemoteResult::Failed.new(error)
+    rescue HardcoverClient::Error, Credentials::Unavailable => error
+      redirect_to hardcover_subscriptions_path, alert: "Could not load that #{kind} from Hardcover: #{error.message}"
+      RemoteResult::Failed.new(error)
     end
 
     def confirm_draft(book_types, automatic)

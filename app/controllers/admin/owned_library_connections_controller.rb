@@ -25,7 +25,7 @@ module Admin
       @connection.provider = "libation"
       @connection.name = "Audible Backup"
 
-      if @connection.enabled? && !audiobook_storage_ready?(@connection)
+      if @connection.enabled? && !RemoteResult.succeeded?(audiobook_storage_ready?(@connection))
         load_index_data
         render :index, status: :unprocessable_entity
       elsif @connection.save
@@ -43,7 +43,7 @@ module Admin
       requested_enabled = ActiveModel::Type::Boolean.new.cast(
         attributes.fetch(:enabled, @connection.enabled?)
       )
-      if requested_enabled && !audiobook_storage_ready?(@connection)
+      if requested_enabled && !RemoteResult.succeeded?(audiobook_storage_ready?(@connection))
         load_index_data
         render :index, status: :unprocessable_entity
         return
@@ -245,7 +245,7 @@ module Admin
       automatic_backup_enabled = ActiveModel::Type::Boolean.new.cast(
         attributes[:automatic_backup_enabled]
       )
-      if automatic_backup_enabled && !audiobook_storage_ready?(@connection)
+      if automatic_backup_enabled && !RemoteResult.succeeded?(audiobook_storage_ready?(@connection))
         redirect_to admin_owned_library_connections_path(tab: "automation", anchor: "automation"),
           alert: @connection.errors.full_messages.to_sentence
         return
@@ -312,7 +312,7 @@ module Admin
     end
 
     def backup
-      if @connection.enabled? && !audiobook_storage_ready?(@connection)
+      if @connection.enabled? && !RemoteResult.succeeded?(audiobook_storage_ready?(@connection))
         redirect_back fallback_location: admin_owned_library_connections_path,
           alert: @connection.errors.full_messages.to_sentence
         return
@@ -375,7 +375,7 @@ module Admin
         OwnedMediaBackupJob.perform_later(media_import.id, poll_token)
       rescue StandardError => e
         Rails.logger.error "[AudibleBackup] Failed to enqueue import ##{media_import.id}: #{e.class}"
-        false
+        RemoteResult::Failed.new(e)
       end
       unless enqueue_succeeded?(backup_job)
         if claim_result == :resume && media_import.upload&.pending?
@@ -802,7 +802,7 @@ module Admin
       true
     rescue OwnedMediaImportFileService::Error => e
       record.errors.add(:base, "Audiobook storage is not ready: #{e.message}")
-      false
+      RemoteResult::Failed.new(e)
     end
   end
 end

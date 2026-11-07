@@ -52,7 +52,8 @@ class GrimmoryClient
 
       response = authenticated_request { connection.get("/api/v1/libraries/#{id}/book") }
       handle_response(response) do |data|
-        extract_collection(data, "books").filter_map { |item| parse_item(item) }
+        items = extract_collection(data, "books").filter_map { |item| parse_item(item) }
+        items.empty? ? RemoteResult::Empty.new : RemoteResult::Ok.new(items)
       end
     end
 

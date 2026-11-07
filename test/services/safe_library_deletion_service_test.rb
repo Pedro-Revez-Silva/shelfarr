@@ -26,6 +26,27 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
     assert_empty Dir.children(@root)
   end
 
+  test "an unavailable recorded Audible root does not block deletion under a current root" do
+    record_completed_owned_import(File.join(@root, "removed-output-root"))
+
+    assert SafeLibraryDeletionService.new(@book).delete!
+    assert_not File.exist?(@path)
+  end
+
+  test "an unavailable recorded Audible root does not authorize deletion outside current roots" do
+    SettingsService.set(:ebook_output_path, "")
+    missing_root = File.join(@root, "removed-output-root")
+    @book.update!(file_path: File.join(missing_root, "book.epub"))
+    record_completed_owned_import(missing_root)
+
+    error = assert_raises(SafeLibraryDeletionService::Error) do
+      SafeLibraryDeletionService.new(@book).delete!
+    end
+
+    assert_match(/outside its current and recorded library roots/, error.message)
+    assert_equal "original book", File.binread(@path)
+  end
+
   test "an unrelated non-UTF8 sibling does not block deletion" do
     sibling = File.join(@root.b, "unrelated-\xFF.txt".b)
     File.binwrite(sibling, "unrelated bytes")
@@ -345,6 +366,29 @@ class SafeLibraryDeletionServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  def record_completed_owned_import(staging_root)
+    connection = OwnedLibraryConnection.create!
+    item = connection.owned_library_items.create!(
+      external_id: "B000000001",
+      title: @book.title,
+      ownership_type: "purchased"
+    )
+    upload = Upload.create!(
+      user: users(:two),
+      book: @book,
+      original_filename: "book.epub",
+      file_path: File.join(staging_root, OwnedMediaImportFileService::STAGING_DIRECTORY, "book.epub"),
+      status: :completed
+    )
+    item.owned_media_imports.create!(
+      upload: upload,
+      created_book: @book,
+      status: "completed",
+      destination_path: @book.file_path,
+      library_path: @book.file_path
+    )
+  end
 
   def with_rename_noreplace_einval(allow_nonatomic: true, &block)
     SettingsService.set(:allow_nonatomic_nfs_directory_publication, allow_nonatomic)

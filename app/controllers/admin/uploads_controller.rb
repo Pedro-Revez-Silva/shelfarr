@@ -41,7 +41,7 @@ module Admin
         details: { book_id: @upload.book_id, choice: attributes[:book_id] ? "existing" : "created" }
       )
 
-      unless enqueue_retry(nil)
+      unless RemoteResult.succeeded?(enqueue_retry(nil))
         Upload.where(id: @upload.id, status: :pending).update_all(
           status: Upload.statuses[:failed],
           error_message: "Shelfarr could not queue the upload retry. Your manual match was saved.",
@@ -123,7 +123,7 @@ module Admin
         @upload.update!(status: :pending, error_message: nil)
       end
 
-      unless enqueue_retry(media_import)
+      unless RemoteResult.succeeded?(enqueue_retry(media_import))
         if media_import
           redirect_to admin_uploads_path,
             alert: "Immediate retry could not be queued. Shelfarr will recover this Audible import automatically."
@@ -224,7 +224,7 @@ module Admin
       Rails.logger.error(
         "[UploadsController] Could not enqueue retry for upload ##{@upload.id}: #{error.class}"
       )
-      false
+      RemoteResult::Failed.new(error)
     end
   end
 end

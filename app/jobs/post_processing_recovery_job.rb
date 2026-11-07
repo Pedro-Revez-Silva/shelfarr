@@ -40,7 +40,7 @@ class PostProcessingRecoveryJob < ApplicationJob
       Rails.logger.warn(
         "[PostProcessingRecoveryJob] Could not inspect jobs for download ##{download_id}: #{error.class}"
       )
-      true
+      RemoteResult::Failed.new(error)
     end
 
     # An unfinished Solid Queue row is the proof a PostProcessingJob has not

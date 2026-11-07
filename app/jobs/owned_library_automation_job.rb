@@ -20,10 +20,10 @@ class OwnedLibraryAutomationJob < ApplicationJob
         .any? do |job|
           Array(job.arguments["arguments"]).first.to_i == owned_media_import_id.to_i
         end
-    rescue ActiveRecord::ActiveRecordError, NameError
+    rescue ActiveRecord::ActiveRecordError, NameError => error
       # When the queue cannot be inspected, avoiding a duplicate backup is
       # safer than trying to repair it blindly. The next recurring run can retry.
-      true
+      RemoteResult::Failed.new(error)
     end
 
     private

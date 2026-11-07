@@ -17,10 +17,6 @@ module RemoteResult
     def pluck(...)
       value.pluck(...)
     end
-
-    def empty?
-      value.empty?
-    end
   end
 
   Empty = Data.define do
@@ -37,13 +33,31 @@ module RemoteResult
     end
   end
 
-  Failed = Data.define(:error)
+  Failed = Data.define(:error) do
+    def to_s
+      raise TypeError, "no implicit conversion of RemoteResult::Failed into String"
+    end
+
+    def to_str
+      to_s
+    end
+
+    def to_ary
+      raise TypeError, "no implicit conversion of RemoteResult::Failed into Array"
+    end
+
+    def to_a
+      to_ary
+    end
+  end
 
   def self.failed?(result)
     result.is_a?(Failed)
   end
 
   def self.succeeded?(result)
+    return false if result == []
+
     !failed?(result) && result
   end
 end

@@ -33,6 +33,7 @@ Shelfarr/RescueToEmpty:
   Include:
     - "app/services/**/*.rb"
     - "app/jobs/**/*.rb"
+    - "app/controllers/**/*.rb"
 
 Shelfarr/UnkeyedFaradayMemo:
   Enabled: true

@@ -4,7 +4,13 @@ module Admin
 
     def index
       @settings_by_category = SettingsService.all_by_category
-      @audiobookshelf_libraries = fetch_audiobookshelf_libraries
+      libraries = fetch_audiobookshelf_libraries
+      @audiobookshelf_libraries = case libraries
+      when RemoteResult::Failed
+        []
+      else
+        libraries
+      end
       load_telegram_chat_authorizations
       load_audiobookshelf_cache_summary
     end
@@ -875,7 +881,7 @@ module Admin
       LibraryPlatformClient.libraries
     rescue LibraryPlatformClient::Error => e
       Rails.logger.warn "[SettingsController] Failed to fetch #{LibraryPlatformClient.display_name} libraries: #{e.message}"
-      []
+      RemoteResult::Failed.new(e)
     end
 
     def sync_telegram_transport

@@ -105,6 +105,7 @@ class GrimmoryClientTest < ActiveSupport::TestCase
 
       items = LibraryPlatformClient.library_items("lib-1")
 
+      assert_instance_of RemoteResult::Ok, items
       assert_equal 2, items.size
       assert_equal "book-1", items.first["audiobookshelf_id"]
       assert_equal "The Left Hand of Darkness", items.first["title"]
@@ -120,6 +121,16 @@ class GrimmoryClientTest < ActiveSupport::TestCase
       assert_equal 1969, items.first["published_year"]
       assert_equal false, items.first["missing"]
       assert_equal true, items.last["missing"]
+    end
+  end
+
+  test "library_items returns explicit empty success for an empty library" do
+    VCR.turned_off do
+      stub_login
+      stub_request(:get, "http://localhost:5173/api/v1/libraries/lib-1/book")
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: "[]")
+
+      assert_instance_of RemoteResult::Empty, LibraryPlatformClient.library_items("lib-1")
     end
   end
 

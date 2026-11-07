@@ -72,8 +72,8 @@ class LibraryDestinationOccupancy
 
       relation = relation.where.not(id: except_book_id) if except_book_id
       relation.exists?
-    rescue ArgumentError, SystemCallError
-      true
+    rescue ArgumentError, SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
 
     private

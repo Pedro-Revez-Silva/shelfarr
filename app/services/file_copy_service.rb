@@ -1798,7 +1798,7 @@ class FileCopyService
 
       with_pinned_absolute_directory(path) { false }
     rescue Errno::ENOENT
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- ENOENT is a missing parent; callers compare with == true
     end
 
     def deepest_existing_directory_device(path)
@@ -2201,7 +2201,7 @@ class FileCopyService
       end
       true
     rescue Errno::ENOENT
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- a missing directory has no interrupted copies left
     end
 
     # Legacy staging-only copy from an already-open source descriptor. This
@@ -3760,7 +3760,7 @@ class FileCopyService
       child.close
       false
     rescue Errno::ENOENT
-      true
+      true # rubocop:disable Shelfarr/RescueToEmpty -- ENOENT is a missing child; callers compare with == true
     rescue Errno::EACCES, Errno::ELOOP, Errno::ENOTDIR => error
       RemoteResult::Failed.new(error)
     end
@@ -5064,8 +5064,8 @@ class FileCopyService
         options = "#{mount.fetch(5)},#{mount.fetch(6)}".split(",")
         !options.include?("serverino")
       end
-    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError
-      true
+    rescue ArgumentError, Encoding::CompatibilityError, IOError, SystemCallError => error
+      RemoteResult::Failed.new(error)
     end
 
     def drvfs_mount?(*filesystem_entries)

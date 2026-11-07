@@ -1076,6 +1076,52 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     assert_empty probes
   end
 
+  test "a tag rescue is a failure that is not a list" do
+    SettingsService.set(:prowlarr_tags, "books")
+    ProwlarrClient.instance_variable_set(:@connection, nil)
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/tag})
+        .to_return(
+          status: 500,
+          headers: { "Content-Type" => "application/json" },
+          body: { "error" => "boom" }.to_json
+        )
+
+      failure = ProwlarrClient.send(:configured_tag_ids_for_names, [ "books" ])
+
+      assert_instance_of RemoteResult::Failed, failure
+      assert_raises(NoMethodError) { failure.empty? }
+      assert_raises(TypeError) { "tags #{failure}" }
+      assert_raises(TypeError) { "tags " + failure }
+      assert_raises(TypeError) { failure.to_a }
+      assert_raises(TypeError) { Array(failure) }
+      assert_not RemoteResult.succeeded?([])
+      assert_raises(NoMethodError) { RemoteResult::Ok.new([]).empty? }
+      assert_equal true, RemoteResult::Empty.new.empty?
+
+      decision = case failure
+      when RemoteResult::Failed
+        :do_not_widen
+      else
+        :widen
+      end
+      assert_equal :do_not_widen, decision
+
+      error = assert_raises(IndexerClients::Base::Error) do
+        ProwlarrClient.send(
+          :book_search_plans,
+          "Frankenstein Mary Shelley",
+          title: "Frankenstein",
+          author: "Mary Shelley",
+          tags: failure,
+          indexers: failure
+        )
+      end
+      assert_same failure.error, error
+    end
+  end
+
   private
 
   def with_blackholed_ipv6_localhost(port)
