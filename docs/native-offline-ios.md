@@ -117,7 +117,7 @@ foreground, like `offline` and `server`.
 
 ### Transfer grant contract (backend)
 
-The client is written against this contract, and the smoke fixture implements it.
+The consumer API and the smoke fixture implement this contract.
 It's additive: a server without it keeps working, with foreground-only transfers.
 
 ```
@@ -131,7 +131,7 @@ Content-Type: application/json
 
 - `url` fetches exactly this asset generation. It must sit under the configured origin
   and subpath, and it carries the grant in a query parameter,
-  e.g. `/api/consumer/v1/library/:id/assets/:asset_id?grant=<opaque>`. The client
+  e.g. `/api/consumer/v1/library/:id/assets/:asset_id/transfer?grant=<opaque>`. The client
   refuses a URL outside the server.
 - The grant authorizes only `GET` and `HEAD` of that one path, with the same
   `ETag`, `If-Range`, single-`Range`, `If-None-Match`/304, 416 and 410 behaviour as a

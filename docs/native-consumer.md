@@ -105,13 +105,16 @@ validation; physical-device compatibility is still unverified.
 - **Credential boundary.** The configured address is an origin plus an optional
   subpath. A bearer token is attached only to URLs inside it, compared on scheme, host,
   port and path after dot segments are resolved. `/shelfarr-evil` is not inside `/shelfarr`.
-- **Redirects.** Automatic redirect handling is off. A redirect is followed only if both
-  ends are inside the boundary. Anything else fails, and nothing is sent to the new host.
-- **Credential boundary.** Interactive API calls, EPUB copies, covers and audio use
+- **Redirects.** Interactive API and media requests follow a redirect only if both
+  ends are inside the boundary. iOS system background sessions follow redirects
+  automatically, so they carry only asset-scoped grants; results outside the server
+  boundary are discarded.
+- **Media credentials.** Interactive API calls, EPUB copies, covers and audio use
   the scoped credential logic. iOS system background tasks instead use short-lived,
   asset-scoped grant URLs and never receive the account bearer. Android uses the same scoped interceptor for shared and account-bound clients. iOS streams audio through an
   `AVAssetResourceLoader` that fetches byte ranges with the API client, because
-  AVPlayer has no supported way to set a bearer header. Tokens never appear in URLs.
+  AVPlayer has no supported way to set a bearer header. Account bearer tokens never
+  appear in URLs.
 - **Storage.** Android encrypts the session with a non-exportable AES-256-GCM Android
   Keystore key, in `noBackupFilesDir`, with backups disabled. iOS uses the Keychain with
   `AfterFirstUnlockThisDeviceOnly`. Unfinished device grants are stored the same way, so
@@ -191,7 +194,8 @@ the cache directory, which the OS may still clear.
   if the ids changed. Online, the reader and player use a download only while its ids
   still match the server's; otherwise they use the server's current edition and the
   page offers to update the download. Offline, they use the download.
-- Files download one at a time, with at most two publications at once. A transfer
+- Android downloads files one at a time; iOS uses bounded range tickets. Both allow
+  at most two publications at once. A transfer
   resumes with `Range` and `If-Range` only against a strong `ETag` recorded before
   the body; a full 200 with a different tag, a 412 or a 416 is a changed file, and the
   partial bytes are discarded rather than stitched together.
@@ -201,8 +205,9 @@ the cache directory, which the OS may still clear.
 - States are queued, downloading, ready, failed and cancelled, with sizes. Failures
   keep their kind: no connection, untrusted certificate, signed out, not allowed, not
   found, server error, redirect, changed on the server, unexpected file, not enough
-  space, files missing. No connection and server errors retry when the app returns to
-  the foreground; the rest wait for the user.
+  space, files missing. Android's transfer hosts retry connection and server failures
+  with bounded backoff. iOS retries failed transfers when the app returns to the
+  foreground. Other failures wait for the user; an interrupted iOS transfer is paused.
 - Cancel stops the transfer and deletes its bytes. Remove deletes the files and the
   entry; the saved place and status stay.
 - The queue is stored with the account. Android runs it through user-initiated jobs
