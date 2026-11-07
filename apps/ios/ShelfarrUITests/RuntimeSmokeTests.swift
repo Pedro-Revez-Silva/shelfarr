@@ -3,9 +3,10 @@ import XCTest
 
 /// Drives the real app on a simulator against `RuntimeSmoke/smoke_server.py`: library
 /// and search, details, a rendered EPUB, downloads through the background session, a
-/// local audiobook, reopening everything with the server unreachable, the activity time
-/// sent with reading progress, a silent reopen, and the audiobook resume rewind. It runs
-/// on iPhone and iPad simulators alike.
+/// local audiobook, reopening everything with the server unreachable (a cold, offline
+/// restore of a place inside a chapter that writes nothing), the activity time sent with
+/// reading progress, a silent reopen, and the audiobook resume rewind. It runs on iPhone
+/// and iPad simulators alike.
 ///
 /// It needs `SHELFARR_SMOKE_PORT` and `SHELFARR_SMOKE_CONTROL_PORT` in the test runner's
 /// environment (`TEST_RUNNER_` prefixed for xcodebuild); `apps/scripts/ios-runtime-smoke.sh`
@@ -62,6 +63,7 @@ final class RuntimeSmokeTests: XCTestCase {
         }
 
         var place = ""
+        var saved: SavedProgress?
         try step("Details, download and EPUB rendering") {
             XCTAssertTrue(item(app, "book-1").waitForExistence(timeout: wait))
             item(app, "book-1").tap()
@@ -81,10 +83,13 @@ final class RuntimeSmokeTests: XCTestCase {
             page.swipeLeft()
             page.swipeLeft()
             sleep(2)
+            turnPastAChapterStart(app)
             place = progress(app)
             XCTAssertNotEqual(place, "0%", "turning pages moved the reading position")
+            attachTrace(app, "06-reader-turned-trace")
             screenshot(app, "06-reader-turned")
             closeReader(app)
+            XCTAssertTrue(waitFor { (try? self.progressWrites("book-1"))?.count ?? 0 > 0 }, "closing the reader sent its place")
         }
 
         try step("Audiobook downloads while the app is in the background") {
@@ -108,6 +113,7 @@ final class RuntimeSmokeTests: XCTestCase {
         }
 
         try step("Offline relaunch") {
+            saved = try savedProgress("book-1")
             try setOnline(false)
             app.terminate()
             let offline = launch(reset: false)
@@ -131,10 +137,22 @@ final class RuntimeSmokeTests: XCTestCase {
             screenshot(offline, "11-details-offline")
             button(offline, startingWith: ["Continue reading", "Start reading", "Open book"]).tap()
             XCTAssertTrue(bookText(offline).waitForExistence(timeout: 60), "the downloaded EPUB renders offline")
+            expectRestored(offline, place, "12-reader-offline")
+            closeReader(offline)
+        }
+
+        try step("Reconnecting sends nothing for the restored place") {
+            let app = XCUIApplication()
+            let writes = try progressWrites("book-1").count
+            try setOnline(true)
+            // Coming to the foreground retries every unsynced place at once.
+            XCUIDevice.shared.press(.home)
             sleep(2)
-            let restored = progress(offline)
-            XCTAssertTrue(close(restored, place), "the reading place was restored: \(restored) vs \(place)")
-            screenshot(offline, "12-reader-offline")
+            app.activate()
+            XCTAssertTrue(app.wait(for: .runningForeground, timeout: wait))
+            XCTAssertFalse(waitFor(timeout: 10) { (try? self.progressWrites("book-1"))?.count ?? 0 > writes },
+                           "opening at the saved place offline queued no new activity")
+            XCTAssertEqual(try savedProgress("book-1"), saved, "the server keeps the place and time last read")
         }
     }
 
@@ -158,6 +176,7 @@ final class RuntimeSmokeTests: XCTestCase {
             page.swipeLeft()
             page.swipeLeft()
             sleep(2)
+            turnPastAChapterStart(app)
             place = progress(app)
             closeReader(app)
             XCTAssertTrue(waitFor { (try? self.progressWrites(book))?.count ?? 0 > 0 }, "closing the reader sent its place")
@@ -174,9 +193,7 @@ final class RuntimeSmokeTests: XCTestCase {
         try step("Reopening the saved page writes nothing") {
             button(app, startingWith: ["Continue reading", "Start reading", "Open book"]).tap()
             XCTAssertTrue(bookText(app).waitForExistence(timeout: 60))
-            sleep(3)
-            let restored = progress(app)
-            XCTAssertTrue(close(restored, place), "the reading place was restored: \(restored) vs \(place)")
+            expectRestored(app, place, "14-reader-reopened-trace")
             closeReader(app)
             sleep(3)
             XCTAssertEqual(try progressWrites(book).count, written, "restoring a place is not new reading")
@@ -283,14 +300,86 @@ final class RuntimeSmokeTests: XCTestCase {
         download.tap()
     }
 
+    /// Prose from each chapter of the fixture EPUB (`build_epub` in
+    /// apps/scripts/mock_consumer_server.py): a restored place can be in any of them.
+    private static let chapterProse = [
+        "The rain had stopped by the time she reached the harbour.",
+        "Nothing in the valley was quite where the old maps put it.",
+        "By the third evening the house had begun to feel familiar.",
+    ]
+
     private func bookText(_ app: XCUIApplication) -> XCUIElement {
-        app.webViews.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "rain had stopped")).firstMatch
+        let prose = NSCompoundPredicate(orPredicateWithSubpredicates: Self.chapterProse.map {
+            NSPredicate(format: "label CONTAINS %@", $0)
+        })
+        return app.webViews.staticTexts.matching(prose).firstMatch
+    }
+
+    /// The saved place is back on screen, restored rather than read: the shown position
+    /// reaches it, and since opening nothing was recorded as reading. The navigator may
+    /// report a wrong page first and be sent back, so this waits for the restore to finish;
+    /// the app gives up after two bounded attempts.
+    private func expectRestored(_ app: XCUIApplication, _ place: String, _ name: String) {
+        let restoring = waitFor(timeout: 25) {
+            self.restoreLog(app).contains { $0.hasSuffix("-> settled") } && self.close(self.shownProgress(app) ?? "", place)
+        }
+        attachTrace(app, name)
+        screenshot(app, name)
+        let log = restoreLog(app)
+        XCTAssertTrue(restoring, "the reading place was restored: \(progress(app)) vs \(place)")
+        XCTAssertFalse(log.contains { $0.hasSuffix("-> record") }, "restoring a place is not reading: \(log)")
+        XCTAssertFalse(log.contains { $0.hasSuffix("-> gave-up") }, "the saved place showed: \(log)")
+    }
+
+    /// Turns on while the reader is at the very start of a chapter, so the saved place is
+    /// inside one, which a cold open has to lay out before it can show.
+    private func turnPastAChapterStart(_ app: XCUIApplication) {
+        for _ in 0 ..< 3 where (lastReportedProgression(app) ?? 0) <= 0 {
+            app.webViews.firstMatch.swipeLeft()
+            sleep(2)
+        }
+        XCTAssertGreaterThan(lastReportedProgression(app) ?? 0, 0, "the saved place is inside a chapter: \(restoreLog(app))")
+    }
+
+    /// The fixture-only restore trace the Debug reader exposes under the UI test argument.
+    private func restoreTrace(_ app: XCUIApplication) -> [String] {
+        let element = app.descendants(matching: .any)["reader-restore-trace"].firstMatch
+        guard element.exists else { return [] }
+        return element.label.components(separatedBy: "\n")
+    }
+
+    /// Trace lines since the reader last opened a place.
+    private func restoreLog(_ app: XCUIApplication) -> [String] {
+        let lines = restoreTrace(app)
+        guard let start = lines.lastIndex(where: { $0.hasPrefix("open ") }) else { return lines }
+        return Array(lines[start...])
+    }
+
+    /// The progression inside its chapter of the navigator's latest report.
+    private func lastReportedProgression(_ app: XCUIApplication) -> Double? {
+        guard let line = restoreTrace(app).last(where: { $0.hasPrefix("report ") }),
+              let at = line.split(separator: " ").dropFirst().first?.split(separator: "@").last
+        else { return nil }
+        return Double(at)
+    }
+
+    private func attachTrace(_ app: XCUIApplication, _ name: String) {
+        let attachment = XCTAttachment(string: restoreTrace(app).joined(separator: "\n"))
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func progress(_ app: XCUIApplication) -> String {
         let label = app.staticTexts["reader-progress"]
         XCTAssertTrue(label.waitForExistence(timeout: wait), "the reader shows its position")
         return label.label
+    }
+
+    /// The position shown right now, without waiting for it.
+    private func shownProgress(_ app: XCUIApplication) -> String? {
+        let label = app.staticTexts["reader-progress"]
+        return label.exists ? label.label : nil
     }
 
     private func close(_ a: String, _ b: String) -> Bool {
@@ -383,6 +472,23 @@ final class RuntimeSmokeTests: XCTestCase {
     // MARK: Fixture server
 
     private enum SmokeError: Error { case unconfigured, timeout, http(Int), malformed }
+
+    /// The server's saved place for one publication: which write it came from.
+    private struct SavedProgress: Equatable {
+        let version: Int?
+        let mutationId: String?
+        let observedAt: String?
+    }
+
+    private func savedProgress(_ publication: String) throws -> SavedProgress {
+        let body = try json(request(port, "GET", "/api/consumer/v1/library/\(publication)/progress", bearer: token))
+        let progress = try XCTUnwrap(body["progress"] as? [String: Any], "the server has a saved place")
+        return SavedProgress(
+            version: progress["version"] as? Int,
+            mutationId: progress["client_mutation_id"] as? String,
+            observedAt: progress["observed_at"] as? String
+        )
+    }
 
     private struct ProgressWrites {
         let count: Int
