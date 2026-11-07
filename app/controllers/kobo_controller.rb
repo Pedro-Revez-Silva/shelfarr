@@ -103,6 +103,10 @@ class KoboController < ActionController::API
     render json: { Tags: [] }
   end
 
+  def unsupported
+    head :not_found
+  end
+
   private
 
   def authenticate_device

@@ -86,4 +86,18 @@ class KoboPublicationTest < ActiveSupport::TestCase
     File.open(@path, "r+b") { |file| file.write("changed") }
     assert_raises(KoboPublication::Unavailable) { KoboPublication.new(@book).open_file(expected_fingerprint: fingerprint) }
   end
+
+  test "empty required entries and covers fail as unavailable rather than server errors" do
+    %w[mimetype META-INF/container.xml OEBPS/content.opf].each do |name|
+      write_epub(@path, extra: { name => "" })
+      assert_raises(KoboPublication::Unavailable) { KoboPublication.new(@book).snapshot }
+    end
+    write_epub(@path, extra: { "OEBPS/cover.png" => "" })
+    source = KoboPublication.new(@book)
+    source.snapshot
+    file = source.open_file
+    assert_raises(KoboPublication::Unavailable) { source.cover(file) }
+  ensure
+    file&.close
+  end
 end

@@ -286,7 +286,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_120000) do
     t.integer "book_id"
     t.string "entitlement_id", null: false
     t.string "revision_id", null: false
-    t.integer "first_revision", null: false
     t.integer "sync_revision", null: false
     t.json "publication", null: false
     t.json "reading_state"

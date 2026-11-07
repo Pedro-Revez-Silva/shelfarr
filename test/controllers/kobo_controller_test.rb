@@ -63,7 +63,7 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_equal [], response.parsed_body
     @device.send_book!(@book)
     get "#{@base}/v1/library/sync", headers: { "x-kobo-synctoken" => cursor }
-    assert_equal @delivery.entitlement_id, response.parsed_body.sole.fetch("ChangedEntitlement").fetch("BookEntitlement").fetch("Id")
+    assert_equal @delivery.entitlement_id, response.parsed_body.sole.fetch("NewEntitlement").fetch("BookEntitlement").fetch("Id")
     get "#{@base}/v1/library/sync"
     assert_equal @delivery.entitlement_id, response.parsed_body.sole.fetch("NewEntitlement").fetch("BookEntitlement").fetch("Id")
   end
@@ -188,6 +188,13 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_includes output.string, "/kobo/[FILTERED]/v1/auth/device"
     assert_not_includes output.string, @token
     assert_not_includes output.string, "private-kobo-account"
+    output.truncate(0)
+    output.rewind
+    get "#{@base}/v1/unknown-firmware-endpoint"
+    assert_response :not_found
+    get @base
+    assert_response :not_found
+    assert_not_includes output.string, @token
   ensure
     Rails.logger = previous_logger
   end

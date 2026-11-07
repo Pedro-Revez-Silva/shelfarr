@@ -79,6 +79,10 @@ Rails.application.routes.draw do
     get "download/:entitlement_id/:revision_id", action: :download
     get ":entitlement_id/:width/:height/:greyscale/image.jpg", action: :cover
     get ":entitlement_id/:width/:height/:quality/:greyscale/image.jpg", action: :cover
+    # Unknown firmware endpoints must not produce a RoutingError containing
+    # the unfiltered capability URL in its exception message.
+    match "*unmatched", action: :unsupported, via: :all
+    match "", action: :unsupported, via: :all
   end
 
   resources :notifications, only: [ :index ] do

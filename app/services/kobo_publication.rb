@@ -181,7 +181,7 @@ class KoboPublication
 
     entry.get_input_stream do |input|
       data = input.read(limit + 1)
-      raise Unavailable, "This EPUB exceeds safe metadata limits" if data.bytesize > limit
+      raise Unavailable, "This EPUB is incomplete or exceeds safe metadata limits" if data.nil? || data.empty? || data.bytesize > limit
 
       data
     end

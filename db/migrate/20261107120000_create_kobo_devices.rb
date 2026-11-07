@@ -16,7 +16,6 @@ class CreateKoboDevices < ActiveRecord::Migration[8.1]
       t.references :book, foreign_key: true
       t.string :entitlement_id, null: false
       t.string :revision_id, null: false
-      t.integer :first_revision, null: false
       t.integer :sync_revision, null: false
       t.json :publication, null: false
       t.json :reading_state

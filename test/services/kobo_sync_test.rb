@@ -11,11 +11,11 @@ class KoboSyncTest < ActiveSupport::TestCase
 
   test "snapshot pages are bounded, replayable and do not skip concurrent sends" do
     publication = KoboPublication.new(@book).snapshot
-    101.times do |index|
+    102.times do |index|
       @device.kobo_deliveries.create!(entitlement_id: SecureRandom.uuid, revision_id: SecureRandom.uuid,
-        first_revision: index + 1, sync_revision: index + 1, publication: publication)
+        book: index == 100 ? @book : nil, sync_revision: index + 1, publication: publication)
     end
-    @device.update!(sync_revision: 101)
+    @device.update!(sync_revision: 102)
     sync = KoboSync.new(@device, endpoint: @device.endpoint(@token))
     first = sync.call(nil)
     assert_equal 100, first.items.size
