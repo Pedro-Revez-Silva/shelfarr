@@ -19,6 +19,7 @@ module Consumer::LibraryHelper
   end
 
   def consumer_cover_style(book)
-    [ "moss", "clay", "slate", "plum", "oat" ][book.id % 5]
+    hash = book.id.to_s.bytes.reduce(0x811c9dc5) { |value, byte| ((value ^ byte) * 0x01000193) & 0xffffffff }
+    [ "clay", "moss", "slate", "oat", "plum", "stone" ][hash % 6]
   end
 end

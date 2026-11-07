@@ -10,6 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  web-reader:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.4
+      - name: Verify web reader and bundled dependencies
+        working-directory: apps/web-reader
+        run: |
+          bun install --frozen-lockfile
+          bun test
+          bun audit
+          bun run build
+          git diff --exit-code -- ../../vendor/javascript/consumer_reader_engine.js
+
   quality:
     runs-on: ubuntu-latest
 
@@ -104,7 +122,7 @@ jobs:
         run: test/filesystem_contracts/cifs-smoke.sh
 
   container:
-    needs: [quality, companion, filesystem-contracts]
+    needs: [quality, companion, filesystem-contracts, web-reader]
     runs-on: ubuntu-latest
 
     steps:
