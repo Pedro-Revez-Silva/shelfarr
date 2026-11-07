@@ -67,8 +67,10 @@ public actor EpubCache {
                 onProgress(1)
                 return CachedEpub(file: book, unverified: true)
             }
-            let unchangedWithoutTag = info.etag == nil && info.sizeBytes == asset.sizeBytes
-            if response.statusCode == 304 || ((200 ..< 300).contains(response.statusCode) && unchangedWithoutTag) {
+            // Servers may ignore If-None-Match, so a 200 with the same tag is unchanged too.
+            let sameTag = info.etag != nil && response.value(forHTTPHeaderField: "ETag") == info.etag
+            let sameSize = info.etag == nil && info.sizeBytes == asset.sizeBytes
+            if response.statusCode == 304 || ((200 ..< 300).contains(response.statusCode) && (sameTag || sameSize)) {
                 try? files.removeItem(at: partial)
                 onProgress(1)
                 return CachedEpub(file: book, unverified: false)

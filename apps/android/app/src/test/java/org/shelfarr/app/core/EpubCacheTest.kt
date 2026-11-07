@@ -59,6 +59,18 @@ class EpubCacheTest {
     }
 
     @Test
+    fun `a 200 repeating the same ETag keeps the copy without rewriting it`() = runTest {
+        ok()
+        val first = cache.obtain("acct", server, asset())
+        first.file.setLastModified(1_000)
+        ok("PK-a-body-that-must-not-be-used!", "\"v1\"")
+        val again = cache.obtain("acct", server, asset())
+
+        assertEquals(bytes, again.file.readText())
+        assertFalse(again.unverified)
+    }
+
+    @Test
     fun `a changed ETag replaces the copy`() = runTest {
         ok()
         cache.obtain("acct", server, asset())
