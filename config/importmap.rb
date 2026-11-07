@@ -1,4 +1,6 @@
 pin "application"
+pin "consumer_reader_engine", to: "consumer_reader_engine.js", preload: false
+pin "consumer_progress_sync", preload: false
 pin "settings_navigation_guard"
 pin "@hotwired/turbo-rails", to: "turbo.min.js"
 pin "@rails/actioncable", to: "actioncable.esm.js"

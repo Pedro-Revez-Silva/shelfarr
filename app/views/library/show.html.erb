@@ -75,6 +75,9 @@
           <% end %>
         </div>
 
+      <% if @book.ebook? || @book.audiobook? %>
+        <div class="mt-6 pt-6 border-t border-gray-800"><%= link_to @book.ebook? ? "Open in reader preview" : "Open in listening preview", consumer_publication_path(@book), class: "inline-flex items-center rounded-lg bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600" %></div>
+      <% end %>
       <% if Current.user&.admin? %>
         <% if @attention_request %>
           <div class="mt-6 pt-6 border-t border-gray-800">

@@ -1,0 +1,70 @@
+<section class="consumer-heading">
+  <p class="consumer-eyebrow">A little time for a good story</p>
+  <h1>Your library.</h1>
+  <p>Pick up where you left off, or find your next chapter.</p>
+</section>
+
+<% if @continue_books.any? %>
+  <section class="consumer-continue" aria-labelledby="continue-heading">
+    <div class="consumer-section-heading"><h2 id="continue-heading">Keep going</h2><span>Just for you</span></div>
+    <div class="consumer-continue-grid">
+      <% @continue_books.each do |book| %>
+        <% publication = @publications.fetch(book) %>
+        <%= link_to consumer_publication_path(book), class: "consumer-resume-card" do %>
+          <%= render "cover", book: book, publication: publication %>
+          <div class="consumer-resume-copy"><span class="consumer-format"><%= book.ebook? ? "Reading" : "Listening" %></span><h3><%= book.title %></h3><p><%= book.author %></p><strong><%= consumer_progress_label(publication) %> <span aria-hidden="true">↗</span></strong></div>
+        <% end %>
+      <% end %>
+    </div>
+  </section>
+<% end %>
+
+<section aria-labelledby="shelf-heading">
+  <div class="consumer-section-heading consumer-shelf-heading">
+    <h2 id="shelf-heading"><%= @query.present? ? "Search results" : "On your shelf" %></h2>
+    <%= form_with url: consumer_library_path, method: :get, role: "search", class: "consumer-search" do |form| %>
+      <%= form.hidden_field :type, value: @type if @type.present? %>
+      <%= form.hidden_field :status, value: @status if @status.present? %>
+      <%= form.hidden_field :sort, value: @sort %>
+      <%= form.label :q, "Search your library", class: "consumer-sr-only" %>
+      <%= form.search_field :q, value: @query, placeholder: "Search your library", maxlength: 200 %>
+      <button type="submit" aria-label="Search">⌕</button>
+    <% end %>
+  </div>
+  <nav class="consumer-filters" aria-label="Publication type">
+    <% [[nil, "Everything"], ["ebook", "Ebooks"], ["audiobook", "Audiobooks"]].each do |type, label| %>
+      <%= link_to label, consumer_library_path(type: type, q: @query.presence, status: @status.presence, sort: @sort), class: @type.presence == type ? "is-active" : nil, aria: { current: @type.presence == type ? "page" : nil } %>
+    <% end %>
+  </nav>
+  <%= form_with url: consumer_library_path, method: :get, class: "consumer-library-options" do |form| %>
+    <%= form.hidden_field :q, value: @query if @query.present? %>
+    <%= form.hidden_field :type, value: @type if @type.present? %>
+    <label>Reading status<%= form.select :status, [["All statuses", ""], ["Unread", "unread"], ["Reading", "in_progress"], ["Finished", "finished"]], selected: @status %></label>
+    <label>Sort by<%= form.select :sort, [["Recently added", "recent"], ["Title A–Z", "title"]], selected: @sort %></label>
+    <%= form.submit "Apply", class: "consumer-button consumer-button--subtle" %>
+  <% end %>
+  <% if @books.empty? %>
+    <div class="consumer-empty">
+      <span aria-hidden="true">✦</span>
+      <% if @query.present? || @status.present? || @type.present? %>
+        <h3>No stories match these filters</h3><p>Try another title or author, or clear the filters to see your library.</p>
+        <%= link_to "Clear filters", consumer_library_path(sort: @sort), class: "consumer-button" %>
+      <% else %>
+        <h3>Your next story belongs here</h3><p>Acquired ebooks and audiobooks appear here, ready to read or listen.</p>
+        <%= link_to "Find a book", search_path, class: "consumer-button" %>
+      <% end %>
+    </div>
+  <% else %>
+    <div class="consumer-book-grid">
+      <% @books.each do |book| %>
+        <% publication = @publications.fetch(book) %>
+        <%= link_to consumer_publication_path(book), class: "consumer-book-card" do %>
+          <%= render "cover", book: book, publication: publication %>
+          <span class="consumer-format"><%= book.ebook? ? "Ebook" : "Audiobook" %></span>
+          <h3><%= book.title %></h3><p><%= book.author %></p><span class="consumer-book-state"><%= consumer_progress_label(publication) %></span>
+        <% end %>
+      <% end %>
+    </div>
+    <% if @next_cursor %><div class="consumer-pagination"><%= link_to "More on your shelf", consumer_library_path(type: @type, q: @query.presence, status: @status.presence, sort: @sort, cursor: @next_cursor), class: "consumer-button consumer-button--subtle" %></div><% end %>
+  <% end %>
+</section>

@@ -1,0 +1,17 @@
+{
+  "name": "shelfarr-web-reader-engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "build": "bun build ./engine.js --target browser --format esm --minify --outfile ../../vendor/javascript/consumer_reader_engine.js"
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "epubjs": "0.3.93"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "0.9.12"
+  },
+  "packageManager": "bun@1.4.4"
+}

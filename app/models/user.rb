@@ -5,6 +5,9 @@ class User < ApplicationRecord
   has_secure_password
   has_many :sessions, dependent: :destroy
   has_many :api_tokens, class_name: "APIToken", dependent: :destroy
+  has_many :consumer_device_grants, dependent: :destroy
+  has_many :consumer_progresses, dependent: :destroy
+  has_many :consumer_reading_states, dependent: :destroy
   has_many :requests, dependent: :destroy
   has_many :uploads, dependent: :destroy
   has_many :notifications, dependent: :destroy
