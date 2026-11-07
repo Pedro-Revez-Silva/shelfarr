@@ -27,6 +27,8 @@ import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -49,6 +51,7 @@ import org.shelfarr.app.core.ProgressUpdate
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.ServerAddress
 import org.shelfarr.app.core.Session
+import org.shelfarr.app.core.SavedPosition
 import org.shelfarr.app.ui.player.PlayerState
 import org.shelfarr.app.ui.player.PlayerViewModel
 
@@ -159,11 +162,20 @@ class ReaderSmokeTest {
             }
             await("both downloads are complete") { downloads.ready("offline-book") != null && downloads.ready("offline-audio") != null }
 
+            // The latest synced place is newer than the download's metadata snapshot.
+            runBlocking {
+                val progress = requireNotNull(app.container.currentAccount()).progress
+                progress.sync("offline-book").begin(SavedPosition("offline-epub", buildJsonObject {
+                    put("href", "OEBPS/c2.xhtml")
+                    put("type", "application/xhtml+xml")
+                }), 4)
+                progress.sync("offline-audio").begin(SavedPosition("track-1", positionSeconds = 1.0), 5)
+            }
             // No server from here on: anything that still opens came from the device.
             web.close()
 
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "offline-book")).use { scenario ->
-                awaitText(scenario, "First chapter is rendered")
+                awaitText(scenario, "Second chapter is rendered")
                 scenario.onActivity { activity ->
                     val model = ViewModelProvider(activity)[ReaderViewModel::class.java]
                     assertEquals(ReaderSource.DOWNLOAD, model.fileSource)
@@ -182,6 +194,7 @@ class ReaderSmokeTest {
                 snapshot.fromDevice && snapshot.durationMs > 0 && snapshot.problem == null
             }
             assertEquals(listOf("track-0", "track-1"), app.container.playback.snapshot.value.tracks.map { it.id })
+            assertEquals(1, app.container.playback.snapshot.value.trackIndex)
         } finally {
             runBlocking {
                 app.container.playback.stop()
