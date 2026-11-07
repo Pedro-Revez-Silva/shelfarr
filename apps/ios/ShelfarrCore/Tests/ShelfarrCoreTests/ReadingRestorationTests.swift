@@ -131,6 +131,14 @@ final class ReadingRestorationTests: XCTestCase {
         XCTAssertEqual(restoring.observe(page("c0.xhtml", 0, 0.06)), .record)
     }
 
+    func testInitialEmptyViewportSettlingAtTheSamePlaceIsNotReading() {
+        var restoring = ReadingRestoration(opening: nil)
+        XCTAssertEqual(restoring.observe(page("c0.xhtml", 0, 0)), .none)
+        XCTAssertEqual(restoring.observe(page("c0.xhtml", 0, 0.06)), .none,
+                       "layout becoming measurable at the same location is not a page turn")
+        XCTAssertEqual(restoring.observe(page("c0.xhtml", 0.06, 0.12)), .record)
+    }
+
     func testGoingToAChosenSavedPlaceIsNotReading() {
         var restoring = ReadingRestoration(opening: place("c1.xhtml", 0.1))
         XCTAssertEqual(restoring.observe(page("c1.xhtml", 0.08, 0.14)), .settled)

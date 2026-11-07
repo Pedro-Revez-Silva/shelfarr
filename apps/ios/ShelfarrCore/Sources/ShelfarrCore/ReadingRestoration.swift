@@ -196,11 +196,14 @@ public struct ReadingRestoration: Sendable {
               same(href, anchored)
         else { return false }
         let at = current.locator["locations"]?["progression"]?.doubleValue ?? 0
+        let start = anchor.locator["locations"]?["progression"]?.doubleValue ?? 0
+        // Readium initially reports an empty viewport before layout. Measuring the
+        // same location afterwards is still restoration, not a page turn.
+        if abs(at - start) <= epsilon { return true }
         if let range = anchor.viewport?.resources.first(where: { same($0.href, href) })?.progression {
             return within(at, range)
         }
-        let start = anchor.locator["locations"]?["progression"]?.doubleValue ?? 0
-        return abs(at - start) <= epsilon
+        return false
     }
 
     /// Reading order hrefs compare without a leading slash, fragment, query or escaping.
