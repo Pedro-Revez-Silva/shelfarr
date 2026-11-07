@@ -33,6 +33,7 @@ func downloadCopy(_ record: DownloadRecord) -> DownloadCopy {
     case .failed:
         switch record.problem {
         case .offline: return DownloadCopy(title: "Paused: no connection", detail: "Continues when Shelfarr is open and online.\(kept)", canRetry: true)
+        case .interrupted: return DownloadCopy(title: "Paused", detail: "iOS stopped the transfer, for example because Shelfarr was closed from the app switcher. It continues when you open Shelfarr.\(kept)", canRetry: true)
         case .certificate: return DownloadCopy(title: "Stopped: can't verify your server", detail: "Its security certificate couldn't be trusted.", canRetry: true)
         case .signIn: return DownloadCopy(title: "Stopped: signed out", detail: "Sign in to this account again to continue.\(kept)")
         case .forbidden: return DownloadCopy(title: "Not allowed", detail: "This account can't download that file.", canRetry: true)
@@ -170,7 +171,7 @@ struct DownloadsView: View {
                         }
                     } footer: {
                         let used = records.reduce(Int64(0)) { $0 + $1.bytesDone }
-                        Text("\(bytes(used)) used on this device. Downloads continue while Shelfarr is open, and pick up where they stopped next time.")
+                        Text("\(bytes(used)) used on this device. When your server allows it, downloads continue in the background as iOS permits; otherwise while Shelfarr is open. Closing Shelfarr from the app switcher pauses them until you open it again.")
                     }
                 }
                 .scrollContentBackground(.hidden)

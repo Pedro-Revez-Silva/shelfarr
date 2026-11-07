@@ -85,6 +85,22 @@ final class APITests: XCTestCase {
         XCTAssertEqual(url.query, "limit=10")
     }
 
+    func testATransferGrantIsMintedForOneAssetWithTheBearer() async throws {
+        transport.enqueue(201, #"{"url":"/s/api/consumer/v1/library/p%201/assets/a1?grant=opaque","expires_at":"2026-11-08T00:00:00Z"}"#)
+        let grant = try await api.transferGrant(server: server, publicationId: "p 1", assetId: "a1")
+        let request = try XCTUnwrap(transport.requests.last)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString, "https://example.org/s/api/consumer/v1/library/p%201/assets/a1/transfer_grant")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token")
+        XCTAssertEqual(grant.expiresAt, "2026-11-08T00:00:00Z")
+        XCTAssertFalse(String(describing: grant).contains("opaque"), "a grant never reaches a log line")
+        transport.enqueue(404, #"{"error":"not_found"}"#)
+        do {
+            _ = try await api.transferGrant(server: server, publicationId: "p", assetId: "a")
+            XCTFail("expected 404")
+        } catch let error as APIError { XCTAssertEqual(error, .notFound) }
+    }
+
     func testSettingAStatusPutsItAndReturnsThePublication() async throws {
         transport.enqueue(200, #"{"id":"p/1","title":"T","book_type":"ebook","reading_status":"finished"}"#)
         let updated = try await api.setReadingStatus(server: server, publicationId: "p/1", status: .finished)

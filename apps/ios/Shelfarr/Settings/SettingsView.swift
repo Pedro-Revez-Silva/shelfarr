@@ -58,7 +58,7 @@ struct SettingsView: View {
             } header: {
                 Text("On this device")
             } footer: {
-                Text("Downloads stay until you remove them, and transfer while Shelfarr is open. Other books open from a temporary copy that iOS may clear, and other audio streams from your server. Your reading place is kept here and syncs when you're connected.")
+                Text("Downloads stay until you remove them. They transfer in the background when your server allows it, otherwise while Shelfarr is open. Other books open from a temporary copy that iOS may clear, and other audio streams from your server. Your reading place is kept here and syncs when you're connected.")
             }
             Section {
                 Button(disconnecting ? "Disconnecting…" : "Disconnect this device", role: .destructive) {

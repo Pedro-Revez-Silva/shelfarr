@@ -3,7 +3,8 @@ import SwiftUI
 
 @main
 struct ShelfarrApp: App {
-    @StateObject private var model = AppModel()
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @StateObject private var model = AppModel.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {

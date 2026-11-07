@@ -5,6 +5,9 @@ import SwiftUI
 /// The app's dependency graph and session state.
 @MainActor
 final class AppModel: ObservableObject {
+    /// One per process, created at launch, including a background relaunch with no UI.
+    static let shared = AppModel()
+
     @Published private(set) var state: SessionState
     @Published var appearance: AppearanceMode {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: Self.appearanceKey) }
@@ -20,6 +23,10 @@ final class AppModel: ObservableObject {
     let playback = PlaybackEngine()
     let readerSettings = ReaderSettingsStore()
     let downloads = DownloadsModel()
+    let transferRouter: TransferRouter
+    let backgroundDownloads: BackgroundDownloadSession
+    /// Runs grant-less transfers in this process, behind the transport's redirect checks.
+    let foregroundDownloads: InProcessDownloadExecutor
 
     private var registry: ProgressRegistry?
     private var registrySession: Session?
@@ -28,7 +35,7 @@ final class AppModel: ObservableObject {
 
     private static let appearanceKey = "appearance"
 
-    init() {
+    private init() {
         let sessions = SessionManager(store: KeychainStore())
         let transport = URLSessionTransport(credential: { sessions.credential() })
         let api = ConsumerAPI(
@@ -40,6 +47,14 @@ final class AppModel: ObservableObject {
         self.transport = transport
         self.api = api
         state = sessions.state
+        let router = TransferRouter()
+        transferRouter = router
+        backgroundDownloads = BackgroundDownloadSession(router: router)
+        foregroundDownloads = InProcessDownloadExecutor(
+            transport: transport,
+            router: router,
+            scratch: FileManager.default.temporaryDirectory.appendingPathComponent("downloads", isDirectory: true)
+        )
         appearance = AppearanceMode(rawValue: UserDefaults.standard.integer(forKey: Self.appearanceKey)) ?? .system
 
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -52,8 +67,10 @@ final class AppModel: ObservableObject {
         sessions.onChange = { [weak self] _ in
             Task { @MainActor in self?.apply() }
         }
-        // Resume this account's unfinished downloads at launch.
+        // Resume this account's unfinished downloads at launch. Its manager is connected to
+        // the router before the background session exists, so no early callback is dropped.
         if sessions.signedIn != nil { _ = downloadsForSession() }
+        backgroundDownloads.activate()
     }
 
     private func apply() {
@@ -124,7 +141,18 @@ final class AppModel: ObservableObject {
         try? excluded.setResourceValues(values)
         let manager = DownloadManager(
             root: root,
+            account: session.accountKey,
+            credential: DownloadManager.credentialTag(session.accessToken),
             transport: transport,
+            executors: DownloadExecutors(
+                foreground: foregroundDownloads,
+                background: backgroundDownloads,
+                mintGrant: { publicationId, assetId in
+                    guard sessions.signedIn == session else { throw CancellationError() }
+                    return try await api.transferGrant(server: session.server, publicationId: publicationId, assetId: assetId)
+                }
+            ),
+            router: transferRouter,
             server: session.server,
             authorize: { api.authorized($0) },
             fetchPublication: { id in
@@ -137,6 +165,8 @@ final class AppModel: ObservableObject {
             },
             onUnauthorized: { sessions.markExpired(Credential(server: session.server, accessToken: session.accessToken)) }
         )
+        // Before anything can deliver this account's events.
+        manager.connect()
         downloadManager = manager
         downloadSession = session
         let model = downloads

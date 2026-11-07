@@ -290,6 +290,27 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
     public var isReadableHere: Bool { !playableAssets.isEmpty }
 }
 
+/// Permission to fetch one asset without the account's bearer token. The grant is in the
+/// URL, valid only for GET and HEAD of that asset, and short-lived, so a system
+/// background transfer never holds the general credential and a redirect can't carry it.
+public struct TransferGrant: Codable, Equatable, Sendable, CustomStringConvertible {
+    public let url: String
+    public let expiresAt: String?
+
+    public init(url: String, expiresAt: String? = nil) {
+        self.url = url
+        self.expiresAt = expiresAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case url
+        case expiresAt = "expires_at"
+    }
+
+    // The URL is a credential: keep it out of logs.
+    public var description: String { "TransferGrant(expiresAt: \(expiresAt ?? "-"))" }
+}
+
 public struct ContinueList: Codable, Equatable, Sendable {
     public let items: [Publication]
 }

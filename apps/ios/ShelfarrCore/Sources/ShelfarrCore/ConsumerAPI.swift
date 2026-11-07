@@ -133,6 +133,12 @@ public final class ConsumerAPI: Sendable {
         return try await decode(perform(authorized(url, method: "PUT", body: body)))
     }
 
+    /// Asks for an asset-scoped grant for a background transfer. Older servers answer 404.
+    public func transferGrant(server: ServerAddress, publicationId: String, assetId: String) async throws -> TransferGrant {
+        let url = server.api("library/\(ServerAddress.pathSegment(publicationId))/assets/\(ServerAddress.pathSegment(assetId))/transfer_grant")
+        return try await decode(perform(authorized(url, method: "POST", body: Data("{}".utf8))))
+    }
+
     public func publication(server: ServerAddress, id: String) async throws -> Publication {
         try await decode(perform(authorized(server.api("library/\(ServerAddress.pathSegment(id))"))))
     }
