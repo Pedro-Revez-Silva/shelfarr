@@ -137,24 +137,35 @@ validation; physical-device compatibility is still unverified.
 
 ## Progress
 
-Each position is written to disk first. Sends are debounced by 5 seconds and never
+Each position and its activity time are written to disk first. Audio saves locally
+every four seconds while playing; page turns, seeks, pause, stop, track changes and
+backgrounding save promptly. Network sends are debounced by 5 seconds and never
 wait longer than 20. They also flush on pause, stop, backgrounding and foregrounding.
 
 A write keeps its `client_mutation_id` until the server gives a definite answer, and
 newer positions wait behind it. Retries back off from 5 seconds to 5 minutes and stop
 after 8 attempts until the next trigger, so nothing loops in the background. A 409
-naming our own mutation id counts as success, because only the response was lost. Any
-other 409 stops sending and asks the reader to choose. A 422 drops that write.
+naming our own mutation id counts as success, because only the response was lost.
+On other conflicts, the latest actual activity wins when both times and positions
+are usable. Unknown, equal or implausible times still ask the reader to choose.
+A 422 retains the unsynced place and asks on the next open; it does not erase it.
+Upload and acknowledgement times never become reading or listening times.
 
 On opening, `ResumeDecision` compares the server position with this device's:
 
 - Unsent local reading continues if the server hasn't moved past the version it was
-  based on. If it has, and the places differ, the reader chooses.
+  based on. Otherwise usable activity times decide; uncertain cases ask the reader.
 - A position whose `asset_id` is not in the publication is treated as an earlier
   edition: the reader is told and starts at the beginning.
 
 Ebook positions are Readium locators, passed through unchanged. Audio positions are
 seconds within the named asset.
+
+Resuming a saved audiobook or playing after a pause rewinds five seconds within the
+current track, once. Deliberate seeks and track choices do not rewind. Reopening a
+book or replaying those seconds does not invent new progress. See the detailed
+activity-time, durability and rewind rules for [Android](native-progress-android.md)
+and [iOS/iPad](native-progress-ios.md).
 
 ## Implementation notes for the API
 

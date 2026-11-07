@@ -108,6 +108,8 @@ udid="${IOS_SIMULATOR_UDID:-}"
 # simulator shut down afterwards. `simctl boot` fails for a device already booted.
 booted_here=0
 server_pid=""
+# Invoked indirectly by the EXIT trap below.
+# shellcheck disable=SC2329
 cleanup() {
   [ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null || true
   if [ "$booted_here" -eq 1 ]; then

@@ -192,17 +192,19 @@ query time.
 ## Runtime smoke test
 
 ```sh
-apps/scripts/ios-runtime-smoke.sh                       # whole test
-apps/scripts/ios-runtime-smoke.sh -only-testing:ShelfarrUITests/RuntimeSmokeTests
+apps/scripts/ios-runtime-smoke.sh --device all          # iPhone and iPad
+apps/scripts/ios-runtime-smoke.sh --device ipad -only-testing:ShelfarrUITests/RuntimeSmokeTests
 ```
 
 It needs macOS, Xcode 16.4, XcodeGen and `python3`. The script works like this:
 
 1. Regenerates the project (`ShelfarrUITests` target, `ShelfarrRuntimeSmoke` scheme).
-2. Picks the newest available iPhone simulator at or below the selected Xcode's
-   simulator SDK version. Set `IOS_SIMULATOR_UDID` to override.
+2. Picks the newest available simulator of each requested family at or below the
+   selected Xcode's simulator SDK version. Set `IOS_SIMULATOR_UDID` to override a
+   single-family run. A simulator already running is left running afterwards.
 3. Starts `apps/ios/RuntimeSmoke/smoke_server.py` on `127.0.0.1:8765`, with control on
-   `8766`. Set `SHELFARR_SMOKE_PORT` and `SHELFARR_SMOKE_CONTROL_PORT` to change them.
+   `8766` for iPhone, or `8775`/`8776` for iPad. Set `SHELFARR_SMOKE_PORT` and
+   `SHELFARR_SMOKE_CONTROL_PORT` to change them for a single-family run.
    The fixture server runs `mock_consumer_server.py` unchanged and adds transfer grants,
    an offline switch that also drops kept-alive connections, and counters.
 4. Runs `xcodebuild test` with local ad-hoc signing (`CODE_SIGN_IDENTITY=-`), which
@@ -237,15 +239,17 @@ Audio output isn't needed or checked.
 
 | Path | Contents |
 |---|---|
-| `apps/ios/build/runtime-smoke/RuntimeSmoke.xcresult` | result bundle (also matched by `apps/ios/build/**/*.xcresult`) |
-| `apps/ios/build/runtime-smoke/attachments/` | exported screenshots `01-home` … `12-reader-offline`, with `manifest.json` |
-| `apps/ios/build/runtime-smoke/xcodebuild.log`, `server.log`, `server-stats.json`, `device.log` | build and test output, fixture requests and counters, and the simulator's log for Shelfarr and `nsurlsessiond` |
-| `apps/ios/test-results/runtime-smoke-summary.json` | `xcresulttool get test-results summary` |
+| `apps/ios/build/runtime-smoke/<family>/RuntimeSmoke.xcresult` | result bundle (also matched by `apps/ios/build/**/*.xcresult`) |
+| `apps/ios/build/runtime-smoke/<family>/attachments/` | exported screenshots and `manifest.json` |
+| `apps/ios/build/runtime-smoke/<family>/xcodebuild.log`, `server.log`, `server-stats.json`, `device.log`, `device.json` | build/test output, fixture counters, simulator logs and the selected device/runtime |
+| `apps/ios/test-results/runtime-smoke/<family>/summary.json` | `xcresulttool get test-results summary`; `<family>` is `iphone` or `ipad` |
 
-The CI step runs `apps/scripts/ios-runtime-smoke.sh` after `ios-check.sh`, on
+The CI step runs `apps/scripts/ios-runtime-smoke.sh --device all` after `ios-check.sh`, on
 `macos-15` with Xcode 16.4 selected and XcodeGen on `PATH`, as for the existing iOS
 job. It needs no secrets, and it should upload the paths above `if: always()`. Allow
-about 15 minutes more than `ios-check.sh`.
+additional time for both simulator families. Activity-time and audio-rewind assertions
+are described in [native-progress-ios.md](native-progress-ios.md); a simulator that
+cannot advance audio reports that test as skipped, not verified.
 
 ## Verification status and limits
 
