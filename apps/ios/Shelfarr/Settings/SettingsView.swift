@@ -3,11 +3,27 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var downloads: DownloadsModel
     @State private var confirming = false
     @State private var disconnecting = false
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    }
+
+    private var downloadsSummary: String {
+        let records = Array(downloads.records.values)
+        if records.isEmpty { return "Nothing downloaded" }
+        let ready = records.filter(\.isReady)
+        let active = records.filter(\.isActive).count
+        var parts: [String] = []
+        if !ready.isEmpty {
+            let size = ByteCountFormatter.string(fromByteCount: ready.reduce(Int64(0)) { $0 + $1.bytesDone }, countStyle: .file)
+            parts.append("\(ready.count) on this device · \(size)")
+        }
+        if active > 0 { parts.append("\(active) downloading") }
+        if parts.isEmpty { parts.append("\(records.count) stopped") }
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
@@ -30,10 +46,19 @@ struct SettingsView: View {
                 .pickerStyle(.inline)
                 .labelsHidden()
             }
-            Section("On this device") {
-                Text("Books open from a temporary copy that iOS may clear, and audio streams from your server. Downloads for offline use aren't available yet. Your reading place is kept here and syncs when you're connected.")
-                    .font(.footnote)
-                    .foregroundStyle(Palette.inkMuted)
+            Section {
+                NavigationLink {
+                    DownloadsView(downloads: downloads)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Downloads")
+                        Text(downloadsSummary).font(.footnote).foregroundStyle(Palette.inkMuted)
+                    }
+                }
+            } header: {
+                Text("On this device")
+            } footer: {
+                Text("Downloads stay until you remove them, and transfer while Shelfarr is open. Other books open from a temporary copy that iOS may clear, and other audio streams from your server. Your reading place is kept here and syncs when you're connected.")
             }
             Section {
                 Button(disconnecting ? "Disconnecting…" : "Disconnect this device", role: .destructive) {
@@ -58,7 +83,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This signs out, stops playback and removes book copies and saved places from this device. Your library stays on your server.")
+            Text("This signs out, stops playback and downloads, and removes downloads, book copies and saved places from this device. Your library stays on your server.")
         }
     }
 }

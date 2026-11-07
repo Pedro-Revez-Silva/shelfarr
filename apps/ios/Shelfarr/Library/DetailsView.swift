@@ -5,31 +5,57 @@ import SwiftUI
 final class DetailsModel: ObservableObject {
     enum State {
         case loading
-        case loaded(ShelfarrCore.Publication)
+        /// `offline` means these are the last details seen on this device, not the server's.
+        case loaded(ShelfarrCore.Publication, offline: Bool)
         case failed(Error)
     }
 
     @Published private(set) var state = State.loading
+    @Published private(set) var statusSaving: ReadingStatus?
+    @Published private(set) var statusError: Error?
 
     func load(_ app: AppModel, id: String) async {
         guard let session = app.session else { return }
         let server = session.server, api = app.api(for: session)
         do {
-            let publication = try await api.publication(server: server, id: id)
+            let metadata = try await app.publications(for: session).load(id: id, server: server, api: api)
             guard app.session == session else { return }
-            state = .loaded(publication)
+            state = .loaded(metadata.publication, offline: metadata.unverified)
         } catch is CancellationError {
             return
         } catch {
             guard app.session == session else { return }
             if case .loaded = state { return }
+            // Offline, a download still knows its book. Sign-in and certificate errors stay visible.
+            if (error as? APIError)?.isPlainOffline == true, let record = await app.downloadsForSession()?.record(id) {
+                state = .loaded(record.publication, offline: true)
+                return
+            }
             state = .failed(error)
         }
+    }
+
+    /// Needs the server: nothing changes on screen until it has accepted the status.
+    func setStatus(_ app: AppModel, _ status: ReadingStatus) async {
+        guard let session = app.session, case let .loaded(publication, offline) = state,
+              !offline, statusSaving == nil, publication.status != status
+        else { return }
+        statusSaving = status
+        statusError = nil
+        do {
+            let updated = try await app.api(for: session).setReadingStatus(server: session.server, publicationId: publication.id, status: status)
+            guard app.session == session else { return }
+            state = .loaded(updated, offline: false)
+        } catch {
+            statusError = error
+        }
+        statusSaving = nil
     }
 }
 
 struct DetailsView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var downloads: DownloadsModel
     @StateObject private var model = DetailsModel()
     let publicationId: String
     let open: (ShelfarrCore.Publication) -> Void
@@ -51,7 +77,7 @@ struct DetailsView: View {
             MessageState(title: copy.title, message: copy.message, systemImage: "wifi.slash", action: copy.retryable ? "Try again" : nil) {
                 Task { await model.load(app, id: publicationId) }
             }
-        case let .loaded(publication):
+        case let .loaded(publication, offline):
             ScrollView {
                 VStack(spacing: 0) {
                     BookCover(publication: publication, corner: 6)
@@ -66,6 +92,28 @@ struct DetailsView: View {
                         Text(author).font(.subheadline).foregroundStyle(Palette.inkMuted).padding(.top, 6)
                     }
                     action(publication).padding(.top, 24)
+                    if offline {
+                        Text(downloads.records[publication.id]?.isReady == true
+                            ? "Offline. Opening the download on this device."
+                            : "Offline. These are the last details seen on this device.")
+                            .font(.footnote)
+                            .foregroundStyle(Palette.inkMuted)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 10)
+                    }
+                    if publication.isReadableHere {
+                        DownloadPanel(downloads: downloads, publication: publication, offline: offline).padding(.top, 20)
+                    }
+                    StatusPicker(
+                        publication: publication,
+                        offline: offline,
+                        saving: model.statusSaving,
+                        error: model.statusError,
+                        host: app.session?.server.host
+                    ) { status in
+                        Task { await model.setStatus(app, status) }
+                    }
+                    .padding(.top, 24)
                     if let description = publication.description, !description.isEmpty {
                         Text(description)
                             .font(Typeface.serif(18))
@@ -114,7 +162,9 @@ struct DetailsView: View {
             row("Format", formats.isEmpty ? "Unknown" : formats)
             if assets.count > 1 { row("Files", String(assets.count)) }
             if total > 0 { row("Size", ByteCountFormatter.string(fromByteCount: total, countStyle: .file)) }
-            row("Availability", publication.bookType == .audiobook ? "Streams from your server" : "Opens from your server")
+            row("Availability", downloads.records[publication.id]?.isReady == true
+                ? "Downloaded to this device"
+                : publication.bookType == .audiobook ? "Streams from your server" : "Opens from your server")
         }
     }
 

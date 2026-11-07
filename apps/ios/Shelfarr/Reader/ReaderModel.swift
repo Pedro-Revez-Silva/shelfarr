@@ -48,11 +48,25 @@ final class ReaderModel: ObservableObject {
         }
         do {
             let api = app.api(for: session)
-            let metadata = try await app.publications(for: session).load(
-                id: publicationId, server: session.server, api: api
-            )
+            let downloads = app.downloadsForSession()
+            var offline = false
+            var metadata: PublicationMetadata?
+            do {
+                metadata = try await app.publications(for: session).load(id: publicationId, server: session.server, api: api)
+                offline = metadata?.unverified == true
+            } catch let error as APIError where error.isPlainOffline {
+                offline = true
+            }
             guard app.session == session else { throw CancellationError() }
-            let publication = metadata.publication
+            let download = await downloads?.ready(publicationId)
+            // A download pins one edition. Online, it is used only while it is still the server's edition.
+            var useDownload = false
+            if let download {
+                useDownload = offline || (metadata.map { download.matches($0.publication) } ?? false)
+            }
+            guard let publication = (useDownload ? download?.publication : nil) ?? metadata?.publication ?? download?.publication else {
+                throw APIError.offline(certificate: false)
+            }
             guard let epub = publication.epubAsset else {
                 state = .unreadable
                 return
@@ -60,21 +74,28 @@ final class ReaderModel: ObservableObject {
             asset = epub
             title = publication.title
 
-            let cached = try await app.epubCache.obtain(accountKey: session.accountKey, server: session.server, asset: epub, authorize: { api.authorized($0) }) { [weak self] fraction in
-                Task { @MainActor in self?.state = .preparing(fraction) }
+            let file: URL
+            if useDownload, let download, let local = await downloads?.fileURL(download, assetId: epub.id) {
+                file = local
+                if offline { notice = "Reading the download on this device. Your place will sync when you're back online." }
+            } else {
+                let cached = try await app.epubCache.obtain(accountKey: session.accountKey, server: session.server, asset: epub, authorize: { api.authorized($0) }) { [weak self] fraction in
+                    Task { @MainActor in self?.state = .preparing(fraction) }
+                }
+                guard app.session == session else { throw CancellationError() }
+                if cached.unverified || offline {
+                    notice = "Reading the copy on this device. Your place will sync when you're back online."
+                }
+                file = cached.file
             }
-            guard app.session == session else { throw CancellationError() }
-            if cached.unverified || metadata.unverified {
-                notice = "Reading the copy on this device. Your place will sync when you're back online."
-            }
-            guard let opened = await ReadiumBook.open(file: cached.file) else {
+            guard let opened = await ReadiumBook.open(file: file) else {
                 state = .unreadable
                 return
             }
             book = opened
 
             let local = await sync.snapshot()
-            switch ResumeDecision.decide(publication: publication, server: publication.progress, local: local, offline: metadata.unverified) {
+            switch ResumeDecision.decide(publication: publication, server: publication.progress, local: local, offline: offline) {
             case .beginning:
                 await start(nil, baseVersion: 0)
             case let .resume(position, baseVersion):

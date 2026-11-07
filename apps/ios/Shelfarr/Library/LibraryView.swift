@@ -5,6 +5,9 @@ import SwiftUI
 final class LibraryModel: ObservableObject {
     @Published var filter: LibraryFilter = .all
     @Published var query = ""
+    /// Nil shows every status.
+    @Published var status: ReadingStatus?
+    @Published var sort: LibrarySort = .recent
     @Published private(set) var items: [ShelfarrCore.Publication] = []
     @Published private(set) var loading = true
     @Published private(set) var loadingMore = false
@@ -22,7 +25,8 @@ final class LibraryModel: ObservableObject {
         request?.cancel()
         pageRequest?.cancel()
         generation += 1
-        let generation = self.generation, filter = self.filter, query = self.query
+        let generation = self.generation
+        let listing = LibraryQuery(filter: filter, text: query, status: status, sort: sort)
         loading = true
         loadingMore = false
         nextCursor = nil
@@ -33,7 +37,7 @@ final class LibraryModel: ObservableObject {
             error = nil
             pageFailed = false
             do {
-                let page = try await api.library(server: server, filter: filter, query: query)
+                let page = try await api.library(server: server, query: listing)
                 guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
                 items = page.items
                 nextCursor = page.nextCursor
@@ -53,13 +57,15 @@ final class LibraryModel: ObservableObject {
         guard let session = app.session, let cursor = nextCursor, !loading, !loadingMore,
               items.suffix(6).contains(where: { $0.id == publication.id })
         else { return }
-        let generation = self.generation, filter = self.filter, query = self.query
+        let generation = self.generation
+        // The cursor is bound to the query that produced it.
+        let listing = LibraryQuery(filter: filter, text: query, status: status, sort: sort)
         let server = session.server, api = app.api(for: session)
         loadingMore = true
         pageFailed = false
         pageRequest = Task {
             do {
-                let page = try await api.library(server: server, filter: filter, query: query, cursor: cursor)
+                let page = try await api.library(server: server, query: listing, cursor: cursor)
                 guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
                 items += page.items
                 nextCursor = page.nextCursor
@@ -88,6 +94,28 @@ struct LibraryView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 20)
+            .padding(.top, 8)
+            HStack(spacing: 8) {
+                // Menus rather than a scrolling chip row, so the active choice is always on screen.
+                Menu {
+                    Picker("Status", selection: $model.status) {
+                        Text("Any status").tag(ReadingStatus?.none)
+                        ForEach(ReadingStatus.allCases, id: \.self) { Text($0.label).tag(ReadingStatus?.some($0)) }
+                    }
+                } label: {
+                    menuLabel("Status: \(model.status?.label ?? "Any")", active: model.status != nil)
+                }
+                Menu {
+                    Picker("Sort", selection: $model.sort) {
+                        Text("Recent activity").tag(LibrarySort.recent)
+                        Text("Title A–Z").tag(LibrarySort.title)
+                    }
+                } label: {
+                    menuLabel("Sort: \(model.sort == .title ? "Title" : "Recent")", active: false, systemImage: "arrow.up.arrow.down")
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 20)
             .padding(.vertical, 8)
             content
         }
@@ -96,8 +124,23 @@ struct LibraryView: View {
         .searchable(text: $model.query, prompt: "Title or author")
         .navigationDestination(for: PublicationRoute.self) { DetailsView(publicationId: $0.id, open: open) }
         .onChange(of: model.filter) { _ in model.reload(app) }
+        .onChange(of: model.status) { _ in model.reload(app) }
+        .onChange(of: model.sort) { _ in model.reload(app) }
         .onChange(of: model.query) { _ in model.reload(app, debounce: true) }
         .task { if model.items.isEmpty { model.reload(app) } }
+    }
+
+    private func menuLabel(_ text: String, active: Bool, systemImage: String? = nil) -> some View {
+        HStack(spacing: 6) {
+            if let systemImage { Image(systemName: systemImage).font(.footnote) }
+            Text(text).font(.subheadline.weight(.medium))
+        }
+        .foregroundStyle(Palette.ink)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 36)
+        .background(active ? Palette.accentSoft : Palette.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Palette.hairline))
+        .accessibilityLabel("\(text). Change")
     }
 
     @ViewBuilder
@@ -108,6 +151,14 @@ struct LibraryView: View {
             let copy = errorCopy(error, host: app.session?.server.host)
             MessageState(title: copy.title, message: copy.message, systemImage: "wifi.slash", action: "Try again") {
                 model.reload(app)
+            }
+        } else if model.items.isEmpty, let status = model.status, model.query.isEmpty {
+            MessageState(
+                title: status == .finished ? "Nothing finished yet" : "Nothing \(status.label.lowercased())",
+                message: "Change the status filter to see the rest of your library.",
+                action: "Show all"
+            ) {
+                model.status = nil
             }
         } else if model.items.isEmpty {
             if model.query.isEmpty {

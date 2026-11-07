@@ -18,6 +18,7 @@ final class PlayerModel: ObservableObject {
     private let owner: Session?
     private let publicationId: String
     private let sync: ProgressSync?
+    private var localFiles: [String: URL]?
 
     init(app: AppModel, publicationId: String) {
         self.app = app
@@ -40,18 +41,33 @@ final class PlayerModel: ObservableObject {
         }
         state = .loading
         do {
-            let publication = try await app.api(for: session).publication(server: session.server, id: publicationId)
+            var offline = false
+            var online: ShelfarrCore.Publication?
+            do {
+                online = try await app.api(for: session).publication(server: session.server, id: publicationId)
+            } catch let error as APIError where error.isPlainOffline {
+                // Only a lost connection may fall back to the download. Certificates are surfaced.
+                offline = true
+            }
             guard app.session == session else { throw CancellationError() }
+            let downloads = app.downloadsForSession()
+            var download = await downloads?.ready(publicationId)
+            if let current = online, let found = download, !found.matches(current) { download = nil }
+            guard let publication = online ?? download?.publication else { throw APIError.offline(certificate: false) }
             if publication.audioAssets.isEmpty {
                 state = .noAudio
                 return
             }
+            // All of the files, or none: a partial download never stands in for the book.
+            if let download { localFiles = await downloads?.fileURLs(download) }
+            if offline, localFiles == nil { throw APIError.offline(certificate: false) }
+            let notice = offline ? "Playing the download on this device. Your place will sync when you're back online." : nil
             let local = await sync.snapshot()
-            switch ResumeDecision.decide(publication: publication, server: publication.progress, local: local) {
+            switch ResumeDecision.decide(publication: publication, server: publication.progress, local: local, offline: offline) {
             case .beginning:
-                await play(publication, nil, baseVersion: 0)
+                await play(publication, nil, baseVersion: 0, notice: notice)
             case let .resume(position, baseVersion):
-                await play(publication, position, baseVersion: baseVersion)
+                await play(publication, position, baseVersion: baseVersion, notice: notice)
             case let .choose(local, server):
                 state = .chooseResume(publication, local: local, server: server)
             case let .editionChanged(staleVersion):
@@ -79,7 +95,7 @@ final class PlayerModel: ObservableObject {
     private func play(_ publication: ShelfarrCore.Publication, _ start: SavedPosition?, baseVersion: Int, notice: String? = nil) async {
         guard let session = owner, app.session == session, let sync else { return }
         await sync.begin(position: start, baseVersion: baseVersion)
-        app.playback.load(publication, server: session.server, api: app.api(for: session), sync: sync, start: start)
+        app.playback.load(publication, server: session.server, api: app.api(for: session), sync: sync, start: start, localFiles: localFiles)
         state = .active(notice: notice)
     }
 
@@ -188,6 +204,12 @@ struct PlayerView: View {
                     }
                     if let line = placeLine {
                         Text(line).font(.footnote.weight(.medium)).foregroundStyle(Palette.accent).lineLimit(1).padding(.top, 8)
+                    }
+                    if notice == nil, playback.fromDevice {
+                        Label("Playing the download on this device", systemImage: "checkmark.circle")
+                            .font(.footnote)
+                            .foregroundStyle(Palette.inkMuted)
+                            .padding(.top, 10)
                     }
                     if let notice {
                         Text(notice).font(.footnote).foregroundStyle(Palette.inkMuted).multilineTextAlignment(.center).padding(.top, 10)

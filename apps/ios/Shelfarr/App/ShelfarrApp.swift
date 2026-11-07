@@ -11,6 +11,7 @@ struct ShelfarrApp: App {
             RootView()
                 .environmentObject(model)
                 .environmentObject(model.playback)
+                .environmentObject(model.downloads)
                 .preferredColorScheme(model.appearance.colorScheme)
                 .tint(Palette.accent)
         }
