@@ -31,6 +31,14 @@ APK lands at `apps/android/app/build/outputs/apk/debug/app-debug.apk` and render
 screens at `apps/android/app/build/screenshots`. Those renders use test fixtures only;
 the app contains no demo content.
 
+CI also runs `:app:connectedDebugAndroidTest` on an accelerated API 35 emulator.
+This opens a fixture EPUB in the real Activity/WebView, navigates to chapter two,
+saves through HTTP and reopens at that chapter. Its screenshots and logcat are
+uploaded alongside the APK; a renderer crash fails the check. To run it locally,
+start an accelerated emulator or connect a test device, then run that Gradle task
+from `apps/android`. The smoke test uses an in-process fixture API and a synthetic
+account, so a connected personal library is not needed.
+
 Versions live in `apps/android/gradle/libs.versions.toml`, pinned to the Kotlin, AGP
 and compile SDK combination that Readium 3.4.0 builds with. Bump them together.
 
