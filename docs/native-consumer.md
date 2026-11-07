@@ -13,7 +13,9 @@ native iOS app, both talking to the consumer API. Neither wraps the web UI.
 The flow on both platforms is: server address, device authorization in the system
 browser, library and continue, publication details, EPUB reader or audio player,
 resume from the saved place. Books and audiobooks can be downloaded for offline use,
-and each has a reading status.
+and each has a reading status. Android also browses cached library titles offline and
+uses Android's transfer hosts to continue downloads after leaving the app; see
+[Android background downloads and offline coverage](native-offline-android.md).
 
 ## Build
 
@@ -39,7 +41,11 @@ book and a two-track audiobook, stops the fixture server, then reopens the book 
 its download in the real reader (`offline-download.png`) and checks that the player
 selected and prepared both downloaded tracks. CI's emulator runs without audio
 output, so audible playback is not asserted. Screenshots and logcat are uploaded
-alongside the APK; a renderer crash fails the check. To run it locally,
+alongside the APK; a renderer crash fails the check.
+The background-transfer test also drives Library → details → Download, notification
+Cancel and Downloads navigation, system interruption/resume, and offline Library
+search. It exercises the real app on the emulator; process death and denied
+notification permission still need device validation. To run it locally,
 start an accelerated emulator or connect a test device, then run
 `apps/scripts/android-reader-smoke.sh`. The smoke test uses an in-process fixture API and a synthetic
 account, so a connected personal library is not needed.
@@ -198,16 +204,22 @@ the cache directory, which the OS may still clear.
   the foreground; the rest wait for the user.
 - Cancel stops the transfer and deletes its bytes. Remove deletes the files and the
   entry; the saved place and status stay.
-- The queue is stored with the account and resumes when the app starts. Transfers run
-  while the app process is alive: there is no OS background transfer, so a download
-  pauses when the system stops the app and continues next time it opens.
+- The queue is stored with the account. Android runs it through user-initiated jobs
+  on Android 14+, and foreground services/network jobs on older versions. Android
+  controls interruptions and retries; an explicit user stop requires Resume. See the
+  [platform limits](native-offline-android.md). iOS currently transfers while its app
+  process is alive and resumes the queue when reopened.
 
 ## Current limits
 
 - Offline: downloaded books and audiobooks open, and Home shows them. Other books that
   were opened before can reopen from their cached copy, which the OS may clear, and
-  other audio needs a connection. The library and status changes need a connection.
-- Downloads transfer only while the app runs; they don't complete in the background.
+  other audio needs a connection. Android's Library searches and filters downloaded
+  and previously loaded titles, with coverage/freshness shown. iOS Library browsing
+  and status edits on both platforms currently need a connection.
+- Android background execution is controlled by the OS and cannot bypass force stop,
+  battery or network limits. iOS downloads currently need the app process to remain
+  alive.
 - EPUB only for reading. Other ebook formats show "can't be opened in the app yet", and
   DRM-protected files can't be opened.
 - Chapters come from the audio file's own metadata (ID3 `CHAP`, MP4 chapter tracks) as
