@@ -3,6 +3,7 @@ package org.shelfarr.app.reader
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -66,7 +67,7 @@ class ReaderActivity : FragmentActivity() {
         // No fragment restore: see the class comment.
         super.onCreate(null)
         enableEdgeToEdge()
-        window.isNavigationBarContrastEnforced = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) window.isNavigationBarContrastEnforced = false
 
         navigatorHost = FragmentContainerView(this).apply { id = R.id.reader_navigator }
         val chrome = ComposeView(this).apply {

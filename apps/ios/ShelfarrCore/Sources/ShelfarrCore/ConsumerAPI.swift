@@ -108,6 +108,16 @@ public final class ConsumerAPI: Sendable {
         try await perform(authorized(url))
     }
 
+    /// Fetches one byte range of an authenticated asset, for streaming audio.
+    public func bytes(at url: URL, range: ClosedRange<Int64>) async throws -> (Data, HTTPURLResponse) {
+        var request = authorized(url)
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range")
+        let (data, response) = try await send(request)
+        try check(data, response)
+        return (data, response)
+    }
+
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let result = try await transport.send(request)
         noteRejection(result.1, request)
