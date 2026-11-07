@@ -39,6 +39,14 @@ class Consumer::LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_select "body", text: /Resume at 0:17/
   end
 
+  test "empty filtered shelves explain the filter and offer a reset" do
+    get consumer_library_path(status: "finished", sort: "title")
+    assert_response :success
+    assert_select ".consumer-empty h3", text: "No stories match these filters"
+    assert_select ".consumer-empty a[href=?]", consumer_library_path(sort: "title"), text: "Clear filters"
+    assert_select ".consumer-empty a", text: "Find a book", count: 0
+  end
+
   test "signed-out browsers cannot access the consumer library or stream" do
     asset = consumer_asset(@ebook)
     sign_out

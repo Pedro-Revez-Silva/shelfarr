@@ -3,7 +3,7 @@
 The consumer preview adds a mobile web library at `/read` and a versioned API for
 the native Android and iOS apps. It reuses Shelfarr's acquired library and normal
 account sign-in. Discovery, requests, acquisition, uploads, and administration
-remain in their existing flows. **My Profile → Reader preview** opens the web
+remain in their existing flows. **Read & listen** in the main navigation or **My Profile → Reader preview** opens the web
 experience; acquired book details also link to its reader or player.
 
 This first slice reads DRM-free EPUBs, plays supported local audio files, and
@@ -55,8 +55,10 @@ Personal responses use `Cache-Control: private, no-store`.
 | `POST /auth/token` with `{device_code}` | `{access_token,token_type:"Bearer",scope,expires_in:2592000}` |
 | `POST /auth/revoke` | Revoke the current credential; 204 |
 | `GET /me` | `{id,name,username}` |
-| `GET /library?type=ebook\|audiobook&q=...&limit=30&cursor=...` | `{items:[publication],next_cursor}` |
+| `GET /library?type=ebook\|audiobook&q=...&status=...&sort=...&limit=30&cursor=...` | `{items:[publication],next_cursor}` |
+| `GET /continue?limit=10` | `{items:[publication]}` across the library, most recent activity first |
 | `GET /library/:id` | One publication |
+| `PUT /library/:id/reading_status` with `{status}` | Updated publication; requires `progress:write` |
 | `GET /library/:id/assets/:asset_id` | Original media bytes; GET, HEAD, single byte ranges, strong ETag, If-Range |
 | `GET /library/:id/progress` | `{progress:null\|progress}` |
 | `PUT /library/:id/progress` | Compare-and-set progress, described below |
@@ -69,7 +71,10 @@ have per-IP rate limits. An expired or revoked bearer receives 401; missing
 scope receives 403 with `error: insufficient_scope`.
 
 Library pages default to 30 items and cap at 50. Signed keyset cursors are bound
-to the account, query and type filter. Changing a filter starts a new page chain.
+to the account, query, type, reading status and sort. Changing any of them starts a new page chain.
+`sort=recent` (default) orders by acquisition record ID descending; `sort=title`
+orders by SQLite lowercase title then ID, with stable keyset pagination. Omit
+`status` for all titles or choose `unread`, `in_progress`, or `finished`.
 Only acquired ebook/audiobook Book records are projected. Remote-only owned
 inventory and pending requests are not fabricated as playable media. A missing
 or unsupported source has an empty assets array, while its metadata remains
@@ -92,6 +97,7 @@ visible. Search matches title and author; it does not call metadata providers.
     "position": 0,
     "content_url": "/api/consumer/v1/library/publication-id/assets/opaque-file-generation-id"
   }],
+  "reading_status": "unread",
   "progress": null
 }
 ```
@@ -123,6 +129,20 @@ multiple, or unsatisfiable ranges receive 416 and `Content-Range: bytes */size`.
 A non-matching If-Range returns the complete file. HEAD reports full-file headers
 without streaming or changing progress. A matching If-None-Match returns 304 so
 native clients can revalidate cached ebooks without downloading them again.
+
+## Reading status and Continue
+
+Reading status is personal and independent of the saved place. Without an
+explicit choice, a publication with progress is `in_progress`; otherwise it is
+`unread`. An explicit Unread, Reading, or Finished choice overrides that default
+and later position writes preserve it. Status writes use the last explicit
+choice and do not reset the locator or listening position.
+
+Continue considers progress and explicitly Reading titles across the whole
+library, rather than just the first catalog page. It skips unavailable files,
+Finished/Unread titles, and saved positions whose file generation no longer
+matches. It defaults to ten items, capped at twenty, and inspects at most the
+200 most recently active candidates. There is no Continue cursor.
 
 ## Saved progress
 
@@ -163,6 +183,9 @@ EPUB.js renders the ebook, after final section serialization is sanitized with
 DOMPurify and a restrictive content policy. Reader frames have no script, popup,
 form, or top-navigation permission. The web player uses normal HTML audio and
 optional Media Session controls; background behavior remains browser-dependent.
+Text size and listening speed persist on this browser. Changing tracks while
+paused keeps playback paused; reaching a track end continues automatically.
+The web reader needs a connection and does not offer offline downloads.
 
 The browser engine is checked in at `vendor/javascript/consumer_reader_engine.js`.
 Production does not install JavaScript packages or fetch reader code from a CDN.

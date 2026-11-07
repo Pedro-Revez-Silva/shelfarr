@@ -10,8 +10,9 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     prepare_consumer_library
     FileUtils.cp(Rails.root.join("test/fixtures/files/consumer_sample.mp3"), @audio_path)
     sign_in_as(users(:one))
+    page.execute_script("localStorage.removeItem('shelfarr.reader.preferences.v1')")
   end
-  teardown { FileUtils.remove_entry(@root) }
+  teardown { FileUtils.remove_entry(@root) if @root && File.exist?(@root) }
 
   test "mobile shelf leads to actual EPUB pages with safe reader isolation and saved progress" do
     File.unlink(@epub_path)
@@ -86,6 +87,76 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     find("select[data-consumer-reader-target=tracks]").select("Chapter2.mp3")
     assert_selector "[data-consumer-reader-target=trackTitle]", text: "Chapter2.mp3"
     assert page.evaluate_script("document.querySelector('audio').playbackRate === 1.5 && document.querySelector('audio').defaultPlaybackRate === 1.5")
+  end
+
+  test "reading preferences survive reopening and text size refreshes the page count" do
+    File.unlink(@epub_path)
+    write_consumer_epub(@epub_path, chapter: "A good story keeps its place. " * 650)
+    page.current_window.resize_to(390, 844)
+    visit consumer_publication_path(@ebook)
+    assert_selector ".consumer-ebook iframe", wait: 20
+    click_button "Next →"
+    initial_total = find("[data-consumer-reader-target=location]").text[/\/ (\d+)/, 1].to_i
+    3.times { find("button[aria-label='Larger text']").click }
+    assert_selector "[data-consumer-reader-target=location]" do |node|
+      node.text[/\/ (\d+)/, 1].to_i > initial_total
+    end
+    assert_selector ".consumer-ebook iframe" do
+      page.evaluate_script("JSON.parse(localStorage.getItem('shelfarr.reader.preferences.v1')).fontSize === 135 && parseFloat(getComputedStyle(document.querySelector('.consumer-ebook iframe').contentDocument.querySelector('p')).fontSize) > 21")
+    end
+    enlarged = within_frame(find(".consumer-ebook iframe")) { page.evaluate_script("getComputedStyle(document.querySelector('p')).fontSize") }
+    assert_text "Your place is saved", wait: 12
+    click_link "← Your library"
+    assert_current_path consumer_library_path
+    click_link "The Quiet Library", match: :first
+    assert_selector ".consumer-ebook iframe", wait: 20
+    restored = within_frame(find(".consumer-ebook iframe")) { page.evaluate_script("getComputedStyle(document.querySelector('p')).fontSize") }
+    assert_equal enlarged, restored
+  end
+
+  test "paused track changes stay paused and listening speed survives reopening" do
+    directory = File.join(@root, "Audio chapters")
+    FileUtils.mkdir_p(directory)
+    %w[Chapter1.mp3 Chapter2.mp3].each { |name| FileUtils.cp(@audio_path, File.join(directory, name)) }
+    @audiobook.update!(file_path: directory)
+    visit consumer_publication_path(@audiobook)
+    assert_selector "[data-consumer-reader-target=duration]", text: /0:0[89]/, wait: 15
+    find("button[aria-label='Play audiobook']").click
+    find("button[aria-label='Pause audiobook']").click
+    find("select[data-consumer-reader-target=speed]").select("1.5×")
+    find("select[data-consumer-reader-target=tracks]").select("Chapter2.mp3")
+    assert_selector "[data-consumer-reader-target=trackTitle]", text: "Chapter2.mp3"
+    assert page.evaluate_script("document.querySelector('audio').paused")
+    click_link "← Your library"
+    assert_current_path consumer_library_path
+    visit consumer_publication_path(@audiobook)
+    assert_selector "[data-consumer-reader-target=duration]", text: /0:0[89]/, wait: 15
+    assert_equal "1.5", find("select[data-consumer-reader-target=speed]").value
+    assert page.evaluate_script("document.querySelector('audio').playbackRate === 1.5")
+  end
+
+  test "reading status and sorted filters are usable and keep a saved place" do
+    visit consumer_publication_path(@ebook)
+    within(".consumer-reading-status") do
+      select "Finished", from: "Reading status"
+      click_button "Save status"
+    end
+    assert_text "Reading status saved. Your saved place is kept."
+    visit consumer_library_path
+    within(".consumer-library-options") do
+      select "Finished", from: "Reading status"
+      select "Title A–Z", from: "Sort by"
+      click_button "Apply"
+    end
+    assert_selector ".consumer-book-card", count: 1
+    assert_selector ".consumer-book-card", text: "The Quiet Library"
+    assert_no_horizontal_overflow
+    @ebook.update!(file_path: File.join(@root, "gone.epub"))
+    visit consumer_publication_path(@ebook)
+    assert_text "No readable files are available"
+    assert_link "Check again", href: consumer_publication_path(@ebook)
+    assert_link "Back to your library", href: consumer_library_path
+    assert_no_link "Library item details"
   end
 
   private

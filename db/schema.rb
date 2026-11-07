@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_130000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_07_140000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -128,6 +128,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_130000) do
     t.index ["book_id"], name: "index_consumer_progresses_on_book_id"
     t.index ["user_id", "book_id"], name: "index_consumer_progresses_on_user_id_and_book_id", unique: true
     t.index ["user_id"], name: "index_consumer_progresses_on_user_id"
+  end
+
+  create_table "consumer_reading_states", force: :cascade do |t|
+    t.integer "user_id", null: false
+    t.integer "book_id", null: false
+    t.integer "status", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["book_id"], name: "index_consumer_reading_states_on_book_id"
+    t.index ["user_id", "book_id"], name: "index_consumer_reading_states_on_user_id_and_book_id", unique: true
+    t.index ["user_id"], name: "index_consumer_reading_states_on_user_id"
+    t.check_constraint "status IN (0, 1, 2)", name: "consumer_reading_status"
   end
 
   create_table "download_clients", force: :cascade do |t|
@@ -752,6 +764,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_130000) do
   add_foreign_key "consumer_device_grants", "users"
   add_foreign_key "consumer_progresses", "books"
   add_foreign_key "consumer_progresses", "users"
+  add_foreign_key "consumer_reading_states", "books"
+  add_foreign_key "consumer_reading_states", "users"
   add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
   add_foreign_key "downloads", "search_results", on_delete: :nullify

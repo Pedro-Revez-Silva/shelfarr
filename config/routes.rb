@@ -113,10 +113,12 @@ Rails.application.routes.draw do
         post "auth/token", to: "auth#token"
         post "auth/revoke", to: "accounts#revoke"
         get "me", to: "accounts#show"
+        get "continue", to: "library#continue"
         get "library/:id/assets/:asset_id", to: "library#asset", as: :asset
         resources :library, only: [ :index, :show ] do
           get :progress, to: "progress#show", on: :member
           put :progress, to: "progress#update", on: :member
+          put :reading_status, to: "reading_status#update", on: :member
         end
       end
     end
@@ -140,6 +142,7 @@ Rails.application.routes.draw do
   get "read/:id", to: "consumer/library#show", as: :consumer_publication
   get "read/:id/assets/:asset_id", to: "consumer/library#asset", as: :consumer_asset
   put "read/:id/progress", to: "consumer/library#progress", as: :consumer_progress
+  put "read/:id/reading_status", to: "consumer/library#reading_status", as: :consumer_reading_status
 
   namespace :integrations, defaults: { format: :json } do
     post "telegram/webhook", to: "telegram_webhooks#create"

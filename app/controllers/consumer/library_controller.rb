@@ -8,15 +8,14 @@ class Consumer::LibraryController < ApplicationController
   def index
     @query = params[:q] || ""
     @type = params[:type]
-    result = Consumer::Catalog.new(user: Current.user).call(query: @query, type: @type, cursor: params[:cursor], limit: "30")
+    @status = params[:status]
+    @sort = params[:sort].presence || "recent"
+    result = Consumer::Catalog.new(user: Current.user).call(query: @query, type: @type, cursor: params[:cursor], limit: "30", status: @status, sort: @sort)
     @next_cursor = result.next_cursor
-    books = result.books
-    progress_scope = Current.user.consumer_progresses.joins(:book).merge(Book.acquired.where(book_type: @type.presence || %w[ebook audiobook]))
-    @continue_progress = @query.blank? && params[:cursor].blank? ? progress_scope.includes(:book).order(updated_at: :desc).limit(3).to_a : []
-    all_books = (books + @continue_progress.map(&:book)).uniq(&:id)
-    progress = Current.user.consumer_progresses.where(book_id: all_books.map(&:id)).index_by(&:book_id)
-    @publications = all_books.index_with { |book| Consumer::Publication.new(book, user: Current.user, routes: self, progress: progress[book.id]).representation }
-    @books = books
+    @books = result.books
+    continuing = @query.blank? && params[:cursor].blank? && @status.blank? ? Consumer::ContinueReading.new(user: Current.user, routes: self).call(limit: 3, type: @type) : {}
+    @continue_books = continuing.keys
+    @publications = Consumer::Publication.many((@books + @continue_books).uniq(&:id), user: Current.user, routes: self).merge(continuing)
   rescue Consumer::Catalog::Invalid => error
     redirect_to consumer_library_path, alert: error.message
   end
@@ -40,6 +39,22 @@ class Consumer::LibraryController < ApplicationController
     render json: { error: "invalid_progress", message: error.message }, status: :unprocessable_entity
   rescue Consumer::ProgressWriter::Conflict => error
     render json: { error: "progress_conflict", progress: error.progress&.representation }, status: :conflict
+  end
+
+  def reading_status
+    book = find_book
+    Consumer::ReadingStatus.set(user: Current.user, book: book, status: params[:status])
+    if request.format.json?
+      render json: Consumer::Publication.new(book, user: Current.user, routes: self).representation
+    else
+      redirect_to consumer_publication_path(book), status: :see_other, notice: "Reading status saved. Your saved place is kept."
+    end
+  rescue Consumer::ReadingStatus::Invalid => error
+    if request.format.json?
+      render json: { error: "invalid_reading_status", message: error.message }, status: :unprocessable_entity
+    else
+      redirect_to consumer_publication_path(book), status: :see_other, alert: error.message
+    end
   end
 
   private
