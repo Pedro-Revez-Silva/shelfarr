@@ -462,8 +462,14 @@ final class DownloadsTests: DownloadTestCase {
         XCTAssertEqual(loaded?.bytesDone, 1_500)
         await migrated.start()
         let done = try await wait(migrated, "book", [.ready])
-        XCTAssertEqual(transport.contentRequests.first?.value(forHTTPHeaderField: "Range"), "bytes=1500-2499")
-        XCTAssertEqual(transport.contentRequests.first?.value(forHTTPHeaderField: "If-Range"), "\"e1\"")
+        // Tickets run concurrently, so request arrival order isn't guaranteed.
+        // Every missing byte is requested once, without refetching the migrated prefix.
+        let requests = transport.contentRequests
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests.compactMap { $0.value(forHTTPHeaderField: "Range") }.sorted(), [
+            "bytes=1500-2499", "bytes=2500-3499", "bytes=3500-4001",
+        ])
+        XCTAssertTrue(requests.allSatisfy { $0.value(forHTTPHeaderField: "If-Range") == "\"e1\"" })
         let fileFound = await migrated.fileURL(done, assetId: "e1")
         let file = try XCTUnwrap(fileFound)
         XCTAssertEqual(try Data(contentsOf: file), epub)
