@@ -133,10 +133,30 @@ extension ShelfarrCore.Publication {
     }
 
     var primaryActionLabel: String {
+        // Finished stays finished: opening it again doesn't promise a restart.
+        if status == .finished { return bookType == .ebook ? "Open book" : "Play audiobook" }
         let resuming = progress?.isUsable == true
         switch bookType {
         case .ebook: return resuming ? "Continue reading" : "Start reading"
         case .audiobook: return resuming ? "Continue listening" : "Start listening"
         }
+    }
+}
+
+extension ReadingStatus {
+    var label: String {
+        switch self {
+        case .unread: return "Unread"
+        case .inProgress: return "In progress"
+        case .finished: return "Finished"
+        }
+    }
+}
+
+extension APIError {
+    /// No connection at all, as opposed to an untrusted certificate. Only this may fall back to local copies.
+    var isPlainOffline: Bool {
+        if case let .offline(certificate) = self { return !certificate }
+        return false
     }
 }

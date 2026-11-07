@@ -6,7 +6,8 @@ final class HomeModel: ObservableObject {
     enum State {
         case loading
         case failed(Error)
-        case loaded(inProgress: [ShelfarrCore.Publication], books: [ShelfarrCore.Publication], audiobooks: [ShelfarrCore.Publication])
+        /// `offline` is set when the server couldn't be reached and only downloads are shown.
+        case loaded(inProgress: [ShelfarrCore.Publication], books: [ShelfarrCore.Publication], audiobooks: [ShelfarrCore.Publication], offline: Error?)
     }
 
     @Published private(set) var state = State.loading
@@ -16,33 +17,53 @@ final class HomeModel: ObservableObject {
         guard let session = app.session else { return }
         let server = session.server, api = app.api(for: session)
         do {
-            let items = try await api.library(server: server).items
+            async let recent = Self.recent(api, server)
+            async let page = api.library(server: server)
+            let items = try await page.items
+            // Library-wide recent activity; older servers without /continue fall back to the first page.
+            let fetched = try await recent
+            let continuing = fetched ?? items
+                .filter { $0.progress?.isUsable == true }
+                .sorted { ($0.progress?.updatedAt ?? "") > ($1.progress?.updatedAt ?? "") }
             guard app.session == session else { return }
             state = .loaded(
-                inProgress: items
-                    .filter { $0.progress?.isUsable == true }
-                    .sorted { ($0.progress?.updatedAt ?? "") > ($1.progress?.updatedAt ?? "") },
+                inProgress: continuing.filter { $0.status == .inProgress },
                 books: items.filter { $0.bookType == .ebook },
-                audiobooks: items.filter { $0.bookType == .audiobook }
+                audiobooks: items.filter { $0.bookType == .audiobook },
+                offline: nil
             )
         } catch is CancellationError {
             return
         } catch {
             guard app.session == session else { return }
-            if case .loaded = state { return }
-            state = .failed(error)
+            if case let .loaded(_, _, _, offline) = state, offline == nil { return }
+            if (error as? APIError)?.isPlainOffline == true {
+                state = .loaded(inProgress: [], books: [], audiobooks: [], offline: error)
+            } else {
+                state = .failed(error)
+            }
+        }
+    }
+
+    private static func recent(_ api: ConsumerAPI, _ server: ServerAddress) async throws -> [ShelfarrCore.Publication]? {
+        do {
+            return try await api.continueReading(server: server, limit: 10)
+        } catch APIError.notFound {
+            return nil
         }
     }
 
     func retry(_ app: AppModel) async {
-        state = .loading
+        if case .loaded = state {} else { state = .loading }
         await refresh(app)
     }
 }
 
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var downloads: DownloadsModel
     @StateObject private var model = HomeModel()
+    @State private var showDownloads = false
     let open: (ShelfarrCore.Publication) -> Void
 
     var body: some View {
@@ -50,6 +71,7 @@ struct HomeView: View {
             .background(Palette.background.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: PublicationRoute.self) { DetailsView(publicationId: $0.id, open: open) }
+            .navigationDestination(isPresented: $showDownloads) { DownloadsView(downloads: downloads) }
             .task(id: app.libraryGeneration) { await model.refresh(app) }
     }
 
@@ -63,8 +85,18 @@ struct HomeView: View {
             MessageState(title: copy.title, message: copy.message, systemImage: "wifi.slash", action: "Try again") {
                 Task { await model.retry(app) }
             }
-        case let .loaded(inProgress, books, audiobooks):
-            if inProgress.isEmpty, books.isEmpty, audiobooks.isEmpty {
+        case let .loaded(_, _, _, offline?) where downloads.ready.isEmpty:
+            let copy = errorCopy(offline, host: app.session?.server.host)
+            MessageState(
+                title: copy.title,
+                message: copy.message + (downloads.records.isEmpty ? " Downloaded books and audiobooks open here without a connection." : ""),
+                systemImage: "wifi.slash",
+                action: "Try again"
+            ) {
+                Task { await model.retry(app) }
+            }
+        case let .loaded(inProgress, books, audiobooks, offline):
+            if inProgress.isEmpty, books.isEmpty, audiobooks.isEmpty, downloads.ready.isEmpty {
                 VStack(alignment: .leading) {
                     wordmark
                     MessageState(
@@ -76,6 +108,18 @@ struct HomeView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         wordmark
+                        if offline != nil {
+                            HStack {
+                                Image(systemName: "wifi.slash").foregroundStyle(Palette.inkMuted)
+                                Text("Offline. Showing downloads on this device.").font(.footnote).foregroundStyle(Palette.ink)
+                                Spacer()
+                                Button("Retry") { Task { await model.retry(app) } }.font(.footnote.weight(.medium)).tint(Palette.accent)
+                            }
+                            .padding(12)
+                            .background(Palette.sunken, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 8)
+                        }
                         if let current = inProgress.first {
                             Button { open(current) } label: { ContinueCard(publication: current) }
                                 .buttonStyle(.plain)
@@ -83,6 +127,16 @@ struct HomeView: View {
                                 .padding(.vertical, 4)
                         }
                         if inProgress.count > 1 { Shelf(title: "Also in progress", items: Array(inProgress.dropFirst())) }
+                        if !downloads.ready.isEmpty {
+                            Shelf(title: "On this device", items: downloads.ready) { showDownloads = true }
+                        } else if !downloads.records.isEmpty {
+                            Button { showDownloads = true } label: {
+                                Label("Downloads in progress", systemImage: "arrow.down.circle")
+                            }
+                            .tint(Palette.accent)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 16)
+                        }
                         if !books.isEmpty { Shelf(title: "Books", items: books) }
                         if !audiobooks.isEmpty { Shelf(title: "Audiobooks", items: audiobooks) }
                     }
@@ -143,15 +197,22 @@ private struct ContinueCard: View {
 private struct Shelf: View {
     let title: String
     let items: [ShelfarrCore.Publication]
+    var manage: (() -> Void)?
 
     var body: some View {
         let square = items.allSatisfy { $0.bookType == .audiobook }
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(Typeface.display(20))
-                .foregroundStyle(Palette.ink)
-                .padding(.horizontal, 20)
-                .accessibilityAddTraits(.isHeader)
+            HStack {
+                Text(title)
+                    .font(Typeface.display(20))
+                    .foregroundStyle(Palette.ink)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                if let manage {
+                    Button("Manage", action: manage).font(.subheadline.weight(.medium)).tint(Palette.accent)
+                }
+            }
+            .padding(.horizontal, 20)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(items) { publication in

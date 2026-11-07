@@ -19,9 +19,12 @@ final class AppModel: ObservableObject {
     let epubCache: EpubCache
     let playback = PlaybackEngine()
     let readerSettings = ReaderSettingsStore()
+    let downloads = DownloadsModel()
 
     private var registry: ProgressRegistry?
     private var registrySession: Session?
+    private var downloadManager: DownloadManager?
+    private var downloadSession: Session?
 
     private static let appearanceKey = "appearance"
 
@@ -49,6 +52,8 @@ final class AppModel: ObservableObject {
         sessions.onChange = { [weak self] _ in
             Task { @MainActor in self?.apply() }
         }
+        // Resume this account's unfinished downloads at launch.
+        if sessions.signedIn != nil { _ = downloadsForSession() }
     }
 
     private func apply() {
@@ -59,9 +64,16 @@ final class AppModel: ObservableObject {
         let previous = registry
         registry = nil
         registrySession = nil
+        let previousDownloads = downloadManager
+        downloadManager = nil
+        downloadSession = nil
         Task {
             await playback.stop()
             await previous?.stopAll()
+            await previousDownloads?.close()
+            await downloads.attach(nil)
+            // A signed-in account resumes its own queue; an expired one keeps its files.
+            if sessions.signedIn != nil { _ = downloadsForSession() }
         }
     }
 
@@ -97,10 +109,59 @@ final class AppModel: ObservableObject {
         return created
     }
 
+    /// Managed downloads for the signed-in account, bound to its own credential.
+    func downloadsForSession() -> DownloadManager? {
+        guard let session else { return nil }
+        if downloadSession == session, let downloadManager { return downloadManager }
+        let previous = downloadManager
+        let api = self.api(for: session)
+        let sessions = self.sessions
+        let root = accountDirectory(session).appendingPathComponent("downloads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var excluded = root
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? excluded.setResourceValues(values)
+        let manager = DownloadManager(
+            root: root,
+            transport: transport,
+            server: session.server,
+            authorize: { api.authorized($0) },
+            fetchPublication: { id in
+                guard sessions.signedIn == session else { throw APIError.unauthorized }
+                return try await api.publication(server: session.server, id: id)
+            },
+            usableSpace: {
+                let values = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                return values?.volumeAvailableCapacityForImportantUsage
+            }
+        )
+        downloadManager = manager
+        downloadSession = session
+        let model = downloads
+        Task {
+            // The next account's transfers wait until the previous ones have stopped.
+            await previous?.close()
+            await manager.start()
+            await model.attach(manager)
+        }
+        return manager
+    }
+
+    /// Best effort: an explicit Read or Listen marks an unread publication in progress.
+    /// It never blocks opening, and never changes a finished status.
+    func markStarted(_ publication: ShelfarrCore.Publication) {
+        guard publication.status == .unread, let session else { return }
+        let api = self.api(for: session)
+        Task { _ = try? await api.setReadingStatus(server: session.server, publicationId: publication.id, status: .inProgress) }
+    }
+
     func onForeground() {
         guard let session, let registry = progressRegistry() else { return }
         let api = self.api(for: session)
+        let manager = downloadsForSession()
         Task {
+            await manager?.retryInterrupted()
             await registry.flushAll()
             // Validates the token; a 401 flows through `onRejected`.
             _ = try? await api.me(server: session.server)
@@ -136,9 +197,60 @@ final class AppModel: ObservableObject {
         await registry?.stopAll()
         self.registry = nil
         registrySession = nil
+        // Stop every transfer before the account's files are deleted.
+        await downloadManager?.close()
+        downloadManager = nil
+        downloadSession = nil
+        await downloads.attach(nil)
         sessions.clear()
         await epubCache.clear(accountKey: session.accountKey)
         try? FileManager.default.removeItem(at: accountDirectory(session))
         CoverLoader.clearCache()
+    }
+}
+
+/// Publishes one account's download records for SwiftUI.
+@MainActor
+final class DownloadsModel: ObservableObject {
+    @Published private(set) var records: [String: DownloadRecord] = [:]
+    private(set) var manager: DownloadManager?
+    private var observation: UUID?
+
+    func attach(_ manager: DownloadManager?) async {
+        if let previous = self.manager, let observation { await previous.stopObserving(observation) }
+        self.manager = manager
+        observation = nil
+        records = [:]
+        guard let manager else { return }
+        observation = await manager.observe { [weak self] records in
+            Task { @MainActor in
+                guard let self, self.manager === manager else { return }
+                self.records = records
+            }
+        }
+    }
+
+    var ready: [ShelfarrCore.Publication] {
+        records.values.filter(\.isReady).sorted { $0.updatedAt > $1.updatedAt }.map(\.publication)
+    }
+
+    func enqueue(_ publication: ShelfarrCore.Publication) {
+        guard let manager else { return }
+        Task { await manager.enqueue(publication) }
+    }
+
+    func cancel(_ id: String) {
+        guard let manager else { return }
+        Task { await manager.cancel(id) }
+    }
+
+    func remove(_ id: String) {
+        guard let manager else { return }
+        Task { await manager.remove(id) }
+    }
+
+    func retry(_ id: String) {
+        guard let manager else { return }
+        Task { await manager.retry(id) }
     }
 }

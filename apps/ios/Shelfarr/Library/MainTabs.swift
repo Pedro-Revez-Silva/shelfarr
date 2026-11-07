@@ -37,6 +37,8 @@ struct MainTabs: View {
     }
 
     private func start(_ publication: ShelfarrCore.Publication) {
+        // An explicit Read or Listen may mark an unread book in progress; it never blocks opening.
+        model.markStarted(publication)
         switch publication.bookType {
         case .ebook: reading = publication
         case .audiobook: listening = publication

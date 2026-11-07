@@ -36,12 +36,15 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var chapters: [AudioChapter] = []
     @Published private(set) var problem: PlaybackProblem?
     @Published private(set) var sleepEndsAt: Date?
+    /// Every track plays from a verified download on this device.
+    @Published private(set) var fromDevice = false
 
     private let player = AVPlayer()
     private var api: ConsumerAPI?
     private var server: ServerAddress?
     private var sync: ProgressSync?
     private var loader: AuthenticatedAudioLoader?
+    private var localFiles: [String: URL] = [:]
     private var timeObserver: Any?
     private var observations: [NSKeyValueObservation] = []
     private var notifications: [NSObjectProtocol] = []
@@ -87,13 +90,19 @@ final class PlaybackEngine: ObservableObject {
         server: ServerAddress,
         api: ConsumerAPI,
         sync: ProgressSync,
-        start: SavedPosition?
+        start: SavedPosition?,
+        localFiles: [String: URL]? = nil
     ) {
         self.api = api
         self.server = server
         self.sync = sync
         self.publication = publication
         tracks = publication.audioAssets
+        // Downloaded files are used only when every track is on the device.
+        let ordered = publication.audioAssets
+        let local = localFiles.flatMap { files in ordered.allSatisfy { files[$0.id] != nil } ? files : nil }
+        self.localFiles = local ?? [:]
+        fromDevice = local != nil
         problem = nil
         configureSession()
         configureRemoteCommands()
@@ -108,18 +117,26 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func open(track index: Int, at seconds: Double, play: Bool) {
-        guard tracks.indices.contains(index), let server, let api,
-              let source = server.resolve(tracks[index].contentUrl), server.contains(source)
-        else {
+        guard tracks.indices.contains(index) else {
             failed(.connection)
             return
         }
         loader?.cancelAll()
-        let loader = AuthenticatedAudioLoader(source: source, api: api)
-        self.loader = loader
-
-        let asset = AVURLAsset(url: loader.assetURL)
-        asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+        loader = nil
+        let asset: AVURLAsset
+        if let file = localFiles[tracks[index].id] {
+            // A verified download plays straight from disk, with no credential involved.
+            asset = AVURLAsset(url: file)
+        } else {
+            guard let server, let api, let source = server.resolve(tracks[index].contentUrl), server.contains(source) else {
+                failed(.connection)
+                return
+            }
+            let loader = AuthenticatedAudioLoader(source: source, api: api)
+            self.loader = loader
+            asset = AVURLAsset(url: loader.assetURL)
+            asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+        }
         let item = AVPlayerItem(asset: asset)
         item.audioTimePitchAlgorithm = .timeDomain
         observations.append(item.observe(\.status) { [weak self] item, _ in
@@ -266,6 +283,8 @@ final class PlaybackEngine: ObservableObject {
         player.replaceCurrentItem(with: nil)
         loader?.cancelAll()
         loader = nil
+        localFiles = [:]
+        fromDevice = false
         publication = nil
         tracks = []
         chapters = []
