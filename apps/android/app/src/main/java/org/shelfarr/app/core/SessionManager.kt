@@ -13,6 +13,10 @@ data class Session(val server: ServerAddress, val user: Me, val accessToken: Str
     /** Scopes every local file, so accounts and servers can never mix. */
     val accountKey: String = accountKey(server, user.id)
 
+    /** Display names may change without replacing the account's services. */
+    fun hasSameAccountAndToken(other: Session?): Boolean =
+        other != null && accountKey == other.accountKey && accessToken == other.accessToken
+
     override fun toString(): String = "Session(server=$server, user=${user.id})"
 }
 
@@ -79,6 +83,7 @@ class SessionManager(private val store: SecureStore) : CredentialSource {
         return SessionState.SignedIn(Session(server, stored.user, stored.accessToken))
     }
 
+    @Synchronized
     fun signIn(session: Session) {
         store.write(SESSION, ApiJson.encodeToString(StoredSession(session.server.display, session.accessToken, session.user)))
         store.delete(AUTHORIZATION)
@@ -87,6 +92,7 @@ class SessionManager(private val store: SecureStore) : CredentialSource {
     }
 
     /** The server refused the token. Forget it, keep the address for re-authorizing. */
+    @Synchronized
     fun markExpired(rejected: Credential) {
         val current = signedIn ?: return
         if (current.server != rejected.server || current.accessToken != rejected.accessToken) return
@@ -94,13 +100,15 @@ class SessionManager(private val store: SecureStore) : CredentialSource {
         state.value = SessionState.Expired(current.server, current.user.displayName)
     }
 
-    fun refreshUser(user: Me) {
+    @Synchronized
+    fun refreshUser(user: Me, expectedSession: Session) {
         val current = signedIn ?: return
-        if (current.user == user) return
+        if (!current.hasSameAccountAndToken(expectedSession) || current.user.id != user.id || current.user == user) return
         signIn(current.copy(user = user))
     }
 
     /** Forgets everything secret. Callers clear account-scoped files separately. */
+    @Synchronized
     fun clear() {
         store.delete(SESSION)
         store.delete(AUTHORIZATION)
