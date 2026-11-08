@@ -15,6 +15,7 @@ class KoboDevicesTest < ApplicationSystemTestCase
 
   test "connect a stock reader and send an acquired ebook" do
     visit profile_path
+    assert_link "Reader preview", href: consumer_library_path
     click_link "Kobo readers"
     assert_text "Connecting Shelfarr replaces"
     fill_in "Reader name", with: "My older Kobo"
@@ -25,6 +26,7 @@ class KoboDevicesTest < ApplicationSystemTestCase
     click_link "Done · manage reader"
     assert_text "Waiting for first sync"
     visit library_path(@book)
+    assert_link "Open in reader preview", href: consumer_publication_path(@book)
     click_button "Send to My older Kobo"
     assert_text "Queued for My older Kobo"
     assert_equal @book.id, users(:one).kobo_devices.find_by!(name: "My older Kobo").kobo_deliveries.sole.book_id

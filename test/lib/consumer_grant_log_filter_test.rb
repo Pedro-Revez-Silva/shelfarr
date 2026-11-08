@@ -25,10 +25,16 @@ class ConsumerGrantLogFilterTest < ActiveSupport::TestCase
     assert_equal "/p?x%FF=1&grant=[FILTERED]", request("x%FF=1&grant=synthetic").filtered_path
   end
 
+  test "Kobo path capabilities and consumer grant queries are redacted together" do
+    path = "/kobo/synthetic-device/v1/initialization"
+    assert_equal "/kobo/[FILTERED]/v1/initialization?gr%61nt=[FILTERED]",
+      request("gr%61nt=synthetic-grant", path: path).filtered_path
+  end
+
   private
 
-  def request(query)
-    ActionDispatch::Request.new(Rack::MockRequest.env_for("/p").merge(
+  def request(query, path: "/p")
+    ActionDispatch::Request.new(Rack::MockRequest.env_for(path).merge(
       "QUERY_STRING" => query, "action_dispatch.parameter_filter" => Rails.application.config.filter_parameters
     ))
   end
