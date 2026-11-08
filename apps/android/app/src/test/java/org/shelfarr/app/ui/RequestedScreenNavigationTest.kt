@@ -2,17 +2,11 @@ package org.shelfarr.app.ui
 
 import android.app.Application
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertNull
@@ -22,8 +16,9 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.shelfarr.app.ui.theme.ShelfarrTheme
 
-/** Real NavHost startup and back navigation, without account or network fixtures. */
+/** The real shell's NavHost startup and back navigation, without account or network fixtures. */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], application = Application::class)
@@ -33,19 +28,16 @@ class RequestedScreenNavigationTest {
 
     private fun render() {
         compose.setContent {
-            MaterialTheme {
+            ShelfarrTheme {
                 val navController = rememberNavController()
-                // Match MainShell: the request precedes NavHost inside Scaffold's
-                // deferred content, so its graph isn't installed at first composition.
+                // Match MainShell: the request is composed before the shell installs its graph.
                 RequestedScreenNavigation(navController, requested)
-                Scaffold { padding ->
-                    NavHost(navController, startDestination = "home", modifier = Modifier.padding(padding)) {
-                        composable("home") { Text("Home destination") }
-                        composable("downloads") {
-                            Column {
-                                Text("Downloads destination")
-                                Button(onClick = { navController.popBackStack() }) { Text("Back") }
-                            }
+                MainShellLayout(navController, miniPlayer = null) {
+                    screen(HOME) { Text("Home destination") }
+                    screen(DOWNLOADS) {
+                        Column {
+                            Text("Downloads destination")
+                            Button(onClick = { navController.popBackStack() }) { Text("Back") }
                         }
                     }
                 }

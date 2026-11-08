@@ -9,33 +9,52 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NamedNavArgument
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -77,12 +96,12 @@ import org.shelfarr.app.ui.setup.SetupPhase
 import org.shelfarr.app.ui.setup.SetupViewModel
 import org.shelfarr.app.ui.theme.ShelfarrTheme
 
-private const val HOME = "home"
-private const val LIBRARY = "library"
-private const val SETTINGS = "settings"
-private const val DETAILS = "details/{id}"
-private const val PLAYER = "player/{id}"
-private const val DOWNLOADS = "downloads"
+internal const val HOME = "home"
+internal const val LIBRARY = "library"
+internal const val SETTINGS = "settings"
+internal const val DETAILS = "details/{id}"
+internal const val PLAYER = "player/{id}"
+internal const val DOWNLOADS = "downloads"
 
 @Composable
 fun ShelfarrApp(container: AppContainer, requestedScreen: MutableStateFlow<AppScreen?> = remember { MutableStateFlow(null) }) {
@@ -183,8 +202,8 @@ internal fun RequestedScreenNavigation(navController: NavHostController, request
     val requested by requestedScreen.collectAsStateWithLifecycle()
     LaunchedEffect(navController, requested) {
         if (requested == AppScreen.DOWNLOADS) {
-            // Scaffold composes NavHost during layout. A cold notification can
-            // arrive before its graph exists; wait for the first installed entry.
+            // A cold notification can arrive before NavHost has installed its
+            // graph; wait for the first installed entry.
             navController.currentBackStackEntryFlow.first()
             navController.navigate(DOWNLOADS) { launchSingleTop = true }
             requestedScreen.value = null
@@ -196,8 +215,6 @@ internal fun RequestedScreenNavigation(navController: NavHostController, request
 private fun MainShell(container: AppContainer, session: Session, requestedScreen: MutableStateFlow<AppScreen?>) {
     val navController = rememberNavController()
     RequestedScreenNavigation(navController, requestedScreen)
-    val backStack by navController.currentBackStackEntryAsState()
-    val route = backStack?.destination?.route
     val playback by container.playback.snapshot.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -213,140 +230,212 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
         }
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        bottomBar = {
-            Column {
-                if (playback.isLoaded && route != PLAYER) {
-                    MiniPlayer(
-                        snapshot = playback,
-                        onOpen = { playback.publication?.let { start(it, explicit = false) } },
-                        onToggle = container.playback::togglePlay,
+    val miniPlayer: (@Composable () -> Unit)? = if (playback.isLoaded) {
+        {
+            MiniPlayer(
+                snapshot = playback,
+                onOpen = { playback.publication?.let { start(it, explicit = false) } },
+                onToggle = container.playback::togglePlay,
+            )
+        }
+    } else {
+        null
+    }
+
+    MainShellLayout(navController, miniPlayer) {
+        screen(HOME) {
+            val viewModel: HomeViewModel = viewModel { HomeViewModel(container) }
+            val state by viewModel.state.collectAsStateWithLifecycle()
+            LifecycleResumeEffect(viewModel) {
+                viewModel.refresh()
+                onPauseOrDispose {}
+            }
+            HomeScreen(state, session.server.host, ::open, { start(it) }, viewModel::retry, onDownloads = { navController.navigate(DOWNLOADS) })
+        }
+        screen(LIBRARY) {
+            val viewModel: LibraryViewModel = viewModel { LibraryViewModel(container) }
+            val state by viewModel.state.collectAsStateWithLifecycle()
+            LifecycleResumeEffect(viewModel) {
+                viewModel.reload()
+                onPauseOrDispose {}
+            }
+            LibraryScreen(
+                state = state,
+                host = session.server.host,
+                onFilter = viewModel::setFilter,
+                onQuery = viewModel::setQuery,
+                onOpen = ::open,
+                onLoadMore = viewModel::loadMore,
+                onRetry = viewModel::reload,
+                onStatus = viewModel::setStatus,
+                onSort = viewModel::setSort,
+            )
+        }
+        screen(SETTINGS) {
+            val appearance by container.appearance.collectAsState()
+            var disconnecting by remember { mutableStateOf(false) }
+            val records by (container.currentAccount()?.downloads?.records ?: remember { MutableStateFlow(emptyMap()) })
+                .collectAsStateWithLifecycle()
+            SettingsScreen(
+                session = session,
+                appearance = appearance,
+                version = BuildConfig.VERSION_NAME,
+                disconnecting = disconnecting,
+                onAppearance = container::setAppearance,
+                onDisconnect = {
+                    disconnecting = true
+                    container.disconnect()
+                },
+                downloadsSummary = downloadsSummary(records.values),
+                onDownloads = { navController.navigate(DOWNLOADS) },
+            )
+        }
+        screen(DETAILS, listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+            val id = requireNotNull(entry.arguments?.getString("id"))
+            val viewModel: DetailsViewModel = viewModel { DetailsViewModel(container, id) }
+            val state by viewModel.state.collectAsStateWithLifecycle()
+            LifecycleResumeEffect(viewModel) {
+                viewModel.load()
+                onPauseOrDispose {}
+            }
+            val download by viewModel.download.collectAsStateWithLifecycle()
+            val statusEdit by viewModel.statusEdit.collectAsStateWithLifecycle()
+            val startDownload = rememberDownloadStarter(container) { viewModel.download() }
+            val actions = remember(viewModel, startDownload) {
+                object : DetailsActions by viewModel {
+                    override fun download() = startDownload()
+                }
+            }
+            DetailsScreen(
+                state = state,
+                host = session.server.host,
+                onBack = navController::popBackStack,
+                onPrimary = { start(it) },
+                onRetry = viewModel::retry,
+                download = download,
+                statusEdit = statusEdit,
+                actions = actions,
+            )
+        }
+        screen(DOWNLOADS) {
+            val downloads = container.currentAccount()?.downloads
+            val records by (downloads?.records ?: remember { MutableStateFlow(emptyMap()) }).collectAsStateWithLifecycle()
+            var notificationsOff by remember { mutableStateOf(!container.transferNotifications.canPost) }
+            LifecycleResumeEffect(Unit) {
+                notificationsOff = !container.transferNotifications.canPost
+                onPauseOrDispose {}
+            }
+            DownloadsScreen(
+                records = records.values.sortedByDescending { it.updatedAtEpochMs },
+                onBack = navController::popBackStack,
+                onOpen = ::open,
+                onCancel = { id -> container.scope.launch { downloads?.cancel(id) } },
+                onRemove = { id -> container.scope.launch { downloads?.remove(id) } },
+                onRetry = { id -> container.scope.launch { downloads?.retry(id) } },
+                notificationsOff = notificationsOff,
+                onTurnOnNotifications = { context.openNotificationSettings() },
+            )
+        }
+        screen(PLAYER, listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+            val id = requireNotNull(entry.arguments?.getString("id"))
+            val viewModel: PlayerViewModel = viewModel { PlayerViewModel(container, id) }
+            val state by viewModel.state.collectAsStateWithLifecycle()
+            val snapshot by viewModel.playback.collectAsStateWithLifecycle()
+            val sync by viewModel.syncStatus.collectAsStateWithLifecycle()
+            PlayerRoute(
+                state = state,
+                snapshot = snapshot,
+                syncStatus = sync,
+                host = session.server.host,
+                controls = remember { ControllerControls(container.playback) },
+                onBack = navController::popBackStack,
+                onRetry = viewModel::start,
+                onChooseResume = viewModel::chooseResume,
+                onKeepThisPlace = viewModel::keepThisPlace,
+                onUseOtherPlace = viewModel::useOtherPlace,
+            )
+        }
+    }
+}
+
+private val TAB_ROUTES = TABS.map { it.route }.toSet()
+
+// Material fade-through: the outgoing screen fades out before the incoming one fades
+// in, so two translucent screens are never drawn over each other.
+private val FadeThroughIn = fadeIn(tween(durationMillis = 210, delayMillis = 90, easing = LinearOutSlowInEasing))
+private val FadeThroughOut = fadeOut(tween(durationMillis = 90, easing = FastOutLinearInEasing))
+
+/**
+ * Bottom space each destination keeps clear of the shell's bars. It depends on the
+ * destination rather than the current route, so a screen still animating out keeps
+ * its layout while the bars change for the screen coming in.
+ */
+@Immutable
+private data class ShellBars(val systemBottom: Dp = 0.dp, val miniPlayer: Dp = 0.dp, val tabBar: Dp = 0.dp) {
+    fun bottomPadding(route: String): Dp {
+        val bars = (if (route != PLAYER) miniPlayer else 0.dp) + (if (route in TAB_ROUTES) tabBar else 0.dp)
+        // As in Scaffold: with no bar below it, a screen keeps clear of the system bar.
+        return if (bars > 0.dp) bars else systemBottom
+    }
+}
+
+private val LocalShellBars = compositionLocalOf { ShellBars() }
+
+/**
+ * The signed-in shell: tab bar, mini player and the destination graph. Kept apart
+ * from [MainShell] so tests can drive real navigation without account fixtures.
+ */
+@Composable
+internal fun MainShellLayout(
+    navController: NavHostController,
+    miniPlayer: (@Composable () -> Unit)?,
+    builder: NavGraphBuilder.() -> Unit,
+) {
+    val backStack by navController.currentBackStackEntryAsState()
+    val route = backStack?.destination?.route
+    val density = LocalDensity.current
+    var miniPlayerHeight by remember { mutableStateOf(0.dp) }
+    var tabBarHeight by remember { mutableStateOf(0.dp) }
+    val bars = ShellBars(
+        systemBottom = WindowInsets.systemBars.asPaddingValues().calculateBottomPadding(),
+        miniPlayer = if (miniPlayer != null) miniPlayerHeight else 0.dp,
+        tabBar = tabBarHeight,
+    )
+
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Box(Modifier.fillMaxSize()) {
+            CompositionLocalProvider(LocalShellBars provides bars) {
+                NavHost(
+                    navController = navController,
+                    startDestination = HOME,
+                    enterTransition = { FadeThroughIn },
+                    exitTransition = { FadeThroughOut },
+                    builder = builder,
+                )
+            }
+            Column(Modifier.align(Alignment.BottomCenter)) {
+                if (miniPlayer != null && route != PLAYER) {
+                    Box(Modifier.onSizeChanged { miniPlayerHeight = with(density) { it.height.toDp() } }) { miniPlayer() }
+                }
+                AnimatedVisibility(route in TAB_ROUTES, enter = FadeThroughIn, exit = FadeThroughOut) {
+                    TabBar(
+                        navController = navController,
+                        route = route,
+                        modifier = Modifier.onSizeChanged { tabBarHeight = with(density) { it.height.toDp() } },
                     )
                 }
-                if (route in TABS.map { it.route }) TabBar(navController, route)
-            }
-        },
-    ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = HOME,
-            modifier = Modifier.padding(bottom = padding.calculateBottomPadding()),
-        ) {
-            composable(HOME) {
-                val viewModel: HomeViewModel = viewModel { HomeViewModel(container) }
-                val state by viewModel.state.collectAsStateWithLifecycle()
-                LifecycleResumeEffect(viewModel) {
-                    viewModel.refresh()
-                    onPauseOrDispose {}
-                }
-                HomeScreen(state, session.server.host, ::open, { start(it) }, viewModel::retry, onDownloads = { navController.navigate(DOWNLOADS) })
-            }
-            composable(LIBRARY) {
-                val viewModel: LibraryViewModel = viewModel { LibraryViewModel(container) }
-                val state by viewModel.state.collectAsStateWithLifecycle()
-                LifecycleResumeEffect(viewModel) {
-                    viewModel.reload()
-                    onPauseOrDispose {}
-                }
-                LibraryScreen(
-                    state = state,
-                    host = session.server.host,
-                    onFilter = viewModel::setFilter,
-                    onQuery = viewModel::setQuery,
-                    onOpen = ::open,
-                    onLoadMore = viewModel::loadMore,
-                    onRetry = viewModel::reload,
-                    onStatus = viewModel::setStatus,
-                    onSort = viewModel::setSort,
-                )
-            }
-            composable(SETTINGS) {
-                val appearance by container.appearance.collectAsState()
-                var disconnecting by remember { mutableStateOf(false) }
-                val records by (container.currentAccount()?.downloads?.records ?: remember { MutableStateFlow(emptyMap()) })
-                    .collectAsStateWithLifecycle()
-                SettingsScreen(
-                    session = session,
-                    appearance = appearance,
-                    version = BuildConfig.VERSION_NAME,
-                    disconnecting = disconnecting,
-                    onAppearance = container::setAppearance,
-                    onDisconnect = {
-                        disconnecting = true
-                        container.disconnect()
-                    },
-                    downloadsSummary = downloadsSummary(records.values),
-                    onDownloads = { navController.navigate(DOWNLOADS) },
-                )
-            }
-            composable(DETAILS, listOf(navArgument("id") { type = NavType.StringType })) { entry ->
-                val id = requireNotNull(entry.arguments?.getString("id"))
-                val viewModel: DetailsViewModel = viewModel { DetailsViewModel(container, id) }
-                val state by viewModel.state.collectAsStateWithLifecycle()
-                LifecycleResumeEffect(viewModel) {
-                    viewModel.load()
-                    onPauseOrDispose {}
-                }
-                val download by viewModel.download.collectAsStateWithLifecycle()
-                val statusEdit by viewModel.statusEdit.collectAsStateWithLifecycle()
-                val startDownload = rememberDownloadStarter(container) { viewModel.download() }
-                val actions = remember(viewModel, startDownload) {
-                    object : DetailsActions by viewModel {
-                        override fun download() = startDownload()
-                    }
-                }
-                DetailsScreen(
-                    state = state,
-                    host = session.server.host,
-                    onBack = navController::popBackStack,
-                    onPrimary = { start(it) },
-                    onRetry = viewModel::retry,
-                    download = download,
-                    statusEdit = statusEdit,
-                    actions = actions,
-                )
-            }
-            composable(DOWNLOADS) {
-                val downloads = container.currentAccount()?.downloads
-                val records by (downloads?.records ?: remember { MutableStateFlow(emptyMap()) }).collectAsStateWithLifecycle()
-                var notificationsOff by remember { mutableStateOf(!container.transferNotifications.canPost) }
-                LifecycleResumeEffect(Unit) {
-                    notificationsOff = !container.transferNotifications.canPost
-                    onPauseOrDispose {}
-                }
-                DownloadsScreen(
-                    records = records.values.sortedByDescending { it.updatedAtEpochMs },
-                    onBack = navController::popBackStack,
-                    onOpen = ::open,
-                    onCancel = { id -> container.scope.launch { downloads?.cancel(id) } },
-                    onRemove = { id -> container.scope.launch { downloads?.remove(id) } },
-                    onRetry = { id -> container.scope.launch { downloads?.retry(id) } },
-                    notificationsOff = notificationsOff,
-                    onTurnOnNotifications = { context.openNotificationSettings() },
-                )
-            }
-            composable(PLAYER, listOf(navArgument("id") { type = NavType.StringType })) { entry ->
-                val id = requireNotNull(entry.arguments?.getString("id"))
-                val viewModel: PlayerViewModel = viewModel { PlayerViewModel(container, id) }
-                val state by viewModel.state.collectAsStateWithLifecycle()
-                val snapshot by viewModel.playback.collectAsStateWithLifecycle()
-                val sync by viewModel.syncStatus.collectAsStateWithLifecycle()
-                PlayerRoute(
-                    state = state,
-                    snapshot = snapshot,
-                    syncStatus = sync,
-                    host = session.server.host,
-                    controls = remember { ControllerControls(container.playback) },
-                    onBack = navController::popBackStack,
-                    onRetry = viewModel::start,
-                    onChooseResume = viewModel::chooseResume,
-                    onKeepThisPlace = viewModel::keepThisPlace,
-                    onUseOtherPlace = viewModel::useOtherPlace,
-                )
             }
         }
     }
+}
+
+/** A shell destination, laid out above the bars that belong to it. */
+internal fun NavGraphBuilder.screen(
+    route: String,
+    arguments: List<NamedNavArgument> = emptyList(),
+    content: @Composable (NavBackStackEntry) -> Unit,
+) = composable(route, arguments) { entry ->
+    Box(Modifier.fillMaxSize().padding(bottom = LocalShellBars.current.bottomPadding(route))) { content(entry) }
 }
 
 private fun downloadsSummary(records: Collection<DownloadRecord>): String {
@@ -373,8 +462,8 @@ private class ControllerControls(private val playback: PlaybackController) : Pla
 }
 
 @Composable
-private fun TabBar(navController: NavHostController, route: String?) {
-    Column {
+private fun TabBar(navController: NavHostController, route: String?, modifier: Modifier = Modifier) {
+    Column(modifier) {
         HorizontalDivider(color = ShelfarrTheme.extended.hairline)
         NavigationBar(containerColor = MaterialTheme.colorScheme.background, tonalElevation = androidx.compose.ui.unit.Dp(0f)) {
             TABS.forEach { tab ->
