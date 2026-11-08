@@ -7,9 +7,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -118,13 +121,17 @@ class DownloadManagerTest {
         maxConcurrent: Int = 2,
         space: Long = Long.MAX_VALUE,
         onQueued: suspend () -> Unit = {},
+        onFetch: suspend () -> Unit = {},
     ): DownloadManager {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scopes += it }
         return DownloadManager(
             root = root,
             client = client,
             server = server,
-            fetchPublication = { id -> publications[id] ?: throw ApiException.NotFound() },
+            fetchPublication = { id ->
+                onFetch()
+                publications[id] ?: throw ApiException.NotFound()
+            },
             scope = scope,
             maxConcurrent = maxConcurrent,
             usableSpace = { space },
@@ -265,6 +272,68 @@ class DownloadManagerTest {
         assertEquals("\"t2\"", resumed.headers["If-Range"])
         assertEquals(1, requests.count { it.target == "/files/t1" })
         assertTrue(downloads.filesFor(ready)!!.getValue("t2").readBytes().contentEquals(track2))
+    }
+
+    @Test
+    fun `a retry queued while the failed job is finishing starts when that job completes`() = runBlocking {
+        val first = AtomicInteger()
+        routes["/files/t2"] = { request ->
+            if (first.getAndIncrement() == 0) truncated(track2, "\"t2\"", 3_000) else ranged(request, track2, "\"t2\"")
+        }
+        var completion: CompletableJob? = null
+        val fetches = AtomicInteger()
+        val downloads = manager(onFetch = {
+            if (fetches.getAndIncrement() == 0) {
+                // Hold the first worker's completion after it publishes FAILED.
+                // This widens the real window in which Retry can see a failed
+                // record while its previous worker is still active.
+                completion = Job(currentCoroutineContext()[Job])
+            }
+        })
+        try {
+            downloads.start()
+            downloads.enqueue(audiobook)
+            downloads.awaitState("audio", DownloadState.FAILED)
+            downloads.retryInterrupted()
+            assertEquals(DownloadState.QUEUED, downloads.record("audio")!!.state)
+            requireNotNull(completion).complete()
+
+            val ready = downloads.awaitState("audio", DownloadState.READY)
+            val resumed = requests.last { it.target == "/files/t2" }
+            assertEquals("bytes=3000-", resumed.headers["Range"])
+            assertEquals("\"t2\"", resumed.headers["If-Range"])
+            assertEquals(1, requests.count { it.target == "/files/t1" })
+            assertTrue(downloads.filesFor(ready)!!.getValue("t2").readBytes().contentEquals(track2))
+        } finally {
+            completion?.complete()
+            downloads.close()
+        }
+    }
+
+    @Test
+    fun `cancelling a queued retry prevents the finishing worker from restarting it`() = runBlocking {
+        routes["/files/epub-1"] = { truncated(epubBytes.toByteArray(), "\"e1\"", 1_000) }
+        var completion: CompletableJob? = null
+        val fetches = AtomicInteger()
+        val downloads = manager(onFetch = {
+            if (fetches.getAndIncrement() == 0) completion = Job(currentCoroutineContext()[Job])
+        })
+        try {
+            downloads.start()
+            downloads.enqueue(book)
+            downloads.awaitState("book", DownloadState.FAILED)
+            downloads.retryInterrupted()
+            assertEquals(DownloadState.QUEUED, downloads.record("book")!!.state)
+
+            downloads.cancel("book")
+            assertEquals(DownloadState.CANCELLED, downloads.record("book")!!.state)
+            assertEquals(0L, downloads.record("book")!!.bytesDone)
+            assertEquals(1, fetches.get())
+            assertEquals(1, requests.count { it.target == "/files/epub-1" })
+        } finally {
+            completion?.complete()
+            downloads.close()
+        }
     }
 
     @Test

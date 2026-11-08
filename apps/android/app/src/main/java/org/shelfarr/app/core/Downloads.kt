@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -433,7 +434,18 @@ class DownloadManager(
             }
             jobs[publicationId] = job
             job.invokeOnCompletion {
-                synchronized(jobsLock) { if (jobs[publicationId] === job) jobs.remove(publicationId) }
+                synchronized(jobsLock) {
+                    if (jobs[publicationId] === job) {
+                        jobs.remove(publicationId)
+                        // FAILED can be observed before this worker has finished.
+                        // If Retry queued it during that window, hand it to a new
+                        // worker now. Stop/pause remove ownership first, so their
+                        // cancellation must never restart a transfer.
+                        if (!closed && scope.isActive && record(publicationId)?.state == DownloadState.QUEUED) {
+                            launch(publicationId)
+                        }
+                    }
+                }
             }
         }
     }
