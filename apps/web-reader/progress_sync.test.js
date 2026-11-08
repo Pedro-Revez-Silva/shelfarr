@@ -71,6 +71,30 @@ function open(options = {}) {
 }
 const at = (seconds, minutes) => { clock = Date.parse(T(minutes)); return { asset_id: ASSET, position_seconds: seconds } }
 
+test("local HTTP checkpoints survive a restart when crypto.randomUUID is unavailable", async () => {
+  const nativeUUID = crypto.randomUUID
+  Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true })
+  window.location = { href: "http://homeserver:3000/shelfarr/read/1", origin: "http://homeserver:3000" }
+  try {
+    const first = open()
+    first.record({ asset_id: ASSET, position_seconds: 12 })
+    responses.push(lost)
+    await first.flush()
+    first.finishClose()
+    const pending = structuredClone(bodies[0])
+    expect(pending.client_mutation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(storedEntries().some(entry => entry.t === "o")).toBe(true)
+
+    const reopened = open()
+    responses.push(saved(1, pending))
+    await reopened.flush()
+    expect(bodies[1]).toEqual(pending)
+    expect(storedEntries()).toHaveLength(0)
+  } finally {
+    Object.defineProperty(crypto, "randomUUID", { value: nativeUUID, configurable: true, writable: true })
+  }
+})
+
 test("every upload stays bound to the account that rendered the reader", async () => {
   const sync = open({ account: "original-account" })
   let headers

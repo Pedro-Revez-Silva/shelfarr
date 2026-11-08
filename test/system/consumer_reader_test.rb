@@ -231,6 +231,8 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     write_consumer_epub(@epub_path, chapter: "Offline pages still count. " * 900)
     visit consumer_publication_path(@ebook)
     assert_selector ".consumer-ebook iframe", wait: 20
+    # HTTP LAN browsers lack randomUUID, while retaining getRandomValues.
+    page.execute_script("Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true })")
     go_offline
     find("[data-consumer-reader-target=viewport]").send_keys(:arrow_right)
     assert_selector "[data-consumer-reader-target=notice]", text: "Saved on this device. It will sync when you're back online.", wait: 12

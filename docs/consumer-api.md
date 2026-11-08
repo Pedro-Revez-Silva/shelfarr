@@ -307,7 +307,8 @@ chapter choices wait for a layout correction to finish before navigating.
 
 The web reader keeps a durable outbox in `localStorage`, keyed by account,
 origin, deployment subpath and publication, so accounts and servers never share
-it. Each genuine checkpoint (a page turn, followed link or chapter choice; while
+it. Journal and mutation IDs remain cryptographically random on local HTTP
+connections, where the browser does not expose `crypto.randomUUID()`. Each genuine checkpoint (a page turn, followed link or chapter choice; while
 listening, at most five seconds apart, and immediately on pause, seek, track
 change, hiding or leaving the page) is stored with its `observed_at` before any
 request. Tabs share the outbox without a lock: `localStorage` makes only single

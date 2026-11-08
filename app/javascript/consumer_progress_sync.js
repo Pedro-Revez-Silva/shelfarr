@@ -25,6 +25,17 @@ const PLACE_KEYS = ["asset_id", "locator", "position_seconds"]
 const EARLIEST_ACTIVITY = Date.UTC(2000, 0, 1)
 const FUTURE_TOLERANCE = 5 * 60_000
 
+// Local HTTP browsers expose getRandomValues but not randomUUID. Keep journal
+// and mutation IDs cryptographically random there too (UUID version 4).
+function newUUID() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 export function parseObservedAt(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null
   const time = Date.parse(value)
@@ -273,7 +284,7 @@ export default class ConsumerProgressSync {
     const local = box.newestLocal
     if (!box.conflict || !local) return Promise.resolve()
     this.write("q", { choice: true, from: box.placeIds, body: { ...local.place, observed_at: new Date(this.now()).toISOString(),
-      resolve_conflict: true, expected_version: box.conflict.remote?.version || 0, client_mutation_id: crypto.randomUUID() } })
+      resolve_conflict: true, expected_version: box.conflict.remote?.version || 0, client_mutation_id: newUUID() } })
     this.rebases = 0
     return this.flush()
   }
@@ -327,7 +338,7 @@ export default class ConsumerProgressSync {
       if (!next) return box.rejection ? this.status("rejected", box.rejection.error) : undefined
       const local = localOf(next)
       request = this.write("q", { from: box.placeIds, body: { ...local.place, observed_at: local.observedAt,
-        expected_version: box.baseFor(local), client_mutation_id: crypto.randomUUID() } }).entry
+        expected_version: box.baseFor(local), client_mutation_id: newUUID() } }).entry
     }
     const body = request.body
     this.status("syncing")
@@ -391,7 +402,7 @@ export default class ConsumerProgressSync {
       if (!remote || (remoteTime !== null && localTime > remoteTime)) {
         this.rebases += 1
         this.write("q", { from: box.placeIds, body: { ...local.place, observed_at: local.observedAt,
-          expected_version: remote?.version || 0, client_mutation_id: crypto.randomUUID() } })
+          expected_version: remote?.version || 0, client_mutation_id: newUUID() } })
         this.again = true
         return
       }
@@ -502,7 +513,7 @@ export default class ConsumerProgressSync {
   }
 
   write(kind, fields) {
-    const id = `${kind}.${Math.max(0, Math.floor(this.now())).toString(36).padStart(9, "0")}.${crypto.randomUUID()}`
+    const id = `${kind}.${Math.max(0, Math.floor(this.now())).toString(36).padStart(9, "0")}.${newUUID()}`
     return this.put(id, { t: kind, ...fields })
   }
 
