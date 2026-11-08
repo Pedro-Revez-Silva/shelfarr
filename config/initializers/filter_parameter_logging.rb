@@ -3,6 +3,8 @@ Rails.application.config.filter_parameters += [
   :nzb_url, :download_url, :response_url, :authorization_code, :account, :session_id, :userkey,
   :readingstates, :currentbookmark,
   :locator, :position_seconds,
+  :activation_code, :activation_poll_url, :kobo_user_id, :kobo_user_key,
+  :kobo_email, :device_id, :serial_number, :access_token, :refresh_token,
   # OAuth callback and device sign-in values. Matched exactly so unrelated
   # keys that merely contain "code" (an ISBN code, a language code) still log.
   /\A(?:code|device_code|user_code|code_verifier)\z/i,

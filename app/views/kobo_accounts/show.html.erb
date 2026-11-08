@@ -1,0 +1,67 @@
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+  <meta name="referrer" content="no-referrer">
+<% end %>
+<div class="mx-auto max-w-3xl space-y-6">
+  <%= link_to "← Kobo accounts", kobo_accounts_path, class: "text-blue-400 hover:text-blue-300" %>
+  <div>
+    <h1 class="text-3xl font-bold text-white break-words"><%= @account.name %></h1>
+    <p class="mt-2 text-gray-400">Private to your Shelfarr user</p>
+  </div>
+  <% if @account.error_message %>
+    <p role="alert" class="rounded-lg border border-amber-800 bg-amber-950/30 p-5 text-amber-200"><%= @account.error_message %></p>
+  <% end %>
+
+  <% if @account.pending? %>
+    <section class="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4"
+      data-controller="kobo-account" data-kobo-account-url-value="<%= poll_kobo_account_path(@account) %>">
+      <h2 class="text-xl font-semibold text-white">Approve this connection on Kobo</h2>
+      <p class="text-gray-300">Open Kobo's activation page, sign in to the account you want to connect, and enter this code:</p>
+      <p class="font-mono text-3xl tracking-widest text-white" data-testid="kobo-activation-code"><%= @account.activation_code %></p>
+      <%= link_to "Open Kobo activation", "https://www.kobo.com/activate", target: "_blank", rel: "noopener noreferrer", class: "inline-block rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500" %>
+      <p class="text-sm text-gray-400">Return here after approving. This code expires in <%= distance_of_time_in_words(Time.current, @account.activation_expires_at) %>. Keep it private.</p>
+      <p role="status" data-kobo-account-target="status" class="text-sm text-gray-300">Waiting for approval…</p>
+      <%= button_to "Check connection", poll_kobo_account_path(@account), form: { data: { turbo: false } }, class: "rounded-lg bg-gray-800 px-4 py-2 text-gray-200 hover:bg-gray-700" %>
+    </section>
+  <% elsif @account.connected? || @account.status == "reauthorization_required" %>
+    <section class="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4">
+      <h2 class="text-xl font-semibold text-white"><%= @account.connected? ? "Connected to Kobo" : "Kobo sign-in required" %></h2>
+      <p class="text-gray-300 break-all">Account: <%= @account.kobo_email %></p>
+      <p class="text-sm text-gray-400">Check that this is the account you intended to connect. Catalogue entries are visible only to you. No book files or licences have been imported.</p>
+      <% if @account.sync_active? %>
+        <div data-controller="kobo-account" data-kobo-account-url-value="<%= poll_kobo_account_path(@account, phase: 'catalogue') %>">
+          <p role="status" data-kobo-account-target="status" class="text-gray-300">Refreshing your catalogue… This page will update when it finishes.</p>
+        </div>
+      <% elsif @account.connected? %>
+        <%= button_to "Refresh catalogue", sync_kobo_account_path(@account), class: "rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500" %>
+      <% end %>
+      <% if @account.last_synced_at %>
+        <p class="text-sm text-gray-400">Last refreshed <%= time_ago_in_words(@account.last_synced_at) %> ago.</p>
+      <% end %>
+    </section>
+    <section class="rounded-lg border border-gray-800 bg-gray-900 p-6">
+      <h2 class="text-xl font-semibold text-white">Kobo catalogue · <%= @count %> <%= "title".pluralize(@count) %></h2>
+      <% if @books.empty? %>
+        <p class="mt-4 text-gray-400"><%= @account.last_synced_at ? "Kobo returned no catalogue entries for this connection." : "Your catalogue will appear after the first successful refresh." %></p>
+      <% end %>
+      <% @books.each do |book| %>
+        <div class="border-t border-gray-800 py-4 mt-3 min-w-0">
+          <p class="font-medium text-gray-200 break-words"><%= book.title %></p>
+          <p class="mt-1 text-sm text-gray-400 break-words"><%= book.author.presence || "Unknown author" %></p>
+          <p class="mt-1 text-sm text-gray-500"><%= book.media_type.humanize %> · <%= book.ownership_type == "unknown" ? "Ownership not specified by Kobo" : book.ownership_type.humanize %><%= " · Archived" if book.archived? %> · Catalogue only</p>
+        </div>
+      <% end %>
+      <nav aria-label="Catalogue pages" class="mt-4 flex flex-wrap gap-4">
+        <%= link_to "Previous", kobo_account_path(@account, page: @page - 1), class: "text-blue-400 hover:text-blue-300" if @page > 1 %>
+        <%= link_to "Next", kobo_account_path(@account, page: @page + 1), class: "text-blue-400 hover:text-blue-300" if @more %>
+      </nav>
+    </section>
+  <% else %>
+    <p class="text-gray-300">This connection did not complete. Return to Kobo accounts to start a new connection.</p>
+  <% end %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4">
+    <h2 class="text-xl font-semibold text-white">Disconnect</h2>
+    <p class="text-sm text-gray-400">Remove this connection's saved credentials and private catalogue from Shelfarr. This does not sign out or reset a physical Kobo, remove its books, or revoke credentials at Kobo.</p>
+    <%= button_to "Disconnect Kobo account", kobo_account_path(@account), method: :delete, data: { turbo_confirm: "Remove this connection and its catalogue from Shelfarr?" }, class: "rounded-lg bg-red-900 px-4 py-2 text-red-100 hover:bg-red-800" %>
+  </section>
+</div>

@@ -63,6 +63,11 @@ Rails.application.routes.draw do
     post :regenerate_backup_codes, on: :member
   end
 
+  resources :kobo_accounts, only: [ :index, :create, :show, :destroy ] do
+    post :poll, on: :member
+    post :sync, on: :member
+  end
+
   resources :kobo_devices, only: [ :index, :create, :show, :destroy ] do
     post :rotate, on: :member
     post :send_book, on: :member

@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_07_150000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_08_190000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -327,6 +327,47 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_150000) do
     t.index ["status", "next_sync_at"], name: "index_hardcover_subscriptions_on_status_and_next_sync_at"
     t.index ["user_id", "target_key"], name: "index_hardcover_subscriptions_on_user_id_and_target_key", unique: true
     t.index ["user_id"], name: "index_hardcover_subscriptions_on_user_id"
+  end
+
+  create_table "kobo_account_books", force: :cascade do |t|
+    t.integer "kobo_account_id", null: false
+    t.string "entitlement_id", null: false
+    t.string "revision_id"
+    t.string "title", null: false
+    t.text "author"
+    t.string "media_type", default: "ebook", null: false
+    t.string "ownership_type", default: "unknown", null: false
+    t.boolean "archived", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["kobo_account_id", "entitlement_id"], name: "index_kobo_account_books_on_kobo_account_id_and_entitlement_id", unique: true
+    t.index ["kobo_account_id"], name: "index_kobo_account_books_on_kobo_account_id"
+  end
+
+  create_table "kobo_accounts", force: :cascade do |t|
+    t.integer "user_id", null: false
+    t.string "name", null: false
+    t.string "status", default: "pending", null: false
+    t.text "device_id", null: false
+    t.text "serial_number", null: false
+    t.text "activation_poll_url"
+    t.text "activation_code"
+    t.datetime "activation_expires_at"
+    t.datetime "next_poll_at"
+    t.text "kobo_user_id"
+    t.text "kobo_user_key"
+    t.text "kobo_email"
+    t.text "access_token"
+    t.text "refresh_token"
+    t.string "sync_status", default: "idle", null: false
+    t.string "sync_request_id"
+    t.datetime "sync_started_at"
+    t.datetime "last_synced_at"
+    t.string "last_error"
+    t.integer "lock_version", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["user_id"], name: "index_kobo_accounts_on_user_id"
   end
 
   create_table "kobo_deliveries", force: :cascade do |t|
@@ -775,6 +816,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_07_150000) do
   add_foreign_key "hardcover_request_budgets", "users"
   add_foreign_key "hardcover_subscription_items", "hardcover_subscriptions"
   add_foreign_key "hardcover_subscriptions", "users"
+  add_foreign_key "kobo_account_books", "kobo_accounts"
+  add_foreign_key "kobo_accounts", "users"
   add_foreign_key "kobo_deliveries", "books"
   add_foreign_key "kobo_deliveries", "kobo_devices"
   add_foreign_key "kobo_devices", "users"

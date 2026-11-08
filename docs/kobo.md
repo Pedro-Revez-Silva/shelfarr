@@ -1,5 +1,9 @@
 # Send ebooks to a stock Kobo (preview)
 
+To connect a Kobo Store account and inspect its private catalogue, see
+[Kobo accounts](kobo-accounts.md). That flow does not configure a reader or
+enable Store coexistence for the reader integration below.
+
 Shelfarr can serve selected library ebooks through the stock Kobo's Wi-Fi sync.
 No KOReader, jailbreak, Kobo Cloud subscription, or new acquisition is needed.
 Choose books separately for each physical reader. The reader fetches them when
