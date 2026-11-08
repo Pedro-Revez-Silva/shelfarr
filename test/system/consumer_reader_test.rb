@@ -98,8 +98,12 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     page.current_window.resize_to(390, 844)
     visit consumer_publication_path(@ebook)
     assert_selector ".consumer-ebook iframe", wait: 20
+    wait_until("the initial reader page is ready") { reader_place&.dig(:inside) }
     reveal_reading_controls
     click_button "Next →"
+    # Font reflow intentionally records no activity. Let this navigation save
+    # before changing the layout, rather than racing its location report.
+    wait_for_progress(@ebook)
     initial_total = find("[data-consumer-reader-target=location]").text[/\/ (\d+)/, 1].to_i
     3.times { find("button[aria-label='Larger text']").click }
     assert_selector "[data-consumer-reader-target=location]" do |node|
