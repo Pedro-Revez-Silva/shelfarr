@@ -96,6 +96,8 @@ def clean_https(url: str, suffix: str):
     """Parses an https URL with a clean path ending in suffix, or raises PolicyError."""
     if not isinstance(url, str) or not url or len(url) > MAX_URL_CHARS:
         raise PolicyError("URL is missing or too long")
+    if any(ord(character) <= 0x20 or ord(character) >= 0x7f for character in url):
+        raise PolicyError("URL must contain only printable ASCII characters")
     if BAD_URL_TEXT.search(url):
         raise PolicyError(f"{url} must not contain credentials, a query, a fragment or encoded separators")
     parts = urlsplit(url)

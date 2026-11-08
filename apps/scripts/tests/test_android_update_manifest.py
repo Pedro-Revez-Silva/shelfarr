@@ -87,6 +87,11 @@ class DirectFeedTest(ManifestCase):
         result = self.generate("--apk-url", DIRECT_APK_URL, "--package", "org.shelfarr.app.debug")
         self.assertRefused(result, "needs --feed-url")
 
+    def test_urls_use_printable_ascii_like_android_and_ruby(self):
+        for filename in ("é.apk", "a\x7f.apk"):
+            with self.subTest(filename=filename):
+                self.assertRefused(self.direct(apk_url=f"https://example.org/downloads/{filename}"), "printable ASCII")
+
     def test_still_refuses_a_version_that_does_not_grow_and_a_wrong_signer(self):
         self.assertRefused(self.direct("--previous-version-code", "3"), "must be larger")
         self.assertRefused(self.direct("--signer-sha256", OTHER_SIGNER), "not the expected certificate")

@@ -466,9 +466,15 @@ def github_publish_apk(args) -> int:
     if commit != args.target_sha:
         raise GitHubError(f"release {tag} is at {commit}, not the tested commit {args.target_sha}")
 
+    assets = assets_by_name(release)
+    if any(asset_name != name and asset_name.lower().endswith(".apk") for asset_name in assets):
+        # Catalog retention forgets old labels; their immutable releases do not.
+        # A label still identifies exactly one APK, even at the same source SHA.
+        raise GitHubError(f"release {tag} already contains another APK; choose a new calendar version")
+
     with tempfile.TemporaryDirectory() as directory:
         check = Path(directory, "published.apk")
-        asset = assets_by_name(release).get(name)
+        asset = assets.get(name)
         if asset and asset.get("state") != "uploaded":
             # A failed upload is never listed in a catalog; start it over.
             gh(["api", "--method", "DELETE", f"repos/{args.repo}/releases/assets/{int(asset['id'])}"])

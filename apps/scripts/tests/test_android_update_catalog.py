@@ -38,6 +38,14 @@ class ValidationTest(LocalCase):
         result = self.check(catalog(entry(10), entry(11, apis=(1, 2)), entry(3, channel="development")))
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_custom_publisher_urls_are_readable_by_the_ruby_consumer(self):
+        catalog_url = "https://apps.example.org/catalog.json"
+        for path in ("é.apk", "a\x00.apk", "a\x7f.apk"):
+            with self.subTest(path=path):
+                invalid = dict(entry(10), apk_url=f"https://apps.example.org/{path}")
+                with self.assertRaisesRegex(module.CatalogError, "printable ASCII"):
+                    module.validate_entry(invalid, catalog_url)
+
     def test_refuses_malformed_documents(self):
         cases = [
             (b'{"schema_version": 1, "releases": [], "releases": []}', "duplicate key"),
@@ -133,7 +141,7 @@ class AddTest(LocalCase):
         result, _ = self.add(previous, entry(3, channel="development"))
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_labels_urls_and_bytes_are_never_reused(self):
+    def test_retained_labels_urls_and_bytes_are_not_reused(self):
         previous = catalog(entry(10))
         reused_label = dict(entry(11), version_name=entry(10)["version_name"])
         self.assertRefused(self.add(previous, reused_label)[0], "version name 2026.11.10 is already published")
@@ -315,6 +323,14 @@ class PublishApkTest(GitHubCase):
         result = self.publish()
         self.assertRefused(result, "it is never replaced")
         self.assertEqual(self.github.asset(self.tag, self.name), b"other bytes" * 100)
+
+    def test_a_pruned_label_cannot_publish_another_apk_even_at_the_same_commit(self):
+        previous_name = "shelfarr-android-release-2026.11.8.1-10.apk"
+        self.github.add_release(self.tag, assets={previous_name: b"previous signed APK"})
+        self.assertRefused(self.publish(), "already contains another APK; choose a new calendar version")
+        self.assertEqual(self.github.asset(self.tag, previous_name), b"previous signed APK")
+        self.assertIsNone(self.github.asset(self.tag, self.name))
+        self.assertFalse(any(call[:2] == ["release", "upload"] for call in self.github.calls()))
 
     def test_refuses_a_release_or_tag_at_another_commit(self):
         self.github.add_release(self.tag, commit="2" * 40)

@@ -56,9 +56,12 @@ they can speak (`[1, 2]`).
   `development` / `org.shelfarr.app.debug`.
 - `apk_url` is an asset of an **APK release** of the same repository, never of the
   `android-catalog-v1` release, which is rewritten on every publication.
-- Each version code, version name, APK URL and SHA-256 appears once. A listed
-  version never changes: publishing the same version again is accepted only with
-  identical content, and then changes nothing.
+- Within the retained catalog, each version code, version name, APK URL and
+  SHA-256 appears once. A listed version never changes: publishing the same
+  version again is accepted only with identical content, and then changes nothing.
+  Pruning removes labels from this local check; their GitHub releases remain.
+  The hosted publisher refuses a second APK in an existing release, so a pruned
+  calendar label cannot be reused there, even from the same source commit.
 - At most 100 releases and 1 MiB, below the server's own limits.
 
 `apps/scripts/android-update-catalog.py` enforces all of this and refuses to
