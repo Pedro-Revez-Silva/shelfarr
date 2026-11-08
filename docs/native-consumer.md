@@ -15,7 +15,8 @@ browser, library and continue, publication details, EPUB reader or audio player,
 resume from the saved place. Books and audiobooks can be downloaded for offline use,
 and each has a reading status. Both clients browse downloaded and previously seen
 titles offline, with saved coverage and freshness shown. See the platform details for
-[Android](native-offline-android.md) and [iOS](native-offline-ios.md).
+[Android](native-offline-android.md) and [iOS](native-offline-ios.md). The Android
+app can also [update itself](native-updates-android.md) from a publisher feed.
 
 ## Build
 
@@ -54,6 +55,11 @@ Versions live in `apps/android/gradle/libs.versions.toml`, pinned to the Kotlin,
 and compile SDK combination that Readium 3.4.0 builds with. Bump them together.
 
 No release signing is configured.
+
+The version comes from `-PshelfarrVersionCode` (default `2`, 1 to 2100000000) and
+`-PshelfarrVersionName` (default `0.1.1`; debug builds append `-debug`). Each build
+published for in-app updates needs a larger version code than the last. In-app updates
+are described in [Android in-app updates](native-updates-android.md).
 
 ### iOS
 

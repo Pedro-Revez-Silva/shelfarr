@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import org.shelfarr.app.core.AccountPublications
@@ -48,6 +49,13 @@ import org.shelfarr.app.transfer.TransferAccount
 import org.shelfarr.app.transfer.TransferNotifications
 import org.shelfarr.app.transfer.TransferScheduler
 import org.shelfarr.app.ui.theme.AppearanceMode
+import org.shelfarr.app.update.AndroidPackageInspector
+import org.shelfarr.app.update.AndroidSessionInstaller
+import org.shelfarr.app.update.AppUpdater
+import org.shelfarr.app.update.PlaybackGuard
+import org.shelfarr.app.update.UpdateFetcher
+import org.shelfarr.app.update.UpdateSource
+import org.shelfarr.app.update.buildUpdateHttpClient
 
 /** Everything tied to one signed-in account. Replaced wholesale when the account changes. */
 class AccountServices(
@@ -178,6 +186,27 @@ class AppContainer(context: Context) {
 
     private var account: AccountServices? = null
 
+    /**
+     * Updates this app from its build-time publisher feed. It has its own HTTP client and
+     * never sees the Shelfarr server, the account or its credential.
+     */
+    val updater: AppUpdater = UpdateSource.parse(BuildConfig.UPDATE_FEED_URL).let { source ->
+        AppUpdater(
+            source = source,
+            channel = BuildConfig.UPDATE_CHANNEL,
+            fetcher = source?.let { UpdateFetcher(buildUpdateHttpClient(), it) },
+            inspector = AndroidPackageInspector(appContext),
+            installer = AndroidSessionInstaller(appContext),
+            directory = File(appContext.noBackupFilesDir, "updates"),
+            playback = object : PlaybackGuard {
+                override val isPlaying: Boolean get() = playback.isListening
+                override fun pause() = playback.pause()
+            },
+            scope = scope,
+            beforeInstall = ::saveBeforeInstall,
+        ).also { it.start() }
+    }
+
     init {
         // Streams can't continue without a session, so don't leave a dead player behind.
         scope.launch {
@@ -274,6 +303,7 @@ class AppContainer(context: Context) {
 
     fun onForeground() {
         isVisible = true
+        updater.onForeground()
         val current = currentAccount() ?: return
         scope.launch {
             current.progress.flushAll()
@@ -298,6 +328,15 @@ class AppContainer(context: Context) {
         scope.launch {
             listening?.join()
             current.progress.flushAll()
+        }
+    }
+
+    /** Android may replace this process once it installs an update: save places first. */
+    private suspend fun saveBeforeInstall() {
+        val listening = withContext(Dispatchers.Main.immediate) { playback.checkpointNow() }
+        withTimeoutOrNull(NETWORK_GRACE_MS) {
+            listening?.join()
+            currentAccount()?.progress?.flushAll()
         }
     }
 

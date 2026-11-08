@@ -255,6 +255,18 @@ class PlaybackController(
         }
     }
 
+    /** Playing, or about to once buffered. Main thread only. */
+    val isListening: Boolean
+        get() = controller?.let { player ->
+            player.isPlaying ||
+                (player.playWhenReady && player.playbackState != Player.STATE_IDLE && player.playbackState != Player.STATE_ENDED)
+        } == true
+
+    /** Pauses without toggling; the place is saved as playback stops. Main thread only. */
+    fun pause() {
+        if (isListening) controller?.pause()
+    }
+
     fun seekTo(positionMs: Long) = deliberately { seekTo(positionMs) }
 
     fun skipBack() = deliberately { seekBack() }

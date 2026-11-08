@@ -1,3 +1,5 @@
+import java.net.URI
+import java.net.URISyntaxException
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -15,6 +17,44 @@ val devHttpHosts: List<String> = (findProperty("shelfarrDevHttpHosts") as String
     .map(String::trim)
     .filter(String::isNotEmpty)
 
+// Build-time version. Direct-distribution updates only move forward, so each published
+// build must use a larger shelfarrVersionCode than the one before it.
+val shelfarrVersionCode: Int = (findProperty("shelfarrVersionCode") as String? ?: "2").trim().let { value ->
+    val code = requireNotNull(value.toIntOrNull()) { "shelfarrVersionCode must be a whole number, not '$value'" }
+    require(code in 1..2_100_000_000) { "shelfarrVersionCode must be between 1 and 2100000000, not $code" }
+    code
+}
+val shelfarrVersionName: String = (findProperty("shelfarrVersionName") as String? ?: "0.1.1").trim().also { name ->
+    require(name.matches(Regex("[0-9A-Za-z][0-9A-Za-z._+-]{0,47}"))) {
+        "shelfarrVersionName must be 1-48 letters, digits, '.', '_', '+' or '-', starting with a letter or digit"
+    }
+}
+
+// The publisher feed an in-app update may come from, fixed at build time. Empty (the
+// default) switches the updater off and leaves out its install permission. Debug and
+// release builds read separate properties, so a development feed can't reach a release.
+fun updateFeedUrl(property: String): String {
+    val value = (findProperty(property) as String?).orEmpty().trim()
+    if (value.isEmpty()) return ""
+    val uri = try {
+        URI(value)
+    } catch (error: URISyntaxException) {
+        throw IllegalArgumentException("$property is not a URL", error)
+    }
+    require(uri.scheme == "https" && !uri.host.isNullOrEmpty()) { "$property must be an https:// URL" }
+    require(uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null) {
+        "$property must not carry credentials, a query or a fragment"
+    }
+    val path = uri.rawPath.orEmpty()
+    require(path.endsWith(".json") && path.lastIndexOf('/') > 0 && path.split('/').none { it == "." || it == ".." }) {
+        "$property must name a .json feed inside a directory, such as https://example.org/downloads/android.json"
+    }
+    require(value.none { it == '"' || it == '\\' || it.isWhitespace() }) { "$property contains characters a URL can't" }
+    return value
+}
+val debugUpdateFeedUrl = updateFeedUrl("shelfarrUpdateFeedUrl")
+val releaseUpdateFeedUrl = updateFeedUrl("shelfarrReleaseUpdateFeedUrl")
+
 android {
     namespace = "org.shelfarr.app"
     compileSdk = 37
@@ -23,8 +63,8 @@ android {
         applicationId = "org.shelfarr.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = shelfarrVersionCode
+        versionName = shelfarrVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["additionalTestOutputDir"] =
             "/sdcard/Android/media/org.shelfarr.app.debug/reader-smoke"
@@ -36,8 +76,12 @@ android {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
             buildConfigField("boolean", "ALLOW_LOCAL_HTTP", "true")
+            buildConfigField("String", "UPDATE_FEED_URL", "\"$debugUpdateFeedUrl\"")
+            buildConfigField("String", "UPDATE_CHANNEL", "\"development\"")
         }
         release {
+            buildConfigField("String", "UPDATE_FEED_URL", "\"$releaseUpdateFeedUrl\"")
+            buildConfigField("String", "UPDATE_CHANNEL", "\"release\"")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -57,6 +101,10 @@ android {
 
     // One copy of the brand fonts, shared with the iOS project.
     sourceSets["main"].assets.directories.add("../../design/assets")
+
+    // The install permission and status receiver exist only in builds that have a feed.
+    if (debugUpdateFeedUrl.isNotEmpty()) sourceSets["debug"].manifest.srcFile("src/updater/AndroidManifest.xml")
+    if (releaseUpdateFeedUrl.isNotEmpty()) sourceSets["release"].manifest.srcFile("src/updater/AndroidManifest.xml")
 
     testOptions {
         unitTests {
@@ -179,6 +227,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.okhttp.tls)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(platform(libs.compose.bom))

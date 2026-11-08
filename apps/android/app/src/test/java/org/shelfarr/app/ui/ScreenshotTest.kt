@@ -66,6 +66,9 @@ import org.shelfarr.app.ui.setup.SetupPhase
 import org.shelfarr.app.ui.setup.SetupState
 import org.shelfarr.app.ui.theme.AppearanceMode
 import org.shelfarr.app.ui.theme.ShelfarrTheme
+import org.shelfarr.app.update.UpdateRelease
+import org.shelfarr.app.update.UpdateState
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
 /**
  * Renders every main screen on the JVM. Content here is test fixture data for
@@ -285,6 +288,47 @@ class ScreenshotTest {
     @Test
     fun settings() = shot("08-settings") {
         SettingsScreen(session, AppearanceMode.SYSTEM, "0.1.0", false, {}, {})
+    }
+
+    private val update = UpdateRelease(
+        channel = "development",
+        packageName = "org.shelfarr.app.debug",
+        versionCode = 3,
+        versionName = "0.1.2-debug",
+        apkUrl = "https://updates.example.org/downloads/shelfarr-3.apk".toHttpUrl(),
+        sizeBytes = 41_300_000,
+        sha256 = "0".repeat(64),
+        releaseNotes = "Faster library loading, and the reader keeps its place when you rotate the phone.\n" +
+            "Downloads resume after a dropped connection.\nSmaller fixes to the player.",
+        minSdk = 26,
+    )
+
+    private fun settingsWith(state: UpdateState) =
+        @Composable { SettingsScreen(session, AppearanceMode.SYSTEM, "0.1.1-debug", false, {}, {}, update = state, nowMs = now) }
+
+    @Test
+    fun settings_up_to_date() = shot("08-settings-up-to-date", content = settingsWith(UpdateState.Idle(lastCheckedAtMs = now - 20 * 60_000)))
+
+    @Test
+    fun settings_update_available_large_text() {
+        RuntimeEnvironment.setFontScale(1.6f)
+        shot("08-settings-update-available-large-text", content = settingsWith(UpdateState.Available(update)))
+    }
+
+    @Test
+    fun settings_update_downloading_dark() =
+        shot("08-settings-update-downloading-dark", dark = true, content = settingsWith(UpdateState.Downloading(update, 17_800_000)))
+
+    @Test
+    fun settings_update_permission() = shot("08-settings-update-permission", content = settingsWith(UpdateState.NeedsPermission(update)))
+
+    @Test
+    fun settings_update_ready_large_text() {
+        RuntimeEnvironment.setFontScale(1.6f)
+        shot(
+            "08-settings-update-ready-large-text",
+            content = settingsWith(UpdateState.Ready(update, notice = "Installation cancelled")),
+        )
     }
 
     private fun files(publication: Publication, doneFraction: Double) = publication.playableAssets.mapIndexed { index, asset ->

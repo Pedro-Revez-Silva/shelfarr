@@ -1,5 +1,6 @@
 package org.shelfarr.app.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -8,7 +9,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
 import org.shelfarr.app.ShelfarrApplication
 import org.shelfarr.app.ui.theme.ShelfarrTheme
 
@@ -27,6 +33,21 @@ class MainActivity : ComponentActivity() {
         setContent {
             val appearance by container.appearance.collectAsState()
             ShelfarrTheme(appearance) { ShelfarrApp(container, requestedScreen) }
+        }
+        // Android's update confirmation is only ever shown over a visible Shelfarr screen.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                container.updater.confirmation.filterNotNull().collect { pending ->
+                    container.updater.confirmationShown(pending.sessionId)
+                    try {
+                        startActivity(pending.intent)
+                    } catch (_: ActivityNotFoundException) {
+                        container.updater.cancelInstall()
+                    } catch (_: SecurityException) {
+                        container.updater.cancelInstall()
+                    }
+                }
+            }
         }
     }
 

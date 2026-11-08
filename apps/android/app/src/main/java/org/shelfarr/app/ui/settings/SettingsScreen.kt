@@ -37,6 +37,8 @@ import org.shelfarr.app.core.Session
 import org.shelfarr.app.ui.components.ShelfarrIcons
 import org.shelfarr.app.ui.theme.AppearanceMode
 import org.shelfarr.app.ui.theme.ShelfarrTheme
+import org.shelfarr.app.update.UpdateState
+import org.shelfarr.app.update.hasUpdate
 
 @Composable
 fun SettingsScreen(
@@ -48,6 +50,9 @@ fun SettingsScreen(
     onDisconnect: () -> Unit,
     downloadsSummary: String = "Nothing downloaded",
     onDownloads: () -> Unit = {},
+    update: UpdateState = UpdateState.Disabled,
+    updateActions: UpdateActions = UpdateActions.None,
+    nowMs: Long = System.currentTimeMillis(),
 ) {
     var confirming by remember { mutableStateOf(false) }
 
@@ -63,6 +68,9 @@ fun SettingsScreen(
             style = MaterialTheme.typography.headlineLarge,
             modifier = Modifier.padding(top = 12.dp, bottom = 20.dp),
         )
+
+        // Something to act on comes first; otherwise updates sit quietly below.
+        if (update.hasUpdate) Section("App update") { UpdateSection(update, nowMs, updateActions) }
 
         Section("Account") {
             Text(session.user.displayName, style = MaterialTheme.typography.titleMedium)
@@ -118,6 +126,10 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = ShelfarrTheme.extended.inkMuted,
             )
+        }
+
+        if (update != UpdateState.Disabled && !update.hasUpdate) {
+            Section("Updates") { UpdateSection(update, nowMs, updateActions) }
         }
 
         Spacer(Modifier.height(8.dp))

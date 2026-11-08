@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +48,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -89,6 +93,10 @@ import org.shelfarr.app.ui.player.PlayerControls
 import org.shelfarr.app.ui.player.PlayerRoute
 import org.shelfarr.app.ui.player.PlayerViewModel
 import org.shelfarr.app.ui.settings.SettingsScreen
+import org.shelfarr.app.ui.settings.UpdateActions
+import org.shelfarr.app.update.AppUpdater
+import org.shelfarr.app.update.InstallRequest
+import org.shelfarr.app.update.hasUpdate
 import org.shelfarr.app.ui.setup.AuthorizationEndedScreen
 import org.shelfarr.app.ui.setup.AuthorizeScreen
 import org.shelfarr.app.ui.setup.ServerSetupScreen
@@ -137,6 +145,36 @@ private fun rememberDownloadStarter(container: AppContainer, start: () -> Unit):
             } else {
                 start()
             }
+        }
+    }
+}
+
+/** Android's per-app "Install unknown apps" switch, which a self-update needs once. */
+private fun Context.installPermissionIntent(): Intent =
+    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+
+@Composable
+private fun rememberUpdateActions(updater: AppUpdater): UpdateActions {
+    val context = LocalContext.current
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        updater.onPermissionReturned()
+    }
+    return remember(updater, permission) {
+        object : UpdateActions {
+            override fun check() = updater.checkNow()
+            override fun download() = updater.download()
+            override fun cancelDownload() = updater.cancelDownload()
+            override fun install(pausePlayback: Boolean): InstallRequest = updater.install(pausePlayback)
+            override fun openInstallPermission() {
+                try {
+                    permission.launch(context.installPermissionIntent())
+                } catch (_: ActivityNotFoundException) {
+                    context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))
+                }
+            }
+            override fun dismissPermission() = updater.dismissPermission()
+            override fun showPrompt() = updater.showPromptAgain()
+            override fun cancelInstall() = updater.cancelInstall()
         }
     }
 }
@@ -216,6 +254,7 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
     val navController = rememberNavController()
     RequestedScreenNavigation(navController, requestedScreen)
     val playback by container.playback.snapshot.collectAsStateWithLifecycle()
+    val update by container.updater.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     fun open(publication: Publication) = navController.navigate("details/${Uri.encode(publication.id)}")
@@ -242,7 +281,7 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
         null
     }
 
-    MainShellLayout(navController, miniPlayer) {
+    MainShellLayout(navController, miniPlayer, badges = if (update.hasUpdate) setOf(SETTINGS) else emptySet()) {
         screen(HOME) {
             val viewModel: HomeViewModel = viewModel { HomeViewModel(container) }
             val state by viewModel.state.collectAsStateWithLifecycle()
@@ -276,6 +315,12 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
             var disconnecting by remember { mutableStateOf(false) }
             val records by (container.currentAccount()?.downloads?.records ?: remember { MutableStateFlow(emptyMap()) })
                 .collectAsStateWithLifecycle()
+            val updateActions = rememberUpdateActions(container.updater)
+            LifecycleResumeEffect(container.updater) {
+                // Android may have dropped an installation without saying so.
+                container.updater.reconcileInstalling()
+                onPauseOrDispose {}
+            }
             SettingsScreen(
                 session = session,
                 appearance = appearance,
@@ -288,6 +333,8 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
                 },
                 downloadsSummary = downloadsSummary(records.values),
                 onDownloads = { navController.navigate(DOWNLOADS) },
+                update = update,
+                updateActions = updateActions,
             )
         }
         screen(DETAILS, listOf(navArgument("id") { type = NavType.StringType })) { entry ->
@@ -389,6 +436,7 @@ private val LocalShellBars = compositionLocalOf { ShellBars() }
 internal fun MainShellLayout(
     navController: NavHostController,
     miniPlayer: (@Composable () -> Unit)?,
+    badges: Set<String> = emptySet(),
     builder: NavGraphBuilder.() -> Unit,
 ) {
     val backStack by navController.currentBackStackEntryAsState()
@@ -421,6 +469,7 @@ internal fun MainShellLayout(
                     TabBar(
                         navController = navController,
                         route = route,
+                        badges = badges,
                         modifier = Modifier.onSizeChanged { tabBarHeight = with(density) { it.height.toDp() } },
                     )
                 }
@@ -462,7 +511,7 @@ private class ControllerControls(private val playback: PlaybackController) : Pla
 }
 
 @Composable
-private fun TabBar(navController: NavHostController, route: String?, modifier: Modifier = Modifier) {
+private fun TabBar(navController: NavHostController, route: String?, badges: Set<String>, modifier: Modifier = Modifier) {
     Column(modifier) {
         HorizontalDivider(color = ShelfarrTheme.extended.hairline)
         NavigationBar(containerColor = MaterialTheme.colorScheme.background, tonalElevation = androidx.compose.ui.unit.Dp(0f)) {
@@ -476,7 +525,14 @@ private fun TabBar(navController: NavHostController, route: String?, modifier: M
                             restoreState = true
                         }
                     },
-                    icon = { Icon(tab.icon, null) },
+                    icon = {
+                        if (tab.route in badges) {
+                            BadgedBox(badge = { Badge() }) { Icon(tab.icon, null) }
+                        } else {
+                            Icon(tab.icon, null)
+                        }
+                    },
+                    modifier = if (tab.route in badges) Modifier.semantics { stateDescription = "Update available" } else Modifier,
                     label = { Text(tab.label, style = MaterialTheme.typography.labelSmall) },
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = MaterialTheme.colorScheme.primary,
