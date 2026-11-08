@@ -60,6 +60,10 @@ module Kobo
     def normalize(item)
       payload = item["NewEntitlement"] || item["ChangedEntitlement"]
       return unless payload
+      # Kobo also sends subscription-account records through these events.
+      # They describe the subscription itself, rather than a catalogue title.
+      return if payload.is_a?(Hash) && payload.keys == [ "BookSubscriptionEntitlement" ] && payload["BookSubscriptionEntitlement"].is_a?(Hash)
+
       raise HttpClient::Error, "protocol_changed" unless payload.is_a?(Hash) && payload["BookEntitlement"].is_a?(Hash)
 
       entitlement = payload.fetch("BookEntitlement")

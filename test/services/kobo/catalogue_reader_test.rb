@@ -22,6 +22,30 @@ class Kobo::CatalogueReaderTest < ActiveSupport::TestCase
     assert_not_requested :get, /content|download|keys/
   end
 
+  test "subscription account events do not prevent importing book entitlements" do
+    subscription = { "BookSubscriptionEntitlement" => {} }
+    stub_kobo_catalogue(items: [ { "NewEntitlement" => subscription }, kobo_book,
+      { "ChangedEntitlement" => subscription } ])
+
+    entries = Kobo::CatalogueReader.new(@account).call
+
+    assert_equal [ "owned-book-1" ], entries.pluck(:entitlement_id)
+    assert_equal "A Purchased Book", entries.sole.fetch(:title)
+    assert_not_requested :get, /content|download|keys/
+  end
+
+  test "unrecognized or malformed book entitlement payloads still reject the catalogue" do
+    [ {}, { "BookSubscriptionEntitlement" => nil }, { "BookEntitlement" => nil },
+      { "BookSubscriptionEntitlement" => {}, "BookEntitlement" => nil } ].each do |payload|
+      stub_kobo_catalogue(items: [ kobo_book, { "NewEntitlement" => payload } ])
+
+      error = assert_raises(Kobo::HttpClient::Error) { Kobo::CatalogueReader.new(@account).call }
+
+      assert_equal "protocol_changed", error.code
+      assert_equal 0, @account.kobo_account_books.count
+    end
+  end
+
   test "a 401 refreshes credentials once and retries the same page with the new token" do
     stub_request(:get, STORE + "/v1/library/sync").with(headers: { "Authorization" => "Bearer synthetic-access" }).to_return(status: 401)
     stub_request(:post, STORE + "/v1/auth/refresh").with(body: hash_including("RefreshToken" => "synthetic-refresh"))

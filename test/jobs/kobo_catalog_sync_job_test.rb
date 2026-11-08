@@ -9,7 +9,7 @@ class KoboCatalogSyncJobTest < ActiveJob::TestCase
   setup { @account = connect_kobo_account(sync_status: "queued", sync_request_id: "request-1", sync_started_at: Time.current) }
 
   test "refresh imports metadata only and never makes a private purchase globally visible" do
-    stub_kobo_catalogue
+    stub_kobo_catalogue(items: [ { "NewEntitlement" => { "BookSubscriptionEntitlement" => {} } }, kobo_book ])
     assert_no_difference [ "Book.count", "KoboDelivery.count" ] do
       assert_difference "KoboAccountBook.count", 1 do
         perform_enqueued_jobs { KoboCatalogSyncJob.perform_later(@account.id, "request-1") }
@@ -17,6 +17,7 @@ class KoboCatalogSyncJobTest < ActiveJob::TestCase
     end
     assert_equal "A Purchased Book", @account.kobo_account_books.sole.title
     assert_equal "idle", @account.reload.sync_status
+    assert_nil @account.last_error
     assert_not_nil @account.last_synced_at
   end
 
