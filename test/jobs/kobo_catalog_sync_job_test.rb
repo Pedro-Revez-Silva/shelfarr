@@ -77,4 +77,14 @@ class KoboCatalogSyncJobTest < ActiveJob::TestCase
     assert_equal "Keep this", @account.kobo_account_books.sole.title
     assert_equal "idle", @account.sync_status
   end
+
+  test "invalid UTF-8 in catalogue JSON records a safe error and preserves the previous catalogue" do
+    @account.kobo_account_books.create!(entitlement_id: "existing", title: "Keep this")
+    body = [ kobo_book(title: "BAD_UTF8") ].to_json.b.sub("BAD_UTF8", "\xff".b)
+    stub_request(:get, STORE + "/v1/library/sync").to_return(body: body)
+    KoboCatalogSyncJob.perform_now(@account.id, "request-1")
+    assert_equal "protocol_changed", @account.reload.last_error
+    assert_equal "idle", @account.sync_status
+    assert_equal "Keep this", @account.kobo_account_books.sole.title
+  end
 end

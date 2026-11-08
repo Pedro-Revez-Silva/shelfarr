@@ -63,4 +63,10 @@ class Kobo::CatalogueReaderTest < ActiveSupport::TestCase
     assert_equal "unknown", entries.first.fetch(:ownership_type)
     assert_equal({ entitlement_id: "old-book", archived: true }, entries.last)
   end
+
+  test "valid non-ASCII UTF-8 titles survive binary HTTP responses unchanged" do
+    title = "O coração · 海辺の本"
+    stub_request(:get, STORE + "/v1/library/sync").to_return(body: [ kobo_book(title: title) ].to_json.b)
+    assert_equal title, Kobo::CatalogueReader.new(@account).call.sole.fetch(:title)
+  end
 end

@@ -113,11 +113,11 @@ module Kobo
     end
 
     def json(response, type: Hash)
-      value = JSON.parse(response.body)
+      value = JSON.parse(FilenameBytes.utf8(response.body))
       raise HttpClient::Error, "protocol_changed" unless value.is_a?(type)
 
       value
-    rescue JSON::ParserError
+    rescue JSON::ParserError, EncodingError
       raise HttpClient::Error, "protocol_changed"
     end
 

@@ -129,4 +129,14 @@ class Kobo::ConnectionManagerTest < ActiveSupport::TestCase
     assert_enqueued_with(job: KoboCatalogSyncJob) { assert Kobo::ConnectionManager.request_catalogue(account) }
     assert_not Kobo::ConnectionManager.request_catalogue(account.reload)
   end
+
+  test "invalid UTF-8 in a successful token response produces a recoverable protocol error" do
+    account = create_kobo_account
+    stub_kobo_approval
+    body = '{"TokenType":"Bearer","AccessToken":"'.b + "\xff".b + '","RefreshToken":"synthetic"}'
+    stub_request(:post, STORE + "/v1/auth/device").to_return(body: body)
+    assert_equal :failed, Kobo::ConnectionManager.poll(account)
+    assert_equal "protocol_changed", account.reload.last_error
+    assert_nil account.access_token
+  end
 end

@@ -143,4 +143,33 @@ class KoboAccountsControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-kobo-account-url-value='/shelfarr/kobo_accounts/#{account.id}/poll?phase=catalogue']"
     assert_not_includes response.body, WORKFLOW
   end
+
+  test "disconnect succeeds when a catalogue worker updates the account after controller lookup" do
+    account = connect_kobo_account(sync_status: "queued", sync_request_id: "request-1", sync_started_at: Time.current)
+    account.kobo_account_books.create!(entitlement_id: "book", title: "Private book")
+    injected = false
+    callback = -> do
+      KoboAccount.find(@account.id).update!(sync_status: "syncing")
+      injected = true
+    end
+    KoboAccountsController.before_action(callback, only: :destroy)
+    delete kobo_account_path(account)
+    assert injected
+    assert_redirected_to kobo_accounts_path
+    assert_not KoboAccount.exists?(account.id)
+    assert_equal 0, KoboAccountBook.where(kobo_account_id: account.id).count
+  ensure
+    KoboAccountsController.skip_before_action(callback) if callback
+  end
+
+  test "a connection removed after lookup does not turn disconnect into an error" do
+    account = connect_kobo_account
+    callback = -> { KoboAccount.find(@account.id).destroy! }
+    KoboAccountsController.before_action(callback, only: :destroy)
+    delete kobo_account_path(account)
+    assert_redirected_to kobo_accounts_path
+    assert_not KoboAccount.exists?(account.id)
+  ensure
+    KoboAccountsController.skip_before_action(callback) if callback
+  end
 end

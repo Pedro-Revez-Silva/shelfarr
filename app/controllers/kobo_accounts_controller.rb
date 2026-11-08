@@ -46,7 +46,11 @@ class KoboAccountsController < ApplicationController
   end
 
   def destroy
-    @account.destroy!
+    begin
+      @account.with_lock { @account.destroy! }
+    rescue ActiveRecord::RecordNotFound
+      Rails.logger.info("[Kobo] Connection was already removed")
+    end
     redirect_to kobo_accounts_path, notice: "Kobo connection and its private catalogue removed from Shelfarr. Your Kobo readers are unchanged."
   end
 
