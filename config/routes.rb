@@ -113,6 +113,7 @@ Rails.application.routes.draw do
         post "auth/token", to: "auth#token"
         post "auth/revoke", to: "accounts#revoke"
         get "me", to: "accounts#show"
+        get "server", to: "server#show", as: :server, format: true, constraints: { format: "json" }
         get "continue", to: "library#continue"
         get "library/:id/assets/:asset_id", to: "library#asset", as: :asset
         post "library/:id/assets/:asset_id/transfer_grant", to: "library#transfer_grant", as: :asset_transfer_grant
@@ -137,6 +138,14 @@ Rails.application.routes.draw do
       resources :users, only: [ :create ]
     end
   end
+
+  # Public Android downloads: a landing page, one feed per channel and the
+  # cached APK bytes. No account is needed and nothing is fetched upstream here.
+  get "apps/android", to: "android_apps#show", as: :android_app, format: false
+  get "apps/android/:channel", to: "android_app_files#feed", as: :android_app_feed,
+    format: true, constraints: { channel: /release|development/, format: "json" }
+  get "apps/android/:channel/:file", to: "android_app_files#apk", as: :android_app_apk,
+    format: false, constraints: { channel: /release|development/, file: /[1-9]\d{0,9}-[0-9a-f]{64}\.apk/ }
 
   get "consumer/connect", to: "consumer/connections#show", as: :consumer_connect
   post "consumer/connect", to: "consumer/connections#create"

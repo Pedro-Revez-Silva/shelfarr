@@ -79,6 +79,9 @@
       <%= link_to "Edit Profile", edit_profile_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
       <%= link_to "Kobo readers", kobo_devices_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
       <%= link_to "Reader preview", consumer_library_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <% if (android_page = android_app_page_path) %>
+        <%= link_to "Get the Android app", android_page, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <% end %>
       <%= link_to "Change Password", password_profile_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
       <% if SettingsService.oidc_configured? && !@user.oidc_user? %>
         <%= button_to "Link OIDC Login", link_oidc_profile_path, method: :post, form: { data: { turbo: false } }, class: "px-4 py-2 bg-indigo-700 hover:bg-indigo-600 text-white font-medium rounded-lg transition cursor-pointer" %>

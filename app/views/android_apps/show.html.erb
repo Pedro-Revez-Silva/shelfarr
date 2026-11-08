@@ -1,0 +1,80 @@
+<% development = @channel == "development" %>
+<% content_for :title, development ? "Shelfarr for Android (development)" : "Shelfarr for Android" %>
+<div class="mx-auto max-w-2xl space-y-6">
+  <div class="rounded-xl border border-gray-800 bg-gray-900 p-6 sm:p-8">
+    <h1 class="flex flex-wrap items-center gap-3 text-2xl font-semibold text-white">
+      Shelfarr for Android
+      <% if development %><span class="rounded-full bg-amber-900/60 px-3 py-1 text-sm font-medium text-amber-200">Development build</span><% end %>
+    </h1>
+    <p class="mt-3 text-gray-400">Read and listen to this server's library on your phone, including offline.</p>
+    <% if development %>
+      <p class="mt-3 text-sm text-amber-300">Development builds change often and may be unstable. They install as a separate app next to the regular one (it is also called Shelfarr), with its own sign-in and downloads.</p>
+    <% end %>
+
+    <% if !@offered %>
+      <p class="mt-6 text-gray-300" role="status">This server doesn't offer the <%= @channel %> Android build.</p>
+      <% if development && @configuration.enabled?("release") %>
+        <p class="mt-3"><%= link_to "Get the regular Android app", android_app_path, class: "text-blue-400 hover:text-blue-300" %></p>
+      <% end %>
+      <% if Current.user&.admin? %>
+        <p class="mt-3 text-sm text-gray-400">
+          <% if @configuration.misconfigured? %>
+            <%= @configuration.error %>.
+          <% else %>
+            Administrators choose the offered builds with <code class="text-gray-300">ANDROID_UPDATE_CHANNELS</code>.
+          <% end %>
+        </p>
+      <% end %>
+    <% elsif @release.nil? %>
+      <p class="mt-6 text-gray-300" role="status">The app isn't ready on this server yet. The server downloads and checks it in the background; try again in a few minutes.</p>
+      <% if Current.user&.admin? %>
+        <p class="mt-3 text-sm text-gray-400">
+          <% if @last_problem %>Last attempt: <code class="text-gray-300"><%= @last_problem %></code>. <% end %>
+          Run <code class="text-gray-300">bin/rails android_updates:refresh</code> on the server to try now, or <code class="text-gray-300">android_updates:status</code> for details.
+        </p>
+      <% end %>
+    <% else %>
+      <dl class="mt-6 grid grid-cols-2 gap-3 text-sm">
+        <div><dt class="text-gray-500">Version</dt><dd class="text-gray-200"><%= @release.version_name %></dd></div>
+        <div><dt class="text-gray-500">Size</dt><dd class="text-gray-200"><%= number_to_human_size(@release.size_bytes) %></dd></div>
+        <% if @release.min_sdk %>
+          <div class="col-span-2"><dt class="text-gray-500">Requires</dt><dd class="text-gray-200">Android API level <%= @release.min_sdk %> or newer</dd></div>
+        <% end %>
+      </dl>
+      <% if @release.release_notes.present? %>
+        <details class="mt-4 text-sm text-gray-300">
+          <summary class="cursor-pointer text-gray-400">What's new</summary>
+          <div class="mt-2 whitespace-pre-line"><%= @release.release_notes %></div>
+        </details>
+      <% end %>
+
+      <ol class="mt-8 space-y-6">
+        <li>
+          <h2 class="font-medium text-white">1. Download and install</h2>
+          <p class="mt-2 text-sm text-gray-400">Android may ask you to keep the file and to allow installing apps from your browser (“Install unknown apps”). Allow it for this browser, open the downloaded file and tap <strong>Install</strong>.</p>
+          <%= link_to "Download Shelfarr #{@release.version_name}", android_app_apk_path(channel: @channel, file: @release.file_name),
+            id: "android-download", data: { turbo: false },
+            class: "mt-3 inline-block rounded-lg bg-blue-600 px-5 py-3 font-medium text-white hover:bg-blue-500" %>
+        </li>
+        <li>
+          <h2 class="font-medium text-white">2. Come back here and open Shelfarr</h2>
+          <% if @server_address.usable? %>
+            <p class="mt-2 text-sm text-gray-400">When Android says the app is installed, tap <strong>Done</strong>, return to this page and tap <strong>Open Shelfarr</strong>. The app opens with this server's address, <code class="text-gray-300"><%= @server_address.to_s %></code>, already filled in. Then sign in here in the browser as usual.</p>
+            <%= link_to "Open Shelfarr", @server_address.connect_url, id: "android-open", data: { turbo: false },
+              class: "mt-3 inline-block rounded-lg bg-gray-700 px-5 py-3 font-medium text-white hover:bg-gray-600" %>
+          <% else %>
+            <p class="mt-2 text-sm text-amber-300">This page isn't open over HTTPS, so it can't hand its address to the app. Open this page from your server's HTTPS address to finish setup, or type that address in the app.</p>
+          <% end %>
+          <p class="mt-3 text-sm text-gray-500">A freshly installed app can't tell which server it was downloaded from, which is why this second step is needed once.</p>
+        </li>
+      </ol>
+    <% end %>
+  </div>
+
+  <div class="rounded-xl border border-gray-800 bg-gray-900 p-6 text-sm text-gray-400 space-y-2">
+    <h2 class="font-medium text-white">Already using Shelfarr on this phone?</h2>
+    <p>You don't need this page: updates are offered inside the app, under Settings. Installing a newer build over the app keeps your account, downloads, progress and settings.</p>
+    <p>Opening Shelfarr from here never replaces an existing connection; if the app is connected to another server it tells you how to switch.</p>
+    <p>Don't uninstall the app to get past an installation error: uninstalling deletes its downloads and progress on the phone.</p>
+  </div>
+</div>
