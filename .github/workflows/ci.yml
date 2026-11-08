@@ -1,8 +1,8 @@
 name: CI
 
 on:
+  # Stack layers target feature branches and need the same checks as main-bound PRs.
   pull_request:
-    branches: [main, master, dev]
   push:
     branches: [main, master, dev]
 
